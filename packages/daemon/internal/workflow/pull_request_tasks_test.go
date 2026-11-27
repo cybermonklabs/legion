@@ -121,7 +121,7 @@ func TestAReviewOfOneTasksPullRequestMovesThatTask(t *testing.T) {
 
 	mustSpend(t, "the settlement of a's head", apply("a-settled", intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 44, HeadSHA: "head-a",
 		CheckRuns: []record.AttemptRun{{Name: "build", ID: 1}, {Name: "unit", ID: 1}}, Generation: 1, Snapshot: "head-a-1", Failing: []string{"unit"}}))
-	told := "Pull request #44: CI settled at head-a: \"build\" succeeded, \"unit\" failed. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code."
+	told := "Pull request sjawhar/legion#44: CI settled at head-a: \"build\" succeeded, \"unit\" failed. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code."
 	var want []record.RoleMessage
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer} {
 		want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: told})

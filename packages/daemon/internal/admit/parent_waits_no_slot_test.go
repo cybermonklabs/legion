@@ -50,7 +50,7 @@ func pnMergedChildren(parent string, merged ...string) string {
 
 // pnMerged is child named with its pull request, as pnMergedChildren lists it.
 func pnMerged(child string, number int) string {
-	return fmt.Sprintf("%s (pull request #%d)", child, number)
+	return fmt.Sprintf("%s (pull request acme/widgets#%d)", child, number)
 }
 
 // pnChildMerged records child, a child of parent in parent's tree, as a child that ran and merged
@@ -1298,7 +1298,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		putIssue(t, pool, record.Issue{Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: testProject, Title: parent, Tree: root, Parent: record.ParentOf(root), Phase: phase.AwaitingChildren,
 			Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: parent, LastDispatchSeq: 1,
-			ChildrenWait: &record.ChildrenWait{Start: phase.Accepting, Task: "Continue " + parent + ". Issue: " + parent + ". Phase: accepting. Pull request: #44.",
+			ChildrenWait: &record.ChildrenWait{Start: phase.Accepting, Task: "Continue " + parent + ". Issue: " + parent + ". Phase: accepting. Pull request: acme/widgets#44.",
 				Reason: "a review approved the head, while these Dispatch children of " + parent + " were open: " + child + " (todo)",
 				Since:  waited, Children: []string{child}},
 			ChildrenWaitedAt: &waited})

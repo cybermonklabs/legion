@@ -44,8 +44,10 @@ func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 // checkClaim is the claim of the agent that works check, the one reader of a check's claim, and
 // each row of the check that names a claim names this one: the start of each look (startLook), the
 // suspend that follows a pending look (endLookPending) and the issue_close of its close
-// (closeCheck). For a check of a task (check.Task set) it is the claim of the check's agent
-// (record.CheckAgent) over the plan of the check's run (check.Generation): the task's last agent
+// (closeCheck). For a check of a task (check.Task set: the task of the merge, or for a pull request
+// the issue links that no task's branch holds the task whose scope works it, checkedTask) it is the
+// claim of the check's agent (record.CheckAgent) over the plan of the check's run
+// (check.Generation): the task's last agent
 // of the check's role, else a fresh agent of the task. The plan alone decides it, so the claim a
 // leave keeps for a check it is about to open is the claim that check's rows will name. For a check
 // of an issue with no plan rows, or one a release before checks carried their task wrote, it is the
@@ -76,7 +78,9 @@ func (e *Engine) checkClaim(ctx context.Context, tx pgx.Tx, check record.Product
 // openCheck opens issue's production check on its merged pull request pr and starts its first
 // look, woken by the merge: the record (record.ProductionCheck, bound at the project's
 // ProductionCheckBound from now, carrying the role that works it and the task whose merge it
-// checks, pr's), the check_bound row due at that bound, then the look (startLook). A project whose
+// checks, checkedTask: pr's own task, or for a pull request the issue links that no task's branch
+// holds the task whose scope works it), the check_bound row due at that bound, then the look
+// (startLook). A project whose
 // `production_check` is off has no role to work a check (checkRole), and opens nothing at all: no
 // record, no bound row and no look, only the line saying the merge had nothing to check.
 // wake is only how the open is logged: a lingering tree's member has its claims suspended,
@@ -135,9 +139,13 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 			now = existing.OpenedAt.Add(time.Microsecond)
 		}
 	}
+	task, err := e.checkedTask(ctx, tx, issue, pr)
+	if err != nil {
+		return err
+	}
 	check := record.ProductionCheck{
 		Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: pr.Repo, Number: pr.Number, MergeSHA: pr.MergeSHA,
-		OpenedAt: now, BoundAt: now.Add(e.cfg.ProductionCheckBound), Role: role, Generation: issue.Generation, Task: pr.Task,
+		OpenedAt: now, BoundAt: now.Add(e.cfg.ProductionCheckBound), Role: role, Generation: issue.Generation, Task: task,
 	}
 	if err := e.enqueueAt(ctx, tx, issue.Key, record.CheckBound{}, check.BoundAt); err != nil {
 		return err
@@ -149,6 +157,29 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 	e.logOnCommit(ctx, "workflow: production check opened", "issue", issue.Key, "mergeCommit", pr.MergeSHA, "pullRequest", pr.Number,
 		"role", role, "bound", check.BoundAt, "firstLook", first)
 	return e.startLook(ctx, tx, issue, &check, wakeMerge, pr.MergeSHA, false)
+}
+
+// checkedTask is the task a check of the merge of pr, a pull request of issue, is of
+// (record.ProductionCheck.Task), whose agent works the check (checkClaim): pr's own task
+// (record.PullRequest.Task, the task whose branch it is on), and for a pull request the issue links
+// that no task's branch holds, in another repository or on a branch no task was given, the task
+// whose scope works it (tasksOfPullRequest, linkedScopeTask, dispatch://INFRA-5910 decision 6), so
+// the check of a linked merge is claimed by that task's check agent. "" for a pull request of an
+// issue with no plan rows at its generation, whose check is of the issue's own worker. The open of a
+// check (openCheck) and the claim a close keeps for a check it will open (keptClaims) read it on one
+// plan, so the claim kept is the claim the check's rows name.
+func (e *Engine) checkedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) (string, error) {
+	if pr.Task != "" || !pr.Linked {
+		return pr.Task, nil
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return "", err
+	}
+	if tasks := tasksOfPullRequest(issue, stored, pr); len(tasks) == 1 {
+		return tasks[0], nil
+	}
+	return "", nil
 }
 
 // checksMerge says whether check is the check of the merge pr: the same repository (sameRepository,
@@ -202,7 +233,9 @@ const checkTaskLead = "Production check of "
 // checkTask is what the check's role is told at a look of the production check of a merge of the
 // issue, which may still be in the workflow with other tasks to run, or closed. The session it
 // reaches may be fresh — a woken pod after a lost volume — so the text stands on its own: the
-// issue, the repository, the pull request, the merge commit, the look and what woke it (wokenBy),
+// issue, the repository, the pull request of the check's own merge as owner/name#number (an issue's
+// merges can be of several repositories, each with a check of its own, dispatch://INFRA-5910
+// decision 21, r3), the merge commit, the look and what woke it (wokenBy),
 // whether it is the last, and the rules of the check in prose: each requirement only the deploy can
 // show observed as it names it, the three verdicts and what each asks of the pull request, no
 // commit, the wake a pending names for its own next look, the suspension that follows it once the
@@ -224,7 +257,8 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	if view := viewSentence(issue); view != "" {
 		text.WriteString(view + "\n")
 	}
-	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
+	fmt.Fprintf(&text, "Repository %s, pull request %s, merge commit %s. Look %d, woken by %s.", check.Repo, prName(check.Repo, check.Number), merge,
+		check.Looks, wokenBy(cause, detail))
 	openedAt := check.OpenedAt.UTC().Format(time.RFC3339Nano)
 	fmt.Fprintf(&text, " The check opened at `%s`: your report names it with check_opened_at `%s`.",
 		openedAt, openedAt)

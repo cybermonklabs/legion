@@ -333,12 +333,16 @@ func (e *Engine) linkReadOf(ctx context.Context, tx pgx.Tx, fact intake.PullRequ
 // repository (dispatch://INFRA-5910 decisions 5 and 9). Its issue is the issue column of its row
 // (record.PullRequest.Issue), never a plan task's, and the merge, which merged recorded already,
 // moves no task: it queues no close of the task pull requests (closeHeldPullRequests) and runs no
-// transition. The architect is told (`pr-merged`), and an issue in reviewing has its round asked
-// again (reaskRound), so the merge ends the review of that pull request alone. The links that hold
-// the issue's close lose one where pr is linked (setHolds), so the close is judged again
-// (judgeClose), with pr the merge it follows. scope is the task pr is of (issueOfPullRequest), nil
-// where it is no one task's; such a pull request that the issue does not link either is none of its
-// set, and its merge tells nobody.
+// transition. The architect is told (`pr-merged`). The merge is work of the issue that lands on its
+// pull request's base, so it opens a production check of its own at its merge, with its repository,
+// number and merge commit, while the issue is in the workflow (openCheck, D6, decision 6): no
+// later merge replaces it, and the check is of the task whose scope works pr (checkedTask), whose
+// check agent claims it; in a lingering tree its first look is a wake. An issue in reviewing has its
+// round asked again (reaskRound), so the merge ends the review of that pull request alone. The
+// links that hold the issue's close lose one where pr is linked (setHolds), so the close is judged
+// again (judgeClose), with pr the merge it follows. scope is the task pr is of (issueOfPullRequest),
+// nil where it is no one task's; such a pull request that the issue does not link either is none of
+// its set, and its merge tells nobody.
 func (e *Engine) mergedNotOwn(ctx context.Context, tx pgx.Tx, scope *TaskScope, pr *record.PullRequest, prior record.PullRequest) error {
 	if scope == nil && !pr.Linked {
 		return nil
@@ -352,6 +356,15 @@ func (e *Engine) mergedNotOwn(ctx context.Context, tx pgx.Tx, scope *TaskScope, 
 		Reason: fmt.Sprintf("pull request %s merged while %s was in %s; it is no task's own pull request of %s, so its merge moves no task", name, issue.Key,
 			issue.Phase, issue.Key)}); err != nil {
 		return err
+	}
+	if InWorkflow(*issue) {
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return err
+		}
+		if err := e.openCheck(ctx, tx, *issue, *pr, lingers); err != nil {
+			return err
+		}
 	}
 	if scope != nil {
 		if err := e.reaskRound(ctx, tx, *scope, pr, prior, byMerge); err != nil {
@@ -383,6 +396,21 @@ func (h heldLink) why() string {
 		return "Legion has not read it from GitHub yet. Remove its link, or have it merged."
 	}
 	return "it is open. Remove its link, or have it merged."
+}
+
+// holdsClause is what a step's text says of h, a link that holds the issue's close and that the
+// step does not work (pullRequestPart): that it holds the close, and why, for a worker, who has no
+// way out of the hold to take, which the architect's notice names (why).
+func (h heldLink) holdsClause() string {
+	switch {
+	case h.link.Refused == record.LinkRefusedUnserved:
+		return fmt.Sprintf("it holds the issue's close, since Legion does not serve %s", h.link.Repo)
+	case h.link.Refused == record.LinkRefusedUnreadable:
+		return "it holds the issue's close, since GitHub does not show it to Legion"
+	case h.row == nil:
+		return "it holds the issue's close, since Legion has not read it from GitHub yet"
+	}
+	return "it holds the issue's close while it is open"
 }
 
 // setHolds is each link of issue that holds its close (dispatch://INFRA-5910 decision 9), in the

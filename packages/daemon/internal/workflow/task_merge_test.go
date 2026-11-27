@@ -172,7 +172,7 @@ func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
 	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Merging {
 		t.Fatalf("%s after b's merge stands in %s, want merging: its close waits for %s", root.Key, issue.Phase, heldParentChild)
 	}
-	want := waitingForTree(root.Key, 45, []string{heldParentChild})
+	want := waitingForTree(root.Key, record.PullRequest{Repo: "sjawhar/legion", Number: 45}, []string{heldParentChild})
 	var told []string
 	for _, notice := range noticesOfKind(t, pool, root.Key, "pr-merged") {
 		told = append(told, notice.Reason)

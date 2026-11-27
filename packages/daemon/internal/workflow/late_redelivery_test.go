@@ -311,7 +311,7 @@ func TestAReviewOfAnEarlierRoundDecidesNoLaterRound(t *testing.T) {
 			seedReviewOf(t, pool, headOne, "green")
 			// Round 2's entry, raised when the issue came back into reviewing at the same head.
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 2,
-				EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42.", EntryRaisedAt: raised})
+				EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: sjawhar/legion#42.", EntryRaisedAt: raised})
 			apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 			if tc.decides == "" {
 				lateChangesNothing(t, pool, apply, "late-review", tc.review)

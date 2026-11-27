@@ -295,8 +295,10 @@ const (
 // A tree of this daemon's own that has stopped is told to the project's controller once, with
 // what the controller needs to decide: the root, how long the tree has been quiet, and each
 // issue of it the workflow still runs, with that issue's phase, the role whose turn it is or
-// that the phase has no role, and the state of its pull request. A tree quiet for less than the
-// deployment's bound is told to nobody.
+// that the phase has no role, and each pull request of its set with its state, named as
+// owner/name#number (dispatch://INFRA-5910 decision 21, r7): tree A's root links acme/deploy#6990,
+// a pull request of a second repository, beside its own acme/widgets#41, and the notice names both.
+// A tree quiet for less than the deployment's bound is told to nobody.
 //
 // Once is the whole of the rule. The daemon marks the root with the movement the notice was
 // told for, so a later pass of the same stall tells nothing — and neither does a pass of an
@@ -325,6 +327,16 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	seedQuietChild(t, pool, stalledRootA, stalledChildA, "A1", phase.Merging, "in_progress")
 	seedQuietChild(t, pool, stalledRootA, stalledDoneA, "A2", phase.Done, record.DoneStatus)
 	seedPullRequest(t, pool, stalledRootA, 41, record.PullRequestOpen)
+	inTx(t, pool, func(tx pgx.Tx) {
+		records := record.NewStore()
+		if err := records.ReplacePullRequestLinks(context.Background(), tx, stalledRootA, []record.PullRequestLink{{Repo: "acme/deploy", Number: 6990}}); err != nil {
+			t.Fatalf("link acme/deploy#6990 on %s: %v", stalledRootA, err)
+		}
+		if err := records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: stalledRootA, Repo: "acme/deploy", Number: 6990,
+			Branch: "fix/deploy", HeadSHA: "head-6990", Generation: 1, State: record.PullRequestOpen}); err != nil {
+			t.Fatalf("record acme/deploy#6990 of %s: %v", stalledRootA, err)
+		}
+	})
 	seedPullRequest(t, pool, stalledChildA, 42, record.PullRequestMerged)
 	// Tree B: a root in retro, which holds no admission slot at all under this release, on a
 	// merged pull request — the tree this rule was filed for.
@@ -359,9 +371,9 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	}
 	want := []stalledNotice{
 		toldOf(stalledRootA, 7,
-			stalledRootA+" is in implementing. The implementer has the turn. Pull request 41 is open.",
-			stalledChildA+" is in merging. The merger has the turn. Pull request 42 is merged."),
-		toldOf(stalledRootB, 7, stalledRootB+" is in retro. The implementer has the turn. Pull request 43 is merged."),
+			stalledRootA+" is in implementing. The implementer has the turn. Pull request acme/deploy#6990 is open. Pull request acme/widgets#41 is open.",
+			stalledChildA+" is in merging. The merger has the turn. Pull request acme/widgets#42 is merged."),
+		toldOf(stalledRootB, 7, stalledRootB+" is in retro. The implementer has the turn. Pull request acme/widgets#43 is merged."),
 	}
 	if got := stalledNotices(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the controller was told %#v, want %#v", got, want)

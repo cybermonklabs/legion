@@ -89,11 +89,11 @@ func bootResumes(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, r
 // pull request it works on, and the merger the head it may merge. Of the example plan a to e, each
 // task with its own open pull request, a's #1 on the issue's own branch and e's #5 on
 // legion/LEGION-208.e: the merger of e, the task that merges, resumed by the boot while a to d are
-// done, is told ` Pull request: #5.` right after the lines of where its work stands, and no other
+// done, is told ` Pull request: sjawhar/legion#5.` right after the lines of where its work stands, and no other
 // number; resumed at the head a merge forward landed past the review that the reviewer is asked to
 // read, it is told after that line to merge the head only once the reviewer's approval of it is on
 // the pull request, as its start is; the reviewer of c, resumed by the boot while c stands at its
-// review, is told c's ` Pull request: #3.`; and the start of c's review, at the completion of c's
+// review, is told c's ` Pull request: sjawhar/legion#3.`; and the start of c's review, at the completion of c's
 // implementation, names #3 once.
 //
 // The fault it catches is a resumed merger told no number, which reads the pull request on
@@ -108,7 +108,7 @@ func TestAResumedStepNamesItsTasksPullRequest(t *testing.T) {
 	atMerge := exampleStand{state: record.TaskRunning, place: record.TaskPlace{Kind: record.PlaceMerge}}
 	namesOnce := func(t *testing.T, who, task string, number int) {
 		t.Helper()
-		if want := fmt.Sprintf(" Pull request: #%d.", number); !strings.Contains(task, want) || strings.Count(task, " Pull request: #") != 1 {
+		if want := fmt.Sprintf(" Pull request: sjawhar/legion#%d.", number); !strings.Contains(task, want) || strings.Count(task, " Pull request: ") != 1 {
 			t.Fatalf("the %s's task = %q, want it to name its task's pull request #%d once, and no other", who, task, number)
 		}
 	}
@@ -120,7 +120,7 @@ func TestAResumedStepNamesItsTasksPullRequest(t *testing.T) {
 
 		merger := bootResumes(t, pool, engine, root.Key, claim.RoleMerger)
 		namesOnce(t, "resumed merger of e", merger, 5)
-		if want := mergerSteps + " Pull request: #5. Resume the existing phase work."; !strings.HasSuffix(merger, want) {
+		if want := mergerSteps + " Pull request: sjawhar/legion#5. Resume the existing phase work."; !strings.HasSuffix(merger, want) {
 			t.Fatalf("the resumed merger's task = %q, want it to end %q: its pull request right after where its work stands", merger, want)
 		}
 	})
@@ -135,7 +135,7 @@ func TestAResumedStepNamesItsTasksPullRequest(t *testing.T) {
 
 		merger := bootResumes(t, pool, engine, root.Key, claim.RoleMerger)
 		namesOnce(t, "resumed merger of e", merger, 5)
-		if want := mergerSteps + " Pull request: #5. Head head-e is the merge of main forward that landed after the review, and the reviewer is asked to read it:" +
+		if want := mergerSteps + " Pull request: sjawhar/legion#5. Head head-e is the merge of main forward that landed after the review, and the reviewer is asked to read it:" +
 			" merge head head-e only once the reviewer's approval of it is on the pull request. Resume the existing phase work."; !strings.HasSuffix(merger, want) {
 			t.Fatalf("the resumed merger's task = %q, want it to end %q", merger, want)
 		}
@@ -149,7 +149,7 @@ func TestAResumedStepNamesItsTasksPullRequest(t *testing.T) {
 
 		reviewer := bootResumes(t, pool, engine, root.Key, claim.RoleReviewer)
 		namesOnce(t, "resumed reviewer of c", reviewer, 3)
-		if want := " Task: c. Step 2 of 2: reviewer:r. Steps: 1 implementer:i, 2 reviewer:r. Pull request: #3. Resume the existing phase work."; !strings.Contains(reviewer, want) {
+		if want := " Task: c. Step 2 of 2: reviewer:r. Steps: 1 implementer:i, 2 reviewer:r. Pull request: sjawhar/legion#3. Resume the existing phase work."; !strings.Contains(reviewer, want) {
 			t.Fatalf("the resumed reviewer's task = %q, want it to hold %q", reviewer, want)
 		}
 	})
@@ -236,7 +236,7 @@ func TestAStartReadsItsTasksPullRequestOnce(t *testing.T) {
 		if reads.reads != 1 {
 			t.Fatalf("%s read the pull request of task %q of %s %d times, want once", who, reads.task, reads.key, reads.reads)
 		}
-		if want := fmt.Sprintf(" Pull request: #%d.", number); strings.Count(task, " Pull request: #") != 1 || !strings.Contains(task, want) {
+		if want := fmt.Sprintf(" Pull request: sjawhar/legion#%d.", number); strings.Count(task, " Pull request: ") != 1 || !strings.Contains(task, want) {
 			t.Fatalf("the task %s started = %q, want it to name the pull request #%d it read, once", who, task, number)
 		}
 	}

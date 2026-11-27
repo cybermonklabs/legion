@@ -98,7 +98,7 @@ func TestAFailedClaimHoldsItsTaskAndTheOtherGoesOn(t *testing.T) {
 	}
 	retries := startsIn(t, pool, root.Key, claim.RoleReviewer, phase.Reviewing)
 	if !slices.ContainsFunc(retries, func(start record.SuperviseRequest) bool {
-		return start.Claim == agentClaim(t, root.Key, "reviewer-2") && start.ResendEntry && strings.Contains(start.Task, " Pull request: #45.")
+		return start.Claim == agentClaim(t, root.Key, "reviewer-2") && start.ResendEntry && strings.Contains(start.Task, " Pull request: sjawhar/legion#45.")
 	}) {
 		t.Fatalf("the reviewer's starts of %s in reviewing = %+v, want the retry's of b's agent reviewer-2, naming b's own pull request #45", root.Key, retries)
 	}
@@ -214,7 +214,7 @@ func TestAFailedClaimOfThePlansOneTaskHoldsItsTaskAndNamesNone(t *testing.T) {
 	}
 	retries := startsIn(t, pool, root.Key, claim.RoleReviewer, phase.Reviewing)
 	if !slices.ContainsFunc(retries, func(start record.SuperviseRequest) bool {
-		return start.Claim == agentClaim(t, root.Key, "reviewer") && start.ResendEntry && strings.Contains(start.Task, " Pull request: #42.")
+		return start.Claim == agentClaim(t, root.Key, "reviewer") && start.ResendEntry && strings.Contains(start.Task, " Pull request: sjawhar/legion#42.")
 	}) {
 		t.Fatalf("the reviewer's starts of %s in reviewing = %+v, want the retry's of a's agent reviewer, naming the pull request #42", root.Key, retries)
 	}

@@ -81,7 +81,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	t.Parallel()
 	const withCommit, withNone = "a row with a commit", "a row with none"
 	both := []string{withCommit, withNone}
-	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work."
+	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: sjawhar/legion#42. Resume the existing phase work."
 	for _, tc := range []struct {
 		name string
 		// rows is each kind of row the path is run for: one that holds a commit, one that holds
@@ -102,7 +102,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			walk: func(t *testing.T, _ bool) (*pgxpool.Pool, string) {
 				pool, _, _ := reviewRoundOne(t)
 				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1)." +
-					" Tester's verdict: pass. Pull request: #42."
+					" Tester's verdict: pass. Pull request: sjawhar/legion#42."
 			},
 		},
 		{
@@ -115,7 +115,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					}
 				}
 				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-					" Tester's verdict: pass. Pull request: #42."
+					" Tester's verdict: pass. Pull request: sjawhar/legion#42."
 			},
 		},
 		{
@@ -127,7 +127,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					readmitsTheTree(t, pool, engine, engine.now().Add(time.Hour))
 					outboxRan(t, pool)
 					promotesTheReviewer(t, pool, engine, engine.now().Add(time.Hour))
-					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work."
+					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: sjawhar/legion#42. Resume the existing phase work."
 				}
 				// A carried hand-over keeps its rows and the commit with them (admit's readmit
 				// returns before the clear), and its promotion raises the reviewer's entry.
@@ -172,7 +172,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				seedIssue(t, pool, *held)
 				outboxRan(t, pool)
 				apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "the claim failed"})
-				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Reason: the claim failed."
+				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: sjawhar/legion#42. Reason: the claim failed."
 			},
 		},
 		{
@@ -240,7 +240,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					}
 					return engine.SendOwedEntry(ctx, tx, s, claim.RoleReviewer, row)
 				})
-				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work."
+				return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: sjawhar/legion#42. Resume the existing phase work."
 			},
 		},
 	} {
@@ -353,7 +353,7 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 			if tc.names != "" {
 				commit = reviewedPartOf(tc.names)
 			}
-			if entry := reviewerRow(t, pool).Entry; !strings.HasSuffix(stored, " Pull request: #42."+commit+reviewEntryPartOf(entry)) ||
+			if entry := reviewerRow(t, pool).Entry; !strings.HasSuffix(stored, " Pull request: sjawhar/legion#42."+commit+reviewEntryPartOf(entry)) ||
 				strings.Count(stored, reviewround.CommitLabel) != 1 {
 				t.Fatalf("the reviewer's row stores the task %q, want it to end with the pull request, then %q, then entry %d", stored, commit, entry)
 			}
@@ -425,7 +425,7 @@ func TestATaskWhoseTextQuotesTheRoundsSentencesIsStillGivenThem(t *testing.T) {
 			outboxRan(t, pool)
 			reason := tc.reason(row.Entry)
 			apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: reason})
-			before := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Reason: " + reason + "."
+			before := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: sjawhar/legion#42. Reason: " + reason + "."
 			want := before + reviewedPartOf(commit) + reviewEntryPartOf(row.Entry)
 			if delivered := deliveredTask(t, pool, tc.name); delivered != want {
 				t.Fatalf("the retry is delivered as %q, want %q: the task's text, then the daemon's sentence naming %s, then its sentence naming entry %d",

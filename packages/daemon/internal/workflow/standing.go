@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -101,14 +102,15 @@ func ownersText(text string) string {
 // review step, and each reads the runs of the steps and their reports from Dispatch
 // (`dispatch steps`), which keeps every run, the failed ones too.
 //
-// Every start, and every resume, names the pull request of s's task (pullRequestPart): a task of a
-// plan its own row, and an issue with no plan rows the row of its merge (taskPullRequest). A worker
-// resumed in a fresh session has no earlier task to read the number from, and with none it would
-// read the pull request on legion/<KEY>, which is another task's wherever that task holds the
-// issue's own branch. pull is that row as the start's handler has it (taskPull): the row it read to
-// judge its move, which the standing names with no read of its own, so the transaction reads the
-// row once; or none read, which is read here as its row alone (taskPullRequestRow), since the
-// standing names its number and its merge forward and writes nothing of it.
+// Every start, and every resume, names the pull requests of s's step (pullRequestText): its task's
+// own first, a task of a plan its own row and an issue with no plan rows the row of its merge
+// (taskPullRequest), then each other pull request the step works or that holds the issue's close. A
+// worker resumed in a fresh session has no earlier task to read the number from, and with none it
+// would read the pull request on legion/<KEY>, which is another task's wherever that task holds the
+// issue's own branch. pull is the task's own row as the start's handler has it (taskPull): the row
+// it read to judge its move, which the standing names with no read of its own, so the transaction
+// reads the row once; or none read, which is read here as its row alone (taskPullRequestRow), since
+// the standing names its number and its merge forward and writes nothing of it.
 //
 // The phase the worker starts in is the phase of s's copy, which each caller has put there before
 // it composes the task, and s's walk is the walk of its task as the caller read it, after any move
@@ -136,7 +138,24 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope, pull 
 			return Standing{}, err
 		}
 	}
-	return standingText(issue, e.cfg.WorkspaceDir, w, rows, told, pr)
+	text, err := e.pullRequestText(ctx, tx, s, pr)
+	if err != nil {
+		return Standing{}, err
+	}
+	return standingText(issue, e.cfg.WorkspaceDir, w, rows, told, text)
+}
+
+// pullRequestText is what a step of s's task is told of its issue's pull requests
+// (pullRequestPart): own, its task's own pull request (nil for none), and the pull requests the
+// step works or that hold the issue's close beside it (scopePullRequests). The start and the resume
+// of every step read it (standingPart), and so does the notice that hands the architect its
+// acceptance (transition).
+func (e *Engine) pullRequestText(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (string, error) {
+	pulls, err := e.scopePullRequests(ctx, tx, s, own)
+	if err != nil {
+		return "", err
+	}
+	return pullRequestPart(s.issue, own, pulls), nil
 }
 
 // taskPull is the pull request of a started step's task as the start has it. A handler that read
@@ -213,9 +232,9 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 
 // standingText is standingPart's text for the worker of issue's phase, from the walk w of its
 // run, the directory dir gives each working copy, its phases rows and what its plan tells its
-// step, which only a step's text reads, and pr, the pull request of its task, nil for none.
-func standingText(issue record.Issue, dir func(record.Issue, string) string, w Walk, rows []record.PhaseRow, told planTold, pr *record.PullRequest) (Standing, error) {
-	pull := pullRequestPart(issue, pr)
+// step, which only a step's text reads, and pull, what it is told of its pull requests
+// (pullRequestPart), "" for none.
+func standingText(issue record.Issue, dir func(record.Issue, string) string, w Walk, rows []record.PhaseRow, told planTold, pull string) (Standing, error) {
 	if !w.Stored {
 		at := WorkingCopy(issue, dir)
 		at.pull = pull
@@ -249,29 +268,62 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 	return Standing{lines: lines, pull: pull, owners: ownersText(strings.TrimSpace(w.Text))}, nil
 }
 
-// pullRequestPart is what the worker of issue's phase is told of pr, the pull request of its task
-// (Standing.pull): ` Pull request: #<n>.`, nothing where its task has none. A merger in merging at
-// the head a merge forward landed on where the task's reviewer step already ran
-// (mergeForwardLanded), while the review that landing asked of the reviewer stands for that head
-// (mergeForwardReviewOwed), is told after it to merge that head only
+// pullRequestPart is what the worker of issue's phase is told of its pull requests (Standing.pull),
+// pr being its task's own and pulls the others its step works or that hold the issue's close
+// (scopePullRequests): ` Pull request: <own>.`, each pull request named as owner/name#number, since
+// an issue's pull requests can be of several repositories and a number alone names none of them
+// (dispatch://INFRA-5910 decision 21, r1). After its task's own, or `none of its own` where the
+// task has none, come each pull request the issue links that the step's scope works, `(linked on
+// the issue)`, and then each other that holds the issue's close, with why it holds it; the merger,
+// in merging, is told of each linked pull request of its scope whether an approval stands at its
+// head (approvalStands), and asked to merge it only where one does, since it merges a pull request
+// only when its review allows it (D6, decision 6). Nothing where the task has no pull request and
+// none other is named. A merger in merging at the head a merge forward landed on where the task's
+// reviewer step already ran (mergeForwardLanded), while the review that landing asked of the
+// reviewer stands for that head (mergeForwardReviewOwed), is told after it to merge that head only
 // once the reviewer's approval of it is on the pull request: the daemon records no decision outside
-// reviewing, so the approval is the merger's to read on GitHub. A merger resumed in a fresh
-// session is told the same as one started at retro's completion, the one move into merging, or at
-// the retry of a held merging (retryPhase): each composes its task from the row its own
-// transaction reads (standingPart), so the part says what the record holds.
-func pullRequestPart(issue record.Issue, pr *record.PullRequest) string {
-	if pr == nil {
-		return ""
+// reviewing, so the approval is the merger's to read on GitHub. A merger resumed in a fresh session
+// is told the same as one started at retro's completion, the one move into merging, or at the retry
+// of a held merging (retryPhase): each composes its task from the row its own transaction reads
+// (standingPart), so the part says what the record holds.
+func pullRequestPart(issue record.Issue, pr *record.PullRequest, pulls scopedPulls) string {
+	var named []string
+	switch {
+	case pr != nil && pr.Number != 0:
+		named = append(named, prName(pr.Repo, pr.Number))
+	case len(pulls.scoped) > 0 || len(pulls.holding) > 0:
+		named = append(named, "none of its own")
+	}
+	for _, linked := range pulls.scoped {
+		clause := "linked on the issue"
+		if issue.Phase == phase.Merging {
+			clause += "; no approval stands at its head, so do not merge it"
+			if approvalStands(linked) {
+				clause = "linked on the issue; an approval stands at its head, so merge it too"
+			}
+		}
+		named = append(named, fmt.Sprintf("%s (%s)", prName(linked.Repo, linked.Number), clause))
+	}
+	for _, held := range pulls.holding {
+		named = append(named, fmt.Sprintf("%s (linked on the issue; %s)", prName(held.link.Repo, held.link.Number), held.holdsClause()))
 	}
 	var text string
-	if pr.Number != 0 {
-		text = fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
+	if len(named) > 0 {
+		text = fmt.Sprintf(" %s: %s.", pullRequestLabel, strings.Join(named, "; "))
 	}
-	if issue.Phase == phase.Merging && mergeForwardReviewOwed(*pr) {
+	if pr != nil && issue.Phase == phase.Merging && mergeForwardReviewOwed(*pr) {
 		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
 			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
 	}
 	return text
+}
+
+// approvalStands says whether the decision pr holds of its own (record.PullRequest.ReviewDecision,
+// dispatch://INFRA-5910 decision 7) approves the code at pr's head (classify.ApprovalStands): what
+// the merger is told before it merges a linked pull request of its scope (pullRequestPart).
+func approvalStands(pr record.PullRequest) bool {
+	d := pr.ReviewDecision
+	return d != nil && d.State == "approved" && classify.ApprovalStands(pr, d.Head)
 }
 
 // stepsLine is ` Steps: 1 <role>, 2 <role>, ….`: each step of a task by its place, words, the steps

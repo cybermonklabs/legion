@@ -1350,8 +1350,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// The round as the completion found it is what a notice is deduped against (settleRound): a
 	// round already stuck at this head before the completion was told then, and the completion
 	// adds nothing to it; a round the completion itself leaves stuck - one it completed with no
-	// decision, or with an approval of other code - was not stuck before it, and is told.
-	found := e.reviewRound(*issue, row, pr)
+	// decision, or with an approval of other code - was not stuck before it, and is told. The round
+	// judges the task's own pull request and each other pull request of its scope (roundPullsOn).
+	pulls, err := e.roundPullsOn(ctx, tx, s, pr)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	found := e.reviewRound(*issue, row, pulls)
 	row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()
 	row.HandoffRecord, row.HandoffVersion = fact.HandoffRecord, fact.HandoffVersion
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
@@ -1386,7 +1391,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 			return intake.Result{}, e.transition(ctx, tx, s, TriggerTesterPassed, record.TaskPlace{}, row, pr, "")
 		}
 	case phase.Reviewing:
-		_, err := e.settleRound(ctx, tx, s, row, pr, found, byCompletion)
+		_, err := e.settleRound(ctx, tx, s, row, pulls, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Step:
 		// A role the deployment defines reports pass or fail and writes no handoff record; its fail
@@ -2734,8 +2739,12 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, s TaskScope, from ph
 			return "", err
 		}
 		// The retry tells nothing of a stuck round: passed as its own before, it is stuck the same way.
-		r := e.reviewRound(issue, reviewer, pr)
-		settled, err := e.settleRound(ctx, tx, s, reviewer, pr, r, "")
+		pulls, err := e.roundPullsOn(ctx, tx, s, pr)
+		if err != nil {
+			return "", err
+		}
+		r := e.reviewRound(issue, reviewer, pulls)
+		settled, err := e.settleRound(ctx, tx, s, reviewer, pulls, r, "")
 		if err != nil {
 			return "", err
 		}
@@ -3522,7 +3531,23 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason, ended)); err != nil {
+	// The move into accepting starts no worker: the architect's acceptance is the step of the issue
+	// there, and the phase-finished notice of the step before it is what tells the architect so
+	// (prompts/go/architect-common.md). That notice names the pull requests of the task's scope as
+	// every step's text names them (pullRequestText, dispatch://INFRA-5910 decision 21, r1), its
+	// task's own first, so the architect accepts the issue on each of them.
+	notice := noticeFor(trigger, from, row.To, handoff, reason, ended)
+	if row.To == phase.Accepting && notice.Kind != "" {
+		pulls, err := e.pullRequestText(ctx, tx, s, pr)
+		if err != nil {
+			return err
+		}
+		if notice.Reason != "" && pulls != "" {
+			notice.Reason = strings.TrimSuffix(notice.Reason, ".") + "."
+		}
+		notice.Reason = strings.TrimSpace(notice.Reason + pulls)
+	}
+	if err := e.notice(ctx, tx, issue.Key, notice); err != nil {
 		return err
 	}
 	// The deployment's hooks that stand on a move back fire once its start has written the agent of

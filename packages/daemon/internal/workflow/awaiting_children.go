@@ -734,10 +734,11 @@ func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.Children
 
 // mergedChildren names each of children, the children a wait of parent was on
 // (record.ChildrenWait.Children), whose record stands at done with its pull request recorded
-// merged, each with that pull request, in the order the wait recorded them: the words with which a
-// task the return starts names the children that merged during the wait, "" where none did. A
-// child the daemon holds no record of, one that left the workflow another way, and one whose pull
-// request did not merge is no child that merged.
+// merged, each with that pull request, its merge (record.Store.PullRequestsOf), named as
+// owner/name#number (dispatch://INFRA-5910 decision 21), in the order the wait recorded them: the
+// words with which a task the return starts names the children that merged during the wait, ""
+// where none did. A child the daemon holds no record of, one that left the workflow another way,
+// and one whose pull request did not merge is no child that merged.
 func (e *Engine) mergedChildren(ctx context.Context, tx pgx.Tx, parent string, children []string) (string, error) {
 	if len(children) == 0 {
 		return "", nil
@@ -762,7 +763,7 @@ func (e *Engine) mergedChildren(ctx context.Context, tx pgx.Tx, parent string, c
 	var named []string
 	for _, key := range children {
 		if pr, ok := prs[key]; ok && pr.State == record.PullRequestMerged {
-			named = append(named, fmt.Sprintf("%s (pull request #%d)", key, pr.Number))
+			named = append(named, fmt.Sprintf("%s (pull request %s)", key, prName(pr.Repo, pr.Number)))
 		}
 	}
 	if len(named) == 0 {

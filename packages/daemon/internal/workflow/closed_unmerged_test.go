@@ -19,7 +19,7 @@ var ownClosed = intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, Hea
 // todaysUnmerged is the pr-closed-unmerged reason the daemon gives today for #42 of LEGION-208,
 // closed with no merge while the issue stood in at.
 func todaysUnmerged(at phase.Phase) string {
-	return "pull request #42 closed without merging while LEGION-208 was in " + string(at)
+	return "pull request sjawhar/legion#42 closed without merging while LEGION-208 was in " + string(at)
 }
 
 // A pull request closed with no merge while another of its issue's set is open tells the architect

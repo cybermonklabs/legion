@@ -418,7 +418,7 @@ func (r *conflictMergerLive) redCheckReachesTheMerger() {
 	r.publishSettlementOf(r.number, mergerMergeHead, 1, nil, []string{conflictRequiredCheck})
 	r.note("drove CI's settlement of #%d at %s: %s failed", r.number, mergerMergeHead, conflictRequiredCheck)
 	bound := testwait.Bounded(t, time.Minute, time.Second)
-	prefix := fmt.Sprintf("Pull request #%d: ", r.number)
+	prefix := fmt.Sprintf("Pull request %s#%d: ", liveRepo, r.number)
 	for _, role := range []claim.Role{claim.RoleMerger, claim.RoleArchitect} {
 		told := r.awaitHeard(role, 1, bound)
 		if !strings.HasPrefix(told[0].Message, prefix) || !strings.Contains(told[0].Message, strconv.Quote(conflictRequiredCheck)) {

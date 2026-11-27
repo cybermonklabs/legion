@@ -135,9 +135,10 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 //     tree, so that a tree it silences costs the pass nothing further;
 //  5. for the trees that are going to be told and for no other, whether each root's own
 //     tree-stalled notice is still unsent (record.Store.ControllerNoticesPending, one batched
-//     read) and then the pull requests of those trees' members (record.Store.PullRequestsOf,
-//     one batched read). Neither is a read per root, and no reason is built for a root the
-//     first of them refuses. wakeController still decides: it asks the registration and the
+//     read) and then the set of pull requests of each of those trees' members
+//     (record.Store.PullRequestSetsOf, one batched read). Neither is a read per root, and no
+//     reason is built for a root the first of them refuses. wakeController still decides: it asks
+//     the registration and the
 //     pending notice again, and the mark is written only for a row that went into the outbox.
 //
 // The liveness clause reads the slots this pass already holds, what the caller handed over, the
@@ -310,7 +311,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	if len(unsent) == 0 {
 		return nil
 	}
-	requests, err := a.store.PullRequestsOf(ctx, tx, keys)
+	requests, err := a.store.PullRequestSetsOf(ctx, tx, keys)
 	if err != nil {
 		return err
 	}
@@ -884,7 +885,9 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // its record carries — `held` for a held issue — the role of each running step where that issue
 // stands (record.Issue.RunningAt over record.StandsAt, which is the phase a held issue was held
 // from, and which at step is the role of the running step), whose turn its standing is, or that
-// the phase has no role, and the state of its pull request. It ends by telling the controller to
+// the phase has no role, and each pull request of its set with its state, named as
+// owner/name#number, since a set can hold pull requests of several repositories
+// (dispatch://INFRA-5910 decision 21, r7). It ends by telling the controller to
 // read the tree and decide. An issue standing at admitted is told as a phase no role works, as it
 // was before workflow.RoleFor named the architect there: that answer is for the readers that
 // start, resume or report the architect, and this notice keeps the words it had
@@ -901,11 +904,11 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 //
 // It is written in short sentences a controller agent reads without decoding anything: the
 // daemon knows the tree has stopped and knows nothing of why, so what it hands over is the
-// facts and the decision, never a guess. The pull request is named from the record of its own
-// table (requests, keyed by issue), because the state a stopped tree is most often in is a
-// merged one — the tree whose work landed and whose roles then stopped — which no list of the
-// open pull requests could answer.
-func stalledTreeReason(root string, measure record.TreeQuiet, members []record.Issue, requests map[string]record.PullRequest,
+// facts and the decision, never a guess. The pull requests are named from the record of their own
+// table (requests, each member's set by its key, record.Store.PullRequestSetsOf), because the
+// state a stopped tree is most often in is a merged one — the tree whose work landed and whose
+// roles then stopped — which no list of the open pull requests could answer.
+func stalledTreeReason(root string, measure record.TreeQuiet, members []record.Issue, requests map[string][]record.PullRequest,
 	stopped map[string]claim.Role,
 ) string {
 	var reason strings.Builder
@@ -932,8 +935,13 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		for _, role := range roles {
 			fmt.Fprintf(&reason, "The %s has the turn. ", role)
 		}
-		if pr, recorded := requests[member.Key]; recorded {
-			fmt.Fprintf(&reason, "Pull request %d is %s.", pr.Number, pr.State)
+		if set := requests[member.Key]; len(set) > 0 {
+			for at, pr := range set {
+				if at > 0 {
+					reason.WriteString(" ")
+				}
+				fmt.Fprintf(&reason, "Pull request %s#%d is %s.", pr.Repo, pr.Number, pr.State)
+			}
 		} else {
 			reason.WriteString("The record holds no pull request.")
 		}

@@ -728,6 +728,50 @@ func (e *Engine) taskPullRequestRow(ctx context.Context, tx pgx.Tx, s TaskScope)
 	return e.store.PullRequestRowOfTask(ctx, tx, s.issue.Key, s.walk.Task)
 }
 
+// scopedPulls is what a step of a task works and names of its issue's pull requests beside the
+// task's own (scopePullRequests): scoped, each open pull request the issue links that the task's
+// scope works (dispatch://INFRA-5910 decision 6), in the order of their repositories, compared
+// without case, and numbers; and holding, each other link that holds the issue's close (setHolds):
+// an open linked pull request of another task's scope, a link whose read is owed, and one held
+// refused as unserved or unreadable. Neither holds the task's own pull request.
+type scopedPulls struct {
+	scoped  []record.PullRequest
+	holding []heldLink
+}
+
+// scopePullRequests is the pull requests of s's issue a step of s's task works and names beside
+// own, its task's own pull request (taskPullRequest, nil for none), read from the links that hold
+// the issue's close (setHolds): an open pull request the issue links is in s's scope where s's task
+// is a task it is of (tasksOfPullRequest: the task whose branch it is on, or, for one no task's
+// branch holds, the task whose scope works it), and every one is for a run with no plan rows, whose
+// scope is the issue itself; every other link that holds the close is holding. An unlinked other
+// pull request of the task on its branch is in neither: no role works it, and the stack's close
+// closes it at the issue's last merge (the plan's departure 2). The rows are rows alone
+// (record.Store.PullRequestRowByNumber), for a reader that writes none of them back.
+func (e *Engine) scopePullRequests(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (scopedPulls, error) {
+	holds, err := setHolds(ctx, e.store, tx, s.issue.Key)
+	if err != nil {
+		return scopedPulls{}, err
+	}
+	var pulls scopedPulls
+	for _, held := range holds {
+		switch {
+		case held.row != nil && own != nil && e.samePullRequest(*held.row, *own):
+		case held.row != nil && (s.plan == nil || slices.Contains(tasksOfPullRequest(s.issue, s.plan, *held.row), s.walk.Task)):
+			pulls.scoped = append(pulls.scoped, *held.row)
+		default:
+			pulls.holding = append(pulls.holding, held)
+		}
+	}
+	return pulls, nil
+}
+
+// samePullRequest says whether a and b are one pull request: one number of one repository, read
+// through GitHub's renames (sameRepository), as the record keys a pull request.
+func (e *Engine) samePullRequest(a, b record.PullRequest) bool {
+	return a.Number == b.Number && e.sameRepository(a.Repo, b.Repo)
+}
+
 // stepRow is the phases row of role's step of s, the one read of it in a step handler: the row of
 // role (record.PhaseRowOf), which keys no step yet.
 func (e *Engine) stepRow(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role) (record.PhaseRow, error) {

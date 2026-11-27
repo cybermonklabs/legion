@@ -149,7 +149,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
 	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
-		" Step 1 (implementer) reported: implement version 1. Pull request: #42. Resume the existing phase work."; resumed != want {
+		" Step 1 (implementer) reported: implement version 1. Pull request: sjawhar/legion#42. Resume the existing phase work."; resumed != want {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
 
@@ -332,7 +332,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 			completes(t, pool, tc.engine, claim.RoleImplementer, "implement", 1)
 			tester := lastStart(t, pool, root.Key, claim.RoleTester)
 			if want := "Continue root. Issue: LEGION-208. Phase: testing." + tc.working +
-				" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1). Handoff commit: head. Pull request: #42."; tester != want {
+				" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1). Handoff commit: head. Pull request: sjawhar/legion#42."; tester != want {
 				t.Fatalf("the tester's task = %q,\nwant %q", tester, want)
 			}
 			applyInTx(t, pool, tc.engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -349,7 +349,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 			})
 
 			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), "Continue root. Issue: LEGION-208. Phase: testing."+tc.working+
-				" Pull request: #42. Resume the existing phase work."; resumed != want {
+				" Pull request: sjawhar/legion#42. Resume the existing phase work."; resumed != want {
 				t.Fatalf("the resumed tester's task = %q,\nwant %q", resumed, want)
 			}
 		})
@@ -633,7 +633,8 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 		Line: line, Places: record.LinePlaces(line, false),
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{}, &record.PullRequest{Number: 42})
+	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{},
+		pullRequestPart(issue, &record.PullRequest{Repo: "acme/widgets", Number: 42}, scopedPulls{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +664,7 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	for p, place := range map[phase.Phase]record.TaskPlace{phase.Retro: {Kind: record.PlaceRetro}, phase.Merging: {Kind: record.PlaceMerge}} {
 		after, there := issue, w
 		after.Phase, there.Place = p, place
-		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, there, rows, planTold{}, nil)
+		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, there, rows, planTold{}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -696,7 +697,8 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: line, Places: record.LinePlaces(line, false),
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{}, &record.PullRequest{Number: 42})
+	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{},
+		pullRequestPart(issue, &record.PullRequest{Repo: "acme/widgets", Number: 42}, scopedPulls{}))
 	if err != nil {
 		t.Fatal(err)
 	}

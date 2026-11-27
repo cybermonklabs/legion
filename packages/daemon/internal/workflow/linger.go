@@ -214,11 +214,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 // status, which that leave's walk over every claim leaves out (everyClaim): at a close (status
 // done), the claim of each open check of the issue, and the claim of each check the leave will
 // open, one for each merged pull request of merges that no check of the issue checks (checksMerge),
-// as openCheck will write it (Generation the issue's, Task the pull request's, Role the project's
-// checking role). Each claim is checkClaim's, the claim each row of that check names, so the claim
-// kept here is the claim the check's own close retires. A leave at any other status keeps none: a
-// park suspends every claim and the pod. A project that checks nothing in production opens no check,
-// so it keeps no claim for one.
+// as openCheck will write it (Generation the issue's, Task the merge's, checkedTask, Role the
+// project's checking role). Each claim is checkClaim's, the claim each row of that check names, so
+// the claim kept here is the claim the check's own close retires. A leave at any other status keeps
+// none: a park suspends every claim and the pod. A project that checks nothing in production opens
+// no check, so it keeps no claim for one.
 func (e *Engine) keptClaims(ctx context.Context, tx pgx.Tx, issue record.Issue, status string, merges []record.PullRequest) ([]claim.Token, error) {
 	if status != "done" {
 		return nil, nil
@@ -238,7 +238,11 @@ func (e *Engine) keptClaims(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			if pr.State != record.PullRequestMerged || slices.ContainsFunc(checks, func(check record.ProductionCheck) bool { return e.checksMerge(check, pr) }) {
 				continue
 			}
-			kept = append(kept, record.ProductionCheck{Issue: issue.Key, Project: issue.Project, Generation: issue.Generation, Task: pr.Task, Role: role})
+			task, err := e.checkedTask(ctx, tx, issue, pr)
+			if err != nil {
+				return nil, err
+			}
+			kept = append(kept, record.ProductionCheck{Issue: issue.Key, Project: issue.Project, Generation: issue.Generation, Task: task, Role: role})
 		}
 	}
 	var tokens []claim.Token
@@ -289,29 +293,49 @@ func (e *Engine) leaveByTasks(ctx context.Context, tx pgx.Tx, written record.Iss
 	return e.openCheckIfMerged(ctx, tx, written, merges, true)
 }
 
-// leaveMerges is the pull request of each merge of issue's run (record.Store.MergePullRequests:
-// each task that has a merge, done, to come, or cut short by a park, as the plan stood) that a
-// leave at status checks: each of them at done, and none at any other status, since a park
-// suspends the claims and the pod a look would need. Its rows are the same whether they are read
-// before the leave writes the issue's tasks out of the workflow or after: that write changes no
-// task's needs or merges, and a task it writes done at its merge stood among the tasks that merge.
+// leaveMerges is the pull request of each merge of issue's run that a leave at status checks: each
+// task that has a merge, done, to come, or cut short by a park, as the plan stood
+// (record.Store.MergePullRequests), and each merged pull request the issue links that is no task's
+// own (record.Store.PullRequestSetsOf), each of which opens its own check at its merge
+// (mergedNotOwn) and is here for a merge no handler applied, as a merge the boot's read of a link
+// finds (dispatch://INFRA-5910 decision 6). Each of them at done, and none at any other status,
+// since a park suspends the claims and the pod a look would need. Its rows are the same whether
+// they are read before the leave writes the issue's tasks out of the workflow or after: that write
+// changes no task's needs or merges, and a task it writes done at its merge stood among the tasks
+// that merge. openCheck opens no second check of a merge one of the issue's checks checks.
 func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) ([]record.PullRequest, error) {
 	if status != "done" {
 		return nil, nil
 	}
-	return e.store.MergePullRequests(ctx, tx, issue.Key)
+	merges, err := e.store.MergePullRequests(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue.Key})
+	if err != nil {
+		return nil, err
+	}
+	for _, pr := range sets[issue.Key] {
+		if pr.Linked && pr.State == record.PullRequestMerged && !slices.ContainsFunc(merges, func(own record.PullRequest) bool { return e.samePullRequest(own, pr) }) {
+			merges = append(merges, pr)
+		}
+	}
+	return merges, nil
 }
 
-// toldPullRequests is the number of each pull request of issue that is open and that no queued
-// close of the issue's generation names (record.Store.QueuedPullRequestCloses), in number order:
-// what the notice of a child's leave names (leftNotice). A merge that ends the issue queues the
-// close of each other open pull request in its own transaction, before its leave, so that leave
-// names none of them; a close that keeps failing keeps its row, and its pull requests are not
-// named while it retries. The pull requests are read as rows alone
-// (record.Store.TaskPullRequestRows): their numbers and states are all this reads, and nothing of
-// them is written.
-func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]int, error) {
-	prs, err := e.store.TaskPullRequestRows(ctx, tx, issue.Key)
+// toldPullRequests is each pull request of issue's set (record.Store.PullRequestSetsOf: each of its
+// tasks' and each it links, in any repository) that is open and that no queued close of the issue's
+// generation names (record.Store.QueuedPullRequestCloses), as owner/name#number, in the set's order
+// of repositories and numbers: what the notice of a child's leave names (leftNotice,
+// dispatch://INFRA-5910 decision 21, r6). A merge that ends the issue queues the close of each
+// other open pull request of a task in its own transaction, before its leave, so that leave names
+// none of them; a close that keeps failing keeps its row, and its pull requests are not named while
+// it retries. A queued close reaches an unlinked pull request of the issue's own repository alone
+// (record.TaskPullRequestsClose), so its numbers take out no linked pull request and none of
+// another repository. The pull requests are read as rows alone: their names and states are all this
+// reads, and nothing of them is written.
+func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]string, error) {
+	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue.Key})
 	if err != nil {
 		return nil, err
 	}
@@ -319,13 +343,17 @@ func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.I
 	if err != nil {
 		return nil, err
 	}
-	var open []int
-	for _, pr := range prs {
-		if pr.State == record.PullRequestOpen && !slices.Contains(closing, pr.Number) {
-			open = append(open, pr.Number)
-		}
+	repo := issue.GitHubRepo
+	if repo == "" {
+		repo = issue.Repo
 	}
-	slices.Sort(open)
+	var open []string
+	for _, pr := range sets[issue.Key] {
+		if pr.State != record.PullRequestOpen || !pr.Linked && e.sameRepository(pr.Repo, repo) && slices.Contains(closing, pr.Number) {
+			continue
+		}
+		open = append(open, prName(pr.Repo, pr.Number))
+	}
 	return open, nil
 }
 
@@ -383,26 +411,22 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 // leftNotice is the reason of the child-closed or child-status notice that tells the architect
 // above child that it left the workflow at status (leave). It starts with "<KEY> is <status>",
 // and it names after that what the move leaves for that architect to act on
-// (dispatch://INFRA-3178/spec R4). The first is each of the child's pull requests that is open, in
-// number order (toldPullRequests): the daemon closes no pull request at a move, and a merge of one
-// later closes nothing (merged); a pull request whose close is queued is not named. The second
+// (dispatch://INFRA-3178/spec R4). The first is each pull request of the child's set that is open,
+// as owner/name#number (toldPullRequests): the daemon closes no pull request at a move, and a merge
+// of one later closes nothing (merged); a pull request whose close is queued is not named. The second
 // is each recorded issue under the child that is not done, with its status, in key order: the move
 // ends the child alone, so an issue under it in the workflow runs on, and one out of the workflow
 // stays out (record.Beneath, over members, the tree's records). A child with nothing to name gets
 // the first sentence alone, so every reader of that bare reason stays valid. The record holds no
 // state that says a pull request is in the merge queue (the daemon hears only GitHub's removal
 // from it, intake.PullRequestDequeued), so the notice cannot say so.
-func leftNotice(child record.Issue, status string, pullRequests []int, members []record.Issue) string {
+func leftNotice(child record.Issue, status string, names []string, members []record.Issue) string {
 	reason := fmt.Sprintf("%s is %s", child.Key, status)
-	numbers := make([]string, len(pullRequests))
-	for i, number := range pullRequests {
-		numbers[i] = fmt.Sprintf("#%d", number)
-	}
 	switch {
-	case len(numbers) == 1:
-		reason += fmt.Sprintf(". Its pull request %s is open", numbers[0])
-	case len(numbers) > 1:
-		reason += fmt.Sprintf(". Its pull requests %s and %s are open", strings.Join(numbers[:len(numbers)-1], ", "), numbers[len(numbers)-1])
+	case len(names) == 1:
+		reason += fmt.Sprintf(". Its pull request %s is open", names[0])
+	case len(names) > 1:
+		reason += fmt.Sprintf(". Its pull requests %s and %s are open", strings.Join(names[:len(names)-1], ", "), names[len(names)-1])
 	}
 	under := record.Beneath(child, members)
 	slices.SortFunc(under, func(a, b record.Issue) int { return strings.Compare(a.Key, b.Key) })

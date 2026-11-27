@@ -123,7 +123,7 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 				HandoffRecord: "test-1", HandoffVersion: 1})
 			reviewer := phaseStartTask(t, pool, claim.RoleReviewer, phase.Reviewing)
 			assertViewSentence(t, "the reviewer's task", reviewer, tc.view)
-			if !strings.Contains(reviewer, "Pull request: #42.") {
+			if !strings.Contains(reviewer, "Pull request: sjawhar/legion#42.") {
 				t.Fatalf("the reviewer's task = %q, want it to name the pull request as well", reviewer)
 			}
 		})

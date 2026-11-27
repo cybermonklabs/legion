@@ -540,7 +540,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // pull request is on (checksSteps, every step of an issue of one task), the implementer, whose
 // code the checks ran on, and the architect that owns the issue (owningArchitect) - each on the
 // role topic of that claim (record.RoleMessage), the way the daemon reaches a role holder with a
-// message. A held issue keeps the worker of Hold.From (record.StandsAt). In merging the
+// message, which names the pull request as owner/name#number, since a step can work pull requests
+// of several repositories (dispatch://INFRA-5910 decision 21). A held issue keeps the worker of
+// Hold.From (record.StandsAt). In merging the
 // implementer is not told: the merge and what breaks it are the merger's to decide, and the merger
 // asks the implementer when it needs it (cybermonklabs/legion#4979). A claim named twice, the
 // implementer holding a step or one keyed agent working two of the roles, is told once, and an
@@ -612,7 +614,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if err != nil {
 		return err
 	}
-	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", pr.Number, settled)
+	body := fmt.Sprintf("Pull request %s: %s. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", prName(pr.Repo, pr.Number), settled)
 	for _, to := range addressed {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
 			return err
@@ -854,6 +856,14 @@ func (e *Engine) reviewersAnswer(fact intake.PullRequestReview, reviewer record.
 	return e.byReviewer(fact, reviewerSession) && fact.SubmittedAt.After(reviewer.CompletedAt.Add(answerSkew))
 }
 
+// review applies a review of a pull request of a task's scope to the review round of that task.
+// The round judges each open pull request of the scope by its own decision (reviewRound,
+// dispatch://INFRA-5910 decision 7), so a review's decision is written as the decision of the pull
+// request it is of: on the reviewer's row for the task's own pull request (taskPullRequest), as the
+// round of one pull request has kept it, and on the pull request's own row
+// (record.PullRequest.ReviewDecision) for every other one, such as a pull request the issue links
+// that the scope works. A head two open pull requests of the round share is one review of each
+// (decideEach).
 func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestReview) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
@@ -868,6 +878,14 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// The pull requests the round judges, pr among them as this handler holds it: pr is the round's
+	// own where it is the task's own (the same pointer), and every write of pr below is the
+	// round's.
+	pulls, err := e.roundPullsAt(ctx, tx, *scope, pr)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	own := pulls.own == pr
 	// reviewerSession is the session of the reviewer's claim (reviewersClaim), "" when none is
 	// recorded, in which case a review-App review waits (RefusedWhileNoSession). It is read only for
 	// a review the review App submitted: no other author's review ever reaches the compare.
@@ -882,7 +900,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	}
 	// The reviewer's answer tells whenever it leaves the round stuck; any other review, only when it
 	// changes how the round is stuck.
-	before, by := e.reviewRound(*issue, reviewer, pr), byOtherReview
+	before, by := e.reviewRound(*issue, reviewer, pulls), byOtherReview
 	if e.reviewersAnswer(fact, reviewer, reviewerSession) {
 		before, by = round{}, byAnswer
 	}
@@ -933,17 +951,26 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if !decides {
 		// The stuck notice of a round nothing decided is built from the record when the reviewer
 		// completes (reviewRound, stuckUndecided), which is after the refused review arrived, so
-		// the refusal is kept on the reviewer's row for it to name. It is written only on a row
+		// the refusal is kept with the decision of the pull request it is of for it to name: on the
+		// reviewer's row for the task's own, on its own row for another. It is written only where
 		// that holds no deciding decision, so a refusal reaching a round an approval already
 		// decided cannot erase it, and it lives with that decision, which every entry into
 		// reviewing clears (clearHandoff): no later round inherits the refusal of an earlier one.
-		if refused != "" && (reviewer.Decision == nil || reviewer.Decision.State == "") {
+		switch {
+		case refused == "":
+		case own && (reviewer.Decision == nil || reviewer.Decision.State == ""):
 			reviewer.Decision = &record.ReviewDecision{Refused: refused}
 			if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 				return intake.Result{}, err
 			}
+		case !own && (pr.ReviewDecision == nil || pr.ReviewDecision.State == ""):
+			pr.ReviewDecision = &record.ReviewDecision{Refused: refused}
+			if err := e.putPullRequest(ctx, tx, *pr); err != nil {
+				return intake.Result{}, err
+			}
+			pulls = e.withPull(pulls, *pr)
 		}
-		_, err := e.settleRound(ctx, tx, *scope, reviewer, pr, before, by)
+		_, err := e.settleRound(ctx, tx, *scope, reviewer, pulls, before, by)
 		return intake.Result{}, err
 	}
 	// Deciding reviews are ordered by when they were submitted, then by GitHub's review id
@@ -964,6 +991,9 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 			return intake.Result{}, err
 		}
 	}
+	if !own {
+		pulls = e.withPull(pulls, *pr)
+	}
 	// The decision belongs to the review round, not to the pull request's head: the round must
 	// still know, when the reviewer completes, what the review decided, on which head, and what
 	// it said for the next round's implementer. The round is open while the issue stands in
@@ -975,28 +1005,72 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if !record.StandsIn(*issue, phase.Reviewing) {
 		return intake.Result{}, nil
 	}
-	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
-	// The commit the reviewer's own review read outlives the round, where the decision does not
-	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
-	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose
-	// Legion footer names the session the reviewer's claim records (byReviewer). A person's review
-	// decides the round and leaves the commit where it stands, since the reviewer never read the
-	// commit the person did; while the reviewer's claim records no session, no review-App review
-	// gets here, since it waits (RefusedWhileNoSession). And the review must be of the entry that
-	// stands (reviewedCommitStays).
-	if e.byReviewer(fact, reviewerSession) {
-		if why := reviewedCommitStays(fact, reviewer); why != "" {
-			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: "+why,
-				"issue", issue.Key, "pull_request", pr.Number, "head", reviewer.Decision.Head, "footer_entry", fact.LegionEntry(), "entry", reviewer.Entry)
-		} else {
-			reviewer.ReviewedHead = reviewer.Decision.Head
-		}
-	}
-	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
+	decision := record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
+	ownDecided, err := e.decideEach(ctx, tx, &pulls, *pr, decision)
+	if err != nil {
 		return intake.Result{}, err
 	}
-	_, err = e.settleRound(ctx, tx, *scope, reviewer, pr, before, by)
+	if ownDecided {
+		reviewer.Decision = &decision
+		// The commit the reviewer's own review read outlives the round, where the decision does
+		// not (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
+		// (namingTheReviewRound). Only the reviewer's own review of the task's own pull request's
+		// head moves it: a review-App review whose Legion footer names the session the reviewer's
+		// claim records (byReviewer). A person's review decides the round and leaves the commit
+		// where it stands, since the reviewer never read the commit the person did; while the
+		// reviewer's claim records no session, no review-App review gets here, since it waits
+		// (RefusedWhileNoSession). And the review must be of the entry that stands
+		// (reviewedCommitStays).
+		if e.byReviewer(fact, reviewerSession) {
+			if why := reviewedCommitStays(fact, reviewer); why != "" {
+				e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: "+why,
+					"issue", issue.Key, "pull_request", pr.Number, "head", decision.Head, "footer_entry", fact.LegionEntry(), "entry", reviewer.Entry)
+			} else {
+				reviewer.ReviewedHead = decision.Head
+			}
+		}
+		if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	_, err = e.settleRound(ctx, tx, *scope, reviewer, pulls, before, by)
 	return intake.Result{}, err
+}
+
+// decideEach writes decision, a deciding review of pr, as the decision of each pull request of
+// pulls it is of, and says whether that is the task's own, whose decision the caller writes on the
+// reviewer's row. It is of pr, and of each other pull request of the round whose head is the head
+// the decision names: a head two open pull requests share is one review of each (dispatch://
+// INFRA-5910 decision 7), as two pull requests on one branch of one repository can share theirs.
+// The decision of each other than the task's own is written on its own row
+// (record.PullRequest.ReviewDecision), pr's as the handler holds it whole, and each other's read
+// whole for the write, and pulls takes each as written, so the round settled next reads it. Each
+// pull request gets a decision of its own, so a told mark written on one later is no other's.
+func (e *Engine) decideEach(ctx context.Context, tx pgx.Tx, pulls *roundPulls, pr record.PullRequest, decision record.ReviewDecision) (bool, error) {
+	shares := func(other record.PullRequest) bool {
+		return e.samePullRequest(other, pr) || decision.Head != "" && other.HeadSHA == decision.Head
+	}
+	ownDecided := pulls.own != nil && shares(*pulls.own)
+	for at := range pulls.others {
+		other := pulls.others[at]
+		if !shares(other) {
+			continue
+		}
+		whole, err := e.pullRequest(ctx, tx, other.Repo, other.Number)
+		if err != nil {
+			return false, err
+		}
+		if whole == nil {
+			continue
+		}
+		of := decision
+		whole.ReviewDecision = &of
+		if err := e.putPullRequest(ctx, tx, *whole); err != nil {
+			return false, err
+		}
+		pulls.others[at] = *whole
+	}
+	return ownDecided, nil
 }
 
 // reviewedCommitStays is why review, a deciding review of the reviewer's own session (byReviewer)
@@ -1169,6 +1243,14 @@ const (
 // thing that would ever say so. Which round that is, is classify.RoundWaitsOnMergeState, and which
 // of the two it is, classify.MergeOutcomeOf: the engine and the state build read those rules, so
 // the issue's view carries a mergeWait exactly for the rounds the daemon reads GitHub for.
+//
+// A round judges each open pull request of its task's scope (reviewRound), so it also says of
+// which one its finding is: other is that pull request where it is not the task's own, one the
+// issue links that the scope works, nil for the task's own; decision is the decision that finding
+// is of, the reviewer's of the task's own pull request or the other's own
+// (record.PullRequest.ReviewDecision), on which the told mark of a round GitHub will not merge from
+// is kept (tellStuckMergeState); and body is the request for changes of a rejected round, which the
+// move back tells the task's first step (transition).
 type round struct {
 	outcome           roundOutcome
 	cause             stuckCause
@@ -1177,6 +1259,9 @@ type round struct {
 	hold              record.StuckHold
 	reason            string
 	waitsOnMergeState bool
+	body              string
+	decision          *record.ReviewDecision
+	other             *record.PullRequest
 }
 
 // stuckAs says whether r is stuck in the same way as other: the same cause at the same head. A
@@ -1225,12 +1310,57 @@ func stuckMergeStateReason(pr record.PullRequest, outcome classify.MergeOutcome)
 	case classify.MergeWaitsToldReviewRequested:
 		held = fmt.Sprintf(" GitHub holds %d review request(s) open on the pull request: a review it asked a person, a team or a code owner for and that is not given yet.", *pr.ReviewsRequested)
 	}
-	return fmt.Sprintf("the reviewer approved head %s on pull request #%d, and GitHub reports that head %s rather than one it would merge.%s %s. The issue waits in reviewing until GitHub reports that head clean, unstable or has_hooks, or blocked with the head MERGEABLE, no check or status of it running, every check run it reported there concluded and no review request open",
-		pr.HeadSHA, pr.Number, pr.MergeState, held, headChecks(pr))
+	return fmt.Sprintf("the reviewer approved head %s on pull request %s, and GitHub reports that head %s rather than one it would merge.%s %s. The issue waits in reviewing until GitHub reports that head clean, unstable or has_hooks, or blocked with the head MERGEABLE, no check or status of it running, every check run it reported there concluded and no review request open",
+		pr.HeadSHA, prName(pr.Repo, pr.Number), pr.MergeState, held, headChecks(pr))
 }
 
-// reviewRound is what issue's review round comes to, row being its reviewer's and pr its pull
-// request as a fact left them. The review event decides it, and the reviewer's handoff records its
+// reviewRound is what the review round of issue's task comes to, row being its reviewer's and pulls
+// the pull requests the round judges as a fact left them (roundPulls): its task's own, and each
+// open pull request the issue links that the task's scope works (dispatch://INFRA-5910 decisions 6
+// and 7). Each is judged by its own decision (pullRound): the task's own by the decision on the
+// reviewer's row, each other by the one it holds itself (record.PullRequest.ReviewDecision). A
+// request for changes on any of them rejects the round. Else a round stuck on any of them is
+// stuck, the task's own first, then the others in their order, since nothing on its way ends that
+// pull request's part of the round. Else a round still open on any of them is open. Only where each
+// of them is approved is the round approved, so the task leaves its review only when each open pull
+// request of its scope has an approving review standing at its head. An issue out of reviewing has
+// no round.
+func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pulls roundPulls) round {
+	if issue.Phase != phase.Reviewing {
+		return round{}
+	}
+	r := e.pullRound(issue, row, pulls.own)
+	if r.outcome == roundRejected {
+		return r
+	}
+	for at := range pulls.others {
+		other := &pulls.others[at]
+		o := e.pullRound(issue, decisionRow(row, other.ReviewDecision), other)
+		o.other = other
+		switch {
+		case o.outcome == roundRejected:
+			return o
+		case o.outcome == roundStuck && r.outcome != roundStuck,
+			o.outcome == roundOpen && r.outcome == roundApproved:
+			r = o
+		}
+	}
+	return r
+}
+
+// decisionRow is row, the reviewer's row, holding decision in place of its own: the row a round of
+// one pull request other than the task's own is judged on (pullRound), whose decision is its own
+// (record.PullRequest.ReviewDecision), and whose completion is the reviewer's, which completes its
+// round over every pull request the round judges.
+func decisionRow(row record.PhaseRow, decision *record.ReviewDecision) record.PhaseRow {
+	row.Decision = decision
+	return row
+}
+
+// pullRound is what the review round of issue comes to for one pull request, pr as a fact left it,
+// row being its reviewer's row holding pr's decision (decisionRow, the reviewer's own row for the
+// task's own pull request): the round of one pull request that reviewRound judges each of its pull
+// requests by. The review event decides it, and the reviewer's handoff records its
 // findings (dispatch://INFRA-714/spec R1): a request for changes ends the round whether or not the
 // reviewer has completed, and the completion that follows is recorded on the reviewer's own row
 // (engine's leftItsPhase). An approval ends it once it approves the head's code
@@ -1273,7 +1403,7 @@ func stuckMergeStateReason(pr record.PullRequest, outcome classify.MergeOutcome)
 // head, since the decision it needs is of the head: no review decided it (stuckUndecided), or its
 // approval is of other code than the head's (stuckApprovedOtherCode). An approval of a head that
 // code is on its way from keeps the round open, and classify.CodeOnItsWay says when that is.
-func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) round {
+func (e *Engine) pullRound(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) round {
 	if issue.Phase != phase.Reviewing {
 		return round{}
 	}
@@ -1283,7 +1413,7 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 		decided = row.Decision.State
 	}
 	if decided == "changes_requested" {
-		return round{outcome: roundRejected}
+		return round{outcome: roundRejected, body: row.Decision.Body}
 	}
 	if pr == nil {
 		return round{}
@@ -1318,17 +1448,98 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState, hold: outcome.Hold(),
-			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr, outcome)}
+			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr, outcome), decision: row.Decision}
 	case !completed:
 		return round{}
 	case decided == "":
 		return round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA, reason: undecidedReason(row, *pr)}
 	case classify.ApprovalSetAside(*pr, row.Decision.Head):
 		return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA,
-			reason: fmt.Sprintf("the reviewer approved %s on pull request #%d, which does not approve head %s: a push since may have changed code, so only an APPROVE of %s or a REQUEST_CHANGES ends the round",
-				row.Decision.Head, pr.Number, pr.HeadSHA, pr.HeadSHA)}
+			reason: fmt.Sprintf("the reviewer approved %s on pull request %s, which does not approve head %s: a push since may have changed code, so only an APPROVE of %s or a REQUEST_CHANGES ends the round",
+				row.Decision.Head, prName(pr.Repo, pr.Number), pr.HeadSHA, pr.HeadSHA)}
 	}
 	return round{}
+}
+
+// roundPulls is the pull requests a review round of a task judges (reviewRound): own, the task's own
+// pull request (taskPullRequest), whole, since a round that ends moves the task on it (transition),
+// nil for none; and others, each open pull request the issue links that the task's scope works
+// (scopePullRequests, dispatch://INFRA-5910 decision 6), as rows, which the round reads and writes
+// nothing of.
+type roundPulls struct {
+	own    *record.PullRequest
+	others []record.PullRequest
+}
+
+// roundPullsOn is the pull requests the round of s's task judges, own being its task's own as its
+// handler read it whole (taskPullRequest): the others are read only while the issue stands in
+// reviewing, a hold from reviewing counted (record.StandsIn), where a round runs or a retry puts it
+// back, and none otherwise.
+func (e *Engine) roundPullsOn(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (roundPulls, error) {
+	pulls := roundPulls{own: own}
+	if !record.StandsIn(s.issue, phase.Reviewing) {
+		return pulls, nil
+	}
+	scoped, err := e.scopePullRequests(ctx, tx, s, own)
+	if err != nil {
+		return roundPulls{}, err
+	}
+	pulls.others = scoped.scoped
+	return pulls, nil
+}
+
+// roundPullsAt is roundPullsOn for a fact of pr, a pull request of s's task's scope as the fact's
+// handler read it whole: pr is the round's own pull request where it is the task's own (roundsOwn;
+// the same pointer, so a write of the handler's is the round's), and takes the place of its row
+// among the others where it is one of them (withPull). The task's own is read whole otherwise
+// (taskPullRequest), since a round that ends moves the task on it.
+func (e *Engine) roundPullsAt(ctx context.Context, tx pgx.Tx, s TaskScope, pr *record.PullRequest) (roundPulls, error) {
+	own, err := e.taskPullRequest(ctx, tx, s)
+	if err != nil {
+		return roundPulls{}, err
+	}
+	if e.roundsOwn(own, *pr) {
+		own = pr
+	}
+	pulls, err := e.roundPullsOn(ctx, tx, s, own)
+	if err != nil {
+		return roundPulls{}, err
+	}
+	if own == pr {
+		return pulls, nil
+	}
+	return e.withPull(pulls, *pr), nil
+}
+
+// roundsOwn says whether pr, a pull request a fact of a task's scope is of, is the round's own
+// pull request, own being the task's own as the record's rule reads it (taskPullRequest): pr is,
+// where it is own, and where the rule reads no own pull request of the task and the issue does not
+// link pr, as for a pull request recorded under the other name of a configured rename than its
+// issue's, which the rule's compare of repositories does not find; a pull request the issue links is
+// never the round's own unless it is the task's own.
+func (e *Engine) roundsOwn(own *record.PullRequest, pr record.PullRequest) bool {
+	if own == nil {
+		return !pr.Linked
+	}
+	return e.samePullRequest(*own, pr)
+}
+
+// withPull is pulls with pr in the place of the pull request it is: the task's own, or one of the
+// others, which keep their order; pulls as they are where pr is none of them. pulls is left as it
+// was.
+func (e *Engine) withPull(pulls roundPulls, pr record.PullRequest) roundPulls {
+	if pulls.own != nil && e.samePullRequest(*pulls.own, pr) {
+		pulls.own = &pr
+		return pulls
+	}
+	others := slices.Clone(pulls.others)
+	for at := range others {
+		if e.samePullRequest(others[at], pr) {
+			others[at] = pr
+		}
+	}
+	pulls.others = others
+	return pulls
 }
 
 // undecidedReason is what the architect is told of a round its reviewer completed with no review
@@ -1338,8 +1549,8 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 // approving what looks like the head - so a reader who was not told it would look for a review
 // that never came.
 func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
-	reason := fmt.Sprintf("the reviewer completed its round on pull request #%d with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round, from an account with write access to the repository or from the reviewer's own session as the review App (its Legion footer naming the session recorded on the reviewer's claim, and naming %s as the head it read: a review-App review whose footer names no head, or another head, is set aside and decides nothing, since GitHub's commit_id for a review moves with the pull request), and a COMMENT decides nothing",
-		pr.Number, pr.HeadSHA, pr.HeadSHA)
+	reason := fmt.Sprintf("the reviewer completed its round on pull request %s with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round, from an account with write access to the repository or from the reviewer's own session as the review App (its Legion footer naming the session recorded on the reviewer's claim, and naming %s as the head it read: a review-App review whose footer names no head, or another head, is set aside and decides nothing, since GitHub's commit_id for a review moves with the pull request), and a COMMENT decides nothing",
+		prName(pr.Repo, pr.Number), pr.HeadSHA, pr.HeadSHA)
 	if row.Decision != nil && row.Decision.Refused != "" {
 		reason += "; a review that would otherwise have decided this round was set aside - " + row.Decision.Refused
 	}
@@ -1357,10 +1568,12 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, s TaskScope
 	return e.transition(ctx, tx, s, TriggerImplementationReady, record.TaskPlace{}, row, pr, "")
 }
 
-// settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
-// pr its pull request as the fact left them), and says whether it moved the issue. An ended round
-// moves on, its request for changes back to implementing; a stuck round is told to the architect,
-// in a notice whose summary is by, the fact that wrote it - unless it was told already. For the
+// settleRound acts on what the review round of s's task comes to (reviewRound, with row its
+// reviewer's and pulls the pull requests the round judges as the fact left them), and says whether
+// it moved the issue. An ended round moves the task on its own pull request (roundPulls.own), its
+// request for changes back to implementing with that request's body (round.body); a stuck round is
+// told to the architect, in a notice whose summary is by, the fact that wrote it - unless it was
+// told already. For the
 // two causes a review decides, that is the round having been stuck the same way (stuckAs) before
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
 // stuck at a head the architect was told of is told once and no fact about the same head tells it
@@ -1372,17 +1585,17 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, s TaskScope
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
-func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
+func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row record.PhaseRow, pulls roundPulls, before round, by string) (bool, error) {
 	issue := s.issue
-	r := e.reviewRound(issue, row, pr)
+	r := e.reviewRound(issue, row, pulls)
 	switch r.outcome {
 	case roundRejected:
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, s, TriggerReviewRejected, record.TaskPlace{}, row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, s, TriggerReviewRejected, record.TaskPlace{}, row, pulls.own, r.body)
 	case roundApproved:
-		return true, e.transition(ctx, tx, s, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
+		return true, e.transition(ctx, tx, s, TriggerReviewApproved, record.TaskPlace{}, row, pulls.own, "")
 	case roundStuck:
 		if r.cause == stuckMergeState {
 			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)
@@ -1414,9 +1627,11 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row re
 //
 // It is deduped against the findings already told for the head (told, toldFindings), whose rule
 // record.ReviewDecision's ToldStuck states, and it appends its own finding to those, so a decision
-// an earlier release marked keeps the finding it told. The mark is written with the notice, so a
-// notice linger holds (record.TreeLingers) leaves none and the head is told when the tree runs
-// again.
+// an earlier release marked keeps the finding it told. The mark is on the decision the round is
+// stuck on (round.decision): the reviewer's row's for the task's own pull request, and the pull
+// request's own row for another one the round judges (round.other), which is read whole for the
+// write. The mark is written with the notice, so a notice linger holds (record.TreeLingers) leaves
+// none and the head is told when the tree runs again.
 //
 // The reviewer's own message is a role message (record.RoleMessage, the way the daemon reaches a
 // role holder with something to read): the reviewer approved that head and would otherwise watch
@@ -1424,7 +1639,12 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row re
 // is where what the notice names is answered. The architect's notice names no role topic, since
 // no decision of the reviewer's would move this round.
 func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, r round, by string) error {
-	if told(row, r) {
+	// A round of the task's own pull request is stuck on the decision on the reviewer's row, which
+	// takes its mark.
+	if r.other == nil {
+		r.decision = row.Decision
+	}
+	if told(r) {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -1438,23 +1658,40 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 		Body: "The round you approved is stuck: " + r.reason + "."}); err != nil {
 		return err
 	}
-	d := row.Decision
+	d := r.decision
 	findings := toldFindings(d, r.head)
 	d.ToldStuckHead, d.ToldStuckState = r.head, r.state
 	d.ToldStuck = append(findings, toldFinding(r))
-	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+	if err := e.markStuckTold(ctx, tx, row, r); err != nil {
 		return err
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing,
 		Summary: by, Reason: r.reason})
 }
 
+// markStuckTold writes the told mark tellStuckMergeState has set on r.decision, the decision r is
+// stuck on: on row, the reviewer's row, where r is of the task's own pull request; on the row of
+// the other pull request r is of otherwise (round.other), read whole so the write keeps what it
+// remembers of its settled heads, and nothing where the record no longer holds it.
+func (e *Engine) markStuckTold(ctx context.Context, tx pgx.Tx, row record.PhaseRow, r round) error {
+	if r.other == nil {
+		return e.store.PutPhase(ctx, tx, row)
+	}
+	pr, err := e.pullRequest(ctx, tx, r.other.Repo, r.other.Number)
+	if err != nil || pr == nil {
+		return err
+	}
+	pr.ReviewDecision = r.decision
+	return e.putPullRequest(ctx, tx, *pr)
+}
+
 // told says whether the notice a round GitHub will not merge from would write has already gone
-// out for its finding: the findings told for the head (toldFindings) hold it. It answers for that
-// cause alone, which is the only caller (tellStuckMergeState); every other is deduped against the
-// round as the fact found it (stuckAs), which the record answers for them.
-func told(row record.PhaseRow, r round) bool {
-	return slices.Contains(toldFindings(row.Decision, r.head), toldFinding(r))
+// out for its finding: the findings told for the head on the decision the round is stuck on
+// (toldFindings, round.decision) hold it. It answers for that cause alone, which is the only caller
+// (tellStuckMergeState); every other is deduped against the round as the fact found it (stuckAs),
+// which the record answers for them.
+func told(r round) bool {
+	return slices.Contains(toldFindings(r.decision, r.head), toldFinding(r))
 }
 
 // toldFindings is every finding d has told for head, the one rule both told and the writer in
@@ -1572,9 +1809,11 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 // mergeStateOwed says whether a fact of kind fact owes a read of pr's merge state, by one of the
 // gate's two reasons (classify.MergeStateReadOwed, on the line of the walk of pr's task: a head
 // move of an issue in implementing or a phase after it, a base push of an issue in a phase after
-// it) or by the third, which the gate does not hold: the issue's review round waiting on GitHub's
-// answer for the head (reviewRound's waitsOnMergeState), or ended by an approval the fact did not
-// move on, worked out here only for a fact the gate owes no read for. The issue is read on the
+// it) or by the third, which the gate does not hold: the review round of pr waiting on GitHub's
+// answer for its head (pullRound's waitsOnMergeState: the round of pr alone, on its own decision,
+// the reviewer's row's where pr is its task's own and its own row's otherwise, dispatch://INFRA-5910
+// decision 7), or ended by an approval the fact did not move on, worked out here only for a fact
+// the gate owes no read for. The issue is read on the
 // scope of pr's task (issueOfPullRequest), whose copy stands where that task stands. It is the one
 // decision both askMergeState, for a fact of one pull request, and basePush, for each pull request
 // on a pushed base, read by. A pull request that is not open is owed nothing: it merges nothing
@@ -1599,11 +1838,24 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 	// settlement that concludes the head's last check under a recorded `blocked` leaves in
 	// reviewing an approval the round now ends on, and GitHub's answer for the head, given with its
 	// checks concluded, is the fact that ends it (mergeability, then settleRound).
+	if issue.Phase != phase.Reviewing {
+		return false, nil
+	}
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return false, err
 	}
-	r := e.reviewRound(*issue, reviewer, pr)
+	own, err := e.taskPullRequestRow(ctx, tx, *scope)
+	if err != nil {
+		return false, err
+	}
+	// A pull request the issue links that is no task's own holds its decision on its own row; every
+	// other pull request of the scope is judged by the decision on the reviewer's row, as the round
+	// of one pull request judged it.
+	if pr.Linked && !e.roundsOwn(own, *pr) {
+		reviewer = decisionRow(reviewer, pr.ReviewDecision)
+	}
+	r := e.pullRound(*issue, reviewer, pr)
 	return r.waitsOnMergeState || r.outcome == roundApproved, nil
 }
 

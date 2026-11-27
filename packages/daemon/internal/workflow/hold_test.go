@@ -530,7 +530,7 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 		t.Fatalf("retry: %v", err)
 	}
 	task := startTask(t, pool, phase.RoleFor(phase.Implementing))
-	if !strings.Contains(task, "Pull request: #42.") {
+	if !strings.Contains(task, "Pull request: sjawhar/legion#42.") {
 		t.Fatalf("task = %q, want it to name pull request #42", task)
 	}
 }

@@ -169,7 +169,7 @@ func TestAnApprovalOnAHeadGitHubWillNotMergeTellsTheArchitectOnce(t *testing.T) 
 		t.Fatalf("after the approval of a behind head the issue is in %s, want reviewing: GitHub would not merge the head", got)
 	}
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request #42") ||
+	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request sjawhar/legion#42") ||
 		!strings.Contains(told[0].Reason, "GitHub reports that head behind") || told[0].Topic != "" {
 		t.Fatalf("review-stuck notices %+v, want one naming the pull request, the head and behind, with no role topic", told)
 	}
@@ -223,7 +223,7 @@ func TestAnApprovalOnADraftHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *tes
 		t.Fatalf("after GitHub reported the head a draft the issue is in %s, want reviewing: GitHub would not merge the head", got)
 	}
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request #42") ||
+	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request sjawhar/legion#42") ||
 		!strings.Contains(told[0].Reason, "GitHub reports that head draft") {
 		t.Fatalf("review-stuck notices %+v, want one naming the pull request, the head and draft", told)
 	}
@@ -1700,7 +1700,7 @@ const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1,
-		EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42.", EntryRaisedAt: seededRaisedAt})
+		EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: sjawhar/legion#42.", EntryRaisedAt: seededRaisedAt})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 }

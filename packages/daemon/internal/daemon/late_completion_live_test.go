@@ -417,7 +417,7 @@ func (r *lateCompletionLive) seed() {
 	}); err != nil {
 		t.Fatalf("record the implementer's unfinished launch: %v", err)
 	}
-	task := fmt.Sprintf("Continue %s. Issue: %s. Phase: implementing. Pull request: #%d.", listed.Title, r.key, r.number)
+	task := fmt.Sprintf("Continue %s. Issue: %s. Phase: implementing. Pull request: %s#%d.", listed.Title, r.key, liveRepo, r.number)
 	if err := r.st.PutDelivery(ctx, implementer, supervise.Delivery{
 		ID: "seeded-start-" + randomSuffix(t), Task: task, Generation: 1, Phase: phase.Implementing, QueuedAt: time.Now(),
 	}); err != nil {

@@ -413,12 +413,19 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 // always its current phase's: the implementer's round-1 commit cannot advance round 2, a reviewer
 // starting round 2 or a tester starting a new round reads as not completed until it completes
 // again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
-// round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
-// its phases row holds only the entry it was handed work on (EnterArchitect), which no move
-// between phases clears.
+// round inherits an earlier decision: the reviewer's start clears the decision each pull request
+// the issue links holds of its own too (clearLinkedDecisions), the round's decisions of the pull
+// requests other than a task's own (dispatch://INFRA-5910 decision 7). The architect reports no
+// handoff, so it has none to clear: its phases row holds only the entry it was handed work on
+// (EnterArchitect), which no move between phases clears.
 func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
+	}
+	if role == claim.RoleReviewer {
+		if err := e.clearLinkedDecisions(ctx, tx, issue); err != nil {
+			return err
+		}
 	}
 	row, err := e.phaseRow(ctx, tx, issue, role)
 	if err != nil {
@@ -429,6 +436,36 @@ func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role
 		return nil
 	}
 	return e.store.PutPhase(ctx, tx, phaseHandoff{}.onto(row))
+}
+
+// clearLinkedDecisions empties the decision of a review round each pull request issue links holds
+// of its own (record.PullRequest.ReviewDecision), read whole for the write, as the reviewer's start
+// on a new round empties the decision on its row (clearHandoff): a request for changes of an
+// earlier round would otherwise reject the new one, and an approval of it end it, at a head the
+// new round's reviewer never read. A link held refused, a pull request the record holds for
+// another issue, and one that holds no decision write nothing.
+func (e *Engine) clearLinkedDecisions(ctx context.Context, tx pgx.Tx, issue string) error {
+	links, err := e.store.PullRequestLinksOf(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		if link.Refused != "" {
+			continue
+		}
+		pr, err := e.pullRequest(ctx, tx, link.Repo, link.Number)
+		if err != nil {
+			return err
+		}
+		if pr == nil || pr.Issue != issue || pr.ReviewDecision == nil {
+			continue
+		}
+		pr.ReviewDecision = nil
+		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // phaseHandoff is the handoff a role reported for one phase, which is the one list of the fields

@@ -30,9 +30,9 @@ func TestAPullRequestFinishingOutsideMergingTellsTheArchitectOnce(t *testing.T) 
 		reason string
 	}{
 		{name: "merged early", fact: intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}, kind: "pr-merged",
-			reason: "pull request #42 merged while LEGION-208 was in reviewing"},
+			reason: "pull request sjawhar/legion#42 merged while LEGION-208 was in reviewing"},
 		{name: "closed without merging", fact: intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42}, kind: "pr-closed-unmerged",
-			reason: "pull request #42 closed without merging while LEGION-208 was in reviewing"},
+			reason: "pull request sjawhar/legion#42 closed without merging while LEGION-208 was in reviewing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

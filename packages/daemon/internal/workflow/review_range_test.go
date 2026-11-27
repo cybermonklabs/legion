@@ -426,7 +426,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 	}
 	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-		" Tester's verdict: pass. Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
+		" Tester's verdict: pass. Pull request: sjawhar/legion#42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
 	if second.EntryTask != want {
 		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
 	}
@@ -517,7 +517,7 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 // returns before the clear for an orphan) and so keeps the commit.
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 	t.Parallel()
-	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work." + reviewedPartOf(headOne)
+	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: sjawhar/legion#42. Resume the existing phase work." + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
 		pool, engine, apply := reviewRoundOne(t)
 		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
@@ -559,7 +559,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		outboxRan(t, pool)
 		apply("retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision, Reason: "the claim failed"})
 		task := onlyReviewerStart(t, pool).Task
-		if !strings.Contains(task, " Phase: reviewing.") || !strings.HasSuffix(task, " Pull request: #42. Reason: the claim failed."+reviewedPartOf(headOne)+reviewEntryPartOf(reviewerRow(t, pool).Entry)) {
+		if !strings.Contains(task, " Phase: reviewing.") || !strings.HasSuffix(task, " Pull request: sjawhar/legion#42. Reason: the claim failed."+reviewedPartOf(headOne)+reviewEntryPartOf(reviewerRow(t, pool).Entry)) {
 			t.Fatalf("the retry's task = %q, want the reviewing task naming %s after the reason and before the entry", task, headOne)
 		}
 	})
@@ -705,7 +705,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			return err
 		})
 		after := reviewerRow(t, pool)
-		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
+		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: sjawhar/legion#42. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}
