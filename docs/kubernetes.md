@@ -2359,6 +2359,9 @@ select i.key, row_number() over (order by i.key) + coalesce((select max(index) f
 Read the count the second statement wrote against the deployment's `admissionCap` before starting the earlier image: it writes a row per running root whatever the cap, as this release's own migration does, and the earlier release's cap loop drains the surplus as trees finish rather than refusing to boot.
 Set `admissionCap` back to the value it had before the upgrade in the same change that pins the earlier image, since this release's value counts issues and the earlier one's counts trees.
 
+These statements publish no state event, since an edit by SQL never does.
+A daemon of a release before the one that publishes state events publishes none at all, so roll Dispatch back first, to the release before that one, and then roll back the daemon ([Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events)).
+
 A root in `todo` is left out because it holds a slot under neither release: it goes back into the earlier release's waiting line, whose own admission pass gives it a slot and opens its tree when the line reaches it.
 Giving it one here would be the opposite of a rollback.
 The earlier release's `line` passes over a root that already holds a slot, and its `releasesSlot` and `releaseInactiveSlots` free only a root that is done, waiting on a person, or out of the workflow (`internal/admit/admit.go` on that release), so a queued root would hold its slot for ever, be promoted by nothing and fill the cap.
@@ -2453,7 +2456,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Six migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps both names.
+Eight migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2501,7 +2504,8 @@ An ask of the merger that has landed stays: the earlier release reads it as a la
 
 This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and a suspension source of a claim, `controller`.
 It serves the project's controller six actions on an agent, `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`, which it served before, and `POST /legion/v1/agents/stop`, `agents/retry`, `agents/suspend` and `agents/resume`, and it refuses every other grant, an architect's included, `403 CONTROLLER_REQUIRED` at all six (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`).
-Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so it writes the list last on any database.
+Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so none of those lists runs after it.
+Only `20261126163320_state_events` writes the list after it, and that list keeps `merge_holds_changed`.
 Its migration `20261115060739_claim_suspended_by_controller` adds the source to the claims' check (`claims_suspended_by_check`).
 The migrations change no column.
 This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, which only the controller was told before.
@@ -2559,7 +2563,7 @@ The earlier release then runs the controller's pod as `runtime.kubernetes.pod.se
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
-Two migrations write the list after it, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps both names and `phase_ended`.
+Four migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps both names and `phase_ended`.
 The release that holds a parent's start while a child of it is open queues `phase_ended` rows again for one move of its own ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
@@ -2648,7 +2652,7 @@ The given-up records stay as they were, and after the roll forward a replay or a
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Five migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps the name.
+Seven migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
 A `role_holders_publish` row publishes the session of each role of one issue whose claim holds it to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its own, or the claim retires, fails, or is suspended by any source but the idle release.
 A claim whose idle pod the daemon released, or that a project pause's stop suspended, keeps its role, and so does a claim launched again over the session it kept.
@@ -2694,6 +2698,98 @@ So roll Dispatch back first, to the release before that one, and then roll back 
 With `DISPATCH_LEGION_STATUS_SCOPE` on, Dispatch also reads the set to let an architect's status write through (R26), and an earlier daemon leaves each stored set as it stands, so turn that setting off before such a rollback.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling out and rolling back the release that publishes the daemon's state events
+
+This release has the daemon publish each change of what Dispatch observes as a state event, and Dispatch writes its Legion observations from those events (dispatch://INFRA-3931).
+Before it, Dispatch read each configured daemon's `GET /legion/v1/state` once a minute.
+The daemon writes each event as an outbox row in the transaction of the write it reports, on one `state` lane per project, and it publishes the rows of each committed transaction as one message on `notifications.legion.<token>.state`, or as consecutive messages split between events where they pass 900 KB (`stateMessageBound`).
+Its migration `20261126163320_state_events` adds the three state kinds to the outbox's kind check (`outbox_kind_check`), the tables `state_publication` and `state_admission_blocks`, three columns on `outbox`, and the commit trigger that gives each state row its sequence.
+That migration writes the whole list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed`, `merge_holds_changed` and `phase_ended` among its kinds, and its version stands above `20261126110259_merge_holds_changed`, the last migration before it that writes the list, so it writes the list last on any database.
+Dispatch's migration `20261118212431_legion_events` adds `kind` and `recorded_at` to `legion_reads`, each with a default, and `reason`, which is null on a row that names no reason.
+It also adds the index `legion_reads_project_recorded_at` and the tables `legion_event_cursors` and `legion_event_parts`.
+It adds `legion_state_intake` to `server_processes`, with the default 0: a process of this release registers 1, and a process of an earlier release does not name the column, so its row reads 0.
+
+Roll out the three parts in this order, which is also the order of [Rolling back the release that records each task's needs](#rolling-back-the-release-that-records-each-tasks-needs), the release that comes out beside this one:
+
+1. **The `envoy-infra` release that grants Dispatch the durable `legion-state-events`, applied to the NATS hub.**
+   The grant is Dispatch's permission set (`core.DispatchDurables()`, `packages/envoy/infra/core/permissions.go`).
+   A changed permission set rewrites the hub's rendered authorization, and on a VM hub that replaces the hub's instance.
+   Without the grant, the hub refuses Dispatch's calls on the durable, so Dispatch creates no durable and no state event reaches its observations.
+   The take-over's ERROR lines (`dispatch delivery: …`) then name `legion-state-events`.
+
+2. **The Dispatch release.**
+   Its intake creates the durable at its first take-over, delivering new messages only, then reads each configured project's daemon whole once, and then applies the events.
+   It takes that first read of a project only when no Dispatch process of an earlier release is in the fleet: no `server_processes` row at `legion_state_intake` 0 has a heartbeat in the last 10 minutes.
+   An earlier release still reads each daemon once a minute, and a row of that read could land after the first read and after the events applied on it.
+   So while a process of the earlier release runs, and for 10 minutes after its last heartbeat, the intake makes no first read, and applies no message of a project that has none.
+   It logs `legion intake: a Dispatch process of an earlier build is in the fleet, so no starting point is taken` at INFO, at most once an hour for each project.
+   The first message, write of a Legion setting or take-over after that time makes the first read.
+   No timer makes it.
+   A project whose daemon does not run the daemon release yet gets one read, recorded as a failed `legion_reads` row whose error names why (`the daemon serves no daemon.stateSeq, so it publishes no state events`), and its board's header shows that failure.
+   The read still records that daemon's state, and nothing reads the project again until its daemon publishes an event, a Legion setting is written, or the durable is taken over again.
+   During the roll, a process of the earlier Dispatch release goes on reading each daemon once a minute, and its `legion_reads` rows take the new columns' defaults.
+   Each whole read is `GET /legion/v1/state?view=observed`, the observed view of the daemon's state (daemon API entry `20261125174131` state-seq).
+   The view has the daemon block, `settings` and `admission` of the whole state, and each issue of the whole state with only its `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and `workers.<role>.claim.state`.
+   The daemon serves the view at the caller's contract with the same rule as the whole state, so at each contract every member of the view is the member the whole state serves there: a caller below that entry's number gets no `stateSeq`, `stateId` or `stateRun` in either answer.
+   Dispatch states no contract and asks from no pod, so it gets the view at the daemon's own contract.
+   The daemon reads the view in the same repeatable-read snapshot as the whole state, under the same 60-second bound, and reads the phase rows of all issues in one statement.
+   On 2026-11-20 the INFRA daemon's whole state was 7,307,929 bytes, and the part of it that the view serves was 665,962 bytes.
+   A daemon of an earlier release does not know the `view` parameter, so it answers the whole state.
+
+3. **The daemon release, on every project that has a Legion setting, at once when step 2 has ended.**
+   Step 2 has ended when no Dispatch process of the earlier release is in the fleet, and the intake no longer logs `legion intake: a Dispatch process of an earlier build is in the fleet, so no starting point is taken`.
+   A process that stops cleanly leaves the fleet at once, since it deletes its `server_processes` row, and a process that is killed counts for 10 minutes after its last heartbeat.
+   A daemon with a workflow writes its boot event at each start, and then an event for each change.
+   A daemon with no workflow (no `dispatch_url`) writes no state event at all.
+   The boot event reaches the durable that step 2 created.
+   It is the daemon's first event, so the intake reads that daemon whole at it, as step 2 says, and then applies its events.
+   A daemon that boots while a process of the earlier release is still in the fleet loses that read: the intake acknowledges its boot event unapplied, and it reads the daemon whole at its next event after that process left the fleet, at a `PUT` of the project's Legion setting, or at a take-over of the durable.
+
+The cost of this order is the time between step 2 and step 3.
+In that time each project's board shows the last read before step 3, the earlier Dispatch's or the one failed read of step 2, and no change after it, since the earlier daemon publishes no state event and no Dispatch of this release reads a daemon on a timer.
+That time ends by itself at each daemon's first boot on this release, which is why step 3 rolls every project's daemon at once when step 2 has ended.
+The other order, the daemon before Dispatch, keeps each board current, since the earlier Dispatch goes on reading each daemon once a minute.
+But each plan that the new daemon writes before Dispatch rolls then reaches a Dispatch that does not store its tasks' needs, and that plan shows its needs as not recorded until Legion takes a later version of the owner's plan, and for the whole run under a default plan ([Rolling back the release that records each task's needs](#rolling-back-the-release-that-records-each-tasks-needs)).
+
+After the roll, the intake reads a project's daemon whole only where the events cannot carry the state, for the reasons the `ReadReason` constants name (`packages/envoy/internal/dispatch/legion/whole_read.go`), and no recurring timer reads a daemon.
+A project's whole reads start at least a minute apart.
+The Dispatch README describes the rule, in [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake): when a read is owed, which message holds it and for how long, how many messages of the durable's window one project can hold meanwhile, what a `PUT` or a `DELETE` of the project's Legion setting does to the project's cursor, and the intake's log lines of the rule, each with the `project`, and beside each part the code that holds it.
+
+The readings of production on 2026-11-18 were these.
+Production Dispatch (commit `4055c4a5`) had no Legion setting, so the take-over of step 2 reads no daemon there, and step 3 covered no project.
+The daemons of namespace `legion`, INFRA, BET, LINUX and OSSV, each run a workflow, so each publishes state events from its first boot on the daemon release.
+The VM hub's `ENVOY_NOTIFICATIONS` stream has no byte limit, so the state lane's messages leave it by age alone, after 72 hours.
+
+**Dispatch rolls back alone.**
+Its earlier release reads each daemon once a minute again, and its `legion_reads` rows take the new columns' defaults, so its migration needs no statement.
+The durable stays on the stream, and the hub keeps the grant.
+Once no process of this release is left, delete the event cursors, and with them the held parts of split transactions, so that a later roll forward starts each project from a whole read:
+
+```sql
+delete from legion_event_cursors;
+```
+
+Without the delete, the roll forward's take-over delivers each message the stream still holds from the time of the rollback.
+The intake then writes those values after the rows the earlier release wrote, so the history shows the changes of that time a second time, at the roll forward.
+Where the rollback lasted longer than the stream keeps a message (72 hours), the first message after it is a gap, and the intake reads the whole state at it.
+
+**The daemon's migration is forward-only, as every daemon migration is.**
+An earlier daemon boots on the migrated schema.
+It writes no state kind, the commit trigger runs for those kinds alone, and it puts the three kinds in no outbox lane, so a state row left unpublished waits and holds back no other row.
+The kind check keeps every kind an earlier release writes, `phase_ended`, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among them, so it refuses nothing that release writes.
+Roll Dispatch back first, and then the daemon.
+A Dispatch of this release reads a daemon without the change once and records a failed read, since that daemon serves no `daemon.stateSeq`.
+That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`cursor.readFor` in `legion/cursor.go`), and its board shows nothing between those reads.
+When each of those calls makes its read is the rule of [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake).
+Where a daemon was rolled back under a Dispatch of this release, `PUT` the project's Legion setting again with the same URL once the daemon runs this release again.
+The boot event of that roll forward follows the cursor and carries the same schema version the earlier daemon's state served, since the migration stayed applied, so nothing else has Dispatch read the state the earlier daemon wrote.
+
+**An edit of the daemon's database by SQL publishes no state event.**
+Only the daemon's own writes queue one.
+After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL: the `PUT` calls for a whole read of the daemon, which [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake) says when Dispatch makes.
+A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
+Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as its `started` earlier than the `updated_at` the `PUT` answers shows, `PUT` the setting once more.
+
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
 This release's broker migration `0037_pod_carry_launcher` rewrites, once, the `carry_principal` of every pod enrollment that carries the pod's account alone and that a token login which proved an account enrolled: to the pair of that account and the login's account, `account:<pod account> launched-by account:<login account>` (`exchange.PodLaunchPrincipal`).
@@ -2709,7 +2805,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Five migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320) and then the merge-holds release's `20261126110259_merge_holds_changed`, and each list keeps the name.
+Six migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2767,7 +2863,7 @@ Roll back and roll forward every daemon of one database in the same change, and 
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
-Three migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news` and then the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and each list keeps the name.
+Five migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -2948,6 +3044,7 @@ A decode error is no permanent refusal for that kind (`permanentRefusal` in `int
 This change runs no migration and changes no column, so no dump and no `alter table` belong here.
 
 Deploy Dispatch first, then the daemon.
+The release that publishes the daemon's state events comes out beside this one, and its order puts the `envoy-infra` release before both and says what the order costs ([Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events)).
 A Dispatch of the release before ignores `needs`, a member its plan write does not declare (`decodeJSON` in `packages/envoy/internal/dispatch/api/server.go`), so it stores each plan this release's daemon writes to it with every task's needs not recorded.
 A later write of that plan at the same version changes nothing (`PutPlan` in `workflowstore/plans.go`), so the steps read, the Steps tab and `dispatch steps` show that run's tasks with their needs not recorded until Legion takes a later version of the owner's plan, and for the whole run under a default plan, whose version is 0.
 That happens when the daemon deploys before Dispatch, and while Dispatch's own rolling deploy still serves the release before beside this one.
@@ -3061,7 +3158,8 @@ So one project can roll back while another stays on this release, and the statem
 
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
 No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
-Its version stands above `20261119003157`, and two migrations stand above it and write the list again with `design_changes` among their kinds: the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), and above that the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), whose list is the last word of the kind check.
+Its version stands above `20261119003157`, so the list of that migration never runs after it.
+Three migrations write the list after it, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`) and then `20261126163320_state_events`, and each list keeps `design_changes`.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -3308,7 +3406,8 @@ It adds four columns to `phases` beside the phase entry.
 `entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.Given`, one `record.GivenTask`, which `record.PhaseRow.GivenFor` reads), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
 The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261122154643_outbox_kinds_with_the_basis_seeds`).
-That migration writes the kind check last, above the design news's `20261119203047_design_news`, and keeps `design_changes` and `phase_ended` in it, and this release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
+That migration writes the kind check above the design news's `20261119203047_design_news` and keeps `design_changes` and `phase_ended` in it; two migrations write the list after it, the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps all four kinds: `pending_basis_seed`, `reparent_seed`, `design_changes` and `phase_ended`.
+This release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 
 **Before the deploy, list the parents that the first admission pass after it stops.**
@@ -4168,6 +4267,7 @@ The same release writes the outbox key `decided` on each supervise start a perso
 That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scratch `outbox` table with the `kind` check and the `payload jsonb` column `0004_record.up.sql` gives it, holding a supervise start that carried `decided` beside `resendEntry`, a supervise start without it and a `notice` row carrying `decided` at the top and under `catch_up`: the first run printed `UPDATE 1` and the second `UPDATE 0`, the first row kept `resendEntry`, and the `notice` row kept both keys.
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
+20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
