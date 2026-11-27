@@ -879,6 +879,31 @@ func TestAChangeWithNoPullRequestEndsWhenItsCheckPasses(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A parent's next change held in awaiting_children (D10 holds it there while a child's change is
+// open) ends with no pull request when its check passes, as any change does, and the issue stands
+// in verifying with nothing of the hold left. endChange cleared the hold but left ChildrenWait set,
+// which issues_children_wait_shape refuses outside awaiting_children, so the row could not be
+// written: every read fact failed and the end with no pull request (B08) never came.
+func TestAChangeHeldForItsChildrenEndsWithNoPullRequest(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, failing("c-after", waitRootMerge)))
+	rig.started(waitRoot, changeGeneration, 1)
+	if _, err := rig.pool.Exec(t.Context(), `update issues set phase = 'awaiting_children', children_wait_start = 'planning',
+		children_wait_task = 'T1', children_wait_reason = 'children', children_wait_since = now(),
+		children_wait_children = array['LEGION-999'] where key = $1`, waitRoot); err != nil {
+		t.Fatalf("hold %s's change for its children: %v", waitRoot, err)
+	}
+
+	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+
+	rig.stands(waitRoot, phase.Verifying, "testing")
+	if got := rig.issue(waitRoot); got.NextChange != 0 || got.ChildrenWait != nil || got.Awaiting != nil {
+		t.Fatalf("%s after the end = next change %d, children wait %+v, awaiting %+v; want none of them", waitRoot, got.NextChange, got.ChildrenWait, got.Awaiting)
+	}
+}
+
 // A next change starts on a reported defect, whose owner withdraws it, and the change ends with no
 // pull request. One new production check of the change's generation opens at the retained merge,
 // whatever the earlier check's outcome: none, open (which the start closed not_run), recorded,
