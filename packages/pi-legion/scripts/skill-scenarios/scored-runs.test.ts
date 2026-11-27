@@ -798,6 +798,29 @@ describe("cells", () => {
       ["guidance/root-C-claude", 1, 1, "pass"],
     ]);
   });
+
+  // Catches: a control form's cell taking a case's count. A control is one count over its twelve
+  // owners, never one case's runs, so a map naming its cases must leave it at 12: with the case's
+  // count taken, four runs of root-D-claude at 3 would read the whole control at 3, scored 12,
+  // and a control that passes would read UNKNOWN.
+  test("a control form's cell keeps the control's own count, whatever the counts name for its cases", () => {
+    const runs = fresh();
+    plantControl(runs, "D", "ctl-D", (owner) => [0, 1, 3, 6, 9].includes(owner));
+    const named = {
+      "ctl-D\troot-D-claude": 3,
+      "ctl-D\troot-D-gpt": 3,
+      "ctl-D\tchild-D-claude": 3,
+      "ctl-D\tchild-D-gpt": 3,
+    };
+    expect(
+      cells(runs, "owner-walk", named).map(({ cell, count, scored, verdict }) => [
+        cell,
+        count,
+        scored,
+        verdict,
+      ])
+    ).toEqual([["guidance/D", 12, 12, "pass"]]);
+  });
 });
 
 /** A run directory with the transcripts `sessions` names: each file's entries, by its path under

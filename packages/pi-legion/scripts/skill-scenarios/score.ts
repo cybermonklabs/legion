@@ -3492,6 +3492,19 @@ function scoreScoredRun(runsDir: string, name: string): void {
   console.log(text);
 }
 
+/** Every scenario score.ts scores: the name a run's directory starts with. The scorers map below
+ * is keyed by this list, so the two cannot drift, and the command line refuses any other name
+ * rather than printing an empty table of it. */
+const SCENARIOS = [
+  "ask-on-message",
+  "measure-before-ask",
+  "tester-proof",
+  "brainstorm",
+  "askgate",
+  "spec-writing",
+  "spec-rewrite",
+] as const;
+
 function scoreRuns(runsDir: string, only: string | undefined) {
   const rows: Row[] = [];
   const errors: { run: string; key: string; reason: string }[] = [];
@@ -3510,20 +3523,22 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
   // case comes from its directory (ASKGATE_RUN).
-  const scorers: Record<string, (dir: string, run: string, label: string, askCase: string) => Row> =
-    {
-      "ask-on-message": askOnMessage,
-      "measure-before-ask": measureBeforeAsk,
-      "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
-      brainstorm: brainstormSurface,
-      askgate: askgateReview,
-      "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
-      "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
-    };
+  const scorers: Record<
+    (typeof SCENARIOS)[number],
+    (dir: string, run: string, label: string, askCase: string) => Row
+  > = {
+    "ask-on-message": askOnMessage,
+    "measure-before-ask": measureBeforeAsk,
+    "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
+    brainstorm: brainstormSurface,
+    askgate: askgateReview,
+    "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
+    "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+  };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const match = name.exec(run);
-    const score = scorers[match?.[1] ?? ""];
+    const score = scorers[(match?.[1] ?? "") as (typeof SCENARIOS)[number]];
     if (!match || !score) continue;
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
@@ -3651,9 +3666,28 @@ if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
   if (command === "live-read" && rest.length === 3) {
     liveRead(rest[0] ?? "", rest[1] ?? "", rest[2] ?? "");
-  } else if (command === "runs" && rest.length === 3 && rest[1] === "--run") {
+  } else if (command === "runs" && rest[1] === "--run") {
+    // `--run` with no name read the whole directory and printed an empty table at exit 0, as an
+    // unknown scenario and a surplus argument did: `cell` refuses each of those, and these are
+    // its siblings, so they refuse too.
+    if (rest.length !== 3 || (rest[2] ?? "") === "") {
+      console.error("score.ts: runs --run takes one run's name: runs <runs dir> --run <name>");
+      process.exit(2);
+    }
     scoreScoredRun(rest[0] ?? "", rest[2] ?? "");
   } else if (command === "runs" && rest.length >= 1) {
+    if (rest.length > 2) {
+      console.error(
+        `score.ts: runs takes a runs directory and at most one scenario, not ${rest.length} arguments`
+      );
+      process.exit(2);
+    }
+    if (rest[1] !== undefined && !SCENARIOS.includes(rest[1] as (typeof SCENARIOS)[number])) {
+      console.error(
+        `score.ts: '${rest[1]}' is no scenario score.ts scores (${SCENARIOS.join(", ")})`
+      );
+      process.exit(2);
+    }
     scoreRuns(rest[0] ?? "", rest[1]);
   } else if (command === "cells" && (rest.length === 2 || rest.length === 3)) {
     // The counts of `<label>\t<case>` keys, as JSON: rig.sh check-stored reads them from the Job's
@@ -3673,7 +3707,10 @@ if (import.meta.main) {
         typeof given === "object" &&
         given !== null &&
         !Array.isArray(given) &&
-        Object.values(given).every((value) => Number.isInteger(value) && (value as number) > 0);
+        // isSafeInteger, which is CellLine's own bound: isInteger takes 1e300 and
+        // 9007199254740993, and the cell would then fail that bound with a zod dump and exit 1 in
+        // place of this refusal.
+        Object.values(given).every((value) => Number.isSafeInteger(value) && (value as number) > 0);
       if (!ok) {
         console.error(
           `score.ts: the counts ${rest[2]} are no object of <label>\\t<case> to a positive whole number`

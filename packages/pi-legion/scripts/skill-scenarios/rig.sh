@@ -2674,6 +2674,14 @@ unpack_fresh() {
   printf '%s\n' "$fresh"
 }
 
+# sorted_counts COUNTS prints the counts COUNTS holds, lowest first, `and` between two: the counts
+# a case's cell lines name, read in no order, so no message depends on the order of the logs.
+sorted_counts() {
+  local sorted
+  sorted=$(printf '%s' "$1" | tr ' ' '\n' | sort -n | paste -sd' ')
+  printf '%s' "${sorted// / and }"
+}
+
 # same_row STORED ROW is true when the stored row STORED, its `pack` taken out, is the run's ROW.
 same_row() {
   [ "$(jq -S -c 'del(.pack)' "$1" 2>/dev/null)" = "$(jq -S -c . "$2" 2>/dev/null)" ]
@@ -2758,7 +2766,8 @@ run_case_label() {
 # Then a line for each run, and the cells at COUNT (score.ts cells; a control form's cell keeps its
 # own count). Each case's count comes from the Job's own cell line for that case, never from the
 # caller: a Job runs each case to its form's runs unless it is told one count. It exits 0 only when
-# every run is as stored, no entry was left out, every case the names hold has a count in the logs,
+# every run is as stored, no entry was left out, every case the names hold has one count in the
+# logs that no scored run of it goes beyond, every case a cell line names has a run,
 # no cell is UNKNOWN, that is, short of the runs its count needs, and the cells cover every case it
 # checked hold: a run whose directory holds no world.json is in no cell, so a Job none of whose
 # runs reached a cell prints no cell line, which counting UNKNOWN cells alone would read as clean.
@@ -2773,13 +2782,14 @@ cmd_check_stored() {
   [ $# -ge 2 ] || fail "usage: rig.sh check-stored <dir> <job log>..."
   local dir=$1 log line file name run object hex faults joined kase label form want problem fresh
   local left=0 faulted=0 listed=0 unknown=0 uncovered=0 uncounted=0 status cells cell counts
-  local -A logged=() named=() conflict=() rowstored=() ran=()
+  local -A logged=() named=() conflict=() rowstored=() ran=() saw=() seen=() scored=()
+  local key outcome
   # A cell line of the Job's own names the case it ran and the count it ran that case to:
   # `scored-job <scenario> <group> <case>, label <label>: ... count <n>[;,]`. A Job runs each case
   # to its form's runs unless it is told one count, so a head Job runs A three times, B three times
   # and C once: one number for the whole Job reads an honest Job as broken at 3 and a short one as
   # clean at 1. The counts come from here, one a case, and the caller gives none.
-  local cell_count_re='^scored-job [a-z-]+ [a-z-]+ ([A-Za-z0-9-]+), label ([A-Za-z0-9_-]+): .* count ([0-9]+)[;,]'
+  local cell_count_re='^scored-job owner-walk [a-z-]+ ([A-Za-z0-9-]+), label ([A-Za-z0-9_-]+): .* count ([0-9]+)[;,]'
   shift
   faults=()
   for log in "$@"; do
@@ -2805,7 +2815,14 @@ cmd_check_stored() {
     # than trusted: a count below the Job's leaves every cell complete, and reads clean.
     while IFS= read -r line; do
       [[ $line =~ $cell_count_re ]] || continue
-      ran[${BASH_REMATCH[2]}$'\t'${BASH_REMATCH[1]}]=${BASH_REMATCH[3]}
+      key=${BASH_REMATCH[2]}$'\t'${BASH_REMATCH[1]}
+      # Every count any log names for the case, sorted and without repeats: two logs that disagree
+      # are a contradiction, and the message must not depend on the order they were given in.
+      case " ${saw[$key]:-} " in
+        *" ${BASH_REMATCH[3]} "*) ;;
+        *) saw[$key]="${saw[$key]:+${saw[$key]} }${BASH_REMATCH[3]}" ;;
+      esac
+      ran[$key]=${BASH_REMATCH[3]}
     done <"$log"
   done
   if [ ! -d "$dir/runs" ]; then
@@ -2911,8 +2928,18 @@ cmd_check_stored() {
   # Job whose runs all failed, and one where some runs reach a cell and others do not, each say so.
   while IFS= read -r run; do
     read -r kase label form < <(run_case_label "$run")
-    if [ -z "${ran[$label$'\t'$kase]:-}" ]; then
+    key=$label$'\t'$kase
+    seen[$key]=$((${seen[$key]:-0} + 1))
+    # A run the rig failed is stored and checked like any other, and is no scored run: a cell
+    # takes its case's first `count` SCORED runs, so an honest count-1 Job whose first run is a
+    # rig error stores two runs of the case and is no fault.
+    outcome=$(jq -r '.outcome // empty' "$dir/checked/$run/row.json" 2>/dev/null)
+    [ "$outcome" != scored ] || scored[$key]=$((${scored[$key]:-0} + 1))
+    if [ -z "${ran[$key]:-}" ]; then
       echo "UNKNOWN: the Job's logs name no count for $label $kase, so its cell is measured against nothing"
+      uncounted=$((uncounted + 1))
+    elif [ "${saw[$key]}" != "${ran[$key]}" ]; then
+      echo "UNKNOWN: $label $kase: the Job's logs name the counts $(sorted_counts "${saw[$key]}") for it, so no count of its own decides it"
       uncounted=$((uncounted + 1))
     fi
     # cells() keys a control form's cell by the form, every other by the case.
@@ -2921,6 +2948,23 @@ cmd_check_stored() {
     echo "UNKNOWN: no cell covers $label $kase: its runs are in none, so nothing was measured of it"
     uncovered=$((uncovered + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
+  # A case with scored runs beyond its count has runs the cell drops with nothing said, which is
+  # the fault the per-case count exists to stop; and a case a cell line names that no run of the
+  # download or the logs holds was measured by nothing at all.
+  # A case whose logs disagree has no count of its own, so nothing below reads one for it: the
+  # disagreement is its reading, and a count taken from it would be the last log's, which is to
+  # say the order the caller named the logs in.
+  for key in "${!ran[@]}"; do
+    if [ -z "${seen[$key]:-}" ]; then
+      echo "UNKNOWN: the Job's logs name the count $(sorted_counts "${saw[$key]}") for ${key/$'\t'/ }, and no run of it is in the download or the logs"
+      uncounted=$((uncounted + 1))
+    elif [ "${saw[$key]}" != "${ran[$key]}" ]; then
+      continue
+    elif [ "${scored[$key]:-0}" -gt "${ran[$key]}" ]; then
+      echo "UNKNOWN: ${key/$'\t'/ }: the Job's logs name the count ${ran[$key]}, and the store holds ${scored[$key]} scored runs of it, so $((${scored[$key]} - ${ran[$key]})) of them would be dropped"
+      uncounted=$((uncounted + 1))
+    fi
+  done
   if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ] || [ "$uncovered" != 0 ] || [ "$uncounted" != 0 ]; then
     echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at the counts the Job ran, $uncovered runs are in no cell, and $uncounted runs are of a case the logs name no count for"
     return 1
