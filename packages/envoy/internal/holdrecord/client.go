@@ -709,8 +709,12 @@ func jsonFailure(err error) string {
 // query after the URL's own, and the URL's fragment dropped, so a broker URL with a path, a query
 // or a fragment still names the route. No error it answers carries the request's URL: a DELETE's
 // query holds the operator's signature, and net/http's *url.Error quotes the URL whole
-// (withoutURL). A redirect is the broker's answer, refused by its status, and its Location is
-// asked nothing (New).
+// (withoutURL). net/http's error of a request that got no answer also quotes what the answering
+// party sent (a Location, a status line or a header line that does not parse), which whatever
+// answers at the broker's address can write the operator's token into, so that error prints as
+// redact.Unanswered names it: net/http's operation, the URL without its query, and the failure's
+// class. A redirect is the broker's answer, refused by its status, and its Location is asked
+// nothing (New).
 func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, []byte, error) {
 	ref := path
 	if len(query) > 0 {
@@ -730,7 +734,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	req, err := http.NewRequestWithContext(ctx, method, asked.String(), payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
+		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, redact.Class(err))
 	}
 	token, err := c.cfg.Token(ctx)
 	if err != nil {
@@ -742,7 +746,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
+		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, redact.Unanswered(err, req, ""))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if redirects.Status(resp.StatusCode) {
