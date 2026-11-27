@@ -20,6 +20,7 @@ import {
   documentTransport,
   holdFirstRequest,
   markSpan,
+  pickVersion,
   selectEditorText,
 } from "./editor";
 import { navigateInApp } from "./sends";
@@ -280,14 +281,13 @@ async function withAnimationFramesHeld(page: Page, during: () => Promise<void>):
 }
 
 /** Searches the issue tracker for `query` from the shell's search dialog and returns its one
- *  comment hit, from the group of comment hits (design v3, state 1: hits grouped by kind). */
+ *  comment hit. */
 async function searchHit(page: Page, query: string): Promise<Locator> {
   await page.getByRole("button", { name: /^search/i }).click();
   await page.getByRole("combobox", { name: "Search" }).fill(query);
-  const hit = page
-    .getByRole("dialog", { name: "Search" })
-    .getByRole("group", { exact: true, name: "Comments" })
-    .getByRole("option");
+  const hit = page.getByRole("dialog", { name: "Search" }).getByRole("option", {
+    name: /^comment /,
+  });
   await expect(hit).toHaveCount(1);
   return hit;
 }
@@ -678,7 +678,7 @@ const hiddenEditorJourneys = [
     name: "a hidden live editor withdraws its report before returning from a historical version",
     namedVersion: true,
     async hide(page: Page, issueKey: string, link: string): Promise<() => Promise<void>> {
-      await page.getByRole("combobox", { name: "Version" }).selectOption("1");
+      await pickVersion(page, 1);
       await expect(page.getByTestId("version-view")).toBeVisible();
       await expect(page).toHaveURL(`/issues/${issueKey}/artifacts/spec?v=1`);
       const hit = await searchHit(page, "must show its quote");

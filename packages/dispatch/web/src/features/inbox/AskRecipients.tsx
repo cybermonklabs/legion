@@ -8,8 +8,11 @@ import {
   removedEvenIfGone,
   type WriteBounds,
 } from "../../api/client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { textMutedOnSurface } from "../../theme/classes";
@@ -23,6 +26,10 @@ const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds
   api.removeAskFollower(askId, sessionId, bounds);
 
 const EMPTY_SUBSCRIBERS: readonly Subscriber[] = [];
+
+/** What the card says where the read of its recipients after an Unfollow or an Unsubscribe has
+ *  not settled once its hold ran out, before the reason (`useReadBound`). */
+const RECIPIENTS_NOT_LOADED = "Could not load the recipients.";
 
 /** The ask's owner, whose topic subscribers also hear every event on the ask. An ask on an
  *  issue (including one in an issue-linked document) routes through the issue's topics; an
@@ -220,11 +227,20 @@ type Confirming =
  * a subscriber's Unsubscribe each confirm first, name what still reaches the session (a
  * subscription, the claim or the route, or that a role route nobody is known to hold may, while
  * its reach is unknown), and then cut the route that actually delivers; the claim and route rows
- * have no control, since both change on the issue. A subscriber whose only matching topic is
- * wider than this owner (e.g. `notifications.dispatch.>`) names that topic and has no control,
- * as the header's Subscribed agents panel does. When the subscribers fetch fails, the card says
- * so with a retry - the shared refilling notice while Envoy's agent list refills - and counts
- * nobody, instead of passing the follower count off as the whole set.
+ * have no control, since both change on the issue. Every Unfollow is held from the press that
+ * confirms one until the commit after its write's answer, and every Unsubscribe the same way
+ * (`useHeldThroughAnswer`), never disabled: the dialog hands the focus back to the one that
+ * opened it, which keeps it, and a press of a held one opens nothing. A write stays pending
+ * until the read its landing starts has answered, which is the read that takes the session's
+ * chip away, so the pressed control stays held until it goes with its chip. That wait has a
+ * bound of its own, the request deadline (`useReadBound`): a read the network does not answer,
+ * as offline, lets the controls go then, and the card says
+ * why its recipients are not read. A subscriber whose only matching topic is wider than this
+ * owner (e.g. `notifications.dispatch.>`) names that topic and has no control, as the header's
+ * Subscribed agents panel does. While the subscribers fetch is out, the toggle reads
+ * `Recipients` and counts nobody, since the subscribers it would add are not read yet. When the
+ * fetch fails, the card says so with a retry - the shared refilling notice while Envoy's agent
+ * list refills - and counts nobody, instead of passing the follower count off as the whole set.
  */
 export function AskRecipients({
   askId,
@@ -242,13 +258,14 @@ export function AskRecipients({
   // only asks once the sign-in read says the principal is a user, so nothing without the scope
   // cycles on a 403.
   const human = useIsHuman();
+  const readsSubscribers = subscription !== undefined && human;
   // Same key as the issue header (`IssueHeader`) and the project document page
   // (`DocumentPage`), so an Inbox of cards on one issue shares one fetch with its header. Each
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
   // while rather than refetched on every mount and focus; the event feed's invalidation still
   // refreshes it.
   const subscribersQuery = useQuery({
-    enabled: subscription !== undefined && human,
+    enabled: readsSubscribers,
     queryKey: ["subscribers", subscription?.id],
     queryFn: () => {
       if (subscription === undefined) {
@@ -268,9 +285,14 @@ export function AskRecipients({
     routeStatus,
     subscribers: subscriberRows,
   });
-  // `Reaches N` counts nobody from a subscriber read that failed: it says nothing of how many
-  // there are, and the card says why instead.
-  const counted = !subscribersQuery.isError;
+  // `Reaches N` waits on the subscriber read when one runs: until it answers, the count would be
+  // of the followers, the claimant and the route alone, short of the subscribers it then adds.
+  // It holds back on a read that failed too, which says nothing of how many there are, and the
+  // card says why instead. With no read to run, it counts at once every recipient the card has:
+  // an ask on neither an issue nor a document has no subscribers to read. The sign-in check
+  // (`human`) holds back no read in the app, since `AuthGate` (`app.tsx`) draws the dashboard
+  // only for a signed-in person.
+  const counted = !readsSubscribers || (!subscribersQuery.isPending && !subscribersQuery.isError);
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
   // Each is a `DELETE`: made again after one that landed, it finds the session off the ask
@@ -280,13 +302,18 @@ export function AskRecipients({
   // and a host may draw one card for one ask after another, so the Retry of a press the reader
   // stopped, and what its landing reads again, are of that press's ask, not of the one the card
   // shows.
+  // Each write stays pending through the read its landing starts, for the request deadline at
+  // the most (`useReadBound`), and `unsettled` is why such a read has not settled once its hold
+  // ran out. The read waits on a fetch the network had already paused too
+  // (`invalidateWaitingForPaused`), which the bound ends as well.
+  const [unsettled, holdThrough] = useReadBound();
   const unfollow = useKeyedWrite({
     method: "DELETE",
     write: (press: { askId: string; sessionId: string }, bounds) =>
       removedEvenIfGone(removeFollower(press.askId, press.sessionId, bounds), isFollowerNotFound),
     label: (press) => `${text.sessionText(press.sessionId, undefined)} taken off this ask`,
     onSuccess: (_result, press) =>
-      queryClient.invalidateQueries({ queryKey: ["ask-thread", press.askId] }),
+      holdThrough(invalidateWaitingForPaused(queryClient, ["ask-thread", press.askId])),
   });
   const unsubscribe = useKeyedWrite({
     method: "DELETE",
@@ -305,8 +332,10 @@ export function AskRecipients({
     label: (press) =>
       `${text.sessionText(press.sessionId, subscribers.find((row) => row.session_id === press.sessionId)?.title)} unsubscribed from ${press.subscription?.label ?? "this ask"}`,
     onSuccess: (_result, press) =>
-      queryClient.invalidateQueries({ queryKey: ["subscribers", press.subscription?.id] }),
+      holdThrough(invalidateWaitingForPaused(queryClient, ["subscribers", press.subscription?.id])),
   });
+  const unfollowHeld = useHeldThroughAnswer(unfollow.isPending);
+  const unsubscribeHeld = useHeldThroughAnswer(unsubscribe.isPending);
 
   if (
     followers.length === 0 &&
@@ -362,10 +391,9 @@ export function AskRecipients({
                   </span>
                   <button
                     className={sessionRemoveButtonClassName}
-                    disabled={unfollow.isPending}
-                    onClick={() =>
+                    {...heldPress(unfollowHeld, () =>
                       setConfirming({ kind: "follower", sessionId: follower.session_id })
-                    }
+                    )}
                     type="button"
                   >
                     Unfollow
@@ -417,10 +445,9 @@ export function AskRecipients({
                     {subscriber.removable ? (
                       <button
                         className={sessionRemoveButtonClassName}
-                        disabled={unsubscribe.isPending}
-                        onClick={() =>
+                        {...heldPress(unsubscribeHeld, () =>
                           setConfirming({ kind: "subscriber", sessionId: subscriber.session_id })
-                        }
+                        )}
                         type="button"
                       >
                         Unsubscribe
@@ -470,6 +497,13 @@ export function AskRecipients({
           />
         </div>
       ) : null}
+      {unsettled === undefined ? null : (
+        <div className="mt-2">
+          {/* A read of the recipients that outlived its hold: the card says why, with no Retry,
+              since the read is still out and draws the recipients once it answers. */}
+          <QueryError message={`${RECIPIENTS_NOT_LOADED} ${unsettled}.`} />
+        </div>
+      )}
       {confirming === undefined ? null : confirming.kind === "follower" ? (
         // Unfollowing cuts the follower route only: a session that is also the claimant, the
         // route session, or subscribed to the owner still hears the ask, and the card then shows

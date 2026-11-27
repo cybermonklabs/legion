@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { useCappedSearchParam } from "../../lib/query-param";
+import { useCappedAddressParam } from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -17,10 +17,11 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { agentsAddress } from "../agents/agent-search";
 import { tallyBySession } from "../agents/ask-tally";
 import { useAgents } from "../conversation/useAgents";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
-import { buildAgentsMachinePath, parseMachinePath } from "../refs/routes";
+import { parseMachinePath } from "../refs/routes";
 import { relativeTimeLabel } from "../refs/Timestamp";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -84,7 +85,7 @@ function MachineView({ host }: { host: string }): ReactNode {
   // is a link, the back button means something across a window change, and one window is
   // deep-linkable. The server is in the value because tmux numbers windows per server, so a
   // bare `@1` would name a window on every server of the machine at once (`windowChoice`).
-  const [picked] = useCappedSearchParam("window");
+  const [picked] = useCappedAddressParam("window");
   // What the viewer is owed, read once for the page from the two queries the shell already
   // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
   // the four states, and the page adds no request of its own.
@@ -119,6 +120,10 @@ function MachineView({ host }: { host: string }): ReactNode {
     age === undefined
       ? undefined
       : (relativeTimeLabel(new Date(age.oldestSeen), now) ?? "just now");
+  // No link where the Agents page's address cannot carry the host's name whole
+  // (`agentsAddress`): a cut name would open another machine's sessions, or none. The heading
+  // still names the host.
+  const agentsLink = agentsAddress({ machines: [host] });
 
   return (
     <section aria-label={`Machine ${host}`} data-machine={host} data-testid="machine-page">
@@ -133,9 +138,11 @@ function MachineView({ host }: { host: string }): ReactNode {
         </h1>
         <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
           <span>{sessionCountSentence(model.summary)}</span>
-          <Link className={`${linkText} ${linkHoverText}`} to={buildAgentsMachinePath(host)}>
-            Agents on this machine
-          </Link>
+          {agentsLink === null ? null : (
+            <Link className={`${linkText} ${linkHoverText}`} to={agentsLink}>
+              Agents on this machine
+            </Link>
+          )}
         </p>
       </header>
       {model.sharedName ? (

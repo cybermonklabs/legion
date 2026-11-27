@@ -9,6 +9,7 @@ import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -144,7 +145,7 @@ test("renders the header, the document, versions, and Referenced by for an unlin
       "/projects/CORE/documents"
     );
     expect(screen.queryByRole("combobox", { name: "Artifact version" })).not.toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Version" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: pickNamed("Version") })).not.toBeNull();
     const referencedBy = screen.getByRole("region", { name: "Referenced by" });
     // Nothing discloses this panel, so it is its own heading and carries the count.
     expect(within(referencedBy).getByRole("heading", { name: "Referenced by (1)" })).toBeTruthy();

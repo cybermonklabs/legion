@@ -1,50 +1,48 @@
 import type { ReactNode } from "react";
 
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../../components/TableShell";
 import { type BlockOf, cellText } from "./block-cells";
-import { blockCellClassName, blockHeadClassName } from "./TableBlock";
 
 /** The agents' status: each session the roster read returned, with its state, its open asks and
- *  when it was last active, as Dispatch's copy of the roster holds them. */
+ *  when it was last active, as Dispatch's copy of the roster holds them, in the shared table
+ *  (`TableShell`). */
 export function AgentStatusBlock({
   block,
 }: {
   readonly block: BlockOf<"agent_status">;
 }): ReactNode {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs" data-testid="going-block-agents">
-        <thead>
-          <tr>
-            <th className={blockHeadClassName} scope="col">
-              Agent
-            </th>
-            <th className={blockHeadClassName} scope="col">
-              State
-            </th>
-            <th className={blockHeadClassName} scope="col">
-              Open asks
-            </th>
-            <th className={blockHeadClassName} scope="col">
-              Last active
-            </th>
-          </tr>
-        </thead>
-        <tbody>
+    <div data-testid="going-block-agents">
+      <TableShell label="Agents" size="compact">
+        <TableHead>
+          <TableHeadCell>Agent</TableHeadCell>
+          <TableHeadCell>State</TableHeadCell>
+          <TableHeadCell>Open asks</TableHeadCell>
+          <TableHeadCell>Last active</TableHeadCell>
+        </TableHead>
+        <TableBody>
           {block.rows.map((row) => {
             const session = cellText(row.session_id);
             return (
-              <tr data-session={session} data-testid="going-block-agent" key={session}>
-                <td className={blockCellClassName}>{cellText(row.title) || session}</td>
-                <td className={blockCellClassName}>{cellText(row.state)}</td>
-                <td className={blockCellClassName} data-testid="going-block-agent-asks">
+              <TableRow data-session={session} data-testid="going-block-agent" key={session}>
+                <TableCell>{cellText(row.title) || session}</TableCell>
+                <TableCell>{cellText(row.state)}</TableCell>
+                <TableCell data-testid="going-block-agent-asks">
                   {cellText(row.open_asks)}
-                </td>
-                <td className={blockCellClassName}>{cellText(row.last_activity)}</td>
-              </tr>
+                </TableCell>
+                <TableCell>{cellText(row.last_activity)}</TableCell>
+              </TableRow>
             );
           })}
-        </tbody>
-      </table>
+        </TableBody>
+      </TableShell>
     </div>
   );
 }

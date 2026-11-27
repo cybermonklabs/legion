@@ -1,4 +1,11 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import {
+  hashKey,
+  type Query,
+  type QueryClient,
+  queryOptions,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { api, isAgentListRefilling } from "../../api/client";
@@ -129,9 +136,53 @@ export function useRegistryPolling(active: boolean): void {
   }, [active]);
 }
 
+/** Why each client's agent list query last failed, kept until a read of it succeeds, whatever time
+ *  passes: the query clears its own error while a later read is out, and a view that mounts or
+ *  draws again in that window must name the same reason as the views around it. Keyed by the query
+ *  itself, so the reason goes with the query it explains - when its client drops it, or the client
+ *  goes - and a second client, another page's or another case's, reads nothing of this one's. */
+const failures = new WeakMap<Query, Error>();
+
+/** What picks the agent list query out of a client's cache. */
+const AGENT_LIST_HASH = hashKey(agentsQuery().queryKey);
+
+/** The clients whose cache `recordFailures` already listens to. */
+const recordedClients = new WeakSet<QueryClient>();
+
+/** Keeps `failures` for `client` from its query cache itself: each failure of the agent list query
+ *  sets its reason and each success removes it, as the query takes them, so the reason kept is the
+ *  latest failure's whichever views were mounted when it came. One listener per client, never
+ *  removed: the client's cache holds it, so it lives as long as the client. The shell's poller and
+ *  each registry view install it, so a page or a case without the poller has it too; a failure
+ *  the query already holds when the listener is installed is kept as well. */
+function recordFailures(client: QueryClient): void {
+  if (recordedClients.has(client)) return;
+  recordedClients.add(client);
+  const listed = client.getQueryCache().get(AGENT_LIST_HASH);
+  if (listed?.state.status === "error" && listed.state.error !== null) {
+    failures.set(listed, listed.state.error);
+  }
+  client.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated") return;
+    const { action, query } = event;
+    if (action.type !== "error" && action.type !== "success") return;
+    if (query.queryHash !== AGENT_LIST_HASH) return;
+    if (action.type === "error") failures.set(query, action.error);
+    else failures.delete(query);
+  });
+}
+
+/** Why `client`'s agent list query last failed, while no read of it has succeeded since. */
+function keptFailure(client: QueryClient): Error | undefined {
+  const query = client.getQueryCache().get(AGENT_LIST_HASH);
+  return query === undefined ? undefined : failures.get(query);
+}
+
 /** The one owner of the registry's refresh cadence, mounted once in the app shell. */
 export function AgentRegistryPoller(): null {
   const wanted = useSyncExternalStore(subscribePolling, pollingWanted, pollingWanted);
+  const client = useQueryClient();
+  useEffect(() => recordFailures(client), [client]);
   const pollMs = agentRegistryPollMs();
   useQuery({
     ...agentsQuery(),
@@ -153,6 +204,9 @@ export interface AgentRegistry {
   lastSeen(sessionId: string): number | undefined;
   /** Every listed session's registry title, for the contracts naming functions. */
   readonly titles: ReadonlyMap<string, string>;
+  /** A read of the registry has answered and the latest one succeeded: until then every state
+   *  is `unknown`, so a view judging what the states decide judges nothing yet. */
+  readonly known: boolean;
   /** The latest read failed: every state is `unknown`, and a view that would judge an absence
    *  says it could not check instead. */
   readonly isError: boolean;
@@ -172,7 +226,7 @@ export interface AgentRegistry {
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
-  const { data, error, isError, isPending } = useQuery({
+  const { data, error, errorUpdateCount, status } = useQuery({
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,
@@ -180,13 +234,29 @@ export function useAgentRegistry(enabled: boolean): AgentRegistry {
   });
   const agents = data ?? EMPTY_AGENTS;
   const lookup = registryLookup(agents);
-  // A failed refetch keeps the last response's data, so the state goes back to unknown while
-  // the cached titles go on naming agents.
-  const known = !(isPending || isError);
-  const refilling = isError && isAgentListRefilling(error);
+  // What the registry last answered, rather than what a read of it is doing now: a read that is
+  // out never takes the last answer away. A list that has only ever failed goes back to pending
+  // on each poll of the shell's, and a view that read that as "no answer yet" would drop what the
+  // last answer settled - the counts a refused list does not decide, and the page's word that it
+  // could not check which claims have lapsed - and draw them again when the poll lands on the
+  // same error. A read's failure is counted once it is recorded (`errorUpdateCount`), and the
+  // count stands through every later read. A failed refetch keeps the last response's data, so
+  // the state goes back to unknown while the cached titles go on naming agents.
+  const known = status === "success";
+  const isError = !known && errorUpdateCount > 0;
+  // Why that failure came, which the query clears while its next read is out although the failure
+  // still stands: a view that says what it could not check names the same reason throughout, and
+  // never Envoy as unreachable while it is the agent list refilling. This render reads the failure
+  // and writes nothing; the client's cache keeps it with the query (`recordFailures`) until a read
+  // of that query succeeds, for a view that mounts or draws while a later read is out and sees no
+  // error of its own.
+  const client = useQueryClient();
+  useEffect(() => recordFailures(client), [client]);
+  const refilling = isError && isAgentListRefilling(error ?? keptFailure(client));
   return useMemo(
     () => ({
       isError,
+      known,
       lastSeen: (sessionId: string) => lookup.byId.get(sessionId)?.last_seen,
       refilling,
       // A listed row's own `state` decides: the listener judged it from the session's last

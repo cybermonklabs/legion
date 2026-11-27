@@ -182,6 +182,9 @@ function isIDCandidate(candidate: ErrorCandidate): candidate is IDCandidate {
   return "id" in candidate && "kind" in candidate;
 }
 
+/** The message of a `NetworkError`. */
+export const NETWORK_ERROR_MESSAGE = "Dispatch could not be reached";
+
 /** A request the browser could not get an answer to at all: the connection failed or dropped
  *  (`fetch`'s and XHR's own error). It is no refusal - the request may have reached Dispatch - so
  *  a read is asked again by the queries' policy and a write again under its key. */
@@ -189,7 +192,7 @@ export class NetworkError extends Error {
   readonly path: string;
 
   constructor(path: string, cause: unknown) {
-    super("Dispatch could not be reached", { cause });
+    super(NETWORK_ERROR_MESSAGE, { cause });
     this.name = "NetworkError";
     this.path = path;
   }
@@ -289,6 +292,11 @@ export { REFERENCE_TARGETS_MAX };
  *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
 export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
 
+/** The message of a `RequestTimeoutError` given up after `deadlineMs` of silence. */
+export function requestTimeoutMessage(deadlineMs: number): string {
+  return `Dispatch did not answer within ${deadlineMs / 1000} seconds`;
+}
+
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
  *  under its key (`writeUnderKey`), is asked again. */
@@ -296,7 +304,7 @@ export class RequestTimeoutError extends Error {
   readonly path: string;
 
   constructor(path: string, deadlineMs: number) {
-    super(`Dispatch did not answer within ${deadlineMs / 1000} seconds`);
+    super(requestTimeoutMessage(deadlineMs));
     this.name = "RequestTimeoutError";
     this.path = path;
   }

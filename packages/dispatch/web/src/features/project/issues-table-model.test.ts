@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { IssueSummary } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import {
@@ -16,7 +17,6 @@ import {
   queuedInOrder,
   readSelection,
   readUrl,
-  reorder,
   selectIssues,
   startNextWrites,
   UNCLAIMED_FACET,
@@ -249,20 +249,6 @@ test("a merge crosses closed intermediates but does not flatten an open subtree"
   expect(mergeMembers(rows, "A")).toEqual(["C", "E", "G"]);
 });
 
-test("a dropped column lands immediately before the one it was dropped on", () => {
-  const order = ["select", "key", "title", "status", "epic"];
-  expect(reorder(order, "epic", "title")).toEqual(["select", "key", "epic", "title", "status"]);
-  expect(reorder(order, "key", "epic")).toEqual(["select", "title", "status", "key", "epic"]);
-  expect(order).toEqual(["select", "key", "title", "status", "epic"]);
-});
-
-test("a column dropped on itself, or on one the order does not hold, stays where it is", () => {
-  const order = ["select", "key", "title"];
-  expect(reorder(order, "title", "title")).toEqual(order);
-  expect(reorder(order, "title", "claim")).toEqual(order);
-  expect(reorder(order, "claim", "title")).toEqual(order);
-});
-
 // B1: a `?status=` this bundle does not know is still the reader's filter, under its own text.
 test("an unknown status keeps its own text and its place in the picks", () => {
   const show = columnFilterSpec("status");
@@ -394,4 +380,22 @@ test("a stateKey prefixes the table's own controls and leaves the bare ones to t
   const bare = writeUrl(new URLSearchParams(), state);
   expect(bare.get("sort")).toBe("-key");
   expect([...bare.keys()].some((key) => key.includes("advances."))).toBe(false);
+});
+
+// An unrelated write must leave the address's own value whole: the search box caps what the
+// reader types (`useTableAddress`'s `setSearch`), and the table rewrites every field on any
+// sort, group, filter or page change, so a cut on the way in would shorten a longer `?q=` a
+// link carried as soon as the reader pressed a header.
+test("a sort or a page step leaves a longer ?q= a link carried whole", () => {
+  const long = "x".repeat(SEARCH_QUERY_MAX + 200);
+  const linked = new URLSearchParams(`q=${long}`);
+  expect(readUrl(linked).search).toBe(long);
+  const sorted = writeUrl(linked, { ...readUrl(linked), sorting: [{ id: "key", desc: true }] });
+  expect(sorted.get("q")).toBe(long);
+  const paged = writeUrl(sorted, { ...readUrl(sorted), page: 2 });
+  expect(paged.get("q")).toBe(long);
+  // The same under a prefix, which is what the priorities page's work tables write.
+  const prefixed = new URLSearchParams(`w.q=${long}`);
+  expect(readUrl(prefixed, "w").search).toBe(long);
+  expect(writeUrl(prefixed, { ...readUrl(prefixed, "w"), page: 1 }, "w").get("w.q")).toBe(long);
 });

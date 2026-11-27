@@ -1,4 +1,5 @@
 import { createComment, createIssue, createProject, patchIssue } from "./api";
+import { controlRow, openFilterPanel } from "./filters";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -25,14 +26,6 @@ async function openSearch(page: Page): Promise<void> {
   await page.locator("body").focus();
   await page.keyboard.press("/");
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
-}
-
-/** Opens the filters and the search syntax help, which sit behind the Filters button at the
- *  box's right and show nowhere else (design v3, state 1). */
-async function openFilters(page: Page): Promise<void> {
-  const button = page.getByRole("dialog", { name: "Search" }).getByTestId("search-filters-button");
-  await button.click();
-  await expect(button).toHaveAttribute("aria-expanded", "true");
 }
 
 /** The day three days back: the value the date control takes, and the words the chip reads it
@@ -73,15 +66,16 @@ test("the operator forms are offered as the words are typed, and each narrows th
     const dialog = page.getByRole("dialog", { name: "Search" });
     const search = page.getByRole("combobox", { name: "Search" });
     const options = dialog.getByRole("option");
-    const forms = dialog.getByTestId("search-operators");
-    const inUse = (name: string) => forms.locator(`[data-operator="${name}"][data-in-use="true"]`);
 
     // What the bar shows is checked with `expect.soft` and the rows with a plain `expect`, so
     // a run where the query reads an operator the bar never shows reports both halves.
 
     // All three are offered under Filters from the first keystroke, so a person who knows none
-    // of them is told what the box can do while they are using it.
-    await openFilters(page);
+    // of them is told what the box can do while they are using it. They sit in the panel the
+    // Filters button at the box's right opens, and show nowhere else (design v3, state 1);
+    // `AnchoredPanel` portals that panel to the body rather than into the dialog.
+    const forms = (await openFilterPanel(page, dialog)).getByTestId("search-operators");
+    const inUse = (name: string) => forms.locator(`[data-operator="${name}"][data-in-use="true"]`);
     await search.fill("brass");
     await expect
       .soft(forms.getByRole("listitem"), "the three forms are offered")
@@ -143,31 +137,37 @@ test("each chip narrows the same list and reads back in the words the person cho
     const dialog = page.getByRole("dialog", { name: "Search" });
     const search = page.getByRole("combobox", { name: "Search" });
     const options = dialog.getByRole("option");
-    const chips = dialog.getByTestId("search-filters");
+    // The chips stand in the bar's own control row, beside the box the words are typed in.
+    const chips = controlRow(dialog);
 
-    // The row the four chips are added from, behind the Filters button, before any of them is
-    // used: a bar without it fails here rather than at a click on a control that does not exist.
-    await expect(chips).toHaveCount(0);
-    await openFilters(page);
+    // The row the four chips are added from, before any of them is used: a bar without it
+    // fails here rather than at a click on a control that does not exist.
     await expect(chips).toBeVisible();
     await search.fill("astrolabe");
     await expect(options).toHaveCount(5);
 
-    await dialog.getByRole("button", { name: "Project" }).click();
-    await dialog.getByRole("button", { name: "INFRA" }).click();
+    // The four narrowings are added from the panel the row's one **Filters** button opens, and
+    // `AnchoredPanel` portals that panel to the body rather than into the dialog.
+    const narrow = await openFilterPanel(page, dialog);
+    await narrow.getByRole("button", { exact: true, name: "Project" }).click();
+    await page
+      .getByRole("listbox", { name: "Project options" })
+      .getByRole("option", { name: "INFRA" })
+      .click();
     await expect(options).toHaveCount(4);
 
-    await dialog.getByRole("button", { name: "Status" }).click();
-    await dialog.getByRole("button", { name: "Todo" }).click();
+    await narrow.getByRole("button", { exact: true, name: "Status" }).click();
+    await page
+      .getByRole("listbox", { name: "Status options" })
+      .getByRole("option", { name: "Todo" })
+      .click();
     await expect(options).toHaveCount(3);
 
-    await dialog.getByLabel("Author").fill("alice");
-    await dialog.getByLabel("Author").press("Enter");
+    await narrow.getByLabel("Author").fill("alice");
+    await narrow.getByLabel("Author").press("Enter");
     await expect(options).toHaveCount(2);
 
-    // "Updated since" is a menu of days back and a day of the person's own.
-    await dialog.getByRole("button", { name: "Updated since" }).click();
-    await dialog.getByLabel("On a day").fill(since.value);
+    await narrow.getByLabel("Updated since").fill(since.value);
     await expect(options).toHaveCount(1);
     await expect(options.first()).toContainText("case is ready");
 
@@ -181,9 +181,9 @@ test("each chip narrows the same list and reads back in the words the person cho
     await expect(search).toHaveValue("astrolabe");
 
     // A chip comes off on its own, and the rows it was holding back come back.
-    await dialog.getByRole("button", { name: "Remove Author alice" }).click();
+    await dialog.getByRole("button", { name: "Remove Author alice filter" }).click();
     await expect(options).toHaveCount(2);
-    await expect(dialog.getByLabel("Author")).toBeVisible();
+    await expect((await openFilterPanel(page, dialog)).getByLabel("Author")).toBeVisible();
   } finally {
     await context.close();
   }

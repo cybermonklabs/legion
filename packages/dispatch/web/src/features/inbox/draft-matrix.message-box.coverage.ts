@@ -74,13 +74,13 @@ export const coverage: readonly CoverageEntry[] = [
     "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | early return | if (messages.isError) return …",
     { reason: REASONS[7] }
   ),
-  ...answers('Inbox | ReadingPane | conditional | (mode === "columns") ? …', {
+  ...answers('InboxBody | ReadingPane | conditional | (mode === "columns") ? …', {
     reason: REASONS[9],
   }),
-  ...answers('Inbox | ReadingPane | conditional | !(mode === "columns") ? …', {
+  ...answers('InboxBody | ReadingPane | conditional | !(mode === "columns") ? …', {
     reason: REASONS[9],
   }),
-  ...answers("Inbox | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[9] }),
+  ...answers("InboxBody | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[9] }),
   ...answers("InboxDrawer | Inbox | early return | if (!open) return …", { reason: REASONS[9] }),
   ...answers('AppShell | InboxPage | route | <Route path="/">', { reason: REASONS[9] }),
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {

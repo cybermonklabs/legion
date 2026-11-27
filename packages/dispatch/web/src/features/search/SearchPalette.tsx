@@ -1,7 +1,8 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
@@ -13,8 +14,20 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
-import type { GoingContextInput, GoingLine, Project, SearchResult } from "../../api/types";
+import type {
+  GoingContextInput,
+  GoingLine,
+  Project,
+  SearchOperator,
+  SearchResult,
+} from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { filterChips } from "../../components/filter-chips";
+import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
+import { SearchBox } from "../../components/SearchBox";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop50,
@@ -23,6 +36,7 @@ import {
   card,
   dangerText,
   expandedButtonAccent,
+  inputClasses,
   kbdHint,
   searchHitBg,
   searchHitText,
@@ -32,6 +46,7 @@ import {
   surfaceMutedBg,
   textMutedOnSelectedCard,
   textMutedOnSurface,
+  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
@@ -62,7 +77,7 @@ import {
 } from "../going/RunControls";
 import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
-import { statusText } from "../project/board-model";
+import { issueStatuses, statusText } from "../project/board-model";
 import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
@@ -89,13 +104,18 @@ import { dropFiling, fileNewIssue, filingParent, useBarOpen, useFiling } from ".
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
-import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
-import { type SearchBarFilters, searchFilterChips, searchRequest } from "./search-filters";
+import {
+  type SearchBarFilters,
+  type SearchFilterName,
+  searchFilterChips,
+  searchRequest,
+} from "./search-filters";
 import {
   groupResults,
   hitIsItsIssue,
   issueHitTitle,
+  kindLabel,
   optionId,
   ownerWords,
   searchOperators,
@@ -122,7 +142,6 @@ const CONTINUE_OPTION_ID = "search-option-continue";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
 const RECENT_GROUP_ID = "search-group-recent";
-const FILTERS_PANEL_ID = "search-filters-panel";
 
 /** How recent a conversation is for the bar to offer "Continue" on it as it opens (design v3,
  *  Keys): the last hour. */
@@ -330,19 +349,113 @@ function ItemRow({
   );
 }
 
-/** A hit (design v3, state 1) in the one look of a row that opens an item (`ItemRow`). A hit that
- *  is the issue itself is one line, its title. Any other hit names its owner - the issue's title,
+/**
+ * A hit under the row of the issue or document it belongs to, which names that owner, so the hit
+ * names only itself: its kind's icon and word, the document it is in where it is one, and its
+ * snippet under them - the server's reading of it (`snippet_tree`), its formatting shown rather
+ * than its syntax and the words the search matched marked, each link drawn as the words around
+ * it, since a link inside the row would compete with the row's own Enter and click. The snippet is
+ * cleaned as a best match's is (`BestOption`): the syntax of a Proof directive the window cut
+ * comes out of its text (`snippetWithoutDirectives`; rule 1, no marker text), and a line whose
+ * window the server says began or stopped inside the text (`snippetCut`) begins or ends with "…",
+ * and starts at the next sentence's first word where the window began on a sentence's tail
+ * (`snippetFromSentence`). `muted` is its owner's: the hits of a done issue read muted.
+ */
+function ResultOption({
+  active,
+  muted,
+  onSelect,
+  result,
+}: {
+  active: boolean;
+  muted: boolean;
+  onSelect: () => void;
+  result: SearchResult;
+}): ReactNode {
+  // The sentinels the server leaves in `snippet` itself come out for the literal text a preview
+  // falls back to where no tree reached it.
+  const source = snippetSegments(result.snippet)
+    .map((segment) => segment.text)
+    .join("");
+  // The route table carries the kind as a plain string; a kind this build has no icon or label
+  // for keeps its own word and draws no icon, rather than borrowing another kind's.
+  const kind = searchResultKind(result.kind);
+  // The same tree, and so the same drawing, on every render of the row: a tree cut anew each
+  // time would paint the snippet again on each.
+  const snippet = useMemo(() => {
+    const cut = snippetCut(result.snippet_tree);
+    const drawn = snippetWithoutDirectives(result.snippet_tree);
+    return { cut, tree: cut.start ? snippetFromSentence(drawn) : drawn };
+  }, [result.snippet_tree]);
+  // The hit's snippet is the record's own text, cut: the row names the record (`result.id`), the
+  // kind it was indexed under, which is what a `#id` in it resolves against, and the issue it is
+  // on, its owner. A kind that names no reference source - a project, an agent - answers none
+  // (`textSourceKind`).
+  const record = textSourceOf(
+    textSourceKind(result.kind),
+    result.id,
+    result.owner.kind === "issue" ? result.owner.key : undefined
+  );
+  // A delete takes the post's windows with its body, so a deleted post is no hit once the
+  // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
+  // empty: the deleted line stands where the snippet would, as it does in the referenced-by
+  // list.
+  const deleted = postDeletion(result);
+
+  return (
+    <PaletteOption
+      active={active}
+      id={optionId(result)}
+      onSelect={onSelect}
+      reference={nodeRouteFromHref(result.href)}
+    >
+      <div
+        className={`flex min-w-0 items-center gap-2 text-xs ${
+          muted ? textMutedOnSelectedCard : textSecondaryOnSurface
+        }`}
+      >
+        {kind === undefined ? null : <RefKindIcon kind={kind} />}
+        <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
+          {kind === undefined ? result.kind : kindLabel(kind)}
+        </span>
+        {result.artifact === undefined ? null : (
+          <span className="truncate">{result.artifact.name}</span>
+        )}
+        {/* A comment or a message its author edited says so, as its byline does. */}
+        <EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />
+      </div>
+      <div className="mt-1 flex min-w-0" data-testid="search-hit-snippet">
+        {deleted === null ? (
+          <MarkdownPreview
+            className={`min-w-0 flex-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
+            highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
+            lead={snippet.cut.start ? "…" : undefined}
+            lines={2}
+            linkLook="text"
+            markdown={withoutDirectiveSyntax(source)}
+            source={record}
+            surface="search-result"
+            trail={snippet.cut.end ? "…" : undefined}
+            tree={snippet.tree}
+          />
+        ) : (
+          <DeletedBody className="min-w-0 flex-1 text-sm" deleted={deleted} />
+        )}
+      </div>
+      {result.ask === undefined ? null : (
+        <AskHitStatus ask={result.ask} muted={muted} source={record} />
+      )}
+    </PaletteOption>
+  );
+}
+
+/** A best match (R2: the item the words name, which ranks above the line on top) in the one look
+ *  of a row that opens an item (`ItemRow`), since it stands under no owner's row. A hit that is
+ *  the issue itself is one line, its title. Any other hit names its owner - the issue's title,
  *  and the document's name where it is one of the issue's - on the first line, and its snippet on
  *  a second line under it, one size below the title and in the grey of the bar's hints (review
- *  A2): the server's reading of it (`snippet_tree`) drawn on one line, its formatting shown rather
- *  than its syntax, the words the search matched marked, and each link drawn as the words around
- *  it, since a link inside the row would compete with the row's own Enter and click. The syntax
- *  of a Proof directive the window cut is taken out of its text (`snippetWithoutDirectives`; rule
- *  1, no marker text). The server says where its headline window cut the text the snippet was
- *  read out of (`snippetCut`): a line whose window began after a word of that text begins with
- *  "…", and starts at the next sentence's first word where the window began on a sentence's tail
- *  (`snippetFromSentence`), and a line whose window stopped before a word of it ends with "…". */
-function ResultOption({
+ *  A2), cleaned as a hit under its owner's row is (`ResultOption`). */
+function BestOption({
   active,
   onSelect,
   result,
@@ -726,6 +839,172 @@ function CommandGroup({
   );
 }
 
+/** What a chip removed puts back, under the name `searchFilterChips` gives it. */
+const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
+  author: { author: undefined },
+  project: { project: undefined },
+  status: { status: undefined },
+  updatedSince: { updatedSince: undefined },
+};
+
+/** The two lists the panel opens inside itself, which `useNestedPanels` keeps one open at a time,
+ *  as the Delivery page's facets are. */
+type FilterListName = "project" | "status";
+
+/**
+ * The Filters button at the box's right and the panel it opens (design v3, state 1), which hold
+ * the four narrowings the bar offers and the search syntax help, and show nowhere else: a
+ * project, an issue status, an author and the day since which the item was last written, then
+ * the three operator forms the words can use, each marked where the query uses it
+ * (`SearchOperators`). The button says how many narrowings are on (`Filters · 2`), and "/" in the
+ * empty box opens it, which is why the bar holds it open or shut (`open`). Each narrowing is a
+ * control in the panel while it is unset and a chip in the bar's control row once the person has
+ * chosen, and pressing that chip drops that narrowing alone and brings its control back.
+ *
+ * The project and the status are each picked from the shared list's single-pick mode
+ * (`MultiSelect`), a text box over the options that narrows them. Its `option` rows join neither
+ * the rows this dialog's arrows walk nor the hits a reader is told there are: the list is
+ * portalled to the body (`AnchoredPanel`), outside the dialog. A pick takes its control out of
+ * the panel, and the panel hands the focus to the control now at its place (`PanelTrigger`).
+ *
+ * The author is typed rather than picked: an item's author is a person's login or a session id,
+ * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
+ * half-typed login never searches. The box keeps what was typed while the panel is shut, so a
+ * reader who opens it again finds their half-typed login where they left it.
+ *
+ * The Project list is drawn from the bar's one read of the projects, which can still be out or
+ * have failed when the panel opens: it says which, as the Agents composer's Issue list does,
+ * rather than call an unread list empty.
+ */
+function SearchNarrowing({
+  count,
+  filters,
+  onFilters,
+  onOpenChange,
+  open,
+  operators,
+  projects,
+}: {
+  /** How many narrowings are on. */
+  count: number;
+  filters: SearchBarFilters;
+  onFilters: (filters: SearchBarFilters) => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  /** The operator forms the answer read the query as using. */
+  operators: readonly SearchOperator[];
+  projects: UseQueryResult<Project[]>;
+}): ReactNode {
+  const projectList = projects.data ?? emptyProjects;
+  const filterList = useNestedPanels<FilterListName>(open);
+  const [author, setAuthor] = useState("");
+  const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
+  const takeAuthor = () => {
+    const typed = author.trim();
+    if (typed !== "") {
+      setAuthor("");
+      set({ author: typed });
+    }
+  };
+
+  return (
+    <PanelTrigger
+      align="right"
+      count={count === 0 ? undefined : count}
+      label="Filters"
+      onOpenChange={(next) => {
+        // Shutting the panel is leaving the author box as much as moving off it is: a press
+        // outside takes the box away with the panel, before it could lose focus on its own.
+        if (!next) takeAuthor();
+        onOpenChange(next);
+      }}
+      open={open}
+      stacked
+      // Held down while the panel shows, as History is while it shows.
+      triggerClassName={`${secondaryButtonCompact} ${expandedButtonAccent}`}
+    >
+      {() => (
+        <>
+          {filters.project === undefined ? (
+            <MultiSelect
+              {...filterList("project")}
+              emptyMessage={
+                projects.isPending
+                  ? "Loading projects…"
+                  : projects.isError || projectList.length > 0
+                    ? "No project matches that."
+                    : "No projects yet"
+              }
+              error={projects.isError ? "Could not load projects." : null}
+              label="Project"
+              mode="single"
+              onPick={(project) => set({ project })}
+              options={projectList.map((project) => project.key)}
+              searchLabel="Search projects"
+            />
+          ) : null}
+          {filters.status === undefined ? (
+            <MultiSelect
+              {...filterList("status")}
+              emptyMessage="No status matches that."
+              label="Status"
+              mode="single"
+              onPick={(status) => set({ status })}
+              optionLabel={statusText}
+              options={issueStatuses}
+              searchLabel="Search statuses"
+            />
+          ) : null}
+          {filters.author === undefined ? (
+            <SearchBox
+              className="w-full"
+              label="Author"
+              onBlur={takeAuthor}
+              onChange={setAuthor}
+              onKeyDown={(event) => {
+                // An Enter that ends or moves an input method's composition is the composition's
+                // (`inputMethodKey`).
+                if (event.key === "Enter" && !inputMethodKey(event.nativeEvent)) {
+                  event.preventDefault();
+                  takeAuthor();
+                }
+              }}
+              placeholder="Author"
+              value={author}
+            />
+          ) : null}
+          {/* The date box carries its words on screen: a browser draws an empty one as its own
+              date format and nothing else, so without them a reader cannot tell what the box
+              narrows. */}
+          {filters.updatedSince === undefined ? (
+            <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+              Updated since
+              <input
+                className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+                onChange={(event) => {
+                  // A date the reader types is taken once its year is whole: an engine reports a
+                  // valid date from the year's first digit (Chromium reads `2` as the year 0002),
+                  // and taking that would narrow to a year the reader is still typing and draw
+                  // the box away from under their next keys. The box holds no `value` of its
+                  // own: React puts a controlled empty value back after every change it hands
+                  // here, so Chromium's date would be emptied at each digit before its year is
+                  // whole.
+                  const { value } = event.target;
+                  if (Number(value.slice(0, 4)) >= 1000) {
+                    set({ updatedSince: value });
+                  }
+                }}
+                type="date"
+              />
+            </label>
+          ) : null}
+          <SearchOperators inUse={operators} />
+        </>
+      )}
+    </PanelTrigger>
+  );
+}
+
 export function SearchPalette({
   onClose,
   open,
@@ -898,7 +1177,9 @@ function PaletteDialog({
   // this one. The page's project rides with them, under the parameter that narrows nothing,
   // and it is the chip's project at every level because every level sits in one project.
   const narrowed = searchRequest(filters, scope.targets.project);
-  const filterCount = searchFilterChips(filters).length;
+  // What is on, in the words the person chose it in: one chip of the control row for each
+  // narrowing, and the control of that narrowing stays out of the panel while its chip is up.
+  const narrowings = searchFilterChips(filters);
   // The one search the list reads, in two tiers the hook answers as one. Everything below -
   // the hits, the operators the query was read as and the message under the list - reads this
   // one answer, so the list, what it says about itself and the highlight all speak of one
@@ -920,7 +1201,7 @@ function PaletteDialog({
   // refresh that fails keeps the answer the query already has, and so do the hits.
   const showHits = queryEnabled && !waitingForQuery && search.data !== undefined;
   // A hit the words name exactly - its key or its title - ranks above the line on top, so Enter
-  // opens it (R2); the rest are grouped by kind, at most 6 a group.
+  // opens it (R2); the rest stay under the issue or document they belong to.
   const bestResults = showHits
     ? results.filter((result) => namesHit(result, needle))
     : emptyResults;
@@ -929,10 +1210,9 @@ function PaletteDialog({
   );
   const hitGroups = showHits
     ? groupResults(results.filter((result) => !bestResults.includes(result))).map(
-        ({ heading, kind, results: kindResults }) => ({
-          heading,
-          kind,
-          rows: kindResults.map(
+        ({ owner, results: ownerResults }) => ({
+          owner,
+          rows: ownerResults.map(
             (result): ResultRow => ({ id: optionId(result), kind: "result", result })
           ),
         })
@@ -1363,26 +1643,26 @@ function PaletteDialog({
   });
   // The box, one element in every state of the bar, so the person's focus and words stay in it as
   // the bar turns from the search into the conversation and back. Before Enter it is the combobox
-  // of the list under it; as a conversation it is a plain text box. Its frame holds the context
-  // chip on its left and, before Enter, the Filters button on its right; each keeps its place,
-  // empty where it does not show, so the input is the same element throughout.
-  const listParts = talking
-    ? {}
-    : {
-        "aria-activedescendant": activeRow?.id,
-        "aria-controls": "search-results",
-        "aria-expanded": rows.length > 0,
-        role: "combobox",
-      };
+  // of the list under it; as a conversation it is a plain text box. It is the shared search box
+  // (`SearchBox`), bare, since its frame draws the border: the frame holds the context chip on
+  // its left and, before Enter, the Filters button on its right; each keeps its place, empty
+  // where it does not show, so the input is the same element throughout. It takes words past the
+  // search's limit, which the bar names under the list rather than cutting them.
   const box = (
     <BoxFrame chip={scope.chip} chipTitle={scope.chipTitle}>
-      <input
-        {...listParts}
-        aria-label={talking ? "Ask the command bar" : "Search"}
+      <SearchBox
+        bare
         className={boxInputClassName}
+        combobox={
+          talking
+            ? undefined
+            : { activeId: activeRow?.id, controls: "search-results", expanded: rows.length > 0 }
+        }
         data-testid="bar-box"
-        onChange={(event) => {
-          setQuery(event.target.value);
+        label={talking ? "Ask the command bar" : "Search"}
+        maxLength={null}
+        onChange={(value) => {
+          setQuery(value);
           // A new query is a new list, so the highlight is undecided again and the first
           // hits to answer it take the head.
           setActive({ hits: "", id: null, left: false });
@@ -1400,23 +1680,20 @@ function PaletteDialog({
         value={query}
       />
       {talking ? null : (
-        <button
-          aria-controls={FILTERS_PANEL_ID}
-          aria-expanded={filtersOpen}
-          // Pressed while the filters show, as History is pressed while it shows.
-          className={`${secondaryButtonCompact} ${expandedButtonAccent}`}
-          data-testid="search-filters-button"
-          onClick={() => setFiltersOpen((shown) => !shown)}
-          type="button"
-        >
-          {filterCount === 0 ? "Filters" : `Filters · ${filterCount}`}
-        </button>
+        <SearchNarrowing
+          count={narrowings.length}
+          filters={filters}
+          onFilters={setFilters}
+          onOpenChange={setFiltersOpen}
+          open={filtersOpen}
+          operators={operators}
+          projects={projects}
+        />
       )}
     </BoxFrame>
   );
   // What Enter does on the highlighted row, for the foot.
   const enterHint = enterWord(activeRow);
-  const shownHits = bestRows.length + hitRows.length;
 
   return (
     <>
@@ -1482,10 +1759,30 @@ function PaletteDialog({
           <div
             className={`shrink-0 p-3 ${history ? "hidden" : ""} ${talking ? "border-t" : "border-b"} ${borderDefault}`}
           >
-            <BoxRow
-              box={box}
-              hint={talking ? boxHint(asking, query) : undefined}
-              onStop={asking.stop}
+            {/* The bar's one row of controls (`ControlRow`): the box, with the Filters button
+                at its right before Enter, and under it a chip for each narrowing that is on. The
+                row stands in every state of the bar, so the box in it stays the same element. */}
+            <ControlRow
+              chips={
+                talking
+                  ? undefined
+                  : filterChips(
+                      narrowings.map(({ label, name }) => ({
+                        key: name,
+                        label,
+                        remove: () => setFilters({ ...filters, ...FILTER_REMOVALS[name] }),
+                      }))
+                    )
+              }
+              search={
+                <div className="min-w-0 flex-1">
+                  <BoxRow
+                    box={box}
+                    hint={talking ? boxHint(asking, query) : undefined}
+                    onStop={asking.stop}
+                  />
+                </div>
+              }
             />
             {refusal === undefined ? null : (
               <p className={`mt-2 text-xs ${dangerText}`} role="alert">
@@ -1495,23 +1792,6 @@ function PaletteDialog({
           </div>
           {talking || history ? null : (
             <div className="flex min-h-0 flex-col overflow-y-auto" ref={searchPartsRef}>
-              {/* What narrows the search and what the words themselves can do, behind the
-                  Filters button: the chips the reader has added with the controls for the rest,
-                  and the three operator forms. */}
-              {filtersOpen ? (
-                <div
-                  className={`shrink-0 border-b ${borderDefault}`}
-                  data-testid="search-filters-panel"
-                  id={FILTERS_PANEL_ID}
-                >
-                  <SearchFilterBar
-                    filters={filters}
-                    onFilters={setFilters}
-                    projects={projects.data ?? emptyProjects}
-                  />
-                  <SearchOperators inUse={operators} />
-                </div>
-              ) : null}
               {/* On a Dispatch with no answering model, the one sentence that says so, in the
                   line on top's place (design v3, state 13); search works as usual. */}
               {answersOff && queryEnabled ? (
@@ -1539,11 +1819,11 @@ function PaletteDialog({
               )}
               {rows.length === 0 ? null : (
                 // The list takes the room its column leaves it once the parts above it (the
-                // Filters panel, the no-model line, the answer card) and under it are drawn, which
-                // ends where the frame clips, and keeps one row's height (5rem) where that room is
-                // less: there the column scrolls, and the arrows' scroll into view brings the row
-                // into the column's view as well as the list's, so a window that holds the box and
-                // one row shows the row the reader is on whole, whatever stands above the list.
+                // no-model line, the answer card) and under it are drawn, which ends where the
+                // frame clips, and keeps one row's height (5rem) where that room is less: there
+                // the column scrolls, and the arrows' scroll into view brings the row into the
+                // column's view as well as the list's, so a window that holds the box and one row
+                // shows the row the reader is on whole, whatever stands above the list.
                 <div
                   className="max-h-[60vh] min-h-20 flex-1 overflow-y-auto"
                   id="search-results"
@@ -1553,7 +1833,7 @@ function PaletteDialog({
                   {bestRows.length === 0 ? null : (
                     <ListGroup heading={false} id="search-group-best" label="Best match">
                       {bestRows.map((row) => (
-                        <ResultOption
+                        <BestOption
                           active={activeRow?.id === row.id}
                           key={row.id}
                           onSelect={() => selectRow(row)}
@@ -1594,18 +1874,78 @@ function PaletteDialog({
                       section={section}
                     />
                   ))}
-                  {hitGroups.map(({ heading, kind, rows: kindRows }) => (
-                    <ListGroup heading id={`search-group-kind-${kind}`} key={kind} label={heading}>
-                      {kindRows.map((row) => (
-                        <ResultOption
-                          active={activeRow?.id === row.id}
-                          key={row.id}
-                          onSelect={() => selectRow(row)}
-                          result={row.result}
-                        />
-                      ))}
-                    </ListGroup>
-                  ))}
+                  {hitGroups.map(({ owner, rows: ownerRows }) => {
+                    const header =
+                      owner.kind === "issue"
+                        ? {
+                            id: `issue:${owner.key}`,
+                            key: owner.key,
+                            name: owner.title,
+                            status: owner.status,
+                          }
+                        : {
+                            id: `document:${owner.artifact_id}`,
+                            key: owner.project,
+                            name: owner.name,
+                            status: undefined,
+                          };
+                    const muted = header.status === "done";
+                    return (
+                      <Fragment key={header.id}>
+                        {/* The group's own row: a label for the hits under it, on the recessed
+                            surface so the hits read as the list and this reads as its heading.
+                            Its status is the lifecycle label the rest of the product shows -
+                            `Needs review`, never the raw value. */}
+                        {/* `aria-hidden` because the group below takes its name from this row:
+                            a reader would otherwise hear the owner twice, once as the row and
+                            once as the group's label. `aria-labelledby` computes a name from a
+                            hidden element, so the group keeps it. */}
+                        <div
+                          aria-hidden="true"
+                          aria-label={`${header.key}: ${header.name}`}
+                          className={`flex min-w-0 items-center gap-2 border-b px-3 py-1.5 text-xs ${borderDefault} ${surfaceMutedBg} ${
+                            muted ? textMutedOnSurfaceMuted : ""
+                          }`}
+                          data-status={header.status}
+                          id={`search-group-${header.id}`}
+                          role="presentation"
+                        >
+                          <span className="font-semibold">{header.key}</span>
+                          <span
+                            className={`min-w-0 flex-1 truncate ${
+                              muted ? textMutedOnSurfaceMuted : textSecondaryOnSurfaceMuted
+                            }`}
+                          >
+                            {header.name}
+                          </span>
+                          {header.status === undefined ? null : (
+                            <span
+                              className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}
+                            >
+                              {statusText(header.status)}
+                            </span>
+                          )}
+                        </div>
+                        {/* The hits of one owner are a group named by the row above them, so a
+                            reader who cannot see that row still hears which issue or document a
+                            hit belongs to. The options stay direct children of the group and the
+                            listbox's own arrow navigation is untouched. A `fieldset` carries the
+                            group role implicitly; `min-w-0` overrides its UA `min-inline-size:
+                            min-content`, which a long hit would otherwise widen the palette to. */}
+                        <fieldset aria-labelledby={`search-group-${header.id}`} className="min-w-0">
+                          {ownerRows.map((row) => (
+                            <ResultOption
+                              active={activeRow?.id === row.id}
+                              key={row.id}
+                              muted={muted}
+                              onSelect={() => selectRow(row)}
+                              result={row.result}
+                            />
+                          ))}
+                        </fieldset>
+                      </Fragment>
+                    );
+                  })}
                   {footSections.map((section) => (
                     <CommandGroup
                       activeId={activeRow?.id}
@@ -1644,11 +1984,11 @@ function PaletteDialog({
                 <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
                   No results for &quot;{searchText}&quot;
                 </p>
-              ) : search.data?.total !== undefined && search.data.total > shownHits ? (
-                // The bar lists the best hits of one page of them, so a query matching more says
-                // so rather than looking complete.
+              ) : search.data?.total !== undefined && search.data.total > results.length ? (
+                // The bar lists one page of hits, so a query matching more says so rather than
+                // looking complete.
                 <p className={barNoteClassName}>
-                  Showing the best {shownHits} of {search.data.total} matches
+                  Showing the best {results.length} of {search.data.total} matches
                 </p>
               ) : projects.isError && needle !== "" ? (
                 // Projects are rows of this list too, so a query that found none has to say

@@ -496,10 +496,8 @@ export function focusConversationBox(): boolean {
 }
 
 /** The padding and line of the box's input, which set the box's height inside its frame's border
- *  (`BoxFrame`), with the floor `styles.css` puts on every input below `xl`. The search's filter
- *  pills give their one control the same, inside a border of their own, so they stand as tall as
- *  the box at every width (`SearchFilterBar`). */
-export const boxLineClassName = "py-2 text-sm";
+ *  (`BoxFrame`), with the floor `styles.css` puts on every input below `xl`. */
+const boxLineClassName = "py-2 text-sm";
 
 /** The input the person types in, inside the box's frame (`BoxFrame`), which draws its border.
  *  The clear button a browser draws in a search box keeps a gap from the words before it, which
@@ -523,11 +521,11 @@ const PROJECT_WORDS = /^(the project )(\S+)$/u;
 /**
  * The conversation's box, in the bar and in the panel (design v3, states 1, 2 and 10): one frame
  * holding the context chip on its left (`chip`, cut where the chip ends, its whole words in
- * `chipTitle`), then `children` - the input, and in the bar before Enter its Filters button - so
- * the chip stands in the same place on every surface. A project's chip shows its key alone,
- * "OPS", as the design draws a chip, and keeps "the project OPS" for a screen reader and its
- * tooltip, so it stays whole beside Stop in the panel. Where the frame is narrow, the chip is cut
- * before the input's words are (`boxInputStyle`).
+ * `chipTitle`), then `children` - the input, and in the bar before Enter its Filters button, the
+ * shared panel trigger (`PanelTrigger`) - so the chip stands in the same place on every surface.
+ * A project's chip shows its key alone, "OPS", as the design draws a chip, and keeps "the project
+ * OPS" for a screen reader and its tooltip, so it stays whole beside Stop in the panel. Where the
+ * frame is narrow, the chip is cut before the input's words are (`boxInputStyle`).
  */
 export function BoxFrame({
   children,

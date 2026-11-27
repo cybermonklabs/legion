@@ -65,9 +65,9 @@ function choice(value: string, selected: string | undefined, testId: string): Re
 }
 
 /**
- * A header picker's choice: its change switches the live session, so the rule is the one the
- * Agents issue picker keeps (`markKeyStep` in `AgentMessageComposer.tsx`). The select's own keys
- * only move its choice, so a keyboard reader can pass one model to reach the next; `Enter` picks
+ * A header picker's choice: its change switches the live session, so the select keeps a
+ * keyboard-step rule of its own (`markKeyStep` below). The select's own keys only move its
+ * choice, so a keyboard reader can pass one model to reach the next; `Enter` picks
  * the choice reached (and stops there); a pick made with the pointer or in the native popup picks
  * at once; and leaving the select without picking, or the session reporting a new value, puts it
  * back on `reported`. Once not being stepped the select shows the reported value alone, a pick

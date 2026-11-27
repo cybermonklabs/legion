@@ -176,7 +176,7 @@ function ChipMark({ state }: { readonly state: RunState }): ReactNode {
  *  row, so it moves nothing; its foot reaches a few pixels over that row's own leading, clear of
  *  the title's letters. The button is the whole pill, its rule included (`-m-px`), and takes no
  *  44 px floor (`data-run-chip`, styles.css); it keeps that height rather than stretching. */
-function Chip({ going, more }: { readonly going: GoingOn; readonly more: number }): ReactNode {
+function RunPill({ going, more }: { readonly going: GoingOn; readonly more: number }): ReactNode {
   const waiting = going.state === "waiting";
   const plan = useQuery({ ...goingPlanQuery(going.run.id), enabled: waiting });
   const named =
@@ -231,5 +231,5 @@ export function RunChip(): ReactNode {
     return null;
   }
   const [first, ...others] = goingOn(going);
-  return first === undefined ? null : <Chip going={first} more={others.length} />;
+  return first === undefined ? null : <RunPill going={first} more={others.length} />;
 }

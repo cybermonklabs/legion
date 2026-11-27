@@ -6,6 +6,7 @@ import { type ReactNode, useState } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api, type WriteBounds } from "../../api/client";
@@ -157,10 +158,11 @@ function fieldOf(drawn: HTMLElement, field: string): HTMLElement {
 }
 
 /** The words `element` shows: its text without the options of a menu, which show only once the
- *  menu is opened, with its spaces run together. */
+ *  menu is opened, and without the name a shared list keeps hidden beside its trigger for a
+ *  screen reader, with its spaces run together. */
 function shownText(element: HTMLElement): string {
   const copy = element.cloneNode(true) as HTMLElement;
-  for (const menu of copy.querySelectorAll("select")) menu.remove();
+  for (const unseen of copy.querySelectorAll("select, [hidden]")) unseen.remove();
   return (copy.textContent ?? "").replace(/\s+/gu, " ").trim();
 }
 
@@ -327,17 +329,20 @@ test("the priority menu and the label picker edit a value, the row says Edited, 
     expect(within(drawnRow(0)).queryByTestId("going-plan-edited")).toBeNull();
 
     // Each line has one Edit, whatever its field; it swaps the value for the issue page's own
-    // control, here its priority menu.
-    expect(screen.queryByRole("combobox", { name: "Priority of DEMO-10" })).toBeNull();
+    // control, here its priority list, the shared list's single pick, and opens that list at
+    // once.
+    const pickPriority = { name: pickNamed("Priority of DEMO-10") };
+    expect(screen.queryByRole("button", pickPriority)).toBeNull();
     await user.click(
       within(fieldOf(drawnRow(0), "priority")).getByRole("button", { name: "Edit priority" })
     );
-    await user.selectOptions(screen.getByRole("combobox", { name: "Priority of DEMO-10" }), "1");
+    const levels = await screen.findByRole("listbox", { name: "Priority of DEMO-10 options" });
+    await user.click(within(levels).getByRole("option", { name: "P1" }));
     const priority = fieldOf(drawnRow(0), "priority");
     expect(within(priority).getByTestId("going-plan-edited")).toHaveTextContent("Edited");
     expect(priority).toHaveTextContent(/^Priority: No priority → P1/u);
     // The pick puts the value back in its words.
-    expect(screen.queryByRole("combobox", { name: "Priority of DEMO-10" })).toBeNull();
+    expect(screen.queryByRole("button", pickPriority)).toBeNull();
 
     // The labels' Edit opens the issue page's label picker over them.
     await user.click(
@@ -1262,12 +1267,13 @@ test("the status menu and the assignee picker edit a row's values, and Approve c
     await user.click(
       within(fieldOf(drawnRow(0), "assignee")).getByRole("button", { name: "Edit assignee" })
     );
-    const assignee = screen.getByRole("combobox", { name: "Assignee of DEMO-5" });
-    expect(assignee).toHaveValue("alice");
-    // The picker reads who has signed in once the person reaches for it, as on the issue page.
-    await user.hover(assignee);
-    await waitFor(() => expect(within(assignee).getAllByRole("option")).toHaveLength(3));
-    await user.selectOptions(assignee, "bob");
+    // The picker is the issue page's own, the shared list's single pick. Edit opens its list at
+    // once, and it reads who has signed in then, as on the issue page.
+    const trigger = screen.getByRole("button", { name: pickNamed("Assignee of DEMO-5") });
+    expect(trigger).toHaveTextContent("alice");
+    const people = await screen.findByRole("listbox", { name: "Assignee of DEMO-5 options" });
+    await waitFor(() => expect(within(people).getAllByRole("option")).toHaveLength(3));
+    await user.click(within(people).getByRole("option", { name: /^bob\b/ }));
     expect(
       within(fieldOf(drawnRow(0), "assignee")).getByTestId("going-plan-edited")
     ).toBeInTheDocument();

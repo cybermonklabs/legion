@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 import {
   askBlockPill,
@@ -10,15 +10,17 @@ import {
   surfaceMutedStrongBg,
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
-  toolbarControlHeight,
 } from "../theme/classes";
+import { CONTROL, type ControlSize, controlPadding } from "./control-names";
 import { TruncatedText } from "./TruncatedText";
 
 /** The fill a chip takes while selected: the neutral strong surface, or an ask urgency's badge
  *  (the margin composer's Urgency row). At rest every tone is the same quiet outlined pill. */
 export type ChipTone = "neutral" | keyof typeof askBlockPill;
 
+/** A chip at rest: the quiet outlined pill every tone shares. */
 const restingChip = `${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
+
 const selectedChip: Record<ChipTone, string> = {
   neutral: `${borderStrong} ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`,
   blocking: `${borderTransparent} ${askBlockPill.blocking.bg} ${askBlockPill.blocking.text}`,
@@ -34,37 +36,48 @@ const selectedChip: Record<ChipTone, string> = {
  * selected fill; `removable` appends a `×` glyph and the whole chip is the remove control, so the
  * host names the action in `aria-label` (`Remove Label: docs filter`). The chip is never wider
  * than its row: text that does not fit ends in an ellipsis, and a host whose text can be that
- * long passes the whole of it as `title`. `inToolbar` is a host's that stands it among a table
- * toolbar's controls, where from 1280 px up it takes their one height (`toolbarControlHeight`)
- * rather than 44 px.
+ * long passes the whole of it as `title`. `size` buys room back in a crowded row, and gives the
+ * target up only where a mouse is the pointer. A chip that opens a panel - the control row's
+ * `+N more` - says so (`aria-expanded`, `aria-haspopup`) and hands the panel its button as the
+ * anchor (`ref`).
  */
 export function Chip({
+  "aria-expanded": ariaExpanded,
+  "aria-haspopup": ariaHasPopup,
   "aria-label": ariaLabel,
   children,
-  inToolbar = false,
   onClick,
+  ref,
   removable = false,
   selected,
+  size = "comfortable",
   title,
   tone = "neutral",
 }: {
+  "aria-expanded"?: boolean;
+  "aria-haspopup"?: "dialog";
   "aria-label"?: string;
   children: ReactNode;
-  inToolbar?: boolean;
   onClick: () => void;
+  ref?: Ref<HTMLButtonElement>;
   removable?: boolean;
   selected?: boolean;
+  size?: ControlSize;
   title?: string;
   tone?: ChipTone;
 }): ReactNode {
   return (
     <button
+      aria-expanded={ariaExpanded}
+      aria-haspopup={ariaHasPopup}
       aria-label={ariaLabel}
       aria-pressed={selected}
-      className={`inline-flex min-h-11 max-w-full shrink-0 items-center gap-1 rounded-full border px-3 text-xs font-medium whitespace-nowrap ${inToolbar ? `${toolbarControlHeight} ` : ""}${controlHoverBorder} ${
+      className={`inline-flex max-w-full shrink-0 items-center gap-1 rounded-full border text-xs font-medium whitespace-nowrap ${controlPadding[size]} ${controlHoverBorder} ${
         selected === true ? selectedChip[tone] : restingChip
       }`}
+      data-control={CONTROL.chip}
       onClick={onClick}
+      ref={ref}
       type="button"
     >
       <TruncatedText title={title}>{children}</TruncatedText>

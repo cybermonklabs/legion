@@ -638,16 +638,6 @@ export function markThreadRead(threadId: string, readThrough: string, options: A
   );
 }
 
-/** `POST /api/v1/me/inbox/read`: the Inbox's **Mark all read** - mark every unread thread the
- *  list route answers under the same narrowing whose newest write is at or before
- *  `body.read_through`. Answers how many threads it marked. */
-export function markInboxRead(
-  body: Body<"/api/v1/me/inbox/read", "post">,
-  options: ApiOptions = {}
-) {
-  return post("/api/v1/me/inbox/read", { body }, options);
-}
-
 /** `PUT /api/v1/me/asks/{id}/snooze`: the caller's own snooze on an Inbox row, until
  *  `snoozedUntil` (RFC 3339, in the future). */
 export function snoozeAsk(id: string, snoozedUntil: string, options: ApiOptions = {}) {

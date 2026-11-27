@@ -13,6 +13,7 @@ import {
   patchIssue,
   userHeaders,
 } from "./api";
+import { listTrigger } from "./filters";
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
@@ -40,8 +41,9 @@ declare global {
  *   `[data-identity-block]`, with `data-condensed` on the header once the page has scrolled more
  *   than 40 px (`IssueHeader.tsx`).
  * - **The properties line** `[data-testid="issue-state-actions"]`: the status
- *   (`select[aria-label="Status"]`), the priority and the assignee (each a `select` named
- *   `Priority of <key>` and `Assignee of <key>`, drawn over an `aria-hidden` badge), the
+ *   (`select[aria-label="Status"]`), the priority and the assignee (each the shared list's single
+ *   pick: a button named `Priority of <key>` or `Assignee of <key>` and then the value it draws,
+ *   `priorityTrigger` and `assigneeTrigger`), the
  *   children's progress `[data-testid="issue-progress-children"]` and
  *   `[data-testid="issue-progress-subtree"]`, the count `[data-testid="issue-whose-turn"]`, the
  *   approval control, the route's marker `[data-testid="issue-route-unreachable"]`, the labels
@@ -359,13 +361,18 @@ function cssValue(value: string): string {
   return value;
 }
 
-/** The value a badge-and-select control shows a reader: the badge drawn under the `select`
- *  named `label` (`web/src/features/issue/badge-select.ts`). The badge is hidden from assistive
- *  technology, because the select carries the name. */
-export function badgeValue(page: Page, label: string): Locator {
-  return issueHeader(page).locator(
-    `:has(> select[aria-label="${cssValue(label)}"]) > [aria-hidden="true"]`
-  );
+/** The header's priority: the trigger of the shared list's single pick (`MultiSelect`), named
+ *  `Priority of <key>` and then the priority it draws, and drawing that priority's words as the
+ *  value a reader reads (`listTrigger`). */
+export function priorityTrigger(page: Page, key: string): Locator {
+  return listTrigger(issueHeader(page), `Priority of ${key}`);
+}
+
+/** The header's assignee: the trigger of the shared list's single pick (`MultiSelect`), named
+ *  `Assignee of <key>` and then the person it draws, and drawing that person's words as the
+ *  value a reader reads (`listTrigger`). */
+export function assigneeTrigger(page: Page, key: string): Locator {
+  return listTrigger(issueHeader(page), `Assignee of ${key}`);
 }
 
 /** The header's approval chip of the document `artifactId`: the issue's own chip, or the chip of
@@ -442,7 +449,9 @@ export async function holdReviewReads(
 /**
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
  * its tag with the name a reader hears; and every run of words drawn outside those, as
- * `text <its words>`. Words count as drawn outside them where an element holds a text of its own
+ * `text <its words>`. The name is the element's `aria-label`, else the words of the elements its
+ * `aria-labelledby` names, as the shared list's single pick is named (`Assignee of <key> alice`),
+ * else its own words. Words count as drawn outside them where an element holds a text of its own
  * and no part that holds no other part - a control, the title, a test id around words alone -
  * holds that element: the project, the key and a pill are text in a span, and a property added
  * that way is named too. A part that holds others, as the properties line does, names nothing
@@ -450,6 +459,20 @@ export async function holdReviewReads(
  */
 export function headerParts(page: Page): Promise<string[]> {
   return issueHeader(page).evaluate((header) => {
+    const wordsOf = (element: Element | null) =>
+      (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    const nameOf = (part: Element) => {
+      const labelledBy = part.getAttribute("aria-labelledby");
+      return (
+        part.getAttribute("aria-label") ??
+        (labelledBy === null
+          ? wordsOf(part)
+          : labelledBy
+              .split(/\s+/)
+              .map((id) => wordsOf(document.getElementById(id)))
+              .join(" "))
+      );
+    };
     const all = [...header.querySelectorAll("a, button, select, h1, textarea, [data-testid]")];
     const leaves = all.filter(
       (part) => !all.some((other) => other !== part && part.contains(other))
@@ -458,8 +481,7 @@ export function headerParts(page: Page): Promise<string[]> {
       .filter((part) => part.checkVisibility())
       .map(
         (part) =>
-          part.getAttribute("data-testid") ??
-          `${part.tagName.toLowerCase()} ${part.getAttribute("aria-label") ?? (part.textContent ?? "").replace(/\s+/g, " ").trim()}`
+          part.getAttribute("data-testid") ?? `${part.tagName.toLowerCase()} ${nameOf(part)}`
       );
     const texts = [...header.querySelectorAll("*")].filter(
       (element) =>
@@ -473,7 +495,7 @@ export function headerParts(page: Page): Promise<string[]> {
     // their own - a number in a sentence - are one run and not two.
     const words = texts
       .filter((element) => !texts.some((other) => other !== element && other.contains(element)))
-      .map((element) => `text ${(element.textContent ?? "").replace(/\s+/g, " ").trim()}`);
+      .map((element) => `text ${wordsOf(element)}`);
     return [...parts, ...words];
   });
 }
@@ -506,20 +528,28 @@ export function undersizedTargets(page: Page): Promise<string[]> {
   });
 }
 
-/** The controls the header holds to 24 px tall at every width: the status, the priority, the
- *  assignee, the count, Approve (`Approve v3` on a stale approval), Request changes, the labels'
- *  count and the control that copies the key, 24 by 24 px as row one's other controls are, each
- *  as `<name>: <height>` where it is drawn shorter. The two actions are the buttons whose words
- *  are an action's (`ACTION_WORDS`), the patterns the header itself finds them by. */
+/** The controls the header holds to 24 px tall at every width: the status, the priority's and
+ *  the assignee's triggers, the count, Approve (`Approve v3` on a stale approval), Request
+ *  changes, the labels' count and the control that copies the key, 24 by 24 px as row one's
+ *  other controls are, each as `<name>: <height>` where it is drawn shorter. The two actions are
+ *  the buttons whose words are an action's (`ACTION_WORDS`), the patterns the header itself
+ *  finds them by. A list's trigger is the button whose `aria-labelledby` names first the hidden
+ *  element that holds `Priority of <key>` or `Assignee of <key>` (`MultiSelect`). */
 export function shortControls(page: Page, key: string): Promise<string[]> {
   const actionWords = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
   return issueHeader(page).evaluate(
     (header, { actionWords, key }) => {
       const actions = actionWords.map((source) => new RegExp(source));
+      const trigger = (name: string) =>
+        [...header.querySelectorAll("button[aria-labelledby]")].find(
+          (button) =>
+            document.getElementById(button.getAttribute("aria-labelledby")?.split(" ")[0] ?? "")
+              ?.textContent === name
+        ) ?? null;
       const named: [string, Element | null][] = [
         ["the status", header.querySelector('select[aria-label="Status"]')],
-        ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
-        ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
+        ["the priority", trigger(`Priority of ${key}`)],
+        ["the assignee", trigger(`Assignee of ${key}`)],
         ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
         ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
         ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],

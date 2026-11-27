@@ -1,4 +1,5 @@
 import { getAsk, getIssue, patchIssue, setAgentStreamResponder } from "./api";
+import { listOf, listTrigger, pickFromList } from "./filters";
 import { attachShot, drawer, seedAsk } from "./inbox-drawer";
 import {
   detailRead,
@@ -93,19 +94,19 @@ test("picker keeps the newest pick: a pick in the Inbox drawer's row after two i
     const held = await holdIssuePatches(page, key);
     const headerPicker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expect(headerPicker).toHaveValue("3");
+    await expect(headerPicker).toHaveAccessibleName(`Priority of ${key} P3`);
 
-    await headerPicker.selectOption("1");
+    await pickFromList(headerPicker, "P1");
     await expect.poll(() => held.sent.length).toBe(1);
     // P1 is out, held: P2 waits its turn in the store's line, and P0, made in the other picker
     // of the same field, takes it out.
-    await headerPicker.selectOption("2");
-    await expect(headerPicker).toHaveValue("2");
+    await pickFromList(headerPicker, "P2");
+    await expect(headerPicker).toHaveAccessibleName(`Priority of ${key} P2`);
     await openInboxDrawer(page);
-    const rowPicker = drawer(page).getByRole("combobox", { name: `Priority of ${key}` });
-    await expect(rowPicker).toHaveValue("2");
-    await rowPicker.selectOption("0");
-    await expect(rowPicker).toHaveValue("0");
+    const rowPicker = listTrigger(drawer(page), `Priority of ${key}`);
+    await expect(rowPicker).toHaveAccessibleName(`Priority of ${key} P2`);
+    await pickFromList(rowPicker, "P0");
+    await expect(rowPicker).toHaveAccessibleName(`Priority of ${key} P0`);
     expect(
       held.sent.map((patch) => patch.body),
       "P1 is still the only save out"
@@ -118,7 +119,7 @@ test("picker keeps the newest pick: a pick in the Inbox drawer's row after two i
       `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
     ).toEqual([1, 0]);
     expect(await getIssue(key)).toMatchObject({ priority: 0 });
-    await expect(headerPicker).toHaveValue("0");
+    await expect(headerPicker).toHaveAccessibleName(`Priority of ${key} P0`);
   } finally {
     await context.close();
   }
@@ -153,16 +154,17 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     const inboxReads = logReads(page, inboxRead);
     const picker = pagePicker(page, `Assignee of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expect(picker).toHaveValue("bob");
+    await expect(picker).toHaveAccessibleName(`Assignee of ${key} bob`);
 
     // Its people are read once the reader reaches for the control.
     await picker.focus();
-    await picker.selectOption("alice");
+    await picker.click();
+    await listOf(picker).getByRole("option", { exact: true, name: "alice" }).click();
     await expect.poll(() => shownOnPage.values.at(-1)).toBe("alice");
     const fromPick = shownOnPage.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     await openInboxDrawer(page);
-    await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
+    await expect(listTrigger(drawer(page), `Priority of ${key}`)).toBeVisible();
     // A rename of the issue, straight to the server, with the issue's row painted in the drawer
     // and the save held: its live event has the page read the issue and its Inbox rows again, and
     // each answer, carrying bob, lands while the save is held.
@@ -171,7 +173,7 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     await expect
       .poll(() => [detailReads, inboxReads].every((reads) => readAnsweredSince(reads, renamedAt)))
       .toBe(true);
-    await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
+    await expect(listTrigger(drawer(page), `Priority of ${key}`)).toBeVisible();
     held.release();
     await savesEnded(page, held);
 
@@ -188,15 +190,16 @@ test("picker keeps a pick on screen: the assignee on the issue page and on its I
     expect(
       listedInDrawer.values.slice(fromListed),
       `the drawer's row of the issue, from its first paint: ${JSON.stringify(listedInDrawer.values)}`
-    ).toEqual(["3"]);
+    ).toEqual(["P3"]);
     const fromDrawn = waitingInDrawer.values.findIndex((value) => value !== "(none)");
+    // The hand-on is the shared list, whose trigger shows `Asked of <login>`, not the login alone.
     expect(
       waitingInDrawer.values.slice(fromDrawn),
       `the person the drawer's row waits on, from its first paint: ${JSON.stringify(waitingInDrawer.values)}`
-    ).toEqual(["alice"]);
+    ).toEqual(["Asked of alice"]);
     expect(await getIssue(key)).toMatchObject({ assignee: "alice", title: renamed });
-    await expect(picker).toHaveValue("alice");
-    await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
+    await expect(picker).toHaveAccessibleName(`Assignee of ${key} alice`);
+    await expect(listTrigger(drawer(page), `Priority of ${key}`)).toBeVisible();
   } finally {
     await context.close();
   }

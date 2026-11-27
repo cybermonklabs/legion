@@ -1,12 +1,19 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeadCell,
+  TableRow,
+  TableShell,
+} from "../../../components/TableShell";
 import { CHART_AXIS_COLORS } from "../../../theme/chart-colors";
 import { borderDefault } from "../../../theme/classes";
 import { issueStatuses } from "../../project/board-model";
 import { useMediaQuery } from "../../shell/useDialog";
 import { type BlockOf, cellNumber, columnText, columnWords } from "./block-cells";
-import { blockCellClassName, blockHeadClassName } from "./TableBlock";
 
 // echarts is loaded here as the delivery timeline loads it (features/delivery/Timeline.tsx): by
 // the one dynamic import, so its chunk arrives with the first chart an answer draws and nothing
@@ -165,31 +172,31 @@ export function ChartBlock({ block }: { readonly block: BlockOf<"chart"> }): Rea
         data-testid="going-block-chart"
         ref={container}
       />
-      <table className="sr-only" data-testid="going-block-chart-data">
-        <caption>{block.title === "" ? `${yWords} by ${xWords}` : block.title}</caption>
-        <thead>
-          <tr>
-            <th className={blockHeadClassName} scope="col">
-              {xWords}
-            </th>
-            <th className={blockHeadClassName} scope="col">
-              {yWords}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {points.map((point, index) => (
-            <tr
-              data-testid="going-block-chart-point"
-              // biome-ignore lint/suspicious/noArrayIndexKey: a block's rows never reorder.
-              key={index}
-            >
-              <td className={blockCellClassName}>{point.label}</td>
-              <td className={blockCellClassName}>{point.value}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {/* The chart's points for a reader who cannot see it, in the shared table, named by what
+          the chart counts. */}
+      <div className="sr-only" data-testid="going-block-chart-data">
+        <TableShell
+          label={block.title === "" ? `${yWords} by ${xWords}` : block.title}
+          size="compact"
+        >
+          <TableHead>
+            <TableHeadCell>{xWords}</TableHeadCell>
+            <TableHeadCell>{yWords}</TableHeadCell>
+          </TableHead>
+          <TableBody>
+            {points.map((point, index) => (
+              <TableRow
+                data-testid="going-block-chart-point"
+                // biome-ignore lint/suspicious/noArrayIndexKey: a block's rows never reorder.
+                key={index}
+              >
+                <TableCell>{point.label}</TableCell>
+                <TableCell>{point.value}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </TableShell>
+      </div>
     </div>
   );
 }

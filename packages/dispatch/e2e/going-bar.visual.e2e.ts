@@ -536,10 +536,11 @@ const barRows: readonly BarRow[] = [
       await shoot(page, "01-empty");
       // "/" in the empty box opens the filters; the Filters button closes them.
       await searchBox(page).press("/");
-      await expect(bar(page).getByTestId("search-filters-panel")).toBeVisible();
+      const filters = page.getByRole("dialog", { name: "Filters" });
+      await expect(filters).toBeVisible();
       await shoot(page, "01-filters");
-      await bar(page).getByTestId("search-filters-button").click();
-      await expect(bar(page).getByTestId("search-filters-panel")).toHaveCount(0);
+      await bar(page).getByRole("button", { name: "Filters" }).click();
+      await expect(filters).toHaveCount(0);
       await searchBox(page).fill(words);
       await expect(bar(page).locator(`#search-option-issue-${seed.bar.mount}`)).toBeVisible();
       await expect(answerPanel(page)).toHaveAttribute("data-state", "ended", {
@@ -1405,26 +1406,16 @@ const barRows: readonly BarRow[] = [
       await expect(bar(page).getByText("Searching…")).toHaveCount(0);
       // A filing line draws no short answer: Enter files the words, and answers nothing.
       await expect(answerPanel(page)).toHaveCount(0);
-      // The hit under the line is a document of an issue: its snippet's line stops before the
-      // issue's status at the row's end (review R4).
+      // The hit under the line is a document of an issue, under that issue's own row, which
+      // carries the issue's status: the hits stay under what they belong to.
       const hit = bar(page)
         .getByRole("option")
         .filter({ has: page.getByTestId("search-hit-snippet") })
         .first();
-      const snippetLine = hit.getByTestId("search-hit-snippet");
-      const statusMark = hit.getByTestId("search-hit-status");
-      await expect(snippetLine).toBeVisible();
-      await expect(statusMark).toBeVisible();
-      // The wait above drew the hit's snippet, and a drawn element has a box, so the box is there.
-      const snippet = await snippetLine.boundingBox();
-      // The wait above drew the hit's status as well, so its box is there as the snippet's is.
-      const status = await statusMark.boundingBox();
-      if (snippet === null || status === null) {
-        throw new Error("the hit's snippet or its status is not drawn");
-      }
-      expect(snippet.x + snippet.width, "where the snippet's line ends").toBeLessThanOrEqual(
-        status.x
-      );
+      await expect(hit.getByTestId("search-hit-snippet")).toBeVisible();
+      await expect(
+        bar(page).locator('#search-results [id^="search-group-issue:"][data-status]').first()
+      ).toBeVisible();
       await shoot(page, "13-filing-line");
       await searchBox(page).press("Enter");
       const notice = page.getByTestId("going-notice");

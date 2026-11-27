@@ -1,12 +1,67 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
+import { readStore, writeStore } from "../../components/table-storage";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { defineWriteKind, useWrites } from "../writes/write-store";
-import { WRITES_IN_FLIGHT } from "./issues-table-model";
-import { readTableAction, type TableAction, writeTableAction } from "./issues-table-storage";
+import { tableStorageKey, WRITES_IN_FLIGHT } from "./issues-table-model";
 
-export type { TableAction } from "./issues-table-storage";
+/** The kinds of action a reload can interrupt. The union and the check a stored record passes
+ *  are one list, so neither can gain a kind the other refuses. */
+export const ACTION_KINDS = ["newEpic", "startNext", "merge"] as const;
+export interface TableAction {
+  id: string;
+  kind: (typeof ACTION_KINDS)[number];
+  project: string;
+  keys: readonly string[];
+  source?: string;
+  target?: string;
+  /** When the action was begun, as epoch milliseconds. A record older than `ACTION_LIFETIME_MS`
+   *  is a tab somebody closed a day ago, not work this reader left half-done. */
+  startedAt?: number;
+  /** The merge reason exactly as it was sent, so a resume knows the sentence it is looking for
+   *  even if the target has been renamed, or closed, since. */
+  reasonBody?: string;
+  /** The name a New epic was given, as the reader typed it: what Finish's question calls an epic
+   *  whose create has not landed, which has no key yet. */
+  title?: string;
+  writes: Record<string, string>;
+}
+/** How long a stored action is still the reader's to finish: a day. Past that the banner goes
+ *  and a new action may begin, because the writes it named have long since landed or been
+ *  discarded in Pending changes. */
+export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
+
+/** The action record a reload interrupted, kept beside the reader's layout under the project's
+ *  one storage key, and read back only where every field is the kind it was written as. */
+export function readTableAction(project: string): TableAction | undefined {
+  const action = readStore(tableStorageKey(project)).action as TableAction | undefined;
+  if (
+    action?.project === project &&
+    typeof action.id === "string" &&
+    (ACTION_KINDS as readonly string[]).includes(action.kind) &&
+    Array.isArray(action.keys) &&
+    action.keys.every((key: unknown) => typeof key === "string") &&
+    action.writes &&
+    typeof action.writes === "object" &&
+    !Array.isArray(action.writes) &&
+    Object.values(action.writes).every((key) => typeof key === "string") &&
+    (action.target === undefined || typeof action.target === "string") &&
+    (action.startedAt === undefined ||
+      (typeof action.startedAt === "number" &&
+        Date.now() - action.startedAt < ACTION_LIFETIME_MS)) &&
+    (action.reasonBody === undefined || typeof action.reasonBody === "string") &&
+    (action.title === undefined || typeof action.title === "string") &&
+    (action.kind !== "merge" ||
+      (typeof action.source === "string" && typeof action.target === "string"))
+  )
+    return action;
+  return undefined;
+}
+
+export function writeTableAction(project: string, action: TableAction | undefined): void {
+  writeStore(tableStorageKey(project), { action });
+}
 
 // Keep the answer's issue key even when the table that started creation is no longer mounted.
 export const tableEpicWrite = defineWriteKind<string>({
@@ -33,7 +88,7 @@ export const tableEpicWrite = defineWriteKind<string>({
 });
 
 /** The step each of `writes` was sent for, by its write key. */
-function stepsByWriteKey(writes: TableAction["writes"]): ReadonlyMap<string, string> {
+export function stepsByWriteKey(writes: TableAction["writes"]): ReadonlyMap<string, string> {
   return new Map(Object.entries(writes).map(([step, key]) => [key, step]));
 }
 
@@ -161,7 +216,8 @@ export function useTableRecovery(project: string, report: (text: string) => void
     /** Waits on each write of `record` still in flight, and sends a refused one again only where
      *  `resend` lets its step go: what the kind's guard, where it has one, has let through
      *  (`ResumableAction.guard` in `issues-table-actions.ts`). A step is a key of `record.writes`:
-     *  an issue's key for its parent or rank write, `create`, `intoWork` or `reason`. A refused
+     *  an issue's key for its parent or rank write, or for a merge's close of its source, `create`,
+     *  `intoWork` or `reason`. A refused
      *  write `resend` holds back stays as it is in Pending changes. Throws the first refusal of a
      *  write it waited on or sent. */
     settle: async (record: TableAction, resend: (step: string) => boolean) => {

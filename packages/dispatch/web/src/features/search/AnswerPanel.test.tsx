@@ -469,8 +469,8 @@ test("the project chip asking the same words of another project lets the kept an
 
     await user.click(screen.getByRole("button", { name: "Filters" }));
     await user.click(screen.getByRole("button", { name: "Project" }));
-    await user.click(await screen.findByRole("button", { name: "DEMO" }));
-    await screen.findByRole("button", { name: "Remove Project DEMO" });
+    await user.click(await screen.findByRole("option", { name: "DEMO" }));
+    await screen.findByRole("button", { name: "Remove Project DEMO filter" });
     expect(screen.queryByTestId("going-answer-stale")).not.toBeInTheDocument();
   } finally {
     bar.unmount();

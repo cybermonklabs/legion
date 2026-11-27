@@ -81,15 +81,15 @@ phoneTest(
     // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
     const dialog = page.getByRole("dialog", { name: "Search" });
     const options = dialog.getByRole("option");
-    const group = (name: string) => dialog.getByRole("group", { exact: true, name });
     // Four rows, not the three this corpus answered before an issue's keyword vector carried
     // its primary document's text: the document, the comment, the ask, and the issue the
-    // document belongs to, which that change makes a hit for its own spec's words. Each sits
-    // under the heading of its kind (design v3, state 1).
+    // document belongs to, which that change makes a hit for its own spec's words.
     const hits = 4;
     await expect(options).toHaveCount(hits);
-    await expect(group("Issues").getByRole("option")).toHaveCount(1);
-    await expect(group("Asks").getByRole("option")).toContainText("Chose On the chart table");
+    await expect(dialog.getByRole("option", { name: /^issue / })).toHaveCount(1);
+    await expect(dialog.getByRole("option", { name: /^ask / })).toContainText(
+      "Chose On the chart table"
+    );
     for (let index = 0; index < hits; index += 1) {
       const box = await options.nth(index).boundingBox();
       expect(box, `result option ${index} has a layout box`).not.toBeNull();
@@ -101,7 +101,7 @@ phoneTest(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true);
 
-    await group("Comments").getByRole("option").click();
+    await dialog.getByRole("option", { name: /^comment / }).click();
     await expect(page).toHaveURL(
       new RegExp(`/issues/${scene.commentIssueKey}/comments/${scene.commentID}$`)
     );
@@ -132,26 +132,23 @@ test("no results and short queries are stated, not silent @pr", async ({ page, s
   await expect(page.getByText(`No results for "${scene.missing}"`)).toBeVisible();
 });
 
-// The hits of one kind are a group named by the heading above them, so a reader who cannot see
-// that heading still hears which kind of item a hit is; each hit names the issue it belongs to
-// on its own row (design v3, state 1).
+// The hits of one owner are a group named by the row above them, so a reader who cannot see
+// that row still hears which issue a hit belongs to.
 groupTest("each palette group is named by its owner row @pr", async ({ page, scene }) => {
   await page.goto("/");
   await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   await page.getByRole("combobox", { name: "Search" }).fill("conversation");
-  const dialog = page.getByRole("dialog", { name: "Search" });
-  const group = dialog.getByRole("group", { exact: true, name: "Issues" });
+  const group = page.getByRole("group", { name: new RegExp(`^${scene.issue}: `) });
   await expect(group).toBeVisible();
   // The options are inside it, and the listbox still owns them.
   await expect(group.getByRole("option").first()).toBeVisible();
-  await expect(group.getByRole("option").first()).toContainText(scene.issue);
-  // The heading names the group and is not a second node in the accessibility tree, so a
-  // reader hears it once rather than twice. `aria-labelledby` computes a name from a hidden
-  // element, which is why the group above still has one.
-  const row = page.locator('[id="search-group-kind-issue"]');
+  // The owner row names the group and is not a second node in the accessibility tree, so a
+  // reader hears the owner once rather than twice. `aria-labelledby` computes a name from a
+  // hidden element, which is why the group above still has one.
+  const row = page.locator(`[id="search-group-issue:${scene.issue}"]`);
   await expect(row).toHaveAttribute("aria-hidden", "true");
-  // Exactly one node carries the heading's accessible name: the group.
-  await expect(dialog.getByRole("group", { exact: true, name: "Issues" })).toHaveCount(1);
+  // Exactly one node carries the owner's accessible name: the group.
+  await expect(page.getByRole("group", { name: new RegExp(`^${scene.issue}: `) })).toHaveCount(1);
 });

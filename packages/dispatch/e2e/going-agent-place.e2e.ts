@@ -123,7 +123,7 @@ test("Open in panel on the card, pressed from the keyboard, starts one run and h
     // is Open in panel.
     await expect(searchBox(page)).toBeFocused();
     await page.keyboard.press("Tab");
-    await expect(bar(page).getByTestId("search-filters-button")).toBeFocused();
+    await expect(bar(page).getByRole("button", { name: "Filters" })).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(open).toBeFocused();
     await page.keyboard.press("Enter");

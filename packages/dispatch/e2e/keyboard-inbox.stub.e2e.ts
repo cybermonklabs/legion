@@ -10,6 +10,7 @@
 import { expect } from "@playwright/test";
 
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -140,8 +141,8 @@ test.describe("inbox selection", () => {
     );
 
     await markFromKeyboard(page, 2);
-    const bar = page.getByRole("group", { name: "Selected rows" });
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
+    await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
 
     await expect(bar).toContainText(
       "Could not snooze 2 of 2: snoozed_until must be a moment, and 1 other reason."
@@ -160,13 +161,13 @@ test.describe("inbox selection", () => {
     await rows.nth(0).getByRole("checkbox").check();
     await rows.nth(1).getByRole("checkbox").check();
     await expect(rows.nth(1).getByRole("checkbox")).toBeFocused();
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("2 selected");
 
     // `h` from the box the reader just ticked is the flow the pointer leaves them in: it
     // reaches the bulk picker with no roving in between.
     await page.keyboard.press("h");
-    const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+    const picker = listTrigger(bar, "Snooze selected asks");
     await expect(picker).toBeFocused();
     await page.keyboard.press("Escape");
 
@@ -205,10 +206,10 @@ test.describe("inbox selection", () => {
     // The bulk picker does the same, and leaves the selection alone on the way.
     await goToRow(page, 1);
     await page.keyboard.press("x");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await page.keyboard.press("h");
-    const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+    const picker = listTrigger(bar, "Snooze selected asks");
     await expect(picker).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(rows.nth(1)).toBeFocused();
@@ -229,7 +230,7 @@ test.describe("inbox selection", () => {
   }) => {
     await openInbox(page, scene.rows);
     const rows = page.locator("[data-inbox-row]");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await markFromKeyboard(page, 1);
     await expect(bar).toContainText("1 selected");
     // No row focused, so the page's Escape is the Clear the popover now stands in front of.
@@ -243,7 +244,12 @@ test.describe("inbox selection", () => {
     await expect(bar).toContainText("1 selected");
     await expect(rows.nth(0).getByRole("checkbox")).toBeChecked();
 
-    // With the popover shut, the same key clears the selection, as it always did.
+    // The popover is one level inside the panel it is drawn in, so the next press closes that
+    // panel - still clearing nothing - and the one after it clears the selection, as it always
+    // did with no panel open.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Filter" })).toHaveCount(0);
+    await expect(bar).toContainText("1 selected");
     await page.keyboard.press("Escape");
     await expect(bar).toHaveCount(0);
     await expect(rows.nth(0).getByRole("checkbox")).not.toBeChecked();
@@ -281,7 +287,14 @@ test.describe("inbox selection", () => {
       items.map((item) => item.getAttribute("data-inbox-row") ?? "")
     )) {
       const picker = await rowSnooze(page, askId);
-      pickers.push((await picker.getAttribute("aria-label")) ?? "none");
+      // The shared list's single pick is named by the element its `aria-labelledby` names first.
+      pickers.push(
+        await picker.evaluate(
+          (node) =>
+            document.getElementById(node.getAttribute("aria-labelledby")?.split(" ")[0] ?? "")
+              ?.textContent ?? "none"
+        )
+      );
     }
     expect(pickers).toEqual(
       checkboxes.map((name) => name.replace(/^Select /, "Snooze ").replace(/, ask \d+ of \d+/, ""))
@@ -298,7 +311,7 @@ test.describe("inbox selection", () => {
       const rows = page.locator("[data-inbox-row]");
       await expect(rows).toHaveCount(2);
       await page.locator("body").focus();
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
 
       const hiddenRow = page.locator(`[data-inbox-row="${scene.hiddenAskId}"]`);
       await hiddenRow.getByRole("checkbox").check();
@@ -331,18 +344,17 @@ test.describe("inbox selection", () => {
   );
 
   // The `?agent=` chip narrows the list the same way the assignee filter does, and the Inbox
-  // stays mounted across it: the chip's clear link and the browser's own Back are client-side
-  // moves.
+  // stays mounted across it: the chip's press and the browser's own Back are client-side moves.
   agentFilterTest(
     "a mark made outside the agent filter does not count inside it @pr",
     async ({ page, scene }) => {
       await page.goto(`/?agent=${scene.agent}`);
       const rows = page.locator("[data-inbox-row]");
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", scene.fromOtherAskId);
 
-      await page.getByRole("link", { name: "Clear agent filter" }).click();
+      await page.getByRole("button", { name: "Clear agent filter" }).click();
       await expect(rows).toHaveCount(2);
       await page
         .locator(`[data-inbox-row="${scene.fromSessionAskId}"]`)
@@ -379,8 +391,8 @@ test.describe("inbox selection", () => {
     );
 
     await markFromKeyboard(page, 2);
-    const bar = page.getByRole("group", { name: "Selected rows" });
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
+    await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
     await expect(bar).toContainText("Could not snooze 2 of 2");
 
     const rows = page.locator("[data-inbox-row]");
@@ -399,7 +411,7 @@ test.describe("inbox selection", () => {
     "h does not pull the reader out of an ask they are answering @pr",
     async ({ page, scene }) => {
       await openInbox(page, scene.rows);
-      const bar = page.getByRole("group", { name: "Selected rows" });
+      const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await markFromKeyboard(page, 1);
       await expect(bar).toContainText("1 selected");
 
@@ -408,7 +420,7 @@ test.describe("inbox selection", () => {
       await expect(hold).toBeFocused();
       await page.keyboard.press("h");
       await expect(hold).toBeFocused();
-      await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).not.toBeFocused();
+      await expect(listTrigger(bar, "Snooze selected asks")).not.toBeFocused();
     }
   );
 
@@ -420,7 +432,7 @@ test.describe("inbox selection", () => {
   }) => {
     await openInbox(page, scene.rows);
     const rows = page.locator("[data-inbox-row]");
-    const bar = page.getByRole("group", { name: "Selected rows" });
+    const bar = page.getByRole("toolbar", { name: "Selected rows" });
 
     // An `h` from the first row records that row, then the reader leaves and marks row 3.
     await goToRow(page, 0);
@@ -432,7 +444,7 @@ test.describe("inbox selection", () => {
     await rows.nth(2).getByRole("checkbox").check();
     await expect(bar).toContainText("1 selected");
 
-    await bar.getByRole("combobox", { name: "Snooze selected asks" }).focus();
+    await listTrigger(bar, "Snooze selected asks").focus();
     await page.keyboard.press("Escape");
     await expect(rows.nth(2)).toBeFocused();
   });

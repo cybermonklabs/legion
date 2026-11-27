@@ -579,8 +579,8 @@ function orderConversation(drafts: Map<string, Draft>): void {
 /**
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
- * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip
- * draws the page's word for the document, as every chip naming a whole document does
+ * the document at its own address in place of the outline (`NodeRow.tsx`'s `NodeReference`). The
+ * chip draws the page's word for the document, as every chip naming a whole document does
  * (`documentReading`): the filter's name for the spec and for the plan, Verification and
  * decisions documents, and "document" for any other, never its file name (decision 39). It
  * addresses the document as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec

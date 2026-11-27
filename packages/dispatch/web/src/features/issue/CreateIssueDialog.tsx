@@ -6,6 +6,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue } from "../../api/types";
+import { heldField } from "../../components/held-press";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -42,6 +44,22 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
  * **Create anyway** (`force`), the same path an agent takes. Success opens the new issue. While
  * a person types a title, the dialog lists the related items the check finds for it, so a
  * duplicate is seen before it is filed.
+ *
+ * The project is the shared list's single pick (`MultiSelect`), whose text box narrows the
+ * projects as the reader types (`KEY · name`), held while the create is out. Its panel is
+ * portalled out of the dialog and stands in the layer over it (`AnchoredPanel`), so its options
+ * take the press rather than the backdrop, and Escape and Tab in the list are the list's: they
+ * close it and leave the reader on its trigger, inside the dialog, whose own Escape and Tab
+ * cycle then take over. It says the projects are loading while their read is out, and that they
+ * could not be loaded where it failed, as the dialog does beside it.
+ *
+ * While the create is out, the reader's press stays where they made it. Title and Spec are held:
+ * `aria-disabled` and read-only, never disabled. Create is held by `aria-disabled`. So the field
+ * or the button the reader submitted from keeps the focus, and a submit then sends nothing. A
+ * create that lands with no answer empties the title, and Create stays held while it has no
+ * title, with the focus still on it. Create is disabled only while no project is picked, which
+ * nothing the dialog sends changes. Create anyway goes at its own press, with the refusal it
+ * answers, so it has nothing to hold.
  */
 export function CreateIssueDialog({
   onClose,
@@ -59,6 +77,7 @@ export function CreateIssueDialog({
   const projects = useQuery(projectsQuery());
   const routeProject = routeProjectOf(location.pathname);
   const [project, setProject] = useState<string | undefined>(undefined);
+  const [projectListOpen, setProjectListOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [spec, setSpec] = useState("");
   const submitGuard = useSubmitGuard();
@@ -87,6 +106,9 @@ export function CreateIssueDialog({
   });
 
   const available = projects.data ?? [];
+  const projectLabels = new Map(
+    available.map((candidate) => [candidate.key, `${candidate.key} · ${candidate.name}`])
+  );
   const selectedProject =
     project ??
     available.find((candidate) => candidate.key === routeProject)?.key ??
@@ -132,21 +154,36 @@ export function CreateIssueDialog({
           role="dialog"
         >
           <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>Create issue</h2>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
-            Project
-            <select
-              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)} ${textPrimaryOnSurface}`}
-              disabled={mutation.isPending || available.length === 0}
-              onChange={(event) => setProject(event.target.value)}
-              value={selectedProject}
+          <div className={`text-sm font-medium ${textSecondaryOnSurface}`}>
+            <span aria-hidden="true">Project</span>
+            <MultiSelect
+              disabled={mutation.isPending}
+              emptyMessage={
+                projects.isPending
+                  ? "Loading projects…"
+                  : projects.isError || available.length > 0
+                    ? "No project matches that."
+                    : "No projects yet"
+              }
+              error={projects.isError ? "Could not load projects." : null}
+              label="Project"
+              mode="single"
+              onOpenChange={setProjectListOpen}
+              onPick={setProject}
+              open={projectListOpen}
+              optionLabel={(key) => projectLabels.get(key)}
+              options={available.map((candidate) => candidate.key)}
+              searchLabel="Search projects"
+              triggerClassName={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-left text-sm font-normal outline-none ${inputClasses(true)} ${textPrimaryOnSurface}`}
+              value={selectedProject === "" ? undefined : selectedProject}
             >
-              {available.map((candidate) => (
-                <option key={candidate.key} value={candidate.key}>
-                  {candidate.key} · {candidate.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              {selectedProject === ""
+                ? projects.isPending
+                  ? "Loading projects…"
+                  : "Choose a project"
+                : undefined}
+            </MultiSelect>
+          </div>
           {projects.isSuccess && available.length === 0 ? (
             <p className={`text-sm ${textMutedOnSurface}`}>
               No projects yet — create one under Settings first.
@@ -162,8 +199,8 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Title
             <input
+              {...heldField(mutation.isPending)}
               className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
-              disabled={mutation.isPending}
               maxLength={ISSUE_TITLE_MAX}
               onChange={(event) => {
                 mutation.forgetUnanswered();
@@ -177,7 +214,7 @@ export function CreateIssueDialog({
           <MentionField
             body={spec}
             className="text-sm"
-            disabled={mutation.isPending}
+            held={mutation.isPending}
             label="Spec (optional)"
             onChange={(change) => setSpec(change.body)}
             onKeyDown={(event) => submitOnModifiedEnter(event)}
@@ -228,8 +265,9 @@ export function CreateIssueDialog({
               </button>
             )}
             <button
+              aria-disabled={!canSubmit || undefined}
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={!canSubmit}
+              disabled={selectedProject === ""}
               type="submit"
             >
               {mutation.isPending ? "Creating…" : "Create"}

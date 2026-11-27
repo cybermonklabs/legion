@@ -227,6 +227,28 @@ test("the bare project path opens on Architecture when the project has sources, 
   }
 });
 
+test("the bare project path with a query opens on Architecture without it when the project has sources", async () => {
+  const page = renderPage(
+    "/projects/CORE?label=frontend&q=core",
+    undefined,
+    "alice",
+    [],
+    [coreSource]
+  );
+  try {
+    // The filter parameters are the Issues tab's; the Architecture tab carries no query.
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/architecture")
+    );
+    expect(screen.getByRole("tab", { name: "Architecture" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  } finally {
+    page.restore();
+  }
+});
+
 test("the bare project path opens on Issues with the filter parameters forwarded when there is no source, and the tab is absent", async () => {
   const page = renderPage("/projects/CORE?label=frontend&q=core");
   try {
@@ -465,7 +487,7 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
   }
 });
 
-test("List table and Board strip share the URL's status, labels and search", async () => {
+test("List table and Board control row share the URL's status, labels and search", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
@@ -475,7 +497,7 @@ test("List table and Board strip share the URL's status, labels and search", asy
     expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Board" }));
-    expect(await screen.findByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filters · 2" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "List" }));
@@ -488,7 +510,7 @@ test("List table and Board strip share the URL's status, labels and search", asy
   }
 });
 
-test("typing v in the strip's search input never toggles the view", async () => {
+test("typing v in the control row's search input never toggles the view", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend");

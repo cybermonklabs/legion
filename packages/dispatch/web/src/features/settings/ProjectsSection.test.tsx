@@ -5,13 +5,21 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, panelOf, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { projectDefaultAssigneesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
-import type { Project, ProjectDefaultAssignee, ProjectDefaultRepository } from "../../api/types";
+import type {
+  AuthenticatedUser,
+  DispatchUser,
+  Project,
+  ProjectDefaultAssignee,
+  ProjectDefaultRepository,
+} from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ProjectsSection } from "./ProjectsSection";
@@ -88,6 +96,227 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
   }
 });
 
+// While the create is out, Key, Name and New project are held, by `aria-disabled`, never
+// `disabled` (`pressHeld`): the control the reader submitted from keeps the focus, and a second
+// press sends nothing.
+test.each([
+  { label: "Key", role: "textbox" },
+  { label: "Name", role: "textbox" },
+  { label: "New project", role: "button" },
+] as const)("$label, held while the create is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  role,
+}) => {
+  const user = userEvent.setup();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  // The create's answer, held until the case refuses it inside `act`.
+  const answer = Promise.withResolvers<never>();
+  const createProject = spyOn(api, "createProject").mockReturnValue(answer.promise);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsSection />
+      </QueryClientProvider>
+    );
+    await screen.findByRole("cell", { name: "CORE" });
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("qa");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Quality");
+    await pressHeld(user, screen.getByRole(role, { name: label }), {
+      name: label,
+      sent: () => createProject.mock.calls.length,
+    });
+  } finally {
+    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+    cleanup();
+    queryClient.clear();
+    listProjects.mockRestore();
+    listDefaults.mockRestore();
+    createProject.mockRestore();
+  }
+});
+
+/** The section over CORE, which names alice until a save names another, with `readUsers`
+ *  answering the people list and `whoAmI` the viewer; every create and default-assignee save is
+ *  recorded. */
+function renderSection({
+  readUsers = () => Promise.resolve([{ login: "alice" }, { login: "bob" }, { login: "carol" }]),
+  whoAmI = () => Promise.resolve({ event_head: "0", kind: "user", login: "alice" }),
+}: {
+  readUsers?: () => Promise<DispatchUser[]>;
+  whoAmI?: () => Promise<AuthenticatedUser>;
+} = {}) {
+  let defaults = [{ assignee: "alice", project: "CORE" }];
+  const stubs = {
+    createProject: spyOn(api, "createProject").mockImplementation(async (input) => ({
+      ...core,
+      default_assignee: input.default_assignee ?? "alice",
+      key: input.key,
+      name: input.name,
+    })),
+    listDefaults: spyOn(api, "listProjectDefaultAssignees").mockImplementation(
+      async () => defaults
+    ),
+    listProjects: spyOn(api, "listProjects").mockResolvedValue([core]),
+    listUsers: spyOn(api, "listUsers").mockImplementation(readUsers),
+    putDefault: spyOn(api, "putProjectDefaultAssignee").mockImplementation(
+      async (project, { assignee }) => {
+        defaults = [...defaults.filter((row) => row.project !== project), { assignee, project }];
+        return { assignee, project };
+      }
+    ),
+    whoAmI: spyOn(api, "whoAmI").mockImplementation(whoAmI),
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ProjectsSection />
+    </QueryClientProvider>
+  );
+  return {
+    ...stubs,
+    done: () => {
+      cleanup();
+      queryClient.clear();
+      for (const stub of Object.values(stubs)) stub.mockRestore();
+    },
+  };
+}
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The New project form's Default assignee offers everyone who has signed in, who grow
+// with the deployment: opened from its trigger it holds a text box of its own, says the people
+// are loading while their read is out, then a word typed there leaves only the people it
+// matches, and the pick is the person the project is created with, with the focus back on the
+// trigger.
+test("the New project form's Default assignee list holds a text box that narrows the people, and a pick is who the project names", async () => {
+  const user = userEvent.setup();
+  const people = Promise.withResolvers<DispatchUser[]>();
+  const view = renderSection({ readUsers: () => people.promise });
+  try {
+    await screen.findByRole("cell", { name: "CORE" });
+    const trigger = screen.getByLabelText("Default assignee");
+    await waitFor(() => expect(trigger).toHaveTextContent("alice"));
+    const before = new Set(textBoxes());
+    await user.click(trigger);
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(
+      own,
+      "the New project form's Default assignee list holds no text box of its own"
+    ).toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    await user.type(own[0] as HTMLElement, "car");
+    // Until the people are read the list holds the viewer alone, whom "car" leaves out.
+    expect(list).toHaveTextContent("Loading people…");
+
+    await act(async () => {
+      people.resolve([{ login: "alice" }, { login: "bob" }, { login: "carol" }]);
+      await people.promise;
+    });
+    await waitFor(() => expect(rows(list)).toEqual(["carol"]));
+    await user.keyboard("{Enter}");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("carol");
+
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("qa");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Quality");
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await waitFor(() =>
+      expect(view.createProject).toHaveBeenCalledWith(
+        { default_assignee: "carol", key: "QA", name: "Quality" },
+        keyedAttempt
+      )
+    );
+  } finally {
+    view.done();
+  }
+});
+
+// INFRA-3135, R3, for each project's Default assignee: the same people, in a list of its own per
+// row. A word leaves only the people it matches, Escape closes the list with nothing picked and
+// nothing saved, and a pick saves the project's default with the focus back on the trigger.
+test("a project's Default assignee list holds a text box that narrows the people, and a pick saves the default", async () => {
+  const user = userEvent.setup();
+  const view = renderSection();
+  try {
+    const trigger = await screen.findByLabelText("Default assignee of CORE");
+    await waitFor(() => expect(trigger).toHaveTextContent("alice"));
+    const before = new Set(textBoxes());
+    await user.click(trigger);
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Default assignee of CORE list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    await within(list).findByRole("option", { name: "carol" });
+    await user.type(own[0] as HTMLElement, "bo");
+    expect(rows(list)).toEqual(["bob"]);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Default assignee of CORE options" })).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("alice");
+
+    await user.click(trigger);
+    await user.type(within(panelOf(trigger)).getByRole("combobox"), "bo");
+    await user.keyboard("{Enter}");
+    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(trigger).toHaveTextContent("bob"));
+    await waitFor(() =>
+      expect(view.putDefault).toHaveBeenCalledWith("CORE", { assignee: "bob" }, keyedAttempt)
+    );
+    expect(view.putDefault).toHaveBeenCalledTimes(1);
+  } finally {
+    view.done();
+  }
+});
+
+// A pick of the person a project already names saves nothing, as the select the list replaced
+// fired nothing for the value it held; and a list whose people could not be read says so.
+test("a project's Default assignee list says the people could not be loaded, and a pick of the person it names saves nothing", async () => {
+  const user = userEvent.setup();
+  const view = renderSection({ readUsers: () => Promise.reject(new Error("people unreachable")) });
+  try {
+    const trigger = await screen.findByLabelText("Default assignee of CORE");
+    await waitFor(() => expect(trigger).toHaveTextContent("alice"));
+    await user.click(trigger);
+    const panel = panelOf(trigger);
+    expect(await within(panel).findByText("Could not load the people list.")).toBeTruthy();
+    expect(within(panel).queryByText("Loading people…")).toBeNull();
+    await user.click(within(panel).getByRole("option", { name: "alice" }));
+    expect(trigger).toHaveFocus();
+    await act(async () => {});
+    expect(view.putDefault).not.toHaveBeenCalled();
+  } finally {
+    view.done();
+  }
+});
+
+// The Default assignee list is a button, which no `required` holds: while the viewer has not
+// resolved it names nobody and takes no pick, and the form files no project then, whatever
+// submits it.
+test("with no default assignee picked, New project files nothing", async () => {
+  const user = userEvent.setup();
+  const view = renderSection({ whoAmI: () => new Promise(() => {}) });
+  try {
+    await screen.findByRole("cell", { name: "CORE" });
+    expect(screen.getByLabelText("Default assignee")).toBeDisabled();
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("qa");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Quality");
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await act(async () => {});
+    expect(view.createProject, "a project was created naming nobody").not.toHaveBeenCalled();
+  } finally {
+    view.done();
+  }
+});
+
 /** The project routes' server state as the section reaches it: `list` answers what the default
  *  repository writes have left, and `put` stores the name in lower case, as the server does. A
  *  project with no default carries no `default_repo`. */
@@ -116,7 +345,7 @@ function projectServer(initial: Project[]): ProjectServer {
 
 /** Renders the section over `server`'s projects, with no default assignee read for any of them.
  *  `done` unmounts it and restores the stubs. */
-function renderSection(server: ProjectServer) {
+function renderOverServer(server: ProjectServer) {
   const listProjects = spyOn(api, "listProjects").mockImplementation(server.list);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -147,7 +376,7 @@ const repositoryBox = (project: string): Promise<HTMLInputElement> =>
   screen.findByRole<HTMLInputElement>("textbox", { name: `Default repository of ${project}` });
 
 test("the default repository cell reads the project's default, and None for a project with none", async () => {
-  const { done } = renderSection(projectServer(withDefault));
+  const { done } = renderOverServer(projectServer(withDefault));
   try {
     expect(await screen.findByRole("columnheader", { name: "Default repository" })).toBeDefined();
     const coreBox = await repositoryBox("CORE");
@@ -171,7 +400,7 @@ test("Save sends the typed owner/name to the project's default repository, and t
   const user = userEvent.setup();
   const server = projectServer(withDefault);
   const put = spyOn(api, "putProjectDefaultRepository").mockImplementation(server.put);
-  const { done, listProjects } = renderSection(server);
+  const { done, listProjects } = renderOverServer(server);
   try {
     const opsBox = await repositoryBox("OPS");
     await user.click(opsBox);
@@ -198,7 +427,7 @@ test("Clear sends null, and the cell reads None", async () => {
   const user = userEvent.setup();
   const server = projectServer(withDefault);
   const put = spyOn(api, "putProjectDefaultRepository").mockImplementation(server.put);
-  const { done, listProjects } = renderSection(server);
+  const { done, listProjects } = renderOverServer(server);
   try {
     const coreBox = await repositoryBox("CORE");
     await waitFor(() => expect(coreBox.value).toBe("acme/widgets"));
@@ -222,7 +451,7 @@ test("Clear sends null, and the cell reads None", async () => {
 test("a default repository that is not owner/name is refused at the box and sends nothing", async () => {
   const user = userEvent.setup();
   const put = spyOn(api, "putProjectDefaultRepository");
-  const { done } = renderSection(projectServer(withDefault));
+  const { done } = renderOverServer(projectServer(withDefault));
   try {
     const opsBox = await repositoryBox("OPS");
     for (const typed of ["acme gadgets", "acme", "acme/gadgets/extra"]) {
@@ -259,7 +488,7 @@ test("a default repository the server refuses shows the server's reason under th
       })
     )
     .mockImplementation(server.put);
-  const { done } = renderSection(server);
+  const { done } = renderOverServer(server);
   try {
     const coreBox = await repositoryBox("CORE");
     await waitFor(() => expect(coreBox.value).toBe("acme/widgets"));
@@ -325,14 +554,14 @@ test("a defaults read asked while a pick saved does not put back the assignee th
         <ProjectsSection />
       </QueryClientProvider>
     );
-    const control = await screen.findByRole<HTMLSelectElement>("combobox", {
-      name: "Default assignee of CORE",
-    });
-    await waitFor(() => expect(control.value).toBe("alice"));
+    const control = await screen.findByLabelText("Default assignee of CORE");
+    await waitFor(() => expect(control).toHaveTextContent("alice"));
     // Reaching for the picker reads who may be picked.
     await user.click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeDefined());
-    await user.selectOptions(control, "bob");
+    await waitFor(() =>
+      expect(within(panelOf(control)).getByRole("option", { name: "bob" })).toBeDefined()
+    );
+    await user.click(within(panelOf(control)).getByRole("option", { name: "bob" }));
     await waitFor(() =>
       expect(putDefault).toHaveBeenCalledWith("CORE", { assignee: "bob" }, keyedAttempt)
     );
@@ -347,14 +576,14 @@ test("a defaults read asked while a pick saved does not put back the assignee th
       saved.resolve({ assignee: "bob", project: "CORE" });
     });
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-    expect(control.value).toBe("bob");
+    expect(control).toHaveTextContent("bob");
 
     // That read reached Dispatch before the save did, and answers the person from before it.
     await act(async () => {
       staleRead.resolve(alice);
       await settle();
     });
-    expect(control.value).toBe("bob");
+    expect(control).toHaveTextContent("bob");
     expect(listDefaults).toHaveBeenCalledTimes(3);
 
     // The read asked again answers what the save left. The refetch the save made as it settled
@@ -364,7 +593,7 @@ test("a defaults read asked while a pick saved does not put back the assignee th
     });
     await waitFor(() => expect(listDefaults).toHaveBeenCalledTimes(4));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
-    expect(control.value).toBe("bob");
+    expect(control).toHaveTextContent("bob");
     expect(
       queryClient.getQueryData<ProjectDefaultAssignee[]>(projectDefaultAssigneesQuery().queryKey)
     ).toEqual(bob);
@@ -406,21 +635,16 @@ test("Retry after two stopped saves of the same default assignee makes the newer
         <ProjectsSection />
       </QueryClientProvider>
     );
-    const control = await screen.findByRole<HTMLSelectElement>("combobox", {
-      name: "Default assignee of CORE",
-    });
-    await waitFor(() => expect(control.disabled).toBe(false));
-    await user.hover(control);
-    // The new-project form offers the same people, so the option is read inside this row.
-    await within(control).findByRole("option", { name: "alice@example.com" });
+    const control = await screen.findByLabelText("Default assignee of CORE");
+    await waitFor(() => expect(control).not.toBeDisabled());
 
-    await user.selectOptions(control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await stopTheLateWrite(queryClient);
     // A `PUT` carries no `Idempotency-Key`: the key a call is handed in its bounds is the page's
     // own name for the press the call is of, and what these lines compare is which press it is.
     const firstPress = putDefault.mock.calls[0]?.[2]?.key;
 
-    await user.selectOptions(control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await tick(0);
     const secondPress = putDefault.mock.calls.at(-1)?.[2]?.key;
     expect(secondPress).not.toBe(firstPress);
@@ -514,14 +738,9 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
         <ProjectsSection />
       </QueryClientProvider>
     );
-    const control = await screen.findByRole<HTMLSelectElement>("combobox", {
-      name: "Default assignee of CORE",
-    });
-    await waitFor(() => expect(control.disabled).toBe(false));
-    await user.hover(control);
-    // The new-project form offers the same people, so the option is read inside this row.
-    await within(control).findByRole("option", { name: "alice@example.com" });
-    await user.selectOptions(control, "alice@example.com");
+    const control = await screen.findByLabelText("Default assignee of CORE");
+    await waitFor(() => expect(control).not.toBeDisabled());
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await stopTheLateWrite(queryClient);
 
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(

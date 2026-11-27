@@ -73,6 +73,7 @@ export function MentionField({
   disabled = false,
   fieldClassName,
   fieldRef,
+  held = false,
   hintClassName,
   inline = false,
   issueKey,
@@ -114,6 +115,10 @@ export function MentionField({
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
+  /** Held while a write that holds the form this box is part of is out: `aria-disabled` and
+   *  read-only (`heldField`), never disabled, so the box the reader submitted from keeps the
+   *  focus. The picker is shut with it. */
+  readonly held?: boolean;
   /** What this host's layout asks of the line under the box, in place of the field's own
    *  classes. A host whose box sits in a layout of its own places that line as it places the
    *  label; a panel held to a share of a phone's screen (the Agents broadcast composer) makes
@@ -188,7 +193,7 @@ export function MentionField({
   const picker = useRefPicker({
     caret,
     delivers: delivered,
-    enabled: !disabled && !readOnly && focused,
+    enabled: !disabled && !readOnly && !held && focused,
     issueKey,
     project,
     text: body,
@@ -286,6 +291,7 @@ export function MentionField({
           aria-activedescendant={picker.activeId}
           aria-controls={open ? listboxId : undefined}
           aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
+          aria-disabled={held || undefined}
           aria-label={label}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`}
           disabled={disabled}
@@ -320,7 +326,7 @@ export function MentionField({
             setCaret(event.currentTarget.selectionStart)
           }
           placeholder={placeholder}
-          readOnly={readOnly}
+          readOnly={readOnly || held}
           ref={bodyFieldRef}
           rows={rows}
           value={body}

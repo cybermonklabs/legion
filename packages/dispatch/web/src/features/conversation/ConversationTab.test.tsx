@@ -10,6 +10,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
 import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
 import { jump, settle } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import {
   dwellOn,
   type IntersectionControl,
@@ -354,7 +355,9 @@ test("Conversation holds Reply while its composer sends", async () => {
     await user.click(field);
     await user.paste("Status please");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(field.closest("fieldset")?.disabled).toBe(true));
+    await waitFor(() =>
+      expect(field.closest("fieldset")?.getAttribute("aria-disabled")).toBe("true")
+    );
     const reply = screen.getByRole("button", { name: "Reply" }) as HTMLButtonElement;
     expect(reply.disabled).toBe(true);
     await user.click(reply);
@@ -2365,14 +2368,49 @@ test("a comment-delivery retry guards a same-tick double click to exactly one at
 
   try {
     const retry = await screen.findByRole("button", { name: "Retry" });
-    // Both clicks fire in the same task, before any re-render could disable the button - the
-    // window a disabled-prop check (which lags on React state) cannot catch. user-event has no
-    // form for this: each `await user.click` lets React re-render between the two presses.
+    // Both clicks fire in the same task, before any re-render could hold the button - the window
+    // a check of the held state (which lags on React state) cannot catch. user-event has no form
+    // for this: each `await user.click` lets React re-render between the two presses.
     fireEvent.click(retry);
     fireEvent.click(retry);
     resolve();
     await waitFor(() => expect(sends).toBe(1));
   } finally {
+    view.unmount();
+    createCommentDelivery.mockRestore();
+    stub.restore();
+  }
+});
+
+// A mention's Retry is held while its retry is out, by `aria-disabled`, never `disabled`
+// (`pressHeld`): the pressed Retry keeps the focus through the write, and a second press, by key or
+// by pointer, sends nothing.
+test("a mention's held Retry keeps the focus while its retry is out, and a second press sends nothing", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    agents: [agent("worker-session", "Worker", ["steer"])],
+    comments: [
+      comment("comment-1", {
+        body: "@Worker take a look",
+        deliveries: [mentionAttempt({ error: "no live session worker" })],
+      }),
+    ],
+  });
+  const queryClient = newQueryClient();
+  // The retry's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<CommentDelivery>();
+  const createCommentDelivery = spyOn(api, "createCommentDelivery").mockReturnValue(answer.promise);
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await pressHeld(user, await screen.findByRole("button", { name: "Retry" }), {
+      name: "Retry",
+      sent: () => createCommentDelivery.mock.calls.length,
+    });
+  } finally {
+    await act(async () =>
+      answer.resolve(mentionAttempt({ attempt: 2, error: null, state: "sent" }))
+    );
     view.unmount();
     createCommentDelivery.mockRestore();
     stub.restore();

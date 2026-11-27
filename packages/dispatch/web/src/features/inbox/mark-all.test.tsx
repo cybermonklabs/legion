@@ -18,12 +18,20 @@ import {
 } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { DispatchEvent, MyRepliesResponse, MyReplyRow } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { dangerText } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import { InboxBar, type InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import type { InboxListRow } from "./list-row";
-import { MARK_ALL_REFUSED_TEXT, markAllReadBody, marksThread, useMarkAllRead } from "./mark-all";
+import {
+  MARK_ALL_REFUSED_TEXT,
+  MARK_ALL_STOPPED_TEXT,
+  markAllReadBody,
+  marksThread,
+  useMarkAllRead,
+} from "./mark-all";
 import { useUnreadThreadCount } from "./useInboxCount";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -51,13 +59,12 @@ function repliesAnswer(
   return { ...threadsRead([]), limit: 1, total: rows.filter((row) => row.unread).length };
 }
 
-function noop(): void {}
-
 /**
- * The bar over one list, with the one number the sidebar's Inbox count and the compact header's
- * Inbox link both read beside it (`useUnreadThreadCount` over `myRepliesCountQuery`, which is
- * what `Sidebar.tsx` and `app.tsx` each add their Needs-you count to). The bar is the surface
- * the button and its refusal live on; the press itself is the Inbox's own hook.
+ * The row the Inbox draws **Mark all read** in (`Inbox.tsx`), with the one number the sidebar's
+ * Inbox count and the compact header's Inbox link both read beside it (`useUnreadThreadCount`
+ * over `myRepliesCountQuery`, which is what `Sidebar.tsx` and `app.tsx` each add their Needs-you
+ * count to). The row is the surface the button, its refusal and the word of a press the reader
+ * stopped live on; the press itself is the Inbox's own hook, which is what this file is about.
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   const read = useQuery(inboxThreadsQuery());
@@ -72,29 +79,22 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
       <output data-testid="inbox-count">{count}</output>
       <output data-testid="listed">{rows.length}</output>
       <output data-testid="unread">{(read.data?.rows ?? []).filter((t) => t.unread).length}</output>
-      <InboxBar
-        agentToken={undefined}
-        assignees={undefined}
-        filters={filters}
-        markAll={markAll}
-        onAssigneesChange={noop}
-        onClearAgent={noop}
-        onFiltersChange={noop}
-        onPopoverOpenChange={noop}
-        rows={rows}
-        selection={["alice"]}
-        view={{
-          group: "priority",
-          onGroupChange: noop,
-          onShowChange: noop,
-          onSortChange: noop,
-          onThreadOrderChange: noop,
-          show: "inbox",
-          sort: "newest",
-          threadOrder: "oldest",
-        }}
-        viewer="alice"
-      />
+      <ControlRow>
+        {markAll.offered ? (
+          <button data-inbox-mark-all="" onClick={markAll.markAll} type="button">
+            Mark all read
+          </button>
+        ) : null}
+        {markAll.failure === "refused" ? (
+          <p className={dangerText} data-inbox-mark-all-refused="" role="alert">
+            {MARK_ALL_REFUSED_TEXT}
+          </p>
+        ) : markAll.failure === "stopped" ? (
+          <p className={dangerText} data-inbox-mark-all-stopped="" role="alert">
+            {MARK_ALL_STOPPED_TEXT}
+          </p>
+        ) : null}
+      </ControlRow>
     </>
   );
 }

@@ -3217,9 +3217,9 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
 });
 
 // Outside the new issue page Referenced by is as on every other page: a read that fails after the
-// list answered draws its line over that list, and Retry is disabled while the read it sent is
-// out.
-test("outside Details, Referenced by draws its line over the list it holds, and its Retry is disabled while the read it sent is out", async () => {
+// list answered draws its line over that list, and Retry is held while the read it sent is out,
+// never disabled, as it is in Details.
+test("outside Details, Referenced by draws its line over the list it holds, and its Retry is held while the read it sent is out", async () => {
   const user = userEvent.setup();
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
@@ -3244,9 +3244,12 @@ test("outside Details, Referenced by draws its line over the list it holds, and 
     getReferences.mockImplementationOnce(() => new Promise(() => undefined));
     await user.click(retry);
     await waitFor(() =>
-      expect(retry, "Retry outside Details is not disabled while its read is out").toBeDisabled()
+      expect(retry, "Retry outside Details is not held while its read is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
     );
-    expect(retry, "Retry outside Details reads aria-disabled").not.toHaveAttribute("aria-disabled");
+    expect(retry, "Retry outside Details is disabled while its read is out").not.toBeDisabled();
   } finally {
     view.unmount();
     queryClient.clear();

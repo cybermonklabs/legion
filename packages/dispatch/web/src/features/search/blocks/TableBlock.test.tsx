@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 
 import { renderWithQueries } from "../../../__tests__/query-provider";
 import { api } from "../../../api/client";
+import { CONTROL } from "../../../components/control-names";
 import { PriorityEditor } from "../../issue/PriorityControl";
 import type { BlockOf } from "./block-cells";
 import { TableBlock } from "./TableBlock";
@@ -174,9 +175,10 @@ test("a table shows 8 rows, its statuses in words and its issues as chips, then 
       .getAllByRole("columnheader")
       .map((head) => head.textContent)
   ).toEqual(["Issue", "Status"]);
-  // The table stands in a card, as a chart does, at the size of its chips.
-  expect(table.parentElement?.className).toContain("rounded-lg");
-  expect(table.className).toContain("text-sm");
+  // The table is the shared one (`TableShell`), in its own bordered box, named by the block's
+  // title.
+  expect(table.querySelector(`[data-control="${CONTROL.tableShell}"]`)).not.toBeNull();
+  expect(within(table).getByRole("table", { name: "DEMO issues" })).toBeTruthy();
   // With no conversation to open it over, Show all shows every row in place.
   const all = screen.getByTestId("going-block-show-all");
   expect(all).toHaveTextContent("Show all 10 ›");

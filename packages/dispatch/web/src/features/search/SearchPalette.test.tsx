@@ -29,9 +29,12 @@ import type {
   GoingRun,
   IssueReferenceSummary,
   Message,
+  Project,
   SearchResponse,
   SearchResult,
 } from "../../api/types";
+import { CONTROL } from "../../components/control-names";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { goingState, setLevel, setPlace, useGoingValue } from "../going/going-store";
 import { SidePanel } from "../going/SidePanel";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
@@ -225,7 +228,7 @@ async function searchFor(user: UserEvent, query: string): Promise<HTMLInputEleme
   return input;
 }
 
-test("groups the hits by kind with marked snippets, names each hit's issue once, and dims a done issue's", async () => {
+test("renders grouped results with marked snippets and dims a done issue", async () => {
   // Each snippet is Markdown (`MarkdownPreview`), empty until the lazy Markdown engine loads.
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
@@ -238,34 +241,20 @@ test("groups the hits by kind with marked snippets, names each hit's issue once,
       expect(screen.getAllByText("astrolabe", { selector: "mark" }).length).toBeGreaterThan(0)
     );
 
-    // One group for each kind, in the order of each kind's best hit. The headings are
-    // `aria-hidden`, so a reader hears each once, as the group's name.
-    const list = screen.getByRole("listbox");
-    expect(within(list).getAllByRole("group")).toHaveLength(3);
-    for (const kind of ["Documents", "Issues", "Comments"]) {
-      expect(within(list).getByRole("group", { name: kind })).toBeTruthy();
-    }
-    const options = screen.getAllByRole("option");
-    expect(options.map((option) => option.id)).toEqual(results.map(optionId));
-    // Each hit names its issue by key and title, a document of it by its name too, and carries
-    // the issue's status; a done issue's hits read muted.
-    const [document, , comment] = options;
-    expect(document).toHaveTextContent("LEGION-2");
-    expect(document).toHaveTextContent("Navigation instruments · spec.md");
-    expect(document).toHaveAttribute("data-status", "done");
-    // Its snippet stands on a second, grey line of its own, its match marked (review N2).
-    const snippet = within(document as HTMLElement).getByTestId("search-hit-snippet");
+    // The owner rows name their groups and are `aria-hidden`, so a reader hears each owner
+    // once; they are found by their label attribute rather than by role.
+    const doneGroup = document.querySelector('[aria-label="LEGION-2: Navigation instruments"]');
+    expect(screen.getAllByRole("group")).toHaveLength(2);
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+    expect(screen.getAllByText("astrolabe", { selector: "mark" })).not.toHaveLength(0);
+    expect(doneGroup).toHaveAttribute("data-status", "done");
+    // A hit's snippet stands under its kind, its match marked (review N2).
+    const owned = within(screen.getByRole("group", { name: "LEGION-2: Navigation instruments" }));
+    const snippet = within(owned.getAllByRole("option")[0] as HTMLElement).getByTestId(
+      "search-hit-snippet"
+    );
     expect(snippet).toHaveTextContent("The astrolabe measures altitude.");
     expect(within(snippet).getByText("astrolabe", { selector: "mark" })).toBeTruthy();
-    expect(comment).toHaveTextContent("LEGION-2");
-    expect(comment).toHaveTextContent("Navigation instruments");
-    // A hit that is the issue itself names its key, and its text is its title with the words
-    // that matched marked: the title shows once, not beside the key and again under it.
-    const issue = within(within(list).getByRole("group", { name: "Issues" })).getByRole("option");
-    expect(issue).toHaveTextContent("LEGION-3");
-    expect(issue.textContent?.match(/Astrolabe research/gu)).toHaveLength(1);
-    expect(within(issue).getByText("Astrolabe", { selector: "mark" })).toBeTruthy();
-    expect(issue).toHaveAttribute("data-status", "todo");
     expect(screen.queryByText(/^Showing the best/)).not.toBeInTheDocument();
   } finally {
     search.mockRestore();
@@ -321,7 +310,9 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
   const view = renderPalette();
   try {
     const input = await searchFor(user, "plan");
-    const option = within(screen.getByRole("group", { name: "Documents" })).getByRole("option");
+    const option = within(screen.getByRole("group", { name: "LEGION-2: Local testing" })).getByRole(
+      "option"
+    );
     const snippet = within(option).getByTestId("search-hit-snippet");
     const body = snippet.querySelector<HTMLElement>("[data-markdown-preview]");
     if (body === null) throw new Error("the search snippet is not a MarkdownPreview");
@@ -369,9 +360,8 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
 // the text. A window whose start the server cut and that began on a sentence's tail starts at the
 // next sentence's first word, after "…". A tree that says its window held the whole text draws
 // neither and keeps every word, though it starts on a small letter, ends a sentence a few words
-// in and holds two dozen words. The issue's status stands in a column of its own beside both of
-// the hit's lines, so the snippet's line stops before it rather than running on under it.
-test("a snippet begins and ends with … where the server says its window cut the text, a whole one draws neither though it starts on a small letter, and the status keeps a column of its own", async () => {
+// in and holds two dozen words.
+test("a snippet begins and ends with … where the server says its window cut the text, and a whole one draws neither though it starts on a small letter", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const plan: DisplayTree = {
@@ -429,7 +419,7 @@ test("a snippet begins and ends with … where the server says its window cut th
   try {
     await searchFor(user, "page");
     const [planHit, wholeHit, tailHit, endHit] = within(
-      screen.getByRole("group", { name: "Documents" })
+      screen.getByRole("group", { name: "LEGION-2: Local testing" })
     ).getAllByRole("option");
     if (
       planHit === undefined ||
@@ -450,12 +440,6 @@ test("a snippet begins and ends with … where the server says its window cut th
     await waitFor(() => expect(drawn(wholeHit)).toBe(whole));
     await waitFor(() => expect(drawn(tailHit)).toBe("…A page is read once it is drawn"));
     await waitFor(() => expect(drawn(endHit)).toBe(`${end}…`));
-
-    const status = within(planHit).getByTestId("search-hit-status");
-    const lines = within(planHit).getByTestId("search-hit-snippet").parentElement;
-    expect(status.previousElementSibling).toBe(lines);
-    expect(lines).toHaveClass("min-w-0", "flex-1");
-    expect(status).toHaveClass("shrink-0");
   } finally {
     search.mockRestore();
     getReferences.mockRestore();
@@ -464,7 +448,7 @@ test("a snippet begins and ends with … where the server says its window cut th
   }
 });
 
-test("an issue hit whose snippet starts past the title's first words shows the whole title, once, with the word that matched marked", async () => {
+test("a best match whose snippet starts past the title's first words shows the whole title, once, with the word that matched marked", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
   // The server's headline of "API: rate limit headers" for `headers` starts at "rate".
@@ -488,32 +472,15 @@ test("an issue hit whose snippet starts past the title's first words shows the w
   const view = renderPalette();
 
   try {
-    await searchFor(user, "headers");
-    const option = within(screen.getByRole("group", { name: "Issues" })).getByRole("option");
+    // The key names the issue, so its hit is the best match, above the line on top, in the one
+    // row look that names its item (R2): a hit under its owner's row leaves the title to that row.
+    await searchFor(user, "LEGION-30");
+    const option = within(screen.getByRole("group", { name: "Best match" })).getByRole("option");
     expect(option).toHaveTextContent("LEGION-30");
     expect(option).toHaveTextContent("API: rate limit headers");
     expect(option.textContent?.match(/rate limit headers/gu)).toHaveLength(1);
     const marked = option.querySelectorAll("mark[data-search-highlight]");
     expect(Array.from(marked, (mark) => mark.textContent)).toEqual(["headers"]);
-  } finally {
-    search.mockRestore();
-    view.unmount();
-    view.queryClient.clear();
-  }
-});
-
-test("lists at most six hits of a kind, and says how many more the search found", async () => {
-  const user = userOnFakeClock();
-  const hits = Array.from({ length: 8 }, (_, index) => issueHit(`LEGION-${index + 10}`));
-  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(hits));
-  const view = renderPalette();
-
-  try {
-    await searchFor(user, "astrolabe");
-    expect(screen.getAllByRole("option").map((option) => option.id)).toEqual(
-      hits.slice(0, 6).map(optionId)
-    );
-    expect(screen.getByText("Showing the best 6 of 8 matches")).toBeDefined();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -541,8 +508,8 @@ test("says how many matches a query has when the page holds fewer", async () => 
   }
 });
 
-// A comment or a message hit prints the post, so one its author edited says so after the name of
-// its owner, as its byline does; one nobody edited carries no mark.
+// A comment or a message hit prints the post, so one its author edited says so beside its kind,
+// as its byline does; one nobody edited carries no mark.
 test("an edited post's hit carries the edited mark, and a post nobody edited does not", async () => {
   const user = userOnFakeClock();
   const edited: SearchResult = {
@@ -561,10 +528,8 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
   try {
     await searchFor(user, "astrolabe");
     const option = (result: SearchResult) => document.getElementById(optionId(result));
-    await waitFor(() =>
-      expect(option(edited)?.textContent).toContain("Navigation instruments · edited")
-    );
-    expect(option(standing)?.textContent).toContain("Navigation instruments");
+    await waitFor(() => expect(option(edited)?.textContent).toContain("comment · edited"));
+    expect(option(standing)?.textContent).toContain("comment");
     expect(option(standing)?.textContent).not.toContain("edited");
   } finally {
     search.mockRestore();
@@ -576,7 +541,7 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
 // A deleted post is no hit once its delete commits, which takes its windows with its body; the
 // mark is the backstop for a hit of one all the same, whose snippet is empty. The hit draws the
 // deleted line where the snippet would be, naming who deleted it and when, and no edited mark
-// after its owner's name; a post nobody deleted draws its snippet and no deleted line.
+// beside its kind; a post nobody deleted draws its snippet and no deleted line.
 test("a deleted post's hit draws the deleted line where its snippet would be", async () => {
   // The standing hit's snippet is Markdown (`MarkdownPreview`), empty until the lazy engine loads,
   // and a wait on this row's held clock can spend its budget in fake time before the engine has
@@ -660,7 +625,7 @@ test("a post's hit whose refetch fails after its edit and delete carries the edi
     failing = true;
 
     await feed.deliver(correction("comment", id, true), [["search"]]);
-    expect(option(hit)?.textContent).toContain("Navigation instruments · edited");
+    expect(option(hit)?.textContent).toContain("comment · edited");
 
     await feed.deliver(correction("comment", id, false), [["search"]]);
     expect(option(hit)?.querySelector("[data-post-deleted]")?.textContent).toContain(
@@ -676,7 +641,7 @@ test("a post's hit whose refetch fails after its edit and delete carries the edi
   }
 });
 
-test("names a project document's hit by its project and name, and opens its discussion", async () => {
+test("renders document-owned results under the document and opens their discussion", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
@@ -702,12 +667,10 @@ test("names a project document's hit by its project and name, and opens its disc
   try {
     await searchFor(user, "astrolabe");
 
-    const option = within(screen.getByRole("group", { name: "Comments" })).getByRole("option");
-    expect(option).toHaveTextContent("CORE");
-    expect(option).toHaveTextContent("Navigation design");
-    // A project document has no status of its own to show.
-    expect(option).not.toHaveAttribute("data-status");
-    await user.click(option);
+    const documentGroup = document.querySelector('[aria-label="CORE: Navigation design"]');
+    expect(documentGroup).not.toBeNull();
+    expect(screen.getByRole("group", { name: "CORE: Navigation design" })).toBeTruthy();
+    await user.click(screen.getByRole("option"));
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/projects/CORE/documents/navigation-design?comment=comment-2"
     );
@@ -769,9 +732,7 @@ test("an ask hit says where it stands and shows its latest answer", async () => 
     expect(option("closed-answered")).toHaveTextContent("Closed after an answer");
     expect(option("closed-answered")).toHaveTextContent("Resolved by bob · ");
     expect(option("closed-answered")).toHaveTextContent("Chose Brass, Steel");
-    expect(within(screen.getByRole("group", { name: "Asks" })).getAllByRole("option")).toHaveLength(
-      4
-    );
+    expect(screen.getAllByRole("option", { name: /^ask / })).toHaveLength(4);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1016,6 +977,161 @@ test("an Enter that confirms an input method's conversion opens no hit, and a pl
   }
 });
 
+// A key that is part of an input method's composition is the composition's, and its default
+// stays the browser's: the arrows move no highlight, Enter opens no row, and Backspace on the
+// empty box widens no chip. The bar is opened over an issue page, where the plain Backspace on
+// the empty box does widen the chip to the project; the page has no writing cursor in a block,
+// so Tab narrows nothing there with or without a composition.
+test("arrow keys, Enter and Backspace inside an IME composition move no highlight, route or chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  // The bar opened over an issue page may read that issue. No agent holds LEGION-2, and the hits
+  // are the whole list.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issueFixture,
+    artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
+    key: "LEGION-2",
+    number: 2,
+    project: "LEGION",
+    status: "done",
+    title: "Navigation instruments",
+  });
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("going-box-chip").getAttribute("title");
+
+  try {
+    // Backspace widens the chip on an empty box alone, so it is pressed before the words are
+    // typed. `fireEvent` answers false for a key whose default was cancelled, which the bar does
+    // to each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Backspace" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      expect(fireEvent.keyDown(box, { isComposing: true, key }), `${key} composing`).toBe(true);
+      expect(box, `${key} composing`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-2/spec");
+
+    // The plain Backspace on the emptied box is the bar's: it widens the chip the composing one
+    // left alone.
+    await user.clear(box);
+    await user.keyboard("{Backspace}");
+    expect(chip()).toContain("Acting on the project LEGION");
+  } finally {
+    search.mockRestore();
+    getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A Tab that is part of an input method's composition is the composition's too: it narrows no
+// chip, and its default stays the browser's. The bar is opened with the writing cursor in a block
+// of a document behind it, which is where a plain Tab narrows the chip to that block. It is opened
+// over an issue page, so the chip names the issue before any key is pressed.
+test("Tab inside an IME composition moves no chip, where a plain Tab would", async () => {
+  const user = userOnFakeClock();
+  // The bar reads the writing cursor on the render that opens it (`blockAtCursor`), so the cursor
+  // is put in a block of a writing surface before the bar is drawn.
+  const editable = document.createElement("div");
+  editable.setAttribute("contenteditable", "true");
+  const block = document.createElement("p");
+  block.setAttribute(BLOCK_ID_ATTRIBUTE, "b-1");
+  block.textContent = "The sextant sights the horizon.";
+  editable.append(block);
+  document.body.append(editable);
+  editable.focus();
+  const caret = document.createRange();
+  caret.setStart(block.firstChild ?? block, 0);
+  caret.collapse(true);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(caret);
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("going-box-chip").getAttribute("title");
+
+  try {
+    // A composition goes on in the box the reader types into, so the box holds the focus first:
+    // the bar takes the focus on itself as it opens and hands it to the box a frame later, and
+    // until then a Tab is the dialog's own, to its first control (`useDialog`).
+    await user.click(box);
+    // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+    // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Tab" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    // The plain Tab is the bar's: it narrows the chip to the block the composing one left alone.
+    await user.keyboard("{Tab}");
+    expect(chip()).toContain("Acting on the block “The sextant sights the horizon.”");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+    editable.remove();
+    window.getSelection()?.removeAllRanges();
+  }
+});
+
+// Safari sends the key that ends an input method's composition after the composition's end,
+// unmarked - `isComposing` false - with keyCode 229 (WebKit bug 165004): that key is the
+// composition's as well. In the bar's box an arrow moves no highlight and Enter opens no row, and
+// in the filter panel's Author box Enter takes no author. The plain Enter after it takes the
+// author.
+test("keys that end an IME composition in Safari, at keyCode 229, move no highlight, open no row and take no author", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const box = await searchFor(user, "astrolabe");
+    // Two rows at least, so an arrow the bar took would move the highlight off the first.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(box).toHaveAttribute("aria-activedescendant", first.id);
+    for (const key of ["ArrowDown", "ArrowUp", "Enter"]) {
+      // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+      // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+      // composition.
+      const kept = fireEvent.keyDown(box, { isComposing: false, key, keyCode: 229 });
+      expect(kept, `${key} at keyCode 229`).toBe(true);
+      expect(box, `${key} at keyCode 229`).toHaveAttribute("aria-activedescendant", first.id);
+    }
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("alice");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(author, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(
+      screen.queryByRole("button", { name: "Remove Author alice filter" }),
+      "an Enter at keyCode 229 took the author"
+    ).toBeNull();
+
+    await user.keyboard("{Enter}");
+    expect(
+      await screen.findByRole("button", { name: "Remove Author alice filter" })
+    ).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 function issueHit(key: string): SearchResult {
   return {
     href: `/issues/${key}`,
@@ -1184,13 +1300,13 @@ test("a chip taken off, whose search the bar already holds an answer for, highli
     // The chip's search answers its one hit, which takes the highlight.
     await user.click(screen.getByRole("button", { name: "Filters" }));
     await user.click(screen.getByRole("button", { name: "Status" }));
-    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() => expect(optionIds()).toEqual([optionId(other)]));
     expect(input).toHaveAttribute("aria-activedescendant", optionId(other));
 
     // Taken off, the chip leaves the words' own search, whose answer the bar holds: it paints at
     // once, and its first hit takes the highlight, so Enter opens it.
-    await user.click(screen.getByRole("button", { name: "Remove Status In progress" }));
+    await user.click(screen.getByRole("button", { name: "Remove Status In progress filter" }));
     await waitFor(() => expect(optionIds()).toEqual([optionId(first), optionId(second)]));
     expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
   } finally {
@@ -1877,22 +1993,23 @@ test("the filters and the syntax help are behind Filters, and / in the empty box
     const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
     const button = screen.getByRole("button", { name: "Filters" });
     expect(button).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByTestId("search-filters")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull();
     expect(screen.queryByTestId("search-operators")).toBeNull();
 
     await user.click(box);
     await user.keyboard("/");
     expect(box).toHaveValue("");
     expect(button).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("search-filters")).toBeInTheDocument();
-    expect(screen.getByTestId("search-operators")).toBeInTheDocument();
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    expect(within(panel).getByRole("button", { name: "Project" })).toBeInTheDocument();
+    expect(within(panel).getByTestId("search-operators")).toBeInTheDocument();
 
     await user.click(button);
-    expect(screen.queryByTestId("search-filters")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull();
     await user.click(box);
     await user.keyboard("a/b");
     expect(box).toHaveValue("a/b");
-    expect(screen.queryByTestId("search-filters")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1952,6 +2069,56 @@ test("a search that ran on words alone shows its hits and says nothing of meanin
   }
 });
 
+/** Opens the one panel of the bar's control row, which all four narrowings are added from, from
+ *  the Filters button at the box's right, whose name counts the narrowings that are on. A
+ *  narrowing already on is a chip in the row instead, so its control is not in the panel. */
+async function openFilters(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("button", { name: /^Filters/ }));
+}
+
+// The dialog's own strip of controls is the control row itself, so the bar's box, the panel the
+// narrowings are added from and the chips of what is on are one row and not two. The box is the
+// shared search box, which stays the same element under a conversation, and its frame holds the
+// row's one panel trigger, the Filters button, at its right (design v3, state 1); the chips stand
+// in the row under the box, outside its frame.
+test("the bar's controls are one control row: the box with Filters in its frame, and the chips under it", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    const rows = dialog.querySelectorAll(`[data-control="${CONTROL.controlRow}"]`);
+    const triggers = dialog.querySelectorAll(`[data-control="${CONTROL.panelTrigger}"]`);
+    const filters = screen.getByRole("button", { name: "Filters" });
+
+    expect(rows).toHaveLength(1);
+    // The query box is in that row, and it is the dialog's one text box: nothing between the
+    // dialog's top and its first hit is a search box, a panel trigger or a chip of its own.
+    const inputs = dialog.querySelectorAll("input");
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toBe(input);
+    expect(input.getAttribute("data-control")).toBe(CONTROL.searchBox);
+    expect(rows[0]?.contains(input)).toBe(true);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]).toBe(filters);
+    expect(filters.parentElement).toBe(input.parentElement);
+
+    await openFilters(user);
+    await user.click(screen.getByRole("button", { name: "Status" }));
+    await user.click(screen.getByRole("option", { name: "In progress" }));
+    const chip = await screen.findByRole("button", { name: "Remove Status In progress filter" });
+    expect(chip.getAttribute("data-control")).toBe(CONTROL.chip);
+    expect(chip.closest(`[data-control="${CONTROL.controlRow}"]`)).toBe(rows[0] ?? null);
+    expect(input.parentElement?.contains(chip)).toBe(false);
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
@@ -1961,9 +2128,9 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     await searchFor(user, "astrolabe");
     expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
 
-    await user.click(screen.getByRole("button", { name: "Filters" }));
+    await openFilters(user);
     await user.click(screen.getByRole("button", { name: "Status" }));
-    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(search).toHaveBeenLastCalledWith(
         "astrolabe",
@@ -1972,14 +2139,20 @@ test("a chip narrows the search, reads back in the person's words, and comes off
       )
     );
 
-    const chip = screen.getByRole("button", { name: "Remove Status In progress" });
+    const chip = screen.getByRole("button", { name: "Remove Status In progress filter" });
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
     // The button says how many filters narrow the search, so none narrows it unseen.
     expect(screen.getByRole("button", { name: "Filters · 1" })).toBeInTheDocument();
+    // The chip is the shared one, in the shared row: what the bar narrows by is said where
+    // every other page says it.
+    expect(chip.getAttribute("data-control")).toBe(CONTROL.chip);
+    expect(chip.closest(`[data-control="${CONTROL.controlRow}"]`)).not.toBeNull();
 
     await user.click(chip);
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
+    // Removing the chip brings that narrowing's own control back into the panel.
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
   } finally {
@@ -1989,49 +2162,267 @@ test("a chip narrows the search, reads back in the person's words, and comes off
   }
 });
 
-// Every filter is one pill as tall as the box, naming its field and its value (design v3, state
-// 1, as Linear's filters are), and "Updated since" is a menu of days back, with a day of the
-// person's own inside it, not a bare date box reading "mm/dd/yyyy".
-test("each filter is one pill naming its field and its value, and Updated since is a menu of days back", async () => {
+test("a date typed in Updated since narrows the search only once its year is whole", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
+
   try {
     await searchFor(user, "astrolabe");
-    await user.click(screen.getByRole("button", { name: "Filters" }));
-    expect(screen.getByTestId("search-filters-button")).toHaveAttribute("aria-expanded", "true");
-    const status = screen.getByRole("button", { name: "Status" });
-    expect(status).toHaveTextContent("StatusAny");
-    expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent("ProjectAny");
-    // Author names its field in the words Status does, and takes the author after it, "Anyone"
-    // standing in its box until one is typed (review M6).
-    const author = screen.getByRole("searchbox", { name: "Author" });
-    expect(author).toHaveAttribute("placeholder", "Anyone");
-    const authorPill = author.closest("label") as HTMLElement;
-    expect(within(authorPill).getByText("Author").className).toBe(
-      within(status).getByText("Status").className
+    await openFilters(user);
+    const box = screen.getByLabelText("Updated since");
+    // An engine reports a valid date from the year's first typed digit, as Chromium does with
+    // `0002-11-22`. user-event cannot type into a date box's parts, so the value the engine
+    // reports is set as it would report it.
+    fireEvent.change(box, { target: { value: "0002-11-22" } });
+    expect(screen.getByLabelText("Updated since")).toBe(box);
+    expect(screen.queryByRole("button", { name: /^Remove Updated since/ })).toBeNull();
+    // The same box once the year's last digit is typed.
+    fireEvent.change(box, { target: { value: "2026-11-22" } });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Remove Updated since/ })).not.toBeNull()
     );
-    // It ends in the caret every other pill ends in (review a6).
-    expect(authorPill.lastElementChild?.textContent).toBe("▾");
-    expect(status.lastElementChild?.textContent).toBe("▾");
-    const since = screen.getByRole("button", { name: "Updated since" });
-    expect(since).toHaveTextContent("Updated sinceAny time");
-    expect(since.className).toBe(status.className);
-    expect(screen.queryByLabelText("On a day")).toBeNull();
+    expect(screen.queryByLabelText("Updated since")).toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
 
-    await user.click(since);
-    const menu = screen.getByRole("list", { name: "Updated since" });
-    expect(
-      within(menu)
-        .getAllByRole("button")
-        .map((choice) => choice.textContent)
-    ).toEqual(["Today", "Last 7 days", "Last 30 days", "Last 90 days"]);
-    expect(within(menu).getByLabelText("On a day")).toHaveAttribute("type", "date");
-    await user.click(within(menu).getByRole("button", { name: "Last 7 days" }));
-    expect(
-      await screen.findByRole("button", { name: /^Remove Updated since / })
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Updated since" })).toBeNull();
+test("a project picked in the panel narrows the search and reads back as its chip", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+      proven_sessions: false,
+    },
+  ]);
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    await user.click(await screen.findByRole("option", { name: "INFRA" }));
+
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { keywords_only: true, project: "INFRA" },
+        aborts
+      )
+    );
+    expect(screen.getByRole("button", { name: "Remove Project INFRA filter" })).not.toBeNull();
+  } finally {
+    listProjects.mockRestore();
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** The text boxes in the page now: a list's own box is one that appears when the list opens. */
+function textBoxes(): Element[] {
+  return [
+    ...document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])'),
+  ];
+}
+
+/** Every element whose own name or text is `name`, as a button or an option: what a reader
+ *  picks from a list, however the list draws it. */
+function picks(name: RegExp): HTMLElement[] {
+  return [
+    ...screen.queryAllByRole("button", { name }),
+    ...screen.queryAllByRole("option", { name }),
+  ];
+}
+
+// Every list of options a reader picks from holds a text box that narrows the options, and the
+// bar's Project and Status lists are such lists. Each one, opened from the panel,
+// holds a text box of its own, and a word typed into it leaves only the options that match.
+test("the bar's Project and Status lists each hold a text box that narrows their options", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(
+    ["INFRA", "CORE"].map((key) => ({
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key,
+      name: key === "INFRA" ? "Infra" : "Core",
+      open_asks: 0,
+      proven_sessions: false,
+    }))
+  );
+  const view = renderPalette();
+
+  try {
+    const lists = [
+      { menu: "Project", word: "COR", kept: /^CORE\b/, gone: /^INFRA\b/ },
+      { menu: "Status", word: "progress", kept: /^In progress\b/, gone: /^Todo\b/ },
+    ];
+    for (const { menu, word, kept, gone } of lists) {
+      await openFilters(user);
+      const before = new Set(textBoxes());
+      await user.click(await screen.findByRole("button", { name: menu }));
+      await waitFor(() => expect(picks(gone).length).toBeGreaterThan(0));
+      const own = textBoxes().filter((box) => !before.has(box));
+      expect(own, `the ${menu} list holds no text box of its own`).toHaveLength(1);
+      await user.type(own[0] as HTMLElement, word);
+      await waitFor(() =>
+        expect(picks(gone), `"${word}" leaves ${gone} in the ${menu} list`).toHaveLength(0)
+      );
+      expect(picks(kept).length, `"${word}" takes ${kept} out of the ${menu} list`).toBeGreaterThan(
+        0
+      );
+      await user.keyboard("{Escape}");
+      await user.keyboard("{Escape}");
+    }
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The Project list says whether the bar's read of the projects is still out or failed, rather
+// than "No projects yet", as the Agents composer's Issue list does.
+test("the bar's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
+  const user = userOnFakeClock();
+  const read = Promise.withResolvers<Project[]>();
+  const listProjects = spyOn(api, "listProjects").mockReturnValue(read.promise);
+  const view = renderPalette();
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const list = await screen.findByRole("listbox", { name: "Project options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(list).toHaveTextContent("Loading projects…");
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+
+    await act(async () => {
+      read.reject(new Error("projects unreachable"));
+      await read.promise.catch(() => undefined);
+    });
+    expect(await within(panel).findByText("Could not load projects.")).toBeTruthy();
+    expect(within(panel).queryByText("Loading projects…")).toBeNull();
+    expect(within(panel).queryByText("No projects yet")).toBeNull();
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Shift+Tab out of the Project list closes that list and gives the focus back to its Project
+// trigger in the Filter panel. From there Escape closes the panel, with the focus on the bar's
+// Filter trigger, and the next Escape closes the bar, so the bar can be closed from the keyboard.
+test("after Shift+Tab out of the Project list, Escape closes the panel, and the next Escape the bar", async () => {
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "INFRA",
+      name: "Infra",
+      open_asks: 0,
+      proven_sessions: false,
+    },
+  ]);
+  let closed = 0;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await openFilters(user);
+    await user.click(await screen.findByRole("button", { name: "Project" }));
+    const box = await screen.findByRole("combobox", { name: "Search projects" });
+    act(() => box.focus());
+    await user.tab({ shift: true });
+    expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Project" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Filters" })).toHaveFocus();
+    expect(closed).toBe(0);
+    await user.keyboard("{Escape}");
+    expect(closed).toBe(1);
+  } finally {
+    listProjects.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An item's author is a person's login or a session id, and no list holds both, so the author
+// is typed. Enter takes it, and a login still half-typed searches nothing.
+test("an author typed in the panel is taken on Enter, narrows the search, and comes off again", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    await user.click(author);
+    await user.paste("ali");
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
+
+    await user.paste("ce");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+
+    const chip = screen.getByRole("button", { name: "Remove Author alice filter" });
+    expect(chip.textContent).toContain("Author alice");
+
+    await user.click(chip);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts)
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Shutting the panel is leaving the box: the press that takes the box away is the reader
+// walking off it, and what they typed is taken then rather than dropped.
+test("an author left in the box is taken when the panel shuts", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(screen.getByRole("searchbox", { name: "Author" }));
+    await user.paste("alice");
+
+    await user.click(input);
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+    expect(screen.getByRole("button", { name: "Remove Author alice filter" })).not.toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -2046,7 +2437,7 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   // The bar opened over an issue page may read that issue. LEGION-2 is the page's issue and the
-  // document hit's own, and the chips below the box are the whole of what this row reads.
+  // document hit's own, and the chips of its control row are the whole of what this row reads.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issueFixture,
     artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
@@ -2066,8 +2457,8 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
       { keywords_only: true, number_project: "LEGION" },
       aborts
     );
-    await user.click(screen.getByRole("button", { name: "Filters" }));
     expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
+    await openFilters(user);
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {
     search.mockRestore();
@@ -2127,9 +2518,9 @@ test("the empty box lists Continue on the last hour's conversation, then at most
       screen.getByRole("option", { name: "Continue: Who looks after the comet" })
     ).toBeTruthy();
     const recent = within(screen.getByRole("group", { name: "Recent" })).getAllByRole("option");
-    // Each recent issue reads as an Issues hit does, as Raycast gives every list one row look
-    // (review a12): its kind's icon, named as a hit's is, its key, its title - the issue's own
-    // once its summary is read - and its status at the row's end.
+    // Each recent issue reads as a best match does, as Raycast gives every list of items one row
+    // look (review a12): its kind's icon, its key, its title - the issue's own once its summary
+    // is read - and its status at the row's end.
     await waitFor(() =>
       expect(recent.map((row) => row.textContent)).toEqual(
         items.slice(0, 5).map((item) => {
@@ -2449,8 +2840,8 @@ test("Enter turns the bar into the conversation at once: the search parts leave,
     expect(dialog.className.split(" ")).toContain("relative");
     // The list, the Filters button, the message under the list and the list's keys are gone.
     expect(screen.queryByRole("listbox")).toBeNull();
-    expect(screen.queryByTestId("search-filters-button")).toBeNull();
-    expect(screen.queryByTestId("search-filters")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Filters/ })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull();
     expect(screen.queryByTestId("search-operators")).toBeNull();
     expect(screen.queryByText("Type at least 2 characters")).toBeNull();
     expect(screen.queryByTestId("search-keyboard-hints")).toBeNull();
@@ -2529,7 +2920,7 @@ test("New brings the search back, in the same box", async () => {
     expect(search).toHaveAttribute("placeholder", "Search or ask…");
     // The cursor is back in the box, so typing lands in it (review n2).
     expect(search).toHaveFocus();
-    expect(screen.getByTestId("search-filters-button")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
   } finally {
     bar.restore();
     view.unmount();

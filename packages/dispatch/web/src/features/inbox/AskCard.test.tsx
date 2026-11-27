@@ -10,6 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, textBoxes } from "../../__tests__/list-picks";
 import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -974,22 +975,123 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
   const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
   const card = within(view.container);
   try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
-    expect(control.value).toBe("");
+    const control = await card.findByLabelText("Hand this question to");
+    expect(control).toHaveAccessibleName("Hand this question to Asked of nobody");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
     await user.click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    // The list is portalled to the body, outside the card's own container.
+    const bob = await within(document.body).findByRole("option", { name: "bob" });
     const before = threadReads;
-    await user.selectOptions(control, "bob");
+    await user.click(bob);
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
     await waitFor(() => expect(threadReads).toBeGreaterThan(before));
     // What that read is for: the person the write moved the ask to is on the screen.
-    await waitFor(() => expect(control.value).toBe("bob"));
+    await waitFor(() =>
+      expect(card.getByLabelText("Hand this question to")).toHaveAccessibleName(
+        "Hand this question to Asked of bob"
+      )
+    );
   } finally {
     view.unmount();
     getAsk.mockRestore();
     handAskTo.mockRestore();
     listMyReplies.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The card's "Hand this question to" is such a list: its options are the people who
+// have signed in, which grow with the team. Opened, it holds a text box of its own, a word typed
+// into it leaves only the people who match, and a pick hands the question on and puts the focus
+// back on the control.
+test("the hand-on list holds a text box that narrows its people, and a pick hands the question on", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+    { login: "carol" },
+  ]);
+  const handAskTo = spyOn(api, "handAskTo").mockResolvedValue({
+    ...open,
+    asked_of: "carol",
+    waiting_on_person: "carol",
+  });
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  // The list is portalled to the body, outside the card's own container.
+  const page = within(document.body);
+  try {
+    const before = new Set(textBoxes());
+    await user.click(await within(view.container).findByLabelText("Hand this question to"));
+    // The people are read once the reader reaches for the control.
+    await waitFor(() =>
+      expect(page.queryAllByRole("option", { name: /^bob\b/ }).length).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the hand-on list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await user.type(own[0] as HTMLElement, "car");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^bob\b/ }),
+        `"car" leaves bob in the hand-on list`
+      ).toHaveLength(0)
+    );
+    expect(
+      within(list).queryAllByRole("option", { name: /^alice\b/ }),
+      `"car" leaves alice in the hand-on list`
+    ).toHaveLength(0);
+    await user.click(within(list).getByRole("option", { name: /^carol\b/ }));
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-1", "carol", keyedAttempt));
+    expect(page.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(within(view.container).getByLabelText("Hand this question to")).toHaveFocus();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// INFRA-3135, round 12: the hand-on list passed no failure, so after a failed read of the people
+// it offered the person the question waits on as if that were everyone, with nothing to say the
+// people never came. It says so, as the Inbox's own people list does.
+test("the hand-on list says the people could not be loaded when their read fails", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockRejectedValue(new Error("users unreachable"));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  // The list is portalled to the body, outside the card's own container.
+  const page = within(document.body);
+  try {
+    await user.click(await within(view.container).findByLabelText("Hand this question to"));
+    const list = await page.findByRole("listbox", { name: "Hand this question to options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(await within(panel).findByText("Could not load the people list.")).toBeTruthy();
+    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
     listUsers.mockRestore();
   }
 });

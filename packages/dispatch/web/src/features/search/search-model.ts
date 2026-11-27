@@ -23,42 +23,25 @@ export function searchOperators(read: readonly string[] | null | undefined): Sea
   return SEARCH_OPERATORS.filter((known) => read?.includes(known) === true);
 }
 
-/** How many hits of one kind the bar lists (design v3, state 1). */
-export const HITS_PER_KIND = 6;
-
-/** The heading of each kind's group of hits. */
-const KIND_HEADINGS: Readonly<Record<SearchResultKind, string>> = {
-  ask: "Asks",
-  comment: "Comments",
-  document: "Documents",
-  issue: "Issues",
-  message: "Messages",
-};
-
-/** The hits of one kind, under the heading the bar draws above them. */
 export interface ResultGroup {
-  /** The kind, as the route table names it. */
-  readonly kind: string;
-  /** "Issues", "Documents", and so on; a kind this build has no word for keeps its own. */
-  readonly heading: string;
+  readonly owner: SearchOwner;
   readonly results: SearchResult[];
 }
 
-/** The hits grouped by their kind, each group in the rank order of its first hit, and at most
- *  `HITS_PER_KIND` hits in a group, in the server's order. */
+/** Groups retain the rank order of their first server result. */
 export function groupResults(results: readonly SearchResult[]): ResultGroup[] {
   const groups = new Map<string, ResultGroup>();
 
   for (const result of results) {
-    const group = groups.get(result.kind);
+    const { owner } = result;
+    // The owner is one flat record carrying the fields of whichever arm it is: an issue owner
+    // names `key`, a document owner `artifact_id`.
+    const ownerKey =
+      owner.kind === "issue" ? `issue:${owner.key ?? ""}` : `document:${owner.artifact_id ?? ""}`;
+    const group = groups.get(ownerKey);
     if (group === undefined) {
-      const known = searchResultKind(result.kind);
-      groups.set(result.kind, {
-        heading: known === undefined ? result.kind : KIND_HEADINGS[known],
-        kind: result.kind,
-        results: [result],
-      });
-    } else if (group.results.length < HITS_PER_KIND) {
+      groups.set(ownerKey, { owner, results: [result] });
+    } else {
       group.results.push(result);
     }
   }

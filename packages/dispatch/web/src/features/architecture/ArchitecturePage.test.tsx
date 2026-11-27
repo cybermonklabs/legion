@@ -1,10 +1,18 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, waitForElementToBeRemoved, within } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  waitFor,
+  waitForElementToBeRemoved,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -145,17 +153,24 @@ function LocationProbe() {
   return <output data-testid="location">{location.search}</output>;
 }
 
-function renderPane(tree: ArchitectureTree, search = "") {
+/** The page on `tree` at `search`; `inMain` draws it in the shell's main content, as the app
+ *  shell draws it. */
+function renderPane(
+  tree: ArchitectureTree,
+  search = "",
+  { inMain = false }: { inMain?: boolean } = {}
+) {
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(tree);
   const syncArchitectureSource = spyOn(api, "syncArchitectureSource");
   const patchIssue = answerIssuePatches();
   const getIssue = spyOn(api, "getIssue");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = <ArchitecturePage project="CORE" />;
   const view = render(
     <MemoryRouter initialEntries={[`/projects/CORE/architecture${search}`]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <ArchitecturePage project="CORE" />
+          {inMain ? <main>{page}</main> : page}
           <LocationProbe />
         </KeymapProvider>
       </QueryClientProvider>
@@ -284,6 +299,36 @@ test("j/k rove the rows, l/h descend and ascend, Enter opens a parent's children
     await user.click(rowFor("Docs"));
     await user.keyboard("{Escape}");
     expect(document.body).toHaveFocus();
+  } finally {
+    pane.restore();
+  }
+});
+
+// An Architecture row is a row of its list. A refetch that takes the row holding the focus away -
+// a sync that dropped its component - is a loss the reader did not cause, so with the page in the
+// shell's main content, as the shell draws it, the focus goes into no other row: the reader's next
+// key acts on no component they did not pick.
+test("a row a refetch takes away from under the focus hands it to no other row", async () => {
+  const roots = ["Alpha", "Bravo", "Charlie"].map((title) =>
+    component({ id: title.toLowerCase(), title })
+  );
+  const pane = renderPane(fixture({ components: roots }), "", { inMain: true });
+  try {
+    const list = await screen.findByRole("list", { name: "Components" });
+    const title = within(rowFor("Bravo")).getByRole("link", { name: "Bravo" });
+    act(() => title.focus());
+
+    pane.getArchitecture.mockResolvedValue(
+      fixture({ components: roots.filter((root) => root.id !== "bravo") })
+    );
+    await act(async () => {
+      await pane.queryClient.refetchQueries();
+    });
+    await waitFor(() => expect(title).not.toBeInTheDocument());
+    await afterFrameAndTasks();
+
+    expect(document.activeElement?.closest("[data-component-row]") ?? null).toBeNull();
+    expect(within(list).getByRole("article", { name: /^Charlie,/ })).toBeInTheDocument();
   } finally {
     pane.restore();
   }

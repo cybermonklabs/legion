@@ -294,8 +294,8 @@ const SEED_DRAWN_MS = 30_000;
  * questions, decisions, results and blocks arrive after it, and the batched names last
  * (`useIssueTree.ts`), so a reading taken as soon as the tree exists may find a row, or a chip's
  * name, not drawn yet. The needs chip of `t2` draws nothing until the names have come
- * (`NodeRow.tsx`'s `Chip`), so it stands for them. Each poll first opens every branch a fold
- * left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
+ * (`NodeRow.tsx`'s `NodeReference`), so it stands for them. Each poll first opens every branch a
+ * fold left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
  */
 export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void> {
   const ids = [

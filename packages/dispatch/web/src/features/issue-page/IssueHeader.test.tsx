@@ -18,6 +18,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
@@ -423,7 +424,7 @@ test("the header keeps state actions available while approval awaits", async () 
     const stateActions = screen.getByTestId("issue-state-actions");
     expect(within(stateActions).getByRole("combobox", { name: "Status" })).not.toBeNull();
     expect(
-      within(stateActions).getByRole("combobox", { name: "Priority of CORE-1" })
+      within(stateActions).getByRole("button", { name: pickNamed("Priority of CORE-1") })
     ).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();

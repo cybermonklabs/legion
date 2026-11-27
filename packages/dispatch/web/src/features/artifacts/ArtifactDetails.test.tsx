@@ -1,10 +1,10 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the two compare selects below are set to the version each already holds, which user-event's selectOptions cannot deliver
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { listOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -85,6 +85,18 @@ function noReferences(target: Artifact) {
   });
 }
 
+/** Picks the version named `version` on one side of the compare, the list labelled `side`
+ *  (`Compare <name> from`, `Compare <name> to`): opens that side's list and presses its option.
+ *  The list is portalled onto the body, so it is reached from the screen. */
+async function pickCompared(user: UserEvent, side: string, version: string): Promise<void> {
+  await user.click(screen.getByRole("button", { name: pickNamed(side) }));
+  await user.click(
+    within(screen.getByRole("listbox", { name: `${side} options` })).getByRole("option", {
+      name: version,
+    })
+  );
+}
+
 test("ArtifactDetails compares selected blob versions side by side", async () => {
   const user = userEvent.setup();
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
@@ -98,15 +110,10 @@ test("ArtifactDetails compares selected blob versions side by side", async () =>
     // The comparison is a deliberate action: nothing to pick from until it is opened.
     expect(screen.queryByLabelText("Compare diagram.png from")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show comparison" }));
-    // Version 1 is the From select's own default: a selection a control already holds is one
-    // user-event's selectOptions cannot deliver.
-    fireEvent.change(screen.getByLabelText("Compare diagram.png from"), {
-      target: { value: "1" },
-    });
-    // Version 2 is likewise the To select's default.
-    fireEvent.change(screen.getByLabelText("Compare diagram.png to"), {
-      target: { value: "2" },
-    });
+    // Version 1 and Version 2 are each side's own default, which a list picks as it picks any
+    // other version.
+    await pickCompared(user, "Compare diagram.png from", "Version 1");
+    await pickCompared(user, "Compare diagram.png to", "Version 2");
 
     const comparison = await screen.findByLabelText("Blob version comparison");
     expect(comparison.textContent).toContain("Version 1");
@@ -115,11 +122,57 @@ test("ArtifactDetails compares selected blob versions side by side", async () =>
     expect(comparison.textContent).toContain("Version 2");
     expect(comparison.textContent).toContain("20 B");
     expect(comparison.textContent).toContain("second-sha");
-    await user.selectOptions(screen.getByLabelText("Compare diagram.png to"), "1");
+    await pickCompared(user, "Compare diagram.png to", "Version 1");
     expect(await screen.findByText("Identical blobs.")).not.toBeNull();
     view.unmount();
   } finally {
     getArtifact.mockRestore();
+    getReferences.mockRestore();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The compare's From and To are such lists: their options are every version of the
+// document, which grow as it is written. Each one, opened, holds a text box of its own, a word
+// typed into it leaves only the versions that match, and a pick sets that side of the compare
+// with the focus back on its control.
+test("the compare's From and To lists each hold a text box that narrows their versions", async () => {
+  const user = userEvent.setup();
+  const getReferences = noReferences(artifact);
+  const view = renderDetails(artifact);
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Show comparison" }));
+    const sides = [
+      { side: "Compare diagram.png from", word: "2", kept: "Version 2", gone: "Version 1" },
+      { side: "Compare diagram.png to", word: "1", kept: "Version 1", gone: "Version 2" },
+    ];
+    for (const { side, word, kept, gone } of sides) {
+      const before = new Set(textBoxes());
+      await user.click(screen.getByLabelText(side));
+      await waitFor(() =>
+        expect(screen.queryAllByRole("option", { name: gone }).length).toBeGreaterThan(0)
+      );
+      const own = textBoxes().filter((box) => !before.has(box));
+      expect(own, `the ${side} list holds no text box of its own`).toHaveLength(1);
+      const list = listOf(own[0] as HTMLElement);
+      await user.type(own[0] as HTMLElement, word);
+      await waitFor(() =>
+        expect(
+          within(list).queryAllByRole("option", { name: gone }),
+          `"${word}" leaves ${gone} in the ${side} list`
+        ).toHaveLength(0)
+      );
+      await user.click(within(list).getByRole("option", { name: kept }));
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(screen.getByLabelText(side)).toHaveFocus();
+    }
+    // From is now Version 2 and To Version 1, the other way round from where they started.
+    const comparison = await screen.findByLabelText("Blob version comparison");
+    expect(comparison.textContent).toContain("From · Version 2");
+    expect(comparison.textContent).toContain("To · Version 1");
+    view.unmount();
+  } finally {
     getReferences.mockRestore();
   }
 });

@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -445,6 +446,38 @@ test("a closed issue reads its priorities and writes none of them", async () => 
   try {
     await view.q.findByRole("link", { name: "#2 Rocq and Lean speed work restarted" });
     expect(view.trigger()).toBeDisabled();
+  } finally {
+    view.unmountAll();
+  }
+});
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The issue header's priorities picker is such a list: its options are every live
+// priority, which grow with the priorities page. Opened, it holds a text box of its own, and a
+// word typed into it leaves only the priorities that match.
+test("the priorities picker holds a text box that narrows the priorities", async () => {
+  const user = userEvent.setup();
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  try {
+    const before = new Set(textBoxes());
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    await waitFor(() =>
+      expect(within(listbox).queryAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the priorities picker holds no text box of its own").toHaveLength(1);
+    await user.type(own[0] as HTMLElement, "oss");
+    await waitFor(() =>
+      expect(
+        within(listbox).queryAllByRole("option", { name: /Evals collecting data now$/ }),
+        `"oss" leaves #1 in the priorities picker`
+      ).toHaveLength(0)
+    );
+    expect(
+      within(listbox).queryAllByRole("option", { name: /Rocq and Lean speed work restarted$/ }),
+      `"oss" leaves #2 in the priorities picker`
+    ).toHaveLength(0);
+    expect(within(listbox).getAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1);
   } finally {
     view.unmountAll();
   }
