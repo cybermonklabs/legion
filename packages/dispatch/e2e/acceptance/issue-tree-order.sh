@@ -460,10 +460,13 @@ expect "$section" "GET /api/v1/issues lists $ordered with blocked_by beside need
     | if length == 1 then .[0] else "the list holds \(length) rows of " + $k end'
 tree_send GET "/api/v1/issues/$ordered/events"
 tree_want 200 "$section" "read $ordered's events"
-expect "$section" "GET /api/v1/issues/$ordered/events answers each blocked_by beside needs, the same targets, naming $blocker" true \
+# Every object of the events that holds either member holds both, with the same targets; a failure
+# prints the objects whose two members differ, which is what a reader needs to find the writer.
+expect "$section" "GET /api/v1/issues/$ordered/events answers no object whose blocked_by and needs differ" '[]' \
+  '[.. | objects | select(has("blocked_by") or has("needs")) | select(.blocked_by != .needs)] | map({blocked_by, needs, keys: keys})'
+expect "$section" "GET /api/v1/issues/$ordered/events answers an object holding both members, naming $blocker" true \
   --arg b "$blocker" '[.. | objects | select(has("blocked_by") or has("needs"))] as $held
-    | ($held | length > 0) and all($held[]; .blocked_by == .needs)
-      and any($held[]; (.needs // []) | index($b) != null)'
+    | ($held | length > 0) and any($held[]; (.needs // []) | index($b) != null)'
 tree_send PATCH "/api/v1/issues/$ordered" "$(jq -cn --arg b "$blocker" --argjson a "$(tree_actor)" \
   '{needs: [$b], blocked_by: [$b], actor: $a}')"
 tree_want 200 "$section" "PATCH $ordered with needs and blocked_by naming the same target"
