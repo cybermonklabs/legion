@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { onlineManager } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for; nor has it one for a key marked as an input method's, at keyCode 229.
 import { act, fireEvent, render, renderHook } from "@testing-library/react";
 import { Component, createElement, Fragment, type ReactNode, useRef } from "react";
@@ -850,6 +850,16 @@ test("an armed press whose write is held hands the focus on when the write lands
   expect(landed).toEqual({ "a hold on what answers it": "Three", "its control held": "Three" });
 });
 
+/** The read a hold of these rows waits on, as `useReadBound` keys its holds. */
+const HELD_READ = ["issues"] as const;
+
+/** A query client of its own for each hook these rows render, so no hold of one row's read is
+ *  another's (`useReadBound` keeps its holds with the client). */
+function underClient(): (props: { children: ReactNode }) => ReactNode {
+  const client = new QueryClient();
+  return ({ children }) => createElement(QueryClientProvider, { client }, children);
+}
+
 // (dh) Armed, offline, and the press's write held by its hold: the write landed, and its control
 // is held through the re-read after it (`useReadBound`), which a paused fetch never answers. The
 // hold ends at the request deadline with the network's reason, and the commit that lets the
@@ -857,7 +867,7 @@ test("an armed press whose write is held hands the focus on when the write lands
 test("an armed press held offline hands the focus on in the render its hold's end at the request deadline takes its control away", async () => {
   jest.useFakeTimers();
   const online = onlineManager.isOnline();
-  const bound = renderHook(() => useReadBound());
+  const bound = renderHook(() => useReadBound(HELD_READ), { wrapper: underClient() });
   try {
     act(() => onlineManager.setOnline(false));
     const landed = await inMain([], async (main) => {
@@ -865,7 +875,11 @@ test("an armed press held offline hands the focus on in the render its hold's en
       try {
         clickPress(line.button("Two"));
         line.redraw({ held: ["Two"], labels: LINE });
-        const held = bound.result.current[1](new Promise<never>(() => undefined));
+        // The hold is kept with the query client, whose change draws the hook again, inside `act`.
+        let held = Promise.resolve();
+        act(() => {
+          held = bound.result.current[1](new Promise<never>(() => undefined));
+        });
         await act(async () => {
           jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
           await held;
@@ -1034,7 +1048,7 @@ test("an armed press that holds nothing is disarmed a frame and a task on, and a
 // pass with no loss, the press is disarmed, and a loss after that leaves the focus on the page.
 test("an armed press held through its write's re-read causes a loss inside that read, and none a frame and a task after the hold ends", async () => {
   const landed: Record<string, string | null> = {};
-  const bound = renderHook(() => useReadBound());
+  const bound = renderHook(() => useReadBound(HELD_READ), { wrapper: underClient() });
   try {
     for (const when of ["inside the read", "after the read's hold ended"] as const) {
       landed[when] = await inMain([], async (main) => {
@@ -1044,18 +1058,22 @@ test("an armed press held through its write's re-read causes a loss inside that 
           clickPress(line.button("Two"));
           line.redraw({ held: ["Two"], labels: LINE });
           await frameAndTasks();
-          // The write lands, and its `onSuccess` holds it through the list's read.
-          const held = bound.result.current[1](reread.promise);
+          // The write lands, and its `onSuccess` holds it through the list's read. The hold is
+          // kept with the query client, whose change draws the hook again, inside `act`.
+          let held = Promise.resolve();
+          act(() => {
+            held = bound.result.current[1](reread.promise);
+          });
           for (const _ of [0, 1, 2]) await frameAndTasks();
           if (when === "after the read's hold ended") {
             reread.resolve();
-            await held;
+            await act(() => held);
             line.redraw({ labels: LINE });
             await frameAndTasks();
           }
           line.redraw({ labels: ["One", "Three"] });
           reread.resolve();
-          await held;
+          await act(() => held);
           return landing();
         } finally {
           line.remove();
@@ -1182,7 +1200,7 @@ test("with nothing armed, a control taken away by an update leaves the focus on 
 test("with nothing armed, a hold that ends offline at the request deadline keeps its own rule, and the later loss leaves the focus on the page", async () => {
   jest.useFakeTimers();
   const online = onlineManager.isOnline();
-  const bound = renderHook(() => useReadBound());
+  const bound = renderHook(() => useReadBound(HELD_READ), { wrapper: underClient() });
   try {
     act(() => onlineManager.setOnline(false));
     await scrollingNothing(async () => {
@@ -1192,7 +1210,10 @@ test("with nothing armed, a hold that ends offline at the request deadline keeps
           const two = line.button("Two");
           two.focus();
           line.redraw({ held: ["Two"], labels: LINE });
-          const held = bound.result.current[1](new Promise<never>(() => undefined));
+          let held = Promise.resolve();
+          act(() => {
+            held = bound.result.current[1](new Promise<never>(() => undefined));
+          });
           await act(async () => {
             jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
             await held;
