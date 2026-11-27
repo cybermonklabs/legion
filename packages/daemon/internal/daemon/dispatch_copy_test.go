@@ -78,7 +78,7 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 		}
 
 		// The fact api's recordOwnStatusWrite applies for a write Dispatch answered at a sequence.
-		event := intake.OwnStatusWrite(written)
+		event := intake.OwnStatusWrite(written, "", "")
 		fact := intake.ObservedIssue(written)
 		fact.Delivered = &event
 		applyCopyFact(t, w, "api", "status/own-write", fact)

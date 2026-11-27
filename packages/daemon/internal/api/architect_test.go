@@ -999,7 +999,8 @@ func TestRerunMovesAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 	if len(statuses.writes) != 1 {
 		t.Fatalf("Dispatch writes after refusals = %#v, want only the rerun", statuses.writes)
 	}
-	wantFacts := []intake.Fact{intake.DispatchIssue{Key: want.issue, Seq: 1, Type: "issue.updated", Status: want.status, DaemonActor: true, StatusMove: true, ClaimKnown: true}}
+	wantFacts := []intake.Fact{intake.DispatchIssue{Key: want.issue, Seq: 1, Type: "issue.updated", Status: want.status, DaemonActor: true,
+		Requester: claim.RoleArchitect, StatusMove: true, ClaimKnown: true}}
 	if got := facts.recorded(); !reflect.DeepEqual(got, wantFacts) {
 		t.Fatalf("facts = %#v, want the route's own write, as its event, and nothing for a refused write: %#v", got, wantFacts)
 	}

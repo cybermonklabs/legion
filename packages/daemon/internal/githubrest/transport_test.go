@@ -12,10 +12,12 @@ import (
 )
 
 // answeringTransport answers every request itself, counting them, so a test sees which transport
-// a call went through; with err set it answers none, as a transport that reached no server.
+// a call went through; with err set it answers none, as a transport that reached no server. It
+// answers body, or {} where body is empty.
 type answeringTransport struct {
 	calls atomic.Int32
 	err   error
+	body  string
 }
 
 func (a *answeringTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -23,12 +25,16 @@ func (a *answeringTransport) RoundTrip(request *http.Request) (*http.Response, e
 	if a.err != nil {
 		return nil, a.err
 	}
-	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
+	body := a.body
+	if body == "" {
+		body = `{}`
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 }
 
-// A Client call goes through the transport SetTransport set, which HTTPClient carries, and
-// SetTransport(nil) gives every call back to http.DefaultClient, which is all a process that never
-// calls it uses.
+// A Client call goes through the transport SetTransport set, which HTTPClient carries, GetPage's
+// call too, and SetTransport(nil) gives every call back to http.DefaultClient, which is all a
+// process that never calls it uses.
 func TestSetTransportCarriesEveryClientCallUntilItIsSetBack(t *testing.T) {
 	t.Cleanup(func() { SetTransport(nil) })
 	if HTTPClient() != http.DefaultClient {
@@ -45,6 +51,14 @@ func TestSetTransportCarriesEveryClientCallUntilItIsSetBack(t *testing.T) {
 	}
 	if calls := through.calls.Load(); calls != 1 {
 		t.Fatalf("the set transport carried %d calls, want the one", calls)
+	}
+	paged := &answeringTransport{body: `[]`}
+	SetTransport(paged)
+	if _, err := GetPage[string](context.Background(), Client{Token: "token", API: "http://github.invalid/repos/acme/widgets"}, "/pulls"); err != nil {
+		t.Fatalf("GetPage through the set transport: %v", err)
+	}
+	if calls := paged.calls.Load(); calls != 1 {
+		t.Fatalf("the set transport carried %d of GetPage's calls, want the one", calls)
 	}
 
 	SetTransport(nil)

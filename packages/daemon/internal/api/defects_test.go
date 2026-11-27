@@ -422,9 +422,8 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 
 // withdraw_defect answers each case of the shared contract: the owning architect withdraws a
 // reported defect with a reason, which close-wait.md's next version names; anyone else, an id the
-// issue does not hold, a check's or a production check's reason and a defect a merged change
-// carried are refused, and every refusal changes nothing. 409 DEFECT_REQUEST_OF_A_PERSON is not
-// here: it refuses a request of a person, a kind of reason Task 13 adds, which no code writes yet.
+// issue does not hold, a check's or a production check's reason, a defect a merged change
+// carried, and a request a person made are refused, and every refusal changes nothing.
 func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 	t.Parallel()
 
@@ -548,6 +547,22 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 		}
 		architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 		refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, strconv.FormatInt(id, 10), "fixed"), http.StatusConflict, "DEFECT_IN_MERGED_CHANGE")
+	})
+
+	// A request for new work a person made ends with no pull request only on that person's word:
+	// the owning architect asks the person, whose done closes the issue.
+	t.Run("a request of a person is refused DEFECT_REQUEST_OF_A_PERSON", func(t *testing.T) {
+		t.Parallel()
+		h, _, _ := statusHarness(t)
+		setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing'")
+		id := seedDefect(t, h, record.Defect{Issue: statusRoot, Generation: 1, Kind: record.DefectKindRequest, Text: "issue.updated: todo",
+			Role: record.RequesterPerson, ReportedAt: time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC)})
+		architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+		refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, strconv.FormatInt(id, 10), "the work is done"), http.StatusConflict,
+			"DEFECT_REQUEST_OF_A_PERSON")
+		if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
+			t.Fatalf("defects = %+v, want the person's request still open", rows)
+		}
 	})
 
 	t.Run("a blank reason is refused DEFECT_REASON_REQUIRED", func(t *testing.T) {

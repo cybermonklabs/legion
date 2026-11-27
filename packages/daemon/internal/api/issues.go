@@ -30,7 +30,8 @@ func (s *server) issueStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusForbidden, "CONTROLLER_REQUIRED", "issue status requires a controller grant")
 		return
 	}
-	if written, ok := s.setDispatchStatus(w, r, req.Issue, req.Status); ok && s.applyOwnStatusWrite(w, r, written) {
+	requester, person := ownWriteAsker(grant)
+	if written, ok := s.setDispatchStatus(w, r, req.Issue, req.Status); ok && s.applyOwnStatusWrite(w, r, written, requester, person) {
 		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, IssueStatusResponse{})
 	}
 }
