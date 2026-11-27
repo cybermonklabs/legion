@@ -761,16 +761,42 @@ describe("cells", () => {
   });
 
   // Catches: a download's cells read at the stage's count rather than the batch's, so a cell the
-  // batch ran to two reads UNKNOWN at three, or one short of the batch's count reads decided.
-  test("cells at a given count: a case form's cell takes the count its batch ran to", () => {
+  // batch ran to two reads UNKNOWN at three, or one short of the batch's count reads decided; and
+  // one count given to every case, which no Job runs: a default head Job runs A three times and C
+  // once, so one number reads an honest Job as broken at 3 and a short one as clean at 1.
+  test("cells at the counts given: each case's cell takes its own, and a case with none keeps its form's", () => {
     const runs = fresh();
     for (let n = 1; n <= 2; n += 1)
       plantRow(runs, { form: "A", n, clauses: [clause("read", true), clause("choices", true)] });
-    const at = (count?: number) =>
-      cells(runs, "owner-walk", count).map(({ count: c, scored, verdict }) => [c, scored, verdict]);
-    expect(at()).toEqual([[3, 2, "UNKNOWN"]]);
-    expect(at(2)).toEqual([[2, 2, "pass"]]);
-    expect(at(4)).toEqual([[4, 2, "UNKNOWN"]]);
+    plantRow(runs, { form: "C", n: 1, clauses: [clause("read", true), clause("cites", true)] });
+    const at = (counts?: Record<string, number>) =>
+      cells(runs, "owner-walk", counts).map(({ cell, count, scored, verdict }) => [
+        cell,
+        count,
+        scored,
+        verdict,
+      ]);
+    // The stage's own runs: A three, C one. Two A runs are short of three.
+    expect(at()).toEqual([
+      ["guidance/root-A-claude", 3, 2, "UNKNOWN"],
+      ["guidance/root-C-claude", 1, 1, "pass"],
+    ]);
+    // Each case at the count its Job ran it to: both decided.
+    expect(at({ "head\troot-A-claude": 2, "head\troot-C-claude": 1 })).toEqual([
+      ["guidance/root-A-claude", 2, 2, "pass"],
+      ["guidance/root-C-claude", 1, 1, "pass"],
+    ]);
+    // One number for every case, which is what the per-case map replaces: at 3 the honest C cell
+    // reads UNKNOWN, and at 1 the A cell reads decided on a third of its runs.
+    expect(at({ "head\troot-A-claude": 3, "head\troot-C-claude": 3 })).toEqual([
+      ["guidance/root-A-claude", 3, 2, "UNKNOWN"],
+      ["guidance/root-C-claude", 3, 1, "UNKNOWN"],
+    ]);
+    // A case the map does not name keeps its form's runs.
+    expect(at({ "head\troot-A-claude": 2 })).toEqual([
+      ["guidance/root-A-claude", 2, 2, "pass"],
+      ["guidance/root-C-claude", 1, 1, "pass"],
+    ]);
   });
 });
 

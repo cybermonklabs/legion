@@ -39,11 +39,12 @@
 #                                                  pod of the Job stored (RT_STORE): the pack its
 #                                                  row names, checked and unpacked into
 #                                                  <work>/runs (cmd_restore_stored)
-#   rig.sh check-stored <dir> <count> <job log>... a download of a Job's store, checked against
+#   rig.sh check-stored <dir> <job log>...        a download of a Job's store, checked against
 #                                                  the sha256 its logs and its rows name: each run
 #                                                  unpacked into <dir>/checked, or a rig error row
 #                                                  naming each fault; each entry no run's object
-#                                                  named; then the cells at the Job's count
+#                                                  named; then the cells, each case at the count
+#                                                  the Job's own logs name for it
 #   rig.sh rows      [<scenario>]                  each scored run's row.json, then each entry of
 #                                                  its reach, without scoring it again
 #   rig.sh cell      <scenario> <label> <case> <count>
@@ -2728,9 +2729,9 @@ run_case_label() {
   printf '%s %s %s\n' "$kind-$form-$family" "$label" "$form"
 }
 
-# cmd_check_stored DIR COUNT LOG... (the header). DIR is a download of a Job's store,
-# DIR/runs/<run>.tar.gz and DIR/runs/<run>.row.json; COUNT is the count the Job ran each case's cell
-# to (scored-job.sh --count); and the LOGs are every log of the Job, in the order its pods ran
+# cmd_check_stored DIR LOG... (the header). DIR is a download of a Job's store,
+# DIR/runs/<run>.tar.gz and DIR/runs/<run>.row.json; the LOGs are every log of the Job, in the
+# order its pods ran
 # (legion-remote-test.sh keeps every attempt's in <out>.attempts, in that order). Their `stored`
 # and `got` lines name each object's sha256. A `stored` line sets it, and these are faults:
 #   - a `got` line of another sha256 than the `stored` line before it: the object changed between
@@ -2755,26 +2756,31 @@ run_case_label() {
 # passes is unpacked into DIR/checked, through a fresh directory. One that fails gets a rig error
 # row there, naming each fault, and its pack is not unpacked; with no world.json, it is in no cell.
 # Then a line for each run, and the cells at COUNT (score.ts cells; a control form's cell keeps its
-# own count). It exits 0 only when every run is as stored, no entry was left out, no cell is
-# UNKNOWN, that is, short of the runs its count needs, and the cells cover every case the names it
+# own count). Each case's count comes from the Job's own cell line for that case, never from the
+# caller: a Job runs each case to its form's runs unless it is told one count. It exits 0 only when
+# every run is as stored, no entry was left out, every case the names hold has a count in the logs,
+# no cell is UNKNOWN, that is, short of the runs its count needs, and the cells cover every case it
 # checked hold: a run whose directory holds no world.json is in no cell, so a Job none of whose
 # runs reached a cell prints no cell line, which counting UNKNOWN cells alone would read as clean.
-# Any fault, any entry left out, any of its own UNKNOWN lines, any UNKNOWN cell and any case with
-# no cell exit 1.
+# Any fault, any entry left out, any of its own UNKNOWN lines, any UNKNOWN cell, any case with no
+# cell and any case whose count no log names exit 1.
 #
 # What it cannot see: an object an agent in the same pod changed before the rig stored it; and a
 # `stored` line written outside the rig's own put. A run that only a LOG not given names, and whose
 # objects are gone from the store, is named nowhere it reads; its cell is then short of COUNT, and
 # reads UNKNOWN. Give it every attempt's log.
 cmd_check_stored() {
-  [ $# -ge 3 ] || fail "usage: rig.sh check-stored <dir> <count> <job log>..."
-  local dir=$1 count=$2 log line file name run object hex faults joined kase label form want problem fresh
-  local left=0 faulted=0 listed=0 unknown=0 uncovered=0 status cells cell
+  [ $# -ge 2 ] || fail "usage: rig.sh check-stored <dir> <job log>..."
+  local dir=$1 log line file name run object hex faults joined kase label form want problem fresh
+  local left=0 faulted=0 listed=0 unknown=0 uncovered=0 uncounted=0 status cells cell counts
   local -A logged=() named=() conflict=() rowstored=() ran=()
-  # A cell line of the Job's own: `scored-job <scenario> <group> <case>, label <label>: ... count <n>;`.
-  local cell_count_re='^scored-job .*, label [A-Za-z0-9_-]+: .* count ([0-9]+)[;,]'
-  [[ $count =~ ^[1-9][0-9]*$ ]] || fail "check-stored: the count '$count' is no positive whole number"
-  shift 2
+  # A cell line of the Job's own names the case it ran and the count it ran that case to:
+  # `scored-job <scenario> <group> <case>, label <label>: ... count <n>[;,]`. A Job runs each case
+  # to its form's runs unless it is told one count, so a head Job runs A three times, B three times
+  # and C once: one number for the whole Job reads an honest Job as broken at 3 and a short one as
+  # clean at 1. The counts come from here, one a case, and the caller gives none.
+  local cell_count_re='^scored-job [a-z-]+ [a-z-]+ ([A-Za-z0-9-]+), label ([A-Za-z0-9_-]+): .* count ([0-9]+)[;,]'
+  shift
   faults=()
   for log in "$@"; do
     [ -f "$log" ] || fail "the Job's log $log is not a file"
@@ -2799,12 +2805,9 @@ cmd_check_stored() {
     # than trusted: a count below the Job's leaves every cell complete, and reads clean.
     while IFS= read -r line; do
       [[ $line =~ $cell_count_re ]] || continue
-      ran[${BASH_REMATCH[1]}]=1
+      ran[${BASH_REMATCH[2]}$'\t'${BASH_REMATCH[1]}]=${BASH_REMATCH[3]}
     done <"$log"
   done
-  if [ ${#ran[@]} != 0 ] && [ -z "${ran[$count]:-}" ]; then
-    fail "check-stored: the Job's logs name the count $(printf '%s ' "${!ran[@]}" | sed 's/ $//'), not the $count given"
-  fi
   if [ ! -d "$dir/runs" ]; then
     echo "UNKNOWN: $dir/runs is no directory: nothing was checked"
     return 1
@@ -2888,7 +2891,12 @@ cmd_check_stored() {
     printf 'checked %s: rig error: %s\n' "$run" "$joined"
     faulted=$((faulted + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
-  cells=$(bun "$here/score.ts" cells "$dir/checked" owner-walk "$count")
+  counts=$(
+    for key in "${!ran[@]}"; do printf '%s\t%s\n' "$key" "${ran[$key]}"; done |
+      jq -R -s 'split("\n") | map(select(length > 0) | split("\t")) |
+        map({key: (.[0] + "\t" + .[1]), value: (.[2] | tonumber)}) | from_entries'
+  )
+  cells=$(bun "$here/score.ts" cells "$dir/checked" owner-walk "$counts")
   status=$?
   [ -z "$cells" ] || printf '%s\n' "$cells"
   [ "$status" = 0 ] || return "$status"
@@ -2903,14 +2911,18 @@ cmd_check_stored() {
   # Job whose runs all failed, and one where some runs reach a cell and others do not, each say so.
   while IFS= read -r run; do
     read -r kase label form < <(run_case_label "$run")
+    if [ -z "${ran[$label$'\t'$kase]:-}" ]; then
+      echo "UNKNOWN: the Job's logs name no count for $label $kase, so its cell is measured against nothing"
+      uncounted=$((uncounted + 1))
+    fi
     # cells() keys a control form's cell by the form, every other by the case.
     jq -e -n --slurpfile cell <(printf '%s\n' "$cells") --arg label "$label" --arg case "$kase" --arg form "$form" \
       '[$cell[] | select(.label == $label and ((.cell | endswith("/" + $case)) or (.cell | endswith("/" + $form))))] | length > 0' >/dev/null && continue
     echo "UNKNOWN: no cell covers $label $kase: its runs are in none, so nothing was measured of it"
     uncovered=$((uncovered + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
-  if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ] || [ "$uncovered" != 0 ]; then
-    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at count $count, and $uncovered runs are in no cell"
+  if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ] || [ "$uncovered" != 0 ] || [ "$uncounted" != 0 ]; then
+    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at the counts the Job ran, $uncovered runs are in no cell, and $uncounted runs are of a case the logs name no count for"
     return 1
   fi
 }

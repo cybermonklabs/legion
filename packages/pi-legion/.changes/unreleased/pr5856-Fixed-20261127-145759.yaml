@@ -2,13 +2,16 @@ kind: Fixed
 body: |-
   `rig.sh check-stored` counts a run only when a pod's log stores it: a `got` line of a name no
   given log stores, and a second `stored` line of another sha256 for a run whose row was stored,
-  are rig errors. It takes the Job's count (`check-stored <dir> <count> <job log>...`) and reads
-  every entry of the download's `runs/`. It exits 1 on any rig error, on any entry that is no
-  run's object, and on any cell short of the Job's count. The pack of a scored run leaves out
-  every directory named `home`, nested ones too. The cells must cover every case the runs name:
-  a run whose directory holds no world.json is in no cell, so a Job none of whose runs reached
-  one printed no cell line and read clean. The count is checked against the count the Job's own
-  logs name, and a download with no `runs/` directory says UNKNOWN.
+  are rig errors. It reads every entry of the download's `runs/`, and the cells must cover every
+  case the runs name, since a run whose directory holds no world.json is in no cell and a Job none
+  of whose runs reached one printed no cell line and read clean. Each case's count now comes from
+  the Job's own cell line for that case (`check-stored <dir> <job log>...`, and
+  `score.ts cells <runs dir> <scenario> [<counts json>]`), never from the caller: a Job runs each
+  case to its form's runs, so one number for the whole Job reads an honest Job as broken and a
+  short one as clean. A case whose count no log names is a fault. It exits 1 on any rig error, on
+  any entry that is no run's object, on any cell short of its case's count, on any case with no
+  cell, and on a download with no `runs/` directory. The pack of a scored run leaves out every
+  directory named `home`, nested ones too.
 time: 2026-11-27T14:57:59Z
 custom:
     Issue: pr5856
