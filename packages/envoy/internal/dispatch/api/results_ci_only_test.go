@@ -124,6 +124,7 @@ func oneRepositoryGitHub(t *testing.T, repo string, runs *checkRunsFake, pull fu
 		fmt.Fprint(w, `[]`)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", runs.serve)
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},

@@ -1236,6 +1236,10 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 		}
 		fmt.Fprintf(w, `{"status":%q}`, comparison)
 	})
+	// The batched read of many commits' pull requests reads the same route, and each commit it
+	// asks about is counted as a read of that commit is (commitPullsThroughMux), so the two
+	// callers' call counts are compared as they were.
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	return githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 }
 

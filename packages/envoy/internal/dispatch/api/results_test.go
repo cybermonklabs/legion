@@ -1281,6 +1281,7 @@ func linkedRepositoriesOptions(t *testing.T, linked *linkedGitHub) testServerOpt
 			fmt.Fprint(w, `{"status":"diverged"}`)
 		}
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
@@ -2392,6 +2393,7 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 			"state":"open","merged":false,"updated_at":"2026-01-01T00:00:00Z",
 			"head":{"ref":"legion/x","sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":"main"}}]`, issueKey+" work", headCommit)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := httptest.NewServer(mux)
 	t.Cleanup(upstream.Close)
 	handler, database, deps := newTestServer(t, testServerOptions{
@@ -2568,6 +2570,7 @@ func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsA
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := httptest.NewServer(mux)
 	t.Cleanup(upstream.Close)
 	handler, _, _ := newTestServer(t, testServerOptions{
@@ -2630,6 +2633,7 @@ func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *test
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := httptest.NewServer(mux)
 	t.Cleanup(upstream.Close)
 	database, renames := renamedRepositoryStore(t, "RENM", "oldco/gadgets", "acme/gadgets")
@@ -2747,6 +2751,7 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 			"state":"open","merged":false,"updated_at":"2026-01-01T00:00:00Z",
 			"head":{"ref":"legion/child","sha":%q},"base":{"ref":"main"}}]`, childKey+" work", headCommit)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := httptest.NewServer(mux)
 	t.Cleanup(upstream.Close)
 	handler, database, _ := newTestServer(t, testServerOptions{
@@ -2954,6 +2959,77 @@ var factsAlias = regexp.MustCompile(`(r\d+): repository\(owner: \$(\w+), name: \
 // commitPullsAlias reads the aliases of the batched query of a commit's pull requests (delivery's
 // commitPullsQuery), in their order: each is `c<i>: object(oid: "<sha>")`.
 var commitPullsAlias = regexp.MustCompile(`c\d+: object\(oid: "([0-9a-fA-F]+)"\)`)
+
+// commitPullsThroughMux answers POST /graphql for the batched query of the pull requests of many
+// commits (delivery's commitPullsQuery) from the mux's own REST route, as a test's own fake
+// answers one commit: for each `c<i>: object(oid: "<sha>")` alias it asks the mux
+// GET /repos/{owner}/{repo}/commits/{sha}/pulls with the request's own Authorization, and answers
+// that commit's aliased object with those pull requests in the fields of the query (factsNodeOf).
+// A test whose fake counts its REST reads counts one for each commit the query asks about, as it
+// counted one for each read of one commit.
+//
+// Every fake of this package that answers that route registers it, so the read-through reads what
+// the fake holds whether it asks about one commit or about all of them at once. The fake of
+// readThroughGitHub answers the query itself (serveCommitPullsQuery), because it answers the
+// batched query of facts too.
+func commitPullsThroughMux(t *testing.T, mux *http.ServeMux) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !commitPullsAlias.MatchString(request.Query) {
+			http.NotFound(w, r)
+			return
+		}
+		owner, _ := request.Variables["owner"].(string)
+		name, _ := request.Variables["name"].(string)
+		commits := map[string]any{}
+		for index, alias := range commitPullsAlias.FindAllStringSubmatch(request.Query, -1) {
+			inner := httptest.NewRequestWithContext(r.Context(), http.MethodGet,
+				fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", owner, name, alias[1]), nil)
+			inner.Header.Set("Authorization", r.Header.Get("Authorization"))
+			answer := httptest.NewRecorder()
+			mux.ServeHTTP(answer, inner)
+			if answer.Code != http.StatusOK {
+				// GitHub answers one query one status, so a refused commit refuses the query.
+				w.WriteHeader(answer.Code)
+				fmt.Fprintf(w, `{"message":%q}`, http.StatusText(answer.Code))
+				return
+			}
+			var pulls []json.RawMessage
+			if err := json.Unmarshal(answer.Body.Bytes(), &pulls); err != nil {
+				t.Errorf("the pull requests of %s/%s@%s are no JSON array: %v", owner, name, alias[1], err)
+				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+				return
+			}
+			nodes := []any{}
+			for _, raw := range pulls {
+				var named struct {
+					Number int `json:"number"`
+				}
+				if err := json.Unmarshal(raw, &named); err != nil {
+					t.Errorf("a pull request of %s/%s@%s names no number: %v", owner, name, alias[1], err)
+					http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+					return
+				}
+				node, err := factsNodeOf(string(raw), named.Number)
+				if err != nil {
+					t.Errorf("the answer of %s/%s#%d is no pull request of GitHub's REST API: %v", owner, name, named.Number, err)
+					http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+					return
+				}
+				nodes = append(nodes, node)
+			}
+			commits["c"+strconv.Itoa(index)] = map[string]any{
+				"associatedPullRequests": map[string]any{"nodes": nodes},
+			}
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": commits}}); err != nil {
+			t.Errorf("encode the answer to the query of commits' pull requests: %v", err)
+		}
+	}
+}
 
 // serveCommitPullsQuery answers POST /graphql for the batched query of the pull requests of many
 // commits (delivery's ReadThroughCommitsPulls), from the same state the REST route answers from
@@ -5342,6 +5418,7 @@ func readOnlyResultsRig(t *testing.T) (*brokerTokenRig, *readOnlyResultsGitHub) 
 		}
 		fmt.Fprintf(w, `{"status":%q}`, answer)
 	})
+	mux.HandleFunc("POST /graphql", commitPullsThroughMux(t, mux))
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	rig := newBrokerTokenRigOn(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
