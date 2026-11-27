@@ -22,7 +22,7 @@ import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-wor
 import { failRefreshOverHeld } from "../refresh-over-held-fixture";
 import { SHOW_MORE, showMoreName } from "../show-more-fixture";
 import { NodeReferences } from "./NodeReferences";
-import { servingTask } from "./serving-task-fixture";
+import { blockTarget, servingTask } from "./serving-task-fixture";
 
 const STATEMENT = "dispatch://LAY-2/spec#b-r1";
 
@@ -753,16 +753,11 @@ test("a code block that quotes the row is named by its code's first line, drawn 
     source_seq: null,
   };
   draw(true, TASK_ROW, { ...ANSWER, edges: [quoting] }, [
-    {
-      gone: false,
-      kind: "block",
-      name: `\`\`\`\n${code}\n\`\`\``,
+    blockTarget(
       ref,
-      text_tree: {
-        content: [{ content: [{ text: code, type: "text" }], type: "code_block" }],
-        type: "doc",
-      },
-    },
+      [{ content: [{ text: code, type: "text" }], type: "code_block" }],
+      `\`\`\`\n${code}\n\`\`\``
+    ),
   ]);
   await userEvent.click(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })

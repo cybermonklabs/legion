@@ -72,15 +72,6 @@ const MarginDrawerContext = createContext<MarginDrawer | undefined>(undefined);
  *  leaving for the rest of the page (`IssueTree.tsx`'s `releaseFocus`). */
 export const DETAILS_ATTRIBUTE = "data-details";
 
-/** The test id of the box at the page's foot (`IssueComposer.tsx`), which `FOOT_BOX` finds. */
-export const FOOT_BOX_TEST_ID = "issue-composer";
-
-/** The box at the page's foot. Where Details stands beside the outline, Tab goes from a row of
- *  the outline to the box and through it to Details, so the outline keeps the facts of the node
- *  the focus leaves for the box as it does for Details, until the focus leaves the box for the
- *  rest of the page (`IssueTree.tsx`'s `releaseFocus`, decision 570). */
-export const FOOT_BOX = `[data-testid="${FOOT_BOX_TEST_ID}"]`;
-
 export function MarginSlotProvider({
   children,
   drawer,

@@ -30,7 +30,7 @@ export function ProvidersSlot({
   // draws the cue that it takes typing (`document-admission.tsx`).
   return (
     <NoTooltips>
-      <OutlineWriterProvider issueKey={issue.key}>
+      <OutlineWriterProvider issueKey={issue.key} openAsks={issue.open_asks}>
         {/* A later part adds the providers that two slots share here, by lines added. */}
         <FocusedNodeProvider key={issue.key}>
           <OutlineRequestProvider>

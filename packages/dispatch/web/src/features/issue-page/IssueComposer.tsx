@@ -21,9 +21,14 @@ import { AgentName, type AgentStateWords } from "../refs/AgentName";
 import type { RefPickerWords } from "../refs/ref-picker";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useMediaQuery } from "../shell/useDialog";
-import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
+import {
+  FOOT_BOX_ATTRIBUTE,
+  FOOT_BOX_TEST_ID,
+  FOOT_HEIGHT_PROPERTY,
+  HEADER_SCROLLS_QUERY,
+} from "./identity-block";
 import type { TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./margin-slot";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import {
   conversationItem,
   type Landing,
@@ -299,6 +304,7 @@ export function IssueComposer({
       aria-label={CONTROL_LABELS.write}
       className={pageComposer.foot}
       data-testid={FOOT_BOX_TEST_ID}
+      {...{ [FOOT_BOX_ATTRIBUTE]: "" }}
       hidden={!shown}
       onFocus={(event) => {
         // Where the reader came to the box from. A move inside the box is no arrival, and nor is

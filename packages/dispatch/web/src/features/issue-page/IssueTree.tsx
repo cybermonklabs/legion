@@ -24,10 +24,15 @@ import { useMediaQuery } from "../shell/useDialog";
 import { pointMarks } from "./current-point";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
-import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import {
+  bringOnScreen,
+  FOOT_BOX,
+  FOOT_HEIGHT_PROPERTY,
+  IDENTITY_HEIGHT_PROPERTY,
+} from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE, FOOT_BOX } from "./margin-slot";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";

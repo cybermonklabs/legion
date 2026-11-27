@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
+import type { Actor, Comment, IssueDetails, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
@@ -24,10 +24,10 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
-import { agentsOnlyIds } from "./agents-only";
+import { agentsOnlyIds, issueAsks } from "./agents-only";
+import { FOOT_BOX } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
-import { FOOT_BOX } from "./margin-slot";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
@@ -212,9 +212,13 @@ const COMPOSER_FIELD = `${FOOT_BOX} textarea`;
 export function OutlineWriterProvider({
   children,
   issueKey,
+  openAsks,
 }: {
   children: ReactNode;
   issueKey: string;
+  /** The asks the issue read holds open (`IssueDetails.open_asks`), which `land` reads beside
+   *  the asks read, as the outline and the history do (`issueAsks`). */
+  openAsks: IssueDetails["open_asks"];
 }): ReactNode {
   const sendKey = useMemo<MutationKey>(() => ["issue-composer", issueKey], [issueKey]);
   const store = useHeldSends();
@@ -244,15 +248,19 @@ export function OutlineWriterProvider({
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   // Which part of the page takes a landing (`HeldLanding.in`): the history where what the write
   // answered is a turn of a thread it holds, by the rule the outline leaves those threads out by
-  // and the history draws them by (`agentsOnlyIds`), over the same reads under the same keys.
+  // and the history draws them by (`agentsOnlyIds`), over the same reads under the same keys and
+  // the same asks (`issueAsks`), so while the asks read is out or has failed the writer takes the
+  // same asks for questions as they do, and lands no turn where neither draws it.
   const land = useCallback(
     (asked: Landing) => {
       const history =
         asked.under !== undefined &&
-        agentsOnlyIds(comments.data, messages.data, asks.data).has(asked.under.id);
+        agentsOnlyIds(comments.data, messages.data, issueAsks(openAsks, asks.data)).has(
+          asked.under.id
+        );
       setLanding({ ...asked, in: history ? "history" : "outline" });
     },
-    [asks.data, comments.data, messages.data]
+    [asks.data, comments.data, messages.data, openAsks]
   );
   // The animation frame `focus()` is waiting on, if any: a new `focus()` cancels the earlier one
   // before scheduling its own, and unmounting the provider cancels it so no frame of an unmounted

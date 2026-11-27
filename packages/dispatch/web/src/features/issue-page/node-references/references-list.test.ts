@@ -2,10 +2,16 @@ import { expect, test } from "bun:test";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import type { DisplayTree, GraphEdge, GraphReferences, ReferenceTarget } from "../../../api/types";
+import type { KnownReferences } from "../../refs/reference-names";
 import { buildDispatchReference } from "../../refs/routes";
 import { NODE_REFERENCES_WORDS } from "../page-words";
 import { issueItemWords, referenceRows } from "./references-list";
-import { type ServingTask, servingTask, statementsReaching } from "./serving-task-fixture";
+import {
+  blockTarget,
+  type ServingTask,
+  servingTask,
+  statementsReaching,
+} from "./serving-task-fixture";
 
 const AT = "2026-11-15T10:00:00Z";
 
@@ -45,18 +51,11 @@ function commentWords(
   });
 }
 
-/** The page's batched names read's member for the block at `ref`: the server's reading of the
- *  block's own content (`text_tree`), one element of `content` per top-level block, and its
- *  stored excerpt as its `name`, which no row reads. */
-function blockTarget(ref: string, content: readonly DisplayTree[], name = ""): ReferenceTarget {
-  return { gone: false, kind: "block", name, ref, text_tree: { content, type: "doc" } };
-}
-
 /** The rows of the tasks `tasks`, with the names read's member of each, for a statement of
  *  `LAY-2`: no item of the issue holds words the page holds. */
 function taskRows(
   tasks: readonly ServingTask[],
-  known: Parameters<typeof referenceRows>[3] = NO_KNOWN
+  known: Pick<KnownReferences, "edited" | "names"> = NO_KNOWN
 ) {
   return referenceRows(
     NO_WORDS,

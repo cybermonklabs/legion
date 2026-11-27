@@ -4,7 +4,9 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 
 import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
+import type { Comment, IssueDetails } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -31,7 +33,9 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
   try {
     const view = render(
       <QueryClientProvider client={client}>
-        <OutlineWriterProvider issueKey="CORE-1">{null}</OutlineWriterProvider>
+        <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
+          {null}
+        </OutlineWriterProvider>
       </QueryClientProvider>
     );
     try {
@@ -82,7 +86,7 @@ test("unmounting the writer cancels a pending focus frame so a later box does no
   }
   const first = render(
     <QueryClientProvider client={client}>
-      <OutlineWriterProvider issueKey="CORE-1">
+      <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
         <Capture />
       </OutlineWriterProvider>
     </QueryClientProvider>
@@ -96,7 +100,7 @@ test("unmounting the writer cancels a pending focus frame so a later box does no
 
     // Mount a fresh box with a field of its own, and let more frames run than the writer waits.
     second = render(
-      <section data-testid="issue-composer">
+      <section {...{ [FOOT_BOX_ATTRIBUTE]: "" }} data-testid={FOOT_BOX_TEST_ID}>
         <textarea aria-label="Comment" />
       </section>
     );
@@ -108,6 +112,60 @@ test("unmounting the writer cancels a pending focus frame so a later box does no
   } finally {
     second?.unmount();
     first.unmount();
+    client.clear();
+  }
+});
+
+// Decision 127: a reply the line sends to a turn of a thread the history holds lands in the
+// history (`HeldLanding.in`), by the rule the outline leaves those threads out by and the history
+// draws them by (`agents-only.ts`), read over the asks both read it over: the asks the issue holds
+// open, then the asks read (`issueAsks`). An agent's comment under an open approval request is
+// such a thread, which the outline draws no row of. The writer read the rule over the asks read
+// alone, and while that read was out took every ask for a question: the reply's landing went to
+// the outline, which draws no row for the turn and drops it, and which the history leaves alone,
+// so the reader's new turn took no focus.
+test("with the asks read out, a reply to an agent's comment under an open approval request lands in the history", async () => {
+  const approval = { id: "ask-approval", kind: "approval" };
+  const comment = {
+    anchor: null,
+    ask_id: approval.id,
+    author: { id: "planner", kind: "session" },
+    id: "comment-agent",
+    reply_to: null,
+  } as Comment;
+  // The asks read is out, and stays out for the case.
+  const asksRead = spyOn(api, "listIssueAsks").mockImplementation(() => new Promise(() => {}));
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["comments", "CORE-1"], [comment]);
+  client.setQueryData(["issue-messages", "CORE-1"], []);
+  const held: { writer?: OutlineWriter } = {};
+  function Capture(): null {
+    held.writer = useOutlineWriter();
+    return null;
+  }
+  const view = render(
+    <QueryClientProvider client={client}>
+      <OutlineWriterProvider
+        issueKey="CORE-1"
+        openAsks={[approval] as unknown as IssueDetails["open_asks"]}
+      >
+        <Capture />
+      </OutlineWriterProvider>
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() => expect(asksRead, "the writer did not read the asks").toHaveBeenCalled());
+    expect(client.getQueryData(["asks", "CORE-1"]), "the asks read answered").toBeUndefined();
+    act(() => held.writer?.land({ to: "newest", under: { id: comment.id, kind: "comment" } }));
+    expect(
+      held.writer?.landing,
+      "the reply to a turn of the history did not land in the history"
+    ).toMatchObject({ in: "history", under: { id: comment.id } });
+  } finally {
+    view.unmount();
+    asksRead.mockRestore();
     client.clear();
   }
 });

@@ -70,10 +70,16 @@ import {
 import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
-import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import {
+  CLEARANCE,
+  FOOT_BOX_ATTRIBUTE,
+  FOOT_BOX_TEST_ID,
+  FOOT_HEIGHT_PROPERTY,
+  IDENTITY_HEIGHT_PROPERTY,
+} from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import type { NodeChip, TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./margin-slot";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
 import { lineOrKindWord } from "./node-line";
@@ -516,7 +522,7 @@ function renderPageTree(root: TreeNode, reader = "alice", messages: readonly Mes
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <OutlineWriterProvider issueKey={KEY}>
+            <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
               <OutlineRequestProvider>
                 <IssueScope />
                 <PageBody drawn={drawn} held={held} />
@@ -628,7 +634,7 @@ function cardInDetails(): HTMLElement {
  *  it stands between the outline and Details in the order Tab goes: its field and its Send. */
 function boxAtFoot(): { readonly field: HTMLElement; readonly send: HTMLElement } {
   const drawn = render(
-    <section data-testid={FOOT_BOX_TEST_ID}>
+    <section {...{ [FOOT_BOX_ATTRIBUTE]: "" }} data-testid={FOOT_BOX_TEST_ID}>
       <textarea aria-label="Comment" />
       <button type="button">Send</button>
     </section>
