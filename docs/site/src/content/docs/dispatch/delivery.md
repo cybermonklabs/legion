@@ -315,6 +315,7 @@ The failure measures and their items use the same deploy attribution, including 
 
 - A posted deploy counts for the project of the route it was posted to, and for no other project.
   While that project has delivery on and an `events` source, the deploy adds one to its `deploy-frequency` on the UTC day the deploy finished, and each population pull request it names adds its time from merge to the deploy's finish to `merge-to-production`, where no earlier deploy shipped it.
+  That pull request's row in the eval's items carries the posted deploy's finish as `deployed_at` and no `deploy_run_id`, since a posted deploy is no GitHub run.
   A deploy posted to any other project stays in the record and counts in no eval.
 
 Each series of an eval read carries `via_repository`: how many of the rows its window counts reached the project through a repository rather than an issue, such as a pull request with no issue and a deploy that ships no pull request.

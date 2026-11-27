@@ -174,7 +174,7 @@ type evalRequestReads struct {
 // pr-ci's jobs and its day rows both read, and the record's rows behind a failure measure, which
 // its deploys and its failures both read.
 type evalRangeReads struct {
-	counted      map[string]map[string]bool
+	counted      map[string]map[string][]string
 	days         []evals.DayRow
 	read         bool
 	failures     []evals.FailureItem
@@ -677,11 +677,13 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 	return rows, nil
 }
 
-// counted is the row keys of the items family's day rows of the project counted on the days of
-// days, under the deploy repositories the eval's read reads (evals.DeployRepoOf), those of the
-// repositories the request names where it names any. Those of the range's own days are read once
-// a range (evalRangeReads), for every reader of the range that reads them.
-func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string]bool, error) {
+// counted is the items family's day rows of the project counted on the days of days, under the
+// deploy repositories the eval's read reads (evals.DeployRepoOf), those of the repositories the
+// request names where it names any: each item's row key, with what each member that counts it
+// names as the deploy that ships it (evals.Member.ShippedBy, "" for a member that names none), so
+// a key the rows count holds an entry and any other key none. Those of the range's own days are
+// read once a range (evalRangeReads), for every reader of the range that reads them.
+func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string][]string, error) {
 	ranged := days == read.rng.days
 	if keys, held := read.shared.counted[family]; ranged && held {
 		return keys, nil
@@ -690,13 +692,13 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 	if err != nil {
 		return nil, err
 	}
-	keys := make(map[string]bool, len(items))
+	keys := make(map[string][]string, len(items))
 	for _, item := range items {
-		keys[item.RowKey] = true
+		keys[item.RowKey] = append(keys[item.RowKey], item.ShippedBy)
 	}
 	if ranged {
 		if read.shared.counted == nil {
-			read.shared.counted = map[string]map[string]bool{}
+			read.shared.counted = map[string]map[string][]string{}
 		}
 		read.shared.counted[family] = keys
 	}
@@ -705,12 +707,19 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 
 // pullRequestItemRows is the pull requests a delivery eval's day rows of the range counted: those
 // merged in it (delivery.ListPullRequestsInWindow, as the day builder reads them), each with the
-// first deploy that ships it among the deploy repositories the eval reads, each under its own rule
-// (repoRules, the apply runs delivery.ReadApplyRows reads of the range, as delivery.ReadMergedRows
-// reads them beside the same pull requests, and delivery.ContainingRun), none for an eval no
-// deploy repository moves, and its four lead times, each built by its eval's day builder over the
-// one pull request (measures.MergeToProductionDay and the rest), so a row's minutes are its part
-// of that eval's day.
+// deploy its day rows time it to, and its four lead times, each built by its eval's day builder
+// over the one pull request (measures.MergeToProductionDay and the rest), so a row's minutes are
+// its part of that eval's day (of a posted deploy, merge-to-production's alone: the other lead
+// times fold no posted deploy, evals' buildFamilies). That deploy is the one its members name
+// (counted, evals.Member.ShippedBy), the first to ship it of those as the day builder picks it
+// (evals' firstShipped: the first to finish, a GitHub deploy before a posted one at once), and
+// none where no member names one, as of an eval no deploy repository moves: a production apply of
+// a deploy repository the eval reads, under that repository's rule (repoRules, the apply runs
+// delivery.ReadApplyRows reads of the range, as delivery.ReadMergedRows reads them beside the same
+// pull requests), or a deploy posted to the project's route (prodevents.PostedDeploysFrom, read
+// once from the range's start where a member names one), whose finish times it and which holds
+// no run id. So a pull request of a GitHub repository that a posted deploy ships first is timed
+// to the post, as the day rows time it, whichever repositories the request names.
 func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
@@ -724,26 +733,58 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 	if err != nil {
 		return nil, err
 	}
-	shipping := map[string]*delivery.Apply{}
+	// deploys is each deploy a member can name as shipping a pull request, by its row key in
+	// eval_day_members: the production applies of the deploy repositories the eval reads, and,
+	// where a member names one, the deploys posted to the project's route from the range's start on.
+	type shipping struct {
+		apply  delivery.Apply
+		posted bool
+	}
+	deploys := map[string]shipping{}
 	for _, rule := range rules {
 		applyRows, err := delivery.ReadApplyRows(ctx, read.tx, rule, read.rng.days.From)
 		if err != nil {
 			return nil, err
 		}
-		applies := delivery.ProductionApplies(applyRows.Runs, applyRows.Jobs, rule.Production()).Applies
-		for _, pr := range prs {
-			key := evals.PullRequestMember(pr.Repo, pr.Number)
-			if apply := delivery.ContainingRun(pr, rule.DeployRepo, applies); apply != nil && (shipping[key] == nil || apply.CompletedAt.Before(shipping[key].CompletedAt)) {
-				shipping[key] = apply
-			}
+		for _, apply := range delivery.ProductionApplies(applyRows.Runs, applyRows.Jobs, rule.Production()).Applies {
+			deploys[evals.RunMember(rule.DeployRepo, apply.RunID)] = shipping{apply: apply}
+		}
+	}
+	postedPrefix, anchored := evals.PostedMember(""), false
+	for _, ships := range members {
+		anchored = anchored || slices.ContainsFunc(ships, func(by string) bool { return strings.HasPrefix(by, postedPrefix) })
+	}
+	if anchored {
+		posted, err := prodevents.PostedDeploysFrom(ctx, read.tx, read.project, read.rng.days.From)
+		if err != nil {
+			return nil, err
+		}
+		for _, deploy := range posted {
+			deploys[evals.PostedMember(deploy.ID)] = shipping{apply: delivery.Apply{CompletedAt: deploy.FinishedAt, CreatedAt: deploy.FinishedAt}, posted: true}
 		}
 	}
 	var rows []evalItemRow
 	for _, pr := range prs {
-		if pr.CreatedAt == nil || pr.MergedAt == nil || !members[evals.PullRequestMember(pr.Repo, pr.Number)] {
+		ships := members[evals.PullRequestMember(pr.Repo, pr.Number)]
+		if pr.CreatedAt == nil || pr.MergedAt == nil || ships == nil {
 			continue
 		}
-		measured := measures.PROf(pr, shipping[evals.PullRequestMember(pr.Repo, pr.Number)])
+		var first *shipping
+		for _, by := range ships {
+			candidate, named := deploys[by]
+			if named && (first == nil || candidate.apply.CompletedAt.Before(first.apply.CompletedAt) ||
+				candidate.apply.CompletedAt.Equal(first.apply.CompletedAt) && first.posted && !candidate.posted) {
+				first = &candidate
+			}
+		}
+		var apply *delivery.Apply
+		if first != nil {
+			apply = &first.apply
+		}
+		measured := measures.PROf(pr, apply)
+		if first != nil && first.posted {
+			measured.DeployRunID = nil
+		}
 		day, one := measures.Midnight(*pr.MergedAt), []measures.PR{measured}
 		rows = append(rows, evalItemRow{
 			RowKey:  measured.ID,
@@ -812,7 +853,7 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 			reached[apply.RunID] = true
 		}
 		for _, run := range deploys.Started.Runs {
-			if !members[evals.RunMember(run.Repo, run.RunID)] {
+			if members[evals.RunMember(run.Repo, run.RunID)] == nil {
 				continue
 			}
 			rows = append(rows, runItemRow(run, evalRowDeploy, "delivery.ReadDeploys", read.rng.label, map[string]any{
@@ -938,7 +979,7 @@ func (s *server) runItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 			cardIndex = slices.IndexFunc(cards, func(c measures.DeployJobCard) bool { return c.CardID == card })
 		}
 		for _, run := range runs {
-			if !members[evals.RunMember(run.Repo, run.RunID)] {
+			if members[evals.RunMember(run.Repo, run.RunID)] == nil {
 				continue
 			}
 			day, one := measures.Midnight(run.StartedAt), []delivery.DeliveryRun{run}
@@ -1094,7 +1135,7 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 		if err != nil {
 			return nil, err
 		}
-		runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
+		runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return members[evals.RunMember(run.Repo, run.RunID)] == nil })
 		for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, deref(rule.PRChecksRollupJobName)) {
 			failing = append(failing, repoJob{repo: rule.DeployRepo, job: job})
 		}

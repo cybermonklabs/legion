@@ -3,6 +3,7 @@ package api
 import (
 	"maps"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -173,5 +175,111 @@ func TestTheItemsOfAProjectWithTwoSourcesReadEachUnderItsOwnRule(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAPullRequestItemIsTimedToTheDeployItsDayRowsName: acme/alpha-app#1 and #2, of ALPHA's issue,
+// merge at 09:00, and ALPHA's GitHub deploy 101 ships both at 10:29; a deploy posted to OMEGA's
+// route at 09:30, which OMEGA's events source reads, names #1, so OMEGA's merge-to-production
+// times #1 to the post. OMEGA's merge-to-production items time #1 as its day rows do: to the
+// post's finish, with no run id, 30 minutes from the merge, 90 from the opening and 120 from the
+// first commit, and the same with ALPHA's repository named as without. ALPHA's time #2, which no
+// post names, to run 101, 89 minutes. Each project's items' minutes are the samples its day rows
+// of the day hold.
+func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	const app = "acme/alpha-app"
+	issue := createTestIssue(t, handler, "ALPHA", "Two changes to the app")
+	createTestProject(t, handler, "OMEGA")
+	saveProjectRules(t, database, "ALPHA", deployRule(app, "release"))
+	saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{
+		Project: "OMEGA", Delivery: true, Sources: []delivery.SourceInput{{Kind: delivery.SourceKindEvents}},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+	})
+	at := func(hour, minute int) time.Time {
+		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	for _, number := range []int{1, 2} {
+		upsertPR(t, database, delivery.DeliveryPullRequest{
+			Repo: app, Number: number, Title: "feat: " + issue, Author: "octocat", IssueKey: &issue,
+			URL:           "https://github.com/" + app + "/pull/" + strconv.Itoa(number),
+			FirstCommitAt: new(at(7, 30)), CreatedAt: new(at(8, 0)), MergedAt: new(at(9, 0)),
+		})
+	}
+	seedSourceRun(t, database, app, 101, 10, "release")
+	writeProductionEvent(t, database.Pool, prodevents.Event{
+		ProjectKey: "OMEGA", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "release-1",
+		FinishedAt: new(at(9, 30)), PullRequests: []string{app + "#1"},
+	})
+	leaveAttributionInputsUnread(t, database.Pool)
+	next := sourcesDay.AddDate(0, 0, 1)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, next.Add(-time.Minute))
+
+	// items is project's merge-to-production pull requests of the day, by row key, those of repo
+	// alone where it is not "".
+	items := func(project, repo string) map[string]map[string]any {
+		t.Helper()
+		query := url.Values{"from": {sourcesDay.Format(time.RFC3339)}, "to": {next.Format(time.RFC3339)}, "row_kind": {evalRowPullRequest}}
+		if repo != "" {
+			query.Set("repo", repo)
+		}
+		answer := evalGet[evalItemsResponse](t, handler, evalItemsPath(project, evals.SlugMergeToProduction)+"?"+query.Encode())
+		rows := map[string]map[string]any{}
+		for _, row := range answer.Items {
+			rows[row.RowKey] = row.Cols
+		}
+		return rows
+	}
+	// shipped fails unless project's item key is timed to a deploy of run id run (nil for a posted
+	// deploy) that finished at finished, with the lead times minutes.
+	shipped := func(project, key string, row map[string]any, run any, finished time.Time, minutes map[string]float64) {
+		t.Helper()
+		if row == nil {
+			t.Errorf("%s's merge-to-production items hold no %s", project, key)
+			return
+		}
+		deployed, _ := row["deployed_at"].(string)
+		if when, err := time.Parse(time.RFC3339, deployed); err != nil || !when.Equal(finished) || row["deploy_run_id"] != run {
+			t.Errorf("%s's item %s was deployed at %v by run %v, want at %s by %v", project, key, row["deployed_at"], row["deploy_run_id"],
+				finished.Format(time.RFC3339), run)
+		}
+		for _, column := range slices.Sorted(maps.Keys(minutes)) {
+			if row[column] != minutes[column] {
+				t.Errorf("%s's item %s holds %s %v, want %v", project, key, column, row[column], minutes[column])
+			}
+		}
+	}
+
+	omega := items("OMEGA", "")
+	if len(omega) != 1 {
+		t.Errorf("OMEGA's merge-to-production items list %v, want %s#1 alone", slices.Sorted(maps.Keys(omega)), app)
+	}
+	shipped("OMEGA", app+"#1", omega[app+"#1"], nil, at(9, 30), map[string]float64{
+		"merge_to_production_minutes": 30, "open_to_production_minutes": 90, "first_commit_to_production_minutes": 120,
+	})
+	if cut := items("OMEGA", app); !reflect.DeepEqual(cut, omega) {
+		t.Errorf("OMEGA's merge-to-production items of %s are %v, want those of every repository, %v", app, cut, omega)
+	}
+	alpha := items("ALPHA", "")
+	shipped("ALPHA", app+"#2", alpha[app+"#2"], 101.0, at(10, 29), map[string]float64{"merge_to_production_minutes": 89})
+	for project, rows := range map[string]map[string]map[string]any{"ALPHA": alpha, "OMEGA": omega} {
+		listed := []float64{}
+		for _, row := range rows {
+			if minutes, ok := row["merge_to_production_minutes"].(float64); ok {
+				listed = append(listed, minutes)
+			}
+		}
+		slices.Sort(listed)
+		var stored []float64
+		if err := database.Pool.QueryRow(t.Context(), `
+			select coalesce(array_agg(s.sample order by s.sample), '{}') from eval_days d cross join lateral unnest(d.samples) as s(sample)
+			where d.project_key = $1 and d.eval_id = $2 and d.series = 'minutes' and d.repo = '' and d.day = $3
+		`, project, evals.EvalID(project, evals.SlugMergeToProduction), sourcesDay).Scan(&stored); err != nil {
+			t.Fatalf("read %s's merge-to-production samples: %v", project, err)
+		}
+		if !slices.Equal(listed, stored) {
+			t.Errorf("%s's merge-to-production items time %v, want the samples its day rows hold, %v", project, listed, stored)
+		}
 	}
 }
