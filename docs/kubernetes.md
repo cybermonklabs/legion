@@ -1875,6 +1875,44 @@ Write each field as it is, not as a URL writes it: a password that `postgres_dsn
 So each command reads `PGPASSFILE=<pgpass file> psql '<postgres_url>' …`, and libpq takes the password from the file.
 Delete the file when the step is done.
 
+### Counting each issue's merge history
+
+`legion merge-history-report` counts the recorded issues of a project by what the daemon's record shows of each issue's merge.
+It reads the database that the file's `postgres_dsn` names, in one read-only transaction, and it migrates and writes nothing.
+So it also reads the database of a release before this one, whose issues hold no merge snapshot.
+
+```sh
+legion merge-history-report --config <legion.yaml> --project <PROJECT> --repo <owner/name> --repo <owner/name>
+```
+
+Each issue is in one class, which the command derives from the rows at each run, and which no row stores:
+
+- `ANSWERED`: a row proves the merge. It is the issue's merge snapshot, its pull request row in state `merged`, or a production check of a pull request other than 0.
+- `PARTIAL`: rows name the issue, and none proves a merge. They are a pull request row that did not merge, a clock that a clear kept, or a production check of pull request 0.
+- `NONE`: no row bears on the merge. This does not prove that the work never merged.
+
+`--repo` counts only the issues on that repository, compared without case: give it once for each repository.
+Without `--repo` the command counts every recorded issue of the project, and without `--project` it counts the file's own project.
+Each line of the report is a name and its values:
+
+- `project` and `repos`: the selection, where `all` is every repository.
+- `snapshot_at`: the time of the database snapshot that the counts are of.
+- `selected`: the count of issues, then the key of each.
+- `ANSWERED`, `PARTIAL`, `NONE` and `total`: `issues`, `done` (in the phase `done`), `requested` (done, and Dispatch shows `todo`) and `missing_metadata` (an `ANSWERED` merge whose base or final head is unknown).
+
+A count that the command could not read is `UNKNOWN`, never 0.
+Then the report ends with a line `unknown` and one of four codes, the error goes to stderr, and the command exits 1:
+
+- `config`: the file was refused.
+- `connect`: the database was not reached.
+- `read`: the read failed, or the database's catalog shows no record.
+- `empty`: the selection holds no issue.
+
+Before the release that routes a request on a closed issue by its merge history, take this reading of each project.
+Run it once with the repositories of each configured rename pair, and once with no `--repo`.
+Keep the whole output of each run: its selection, its time, its keys and its counts.
+The pair's issues are a part of the project's, so do not add the two readings.
+
 ### Daemon migration identifiers and release order
 
 A migration's version is the leading digits of its file name (`internal/store/migrations`).
