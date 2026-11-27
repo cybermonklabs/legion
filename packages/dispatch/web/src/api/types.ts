@@ -210,6 +210,7 @@ export type {
   LauncherCredentialsResponse,
   LegionIssueResponse,
   LegionIssueState,
+  LegionReadResponse,
   LegionRoleClaim,
   LegionSetting,
   LiveAgentFrame,

@@ -343,6 +343,23 @@ func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLive
 	return answer, nil
 }
 
+// readLegionReadView is a legion-read view's read: GET /api/v1/projects/{key}/legion/read's body,
+// through the route's own readLegionRead, so the view and the route answer one body, the board's
+// header's read. A project that does not exist is loadProject's refusal, and one that names no
+// daemon legion.ErrNoSettings, LEGION_NOT_CONFIGURED, each as the route answers it
+// (viewReads.refusal). It names no issue in read.issues: no Dispatch event moves the body, which
+// only its project's notifications move (dirtyLegionProject).
+func (h *deliveryHub) readLegionReadView(ctx context.Context, spec deliveryLiveSpec, _ time.Time, _ *deliveryViewRead) (any, error) {
+	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+		return nil, err
+	}
+	answer, err := h.server.readLegionRead(ctx, spec.project)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
+}
+
 // readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
 // the function the route answers with (readProjectEvalList), from the query the route would be
 // sent (evalsQuery). So the body is the route's for the same query, byte for byte. A project no

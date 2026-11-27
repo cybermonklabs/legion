@@ -5500,9 +5500,13 @@ Each item below names a path with its method and identity, then its purpose.
   A `legion_issue` view, `{kind: "legion_issue", issue}`, names one issue and nothing else, and its snapshot and deltas carry the body of `GET /api/v1/issues/{key}/legion`, as a `legion` view's carry the body of its project's board.
   A frame that names a project, a window, an `at` or a `query` beside the issue, or names no issue, is `INVALID_FRAME`.
   The view moves when the Legion intake records a read or a batch of state events of the daemon of the issue's project, when `PUT` or `DELETE /api/v1/projects/{key}/legion/daemon` names or removes that daemon, and when a write of one of the issue's runs that stores something new commits (`dispatch_workflow_runs`).
-  At each connection of the hub's listener to Postgres, the hub reads every `legion` and `legion_issue` view again, so a notification sent while the listener was down leaves no view stale.
+  At each connection of the hub's listener to Postgres, the hub reads every `legion`, `legion-read` and `legion_issue` view again, so a notification sent while the listener was down leaves no view stale.
   Dispatch never refuses a `legion_issue` view for a project that names no daemon: its body then says `configured` `false`.
   A well-formed view has one refusal, an `error` frame with the route's code `NOT_FOUND`, for a key that names no issue.
+  A `legion-read` view, `{kind: "legion-read", project}`, names one project and nothing else, and its snapshot and deltas carry the body of `GET /api/v1/projects/{key}/legion/read`, the newest read of that project's daemon.
+  It moves when the Legion intake records a batch of state events or a whole read of that daemon, failed or not, and when `PUT` or `DELETE /api/v1/projects/{key}/legion/daemon` names or removes it.
+  It is a view of its own, apart from the project's `evals` views, so a daemon's batches recompute no eval's numbers.
+  It is refused as its route refuses: `LEGION_NOT_CONFIGURED` for a project that names no daemon, `PROJECT_NOT_FOUND` and `INVALID_PROJECT`.
   An events subscription resumes after a decimal event id;
   its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, or above the head (a log that was reset).
   An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
@@ -5681,6 +5685,15 @@ Each item below names a path with its method and identity, then its purpose.
   The rows are read in three index reads that share no row: the open rows through `issue_facts_closed` (`closed_at is null`), the closed rows of the shown trees by root through `issue_facts_root` (`20261117100000`) and the closed rows of the cards outside those trees by key through the primary key, each planned with its values (`plan_cache_mode = force_custom_plan`), never as the project's rows filtered after the read; the open rows test no list of cards or roots.
   The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, the oldest `updated_at` of the rows served (those the map carries, not every row of the project) and the age of the facts consumer's cursor.
   The cursor age is of the deployment's one consumer and not of the project, so it says how fresh the facts are and is null on a deployment whose consumer has never run.
+  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
+
+- `/api/v1/projects/{key}/legion/read` (GET; cookie, trusted header, or bearer)
+
+  The newest read of the Legion daemon of the project its path names, as the board's header gives it: `{read_at, ok, error}`, the header's `read_at`, `read_ok` and `read_error`, read through the one statement the header reads.
+  `read_at` is when the newest record Dispatch made of that daemon was made, a batch of its state events or a whole read, and null where Dispatch made none;
+  `ok` is whether that read succeeded, and `error` why it did not.
+  While the project owes a whole read, `ok` and `error` are the newest whole read's, so a batch applied after a failed whole read does not show a good read.
+  The `/ws/live` `legion-read` view carries the same body and pushes each change, and the Evals tab's header draws it beside the sources' freshness, for a project that names a daemon.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/projects/{key}/timeline?from=&to=&q=&<facets>&limit=&offset=` (GET; cookie, trusted header, or bearer)

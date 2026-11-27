@@ -24,6 +24,7 @@ import type {
   InboxRow,
   IssueDetails,
   LegionIssueResponse,
+  LegionReadResponse,
   MyRepliesResponse,
   ProjectTimelineResponse,
   ReferenceTarget,
@@ -511,14 +512,17 @@ interface DeliveryLiveBodies {
   readonly evals: EvalListResponse;
   readonly items: EvalItemsResponse;
   readonly "project-timeline": ProjectTimelineResponse;
+  /** The newest read of one project's Legion daemon, `GET /api/v1/projects/{key}/legion/read`'s
+   *  body, which the Evals tab's header draws (`legionReadViewQuery`). */
+  readonly "legion-read": LegionReadResponse;
   /** One issue's Legion state, `GET /api/v1/issues/{key}/legion`'s body: not a delivery view,
    *  but served by the same hub, so `api/legion-issue.ts` subscribes it through `subscribeLive`. */
   readonly legion_issue: LegionIssueResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  the Evals tab subscribes - evals, items and project-timeline - are keyed here; the socket
- *  serves other kinds no page reads. */
+ *  the Evals tab subscribes - evals, items, project-timeline and legion-read - and an issue's
+ *  Legion state are keyed here; the socket serves other kinds no page reads. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -541,6 +545,20 @@ export const projectDeployRunQuery = (project: string, repo: string, id: number)
   queryOptions({
     queryKey: ["project-deploy-run", project, repo, id],
     queryFn: () => api.getProjectDeployRun(project, id, repo),
+  });
+
+/** The newest read of one project's Legion daemon, live (dispatch://INFRA-2918/artifact/plan-md,
+ *  D23): the body of `GET /api/v1/projects/{key}/legion/read`, the board's header's `read_at`,
+ *  `read_ok` and `read_error`, which moves at every batch of state events and every whole read
+ *  Dispatch records of that daemon. The Evals tab's header draws it for a project that names a
+ *  daemon, and opens it with the tab's evals views, on the first paint. Its key stands apart from
+ *  the project's evals (`evalsProjectKey`), so a write of the project's eval rows never subscribes
+ *  it again. A project that names no daemon is refused `LEGION_NOT_CONFIGURED`. */
+export const legionReadViewQuery = (project: string) =>
+  queryOptions({
+    ...LIVE,
+    queryKey: ["legion-read", project],
+    queryFn: (context) => subscribeLive(context, { kind: "legion-read", project }),
   });
 
 /** The kinds of eval, each read by a view of its own on the Evals tab. */

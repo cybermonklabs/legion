@@ -1,8 +1,9 @@
 /** `bun e2e/delivery-live-probe.ts`: an agent's client for `GET /ws/live`, the websocket the
- * Evals tab keeps itself current over. It subscribes one of the tab's views (an `evals`, `items`
- * or `project-timeline` view) under a bearer token and writes one JSON line per frame Dispatch
- * sends, applying each to the body it holds with the page's own `applyDelta` and `applyRevs`. It
- * reconnects as the page does, and each new connection resumes from the last change it applied.
+ * Evals tab keeps itself current over. It subscribes one of the tab's views (an `evals`, `items`,
+ * `project-timeline` or `legion-read` view) under a bearer token and writes one JSON line per frame
+ * Dispatch sends, applying each to the body it holds with the page's own `applyDelta` and
+ * `applyRevs`. It reconnects as the page does, and each new connection resumes from the last
+ * change it applied.
  * What bounds each wait of the probe:
  *
  *  - Before the first open, `--open-within` seconds from the first dial; without that flag, the
@@ -28,9 +29,9 @@
  *    flag, the page's own deadline on a GET's silence, `REQUEST_DEADLINE_MS` (30 s). The time
  *    starts at the request and starts over as the headers arrive and as each piece of the body
  *    does, so a read that keeps sending goes on however slowly, and one that sends nothing for
- *    that long fails the probe. The reads run one after another: one for an evals or an items
- *    view, and one for each page of `PROJECT_TIMELINE_PAGE_MAX` rows a project-timeline view
- *    holds.
+ *    that long fails the probe. The reads run one after another: one for an evals, an items or a
+ *    legion-read view, and one for each page of `PROJECT_TIMELINE_PAGE_MAX` rows a
+ *    project-timeline view holds.
  *
  *  No flag takes a time longer than the longest delay a timer keeps, 2^31-1 ms (about 24.9 days).
  *  Reading `--token-file` and writing `--body-file` wait as long as the named file makes them, as
@@ -45,9 +46,10 @@
  *  list read `GET /api/v1/projects/{key}/evals`, and for an items view the eval's rows
  *  `GET /api/v1/projects/{key}/evals/{slug}/items`, each over the view's own window (a preset's
  *  days ending then) and each field by field (an evals view's every eval and every field but the
- *  refresher's age, which the route measures at the moment of its read). Dispatch refusing the
- *  view ends the watch at once and the probe exits 1 with neither: no body is written and no
- *  route is read.
+ *  refresher's age, which the route measures at the moment of its read); and for a legion-read
+ *  view the read of the project's daemon `GET /api/v1/projects/{key}/legion/read`, field by field.
+ *  Dispatch refusing the view ends the watch at once and the probe exits 1 with neither: no body
+ *  is written and no route is read.
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"project-timeline","project":"INFRA","window":{"preset":28},"query":"limit=200"}' \
@@ -59,6 +61,10 @@
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"items","project":"INFRA","slug":"pr-ci","window":{"preset":28},"query":"sort=failures"}' \
+ *      --minutes 10 --compare
+ *
+ *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
+ *      --view '{"kind":"legion-read","project":"INFRA"}' \
  *      --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
@@ -85,6 +91,7 @@ import type {
   DeliveryLiveView,
   EvalItemsResponse,
   EvalListResponse,
+  LegionReadResponse,
   LiveServerFrame,
   LiveSubscribe,
   ProjectTimelineResponse,
@@ -103,8 +110,12 @@ type DeliveryServerFrame = Extract<
 /** The views the probe watches: the Evals tab's own. */
 export type ProbeView = Extract<
   DeliveryLiveView,
-  { readonly kind: "evals" | "items" | "project-timeline" }
+  { readonly kind: "evals" | "items" | "project-timeline" | "legion-read" }
 >;
+
+/** The views the probe watches that name a window and a query: every one but the daemon's read,
+ *  which names its project alone. */
+type WindowedView = Exclude<ProbeView, { readonly kind: "legion-read" }>;
 
 /** A delta's changes to one list: the ids of the items it upserts, whole, and of those that left. */
 export interface ProbeListChanges {
@@ -254,6 +265,13 @@ const ITEMS_FIELDS: Readonly<Record<keyof EvalItemsResponse, true>> = {
   offset: true,
   total: true,
   window: true,
+};
+/** The daemon read's fields, every one: it is three fields, each sent whole. A record, so a field
+ *  the response gains fails the type check until it is named here. */
+const LEGION_READ_FIELDS: Readonly<Record<keyof LegionReadResponse, true>> = {
+  error: true,
+  ok: true,
+  read_at: true,
 };
 
 /** The project timeline route's largest page, `projectTimelinePageMax` (api/project_timeline.go).
@@ -407,8 +425,8 @@ function duration(flag: string, raw: string, unit: "minutes" | "seconds"): numbe
 }
 
 /** The view `--view` names. The probe checks what it reads itself (the kind, and each view's
- *  project, window and query, and an items view's slug); Dispatch judges the rest and answers a
- *  view it refuses with an error frame. */
+ *  project, window and query, and an items view's slug; a legion-read view's project alone);
+ *  Dispatch judges the rest and answers a view it refuses with an error frame. */
 function parseView(text: string): ProbeView {
   let value: unknown;
   try {
@@ -420,15 +438,23 @@ function parseView(text: string): ProbeView {
     throw new UsageError("--view is a JSON object");
   }
   const kind = "kind" in value ? value.kind : undefined;
-  if (kind !== "evals" && kind !== "items" && kind !== "project-timeline") {
+  if (
+    kind !== "evals" &&
+    kind !== "items" &&
+    kind !== "project-timeline" &&
+    kind !== "legion-read"
+  ) {
     throw new UsageError(
-      `--view's "kind" is evals, items or project-timeline, not ${String(kind)}`
+      `--view's "kind" is evals, items, project-timeline or legion-read, not ${String(kind)}`
     );
   }
-  const named = kind === "project-timeline" ? "a project-timeline view" : `an ${kind} view`;
+  const named =
+    kind === "project-timeline" || kind === "legion-read" ? `a ${kind} view` : `an ${kind} view`;
   if (!("project" in value) || typeof value.project !== "string") {
     throw new UsageError(`${named}'s "project" is the key of the project it shows`);
   }
+  // The daemon's read names its project and nothing else, as Dispatch reads it.
+  if (kind === "legion-read") return value as ProbeView;
   if (kind === "items" && (!("slug" in value) || typeof value.slug !== "string")) {
     throw new UsageError(`an items view's "slug" is the slug of the eval whose rows it shows`);
   }
@@ -518,9 +544,10 @@ function listChanges(
 }
 
 /** What a snapshot's body holds, counted, by the view it answers: a project-timeline body has two
- *  lists, its rows and its session groups, maps and counts; an evals body one list, its evals; and
- *  an items body its rows. Dispatch answers each view with its own route's body (packages/contracts
- *  DeliveryLiveView): the frame carries the union, and the view's kind names the member. */
+ *  lists, its rows and its session groups, maps and counts; an evals body one list, its evals; an
+ *  items body its rows; and a daemon read nothing to count, its three fields being sent whole.
+ *  Dispatch answers each view with its own route's body (packages/contracts DeliveryLiveView): the
+ *  frame carries the union, and the view's kind names the member. */
 function holds(view: ProbeView, body: DeliveryLiveBody): Sections {
   const none: Sections = { counts: null, items: null, maps: null, session_groups: null, set: null };
   switch (view.kind) {
@@ -528,6 +555,8 @@ function holds(view: ProbeView, body: DeliveryLiveBody): Sections {
       return { ...none, items: ((body as EvalListResponse).items ?? []).length };
     case "items":
       return { ...none, items: ((body as EvalItemsResponse).items ?? []).length };
+    case "legion-read":
+      return none;
     case "project-timeline": {
       const timeline = body as ProjectTimelineResponse;
       return {
@@ -871,7 +900,7 @@ function query(
  *  body's: those reads answer the whole UTC days a window touches, so a preset of 84 days, which
  *  touches 85, holds a window the route refuses to be sent. The route folds the same days, and the
  *  `window` it answers is compared with the rest. */
-function ownWindow(view: ProbeView): { readonly from: string; readonly to: string } {
+function ownWindow(view: WindowedView): { readonly from: string; readonly to: string } {
   if (!("preset" in view.window)) return view.window;
   const end = Date.now();
   return {
@@ -884,7 +913,7 @@ function ownWindow(view: ProbeView): { readonly from: string; readonly to: strin
  *  `PROJECT_TIMELINE_PAGE_MAX` rows at most and one page where it holds none, read over the window
  *  the body last applied with the view's own query: each page's rows by id against the rows the
  *  body holds at its offset, and each field that page carries (`TIMELINE_FIELDS`). */
-function timelineReads(view: ProbeView, timeline: ProjectTimelineResponse): Read[] {
+function timelineReads(view: WindowedView, timeline: ProjectTimelineResponse): Read[] {
   const rows = timeline.items ?? [];
   const reads: Read[] = [];
   for (let offset = 0; offset === 0 || offset < rows.length; offset += PROJECT_TIMELINE_PAGE_MAX) {
@@ -915,9 +944,9 @@ function timelineReads(view: ProbeView, timeline: ProjectTimelineResponse): Read
 }
 
 /** The GET routes that answer what `body` holds: the project timeline's pages for the window it
- *  last applied; the evals list and an eval's rows for the view's own window. Dispatch answers
- *  each view with its own route's body (packages/contracts DeliveryLiveView), which the view's
- *  kind names. */
+ *  last applied; the evals list and an eval's rows for the view's own window; and the read of the
+ *  project's daemon. Dispatch answers each view with its own route's body (packages/contracts
+ *  DeliveryLiveView), which the view's kind names. */
 function readsFor(view: ProbeView, body: DeliveryLiveBody): Read[] {
   const project = encodeURIComponent(view.project);
   switch (view.kind) {
@@ -942,6 +971,13 @@ function readsFor(view: ProbeView, body: DeliveryLiveBody): Read[] {
         ),
       ];
     }
+    case "legion-read":
+      return [
+        read<LegionReadResponse>(`/api/v1/projects/${project}/legion/read`, (answer) => ({
+          fields: compareFields(body as LegionReadResponse, answer, namesOf(LEGION_READ_FIELDS)),
+          rows: null,
+        })),
+      ];
   }
 }
 

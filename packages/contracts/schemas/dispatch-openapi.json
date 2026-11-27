@@ -13444,6 +13444,53 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/projects/{key}/legion/read": {
+      "get": {
+        "description": "The newest read of the Legion daemon of the project its path names, as the header of GET /api/v1/projects/{key}/legion/board gives it (its read_at, read_ok and read_error): read_at, when the newest record Dispatch made of that daemon was made, a batch of its state events or a whole read of its state, null where Dispatch made none; ok, whether that read succeeded, false where none was made; and error, why it did not, null where it did or none was made. While the project owes a whole read, ok and error are the newest whole read's, good or failed, so a batch of state events applied after a failed whole read does not show a good read. The `/ws/live` `legion-read` view carries the same body and sends each change, at every batch the Legion intake applies and every whole read it makes, failed or not. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist, 404 LEGION_NOT_CONFIGURED for a project that names no daemon.",
+        "operationId": "getApiV1ProjectsByKeyLegionRead",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionReadResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/projects/{key}/plans": {
       "get": {
         "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps, needs}]}, each task's needs null where the write recorded none, and plan null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
@@ -29635,6 +29682,32 @@
         "required": [
           "place",
           "length"
+        ],
+        "type": "object"
+      },
+      "LegionReadResponse": {
+        "properties": {
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "read_at",
+          "ok",
+          "error"
         ],
         "type": "object"
       },

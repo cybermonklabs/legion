@@ -151,6 +151,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/legion/daemon": {target: "/api/v1/projects/$project/legion/daemon", statement: statementOf(`\bfrom\s+legion_settings\s+where\s+project\b`)},
 	"GET /api/v1/projects/{key}/legion/board": {target: "/api/v1/projects/$project/legion/board", statement: statementOf(`\bfrom\s+legion_reads\b`),
 		volatile: []volatileMember{{"computed_at", readTime}}},
+	// The drive project names a daemon nothing samples here; the read runs the board header's one
+	// statement of the daemon's reads (readDaemonRead) whatever it finds.
+	"GET /api/v1/projects/{key}/legion/read": {target: "/api/v1/projects/$project/legion/read",
+		statement: statementOf(`\bwith\s+newest\s+as\s*\(\s*select\s+read_at,\s*ok,\s*error\s+from\s+legion_reads\b`)},
 	"GET /api/v1/delivery/runs/{id}": {target: "/api/v1/delivery/runs/$pipelineRun",
 		statement: statementOf(`\bfrom\s+delivery_run_jobs\s+where\s+repo\s*=\s*\$1\s+and\s+run_id\s*=\s*\$2\b`)},
 	// The project's one source reads the pipeline fixture's repository (seedWrites), whose oldest

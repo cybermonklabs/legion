@@ -92,26 +92,29 @@ var explainable = regexp.MustCompile(`(?is)^\s*(select|with|values)\b`)
 // jobNameCondition matches a condition that names the jobs a read of delivery_run_jobs reads.
 var jobNameCondition = regexp.MustCompile(`\bname = `)
 
-// The reads of the first paint the test sends, by name: the four evals views, one per kind, and
-// pr-ci's two items views of the CI section.
+// The reads of the first paint the test sends, by name: the four evals views, one per kind,
+// pr-ci's two items views of the CI section, and the header's read of the project's daemon.
 const (
 	paintSlowestJobs = "items pr-ci sort=median"
 	paintFailedJobs  = "items pr-ci sort=failures"
+	paintDaemonRead  = "legion-read"
 )
 
 // TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues (dispatch://INFRA-2918, R12, check k12): the
 // reads of one first paint of the Evals tab, at the 84-day preset with the compare range the header
 // defaults to (the 84 whole UTC days before the window's first), as the tab subscribes them (the
-// web's evalsViewQuery and itemsViewQuery): the four evals views, one of each kind, 200 evals a
-// page, and the CI section's two items views of pr-ci, the slowest jobs (sort=median, 5 rows) and
-// the jobs failed in the last 24 hours (sort=failures, 200 rows). The merge timeline is closed on
-// the first paint (R13), so its view is no read of it. Each view is read through the function the
-// live hub reads it with (deliveryLiveClasses.read), on a server whose pool a tracer records every
-// statement of, with its arguments; each query is then explained with those arguments, with
-// sequential scans off, since a fixture this small is read fastest whole however a statement is
-// written, and a scan carrying no index condition is then what says no index serves a read. The
-// project holds a logged eval whose `last` series a step chart draws, so the evals views read its
-// value at each range's end from its readings (evals.StepLastIn, D20 (b)) among their statements.
+// web's evalsViewQuery, itemsViewQuery and legionReadViewQuery): the four evals views, one of each
+// kind, 200 evals a page, the CI section's two items views of pr-ci, the slowest jobs (sort=median,
+// 5 rows) and the jobs failed in the last 24 hours (sort=failures, 200 rows), and the header's read
+// of the project's daemon (legion-read, D23), which the project, naming a daemon read once, answers.
+// The merge timeline is closed on the first paint (R13), so its view is no read of it. Each view is
+// read through the function the live hub reads it with (deliveryLiveClasses.read), on a server
+// whose pool a tracer records every statement of, with its arguments; each query is then explained
+// with those arguments, with sequential scans off, since a fixture this small is read fastest whole
+// however a statement is written, and a scan carrying no index condition is then what says no
+// index serves a read. The project holds a logged eval whose `last` series a step chart draws, so
+// the evals views read its value at each range's end from its readings (evals.StepLastIn, D20 (b))
+// among their statements.
 //
 // It fails when any plan reads the events table, the log a session title was once resolved out of
 // (the stored title is session_titles'); when a read of delivery_run_jobs outside the failures read
@@ -120,7 +123,8 @@ const (
 // completed_at by those 24 hours in its index condition, sent as the two ends of them, and its read
 // of delivery_run_jobs names those runs alone, every job of each, as measures.FailingJobs tallies
 // each job's results); when any plan has a Seq Scan on issues; when no plan of the evals views reads
-// the step series' readings through eval_readings_series; and when no statement was captured.
+// the step series' readings through eval_readings_series; when no plan of the daemon's read reads
+// legion_reads; and when no statement was captured.
 // It prints what each read sent and read.
 func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	log := &paintStatements{}
@@ -134,6 +138,8 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	registerLastSeries(t, handler, project, "admission", []string{"cap"}, chartList(stepChart("cap", "cap", "")))
 	logReadings(t, handler, project, "admission", "paint-cap", stepReading("cap", "", "cap-1", new(4.0), measures.Midnight(now).AddDate(0, 0, -2)))
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, now)
+	nameLegionDaemon(t, handler, project, "http://legion.invalid:13370")
+	seedLegionRead(t, database, project, now.Add(-time.Minute), "")
 
 	// The header's 84-day preset, and the compare range it defaults to (the web's compareRange):
 	// the window covers the whole UTC days from the one 84 days back to today, and the compare range
@@ -156,6 +162,7 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	reads = append(reads,
 		paintRead{paintSlowestJobs, itemsLiveView(project, evals.SlugPRCI, window, url.Values{"sort": {evalSortMedian}, "limit": {"5"}}.Encode())},
 		paintRead{paintFailedJobs, itemsLiveView(project, evals.SlugPRCI, window, url.Values{"sort": {evalSortFailures}, "limit": {"200"}}.Encode())},
+		paintRead{paintDaemonRead, DeliveryLiveView{Kind: legionReadView, Project: &project}},
 	)
 
 	hub := newDeliveryHub(served, t.Context(), newStillHubClock())
@@ -190,7 +197,7 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 		tallies[paint.name] = &tally{}
 	}
 	relations := map[string]int{}
-	var deployJobReads, failureRunReads, failureJobReads, stepLastReads int
+	var deployJobReads, failureRunReads, failureJobReads, stepLastReads, daemonReadReads int
 	for _, statement := range ran {
 		counts := tallies[statement.read]
 		counts.sent++
@@ -219,6 +226,9 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 		}) {
 			stepLastReads++
 		}
+		if statement.read == paintDaemonRead && read["legion_reads"] {
+			daemonReadReads++
+		}
 		if statement.read == paintFailedJobs {
 			if read["delivery_runs"] {
 				failureRunReads++
@@ -246,6 +256,9 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	if stepLastReads == 0 {
 		t.Error("no plan of the evals views reads eval_readings through eval_readings_series, so the step series' value at each range's end was read by no statement the test explained")
 	}
+	if daemonReadReads == 0 {
+		t.Error("no plan of the header's read of the daemon reads legion_reads, so the read the first paint's legion-read view answers was taken by no statement the test explained")
+	}
 
 	explained := 0
 	for _, paint := range reads {
@@ -262,9 +275,9 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	}
 	t.Logf("the first paint's %d reads sent %d statements, %d of them queries explained; the plans read %s; reads of events %d, of issues %d; "+
 		"%d reads of delivery_run_jobs outside the failures read (a deploy run-jobs read), each naming its jobs; the failures read sent %d reads of delivery_runs, each by completion in %s..%s, and %d of delivery_run_jobs; "+
-		"%d plans of the evals views read the step series' readings through eval_readings_series",
+		"%d plans of the evals views read the step series' readings through eval_readings_series; %d plans of the daemon's read read legion_reads",
 		len(reads), len(ran), explained, strings.Join(read, ", "), relations["events"], relations["issues"],
-		deployJobReads, failureRunReads, horizon.Format(time.RFC3339), end.Format(time.RFC3339), failureJobReads, stepLastReads)
+		deployJobReads, failureRunReads, horizon.Format(time.RFC3339), end.Format(time.RFC3339), failureJobReads, stepLastReads, daemonReadReads)
 }
 
 // requireReadByCompletion holds the failures read's statement of delivery_runs to reading runs by

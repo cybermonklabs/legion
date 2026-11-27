@@ -1196,9 +1196,10 @@ func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
 // freshness a delta never carries), a freshness verdict, an error, the event feed's start, one of
 // its events and its end, an agent view's responder verdict, the one agent frame whose data
 // Dispatch writes itself, an evals view's snapshot, the delta of a reading and a registration,
-// and the snapshot after them, which applying that delta to the first gives whole, and an items
+// and the snapshot after them, which applying that delta to the first gives whole, an items
 // view's snapshot of pr-ci's failing jobs, the delta of a job's second failure and another job's
-// first, and the snapshot after them.
+// first, and the snapshot after them, and a legion-read view's snapshot of a good read of the
+// project's daemon, the delta of a whole read that failed, and the snapshot after it.
 // `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
 // rewrites them.
 func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
@@ -1277,6 +1278,20 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	}
 	timelineAt := liveFrom.Add(47 * time.Hour)
 	timelineDelta.Sub, timelineDelta.Seq, timelineDelta.ChangedAt = "project-timeline-1", "46", &timelineAt
+
+	// ACME's daemon: a good read, then a whole read that failed, whose time and failure the header
+	// shows. No record of a daemon is in the delivery change log, so the delta stands at the change
+	// the snapshot did.
+	daemonReadAt := liveFrom.Add(47 * time.Hour)
+	failedAt := daemonReadAt.Add(10 * time.Minute)
+	failure := "the daemon answered 503 Service Unavailable"
+	daemonHeld := mustEncodeLive(t, legionReadView, legionReadResponse{ReadAt: &daemonReadAt, OK: true})
+	daemonNext := mustEncodeLive(t, legionReadView, legionReadResponse{ReadAt: &failedAt, Error: &failure})
+	daemonDelta, ok := liveDiff(t, daemonHeld, daemonNext)
+	if !ok {
+		t.Fatal("the legion-read fixture's failed read sent no delta")
+	}
+	daemonDelta.Sub, daemonDelta.Seq, daemonDelta.ChangedAt = "legion-read-1", "46", &timelineAt
 	event := liveFixtureEventFrame(t)
 	frames := map[string]any{
 		"snapshot.json":  held.snapshot("timeline-1", 41, &snapshotAt),
@@ -1309,6 +1324,9 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 		"project_timeline_snapshot.json": timelineHeld.snapshot("project-timeline-1", 46, &timelineAt),
 		"project_timeline_delta.json":    timelineDelta,
 		"project_timeline_after.json":    timelineNext.snapshot("project-timeline-1", 46, &timelineAt),
+		"legion_read_snapshot.json":      daemonHeld.snapshot("legion-read-1", 46, &timelineAt),
+		"legion_read_delta.json":         daemonDelta,
+		"legion_read_after.json":         daemonNext.snapshot("legion-read-1", 46, &timelineAt),
 	}
 	for name, frame := range frames {
 		got, err := json.MarshalIndent(frame, "", "  ")

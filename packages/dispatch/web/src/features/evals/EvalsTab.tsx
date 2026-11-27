@@ -118,17 +118,20 @@ function headOf(
   };
 }
 
-/** The header, naming the days of the first answer any of the tab's views gives, and the
- *  freshness line of the delivery view's `delivery_freshness`, read at that view's last answer
- *  (plan D2). It reads only each view's window, compare range and delivery freshness, and the
- *  delivery view's answer time, so a delta of another view that moves none of them renders no
- *  header. */
+/** The header, naming the days of the first answer any of the tab's views gives, the freshness
+ *  line of the delivery view's `delivery_freshness`, read at that view's last answer (plan D2),
+ *  and, where the project has a Legion daemon (`daemon`), its daemon's newest read beside it (plan
+ *  D23), from a view of its own the header opens with the evals views. It reads only each view's
+ *  window, compare range and delivery freshness, and the delivery view's answer time, so a delta
+ *  of another view that moves none of them renders no header. */
 function LiveHeader({
+  daemon,
   kinds,
   onChange,
   scope,
   state,
 }: {
+  daemon: boolean;
   kinds: readonly EvalKind[];
   onChange: (next: EvalsUrlState) => void;
   scope: EvalsScope;
@@ -146,6 +149,7 @@ function LiveHeader({
   return (
     <EvalsHeader
       compare={first?.compare}
+      daemon={daemon ? scope.project : undefined}
       freshness={
         delivery === undefined || freshness === undefined || freshness === null
           ? undefined
@@ -205,11 +209,12 @@ function drawSection(
  * one page of numbers, every project's alike, under one header. It is a subscriber: it opens one
  * evals view per kind it shows, all at once, and each section paints from its own as it lands,
  * never waiting for another's (plan D3). In parallel it reads the project's Legion daemon, which
- * decides whether the Legion section and cards show, and its delivery settings, which decide
- * whether the delivery and CI sections, cards and targets show: with no settings row or delivery
- * off they do not, though Dispatch's eval reads still hold those evals, and with no row the header
- * says delivery is not set up; with no daemon either, every source is missing, and the tab shows
- * one line naming both settings and no section.
+ * decides whether the Legion section and cards show, and whether the header gives the daemon's
+ * newest read, whose view (`legion-read`, plan D23) opens with the evals views, and its delivery
+ * settings, which decide whether the delivery and CI sections, cards and targets show: with no
+ * settings row or delivery off they do not, though Dispatch's eval reads still hold those evals,
+ * and with no row the header says delivery is not set up; with no daemon either, every source is
+ * missing, and the tab shows one line naming both settings and no section.
  * Until each read answers its sections show, so their views are opened with the others rather
  * than after them. The merge timeline opens no view until the reader opens it (spec R13); its
  * brush sets the target cards' days and its Repository facet the repository every number reads
@@ -244,7 +249,7 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
-        <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
+        <LiveHeader daemon={legion} kinds={kinds} onChange={setState} scope={scope} state={state} />
         {everySourceMissing || settings.data === null ? (
           <MissingSources everySource={everySourceMissing} project={project} />
         ) : null}

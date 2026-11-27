@@ -260,6 +260,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "legion-daemon": "a project's Legion daemon setting",
   "legion-issue":
     "an issue's Legion state: its phase, its roles' claims and the daemon's last read",
+  "legion-read":
+    "the newest read of a project's Legion daemon: its time, whether it succeeded and why not",
   "machine-logins": "the reader's machine logins",
   "new-issue-settings": "the label and session a new issue from the bar takes",
   priorities: "the priorities and the work under them",

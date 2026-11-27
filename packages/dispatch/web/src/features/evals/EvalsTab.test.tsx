@@ -635,6 +635,13 @@ const stateRows: [string, () => Promise<void>][] = [
           .map((frame) => queryOf(frame).get("kind"))
           .sort()
       ).toEqual(["ci", "delivery", "experiment"]);
+      // Nor does the header hold a read of a daemon the project does not name.
+      const dropped = new Set(socket.unsubscribes().map((frame) => frame.sub));
+      expect(
+        socket
+          .subscribes()
+          .filter((frame) => frame.view.kind === "legion-read" && !dropped.has(frame.sub))
+      ).toEqual([]);
     },
   ],
   [
@@ -1169,7 +1176,7 @@ test("the header's freshness line is the delivery view's delivery_freshness, and
   );
 });
 
-test("the four views open at once, with the Legion daemon and delivery settings reads in parallel", async () => {
+test("the four views open at once, with the header's daemon read view and the Legion daemon and delivery settings reads in parallel", async () => {
   const { getLegionDaemon, getProjectDeliverySettings } = renderTab(
     "pending",
     "?window=28d",
@@ -1190,6 +1197,14 @@ test("the four views open at once, with the Legion daemon and delivery settings 
     expect(queryOf(frame).get("limit")).toBe("200");
     expect(queryOf(frame).has("offset")).toBe(false);
   }
+  // The header's read of the project's daemon is a first-paint view too (plan D23): it opens with
+  // the four, before the daemon read answers.
+  expect(
+    socket
+      .subscribes()
+      .filter((frame) => frame.view.kind === "legion-read")
+      .map((frame) => frame.view)
+  ).toEqual([{ kind: "legion-read", project: "ACME" }]);
   // Nothing has answered: every section that reads a view says so, and the timeline is closed.
   expect(
     [...document.querySelectorAll("[data-section]")].map((section) =>
