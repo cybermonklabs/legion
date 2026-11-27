@@ -66,7 +66,9 @@ func takeWokenByTheAsk(t *testing.T) (*outbox, *store.Pool, *holderPublisher, *s
 	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	publisher.setAbsent(notify.RoleTopicPrefix + string(token))
-	machine := releasedClaim(t, sup, claim.RoleImplementer)
+	// The claim's row is in the store too: a delivery wake takes nothing for a claim the record holds
+	// no row of (store.Store.TakeDeliveryWake).
+	machine := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 	publisher.holdBy(func() string { return string(machine.View().Claim.Session) })
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", takeAsk, time.Now().Add(-time.Minute)))

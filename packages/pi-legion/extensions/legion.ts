@@ -77,6 +77,7 @@ import { createClaimSession } from "../src/claim-session";
 import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
 import { createCyberPolicyLadder, cyberPolicyLadderSettings } from "../src/cyber-policy-ladder";
+import { ompHostStop } from "../src/host-stop";
 import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
@@ -474,13 +475,15 @@ export default function legionExtension(pi: PiApi): void {
   const runTask: TaskTakeDeps["run"] = (text) =>
     paneContext?.isIdle?.() === false ? "not idle" : pi.sendUserMessage(text);
 
-  // A root architect's or phase worker's claim, and the operator-launched controller's.
+  // A root architect's or phase worker's claim, and the operator-launched controller's. Each exit
+  // a failed claim makes waits for the host's stop where that stop has begun (`ompHostStop`).
   const claimSession = createClaimSession({
     daemon: roleDaemon,
     persistedTranscript,
     runTask,
     reportDrop: turnOutcomes.reportDrop,
     exitProcess: (code) => exitProcess(code),
+    hostStop: ompHostStop,
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
@@ -489,6 +492,7 @@ export default function legionExtension(pi: PiApi): void {
     runTask,
     reportDrop: turnOutcomes.reportDrop,
     exitProcess: (code) => exitProcess(code),
+    hostStop: ompHostStop,
   });
 
   /**
@@ -862,6 +866,11 @@ export default function legionExtension(pi: PiApi): void {
     }
   });
   pi.on("session_shutdown", async (_event, context) => {
+    // The session's stop has begun: its claim boot claims nothing from here on, and a claim that
+    // fails says nothing and exits nothing (R24 of dispatch://INFRA-3589). The controller's claim
+    // does the same.
+    claimSession.stop();
+    controllerSession.stop();
     const sessionID = context.sessionManager.getSessionId();
     clearStartupTurn(sessionID);
     // Whatever this session had open is not this watch's business any more.

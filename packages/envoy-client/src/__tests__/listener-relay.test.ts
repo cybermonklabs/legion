@@ -7,8 +7,9 @@
 // upgrade is opened again as the wire says, each cause counting its own run of waits, with a fresh
 // trade only where the token was the cause; an upgrade never answered is dropped and tried again;
 // a subject the socket does not carry, and a second subscription, close that subscription alone
-// and are logged once; a flush is answered only by its own socket; and a refused trade is told as
-// an inbound outage is. The socket with a host's registrations is `./relay-registration.test.ts`,
+// and are logged once; a flush is answered only by its own socket; and a refused trade, and a
+// refusal of the session's own relay subject, are told as an inbound outage is. The socket with a
+// host's registrations is `./relay-registration.test.ts`,
 // and which settings choose the socket is `./envoy-settings.test.ts`.
 //
 // The reopen rows read the real clock against a real socket, but what they hold is the wait each
@@ -26,8 +27,11 @@ import {
   until,
 } from "../../test/relay-socket-fixtures";
 import { standInDeliverSubject } from "../../test/relay-socket-stand-in";
-import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
+import { createConsumerDelivery } from "../consumer-delivery";
+import { messageFor } from "../errors";
+import { inboundUnavailable } from "../inbound-outage";
 import { ListenerRelay, type RelayEnd, relayReopenDelay, relayRun } from "../listener-relay";
+import { registerWithRelay } from "../relay-registration";
 
 const { started, standIn, opened } = relaySocketFixtures("listener-relay");
 
@@ -175,6 +179,95 @@ describe("a relay socket", () => {
       )
     );
   });
+
+  // R24 of dispatch://INFRA-3589 on this path: a session is told that it receives nothing only
+  // when its socket is closed and does not open again soon. A 4401 or a 1012 close opens again at
+  // once. So the host's outage report, which the socket and the registrations share, is told
+  // nothing, and the registration after the reopens tells no restore, since no outage was told.
+  test("a socket closed 4401 or 1012 and reopened at once tells the session no outage", async () => {
+    const server = standIn();
+    const told: string[] = [];
+    const restored: string[] = [];
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
+      restored: ({ why }) => restored.push(why),
+    });
+    const relay = await opened(server, "ses_a", { outage });
+    // A running session: a registration was accepted before the closes, so the start race's hold
+    // (`InboundUnavailable.noRelay`) is over, and an outage would be told at once.
+    await registerOnce(outage, () => false);
+
+    server.close(4401, "credential_expired");
+    await until(
+      () => opens(server).length === 2,
+      10_000,
+      () => `no reopen after the 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    server.close(1012, "listener_stopping");
+    await until(
+      () => opens(server).length === 3,
+      10_000,
+      () => `no reopen after the 1012 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    await relay.flush();
+    await registerOnce(outage, () => false);
+
+    expect([told, restored]).toEqual([[], []]);
+  });
+
+  // R24 of dispatch://INFRA-3589 on this path. A first open that does not land within the host's
+  // bound is a socket the client opens again. So the registration after it, which finds no relay
+  // subject, is held: `held` hears of it at once, and the session is told nothing inside the
+  // bound. A relay subject the listener refuses is the listener's answer, so the socket tells it
+  // at once, inside that same hold.
+  test("a first open that fails within its bound is held, and a refused relay subject is told at once", async () => {
+    let clock = 0;
+    const told: string[] = [];
+    const held: (string | undefined)[] = [];
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
+      now: () => clock,
+      firstOpenBoundMs: 60_000,
+      held: (relayMissing) => held.push(relayMissing),
+    });
+    const registerWithNoRelay = (relayMissing: string) =>
+      registerWithRelay({
+        relay: undefined,
+        relayMissing,
+        ownAgentSubject: "notifications.agent.ses_a",
+        followed: () => [],
+        outage,
+        send: () => Promise.resolve("registered"),
+        answered: () => undefined,
+        drop: () => undefined,
+        log: () => undefined,
+      }).catch(() => undefined);
+
+    // Every upgrade is refused 429, which says nothing of the token: no socket opens in the bound.
+    const unopened = standIn();
+    unopened.refuseUpgrades = 429;
+    const failure = await opened(unopened, "ses_a", { outage, boundMs: 1_500 }).then(
+      () => undefined,
+      (error: unknown) => messageFor(error)
+    );
+    if (failure === undefined) throw new Error("a socket opened though every upgrade was refused");
+    await registerWithNoRelay(failure);
+    clock = 59_999;
+    await registerWithNoRelay(failure);
+    expect([held, told]).toEqual([[failure], []]);
+
+    // Inside that hold, the listener refuses the session's own relay subject.
+    const server = standIn();
+    server.refuseOwnSubject = true;
+    const relay = await opened(server, "ses_a", { outage });
+    relay.subscribe(standInDeliverSubject("ses_a"));
+    await until(
+      () => told.length > 0,
+      5_000,
+      () => "the refused relay subject was never told"
+    );
+    expect(told).toEqual([
+      `the listener's relay socket refused the subject ${standInDeliverSubject("ses_a")} (subject_not_granted)`,
+    ]);
+  }, 15_000);
 
   test("a 1013 after a 4403 waits 5 s, not 10 s: each close counts its own run of waits", async () => {
     const server = standIn();
@@ -588,12 +681,11 @@ describe("a relay socket", () => {
     const told: string[] = [];
     const asks = { count: 0 };
     const restored = { count: 0 };
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => {
+    const outage = inboundUnavailable(({ why }) => told.push(why), {
+      restored: () => {
         restored.count += 1;
-      }
-    );
+      },
+    });
     // The token client answers a refusal again with no trade until its own retry, 15 s or so
     // later (`RETRY_FIRST_WAIT_MS`, @legion/cipher-client/token-client), and the relay asks it at
     // 1 s, 3 s, 7 s, 15 s and 31 s: the open comes on one of the last two.

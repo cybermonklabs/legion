@@ -109,7 +109,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
 	// (doReconnect), so once it runs the violation is gone and the reconnect has not counted.
 	testwait.Receive(t, "the client to see the server drop the connection", disconnected)
-	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
+	if err := confirmPublished(t.Context(), conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: last error %v, reconnecting %t",
 			err, conn.LastError(), conn.IsReconnecting())
 	}
@@ -144,7 +144,7 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
 	testwait.Receive(t, "the client to reconnect", reconnected)
-	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
+	if err := confirmPublished(t.Context(), conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: before %+v, after %+v", err, before, observe(conn))
 	}
 }

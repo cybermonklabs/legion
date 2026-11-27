@@ -78,7 +78,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		publisher := &holderPublisher{}
 		runner, sup, pool, logs := mergeForwardRunner(t, publisher, asked)
 		publisher.setAbsent(topic)
-		machine := releasedClaim(t, sup, claim.RoleImplementer)
+		machine := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
 		id := noticeRowID(t, pool)
 

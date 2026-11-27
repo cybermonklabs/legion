@@ -93,9 +93,19 @@ export function endPane(): void {
   process.kill(process.ppid, "SIGTERM")
 }
 
-/** Logs why the pane cannot run, then ends it (`endPane`). */
-export function stopPane(why: string): void {
-  logLegion(`${why}; stopping the pane so the daemon launches it again`)
+/**
+ * Logs why the pane cannot run, then ends it (`endPane`). `server` is the channel server's stop
+ * and its writer of the pane's log, which passes each line through the server's tell gate
+ * (`logLegionLine` in `./envoy-channel-server`). Once the server's stop has begun this does
+ * nothing (R24 of dispatch://INFRA-3589): the stop ends the pane already, and `endPane` would
+ * SIGTERM the `claude` this server runs under on its way out.
+ */
+export function stopPane(
+  why: string,
+  server: { readonly stopping: () => boolean; readonly log: (line: string) => void },
+): void {
+  if (server.stopping()) return
+  server.log(`${why}; stopping the pane so the daemon launches it again`)
   endPane()
 }
 

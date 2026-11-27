@@ -63,12 +63,19 @@ export interface LegionClaimHost {
    * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
    * a test sets it short. */
   readonly roleClaimRetryFirstDelayMs?: number;
-  /** Aborts when the host stops: a claim the listener answered 503 is not made again after it. */
+  /** Aborts when the host stops (R24 of dispatch://INFRA-3589): no role claim is made from then
+   *  on, a claim the listener answered 503 is not made again after it, a refused
+   *  `claims/register` is not said, a failed `claims/ready` at the boot is neither said nor sent
+   *  again (`callReadyWithRetry`), and a failure after the registration is neither said nor
+   *  stopped on. A role regain from then on writes nothing: a regain that starts after the abort
+   *  sends no `claims/task`, and a regain whose read answers after it writes no line, whether
+   *  that read passed or failed. */
   readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
   readonly onRoleRegained: (listener: (role: string, reason: string) => Promise<void>) => void;
-  /** Writes one line to the agent's log. */
+  /** Writes one line to the agent's log: every line of the boot's, the `claims/ready` retries'
+   *  included. */
   readonly log: (line: string) => void;
   /** What `stop` does, as a log line names it: `exiting so the daemon launches it again`. */
   readonly stopping: string;
@@ -126,7 +133,10 @@ export interface LegionClaimBoot {
  * `stop` the agent, since none of them changes on retry; a relaunched process reads its claim's
  * value at its own registration. An outage at the registration (`outage`: a 5xx, a 408 or a 429)
  * is logged and rejects, as a request that never reached the daemon does unlogged: both leave the
- * agent to the daemon's registration deadline.
+ * agent to the daemon's registration deadline. A refusal of the registration, and a failure after
+ * a registration, once the host's `signal` aborted - the host stopping - is not logged, and a
+ * failure after a registration is not stopped on either: the host's stop ends the agent itself.
+ * Nor is the role claimed once it aborted.
  *
  * A role claim the listener answered 503 is no refusal (`listenerAskedToClaimAgain`): the listener
  * asks for the claim again - it wrote no claim, because every try of its write met a conflict or
@@ -151,12 +161,18 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     claim = await daemon.register(host.registration);
   } catch (error) {
     if (!(error instanceof LegionDaemonApiError)) throw error;
-    host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
+    // A refusal the host's stop overtook says nothing: the stop ends the agent itself.
+    if (host.signal?.aborted !== true) {
+      host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
+    }
     if (error.status < 400 || outage(error.status)) throw error;
     host.stop();
     return undefined;
   }
   const { taskValue } = host;
+  // The host's stop, read afresh at each use: from then on the boot says nothing, claims nothing
+  // and stops nothing, since the stop ends the agent itself.
+  const stopped = (): boolean => host.signal?.aborted === true;
   // The claim in the agent form its ready and its task reads speak for.
   const caller = claimCaller(claim, host.registration.sessionId);
   // The claim's value read now and handed to the host; whether the read answered.
@@ -165,9 +181,11 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       taskValue(await daemon.task(caller));
       return true;
     } catch (error) {
-      host.log(
-        `claims/task ${why} failed; the claim's value reaches this session with the daemon's next write of it: ${messageFor(error)}`
-      );
+      if (!stopped()) {
+        host.log(
+          `claims/task ${why} failed; the claim's value reaches this session with the daemon's next write of it: ${messageFor(error)}`
+        );
+      }
       return false;
     }
   };
@@ -183,13 +201,14 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       generation: claim.generation,
       promptAgents: claim.promptAgents,
     });
-    await callReadyWithRetry("claims/ready", () => daemon.ready(caller));
+    await callReadyWithRetry("claims/ready", () => daemon.ready(caller), host);
     await readTask("after claims/ready");
     host.afterReadyRead();
   } catch (error) {
-    stopAfterRegistration(host, claim.claimToken, error);
+    if (!stopped()) stopAfterRegistration(host, claim.claimToken, error);
     return undefined;
   }
+  if (stopped()) return undefined;
   try {
     await claimRoleAgainOnBusy(
       () => host.claimRole(claim.claimToken, claim.replaces),
@@ -201,12 +220,15 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       }
     );
   } catch (error) {
-    if (!host.signal?.aborted) stopAfterRegistration(host, claim.claimToken, error);
+    if (!stopped()) stopAfterRegistration(host, claim.claimToken, error);
     return undefined;
   }
   host.onRoleRegained(async (role, reason) => {
     if (role !== claim.claimToken) return;
-    if (await readTask(`after role ${role} was ${reason}`)) {
+    // Once the host's stop began, a regain asks the daemon nothing and says nothing: the stop
+    // ends the agent itself. The stop is read again after the read, which can answer after it.
+    if (stopped()) return;
+    if ((await readTask(`after role ${role} was ${reason}`)) && !stopped()) {
       host.log(`read claims/task after role ${role} was ${reason}`);
     }
   });

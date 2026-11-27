@@ -1,9 +1,10 @@
 package main
 
 // relay_socket_fixture_test.go is the relay socket's test plumbing, shared by its in-process rows
-// (relay_socket_test.go) and its live rows (relay_socket_live_test.go): the in-process rig of two
-// edge replicas, the session's socket client and the frames it decodes, and the helpers that
-// publish a relay frame and read what a replica holds.
+// (relay_socket_test.go, relay_socket_reconnect_test.go) and its live rows
+// (relay_socket_live_test.go): the in-process rig of two edge replicas, the session's socket
+// client and the frames it decodes, and the helpers that publish a relay frame and read what a
+// replica holds.
 
 import (
 	"bytes"
@@ -81,6 +82,10 @@ type relaySocketRig struct {
 	caller  *ciphertokentest.Caller
 	clock   *relaySocketClock
 	logs    *cmdtest.LockedBuffer
+	// proxy is the socket replica's way to the server when a row asked for one
+	// (withSocketNATSLatency, withSocketNATSProxy), nil otherwise: a row cuts it to make that
+	// replica's connection reconnect.
+	proxy *testnats.Proxy
 }
 
 // relaySocketRigOption changes how newRelaySocketRig builds the socket's replica.
@@ -91,6 +96,9 @@ type relaySocketRigConfig struct {
 	// testnats.Proxy with ProxyLatency), so a row can tell a subscribe that reached the server
 	// from one that has not yet; none by default.
 	natsLatency time.Duration
+	// proxied puts the socket replica's connection behind a proxy with no added latency
+	// (withSocketNATSProxy), which a row can cut.
+	proxied bool
 	// checkEvery is the sockets' check interval, relaySocketTestCheck by default.
 	checkEvery time.Duration
 	// maxSockets is the replica's socket cap, relaySocketMaxPerListener by default.
@@ -113,6 +121,10 @@ type relaySocketRigConfig struct {
 
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.natsLatency = rtt }
+}
+
+func withSocketNATSProxy() relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.proxied = true }
 }
 
 func withCheckEvery(every time.Duration) relaySocketRigOption {
@@ -169,11 +181,17 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	owner.relays.setOwned(true)
 
 	url := owner.url
-	if config.natsLatency > 0 {
-		url = testnats.StartProxy(t, url, testnats.ProxyLatency(config.natsLatency)).URL()
+	var proxy *testnats.Proxy
+	switch {
+	case config.natsLatency > 0:
+		proxy = testnats.StartProxy(t, url, testnats.ProxyLatency(config.natsLatency))
+		url = proxy.URL()
+	case config.proxied:
+		proxy = testnats.StartProxy(t, url)
+		url = proxy.URL()
 	}
 	rig := newRelaySocketReplica(t, url, config)
-	rig.owner = owner
+	rig.owner, rig.proxy = owner, proxy
 	return rig
 }
 

@@ -21,6 +21,7 @@ import {
 } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
+import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
 import {
   clearStartupTurn,
   markStartupTurnPending,
@@ -41,6 +42,7 @@ import {
   requiredEnvironment,
   requiredSecret,
 } from "./classify";
+import { exitAfterHostStop, type HostStopExit } from "./host-stop";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
 import type { ReportedClaim } from "./turn-outcome";
 
@@ -90,6 +92,14 @@ export interface ControllerSession {
    * daemon's provider-error wait. Undefined for any other session, and for an operator's
    * controller, which takes no task. */
   readonly reportedClaim: (sessionID: string) => ReportedClaim | undefined;
+  /** The session's stop has begun (`legion.ts` calls it at `session_shutdown`), R24 of
+   * dispatch://INFRA-3589: the claim's signal aborts, so a role claim the listener answered 503
+   * is not made again, and a claim that fails from then on says nothing: the daemon-launched
+   * controller's exits nothing, and the operator-launched controller's start command and re-claim
+   * log and show nothing. A role claim or a notice subscription Envoy refuses because the
+   * session's stop has begun (`claimRefusedForStop`) is that same stop: in RPC mode, which the
+   * daemon-launched controller runs, a SIGTERM stops Envoy's session with no `session_shutdown`. */
+  readonly stop: () => void;
 }
 
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
@@ -113,18 +123,19 @@ function operatorLaunchedController(env: NodeJS.ProcessEnv): boolean {
  * deliberately separate from the claim session (`claim-session.ts`) and the extension's
  * tool-routing policy: a controller holds no claim, and its session can change in place.
  */
-export function createControllerSession(deps: {
-  readonly daemon: () => LegionDaemonClient;
-  readonly persistedTranscript: PersistedTranscript;
-  readonly pi: PiApi;
-  /** An accepted take's text to the host (`TaskTakeDeps.run`). */
-  readonly runTask: TaskTakeDeps["run"];
-  readonly reportDrop: (
-    sessionID: string,
-    ...drop: Parameters<NonNullable<TaskTakeDeps["reportDrop"]>>
-  ) => Promise<void>;
-  readonly exitProcess: (code: number) => never;
-}): ControllerSession {
+export function createControllerSession(
+  deps: HostStopExit & {
+    readonly daemon: () => LegionDaemonClient;
+    readonly persistedTranscript: PersistedTranscript;
+    readonly pi: PiApi;
+    /** An accepted take's text to the host (`TaskTakeDeps.run`). */
+    readonly runTask: TaskTakeDeps["run"];
+    readonly reportDrop: (
+      sessionID: string,
+      ...drop: Parameters<NonNullable<TaskTakeDeps["reportDrop"]>>
+    ) => Promise<void>;
+  }
+): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
   // The session the daemon last registered as the controller and the grant minter for its
   // registration's secret, set as soon as that registration is in: the `legion` tool answers for
@@ -193,6 +204,9 @@ export function createControllerSession(deps: {
   // failure of a typed claim the daemon-launched controller stays up for (`claimOnce`). Any other
   // 503, such as one to the controller-topic subscription after the role landed, is not in it.
   const roleClaimGaveUp = new WeakSet<object>();
+  // Aborts as the session's stop begins (`stop`): the role claim's signal, and what tells a claim
+  // the stop overtook to end quietly (`claimOnce`).
+  const stopped = new AbortController();
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
     claimsQueued += 1;
@@ -306,10 +320,13 @@ export function createControllerSession(deps: {
    * reported naming the task's number, as any claim's is (`reportedClaim`, `runEnded`). A failed
    * read of the start task's value is logged and the claim goes on, since the daemon's next write
    * of the value reaches the session as well; any other step of its claim that fails exits Oh My
-   * Pi, so the daemon relaunches it, as a pane's failed boot
-   * does. A root architect's or phase worker's pane carries a boot token too, its own claim's:
-   * `/legion-claim-controller` run there is a takeover by hand like any other, which needs the
-   * capability and stops before any daemon call without it.
+   * Pi, so the daemon relaunches it, as a pane's failed boot does, except once the session's stop
+   * has begun ({@link ControllerSession.stop}): the stop ends the process itself, and an exit in
+   * its middle would cut its role release and its DELETE short. A step that fails while the host's
+   * own stop runs, which this session has not heard of, exits once that stop has ended
+   * (`claimOnce`). A root architect's or phase worker's pane carries a boot token too, its own
+   * claim's: `/legion-claim-controller` run there is a takeover by hand like any other, which
+   * needs the capability and stops before any daemon call without it.
    *
    * One claim runs at a time, in the order they were asked for: each registration replaces the
    * controller secret the daemon holds, so two claims racing could leave this session holding the
@@ -346,7 +363,12 @@ export function createControllerSession(deps: {
   // after its counted tries (`claimWith`, `roleClaimGaveUp`): that command fails where the person
   // reads it, and the process, which still holds what it held, stays. Any other failure of a typed
   // claim, a 503 to its controller-topic subscription after the role landed included, exits as
-  // the daemon's own claim does, so a controller never stays up without its topics.
+  // the daemon's own claim does, so a controller never stays up without its topics. A claim the
+  // session's stop overtook (`stopped`) says nothing and exits nothing: the stop ends the process
+  // itself. A claim that fails while the host's stop runs, such as a ready the daemon refuses once
+  // its registration deadline retired this process, exits once that stop has ended, and at most at
+  // its bound (`exitAfterHostStop`), with the same status: in RPC mode a SIGTERM runs pi-envoy's
+  // stop and emits no `session_shutdown`.
   const claimOnce = async (
     context: CommandContext | SessionContext,
     progress: ClaimProgress,
@@ -357,12 +379,13 @@ export function createControllerSession(deps: {
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
+      if (stopped.signal.aborted) return;
       if (startedBy === "typed" && error instanceof Error && roleClaimGaveUp.has(error))
         throw error;
       logger.error(
         `[legion] the daemon-launched controller's claim failed; exiting so the daemon launches it again: ${messageFor(error)}`
       );
-      deps.exitProcess(1);
+      await exitAfterHostStop(deps, 1);
     }
   };
 
@@ -417,7 +440,9 @@ export function createControllerSession(deps: {
         pluginContract: PLUGIN_CONTRACT,
       })
       .catch((error: unknown) => {
-        if (error instanceof LegionDaemonApiError) {
+        // A refusal that arrives after the session's stop began writes no line: the stop overtook
+        // this claim, and such a claim says nothing (`claimOnce`).
+        if (error instanceof LegionDaemonApiError && !stopped.signal.aborted) {
           // The daemon's detail is its own text, and it can echo the boot token it was sent.
           logger.error(
             `[legion] claims/register for the controller failed (${error.status}): ${scrub(error.detail)}`
@@ -512,6 +537,7 @@ export function createControllerSession(deps: {
     // the person sees it, with the listener's answer (for a claim that stands, that it holds the
     // role and only the handover is missing); in the daemon-launched controller its process
     // stays up, with the role and topics its first claim took, and its waits are in that log.
+    // Every wait ends at the session's stop (`stopped`), and no claim is made after it.
     const ui: SessionContext["ui"] = context.ui;
     let waitShown = false;
     const showWaiting = (line: string, error: unknown): void => {
@@ -526,13 +552,25 @@ export function createControllerSession(deps: {
       claimWidget = { session: sessionID, clear: () => ui.setWidget?.(CLAIM_WIDGET, undefined) };
       waitShown = true;
     };
+    // Envoy refused a step of this claim because the session's stop has begun
+    // (`claimRefusedForStop`): that stop is this claim's too, so the claim ends quietly
+    // (`claimOnce`). In RPC mode a SIGTERM stops Envoy's session with no `session_shutdown`.
+    const heardStop = (error: unknown): never => {
+      if (claimRefusedForStop(error)) stopped.abort();
+      throw error;
+    };
     try {
       // `replaces`, the session the registration says this one replaces (the controller session
       // the daemon forgot), is the claim's `previous_session_id`: the listener hands that
       // session's unread direct and role messages to this one once the claim lands.
       await claimRoleAgainOnBusy(
         () =>
-          claimEnvoyRole(sessionID, registration.claimToken, envoyContext, registration.replaces),
+          claimEnvoyRole(
+            sessionID,
+            registration.claimToken,
+            envoyContext,
+            registration.replaces
+          ).catch(heardStop),
         registration.claimToken,
         supervised && startedBy === "daemon"
           ? {
@@ -540,6 +578,7 @@ export function createControllerSession(deps: {
                 logger.warn(`[legion] ${line}`);
                 showWaiting(line, error);
               },
+              signal: stopped.signal,
             }
           : {
               log: (line, error) => {
@@ -550,6 +589,7 @@ export function createControllerSession(deps: {
                 if (ui.setWidget !== undefined) showWaiting(line, error);
               },
               maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
+              signal: stopped.signal,
             }
       );
     } catch (error) {
@@ -587,7 +627,7 @@ export function createControllerSession(deps: {
       legionControllerNoticeSubject(project),
       envoyContext,
       registration.claimToken
-    );
+    ).catch(heardStop);
     // The project's Slack channels, as the daemon that launched this controller names them: each
     // channel's app mentions, for as long as this session holds the controller role, never
     // registered with the listener, so a resume hears the list it is launched with and no other.
@@ -597,7 +637,7 @@ export function createControllerSession(deps: {
         slackMentionTopic(channel),
         envoyContext,
         registration.claimToken
-      );
+      ).catch(heardStop);
     }
     if (taken !== undefined) {
       // From a timer, once `session_start` has returned: a send made from there, or while Oh My
@@ -654,9 +694,11 @@ export function createControllerSession(deps: {
    * start message once that claim succeeds; refused after it (the role
    * claim or the subscription), the start turn runs holding the registration, and
    * `/legion-claim-controller` claims the role and its wakes again. The command itself never fails
-   * past that notice. Run again once the start message is sent, it claims nothing: there is
-   * nothing to do once a claim succeeded, and while the last claim that registered (the one that
-   * sent it, or a later one) did not finish, a warning names `/legion-claim-controller`. A `/new`
+   * past that notice. A refusal that comes once the session's stop has begun (`stop`) is neither
+   * logged nor shown: the stop ends the process itself. Run again once the start message is sent,
+   * it claims nothing: there is nothing to do once a claim succeeded, and while the last claim that
+   * registered (the one that sent it, or a later one) did not finish, a warning names
+   * `/legion-claim-controller`. A `/new`
    * while its claim runs stops that claim at its registration, before the send, clearing the
    * replaced session's unsent mark, and the command shows nothing: the re-claim the session change
    * starts claims the new session, sends the start message there, marking it sent, and shows the
@@ -688,6 +730,9 @@ export function createControllerSession(deps: {
       try {
         await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
+        // A claim the session's stop overtook (`stopped`) logs nothing and shows nothing (R24 of
+        // dispatch://INFRA-3589): the stop ends the process itself.
+        if (stopped.signal.aborted) return;
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
         // Refused before the send: the start `session_start` marked due is not coming, so the
@@ -725,7 +770,8 @@ export function createControllerSession(deps: {
    * clears, nor the return to the main session takes down; the session's next run
    * (`handleAgentStart`) or a later claim that succeeds does. A host with no widget shows the
    * outcome as notices from its managed timer once the re-claim settles, a macrotask that runs
-   * after an unfocused `/new`'s reset, which waits on nothing but promises.
+   * after an unfocused `/new`'s reset, which waits on nothing but promises. A re-claim that settles
+   * once the session's stop has begun (`stop`) shows no outcome: the stop ends the process itself.
    *
    * The claim runs with a context whose `ui` collects its notices for the same delivery and that
    * delegates everything else to the host's (`Object.create`, as the host scopes a handler's
@@ -796,6 +842,10 @@ export function createControllerSession(deps: {
       );
     } finally {
       const { ui } = context;
+      // Once the session's stop has begun, the re-claim drops every notice it held for its
+      // outcome: its failure notice, its wait notices and the start claim's hand-over. The stop
+      // ends the process itself.
+      if (stopped.signal.aborted) notices.splice(0);
       if (landed) {
         const kept = notices.filter(({ message }) => !waitNotices.has(message));
         notices.splice(0, notices.length, ...kept);
@@ -861,5 +911,6 @@ export function createControllerSession(deps: {
       taking?.caller.sessionId === sessionID
         ? { caller: taking.caller, role: "controller" }
         : undefined,
+    stop: () => stopped.abort(),
   };
 }

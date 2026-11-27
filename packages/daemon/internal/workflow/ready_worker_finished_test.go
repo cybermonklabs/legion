@@ -309,7 +309,7 @@ func cancelTheRelease(t *testing.T, pool *pgxpool.Pool, role claim.Role) {
 	defer st.Close()
 	// The row the daemon's outbox builds for each claim a cancelled release still holds
 	// (releaseResume): a start at the issue's generation that names no phase and carries no task.
-	resume := func(role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
+	resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 		row, err := record.NewOutboxRow(entryIssue, record.SuperviseRequest{Op: "start", Tree: entryIssue, Role: role,
 			Generation: generation}, seededRaisedAt)
 		return store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, err

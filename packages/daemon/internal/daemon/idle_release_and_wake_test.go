@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ const (
 	idleRigSubscribed = "subscribed-topic"
 	idleRigStuck      = "stuck-resume"
 	idleRigRestart    = "daemon-restart"
+	idleRigHeldStop   = "held-stop"
 	idleRigLapsed     = "lapsed-holder"
 	idleRigFreed      = "freed-claim"
 	// The four pods whose sessions end as a released Oh My Pi's does in production
@@ -61,12 +63,16 @@ const idleRigSender = "idle-rig-sender"
 //
 // Every pod of the rig is launched and made quiet, and one pass of the daemon's own idle tick
 // releases them all: each live claim suspended with the source `released`, and the pod, its disk
-// and its Sandbox deleted. Each subtest then drives its own pods' wakes.
+// and its Sandbox deleted. The held-stop pod's role process takes idleRigStopDelay to exit, and a
+// direct message is sent to its session while that stop is held; the release wave waits for it
+// with the rest. Each subtest then drives its own pods' wakes.
 func TestIdleReleaseAndWake(t *testing.T) {
 	t.Parallel()
 	// The rig is given every plan that sets a field a role process reads as it starts (idleRigPlan):
 	// the topic the subscribed pod's session takes, as `envoy_subscribe` does, and how each
-	// just-released pod's process ends. The stuck pod's plan is left alone until its own subtest,
+	// just-released pod's process ends. The held-stop pod's session stops as a session whose
+	// plugin still has work on its way out does: it deletes its session record at its SIGTERM and
+	// exits idleRigStopDelay later. The stuck pod's plan is left alone until its own subtest,
 	// which can set it then, since TakeTurn is read at each task (idleRigPlan): a session that
 	// takes a task and starts no turn has a turn due, which is a pod the rule keeps.
 	endsAsReleased := idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true}
@@ -76,13 +82,23 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		idleRigJustReleasedRole:   endsAsReleased,
 		idleRigJustReleasedRouted: endsAsReleased,
 		idleRigJustReleasedOutbox: endsAsReleased,
+		idleRigHeldStop:           {TakeTurn: true, StopDelaySeconds: int(idleRigStopDelay / time.Second)},
 	},
 		idleRigDelivery, idleRigChecks, idleRigRoleWake, idleRigAgentWake, idleRigBackstop,
 		idleRigKeepNone, idleRigSubscribed, idleRigStuck, idleRigRestart, idleRigLapsed, idleRigFreed,
-		idleRigJustReleasedAgent, idleRigJustReleasedRole, idleRigJustReleasedRouted, idleRigJustReleasedOutbox)
+		idleRigJustReleasedAgent, idleRigJustReleasedRole, idleRigJustReleasedRouted, idleRigJustReleasedOutbox,
+		idleRigHeldStop)
 
+	held := rig.issue(idleRigHeldStop)
 	rig.quiet()
-	rig.awaitReleased(rig.issues...)
+	heldSent := idleRigSendDuringTheStop(t, rig, held)
+	// The held-stop pod's wake can come as soon as its release ends, which can be before the other
+	// pods are seen released. So its role's tasks are counted from here, and the wait below is for
+	// the other pods alone: it back-dates the claims it waits for, and a back-dated woken pod would
+	// be released a second time. The held-stop subtest reads that pod's release from its records.
+	heldPrompts := len(rig.agents.prompts(held.key, string(held.role)))
+	others := slices.DeleteFunc(slices.Clone(rig.issues), func(issue idleRigIssue) bool { return issue.key == held.key })
+	rig.awaitReleased(others...)
 	// What each role was given before its pod was released — the phase task the daemon's boot
 	// handed it — is what every count below is taken from.
 	rig.markPrompts()
@@ -98,6 +114,68 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// pod and then publish while its woken session has not claimed the role yet.
 	t.Run("TheHookPromptsOfAReleasedRoleReachItsWokenSessionOnce", func(t *testing.T) {
 		idleRigOutboxWakesJustReleased(t, rig)
+	})
+
+	// The held-stop pod's direct message was sent while its stop was held
+	// (idleRigSendDuringTheStop). The send route reported the wake at once, before the release
+	// recorded the claim as released. The listener's own report of the stored copy came
+	// idleRigAgentWait after the send, while the stop was still held, so it too came before the
+	// release recorded the claim. Each report waits for the release and is applied again, and
+	// the pod comes back once. A daemon that dropped a wake that came during a release would drop
+	// both, and the pod would not come back for the message.
+	t.Run("AWakeDuringAHeldStopBringsThePodBackOnce", func(t *testing.T) {
+		issue := rig.issue(idleRigHeldStop)
+		session := rig.session(issue)
+		rig.awaitResumed(issue, 2)
+		rig.awaitTask(issue, "The wake is a message somebody sent to your session ("+session+")")
+		// The daemon logged the wait, with an error that names the session and the issue whose
+		// release the wake waited for (workflow's listenerWakeInRelease).
+		if waited := rig.loggedWhere("an intake fact waits and is applied again after its delay", func(entry map[string]any) bool {
+			reason := fmt.Sprint(entry["error"])
+			return strings.Contains(reason, session) && strings.Contains(reason, issue.key)
+		}); waited == 0 {
+			t.Errorf("the daemon logged no wait for the wake of %s, want at least one: the wake came while the release still stopped the role", session)
+		}
+		// The wake was taken after the release recorded the claim as released: its resume is
+		// recorded against that release (store.TakePodWake), and a wake taken before the
+		// release was recorded would name none.
+		var releases []api.ReleaseRecord
+		for _, release := range rig.releaseRecords(issue).Releases {
+			if release.Issue == issue.key {
+				releases = append(releases, release)
+			}
+		}
+		resumes := rig.resumesOf(issue)
+		if len(releases) != 1 || len(resumes) != 1 || resumes[0].Release != releases[0].ID || resumes[0].Kind != pods.WakeAgentMessage {
+			t.Errorf("%s has the releases %+v and the resumes %+v, want one release and one %s resume recorded against it",
+				issue.key, releases, resumes, pods.WakeAgentMessage)
+		}
+		// The resume's time is the take's (workflow's wakeReleased), not a report's own. The send
+		// route made its report within idleRigSendReportLag of the send, and the listener made its
+		// own idleRigAgentWait after the send, within that lag again. The take came later, at a
+		// retry of a report after the held stop ended, idleRigStopDelay after the role's SIGTERM.
+		// A daemon that took a report at its own time would record that earlier time. The record
+		// keeps whole seconds.
+		for _, resume := range resumes {
+			at, err := time.Parse(time.RFC3339, resume.At)
+			after := heldSent.Add(idleRigAgentWait + idleRigSendReportLag)
+			if err != nil || !at.After(after) {
+				t.Errorf("%s's resume was taken at %q, want a take after %s: a report taken after its wait for the release, not at its own time",
+					issue.key, resume.At, after.UTC().Format(time.RFC3339))
+			}
+		}
+		// The listener stored the message when it was sent, and the woken session's new
+		// consumer starts at the floor the released one left, so the message reaches it once.
+		idleRigDeliveredOnce(t, rig, issue, idleRigHeldStopMessage)
+		// The two reports are one wake: the take of one of them leaves the other nothing to
+		// take, since the role is coming back by then.
+		if prompts := rig.agents.prompts(issue.key, string(issue.role))[heldPrompts:]; len(prompts) != 1 || !strings.Contains(prompts[0].Text, idleRigWakePreamble) {
+			t.Errorf("%s's woken role was given %v, want exactly one task that says its pod was released and brought back",
+				issue.key, idleRigTexts(prompts))
+		}
+		if started := rig.pods.starts(issue.pod); started != 2 {
+			t.Errorf("%s's pod was started %d times, want twice: once at the rig's start and once for the wake", issue.key, started)
+		}
 	})
 
 	t.Run("AReleasedPodComesBackOnEachOfTheFiveWakes", func(t *testing.T) {
@@ -670,6 +748,51 @@ func idleRigStoredForGone(t *testing.T, status int, body string) {
 		t.Fatalf("the send answered %d %s, want 200 stored with state %s, recipient_state %s and the record's last_seen: the session is gone with its pod, and the listener still knows it",
 			status, body, idleRigSendStopped, idleRigRecipientGone)
 	}
+}
+
+// idleRigStopDelay is how long the held-stop pod's role process takes to exit after its SIGTERM
+// (idleRigPlan.StopDelaySeconds). It is longer than the daemon's 30 seconds between two tries of
+// a wake that came during a release, so that wake is tried again at least once while the stop is
+// still held. It is longer than the rig listener's agent wait (idleRigAgentWait) with
+// idleRigSendReportLag beside it, so the listener's own report of the stored copy comes while the
+// stop is held too. A try after the stop ends takes the wake. It is inside the rig's stop grace
+// (idleRigStopGrace), so the process exits on its own and the launcher does not kill it.
+const idleRigStopDelay = 40 * time.Second
+
+// idleRigSendReportLag bounds the time of a wake report after the moment it reports from: the
+// send route's report after the send, which the listener makes off the send's answer, and the
+// listener's own report of the stored copy after its agent wait, which is one redelivery and one
+// publish bounded at 2 seconds. The daemon takes either report only after it waited for the
+// release, at least one 30-second retry later. A resume time inside this bound is a report's own
+// time, not the take's.
+const idleRigSendReportLag = 10 * time.Second
+
+// idleRigHeldStopMessage is the direct message sent to the held-stop pod's session while its
+// stop is held.
+const idleRigHeldStopMessage = "sent while the release was still stopping the session"
+
+// idleRigSendDuringTheStop sends the direct message to the issue's session while the release
+// wave stops the issue's role: after the role process has deleted its session record and said
+// that it is stopping, and before the release records the claim as released. The listener knows
+// the session only by its known-session record, so it stores the message, and its send route
+// reports the wake at once (cmd/listener's reportAgentWake). That wake finds the claim live in a
+// release that has not ended. It answers the time just before the send.
+func idleRigSendDuringTheStop(t *testing.T, rig *idleWakeRig, issue idleRigIssue) time.Time {
+	t.Helper()
+	rig.awaitStopping(issue)
+	// Only this stop is held: the pod that the wake brings back stops as every other pod does.
+	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true})
+	sent := time.Now()
+	status, body := rig.listener.send(map[string]any{
+		"target_session": rig.session(issue), "message": idleRigHeldStopMessage,
+		"source": "agent", "source_session": idleRigSender, "idempotency_key": "held-stop-1",
+	})
+	idleRigStoredForGone(t, status, body)
+	if state := rig.api.claim(rig.token(issue)); state.State == string(supervise.StateSuspended) {
+		t.Fatalf("%s's claim was %s by %q when the send was answered, want it still live: the message must reach the listener while the release still stops the role",
+			issue.key, state.State, state.SuspendedBy)
+	}
+	return sent
 }
 
 // idleRigDeliveredOnce holds the once-ness R3 items 3 and 4 ask of a sender whose message the

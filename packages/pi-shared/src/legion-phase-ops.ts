@@ -769,8 +769,8 @@ const percentile = (sorted: readonly number[], share: number): number | null =>
  * role to the first wake of its pod, and to `asOf` for one nothing has woken yet, since that pod
  * is gone now. A pod's roles wake one resume each, so the first of them ends the release. A
  * resume names the release it ended, except a wake a project pause held, which names none
- * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake.go`). A held wake
- * therefore ends every release of its issue that came before it, where no resume that names the
+ * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake_take.go`). A held
+ * wake therefore ends every release of its issue that came before it, where no resume that names the
  * release came sooner: a pod released before a pause and woken during it would otherwise be
  * charged to `asOf` at every read, for ever. The release ends at the wake's own moment, which is
  * when the pod was wanted again. The pod stays gone from there until the project runs again, and
