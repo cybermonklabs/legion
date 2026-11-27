@@ -6016,9 +6016,10 @@ test("a dialog opened from a row's act gives the focus back to the row", async (
 // as the issue's plan, so the outline places none of its tasks (`tree-drafts.ts`'
 // `servePlacements` places the tasks of the plan alone); its one task, far down its text, serves a
 // requirement of the spec, which the outline draws. From the requirement's row, part M's "What
-// references this row" lists the task, and the task's row opens the address of its block: the
-// document in the main column with its head, and the task's block on screen, at 1440 px and at
-// 390 px. A block of a document the outline draws is part M's own check.
+// references this row" lists the task, named by the first line of its words (part M's decision
+// 560), and the task's row opens the address of its block: the document in the main column with
+// its head, and the task's block on screen, at 1440 px and at 390 px. A block of a document the
+// outline draws is part M's own check.
 // SLOW(>=2s): a load of the issue at each width, with Details and its list opened, and the
 // document opened from the list.
 test("a reference to a block of a document the outline does not draw opens that document on the block @phone", async ({
@@ -6071,10 +6072,7 @@ test("a reference to a block of a document the outline does not draw opens that 
         await references
           .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
           .click();
-        const task = references.getByRole("link", {
-          exact: true,
-          name: NODE_REFERENCES_WORDS.edges.serves,
-        });
+        const task = references.getByRole("link", { exact: true, name: taskWords });
         await expect(
           task,
           `what references the requirement draws no row of the task that serves it ${where}`
