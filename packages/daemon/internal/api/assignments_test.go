@@ -44,8 +44,8 @@ func assignmentsOf(t *testing.T, body []byte, key string) []map[string]any {
 func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 
-	drawn := memoryDrawnAt.Format("2006-01-02T15:04:05Z")
-	planned := planDrawnAt.Format("2006-01-02T15:04:05Z")
+	drawn := drawnAt(t, "memory")
+	planned := drawnAt(t, "plan-length")
 	for key, want := range map[string][]map[string]any{
 		"LEGION-208": {
 			{"experiment": "memory", "variant": "memory", "mode": "random", "drawnAt": drawn},
@@ -90,7 +90,7 @@ func TestTheStateServedBelowTheAssignmentsContractKeepsTheMemoryFields(t *testin
 			}
 			view := issueViews(t, body)["LEGION-208"]
 			if tc.memory {
-				if view["memoryGroup"] != "memory" || view["memoryDrawMode"] != "random" || view["memoryDrawnAt"] != "2026-09-20T11:04:05Z" {
+				if view["memoryGroup"] != "memory" || view["memoryDrawMode"] != "random" || view["memoryDrawnAt"] != drawnAt(t, "memory") {
 					t.Errorf("the drawn root's memory fields = %v, %v, %v; want the fixture's memory, random and its instant, whatever the assignments gate serves",
 						view["memoryGroup"], view["memoryDrawMode"], view["memoryDrawnAt"])
 				}

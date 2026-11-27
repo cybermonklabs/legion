@@ -117,6 +117,8 @@ packages/daemon:
       - internal/testkernel
       - internal/wait
       - internal/wakepace
+      - internal/testgolden
+      - internal/apifixture
       - internal/capabilities/capabilitiestest
       - internal/clock
       - internal/fixturegit
