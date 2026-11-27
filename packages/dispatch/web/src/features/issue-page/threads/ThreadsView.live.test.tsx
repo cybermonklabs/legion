@@ -28,11 +28,14 @@ import {
   EMPTY_STATE_LINES,
   THREADS_WORDS,
 } from "../page-words";
+import ask404Body from "./fixtures/ask-404.json";
 import asksThreadBody from "./fixtures/asks-thread.json";
+import comment404Body from "./fixtures/comment-404.json";
 import commentReplyToBody from "./fixtures/comment-reply-to.json";
 import commentsInBody from "./fixtures/comments-in.json";
 import commentsInBeforeBody from "./fixtures/comments-in-before.json";
 import eventsBody from "./fixtures/events.json";
+import message404Body from "./fixtures/message-404.json";
 import messagesInBody from "./fixtures/messages-in.json";
 import messagesNoneBody from "./fixtures/messages-none.json";
 import messagesNoneAuthorBody from "./fixtures/messages-none-author.json";
@@ -579,6 +582,98 @@ describe("live updates (R14)", () => {
     } finally {
       joined.resolve();
       for (const lookup of lookups) lookup.mockRestore();
+      drawn.done();
+    }
+  });
+
+  test("a thread between agents whose message lookup failed on the cold load of its address stays open, with no failed-read line, while a person's reply moves it from Agents into All", async () => {
+    // A failed read is asked again at once, so the message lookup stands failed past its retries
+    // with no wait.
+    const client = signedInAsReader(
+      new QueryClient({
+        defaultOptions: {
+          queries: { retry: false, retryDelay: 0, staleTime: Number.POSITIVE_INFINITY },
+        },
+      })
+    );
+    // R12's lookups of the address: the ask and the comment route answer their 404, and the
+    // message route fails with its 404's body under the status 503 each time it is read.
+    let messageReads = 0;
+    answerRequests(
+      http.get("/api/v1/asks/:id", () => Response.json(ask404Body, { status: 404 })),
+      http.get("/api/v1/comments/:id", ({ params }) =>
+        params.id === AGENTS ? Response.json(comment404Body, { status: 404 }) : undefined
+      ),
+      http.get("/api/v1/messages/:id", () => {
+        messageReads += 1;
+        return Response.json(message404Body, { status: 503 });
+      })
+    );
+    const drawn = drawAt(threadsAt(AGENTS), client);
+    const user = userEvent.setup();
+    const main = () => document.querySelector<HTMLElement>("[data-thread-main]");
+    const joined = Promise.withResolvers<void>();
+    const reply: MessageThreadRow["message"] = {
+      ...(AGENTS_ROW?.replies?.[0] as MessageThreadRow["message"]),
+      author: BOB,
+      body: "A person's word in the agents' thread.",
+      created_at: LATER,
+      id: PERSON_REPLY,
+      in_reply_to: AGENTS,
+    };
+    const event = nextEvent(eventShape("message.answered"), BOB, {
+      body: reply.body,
+      id: reply.id,
+      in_reply_to: AGENTS,
+      reply_block: null,
+      thread_logins: [BOB.id],
+      thread_target: AGENTS_ROW?.message.target,
+    });
+    // The text of the main column at each moment of the move it drew the failed-read line, or
+    // another record than the one open.
+    const slips: string[] = [];
+    let watch: MutationObserver | undefined;
+    try {
+      await waitFor(() =>
+        expect(main(), "the main column draws no failed read of the lookup").toHaveTextContent(
+          ANSWER_LINES.threads_unreadable
+        )
+      );
+      expect(messageReads, "the message lookup was not read past its retries").toBe(3);
+      await user.click(choice(THREADS_WORDS.choices.agents));
+      await waitFor(() => expect(record()).toHaveAttribute("data-thread-record", AGENTS));
+      const opened = record();
+      watch = new MutationObserver(() => {
+        const text = main()?.textContent ?? "";
+        if (record() !== opened || text.includes(ANSWER_LINES.threads_unreadable)) {
+          slips.push(text);
+        }
+      });
+      watch.observe(document.body, { characterData: true, childList: true, subtree: true });
+      // The route the thread leaves answers first, and the one it joins is held.
+      drawn.server.messagesHeld = joined.promise;
+      drawn.server.agents = NO_THREAD;
+      drawn.server.messages = messagesWith({
+        ...(AGENTS_ROW as MessageThreadRow),
+        last_activity_at: LATER,
+        replies: [...(AGENTS_ROW?.replies ?? []), reply],
+      });
+      drawn.server.events = [event, ...EVENTS];
+      deliver(drawn.client, event);
+      await screen.findByText(EMPTY_STATE_LINES.threads_agents);
+      expect(record(), "the record went while the route it joins was read").toBe(opened);
+      expect(
+        main(),
+        "the failed read was drawn while the route it joins was read"
+      ).not.toHaveTextContent(ANSWER_LINES.threads_unreadable);
+      await act(async () => joined.resolve());
+      await waitFor(() => expect(entry(PERSON_REPLY), "the record draws no reply").toBeDefined());
+      expect(record(), "the record was drawn anew once All held it").toBe(opened);
+      expect(slips, "the main column drew the failed read or no record for a moment").toEqual([]);
+      expect(messageReads, "the failed lookup was read again while a page held the record").toBe(3);
+    } finally {
+      watch?.disconnect();
+      joined.resolve();
       drawn.done();
     }
   });

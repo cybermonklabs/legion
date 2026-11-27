@@ -3,15 +3,19 @@
  * `/threads/<id>` names where no page the view holds has it. The id is read through the three
  * routes that read one thread, `GET /api/v1/asks/{id}`, `GET /api/v1/comments/{id}` and
  * `GET /api/v1/messages/{id}`, at once, each once. A read the server refuses with a `4xx` is not
- * sent again, and one that failed past its retries is sent again only by the reader's Retry. Only
- * an answer whose `issue_key` is this issue's gives a record of this page.
+ * sent again. One that failed past its retries is sent again by the reader's Retry, or once a
+ * page the view holds has had the record and the pages then answer without it. Only an answer
+ * whose `issue_key` is this issue's gives a record of this page.
  */
 import {
+  type QueryKey,
   type QueryStatus,
   queryOptions,
   type UseQueryResult,
   useQuery,
+  useQueryClient,
 } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
@@ -35,9 +39,11 @@ export type ThreadLookup =
   /** The id names no record of this issue: the page's line for an address it cannot find. */
   | { readonly kind: "missing" }
   /** A read failed past its retries and no other gave the record: the page's failed-read
-   *  sentence, whose Retry reads the failed routes again and keeps the others' answers. Nothing
-   *  else reads a failed route again (`settledRead`). A read that Retry sent is out with no
-   *  answer, so the lookup is reading again meanwhile. */
+   *  sentence, whose Retry reads the failed routes again and keeps the others' answers. A read
+   *  that Retry sent is out with no answer, so the lookup is reading again meanwhile. While the
+   *  line is drawn nothing else reads a failed route again (`settledRead`). Once a page the view
+   *  holds has the record, the failure is forgotten (`useThreadLookup`): the lookup is reading
+   *  while a page is out again, and sends that route again if the pages answer without it. */
   | { readonly kind: "failed"; readonly retry: () => void };
 
 /** A record's id as the server stores it and every address writes it: a uuid. */
@@ -67,11 +73,14 @@ interface LookupQuery {
  *  focus, an event's refresh, the stream's whole-cache refresh, and the lookups enabled again once
  *  a page the view waited on has answered, send it no more. A refusal would be answered alike, and
  *  a failure, holding no answer, would be pending while it is out, which takes the page's line
- *  away until it settles. Only the failed-read line's Retry reads a failure again (`answerOf`):
- *  TanStack Query 5 sends a `refetch` whatever `enabled` says. A read is pending, not in error,
- *  through its first try and its own retries, so it stays enabled for them. One in error that
- *  holds an earlier answer stays enabled unless refused, so an event's refresh keeps that answer
- *  fresh; it is not pending while it is out. */
+ *  away until it settles. While the failure's line is drawn, only its Retry reads it again
+ *  (`answerOf`): TanStack Query 5 sends a `refetch` whatever `enabled` says. A failure stands
+ *  only while no page the view holds has the record: once one has, `useThreadLookup` resets it to
+ *  a read not sent yet, which is pending while a page is out again and is sent once the pages
+ *  answer without the record. A read is pending, not in error, through its first try and its own
+ *  retries, so it stays enabled for them. One in error that holds an earlier answer stays enabled
+ *  unless refused, so an event's refresh keeps that answer fresh; it is not pending while it is
+ *  out. */
 function settledRead(query: LookupQuery): boolean {
   const { data, error, status } = query.state;
   return status === "error" && (refused(error) || data === undefined);
@@ -91,10 +100,15 @@ const messageThreadQuery = (key: string, id: string | undefined) =>
  * still out, sends none of them and waits for that page, so a record the first pages hold is never
  * looked up (R15). An answer the lookups already gave stands meanwhile: a record found, the line
  * for an id that names no record, or the failed read, each stays drawn while a page is read again.
- * An id that is no uuid is refused before any read, whatever the pages hold. Where the comment
- * route answers a reply with a quote, which may begin a record (R8) and whose read holds only the
- * comments whose `reply_to` names it, its thread is read once more by its `reply_to` (for a
- * comment thread) or its `ask_id` (for an ask thread), whose records give the reply's.
+ * A failure is the one answer true does not keep: a page that has the record gave what the failed
+ * read could not, so each lookup of the id that failed past its retries with no answer is reset,
+ * in an effect, to a read not sent yet. A write that then moves the record off the pages leaves
+ * the lookup reading, not failed, until the page the record joins answers, so the view keeps the
+ * record open (R14); if the pages answer without it, the reset route is sent again. An id that is
+ * no uuid is refused before any read, whatever the pages hold. Where the comment route answers a
+ * reply with a quote, which may begin a record (R8) and whose read holds only the comments whose
+ * `reply_to` names it, its thread is read once more by its `reply_to` (for a comment thread) or
+ * its `ask_id` (for an ask thread), whose records give the reply's.
  */
 export function useThreadLookup(
   issueKey: string,
@@ -108,9 +122,12 @@ export function useThreadLookup(
     enabled: (query: LookupQuery) => asked && !settledRead(query),
     retry: lookupRetry,
   };
-  const ask = useQuery({ ...askQuery(named), ...lookup });
-  const comment = useQuery({ ...commentQuery(named), ...lookup });
-  const message = useQuery({ ...messageThreadQuery(issueKey, named), ...lookup });
+  const askRead = askQuery(named);
+  const commentRead = commentQuery(named);
+  const messageRead = messageThreadQuery(issueKey, named);
+  const ask = useQuery({ ...askRead, ...lookup });
+  const comment = useQuery({ ...commentRead, ...lookup });
+  const message = useQuery({ ...messageRead, ...lookup });
   const reply = comment.data?.comment;
   const quotedReply =
     reply !== undefined && reply.issue_key === issueKey && quoteOf(reply) !== undefined;
@@ -118,15 +135,40 @@ export function useThreadLookup(
     quotedReply && reply.reply_to !== null && reply.ask_id === null ? reply.reply_to : undefined;
   const replyAsk =
     quotedReply && reply.ask_id !== null && reply.reply_to === null ? reply.ask_id : undefined;
+  const threadRead = commentQuery(head);
   const thread = useQuery({
-    ...commentQuery(head),
+    ...threadRead,
     ...lookup,
     enabled: (query: LookupQuery) => asked && head !== undefined && !settledRead(query),
   });
+  const askThreadRead = askQuery(replyAsk);
   const askThread = useQuery({
-    ...askQuery(replyAsk),
+    ...askThreadRead,
     ...lookup,
     enabled: (query: LookupQuery) => asked && replyAsk !== undefined && !settledRead(query),
+  });
+  // While a page the view holds has the record, each lookup that failed past its retries with no
+  // answer and no refusal is reset to a read not sent yet. Kept, the failure would draw the
+  // failed-read line in the open record's place the moment a write moves the record off the pages
+  // (R14), and would never be read again if the pages then answered without it. No line is drawn
+  // while a page has the record, so the reset takes none away. It runs in an effect: a reset
+  // tells each component that reads the query, which React refuses while this one renders.
+  const queryClient = useQueryClient();
+  const reads: readonly (readonly [UseQueryResult<ThreadSource>, QueryKey])[] = [
+    [ask, askRead.queryKey],
+    [comment, commentRead.queryKey],
+    [message, messageRead.queryKey],
+    ...(head === undefined ? [] : [[thread, threadRead.queryKey] as const]),
+    ...(replyAsk === undefined ? [] : [[askThread, askThreadRead.queryKey] as const]),
+  ];
+  const forgotten =
+    held === true
+      ? reads
+          .filter(([read]) => read.isError && read.data === undefined && !refused(read.error))
+          .map(([, queryKey]) => queryKey)
+      : [];
+  useEffect(() => {
+    for (const queryKey of forgotten) void queryClient.resetQueries({ exact: true, queryKey });
   });
   if (named === undefined) return { kind: "missing" };
   if (held === true) return { kind: "held" };
@@ -147,10 +189,10 @@ export function useThreadLookup(
     const record = records.find((one) => one.id === named);
     if (record !== undefined) return { kind: "found", record, thread: records };
   }
-  // A lookup not sent yet, while a page that may hold the record is out, is pending as well. One
-  // that has answered is not enabled while such a page is out again, so it keeps the state it
-  // settled in, and the line it draws stays drawn while each event of the issue reads the list's
-  // pages again.
+  // A lookup not sent yet, while a page that may hold the record is out, is pending as well, a
+  // failure reset while a page held the record among them. One that has answered is not enabled
+  // while such a page is out again, so it keeps the state it settled in, and the line it draws
+  // stays drawn while each event of the issue reads the list's pages again.
   if (answers.some((answer) => answer.out)) return { kind: "reading" };
   const failed = answers.filter((answer) => answer.failed);
   if (failed.length === 0) return { kind: "missing" };

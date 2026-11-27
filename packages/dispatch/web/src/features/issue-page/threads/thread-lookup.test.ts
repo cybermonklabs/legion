@@ -504,6 +504,40 @@ test("Retry while a page that may hold the id is out reads the failed route agai
   expect(reads.asked.message).toEqual([ASK_ID]);
 });
 
+test("a failed read is forgotten once a page holds the id: reading while a write moves the record off the pages, and read again once they answer without it", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ROOT_ID);
+  await jump(0);
+  await failOn(reads, "message");
+  expect(view.result.current.kind).toBe("failed");
+  // A page the view reads holds the record, then a write moves it off that page while the page
+  // it joins is out (R14).
+  view.rerender({ held: true });
+  await jump(0);
+  expect(view.result.current.kind).toBe("held");
+  view.rerender({ held: undefined });
+  await jump(0);
+  expect(
+    view.result.current.kind,
+    "the failed read came back while the page it joins was out"
+  ).toBe("reading");
+  expect(reads.asked.message, "the failed route was read while a page held the id").toEqual(
+    Array(3).fill(ROOT_ID)
+  );
+  reads.again("message");
+  view.rerender({ held: false });
+  await jump(0);
+  expect(
+    reads.asked.message,
+    "the failed route was not read again once the pages answered without the id"
+  ).toEqual(Array(4).fill(ROOT_ID));
+  await reads.answer("message", { body: ROOT });
+  expect(recordOf(view.result.current)).toBe(ROOT_ID);
+  expect(reads.asked.ask).toEqual([ROOT_ID]);
+  expect(reads.asked.comment).toEqual([ROOT_ID]);
+});
+
 test("a route that loses its connection draws the failed read with Retry", async () => {
   jest.useFakeTimers();
   reads = routes();
