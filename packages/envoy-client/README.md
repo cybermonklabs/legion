@@ -916,7 +916,7 @@ succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole (p50
 `dispatch` command, and the session waiting on it, no longer than the 60 s deadline, and one that
 takes requests and never answers them holds it about 11 minutes.
 How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
-loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
+loop (`#sendWrite`) decides nothing else. A write is in one of two states: nothing sent, or may have
 landed. An attempt may have landed when it got a 5xx, a 408 (`mayHaveReachedServer`: a hop in
 front of Dispatch can answer 408 after it forwarded the write) or `409 KEY_IN_FLIGHT`, was cut off
 for silence (an upload's included), failed in transport after it went out (a reset after Dispatch
