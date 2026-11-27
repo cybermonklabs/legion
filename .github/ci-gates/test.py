@@ -24,6 +24,10 @@ GATE = gate("test", "test", runs=[
     ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.test.ts#Bun.spawnSync` spawns it as `scripts/semantic-line-breaks.test.ts#SCRIPT`"),
     ("scripts/e2e/**", f"{at('test', E2E_LIB_TESTS)} (`scripts/e2e/lib/script-functions.test.ts#readers` scans scripts/e2e/*.sh and lib/*); "
                        f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
+    ("skills/legion-worker/references/review-threads.md",
+     "`scripts/e2e/lib/reviewer-thread.test.ts#the review-thread reference's listing` reads the shipped listing and runs it"),
+    ("packages/pi-legion/scripts/skill-scenarios/testdata/f7-paginate-slurp.stdout",
+     "`scripts/e2e/lib/reviewer-thread.test.ts#f7` runs the listing's filter on fixture F7"),
     (CONTRACTS_SRC, "`scripts/e2e/lib/envoy-bridge.ts#EnvelopeSchema` and `scripts/e2e/lib/envoy-bridge.ts#githubSubject`, "
                     "`scripts/e2e/lib/session-settings-services.ts#agentStreamControlSubject`; `scripts/dispatch/ask-census.ts#ArtifactReviewEventPayload`, "
                     f"which {at('test', 'Test the Dispatch census script')} loads"),

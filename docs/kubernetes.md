@@ -26,9 +26,12 @@ It carries:
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
   It links the commit it was built from: `docker run --rm ghcr.io/cybermonklabs/legion-worker@sha256:… version` prints `legion (devel) commit <sha>`.
-  It embeds Legion's role prompts (`packages/daemon/internal/prompts/roles`:
-  phase workers compose `mechanics/headless.md` and the per-role residue;
-  merger composes headless plus its residue; root architect, controller, and sub-architect prompts remain single-file).
+  It embeds Legion's role prompts, which `prompts.Compose` reads in this order (`packages/daemon/internal/prompts/prompts.go`):
+  a phase worker's are `roles/core/common.md`, `roles/core/<role>.md`, `roles/mechanics/headless.md` and `roles/<role>.md`, then `go/<role>.md` and `go/worker-common.md`;
+  the merger's are `roles/mechanics/headless.md` and `roles/merger.md`, then `go/merger.md` and `go/worker-common.md`;
+  an architect's are `roles/architect-root.md` or `roles/architect.md`, then the `go/` part of the same name and `go/architect-common.md`;
+  the controller's are `roles/controller-root.md`, then `go/controller-headless.md` or `go/controller-interactive.md`.
+  A part can be empty, as the two `core` parts are: the composer still reads it, so its path stays.
   The daemon snapshots its own into its state directory before a pane can read them and inlines that snapshot into each pod it runs, and `legion probe-image`, given no `--role-references`, resolves the task agents and skills named by the prompts the image's own `legion` embeds (`packages/daemon/cmd/legion/probe_image.go`);
 
 - `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` packed from that commit's `packages/pi-envoy` and `packages/pi-legion` (the exact `bun pm pack` steps `release.yaml`'s `pi_envoy_build` and `pi_legion_build` jobs run), unpacked at `/opt/legion/pi-envoy` and `/opt/legion/pi-legion`, the two roots a pod names as Oh My Pi's explicit extensions
@@ -380,9 +383,10 @@ Each item below names an option and its measurement, then the verdict on it.
 
   **rejected**: it buys nothing the image does not, since it is still an unprivileged container
 
-The forms a role types and the line between a sanctioned pinned run and the withheld `operator-setup` capability are a role's own documentation rather than an operator's, and they live in one place:
-`skills/legion-worker/references/tools.md`.
+The forms a role types for a tool the image lacks are a role's own documentation rather than an operator's, and they live in one place:
+`skills/legion-worker/references/tools.md`, "A tool the image lacks".
 The worker image ships that skill, so a role reads it where it works, and a tool no runner reaches is a change of the image, as that reference says.
+The withheld `operator-setup` capability that those forms stay inside is defined in `packages/daemon/internal/capabilities/capabilities.go`.
 
 ### A test database in the pod
 

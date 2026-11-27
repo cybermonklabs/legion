@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/pi-legion/scripts/skill-scenarios/testdata/f2/sessions/p10-production-check.jsonl TestTeardownEffectsTranscriptF2 reads fixture F2 through ../../../pi-legion
+
 import (
 	"bufio"
 	"encoding/json"

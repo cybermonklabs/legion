@@ -159,7 +159,8 @@ describe("reviewer_thread", () => {
 // mutation, pipes into nothing). Its filter runs through jq on fixture F7, gh 2.98.0's slurped
 // pages of a public pull request's threads (one thread a page), with the last page's thread made
 // unresolved: the filter must find that thread, which a filter that reads only the first page, or
-// reads the pages as one object, misses.
+// reads the pages as one object, misses. The whole block also runs with a `gh` that fails: the
+// listing must fail too, since `jq` exits 0 on the empty input a failed read leaves it.
 describe("the review-thread reference's listing", () => {
   const reference = readFileSync(
     join(import.meta.dir, "../../../skills/legion-worker/references/review-threads.md"),
@@ -169,11 +170,11 @@ describe("the review-thread reference's listing", () => {
     import.meta.dir,
     "../../../packages/pi-legion/scripts/skill-scenarios/testdata/f7-paginate-slurp.stdout"
   );
+  const listings = [...reference.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .map((block) => block[1] ?? "")
+    .filter((block) => /\|\s*jq\s/.test(block));
 
   test("its jq filter finds an unresolved thread on a later page", () => {
-    const listings = [...reference.matchAll(/```bash\n([\s\S]*?)```/g)]
-      .map((block) => block[1] ?? "")
-      .filter((block) => /\|\s*jq\s/.test(block));
     expect(listings).toHaveLength(1);
     const filter = listings[0]?.match(/\|\s*jq\s+'([^']+)'/)?.[1];
     expect(filter).toBeDefined();
@@ -188,5 +189,27 @@ describe("the review-thread reference's listing", () => {
     expect(run.exitCode).toBe(0);
     const found = JSON.parse(run.stdout.toString()) as { id: string }[];
     expect(found.map((thread) => thread.id)).toEqual([later.id]);
+  });
+
+  test("a failed read fails the listing, and is not an empty list", () => {
+    expect(listings).toHaveLength(1);
+    const block = (listings[0] ?? "")
+      .replaceAll("<owner>", "acme")
+      .replaceAll("<repo>", "widgets")
+      .replaceAll("<number>", "1");
+    const failing = join(dir, "failing-gh");
+    mkdirSync(failing, { recursive: true });
+    writeFileSync(join(failing, "gh"), "#!/bin/sh\necho 'gh: HTTP 502' >&2\nexit 1\n", {
+      mode: 0o755,
+    });
+    const env = { ...process.env, PATH: `${failing}:${process.env.PATH}` };
+    const run = Bun.spawnSync(["bash", "-c", block], { env });
+    expect(run.exitCode).not.toBe(0);
+    expect(run.stdout.toString()).toBe("");
+    // The control: the same block without its subshell's pipefail exits 0 on the failed read.
+    const unguarded = Bun.spawnSync(["bash", "-c", block.replace("set -o pipefail; ", "")], {
+      env,
+    });
+    expect(unguarded.exitCode).toBe(0);
   });
 });

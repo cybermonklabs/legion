@@ -612,14 +612,14 @@ Each item below names a script, then what it proves.
 
 - `plan-pointer-drive.sh`
 
-  a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
-  the head arm's is composed from this checkout's `packages/daemon`, the control's from the daemon module of the commit `--base-commit` names, taken with `git archive`, and both are composed by the daemon's own composer.
+  a historical reproduction, not a proof about this checkout: a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), under the implementer's role prompt of the commit `--base-commit` names.
+  That prompt comes from the commit's daemon module, taken with `git archive` and composed by the daemon's own composer; the head arm is retired, because the rule it measured is no longer in the role prompts.
   Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions carrying three of the four designs (`early` at versions 1 to 3, `standing` at 4 to 6, `unapproved` at 7 and 8), approved at version 1 and again at version 6, so versions 7 and 8 are a revision no plan review approved, and six `plan` handoff records whose first cites version 1 — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes the fourth design, `mid`, as a ninth version under that session the moment it first reads the plan, and prints a row naming every plan version it read and when, which design it wrote, and the verdict on it: `approved`, `pointer`, `stale`, `unapproved` or `other`.
   `--mid-approval approved`, the default, has the watcher approve that ninth version, so the correct build becomes its design; `--mid-approval unapproved` leaves it unapproved, so the correct build stays the version 6 design.
   `--tasks 1` stages a plan of one task, which begins after that ninth version lands, so a worker that reads the plan once cannot reach it and the new text's effect is visible.
   `--tasks 2`, the default, stages a plan of two tasks, where a worker that reads the plan again between them reaches the ninth version: this staging measures how often a worker reads the plan again when no text tells it to.
-  `--base-commit` is required, and the run refuses two arms whose composed prompts are the same text.
-  A reproduction and a control, never a rate.
+  `--base-commit` is required.
+  A reproduction, never a rate.
   A model and a loopback PostgreSQL; no daemon, no cluster, no GitHub
 
 - `envoy-session-delivery.sh`

@@ -43,10 +43,11 @@ without getting stuck? Find blockers, not improvements.
    and each requirement of its spec, read as written, with each non-goal as a bound. A plan whose
    own text leaves out work that the goal covers fails this check. If the parts of the spec
    disagree on the scope of the goal, reject, and say that the owner must settle it.
-7. **A test not named before code.** Your caller can carry the plan-tests reference
-   (`legion-worker/references/plan-tests.md`). Then a requirement clause with no test row is a
-   blocker. So is a requirement of one of the four kinds that the reference names, when its list
-   does not come before the first task that writes code.
+7. **A test not named before code.** Each clause of each requirement traces to the test row that
+   proves it: a test file and a test's name, or a row of a table test. A clause with no test row is
+   a blocker. Where your caller carries the plan-tests reference
+   (`legion-worker/references/plan-tests.md`), a requirement of one of the four kinds that it names
+   is a blocker too when its list does not come before the first task that writes code.
 
 Do not judge the approach, style, naming, edge cases that the engineer can settle during the work,
 or what you would do differently.

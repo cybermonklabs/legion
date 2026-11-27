@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The live proof that a Legion phase worker whose task line names a stale plan-handoff pointer
-# builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038).
+# A historical reproduction, not a proof about this checkout: it shows how a Legion phase worker
+# whose task line names a stale plan-handoff pointer built from the newest `plan.md` version the
+# plan review approved, under the role prompt of `--base-commit` (dispatch://INFRA-2038).
 # `--tasks` chooses one of two stagings and `--mid-approval` one of two watcher shapes. Each
 # staging runs one arm, which composes the implementer's role prompt from the daemon module of the
 # commit `--base-commit` names, taken with `git archive` into the run's own work directory. The
