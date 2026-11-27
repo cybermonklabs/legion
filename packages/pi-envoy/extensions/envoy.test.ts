@@ -22985,9 +22985,9 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_shutdown")?.({}, first);
   }, 30_000);
 
-  /** What a viewer that attaches to `session` is replayed of its conversation: each message's id,
-   *  role and Dispatch message, and each tool result's call, in the order the answer gives them. */
-  const viewerReplay = async (session: string, inbox: string) => {
+  /** The frames a viewer that attaches to `session` is replayed, in the order the answer gives
+   *  them. */
+  const replayFrames = async (session: string, inbox: string) => {
     const control = natsState.controls.get(`agentstream.${session}.control`);
     expect(control?.active()).toBe(true);
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
@@ -22995,10 +22995,15 @@ console.log(JSON.stringify(args));
     const answered = () => natsState.published.filter((each) => each.subject === inbox);
     await until(() => answered().length > 0, `the replay answer on ${inbox}`);
     const answer = answered().at(-1);
-    const frames = z
+    return z
       .object({ frames: z.array(z.record(z.string(), z.unknown())) })
       .parse(JSON.parse(new TextDecoder().decode(answer?.data))).frames;
-    return frames.flatMap((frame) => {
+  };
+
+  /** What a viewer that attaches to `session` is replayed of its conversation: each message's id,
+   *  role and Dispatch message, and each tool result's call, in the order the answer gives them. */
+  const viewerReplay = async (session: string, inbox: string) =>
+    (await replayFrames(session, inbox)).flatMap((frame) => {
       if (frame.kind === "tool-result") {
         return [{ call: z.object({ toolCallId: z.string() }).parse(frame.result).toolCallId }];
       }
@@ -23008,7 +23013,6 @@ console.log(JSON.stringify(args));
         .parse(frame.message);
       return [{ dispatchMessageId: message.dispatchMessageId, id: message.id, role: message.role }];
     });
-  };
 
   /** A session's transcript as Oh My Pi's `getBranch` lists it: a person's Send the session took
    *  as its typed turn (`sent`, the attempt the session recorded handling, and the user message
@@ -23135,6 +23139,45 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_start")?.({}, resumed);
 
     expect(await viewerReplay("ses_resumed", "inbox-resumed-viewer")).toEqual(resumedTurns(sent));
+    await fixture.handlers.get("session_shutdown")?.({}, resumed);
+  }, 30_000);
+
+  // Oh My Pi keeps the transcript's message objects and rewrites them in place: a prune pass blanks
+  // a stale tool result's content (`blankToolResult` in its `packages/agent/src/compaction/
+  // pruning.ts`). The replay of a result the session was taken up with keeps the output it had
+  // then, as a result this process recorded keeps the output it had at its `message_end`.
+  test("a resumed session's tool result keeps its output in the replay after the host prunes it", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension }: EnvoyModule = await import(
+      "./envoy.ts?agent-stream-pruned-after-take-up"
+    );
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const transcript = resumedTranscript("44444444-4444-4444-8444-444444444444");
+    const base = sessionContext("ses_pruned_later");
+    const resumed: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => transcript,
+        getEntries: () => transcript,
+      },
+    };
+    await fixture.handlers.get("session_start")?.({}, resumed);
+    // The host's prune pass after the take-up, on the object it holds: the tool result, e4.
+    const pruned = Object(transcript[4]);
+    expect(Reflect.get(pruned, "id")).toBe("e4");
+    Reflect.set(Reflect.get(pruned, "message"), "content", [
+      { text: "[Superseded by a newer read of this file]", type: "text" },
+    ]);
+
+    const outputs = (await replayFrames("ses_pruned_later", "inbox-pruned-later-viewer")).flatMap(
+      (frame) =>
+        frame.kind === "tool-result"
+          ? [z.object({ output: z.string() }).parse(frame.result).output]
+          : []
+    );
+    expect(outputs).toEqual(["export {};"]);
     await fixture.handlers.get("session_shutdown")?.({}, resumed);
   }, 30_000);
 

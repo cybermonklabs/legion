@@ -26,15 +26,16 @@ import type { ContextUsage } from "@legion/pi-shared/pi-types";
  * conversation on the bus at all. **Nothing is stored anywhere else:** the only history is the
  * bounded ring below, in this process, beside the transcript the session already keeps on disk;
  * the relay and the dashboard hold frames no longer than a viewer's connection. A process that
- * takes up a session whose transcript already holds turns fills the ring from that transcript
- * (`restore`), so a session resumed after a restart replays what the process before it would have.
+ * takes up a session whose transcript already holds turns fills the ring from the part of that
+ * transcript the session is still in (`restore`), so a session resumed after a restart replays
+ * those turns, where it replayed none.
  *
- * The ring holds the host's own message object, not a built frame. A streamed tool call arrives
- * as one `message_update` per delta — tens of thousands for a large write — and building a frame
- * for each would serialise the whole growing argument object every time, which is quadratic in
- * its size and was measured at 1.2 s of main-thread CPU for a 100 KB call in a session nobody
- * was even watching. Frames are built where they are actually needed: at a publish the throttle
- * allows, and at a replay.
+ * The ring holds the message object the host hands over, not a built frame; a message read back
+ * from the transcript is a copy (`restore`). A streamed tool call arrives as one `message_update`
+ * per delta — tens of thousands for a large write — and building a frame for each would serialise
+ * the whole growing argument object every time, which is quadratic in its size and was measured
+ * at 1.2 s of main-thread CPU for a 100 KB call in a session nobody was even watching. Frames are
+ * built where they are actually needed: at a publish the throttle allows, and at a replay.
  *
  * Ordering never depends on the host's delivery order, because there isn't one to depend on.
  * Oh My Pi 18.3.2 hands `message_update` to extensions through its own queue while
@@ -263,6 +264,40 @@ function contentText(content: unknown): string {
   return pieces.join("\n");
 }
 
+/**
+ * A copy of a message the host still holds, made as the pinned Oh My Pi copies one for
+ * `message_end` (`cloneMessageNotification`, `extensibility/extensions/lifecycle-mirror.ts`):
+ * each enumerable field read once and structured-cloned, else copied through JSON, else kept as
+ * its text, so nothing of the host's object is shared. The host rewrites its own objects in place
+ * (a prune blanks a tool result's content, `blankToolResult` in
+ * `packages/agent/src/compaction/pruning.ts`), and a ring entry must keep what its message said
+ * when the ring took it.
+ */
+function detached(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const copy: Record<string, unknown> = {};
+  for (const field of Object.keys(raw)) {
+    const value: unknown = Reflect.get(raw, field);
+    try {
+      copy[field] = structuredClone(value);
+      continue;
+    } catch {
+      // A value structuredClone refuses, such as a function in an extension's metadata.
+    }
+    try {
+      const json = JSON.stringify(value);
+      if (json !== undefined) {
+        copy[field] = JSON.parse(json);
+        continue;
+      }
+    } catch {
+      // A cyclic value, which JSON refuses too.
+    }
+    copy[field] = String(value);
+  }
+  return copy;
+}
+
 /** Caps every string a tool call's arguments carry as they are serialised, so the cost of
  *  rendering a call that streams a large file in is bounded by the cap rather than by the file. */
 function boundedStrings(_key: string, value: unknown): unknown {
@@ -368,7 +403,9 @@ function cardParts(content: unknown): AgentStreamPart[] {
   return parts;
 }
 
-/** The frame a ring entry becomes. This is the only place a message's content is read. */
+/** The frame a ring entry becomes, which is where a frame reads a message's content. Two other
+ *  places read it: `keyFor`, for the text of a card that names no id, and `restore`, which copies
+ *  each message its bound kept (`detached`). */
 function frameFor(entry: RingEntry): AgentStreamFrame {
   const { dispatchMessageId, message } = entry;
   if (message.role === "toolResult" && message.toolCallId !== undefined) {
@@ -709,24 +746,29 @@ export class AgentStreamPublisher {
   }
 
   /**
-   * Fills the ring with turns this process did not run: the messages a session's transcript holds
-   * when the process takes the session up (a pod's restart and `omp --continue`, a `--resume`, a
-   * `/resume`), oldest first, each as the host handed it to `message_end` when it ran. Each is kept
-   * as `record` keeps a settled message, into the ring's own bounds, so a replay after a restart
-   * reads as one before it would have. A message whose slot the ring already holds stands: a
-   * restore after a turn of this process adds the turns before it and replaces none of them.
+   * Fills the ring with turns this process did not run: the messages the caller reads back from
+   * the session's transcript when the process takes the session up (a pod's restart and `omp
+   * --continue`, a `--resume`, a `/resume`), oldest first, each as the host handed it to
+   * `message_end` when it ran. The caller decides which part of the transcript that is; only what
+   * it passes is read. Each is kept as `record` keeps a settled message, into the ring's own
+   * bounds, so a replay after a restart holds those turns as the process that ran them recorded
+   * them. A message whose slot the ring already holds stands: a restore after a turn of this
+   * process adds the turns before it and replaces none of them.
    *
    * Which messages survive is decided as the ring itself decides it: the slots are walked in the
    * order the messages were recorded, a message of a slot the ring holds keeps that slot's place,
    * and past the bound the slot first taken goes. The slots the ring already held are this
    * process's own, each recorded after the ring was made, so they are the session's newest: they
    * are taken out while the older ones are filled in and put back after them, and the bound then
-   * drops the oldest filled slot rather than a turn this process ran. Only the slot each message
-   * takes is read here: no body, except the text of a card that names no id of its own, which is
-   * what its slot is (`keyFor`). A body is read where a frame is built, for the messages the bound
-   * kept. Nothing is published, since a viewer reads these from its replay. `dispatchMessageIdOf`
-   * names the Dispatch message a user message delivered, which only the caller can know
-   * (`record`'s `dispatchMessageId`).
+   * drops the oldest filled slot rather than a turn this process ran. Choosing them reads only the
+   * slot each message takes: no body, except the text of a card that names no id of its own,
+   * which is what its slot is (`keyFor`). Each message the bound kept is then copied (`detached`),
+   * as the host copies a message for `message_end`: the host rewrites its own object in place (a
+   * prune blanks a tool result's content), and the ring keeps what the message said when the
+   * session was taken up, as it keeps what a live message said at its end. So the fill reads the
+   * bodies of the messages its bound kept, and no other. Nothing is published, since a viewer
+   * reads these from its replay. `dispatchMessageIdOf` names the Dispatch message a user message
+   * delivered, which only the caller can know (`record`'s `dispatchMessageId`).
    */
   restore(
     messages: readonly unknown[],
@@ -748,7 +790,7 @@ export class AgentStreamPublisher {
     for (const [key, index] of slots) {
       if (held.has(key)) continue;
       const raw = messages[index];
-      this.#keep(raw, false, dispatchMessageIdOf(raw));
+      this.#keep(detached(raw), false, dispatchMessageIdOf(raw));
     }
     for (const [key, entry] of held) this.#history.set(key, entry);
     this.#evict();

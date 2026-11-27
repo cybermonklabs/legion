@@ -3028,21 +3028,21 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // A session this process takes up with turns already in its transcript (its start on a session
   // it resumes: a pod's restart, `omp --continue`, `--resume`; a `/resume`; a fork) gets a ring
   // that holds none of them, so a viewer who opened it was replayed none of what its terminal
-  // shows (dispatch://INFRA-5990). The ring a session is first given here is filled from its
-  // branch instead, as the process that ran those turns recorded them. A person's Send the
-  // session took as its typed turn carries its Dispatch message as it did then: the turn's tag,
-  // where the transcript records that the session handled that message (`handledMessages`), which
-  // is the turn `matchInjectedUserTurn` finds live. A session whose ring is held already keeps
-  // it, and records its turns as they end.
+  // shows (dispatch://INFRA-5990). The ring a session is first given here is filled from its live
+  // context (`liveContext`) instead, as the process that ran those turns recorded them. A person's
+  // Send the session took as its typed turn carries its Dispatch message as it did then: the
+  // turn's tag, where the transcript records that the session handled that message
+  // (`handledMessages`), which is the turn `matchInjectedUserTurn` finds live. A session whose
+  // ring is held already keeps it, and records its turns as they end.
   const restoreAgentStream = (
     session: string,
-    branch: readonly unknown[],
+    live: readonly unknown[],
     entries: readonly unknown[]
   ): void => {
     if (session === "" || restoredAgentStreams.has(session)) return;
     restoredAgentStreams.add(session);
     const handled = handledMessages(entries);
-    agentStreamOf(session).restore(transcriptMessages(branch), (message) => {
+    agentStreamOf(session).restore(transcriptMessages(live), (message) => {
       const tag = messageTag(message);
       return tag !== undefined && handled.has(tag) ? tag : undefined;
     });

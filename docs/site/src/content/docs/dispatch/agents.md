@@ -396,7 +396,10 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   the turns after it. Where a summary kept only the end of a turn, the live view shows that part;
   the terminal hides it when another user turn starts before the summary. A session that
   summarised inside its last 200 messages can show fewer turns than it did before the restart. A
-  `!` command run before the restart shows as your message and the session's reply.
+  tool result the session pruned before the restart, to keep its context small, shows the note
+  that replaced it, such as `[Superseded by a newer read of this file]`, where it showed the
+  output before. A `!` command run before the restart shows as your message and the session's
+  reply.
 
 A session whose plugin does not stream its conversation shows none of it here.
 The live view says so, and still shows your messages and their replies.

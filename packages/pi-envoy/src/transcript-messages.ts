@@ -1,21 +1,26 @@
 /**
- * The messages a session's branch holds (`sessionManager.getBranch()`), oldest first, each as Oh
- * My Pi handed it to the extensions' `message_end` when the session ran it: what the agent stream
- * keeps of a session a process takes up (`AgentStreamPublisher.restore`).
+ * The messages of a session's live context (`liveContext` in
+ * `@legion/pi-shared/delivery-pictures`: the branch from its latest compaction's kept entry, or
+ * after a later `/clear`), oldest first, each as Oh My Pi handed it to the extensions'
+ * `message_end` when the session ran it: what the agent stream keeps of a session a process takes
+ * up (`AgentStreamPublisher.restore`). The rule that no body before that cut is read rests on the
+ * caller passing the live context alone: on a whole branch, `restore` would read every message's
+ * slot, and each card's details.
  *
- * A `message` entry holds that message itself. A `custom_message` entry is how the host writes a
- * custom message, an Envoy card among them, and is read back as the host's own
- * `customMessageEntryMessage` rebuilds it (`packages/tui/src/chat/transcript-entry.ts` at the
- * pinned tag): `role: "custom"`, its type, content, display, details and tag, stamped with the
- * entry's time, which the host writes from the message's own (`appendCustomMessageEntry`). Its
- * content and details are read from the entry only when asked for: an older entry's body may be
- * out of memory, read back on access (the host's cold entries), and the stream reads a body only
- * for a message it keeps. Any other entry (a compaction, a branch summary, a model change, an
- * extension's record) holds no message `message_end` is handed, and is passed over.
+ * A `message` entry holds that message itself, the host's own object, which `restore` copies for
+ * each message it keeps. A `custom_message` entry is how the host writes a custom message, an
+ * Envoy card among them, and is read back as the host's own `customMessageEntryMessage` rebuilds
+ * it (`packages/tui/src/chat/transcript-entry.ts` at the pinned tag): `role: "custom"`, its type,
+ * content, display, details and tag, stamped with the entry's time, which the host writes from the
+ * message's own (`appendCustomMessageEntry`). Its content and details are read from the entry when
+ * the stream asks for them, and only then: a card's details for its slot, its content for the
+ * slot of a card that names no id, and both when `restore` copies a card it keeps. Any other entry
+ * (a compaction, a branch summary, a model change, an extension's record) holds no message
+ * `message_end` is handed, and is passed over.
  */
-export function transcriptMessages(branch: readonly unknown[]): unknown[] {
+export function transcriptMessages(live: readonly unknown[]): unknown[] {
   const messages: unknown[] = [];
-  for (const entry of branch) {
+  for (const entry of live) {
     if (typeof entry !== "object" || entry === null || !("type" in entry)) continue;
     if (entry.type === "message") {
       if ("message" in entry) messages.push(entry.message);

@@ -211,9 +211,18 @@ after that cut, within those bounds. Oh My Pi's terminal draws a resumed session
 compaction cut by default (`display.collapseCompacted`), but where the cut left the first kept
 turn partial and a later user turn starts before the compaction, it hides that partial turn; the
 replay does not trim it. The process before the restart may have replayed more: its ring kept the
-turns from before a compaction it ran. A session that starts fresh has no turns to read back. The
-ring keys a card that names no id, such as one of the plugin's own notices, by what it says, since
-Oh My Pi hands `message_end` a copy of the message `message_start` was handed.
+turns from before a compaction it ran. A session that starts fresh has no turns to read back.
+
+Each message the ring keeps from the transcript is a copy, made as Oh My Pi copies a message for
+`message_end`, because Oh My Pi rewrites its own objects in place: a prune pass blanks a stale tool
+result's content with a placeholder (`blankToolResult`), such as `[Superseded by a newer read of
+this file]` or `[Uneventful result elided]`. So a restored tool result the session prunes after it
+is taken up keeps its output in the replay, as a result this process recorded does. A result
+pruned before the restart shows the placeholder: the prune is recorded in the transcript, and Oh
+My Pi blanks the result as it loads the session, before the ring can copy it, where the process
+before the restart still showed the output. The ring keys a card that names no id, such as one of
+the plugin's own notices, by what it says, since Oh My Pi hands `message_end` a copy of the
+message `message_start` was handed.
 
 ## A `task` subagent
 

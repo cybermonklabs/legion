@@ -1488,27 +1488,54 @@ describe("a session this process takes up with turns already in its transcript",
     expect(newest?.kind === "message" && newest.message.at).toBe(60);
   });
 
-  // A long session's transcript holds thousands of messages, and an old one's body may be out of
-  // memory, read back from the host's store on access. The fill reads the slot each message takes
-  // and no body at all; a body is read where a frame is built, for the messages the bound kept.
-  test("reads no message's body, and at a replay only those its bound kept", () => {
+  // A long session's live context holds thousands of messages. Choosing the ones the ring keeps
+  // reads the slot each takes and no body; the fill then reads the body of each message its bound
+  // kept, once, to copy it, and no other. A replay reads the copies.
+  test("reads the body of no message but those its bound kept, once each", () => {
     const { publisher } = harness();
-    const read = new Set<number>();
-    const total = AGENT_STREAM_LIMITS.historyMessages * 5;
+    const { historyMessages } = AGENT_STREAM_LIMITS;
+    const reads = new Map<number, number>();
+    const total = historyMessages * 5;
     const messages = Array.from({ length: total }, (_, index) => ({
       role: "assistant",
       timestamp: index + 1,
       get content() {
-        read.add(index);
+        reads.set(index, (reads.get(index) ?? 0) + 1);
         return [{ text: `turn ${index}`, type: "text" }];
       },
     }));
     publisher.restore(messages);
-    expect([...read]).toEqual([]);
+    const kept = Array.from({ length: historyMessages }, (_, at) => total - historyMessages + at);
+    expect([...reads.keys()].sort((left, right) => left - right)).toEqual(kept);
+    expect(new Set(reads.values())).toEqual(new Set([1]));
 
     publisher.noteViewer();
-    expect(publisher.replay("s1").frames).toHaveLength(AGENT_STREAM_LIMITS.historyMessages);
-    expect(Math.min(...read)).toBe(total - AGENT_STREAM_LIMITS.historyMessages);
+    const frames = publisher.replay("s1").frames.map(textOf);
+    expect(frames).toHaveLength(historyMessages);
+    expect(frames.at(-1)).toBe(`turn ${total - 1}`);
+    expect(new Set(reads.values())).toEqual(new Set([1]));
+  });
+
+  // The host keeps its own message objects and rewrites them in place: a prune pass blanks a stale
+  // tool result's content (`blankToolResult` in Oh My Pi's `packages/agent/src/compaction/
+  // pruning.ts`). The ring keeps what a restored message said when the session was taken up, as
+  // it keeps what a live message said at its `message_end`.
+  test("keeps what a restored tool result said, though the host blanks its object later", () => {
+    const { publisher } = harness();
+    const result = {
+      content: [{ text: "export {};", type: "text" }],
+      isError: false,
+      role: "toolResult",
+      timestamp: 30,
+      toolCallId: "call-1",
+      toolName: "read",
+    };
+    publisher.restore([result]);
+    result.content = [{ text: "[Superseded by a newer read of this file]", type: "text" }];
+    publisher.noteViewer();
+
+    const [frame] = publisher.replay("s1").frames;
+    expect(frame?.kind === "tool-result" && frame.result.output).toBe("export {};");
   });
 
   // The ring drops the slot first taken, and a later message of a slot it holds keeps that slot's
