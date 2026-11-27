@@ -332,7 +332,7 @@ init) mkdir -p .codegraph; : > .codegraph/begun; echo $$ > '` + building + `'; e
 index) exit 0 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(standIn), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(standIn), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
