@@ -10,14 +10,16 @@ body: |-
   a busy listener was answered `503 {"error":"envoy: the message bus did not answer: context deadline
   exceeded"}` with `Retry-After: 1`, and the client sent it again and again. Both routes now check the
   size once the request's own fields are checked, before the sender limit, so such a message is a
-  `413` at any count, not a `429`; a send of one to an unknown session is a `413`, not a `404`; and a
-  send of one to a stopped session reports no wake for it. A message that is over the bound only once
-  the listener adds its sender stamp, or only as a role forward under its own key and header, is
-  answered after the route's reads: `413` from the publish or the forward itself. A role message with
-  no live holder is not forwarded but kept for the role's next holder, under the keep's own message
-  id, so its answer is the keep's: `202` kept for one that fits the keep, even where a forward of it
-  would be too large, and `404` (`unclaimed` or `holder_lapsed`), as every keep that stored nothing
-  is, for one that does not.
+  `413` at any count, not a `429`; a send of one to an unknown session is a `413`, not a `404`; a
+  send of one to a stopped session reports no wake for it; and a publish of one to a role no live
+  session holds is a `413` before the role is resolved, not the `404` (`unclaimed` or
+  `holder_lapsed`) that kept nothing, with `keep: false` or with no source session. A message that is
+  over the bound only once the listener adds its sender stamp, or only as a role forward under its
+  own key and header, is answered after the route's reads: `413` from the publish or the forward
+  itself. Such a role message with no live holder is not forwarded but kept for the role's next
+  holder, under the keep's own message id, so its answer is the keep's: `202` kept for one that fits
+  the keep, even where a forward of it would be too large, and `404` (`unclaimed` or
+  `holder_lapsed`), as every keep that stored nothing is, for one that does not.
   Every send of the bus - a stored or core publish, a role forward, a publish window's send and a
   relay frame - now checks the size, headers included, before it waits on a reconnect or reads its
   context, once the client knows the server's bound. So a webhook whose envelope is past the max

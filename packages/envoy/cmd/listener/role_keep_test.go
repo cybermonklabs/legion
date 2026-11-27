@@ -320,6 +320,29 @@ func TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing(t *testing.
 	assertNothingKept(t, client, role)
 }
 
+// A message past the max payload is refused for its size before its role is resolved: 413 naming
+// the size and the bound, with no Retry-After and nothing kept, whether the publish asks to be kept
+// or not. Before, a role with no live holder answered first, with keep: false the 404 unclaimed the
+// Legion daemon reads as notify.ErrNoHolder and ends a role message on. The daemon now ends a role
+// message on this 413 too (internal/daemon's permanentRefusal).
+func TestAPublishPastTheMaxPayloadToAnUnheldRoleIs413WhateverItsKeep(t *testing.T) {
+	t.Parallel()
+	d, client := keptRoleDeps(t)
+	const role = "kept-too-large"
+	message := strings.Repeat("a", 2<<20)
+	for _, keep := range []struct{ name, field string }{{"with keep: false", `,"keep":false`}, {"with no keep flag", ""}} {
+		recorder, _ := publishThrough(d, `{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"`+message+`"`+keep.field+`}`)
+		if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), "max payload of") {
+			t.Errorf("a publish past the max payload to an unheld role %s: status %d, body %.300s; want 413 naming the max payload",
+				keep.name, recorder.Code, recorder.Body.String())
+		}
+		if retry := recorder.Header().Get("Retry-After"); retry != "" {
+			t.Errorf("a publish past the max payload to an unheld role %s carries Retry-After %q: the same message is refused however often it is sent", keep.name, retry)
+		}
+	}
+	assertNothingKept(t, client, role)
+}
+
 // A clustered stream refuses a publish whose message id another publish still has in process
 // (bus.ErrDuplicateInProcess, nats-server's 10158), with no sequence to read a copy at. The keep
 // publishes again under the same id inProcessPause later, until an answer names the copy,

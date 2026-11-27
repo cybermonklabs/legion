@@ -89,36 +89,23 @@ func TestABackgroundStartInstallsWithoutWaitingForAHeldReconnect(t *testing.T) {
 	var (
 		client *Client
 		err    error
+		// hooked is the connection the start dialed, set once its install's hook runs. The
+		// cleanup reads it, as it reads client and err, only once the start has returned.
+		hooked *nats.Conn
 	)
 	dialed, install, returned := make(chan *nats.Conn, 1), make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(returned)
-		client, err = Connect([]string{hold.URL()}, WithName(t.Name()), WithConnectInBackground(), WithBeforeBackgroundInstall(func(nc *nats.Conn) {
-			dialed <- nc
-			<-install
-		}))
-		// A start that returned without reaching its install's hook dialed nothing to measure. One
-		// that reached it has had its connection taken by now, so this send finds room and is read
-		// by no one.
-		select {
-		case dialed <- nil:
-		default:
-		}
-	}()
-	conn := testwait.Receive(t, "the background start to reach its install", dialed)
-	if conn == nil {
-		t.Fatalf("UNKNOWN: the start returned without reaching its install (%v), so no held attempt was measured", err)
-	}
-	// Registered before the first wait that can end the test (FailNow): until the start returns it
-	// is held in its hook, with a connection that reconnects for good (MaxReconnect -1). nats.go's
-	// Close waits for its connection lock, which a held handshake holds, so the hold is released and
-	// the proxy restored first (heldHandshakeClient); then the start is let go, and the client it
-	// returned is closed, or the connection it dialed when it returned none. With the hold released
-	// the install waits for nothing, so the wait for the start has no bound of testwait's: a wait
-	// that failed at testwait's bound has spent it, and a wait under it would give up at once and
-	// leave the connection open.
 	var installOnce sync.Once
 	letInstall := func() { installOnce.Do(func() { close(install) }) }
+	// Registered before the start begins, so it runs whichever wait ends the test, the receive of
+	// the start's connection below among them: a start that reaches its hook after that receive has
+	// given up still finds room in dialed and waits there for install, holding a connection that
+	// reconnects for good (MaxReconnect -1), which the proxy's own cleanup does not close. nats.go's
+	// Close waits for its connection lock, which a held handshake holds, so the hold is released
+	// and the proxy restored first (heldHandshakeClient); then the start is let go and joined, and
+	// the client it returned is closed, or the connection it dialed when it returned none. With the
+	// hold released the install waits for nothing, so the join has no bound of testwait's: a wait
+	// that failed at testwait's bound has spent it, and a join under it would give up at once and
+	// leave the connection open.
 	t.Cleanup(func() {
 		hold.Release()
 		hold.Restore()
@@ -128,8 +115,30 @@ func TestABackgroundStartInstallsWithoutWaitingForAHeldReconnect(t *testing.T) {
 			client.Close()
 			return
 		}
-		conn.Close()
+		if hooked != nil {
+			hooked.Close()
+		}
 	})
+	go func() {
+		defer close(returned)
+		client, err = Connect([]string{hold.URL()}, WithName(t.Name()), WithConnectInBackground(), WithBeforeBackgroundInstall(func(nc *nats.Conn) {
+			hooked = nc
+			dialed <- nc
+			<-install
+		}))
+		// A start that returned without reaching its install's hook dialed nothing to measure. One
+		// that reached it sent its connection first: either the receive below took it, so this send
+		// finds room and nobody reads it, or the receive gave up, so the connection still fills the
+		// channel's one place and this send sends nothing.
+		select {
+		case dialed <- nil:
+		default:
+		}
+	}()
+	conn := testwait.Receive(t, "the background start to reach its install", dialed)
+	if conn == nil {
+		t.Fatalf("UNKNOWN: the start returned without reaching its install (%v), so no held attempt was measured", err)
+	}
 	hold.AwaitAttempt(t, conn, hold.Attempts())
 	if !t.Run("within the held attempt", func(t *testing.T) {
 		hold.AnswersWithinAttempt(t, conn, "the background start's install", func() error {

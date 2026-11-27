@@ -1273,6 +1273,57 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	}
 }
 
+// The listener counts a message's size before it resolves the message's role, so a role message
+// too large for NATS to take whole meets the listener's own 413 whether or not anyone holds the
+// role, where a role nobody held answered 404 and ended the row. The 413 is the listener's refusal
+// of the message itself (notify.ErrMessageRefused), which it answers the same way however often
+// the message is sent, so the row ends (permanentRefusal) rather than retrying it on its backoff for
+// ever. Each answer comes from a listener answering as the real one does and is read by the real
+// publisher, and the row's fate is what settle does with execute's answer. The controls: the 404 of
+// a role nobody holds still ends the row, and a 503 the bus did not answer is still retried.
+func TestOutboxRoleMessageTheListenerRefusesForItsSizeEnds(t *testing.T) {
+	t.Parallel()
+	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
+	row.ID = 62
+	// fate is what settle does with a run's answer: finish the row, finish it refused, or retry it.
+	fate := func(err error) string {
+		switch {
+		case err == nil:
+			return "finished"
+		case permanentRefusal(row, err):
+			return "finished refused"
+		default:
+			return "retried"
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"the listener's 413 for a message past the max payload", http.StatusRequestEntityTooLarge,
+			`{"error":"too large to publish whole: a message of 2097331 bytes, its headers included, against the server's max payload of 1048576 bytes"}`,
+			"finished refused"},
+		{"control: the 404 of a role nobody holds", http.StatusNotFound,
+			`{"error":"no holder for role implementer","reason":"unclaimed","claim_revision":0}`, "finished"},
+		{"control: the 503 of a bus that did not answer", http.StatusServiceUnavailable,
+			`{"error":"envoy: the message bus did not answer: context deadline exceeded"}`, "retried"},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(tc.status)
+			_, _ = io.WriteString(w, tc.body)
+		}))
+		runner := &outbox{log: quietLogger(), notices: notify.New(server.URL, ""), dispatch: &outboxDispatch{}}
+		err := runner.execute(context.Background(), row)
+		server.Close()
+		if got := fate(err); got != tc.want {
+			t.Errorf("a role message answered %s: %s (%v), want %s", tc.name, got, err, tc.want)
+		}
+	}
+}
+
 // A role message only informs - of a CI settlement, a design gate's move, an approved round stuck
 // on its merge state - so a role whose pod was released is told nothing and is not woken for it:
 // the row ends before any publish. Published, it would meet the listener's answer for a role
@@ -1343,6 +1394,34 @@ func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
 	}
 	if left := outboxRows(t, pool); left != 0 {
 		t.Fatalf("outbox rows left = %d, want the message finished", left)
+	}
+}
+
+// The outbox's own run of a role message the listener refuses for itself, a size NATS does not
+// take whole (TestOutboxRoleMessageTheListenerRefusesForItsSizeEnds), finishes the row: settle
+// reads the refusal as one no retry repairs and finishes the row refused (finishRefused), rather
+// than leaving it on the outbox for a retry that meets the same refusal.
+func TestOutboxRoleMessageTheListenerRefusesForItsSizeIsFinishedByTheRun(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const refusal = "too large to publish whole: a message of 2097331 bytes, its headers included, against the server's max payload of 1048576 bytes"
+	publisher := &outboxPublisher{err: fmt.Errorf(`publish notice to the role: listener returned 413 Request Entity Too Large: {"error":%q}: %w`,
+		refusal, notify.ErrMessageRefused{Status: http.StatusRequestEntityTooLarge, Message: refusal})}
+	runner, sup, pool := hookRunner(t, publisher)
+	startedClaim(t, sup, claim.RoleImplementer)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
+		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the role message: %v", err)
+	}
+
+	if published := publisher.publishes(); len(published) != 1 || published[0].topic != notify.RoleTopicPrefix+string(token) {
+		t.Fatalf("UNKNOWN: publishes = %#v, want the one message to %s, so the refusal was met", published, notify.RoleTopicPrefix+string(token))
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d after the listener refused the message itself, want the message finished: a retry meets the same refusal", left)
 	}
 }
 
