@@ -903,11 +903,14 @@ tells its maker once, with the key, the longest wait and whether Dispatch said i
 write (`onRunWait`), and the `dispatch` command, which names no deadline and waits for the run,
 prints that on stderr, so the agent that ran it does not stop it as hung. An upload (a body of a
 megabyte or more) keeps the
-five-attempt schedule, since each repeat sends its whole body again. No attempt of a write
-Dispatch has not said it may be running starts more than 55 s after the client was made, since its
-60 s deadline counts from there; a caller with a bound of its own names it as the client's
-`deadlineMs`, and an `inFlightWithinMs` inside it, as `dispatch result --project` does
-(`ResultBound`). The credential is given that budget less the request's reserve
+five-attempt schedule, since each repeat sends its whole body again. A call whose row stores
+nothing (`rowStores`: the markdown and file round trips, the related-item check and a dry run) has
+no run to wait for, so it never waits: it keeps the schedule and the client's deadline. Until
+Dispatch may be running a write, no attempt of it starts more than 55 s after the client was made,
+since its 60 s deadline counts from there; a caller with a bound of its own names it as the
+client's `deadlineMs`, and an `inFlightWithinMs` inside it, as `dispatch result --project` does
+(`ResultBound`), which also sets `runWithinMs` to 0, so the wait for Dispatch's run never outlasts
+that bound. The credential is given that budget less the request's reserve
 (`#credentialSignal`), so a request's wait on a broker credential's trade ends inside it; the
 trade itself runs under its own 30 s bound, and goes on for every other request that shares it.
 The numbers come from the 3,612 `dispatch` write commands that
@@ -1330,8 +1333,9 @@ presentation was dead (`stale(session, presented)`), presents the credential aga
 request one more time. The credential drops that dead token alone, from the client that presented
 it: a session the host moved to in between keeps its live token, and a token the client traded
 since is kept; the next presentation uses the token the client holds now, trading at the broker
-where it holds none. A keyed write, a named command's (`#write`), goes again under the same
-`Idempotency-Key`. A read does this once for each send, and a keyed write once for the call: a
+where it holds none. A keyed write (`#sendWrite`: a named command's, and an upload's through
+`#form`) goes again under the same `Idempotency-Key`. A read does this once for each send, and a
+keyed write once for the call: a
 second such answer is a refusal Dispatch's auth made before its keyed layer ran, so it is the
 write's refusal while nothing may have landed and the write is `DispatchWriteUnsettledError` once
 something may have (`write-outcome.ts`). If the broker refuses the new trade, the call fails in

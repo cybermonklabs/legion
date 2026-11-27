@@ -749,7 +749,8 @@ describe("DispatchClient's writes", () => {
 
     expect(new Set(sent.map((request) => request.headers["Idempotency-Key"])).size).toBe(1);
     // Cut at 20 s, then asked 1 s later and at most every 3 s while the run lives: the replay is
-    // collected at 53 s, inside the 55 s the call keeps for a write Dispatch may still be running.
+    // collected at 53 s, inside the run window the call keeps for a write Dispatch may still be
+    // running, and before 55 s, where the 3 s pace gives way to 10 s.
     expect(pauses).toEqual([1_000, 2_000, ...Array.from({ length: 10 }, () => 3_000)]);
     expect(clock()).toBe(53_000);
   });

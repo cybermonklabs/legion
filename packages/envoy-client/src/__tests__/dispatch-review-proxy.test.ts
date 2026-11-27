@@ -257,9 +257,10 @@ test("the proxy's own refusal, before anything left it, names the proxy and its 
   expect(refusal.message).not.toContain(PLACEHOLDER);
 });
 
-// The placeholder is noted where each attempt presents it (`#write`), as every presentation is, so
-// a proxy that echoes it back has it redacted from the refusal's text. The echo carries no scheme
-// before it, so only that note redacts it, not the excerpt's reading of an `Authorization` value.
+// The placeholder is noted where each attempt presents it (`#sendWrite`), as every presentation
+// is, so a proxy that echoes it back has it redacted from the refusal's text. The echo carries no
+// scheme before it, so only that note redacts it, not the excerpt's reading of an `Authorization`
+// value.
 test("the proxy's refusal that echoes the placeholder is told without it", async () => {
   const fetchImpl = scriptedFetch([
     () =>

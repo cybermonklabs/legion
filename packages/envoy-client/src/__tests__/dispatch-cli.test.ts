@@ -2411,14 +2411,13 @@ describe("the dispatch CLI", () => {
   // and a lease after the first attempt, and a silence bound for the last ask's answer.
   test("a write Dispatch says it is still running is waited on, and stderr says so once", async () => {
     const keys: string[] = [];
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-      const request = new Request(input, init);
-      const { pathname } = new URL(request.url);
-      const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
-      const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
-      if (message) keys.push(key ?? "");
-      const answer =
-        message && keys.length === 1
+    const fetchImpl = keyedLayer(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const { pathname } = new URL(request.url);
+        const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
+        if (message) keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
+        return message && keys.length === 1
           ? Response.json(
               {
                 code: IDEMPOTENCY_KEY_IN_FLIGHT,
@@ -2426,12 +2425,10 @@ describe("the dispatch CLI", () => {
               },
               { status: 409, headers: { "Retry-After": "1" } }
             )
-          : await fetch(request);
-      if (key === null) return answer;
-      const headers = new Headers(answer.headers);
-      headers.set(IDEMPOTENCY_KEY_HEADER, key);
-      return new Response(answer.body, { status: answer.status, headers });
-    }) as typeof fetch;
+          : fetch(request);
+      },
+      { judged: () => true }
+    ) as typeof fetch;
 
     const { code, stderr } = await run(
       ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
@@ -2457,27 +2454,25 @@ describe("the dispatch CLI", () => {
     jest.useFakeTimers();
     try {
       const keys: string[] = [];
-      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-        const request = new Request(input, init);
-        const { pathname } = new URL(request.url);
-        const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
-        const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
-        if (message) keys.push(key ?? "");
-        if (message && keys.length === 1) {
-          // No answer: the fake clock runs out the attempt's silence bound, which cuts it off.
-          const { promise, reject } = Promise.withResolvers<Response>();
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-            once: true,
-          });
-          jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.silenceMs);
-          return await promise;
-        }
-        const answer = await fetch(request);
-        if (key === null) return answer;
-        const headers = new Headers(answer.headers);
-        headers.set(IDEMPOTENCY_KEY_HEADER, key);
-        return new Response(answer.body, { status: answer.status, headers });
-      }) as typeof fetch;
+      const fetchImpl = keyedLayer(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const request = new Request(input, init);
+          const { pathname } = new URL(request.url);
+          const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
+          if (message) keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
+          if (message && keys.length === 1) {
+            // No answer: the fake clock runs out the attempt's silence bound, which cuts it off.
+            const { promise, reject } = Promise.withResolvers<Response>();
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+            jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.silenceMs);
+            return await promise;
+          }
+          return fetch(request);
+        },
+        { judged: () => true }
+      ) as typeof fetch;
       let stderr = "";
 
       const code = await runDispatchCli(

@@ -797,8 +797,8 @@ export interface DispatchWriteRetry {
  * to 30 s. A write Dispatch may still be running is asked every 3 s at most (longer only when a
  * `Retry-After` asks) until 55 s, so an attempt cut off for silence at 20 s still has 35 s in which
  * Dispatch can finish it at that pace, two silent attempts and the ask that collects the answer
- * fit, and a write Dispatch never said it is running makes its last ask 5 s before the client's
- * 60 s deadline. Past 55 s it is asked every 10 s, until Dispatch's run limit
+ * fit, and until Dispatch may be running a write, its last ask is 5 s before the client's 60 s
+ * deadline. Past 55 s it is asked every 10 s, until Dispatch's run limit
  * (`IDEMPOTENCY_RUN_LIMIT_MS`, 10 minutes) and one lease (`IDEMPOTENCY_LEASE_MS`, 60 s) after the
  * attempt that could have started the run: Dispatch renews a run's lease until that limit and no
  * further (`keyedWrites`, packages/envoy/internal/dispatch/api/request_keys.go), so by then the
@@ -924,8 +924,9 @@ class WriteAttemptSilent extends Error {
   }
 }
 
-/** What a write's attempts have shown, apart from its table state (`WriteState`): what the
- *  reading of its answers (`answerEvent`) and the unsettled message take from them. How long the
+/** What a write's attempts have shown, apart from its table state (`WriteState`): what the ending
+ *  of the write (`#endWrite`, `#missingWriteAnswer`: `sent`, `running`, `toldRunning`) and the
+ *  loop's notice of its wait for a run (`onRunWait`: `toldRunning`) take from them. How long the
  *  write asks while Dispatch may still be running it is the loop's own (`#sendWrite`'s run
  *  window). */
 interface WriteProgress {
@@ -1037,9 +1038,9 @@ function refusalIn(json: ParsedJson): DispatchRefusal | undefined {
 }
 
 /**
- * One attempt of a write as the loop reads it (`#write`): the table's event, and what its ending,
- * its resend and the loop's own state are read from. A wait the deadline or the caller's stop
- * ended is one too, with only its event and its stop.
+ * One attempt of a write as the loop reads it (`#sendWrite`): the table's event, and what its
+ * ending, its resend and the loop's own state are read from. A wait the deadline or the caller's
+ * stop ended is one too, with only its event and its stop.
  */
 interface WriteAttempt {
   readonly event: WriteEvent;
@@ -3378,7 +3379,7 @@ export class DispatchClient {
    * broker refuses throws out of the second presentation, so the call fails in the broker's own
    * words, which name `agent-secrets login` after a revoke. It returns the answer and the headers
    * of each presentation (`SentRequest`). Every other write (POST or PATCH) goes through
-   * `#write` instead.
+   * `#sendWrite` instead.
    */
   async #send(
     method: string,

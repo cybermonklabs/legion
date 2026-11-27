@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, jest, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  IDEMPOTENCY_KEY_IN_FLIGHT,
   SPEC_CHECK_OBSERVED_CUT_NOTE,
   SPEC_CHECK_OBSERVED_END,
   SPEC_CHECK_OBSERVED_MAX,
@@ -1170,6 +1171,48 @@ describe("dispatch result --project, as a CI job writes it", () => {
       atTheBound: true,
     });
   }, 90_000);
+
+  // Dispatch answers 409 KEY_IN_FLIGHT while it runs an earlier attempt of the write, and the
+  // client asks again under the key. A session's write asks on for Dispatch's run window, past its
+  // own deadline; a CI job's has none (`runWithinMs: 0`), so it asks nothing in the bound's last
+  // `reserveMs` (`ResultBound`). Answered so for the whole bound, it ends before the reserve with
+  // the last answer's code and exit 1, never at the bound as a TimeoutError.
+  test("a write Dispatch answers 409 KEY_IN_FLIGHT for the whole bound asks nothing in the reserve, and ends naming KEY_IN_FLIGHT", async () => {
+    const bound = shortBound(10_000, 3_000);
+    const lastAsk = bound.totalMs - bound.reserveMs;
+    /** When each write reached Dispatch, on the fake clock from the call's start. */
+    const askedAt: number[] = [];
+    let elapsed = (): number => Number.NaN;
+    dispatchAnswer = () => {
+      askedAt.push(elapsed());
+      return Response.json(
+        {
+          code: IDEMPOTENCY_KEY_IN_FLIGHT,
+          error: "an earlier request with this key is still running",
+        },
+        { status: 409, headers: { "Retry-After": "1" } }
+      );
+    };
+    const ran = await onFakeClock(record, jobEnvironment(), bound, (clock) => {
+      elapsed = clock.elapsed;
+      return eachWait(clock);
+    });
+    expect({
+      code: ran.code,
+      stdout: ran.stdout,
+      stderr: ran.stderr,
+      askedAgainUnderTheKey: askedAt.length > 1,
+      askedInTheReserve: askedAt.filter((at) => at > lastAsk),
+      endedBeforeTheReserve: ran.ms !== undefined && ran.ms <= lastAsk,
+    }).toEqual({
+      code: 1,
+      stdout: `${JSON.stringify({ write_outcome_unknown: IDEMPOTENCY_KEY_IN_FLIGHT })}\n`,
+      stderr: "",
+      askedAgainUnderTheKey: true,
+      askedInTheReserve: [],
+      endedBeforeTheReserve: true,
+    });
+  }, 30_000);
 
   /** Dispatch's public host as the job's write names it behind the airlock. No resolver here
    *  answers it, so the write reaches nothing but the proxy. */
