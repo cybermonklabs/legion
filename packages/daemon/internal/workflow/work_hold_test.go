@@ -419,6 +419,7 @@ func holdStartsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.Super
 // with one task, under `merge` today's open message goes out. A step added to DesignSteps later is
 // in the loop.
 func TestWorkHoldHoldsForEveryGatedStep(t *testing.T) {
+	t.Parallel()
 	for _, step := range record.DesignSteps {
 		for _, hold := range []config.Hold{config.HoldWork, config.HoldMerge} {
 			for _, opening := range []string{"a person's approval", "Dispatch's carried approval after an exact undo"} {
@@ -607,6 +608,7 @@ func (r carriedRig) wantMergeOpening() {
 // wake: each holder, owed news since the rig records no told row, is told it by the task that
 // carries its news (openingDelivery), so it is sent no open message and its told row owes it.
 func TestMergeHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldMerge)
 	rig.close(engine, 4)
@@ -642,6 +644,7 @@ func TestMergeHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
 // the daemon suspended, or a failed one, is stopped by nothing (H17, H27), and a closed member's
 // look is left alone (H29).
 func TestWorkHoldStopsEveryPhaseWorkerOfTheTree(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.close(rig.engine(config.HoldWork), 4)
 	stopped := map[string]bool{}
@@ -668,6 +671,7 @@ func TestWorkHoldStopsEveryPhaseWorkerOfTheTree(t *testing.T) {
 // architect's ending, "Your own work goes on, and a step that you report starts nothing until every
 // gated step stands open again.", and carry no stop; no suspend row names an architect.
 func TestWorkHoldStopsNoArchitect(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.close(rig.engine(config.HoldWork), 4)
 	told := 0
@@ -695,6 +699,7 @@ func TestWorkHoldStopsNoArchitect(t *testing.T) {
 // H12, decision 14: every live architect and phase worker of the tree is told the close, and so
 // is the released merger, woken for it; each text is the one its recipient is owed, word for word.
 func TestWorkHoldTellsEveryArchitectAndEveryWorker(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	rig.close(rig.engine(config.HoldWork), 4)
 	wantLegionClose(t, rig.pool, 4)
@@ -705,6 +710,7 @@ func TestWorkHoldTellsEveryArchitectAndEveryWorker(t *testing.T) {
 // claim a wake finds: a CI settlement's task and the release backstop's wake each start nothing.
 // The opening starts it with one task that begins with the close message's sentences.
 func TestWorkHoldHoldsAReleasedWorkerUntilTheOpening(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Hold: config.HoldWork,
 		Pods: wakePods(t, pool), Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return wakeAt }}, nil)
@@ -753,6 +759,7 @@ func TestWorkHoldHoldsAReleasedWorkerUntilTheOpening(t *testing.T) {
 // document; a registration of a new version closes it too (H5), and the opening is the criteria's
 // approval.
 func TestWorkHoldOverAGatedVerificationDocument(t *testing.T) {
+	t.Parallel()
 	criteria := holdWords{tree: "LEGION-208", step: record.DesignStepCriteria, document: criteriaDoc}
 	for _, tc := range []struct {
 		name  string
@@ -796,6 +803,7 @@ func TestWorkHoldOverAGatedVerificationDocument(t *testing.T) {
 // (record.TreeGate.Standing) and applies the work hold, whose record names that document, and its
 // approval is the opening.
 func TestWorkHoldOverAVerificationDocumentRegisteredBesideTheSpec(t *testing.T) {
+	t.Parallel()
 	criteria := holdWords{tree: "LEGION-208", step: record.DesignStepCriteria, document: criteriaDoc}
 	rig := newHoldRig(t)
 	seedGate(t, rig.pool, record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
@@ -826,6 +834,7 @@ func TestWorkHoldOverAVerificationDocumentRegisteredBesideTheSpec(t *testing.T) 
 // message, or by the news they are owed where they hold a told row (openingDelivery), an
 // operator's suspension and the daemon's are left as they are, and the record goes.
 func TestWorkHoldStartsItsClaimsWhenAPersonApproves(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
@@ -881,6 +890,7 @@ func wantLegionOpening(t *testing.T, rig holdRig, opening string, told bool) {
 // does, and the claim the hold stopped is started with one task naming the version that closed the
 // gate and the version the approval was carried to.
 func TestWorkHoldStartsItsClaimsWhenTheChangeIsUndone(t *testing.T) {
+	t.Parallel()
 	rig := newCarriedRig(t, record.DesignStepSpec, config.HoldWork)
 	rig.close()
 	rig.wantWorkClose()
@@ -895,6 +905,7 @@ func TestWorkHoldStartsItsClaimsWhenTheChangeIsUndone(t *testing.T) {
 // not made among them, and with the record gone the stops still queued read a tree that holds no
 // work.
 func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
@@ -933,6 +944,7 @@ func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 // restart cannot change the outcome, since the engine keeps nothing between facts, and neither can
 // a failed attempt, since the opening's settle is in the transaction that opens the gate.
 func TestWorkHoldOpeningOwesTheOpeningToAHolderOwedNewsThatIsNotLive(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		leave string
@@ -960,6 +972,7 @@ func TestWorkHoldOpeningOwesTheOpeningToAHolderOwedNewsThatIsNotLive(t *testing.
 // that role one task: the newest entry's, behind the opening's sentences, in the one row. A second
 // reading of the opening, the boot's, writes no second start.
 func TestWorkHoldSendsEachStoppedClaimOneTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 4, Status: PhaseStatus(phase.Testing), Rank: "U"}
@@ -1006,6 +1019,7 @@ func TestWorkHoldSendsEachStoppedClaimOneTask(t *testing.T) {
 // H25: a deployment that moved from `merge` to `work` while a tree's gate stood closed has the
 // hold applied at the boot: the record, the messages and the stops, as at a close.
 func TestWorkHoldAppliesAtTheBoot(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	seedGate(t, rig.pool, record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 4, ApprovedVersion: new(3), ApprovedMark: record.EventMark{Seq: 3}, EverOpened: true})
@@ -1016,6 +1030,7 @@ func TestWorkHoldAppliesAtTheBoot(t *testing.T) {
 // H24: a held tree whose close was applied starts nothing at a boot, during the drain and after
 // it: no message, no stop and no start is written again, and the record stands as it was.
 func TestWorkHoldStartsNothingAtTheBoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		stops []heldClaim
@@ -1044,6 +1059,7 @@ func TestWorkHoldStartsNothingAtTheBoot(t *testing.T) {
 // names the version that closed the gate and says the deployment no longer holds the tree's work,
 // each live holder is told so, and the record goes.
 func TestWorkHoldEndsUnderMergeAtTheBoot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		hold  config.Hold
@@ -1071,6 +1087,7 @@ func TestWorkHoldEndsUnderMergeAtTheBoot(t *testing.T) {
 // A lingering tree is left alone: its linger suspended every claim of it, so a gate that moves
 // then closes nothing, stops nothing and records no hold, and a boot does nothing to it.
 func TestWorkHoldLeavesALingeringTreeAlone(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	root := storedIssue(t, rig.pool, "LEGION-208")
 	lingerUntil := holdNow.Add(time.Hour)
@@ -1092,6 +1109,7 @@ func TestWorkHoldLeavesALingeringTreeAlone(t *testing.T) {
 // told nothing and stopped by nothing at the close, the look's start stands as it was, and the
 // opening starts nothing of it.
 func TestWorkHoldLeavesAClosedMembersCheckLookAlone(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	look := superviseRowsOf(t, rig.pool, "LEGION-212", "start")
@@ -1111,6 +1129,7 @@ func TestWorkHoldLeavesAClosedMembersCheckLookAlone(t *testing.T) {
 // that finds a record of an older generation of a root whose own gate stands open drops it and
 // holds nothing.
 func TestWorkHoldGivesWayToANewerGeneration(t *testing.T) {
+	t.Parallel()
 	t.Run("the re-admission's clear", func(t *testing.T) {
 		rig := newHoldRig(t)
 		rig.close(rig.engine(config.HoldWork), 4)
@@ -1144,6 +1163,7 @@ func TestWorkHoldGivesWayToANewerGeneration(t *testing.T) {
 // Decision 17: a held issue keeps its admission slot. The hold moves no
 // phase, so admission's pass over the held tree takes no slot back.
 func TestWorkHoldKeepsTheIssuesSlot(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
@@ -1163,6 +1183,7 @@ func TestWorkHoldKeepsTheIssuesSlot(t *testing.T) {
 // H34, decision 17: the pod of a held claim is kept, as an operator-suspended claim's is: the rule
 // for a pod no live claim owns holds it under a hold of its own, so the worker's unpushed work stays.
 func TestWorkHoldKeepsTheHeldClaimsPod(t *testing.T) {
+	t.Parallel()
 	view := unownedIssue()
 	view.Claims[2].SuspendedBy = supervise.SuspendedByHold
 	if !view.Claims[2].WorkHeld() {
@@ -1188,6 +1209,7 @@ func TestWorkHoldKeepsTheHeldClaimsPod(t *testing.T) {
 // phase holder the hold stopped has no start queued, which would report any other suspended phase
 // holder an operator suspended.
 func TestWorkHoldIsPassedOverByTheStrandedReport(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
@@ -1212,6 +1234,7 @@ func TestWorkHoldIsPassedOverByTheStrandedReport(t *testing.T) {
 // H33: each stop and each start of the hold is one daemon log line naming the issue, the role and
 // the version that closed the gate.
 func TestWorkHoldLogsEachStopAndStart(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
@@ -1255,6 +1278,7 @@ func wantLines(t *testing.T, logged, msg string, claims []heldClaim) {
 // fact here names no version (a stop that named none), so the record alone supplies the version 4
 // that the start's log line names.
 func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfTheOpening(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
@@ -1297,6 +1321,7 @@ func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfTheOpening(t *testing.T) {
 // keeps no record of the version that closed the gate, and the start's log line names version 4,
 // the fact's.
 func TestWorkHoldStartWithNoRecordNamesTheVersionOfItsStop(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
@@ -1320,6 +1345,7 @@ func TestWorkHoldStartWithNoRecordNamesTheVersionOfItsStop(t *testing.T) {
 // tree's work: the deployment may still hold it under `work`. The start's log line names no
 // version.
 func TestWorkHoldStartWithNoRecordSaysTheDaemonKeepsNone(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.stopsMade(heldClaim{"LEGION-209", claim.RoleImplementer})
@@ -1344,6 +1370,7 @@ func TestWorkHoldStartWithNoRecordSaysTheDaemonKeepsNone(t *testing.T) {
 // the daemon keeps no record of the version that closed the gate, never version 2 or that run's
 // open message, and the start's log line names version 4, the fact's.
 func TestWorkHoldStartUsesNoRecordOfAnOlderGeneration(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	older := record.WorkHold{Project: "LEGION", Tree: "LEGION-208", RootGeneration: 3, Step: record.DesignStepSpec,
@@ -1374,6 +1401,7 @@ func TestWorkHoldStartUsesNoRecordOfAnOlderGeneration(t *testing.T) {
 // answers that the hold stands (supervise.Store.WorkHoldStands), and the tree's record is that
 // hold.
 func TestWorkHoldStandsAgainAtACloseAfterAnOpening(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	st, err := store.Open(t.Context(), rig.pool.Config().ConnString())
@@ -1454,6 +1482,7 @@ func projectHeld(t *testing.T, pool *pgxpool.Pool) api.State {
 // closed the gate, for each member whose work is a phase worker's; the root, whose architect works
 // on, carries no such answer, and none does once the gate opens.
 func TestWorkHoldShowsWhyInTheState(t *testing.T) {
+	t.Parallel()
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
@@ -1482,6 +1511,7 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 // contract of the shaped answers (193) does, and the route places it by that; a caller in no pod
 // that states nothing, the operator's `legion state`, is served the daemon's own shape.
 func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
+	t.Parallel()
 	entries := api.NumberedEntries()
 	at := slices.IndexFunc(entries, func(entry api.NumberedEntry) bool { return entry.Slug == "approval-route" })
 	if at < 0 {
@@ -1567,6 +1597,7 @@ func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.Stat
 // newer than any stop that still acts and than the start in hand's own row, and it does not stand
 // where it carries no phase work and the start in hand carries the phase's.
 func TestWorkHoldOpeningStartStandsByOneRule(t *testing.T) {
+	t.Parallel()
 	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 4}
 	opening := func(id int64, at phase.Phase) record.QueuedSupervise {
 		return record.QueuedSupervise{ID: id, Request: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,

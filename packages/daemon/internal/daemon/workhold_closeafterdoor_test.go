@@ -183,6 +183,7 @@ func withoutSession(c supervise.Claim) supervise.Claim {
 // out, as the door refuses it, and nothing of the claim changes, then or by the outbox's passes
 // after.
 func TestWorkHoldRefusesTheControllersRetryWhenTheGateClosesAfterTheDoorsRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		walk func(r *workHoldRig)
@@ -212,6 +213,7 @@ func TestWorkHoldRefusesTheControllersRetryWhenTheGateClosesAfterTheDoorsRead(t 
 // the root stands in its phase at its run, and the claim stays retired with its session, then and
 // after the outbox's passes.
 func TestWorkHoldRefusesTheControllersRetryOfARetiredWorkerWhenTheGateClosesAfterTheDoorsRead(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	gate := closingGate(r)
 	retiredByTheController(r)
@@ -235,6 +237,7 @@ func TestWorkHoldRefusesTheControllersRetryOfARetiredWorkerWhenTheGateClosesAfte
 //     the session behind, and says so: the claim stays retired, with no session and the task it
 //     held, and the session it left behind recorded as such.
 func TestWorkHoldRefusesTheControllersFreshSessionOfARetiredWorkerWhenTheGateClosesAfterTheDoorsRead(t *testing.T) {
+	t.Parallel()
 	t.Run("closed at the forget's read", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 		gate := closingGate(r)

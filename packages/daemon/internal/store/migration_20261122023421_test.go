@@ -27,6 +27,7 @@ const workHoldOpeningsRelease = "the release that records the last opening of ea
 // version row and leaves work_holds, which the release before reads, as it was. The roll-forward
 // runs the migration again and finds the table empty.
 func TestTheWorkHoldOpeningsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, workHoldOpeningsVersion-1)

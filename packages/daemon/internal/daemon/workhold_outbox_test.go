@@ -753,6 +753,7 @@ func cutoverMergerAtTheClose(t *testing.T) *workHoldRig {
 // lets through, is TestWorkHoldWakesAReleasedMerger's; a writer whose tree holds a released merger
 // counts that wake (woken).
 func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
+	t.Parallel()
 	type writer struct {
 		name  string
 		early bool
@@ -1019,6 +1020,7 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 // no stop; and a start of the architect launches it while the gate stays closed, where the start
 // of a phase worker of the same tree, queued beside it, waits.
 func TestWorkHoldStartsAnArchitect(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.live(claim.RoleArchitect)
 	r.close(4)
@@ -1092,6 +1094,7 @@ func wakeTheMerger(r *workHoldRig) time.Time {
 // agent is ready. The hold stops it not. Every other start of the merger waits while the gate is
 // closed — here its phase's start — and runs once the gate opens.
 func TestMergeHoldWakesAReleasedMerger(t *testing.T) {
+	t.Parallel()
 	r := mergingWithAReleasedMerger(t, config.HoldMerge)
 	r.close(4)
 	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
@@ -1129,6 +1132,7 @@ func TestMergeHoldWakesAReleasedMerger(t *testing.T) {
 // start (M4): it is stopped by the hold when the turn the message starts ends, or 2 minutes after
 // it became ready, its session kept.
 func TestWorkHoldWakesAReleasedMerger(t *testing.T) {
+	t.Parallel()
 	for _, end := range []string{"its turn ends", "2 minutes after its start"} {
 		t.Run(end, func(t *testing.T) {
 			r := mergingWithAReleasedMerger(t, config.HoldWork)
@@ -1170,6 +1174,7 @@ func TestWorkHoldWakesAReleasedMerger(t *testing.T) {
 // admission pass; the claims the hold stopped stay stopped through all of it, and the opening
 // starts each of them.
 func TestWorkHoldIsNotEndedByAPauseResume(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.working(claim.RoleImplementer)
 	r.released(claim.RoleTester)
@@ -1233,6 +1238,7 @@ func TestWorkHoldIsNotEndedByAPauseResume(t *testing.T) {
 // (keptRoleMessageHoldBound), and the hook prompt is still delivered at the opening: a claim the
 // hold holds counts as a start that is coming (wakeComing).
 func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.inTx(func(tx pgx.Tx) error {
 		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleImplementer,
@@ -1284,6 +1290,7 @@ func TestWorkHoldKeepsAReleasedWorkerStoppedUntilTheOpening(t *testing.T) {
 // stop is posted then, 2 minutes on: the worker is stopped by the hold when its turn ends, or its
 // turn is cut 2 minutes after the message reached it, its session kept.
 func TestWorkHoldStopsALiveWorkerAtItsTurnsEndOrTwoMinutesAfterTheMessage(t *testing.T) {
+	t.Parallel()
 	for _, end := range []string{"its turn ends", "2 minutes after the message"} {
 		t.Run(end, func(t *testing.T) {
 			r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
@@ -1330,6 +1337,7 @@ func TestWorkHoldStopsALiveWorkerAtItsTurnsEndOrTwoMinutesAfterTheMessage(t *tes
 // after the opening committed and before the stop's row runs again makes no stop either
 // (TestWorkHoldMakesNoStopWhenTheTurnEndsAfterTheOpening).
 func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("before the message reached the worker", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 		r.working(claim.RoleImplementer)
@@ -1383,6 +1391,7 @@ func TestWorkHoldMakesNoStopOnceTheGateOpensAgain(t *testing.T) {
 // opening. The stop was not made when the gate opened, so the turn's end makes none: the claim
 // ends its turn idle with its process, and nothing stops and relaunches it.
 func TestWorkHoldMakesNoStopWhenTheTurnEndsAfterTheOpening(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.working(claim.RoleImplementer)
 	launched := r.launches(claim.RoleImplementer)
@@ -1477,6 +1486,7 @@ func (r *workHoldRig) waitsOrReturns(what string, done <-chan error) (returned b
 // until the opening commits, and then reads no row, so it makes no stop. The implementer ends its
 // turn idle with its process. It is never stopped and never started again.
 func TestWorkHoldMakesNoStopWhenTheTurnEndsWhileTheOpeningCommits(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	machine, token := r.working(claim.RoleImplementer), r.token(claim.RoleImplementer)
 	launched := r.launches(claim.RoleImplementer)
@@ -1538,6 +1548,7 @@ func TestWorkHoldMakesNoStopWhenTheTurnEndsWhileTheOpeningCommits(t *testing.T) 
 // starts it, and the row finishes with one line that names the tester and the version that closed
 // the gate.
 func TestWorkHoldMakesNoStopOfAReleasedWorkerWhileTheOpeningCommits(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
@@ -1645,6 +1656,7 @@ func (s heldReadAfterStop) WorkHoldStands(ctx context.Context, tree string) (boo
 // commits. The read after the stop then finds the row gone and the daemon is told, but the
 // opening's start covers the tester, so the tester is started once, with the opening's own task.
 func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	read := heldReadAfterStop{Store: r.trees, token: r.token(claim.RoleTester), written: &atomic.Bool{},
 		reading: make(chan struct{}), proceed: make(chan struct{})}
@@ -1701,6 +1713,7 @@ func TestWorkHoldOpeningStartsAStopCommittedBeforeIt(t *testing.T) {
 // write finds the row gone (supervise's holdReadAfterStop), so the daemon starts the tester at
 // once, once, with the opening's task.
 func TestWorkHoldStartsAStopDecidedBeforeTheOpeningCommitsWithTheOpeningsTask(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	write := heldStopWrite{Store: r.trees, token: r.token(claim.RoleTester), writing: make(chan struct{}), proceed: make(chan struct{})}
 	letGo := sync.OnceFunc(func() { close(write.proceed) })
@@ -1758,6 +1771,7 @@ func TestWorkHoldStartsAStopDecidedBeforeTheOpeningCommitsWithTheOpeningsTask(t 
 // that held the row across the runtime's stop would hold every fact of the daemon until the stop
 // returned.
 func TestWorkHoldOpeningWaitsForNoRuntimeCallOfAnotherDecision(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	token := r.token(claim.RoleImplementer)
 	slow := slowProcessStop{Runtime: r.rt, token: token, stopping: make(chan struct{}), proceed: make(chan struct{})}
@@ -1834,6 +1848,7 @@ func (s refusedHoldRead) WorkHoldStands(ctx context.Context, tree string) (bool,
 // the close message's sentences naming version 4, that the hold stopped the turn, today's open
 // message naming the person's approval of version 4, and the check of the turn.
 func TestWorkHoldStartsAStopMadeWithoutTheLockAfterTheOpening(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
@@ -1914,6 +1929,7 @@ func (s slowProcessStop) Suspend(ctx context.Context, loc runtime.Locator) error
 // is then written. A claim the hold stopped while no hold stands must still be started; it must
 // not wait, stopped by a hold that has ended, for the next boot of the daemon.
 func TestWorkHoldStartsAStopMadeNowWhoseLockTheDatabaseEnded(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	token := r.token(claim.RoleImplementer)
 	slow := slowProcessStop{Runtime: r.rt, token: token, stopping: make(chan struct{}), proceed: make(chan struct{})}
@@ -1986,6 +2002,7 @@ func TestWorkHoldStartsAStopMadeNowWhoseLockTheDatabaseEnded(t *testing.T) {
 // the issue, the role and version 4, and the drain starts the implementer once, with the
 // opening's task, which names version 4 and carries today's open message.
 func TestWorkHoldStartsAStopMadeWhileTheOpeningCommits(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
@@ -2061,6 +2078,7 @@ func TestWorkHoldStartsAStopMadeWhileTheOpeningCommits(t *testing.T) {
 // person's approval of version 4, and the check of the turn. It must not tell the worker that the
 // deployment no longer holds the tree's work: the deployment still holds it under `work`.
 func TestWorkHoldStartsAStopMadeWhileTheOpeningCommitsWithTheOpeningsTask(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	token := r.token(claim.RoleImplementer)
 	slow := slowProcessStop{Runtime: r.rt, token: token, stopping: make(chan struct{}), proceed: make(chan struct{})}
@@ -2110,6 +2128,7 @@ func TestWorkHoldStartsAStopMadeWhileTheOpeningCommitsWithTheOpeningsTask(t *tes
 // repair, and a daemon restart during the drain and after it leave every claim the hold stopped
 // stopped. A restart during the drain posts the stop again with the deadline it stored.
 func TestWorkHoldLeavesEveryHeldClaimStopped(t *testing.T) {
+	t.Parallel()
 	held := func(t *testing.T) *workHoldRig {
 		t.Helper()
 		r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
@@ -2215,6 +2234,7 @@ func (r *workHoldRig) restartBeforeTheBoot() {
 // version. The boot then ends the hold and finds no claim that the hold stopped. The tester stays
 // released, and no start tells it that the deployment no longer holds the tree's work.
 func TestWorkHoldMakesNoStopAfterARestartIntoMergeBeforeTheBoot(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
@@ -2263,6 +2283,7 @@ func TestWorkHoldMakesNoStopAfterARestartIntoMergeBeforeTheBoot(t *testing.T) {
 // sentences, a claim that holds no phase that the issue's other roles may ask it questions. The
 // live architect and the operator's suspended reviewer are started by nothing.
 func TestWorkHoldOpeningStartsEachHeldClaimAndNoOther(t *testing.T) {
+	t.Parallel()
 	for _, opening := range []string{"a person's approval", "Dispatch's carried approval after an exact undo"} {
 		t.Run(opening, func(t *testing.T) {
 			r := newWorkHoldRig(t, carriedTree())
@@ -2308,6 +2329,7 @@ func TestWorkHoldOpeningStartsEachHeldClaimAndNoOther(t *testing.T) {
 // close — holds no phase of the issue, so the opening gives it the one task of a claim that holds
 // none (workflow's openHeldClaims) rather than the phase's work.
 func TestWorkHoldOpensAWorkerOfAnIssueAtAdmittedWithNoPhase(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Admitted, config.HoldWork))
 	r.live(claim.RoleArchitect)
 	r.released(claim.RoleImplementer)
@@ -2352,6 +2374,7 @@ func (r *workHoldRig) closeWhileProvisioning(version int) func() bool {
 // lease ends: it stops the launching implementer at its ready, before the implementer takes any
 // task. The opening starts it once, with the start's task behind the opening's sentences.
 func TestWorkHoldStopsAStartPastTheFenceAtItsReady(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.inTx(func(tx pgx.Tx) error {
 		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleImplementer,
@@ -2403,6 +2426,7 @@ func TestWorkHoldStopsAStartPastTheFenceAtItsReady(t *testing.T) {
 // meets a working claim. It cuts the turn at the deadline the row stores, with the implementer's
 // session kept, so no phase turn runs to its end under the closed gate.
 func TestWorkHoldCutsAStartPastTheFenceAtTheDeadlineOfTheClose(t *testing.T) {
+	t.Parallel()
 	for _, start := range []string{"a start that creates the claim", "a wake of a released worker"} {
 		for _, miss := range []string{"a restart before its ready", "a first attempt whose read the store refused"} {
 			t.Run(start+"/"+miss, func(t *testing.T) {
@@ -2490,6 +2514,7 @@ func TestWorkHoldCutsAStartPastTheFenceAtTheDeadlineOfTheClose(t *testing.T) {
 // It waits for the merger's session instead, as a woken merger's close does, and the merger is
 // told today's close once its session holds its topic.
 func TestMergeHoldTellsAMergerWhoseStartReadTheGateBeforeTheClose(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
 	merger := r.token(claim.RoleMerger)
 	r.conn(claim.RoleMerger)
@@ -2549,6 +2574,7 @@ func (s closeAtAStart) PutClaim(ctx context.Context, c supervise.Claim) error {
 // undelivered. The start brings the merger back with its merging task, the message reaches the
 // merger's session once the merger is back, and the merger is prompted with its task after that.
 func TestMergeHoldTellsAGoneMergerWhoseStartRunsAtTheClose(t *testing.T) {
+	t.Parallel()
 	suspended := supervise.Claim{Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended,
 		SuspendedBy: supervise.SuspendedByDaemon, Session: "ses-merger", SessionFile: "/tmp/merger.jsonl"}
 	failed := supervise.Claim{Generation: 1, ServingGeneration: 1, State: supervise.StateFailed, Failure: "pane exited",
@@ -2623,6 +2649,7 @@ func TestMergeHoldTellsAGoneMergerWhoseStartRunsAtTheClose(t *testing.T) {
 // each start then gives the words of the newest opening, built when it runs: the close of version
 // 5 and the approval of version 5, once.
 func TestWorkHoldOpeningStartQueuedAcrossAnotherCloseGivesTheNewestOpening(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.working(claim.RoleImplementer)
 	r.released(claim.RoleTester)
@@ -2658,6 +2685,7 @@ func TestWorkHoldOpeningStartQueuedAcrossAnotherCloseGivesTheNewestOpening(t *te
 // behind the opening's sentences. The opening's start then meets a claim the hold no longer
 // holds, and finishes without acting, and admission owes the implementer nothing more.
 func TestWorkHoldGivesOneTaskWhenAPhaseStartMeetsAnOpeningStartWithNoPhase(t *testing.T) {
+	t.Parallel()
 	r := heldAtTheClose(t)
 	r.drain()
 	r.wantHeld(claim.RoleImplementer, 0, "after the close")
@@ -2724,6 +2752,7 @@ func (p *notConfirmedOnce) Publish(ctx context.Context, topic, message string, p
 // worker is told the opening alone. So does the architect's close message under `work`, which
 // carries no stop and no wake: it is marked as a close message (record.RoleMessage.Close).
 func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
+	t.Parallel()
 	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
 	for _, hold := range []config.Hold{config.HoldMerge, config.HoldWork} {
 		t.Run("a woken merger under "+string(hold), func(t *testing.T) {
@@ -2841,6 +2870,7 @@ func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 // queued for its next attempt with that error, is not published, and is not finished as a close
 // whose gate opened again.
 func TestGatesHoldKeepsTheCloseMessageOfAnIssueTheRecordDoesNotHold(t *testing.T) {
+	t.Parallel()
 	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
 	for _, hold := range []config.Hold{config.HoldMerge, config.HoldWork} {
 		t.Run(string(hold), func(t *testing.T) {
@@ -2887,6 +2917,7 @@ func TestGatesHoldKeepsTheCloseMessageOfAnIssueTheRecordDoesNotHold(t *testing.T
 // the hold. So the message's attempt after that finds no lane running the start and no claim,
 // and the row finishes with one line and no stop rather than wait until the gate opens.
 func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueuedAfterTheClose(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
 	merger := r.token(claim.RoleMerger)
 	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
@@ -2929,6 +2960,7 @@ func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueuedAfterTheClose(t *testing
 // opens, the stop's next decision reads no work hold row, and the row finishes with the one line
 // that says the stop is not made.
 func TestWorkHoldStopOfAClaimThatRunsNothingIsNoError(t *testing.T) {
+	t.Parallel()
 	const unmade = "outbox: the design gate opened again before the work hold's stop was made; the stop is not made"
 	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain} {
 		t.Run(string(state), func(t *testing.T) {
@@ -3020,6 +3052,7 @@ func (p *unresponsiveHolder) Publish(ctx context.Context, topic, message string,
 // with its stop unposted: the row ends, and the stop is posted with its deadline 2 minutes on, so
 // the worker's turn is cut then, its session kept.
 func TestWorkHoldStopsAWorkerWhoseHolderIsUnresponsive(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.working(claim.RoleImplementer)
 	launched := r.launches(claim.RoleImplementer)
@@ -3047,6 +3080,7 @@ func TestWorkHoldStopsAWorkerWhoseHolderIsUnresponsive(t *testing.T) {
 // version 4 row then meets the standing hold of version 5: it is not published, so the implementer
 // is not told the older close after the newer one, and it posts no second stop.
 func TestWorkHoldPublishesNoCloseThatANewerCloseOutran(t *testing.T) {
+	t.Parallel()
 	const outran = "outbox role message finished unpublished: a newer close of the design gate stands"
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -3090,6 +3124,7 @@ func TestWorkHoldPublishesNoCloseThatANewerCloseOutran(t *testing.T) {
 // and not the first opening's sentences behind them, then the news the claim is owed now, of
 // version 5, in place of the kept task's news of version 4.
 func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork).withNews())
 	token := r.token(claim.RoleImplementer)
 	r.working(claim.RoleImplementer)
@@ -3143,6 +3178,7 @@ func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *
 // reads the kept task back from the store, and a first attempt of the opening's start that waits
 // for the news to be recorded gives the same task.
 func TestWorkHoldOpeningGivesAMergerTheNewsWithTheTaskItsCutTurnKept(t *testing.T) {
+	t.Parallel()
 	const mergeTask = "Merge the pull request of LEGION-208."
 	for _, miss := range []string{"none", "a restart before the opening", "a first attempt that waits for the news"} {
 		t.Run(miss, func(t *testing.T) {
@@ -3201,6 +3237,7 @@ func TestWorkHoldOpeningGivesAMergerTheNewsWithTheTaskItsCutTurnKept(t *testing.
 // message meets no session that holds the role and finishes, the start waits for the gate, and
 // once the gate opens the start launches the merger with its task.
 func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueued(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
 	merger := r.token(claim.RoleMerger)
 	r.conn(claim.RoleMerger)
@@ -3247,6 +3284,7 @@ func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueued(t *testing.T) {
 // no claim of it exists, nothing creates the claim while the gate stays closed, so the message
 // finishes with one line and no stop rather than wait until the gate opens.
 func TestMergeHoldEndsTheCloseOfAMergerWhoseStartCreatesNoClaim(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
 	logs := &testlog.Buffer{}
 	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
@@ -3331,6 +3369,7 @@ func (r *workHoldRig) launchingWithATask() *supervise.Machine {
 // restart whose read the store refused is asked again on its backoff, and the attempt after it
 // meets the uncertain launch as above. The row is a restart's own.
 func TestWorkHoldStopsTheRelaunchOfAnUncertainLaunchWithinTheBackoffOfItsReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		late, refused bool
@@ -3418,6 +3457,7 @@ func TestWorkHoldStopsTheRelaunchOfAnUncertainLaunchWithinTheBackoffOfItsReady(t
 // at its ready. A first attempt between the two calls whose read the store refused is asked again
 // on its backoff, and the attempt after it meets the queued claim as above.
 func TestWorkHoldStopsTheBootsReleasedLaunchAtItsReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		restart, refused bool
@@ -3538,6 +3578,7 @@ func (r *workHoldRig) wantMergerToldThenStopped(told time.Time) {
 // posted. The wait is the message's row: a daemon restart while the merger launches keeps it, and
 // a first publish its holder did not confirm is retried on the row's backoff.
 func TestWorkHoldTellsALaunchingMergerTheCloseBeforeItsStop(t *testing.T) {
+	t.Parallel()
 	for _, miss := range []string{"", "a restart while the merger launches", "a first publish its holder did not confirm"} {
 		name := miss
 		if name == "" {
@@ -3588,6 +3629,7 @@ func TestWorkHoldTellsALaunchingMergerTheCloseBeforeItsStop(t *testing.T) {
 // unresponsive keeps the row, and a first publish its holder did not confirm is retried on the
 // row's backoff: neither ends the wait.
 func TestWorkHoldWaitsForAnUnresponsiveMergerBeforeItsStop(t *testing.T) {
+	t.Parallel()
 	for _, merger := range []string{"a woken released merger", "a live merger"} {
 		for _, miss := range []string{"", "a restart while its holder is unresponsive", "a first publish its holder did not confirm"} {
 			name := merger
@@ -3658,6 +3700,7 @@ func TestWorkHoldWaitsForAnUnresponsiveMergerBeforeItsStop(t *testing.T) {
 // posted. A daemon restart before the merger's ready keeps the message's row, and a first publish
 // its holder did not confirm is retried on the row's backoff.
 func TestWorkHoldTellsAMergerWhoseStartReadTheGateBeforeTheCloseBeforeItsStop(t *testing.T) {
+	t.Parallel()
 	for _, miss := range []string{"", "a restart before its ready", "a first publish its holder did not confirm"} {
 		name := miss
 		if name == "" {
@@ -3737,6 +3780,7 @@ func (s openedBeforeGatesRead) GatesOf(ctx context.Context, tx pgx.Tx, issue str
 // outcome: the next attempt reads the opening committed, and the open gate ends the row
 // (TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain).
 func TestWorkHoldPublishesNoCloseWhoseHoldEndedAfterItReadTheGate(t *testing.T) {
+	t.Parallel()
 	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -3780,6 +3824,7 @@ func TestWorkHoldPublishesNoCloseWhoseHoldEndedAfterItReadTheGate(t *testing.T) 
 // with its own stop. The spec's row then meets the standing hold of the criteria step at version
 // 2, a version below its own 4: it is not published, and it posts no stop.
 func TestWorkHoldPublishesNoCloseOfAnotherDocumentThatANewerCloseOutran(t *testing.T) {
+	t.Parallel()
 	const outran = "outbox role message finished unpublished: a newer close of the design gate stands"
 	const criteria = "artifact-208-criteria"
 	tree := legionTree(phase.Implementing, config.HoldWork)
@@ -3843,6 +3888,7 @@ func TestWorkHoldPublishesNoCloseOfAnotherDocumentThatANewerCloseOutran(t *testi
 // longer holds the tree's work. Under `merge` the message's stop is not made, and one line names
 // the merger and the version that closed the gate.
 func TestWorkHoldTellsAMergerTheCloseAfterARestartIntoMerge(t *testing.T) {
+	t.Parallel()
 	const unmade = "outbox: the deployment's hold is no longer `work`, which holds no running work; the work hold's stop is not made"
 	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -3886,6 +3932,7 @@ func TestWorkHoldTellsAMergerTheCloseAfterARestartIntoMerge(t *testing.T) {
 // sweep. The tester of INFRA-4528 saw the whole daemon log "outbox row written outside a commit
 // scope" from postHoldStop at every close of its drive.
 func TestWorkHoldStopRowWakesItsLaneOnlyOnceItCommits(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
 	var mu sync.Mutex
@@ -3933,6 +3980,7 @@ func TestWorkHoldStopRowWakesItsLaneOnlyOnceItCommits(t *testing.T) {
 // the gate and carries today's open message. A daemon restart between the two deliveries leaves
 // the opening's task owed, and the start's next attempt delivers it once.
 func TestWorkHoldOpeningGivesTheOperatorsTaskFirstAndItsOwnTaskAfter(t *testing.T) {
+	t.Parallel()
 	for _, restart := range []bool{false, true} {
 		name := "no restart"
 		if restart {
@@ -4107,6 +4155,7 @@ func (r *workHoldRig) wantPrompts(when string, suffixes ...string) {
 // version 4 and carries today's open message, then with its phase work, and nothing more. A
 // daemon restart while the phase start waits changes nothing.
 func TestWorkHoldOpeningStartGoesBeforeAPhaseStartBehindAnOperatorsTask(t *testing.T) {
+	t.Parallel()
 	for _, restart := range []bool{false, true} {
 		name := "no restart"
 		if restart {
@@ -4154,6 +4203,7 @@ func TestWorkHoldOpeningStartGoesBeforeAPhaseStartBehindAnOperatorsTask(t *testi
 // settles that row as told and gives the opening's sentences, with the news of version 4 after its
 // work, once. The phase start's task after it carries neither.
 func TestWorkHoldOpeningStartGoesBeforeAPhaseStartBehindAnOperatorsTaskWithTheNews(t *testing.T) {
+	t.Parallel()
 	r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork).withNews(), false)
 	r.openedWithItsStartOnBackoff()
 	if !r.openingOwed() {
@@ -4187,6 +4237,7 @@ func TestWorkHoldOpeningStartGoesBeforeAPhaseStartBehindAnOperatorsTaskWithTheNe
 // So the one task gives today's open message once, in the opening's sentences, with the news of
 // version 4 after its work and no second gate sentence in front of that news.
 func TestWorkHoldOpeningStartsRetryTellsTheOpeningOnceToAHolderOfANewPhase(t *testing.T) {
+	t.Parallel()
 	r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork).withNews(), false)
 	r.approve(4, 12)
 	r.runOnce()
@@ -4220,6 +4271,7 @@ func TestWorkHoldOpeningStartsRetryTellsTheOpeningOnceToAHolderOfANewPhase(t *te
 // the phase start's task, which follows the operator's, carries the gate's open message in its news.
 // The implementer is not told that the hold stopped its turn.
 func TestWorkHoldPhaseStartWithNoOpeningStartQueuedCarriesTheOwedOpening(t *testing.T) {
+	t.Parallel()
 	r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork).withNews(), false)
 	r.openedWithItsStartOnBackoff()
 	if _, err := r.pool.Exec(r.ctx, `delete from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
@@ -4268,6 +4320,7 @@ func TestWorkHoldPhaseStartWithNoOpeningStartQueuedCarriesTheOwedOpening(t *test
 // counts as a start that is coming (wakeComing), and once a session holds the role the prompt is
 // delivered, once: no hook-prompt-undelivered notice, and no message on the issue names it.
 func TestWorkHoldKeepsAHookPromptPastItsHourWhileTheOpeningGivesTheOperatorsTaskFirst(t *testing.T) {
+	t.Parallel()
 	r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork), false)
 	token := r.token(claim.RoleImplementer)
 	r.publisher.setAbsent(notify.RoleTopicPrefix + string(token))
@@ -4387,6 +4440,7 @@ func (r *workHoldRig) sentToClaim(issue string, role claim.Role, since int64) in
 // sends that claim no start, no task and no message, and still starts the claim the hold stopped
 // of the root, which stayed.
 func TestWorkHoldGivesWayToTheDaemonsSuspensionOfAMemberMovedOutOfTheWorkflow(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"backlog", "icebox", "triage"} {
 		t.Run(status, func(t *testing.T) {
 			r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))

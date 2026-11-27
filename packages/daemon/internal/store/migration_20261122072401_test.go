@@ -42,6 +42,7 @@ func clearedApprovalsWayBackFirst(t *testing.T, store *Store) {
 // schema the migration finds, as the release before writes them; today's store writes an issue
 // only once every migration has run.
 func TestTheClearedSpecApprovalsLatestVersionAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, clearedLatestVersion-1)

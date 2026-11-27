@@ -30,6 +30,7 @@ const claimSourceHoldRelease = "the release that stops a tree's work under the w
 // asked to take is written with SQL that names the columns of the schema the migration finds, as
 // the release before writes it; today's store writes a claim only once every migration has run.
 func TestTheWorkHoldSourceMigrationTakesHoldAndItsWayBackHandsTheClaimToTheOperator(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimSourceHoldVersion-1)

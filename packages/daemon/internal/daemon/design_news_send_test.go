@@ -239,6 +239,7 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 // the work and the news: no send drops them or says them twice, and the news the delivery goes on
 // carrying still holds the work alone.
 func TestWorkHoldOpeningSentencesSurviveEachSendOfTheNews(t *testing.T) {
+	t.Parallel()
 	r := newNewsRig(t)
 	const opening = "The work hold stopped your turn. The design gate of LEGION-500 opened. " +
 		"Check what your turn already did: a tool call may not have finished."

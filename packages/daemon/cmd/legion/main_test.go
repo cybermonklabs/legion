@@ -1094,6 +1094,7 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 // `gates.hold`: `merge` for a file that names no hold, and the word the file names otherwise. A
 // value the key does not take is refused with exit 1 and no OK line.
 func TestGatesHoldPrintedByConfigCheck(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	for _, tc := range []struct{ name, gates, hold string }{
 		{name: "no gates key", gates: "", hold: "merge"},

@@ -112,6 +112,7 @@ func takenOnceOpen(r *workHoldRig, route string, role claim.Role) {
 // while the gate is closed; the opening starts nothing of it; and the controller's resume starts
 // it once the gate is open.
 func TestWorkHoldLeavesAClaimTheControllerSuspendedBeforeTheClose(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
 	r.live(claim.RoleArchitect)
 	r.live(claim.RoleTester)

@@ -18,6 +18,7 @@ import (
 // logs the wait at Info as the wait it is, never at Error as a failed decision, and the claim
 // stays the hold's.
 func TestWorkHoldLogsNoErrorForARuleDoorOnAHeldClaim(t *testing.T) {
+	t.Parallel()
 	var logs testlog.Buffer
 	rig := newIssueRig(t)
 	rig.sup.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))

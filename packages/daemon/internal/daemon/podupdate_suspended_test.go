@@ -209,6 +209,7 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 // round asks it and does not replace the pod before it answers. The tree's record of the hold
 // stands, as the close wrote it, so no decision of the round drops that stop.
 func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
+	t.Parallel()
 	const held, stopping = claim.RolePlanner, claim.RoleTester
 	workers := []claim.Role{claim.RoleImplementer, stopping}
 	rig := newPodUpdateRig(t,
@@ -327,6 +328,7 @@ const heldWorkKeepsLine = "supervise: the work hold stopped a claim of this upda
 // worker again, since its earlier answer says nothing of the work it did since, and replaces the
 // pod only once each has answered again.
 func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *testing.T) {
+	t.Parallel()
 	const held = claim.RolePlanner
 	workers := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t,
@@ -411,6 +413,7 @@ func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *te
 // A non-breaking round uses the R7 decline even if the work hold stopped a worker.
 // Ending the round releases every answered role's task without a hold notice or a re-ask.
 func TestWorkHoldANonBreakingUpdateRoundKeepsThePodAndEnds(t *testing.T) {
+	t.Parallel()
 	const held = claim.RolePlanner
 	roles := []claim.Role{claim.RoleArchitect, claim.RoleReviewer}
 	rig := newPodUpdateRig(t, readyWorker(roles[0]), readyWorker(roles[1]),
@@ -452,6 +455,7 @@ func TestWorkHoldANonBreakingUpdateRoundKeepsThePodAndEnds(t *testing.T) {
 // bound. Once the tester runs in the kept pod, a clean read lets the sweep re-ask it under
 // a new bound and replace the pod after its new answer.
 func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing.T) {
+	t.Parallel()
 	const held, worker = claim.RolePlanner, claim.RoleTester
 	stopped := podlessMember(held, supervise.StateSuspended, supervise.SuspendedByHold, false)
 	tester := answeredThenSuspended(worker)
@@ -529,6 +533,7 @@ func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing
 // Here the tester has not answered when the round's bound comes, so the bound lets the
 // replacement through, and the hold stops the tester while the runtime waits for the launch turn.
 func TestWorkHoldAnUpdateRoundReadsAgainForAClaimTheHoldStopsBeforeTheLastWord(t *testing.T) {
+	t.Parallel()
 	const stopped = claim.RoleTester
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(stopped))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})

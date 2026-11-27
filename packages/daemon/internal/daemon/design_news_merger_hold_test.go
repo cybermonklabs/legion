@@ -88,6 +88,7 @@ func (r *newsReconcileRig) recordOpening() *record.WorkHold {
 // sentences, so each send renders it again behind them. The start tells the opening, so it settles
 // the merger's told row first (settleHeldOpening), and the news carries no second opening.
 func TestWorkHoldOpeningStartOfAMergerWaitsForItsNews(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.runner.gateHold = config.HoldWork
 	root := r.member(reconcileRoot, "", phase.Merging)
@@ -144,6 +145,7 @@ func TestWorkHoldOpeningStartOfAMergerWaitsForItsNews(t *testing.T) {
 // first attempt waits for the merger's news, and the second finds the same. A restart cannot
 // change the outcome: the row reads the claim and the record when it runs, and keeps nothing.
 func TestWorkHoldOpeningStartOfAMergerANewerStartStartedLeavesTheOpeningOwed(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.runner.gateHold = config.HoldWork
 	r.member(reconcileRoot, "", phase.Merging)

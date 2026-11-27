@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -194,22 +195,24 @@ func (h *heldRoundRig) opensOver(drift string, roles ...claim.Role) {
 	})
 }
 
-// until asks done, which may sweep or run the outbox, up to sixty times a few milliseconds apart,
-// and fails the case with the sweep's last lines where it never holds: what held the round is on
-// those lines.
+// until asks done, which may sweep or run the outbox, at testwait's pace until it holds or the
+// test binary's deadline comes near (testwait.Context), and fails the case with the sweep's last
+// lines where it never holds: what held the round is on those lines. The test runs beside the
+// package's other tests, so a bound of its own would miss on a busy machine.
 func (h *heldRoundRig) until(what string, done func() bool) {
 	h.t.Helper()
-	for range 60 {
-		if done() {
-			return
+	deadline := testwait.Context(h.t)
+	for !done() {
+		select {
+		case <-deadline.Done():
+			lines := strings.Split(strings.TrimSpace(h.logs.String()), "\n")
+			if len(lines) > 8 {
+				lines = lines[len(lines)-8:]
+			}
+			h.t.Fatalf("gave up waiting for %s; the sweep's last lines:\n%s", what, strings.Join(lines, "\n"))
+		case <-time.After(testwait.Poll):
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	lines := strings.Split(strings.TrimSpace(h.logs.String()), "\n")
-	if len(lines) > 8 {
-		lines = lines[len(lines)-8:]
-	}
-	h.t.Fatalf("gave up waiting for %s; the sweep's last lines:\n%s", what, strings.Join(lines, "\n"))
 }
 
 // asked sweeps and runs the outbox until the round's ask reached role's session.
@@ -408,6 +411,7 @@ func architectAnsweredUnderTheHold(t *testing.T) *heldRoundRig {
 }
 
 func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing.T) {
+	t.Parallel()
 	architect, implementer := claim.RoleArchitect, claim.RoleImplementer
 
 	t.Run("a live architect, then the held work is pushed", func(t *testing.T) {
@@ -619,6 +623,7 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 }
 
 func TestWorkHoldNonBreakingRoundKeepsThePodAndEnds(t *testing.T) {
+	t.Parallel()
 	const architect, implementer, merger = claim.RoleArchitect, claim.RoleImplementer, claim.RoleMerger
 
 	t.Run("a live architect receives its held task", func(t *testing.T) {
@@ -781,6 +786,7 @@ func (h *heldRoundRig) updateNotices(reason string) []record.ControllerNotice {
 // the read finds it, the round ends with no replacement, the pod is kept, the architect goes on
 // in it, and the held claim stays the hold's.
 func TestWorkHoldTheControllersPodReplacementKeepsThePodOfHeldWork(t *testing.T) {
+	t.Parallel()
 	const architect, implementer = claim.RoleArchitect, claim.RoleImplementer
 	h := newHeldRoundRig(t, phase.Implementing)
 	h.liveInPod(architect)

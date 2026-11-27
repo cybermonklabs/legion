@@ -31,6 +31,7 @@ const workHoldsRelease = "the release that records each tree the work hold holds
 // them as it was. Then it drops the table and deletes the migration's own version row, so the
 // roll-forward runs it again and finds the table empty.
 func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, workHoldsVersion-1)

@@ -394,6 +394,7 @@ func keptForARootOutOfTheWorkflow(status string) func(r *pathRig) string {
 // capture of check e4b07a29 sends to a real session; the file must equal what the path writes, so
 // `-update` rewrites the files and every other run compares them.
 func TestApprovalRouteAnswersAfterEveryPathThatTellsAnApproval(t *testing.T) {
+	t.Parallel()
 	for _, path := range approvalPaths {
 		t.Run(path.name, func(t *testing.T) {
 			entry := path.drive(newPathRig(t))
@@ -477,6 +478,7 @@ var noticeClasses = map[record.NoticeKind]noticeClass{
 // row holds of a person's approval, so the classification is the act's and the route's, not the
 // notice's words.
 func TestApprovalRouteClassifiesEveryNoticeKind(t *testing.T) {
+	t.Parallel()
 	kinds := record.NoticeKinds()
 	for _, kind := range kinds {
 		class, ok := noticeClasses[kind]

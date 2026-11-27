@@ -86,6 +86,7 @@ func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
 // hold stands while its work_holds row exists, from the close that writes the row to the opening
 // that deletes it, and a tree with no row has no hold.
 func TestWorkHoldStandsWhileTheTreesRowExists(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()
@@ -121,6 +122,7 @@ func TestWorkHoldStandsWhileTheTreesRowExists(t *testing.T) {
 // not stand, as for a tree with no hold. The record of the opening still names the hold. A close
 // after the opening makes the hold stand again.
 func TestWorkHoldStandsReadsAnOpenedHoldAsEnded(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()
@@ -193,6 +195,7 @@ func waitingOnALock(t *testing.T, store *Store) bool {
 // it answers, so an opening after it takes the row at once. A read whose deadline passes while the
 // opening holds the row answers an error.
 func TestWorkHoldStandsWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()

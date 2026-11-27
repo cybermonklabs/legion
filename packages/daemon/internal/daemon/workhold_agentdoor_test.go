@@ -221,6 +221,7 @@ func wantSessionAndTaskKept(r *workHoldRig, when string) {
 // state, its source, its session and its pending phase task stay as its machine and the store
 // held them, and no start row of the implementer is written, then or by the outbox's passes after.
 func TestWorkHoldAgentDoorRefusesTheControllersStartsWhileTheGateIsClosed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range agentDoorCases {
 		for _, start := range agentDoorStarts {
 			t.Run(tc.name+"/"+start.name, func(t *testing.T) {
@@ -249,6 +250,7 @@ func TestWorkHoldAgentDoorRefusesTheControllersStartsWhileTheGateIsClosed(t *tes
 // before it forgets anything, so the claim still records its session and still holds its phase
 // task, in its machine and in the store, and the outbox's passes after the refusal change neither.
 func TestWorkHoldAgentDoorKeepsTheSessionAndPhaseTaskOfARefusedFreshSession(t *testing.T) {
+	t.Parallel()
 	for _, tc := range agentDoorCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
@@ -279,6 +281,7 @@ func retiredByTheController(r *workHoldRig) {
 // refused 409 HELD_BY_WORK_HOLD, and no phase restart is applied: no start row of the implementer
 // is written, the root stands in its phase at its run, and the claim stays retired.
 func TestWorkHoldAgentDoorRefusesTheControllersRetryOfAWorkerItsStopRetired(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	retiredByTheController(r)
 	issue := r.issue()
@@ -333,6 +336,7 @@ func openedSendingNothing(r *workHoldRig) {
 // the controller's stop retired (item 3) too; the controller's retry of it is then taken (202),
 // writes the start of its phase, and that start launches it with a task of that phase.
 func TestWorkHoldAgentDoorTakesTheControllersStartsOnceTheGateOpens(t *testing.T) {
+	t.Parallel()
 	for _, tc := range agentDoorCases[1:] {
 		t.Run(tc.name+"/resume_agent", func(t *testing.T) {
 			r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))

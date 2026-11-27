@@ -77,6 +77,7 @@ func (r *workHoldRig) owed(role claim.Role, secret string) api.OwedResponse {
 // capability (supervise.NormalizeClaim), so no reminder can run in it and nothing asks the route
 // for it.
 func TestWorkHoldOwedTellsAHeldWorkerItOwesNothing(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	r.live(claim.RoleArchitect)
 	r.workingWithASecret(claim.RoleImplementer, owedSecret)

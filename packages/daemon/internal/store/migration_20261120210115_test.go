@@ -33,6 +33,7 @@ const approvalRouteRelease = "the release that answers the approval route"
 // schema the migration finds, as the release before writes them; today's store writes an issue
 // only once every migration has run.
 func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, approvalRouteVersion-1)

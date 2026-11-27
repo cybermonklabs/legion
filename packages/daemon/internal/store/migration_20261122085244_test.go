@@ -32,6 +32,7 @@ const pendingOpeningRelease = "the release that marks an opening's task on a cla
 // names the columns of the schema the migration finds, as the release before writes it; today's
 // store writes a claim only once every migration has run.
 func TestThePendingDeliveryOpeningAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, pendingOpeningVersion-1)

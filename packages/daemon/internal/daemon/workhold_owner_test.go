@@ -288,10 +288,12 @@ func firstStepStartsOnlyAtTheOpening(t *testing.T, hold config.Hold) {
 }
 
 func TestMergeHoldStartsAFirstStepThatIsNotPlanningOnlyAtTheOpening(t *testing.T) {
+	t.Parallel()
 	firstStepStartsOnlyAtTheOpening(t, config.HoldMerge)
 }
 
 func TestWorkHoldStartsAFirstStepThatIsNotPlanningOnlyAtTheOpening(t *testing.T) {
+	t.Parallel()
 	firstStepStartsOnlyAtTheOpening(t, config.HoldWork)
 }
 
@@ -331,6 +333,7 @@ func (r *workHoldRig) wantTheImplementerStarted(says string) {
 // restarts the task its owner stopped, at its first step. Each writes the implementer's start,
 // which waits while the gate is closed and runs once it opens.
 func TestWorkHoldHoldsTheStartsOfAMoveBackAndARestartUntilTheOpening(t *testing.T) {
+	t.Parallel()
 	t.Run("a move back", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
 		r.live(claim.RoleArchitect)
@@ -374,6 +377,7 @@ func TestWorkHoldHoldsTheStartsOfAMoveBackAndARestartUntilTheOpening(t *testing.
 // implementing, is recorded as ever: the root moves. What the move starts, the retro's implementer
 // or the implementer's next round, waits while the gate is closed and runs once it opens.
 func TestWorkHoldHoldsWhatTheOwnersAcceptanceStartsUntilTheOpening(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		report func(r *workHoldRig)
@@ -436,6 +440,7 @@ func inReviewOfAnOwnersPlan(t *testing.T, hold config.Hold, steps []string) *wor
 // opening the notice goes, the root still standing in accepting, and the architect accepts: its
 // sign-off moves the root into its retro, whose implementer starts.
 func TestWorkHoldTellsNoArchitectOfItsOwnAcceptanceUntilTheOpening(t *testing.T) {
+	t.Parallel()
 	for _, tc := range ownersPlaceCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := inReviewOfAnOwnersPlan(t, config.HoldWork, tc.steps)
@@ -488,6 +493,7 @@ func TestWorkHoldTellsNoArchitectOfItsOwnAcceptanceUntilTheOpening(t *testing.T)
 // and the rest of the catch-up's words are the same. At the opening it is told again that the
 // acceptance is its own, by the phase-finished notice of the step before it, and it accepts.
 func TestWorkHoldTellsTheArchitectOfItsOwnAcceptanceAtTheOpening(t *testing.T) {
+	t.Parallel()
 	for _, tc := range ownersPlaceCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := inReviewOfAnOwnersPlan(t, config.HoldWork, tc.steps)
@@ -525,6 +531,7 @@ func TestWorkHoldTellsTheArchitectOfItsOwnAcceptanceAtTheOpening(t *testing.T) {
 // Decision 13 beside H45: under `merge` nothing of this changes. The reviewer's handoff that moves
 // the root into its owner's place with the gate closed tells the architect at once.
 func TestMergeHoldTellsTheArchitectOfItsOwnAcceptanceAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range ownersPlaceCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := inReviewOfAnOwnersPlan(t, config.HoldMerge, tc.steps)
@@ -566,6 +573,7 @@ func specStated(t *testing.T, what string, catchUp record.Notice) record.CatchUp
 // `work` with no hold record yet, which the third case builds: there the strip alone holds the
 // clause back.
 func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
+	t.Parallel()
 	t.Run("built at the architect's ready while the hold stands", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
 		r.live(claim.RoleArchitect)
@@ -651,6 +659,7 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 // Decision 21's twin under `merge`: nothing of this changes, and the catch-up the architect's ready
 // builds with the gate closed asks for its acceptance as ever.
 func TestMergeHoldCatchUpAsksForTheAcceptanceAsEver(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldMerge))
 	r.live(claim.RoleArchitect)
 	r.close(4)
@@ -678,6 +687,7 @@ const returnSignOff = "It waits on your sign_off, as an issue in accepting does.
 // of an owner's acceptance waits, and a later notice of the architect passes it. At the opening it
 // goes, once, and the opening tells the architect of its acceptance no second time.
 func TestWorkHoldHoldsTheReturnFromChildrenIntoTheOwnersAcceptanceUntilTheOpening(t *testing.T) {
+	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
 	r.live(claim.RoleArchitect)
 	r.close(4)
