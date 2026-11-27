@@ -778,7 +778,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:541-561 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:542-562 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
@@ -1563,6 +1563,32 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(pane.exits).toEqual([]);
     // The boot measures nothing: no capability host member was called before its ready.
     expect(calls).toEqual([]);
+  });
+
+  // Contract entry 20261125170509: a registration that names the session this one replaces (the claim's session
+  // the daemon forgot) has the role claim name it as `previous_session_id`, a hard claim as every
+  // Legion claim is, so the listener hands that session's unread messages to this one.
+  test("a claim whose registration replaces a session names it as the role claim's previous_session_id", async () => {
+    let answer: Record<string, unknown> = {};
+    const pane = await claimPane({
+      role: "tester",
+      sessionId: "ses_worker_after",
+      register: () => Response.json(answer),
+    });
+    answer = { ...pane.registration, replaces: "ses_worker_before" };
+    await pane.start();
+    await firstTurn(pane);
+
+    const roleClaims = pane.requests.filter((request) => request.path === "/v1/roles/set");
+    expect(roleClaims.map((request) => request.body)).toEqual([
+      {
+        session_id: "ses_worker_after",
+        role: pane.claimToken,
+        previous_session_id: "ses_worker_before",
+        client_instance_id: registeredClientInstance(pane.requests, "ses_worker_after"),
+      },
+    ]);
+    expect(pane.exits).toEqual([]);
   });
 
   // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
@@ -4529,6 +4555,39 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.exits).toEqual([]);
   });
 
+  // Contract entry 20261125170509: a controller registration that names the session this one replaces (the
+  // controller session the daemon forgot) has the role claim name it as `previous_session_id`,
+  // so the listener hands that session's unread messages to this one.
+  test("/legion-controller-start whose registration replaces a session names it as the role claim's previous_session_id", async () => {
+    let answer: Record<string, unknown> | undefined;
+    const controller = await launchedController({
+      sessionId: "ses_controller_after",
+      register: () => (answer === undefined ? undefined : Response.json(answer)),
+    });
+    answer = { ...controller.registration, replaces: "ses_controller_before" };
+    const context = controller.context("ses_controller_after");
+    await controller.handlers.get("session_start")?.({}, context);
+    expect(await runStartCommand(controller, context)).toEqual([]);
+
+    const roleClaims = controller.requests.filter(
+      (request) =>
+        request.path === "/v1/roles/set" &&
+        typeof request.body === "object" &&
+        request.body !== null &&
+        "role" in request.body &&
+        request.body.role === controller.token
+    );
+    expect(roleClaims.map((request) => request.body)).toEqual([
+      {
+        session_id: "ses_controller_after",
+        role: controller.token,
+        previous_session_id: "ses_controller_before",
+        client_instance_id: registeredClientInstance(controller.requests, "ses_controller_after"),
+      },
+    ]);
+    expect(controller.exits).toEqual([]);
+  });
+
   // LEGION-392's race: Oh My Pi's own positional-argument first message can lose the session's one
   // first-turn slot to an Envoy notice. The start command's claim sends the start message once the
   // registration is in, right before the role claim, so neither the role's lane nor the controller
@@ -5686,7 +5745,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const waits = warnings.filter((warning) => warning.message.includes("was answered 503"));
     expect(waits).toHaveLength(1);
     expect(waits[0]?.message).toContain(
-      `claim of Envoy role ${controller.token} was answered 503 at attempt 1, so nothing was claimed`
+      `claim of Envoy role ${controller.token} was answered 503 at attempt 1; claiming it again in`
     );
     expect(waits[0]?.message).toContain("the takeover record of the claim did not store");
     const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
@@ -5699,6 +5758,66 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.exits).toEqual([]);
     expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
   });
+
+  // A claim 503 can also answer a claim that landed and stands, whose handover of the session it
+  // replaces is not recorded yet: the listener names it by the code `handover_unrecorded`. The
+  // controller then holds its role, and its waiting line says so; any other claim 503 wrote
+  // nothing, and its line says the controller holds no Envoy role yet.
+  const handoverText =
+    "the claim landed, but the handover record of the session it replaces did not store, so claim again";
+  const holdsRole =
+    "legion: this controller holds its Envoy role; the handover of the session it replaces is not recorded yet, so it claims again: ";
+  const holdsNone = "legion: this controller holds no Envoy role yet: ";
+  for (const [label, sessionId, body, waiting] of [
+    [
+      "the handover 503",
+      "ses_controller_handover_coded",
+      { error: handoverText, code: "handover_unrecorded" },
+      holdsRole,
+    ],
+    [
+      "a claim 503 that wrote nothing",
+      "ses_controller_wrote_nothing",
+      { error: "envoy: the takeover record of the claim did not store" },
+      holdsNone,
+    ],
+  ] as const) {
+    test(`a daemon-launched controller whose role claim meets ${label} shows what it holds while it claims again`, async () => {
+      let claims = 0;
+      const controller = await launchedController({
+        sessionId,
+        stateFixture: "state-controller-claim.json",
+        roleClaim: () =>
+          ++claims <= LISTENER_CALL_ATTEMPTS
+            ? Response.json(body, { status: 503, headers: { "Retry-After": "1" } })
+            : undefined,
+      });
+      const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+      await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+      delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+      delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+      process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+      process.env.LEGION_SLACK_CHANNELS = "";
+      try {
+        await loggedWarnings(async () => {
+          await controller.handlers.get("session_start")?.({}, controller.context(sessionId));
+        });
+      } finally {
+        delete process.env.LEGION_BOOT_TOKEN_FILE;
+      }
+      expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+      const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+      expect(shown.map((call) => call.lines?.length ?? 0)).toEqual([1, 0]);
+      expect(shown[0]?.lines?.[0]).toStartWith(
+        `${waiting}claim of Envoy role ${controller.token} was answered 503 at attempt 1`
+      );
+      expect(shown[0]?.lines?.[0]).toContain(body.error);
+      expect(controller.exits).toEqual([]);
+      expect(controller.requests.map((request) => request.path)).toContain(
+        "/legion/v1/claims/ready"
+      );
+    });
+  }
 
   // A session change in the daemon-launched controller never reaches its Envoy role claim: the
   // daemon refuses to register a session other than the one it recorded with its same-agent
@@ -5827,6 +5946,72 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // The waiting line was up while the command claimed again, and came down once it gave up.
     const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
     expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 4") === true)).toBe(true);
+    expect(shown.at(-1)?.lines).toBeUndefined();
+  }, 45_000);
+
+  // The same typed claim, met by the handover 503 at every try: the claim stands, so the failure
+  // it gives up with after its counted tries says the controller holds its role and only the
+  // handover of the session it replaces is missing, never that it holds nothing; its waiting line
+  // said so while it claimed again.
+  test("/legion-claim-controller whose claim stands while its handover is never recorded fails saying it holds the role and only the handover is missing", async () => {
+    // Imported here, not at the top: the controller module reaches the host package, which this
+    // file mocks in its body, after its static imports ran, and loads `./legion` the same way.
+    const { CONTROLLER_CLAIM_BUSY_ATTEMPTS } = await import("../src/controller-session");
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_typed_handover",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (!busy) return undefined;
+        claims += 1;
+        return Response.json(
+          { error: handoverText, code: "handover_unrecorded" },
+          { status: 503, headers: { "Retry-After": "1" } }
+        );
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    let failure: unknown;
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_typed_handover")
+      );
+      busy = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined) {
+        throw new Error("controller claim command was not registered");
+      }
+      const typed: SessionContext = {
+        ...controller.context("ses_controller_typed_handover"),
+        ui: { notify: () => undefined, setWidget: recordWidget },
+      };
+      await loggedWarnings(async () => {
+        failure = await claimCommand.handler("", commandContext(typed)).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(claims).toBe(CONTROLLER_CLAIM_BUSY_ATTEMPTS * LISTENER_CALL_ATTEMPTS);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      `this controller holds its Envoy role ${controller.token}; only the handover of the session it replaces is missing, still not recorded after ${CONTROLLER_CLAIM_BUSY_ATTEMPTS} claims: ${handoverText}`
+    );
+    expect(controller.exits).toEqual([]);
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.startsWith(holdsRole) === true)).toBe(true);
+    expect(shown.some((call) => call.lines?.[0]?.startsWith(holdsNone) === true)).toBe(false);
     expect(shown.at(-1)?.lines).toBeUndefined();
   }, 45_000);
 
