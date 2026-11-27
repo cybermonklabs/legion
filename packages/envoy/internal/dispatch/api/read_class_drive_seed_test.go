@@ -165,10 +165,7 @@ func (w *driveWorld) waitReadWork(ctx context.Context) error {
 	}
 	for _, project := range projects {
 		select {
-		case result := <-s.termStats.DoChan(project, func() (any, error) { return nil, nil }):
-			if result.Err != nil {
-				return fmt.Errorf("statistics refresh of %s: %w", project, result.Err)
-			}
+		case <-s.termStats.DoChan(project, func() (any, error) { return nil, nil }):
 		case <-ctx.Done():
 			return ctx.Err()
 		}

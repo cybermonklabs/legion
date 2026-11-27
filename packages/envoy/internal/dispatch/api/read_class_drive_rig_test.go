@@ -94,20 +94,34 @@ func (p *poolStatements) since(from int) []drivenStatement {
 	return slices.Clone(p.statements[from:])
 }
 
-// driveWindowLimit is how long a request and all the work it starts may take before the drive
-// fails. Completion, rather than a period with no writes, closes each window.
+// driveWindowLimit bounds each request's work and the calibration's extra observation.
 const driveWindowLimit = 20 * time.Second
 
+// driveCalibrationWindow keeps the calibration's original two-second observation for background
+// writers outside the known workers' completion barriers. Each world pays it only once.
+const driveCalibrationWindow = 2 * time.Second
+
 // window records the request and all its background work, including a worker that runs no SQL
-// until after the response. waitWork is installed by newDriveRig and joins those workers before
-// this method takes the statements. A worker that exceeds driveWindowLimit fails the drive.
-func (p *poolStatements) window(t *testing.T, what string, send func()) []drivenStatement {
+// until after the response. waitWork joins those workers. An optional observation then keeps the
+// window open for unknown writers in the calibration. The same driveWindowLimit bounds both.
+func (p *poolStatements) window(t *testing.T, what string, observation time.Duration, send func()) []drivenStatement {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
 	defer cancel()
 	from := p.count()
 	send()
-	p.finish(t, ctx, what)
+	p.finish(t, ctx, what, from)
+	if observation > 0 {
+		timer := time.NewTimer(observation)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("%s: observation did not finish within %s: %v; window writes: %v", what, driveWindowLimit, err, writesIn(p.since(from)))
+		}
+	}
 	return p.since(from)
 }
 
@@ -116,16 +130,19 @@ func (p *poolStatements) settle(t *testing.T, what string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
 	defer cancel()
-	p.finish(t, ctx, what)
+	p.finish(t, ctx, what, p.count())
 }
 
-func (p *poolStatements) finish(t *testing.T, ctx context.Context, what string) {
+func (p *poolStatements) finish(t *testing.T, ctx context.Context, what string, from int) {
 	t.Helper()
 	if p.waitWork == nil {
 		t.Fatal("the traced pool has no completion barrier")
 	}
 	if err := p.waitWork(ctx); err != nil {
-		t.Fatalf("%s: request work did not finish within %s: %v; pool writes: %v", what, driveWindowLimit, err, writesIn(p.since(0)))
+		if ctx.Err() != nil {
+			t.Fatalf("%s: request work did not finish within %s: %v; window writes: %v", what, driveWindowLimit, err, writesIn(p.since(from)))
+		}
+		t.Fatalf("%s: request work failed: %v; window writes: %v", what, err, writesIn(p.since(from)))
 	}
 }
 

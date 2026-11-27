@@ -543,8 +543,8 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // pool alone and holds no statement of a row another world sends beside it.
 //
 // In each world, before its first row, a calibration window, GET /api/v1/limits under the
-// deployment's shared token, which writes nothing, must hold no write at all: no duty of the rig
-// writes while a row is driven. Then the pre-check must see, each in its own window, one insert
+// deployment's shared token, joins known workers and observes two more seconds for an unknown
+// background writer. It must hold no write. Then the pre-check must see, in its own windows, an insert
 // into text_trees (the first read of a version no other test or world has shown), one upsert of
 // route_roster on the server's own context (a read of a stale roster), and the term statistics
 // refresh a related read starts on the server's own context, so a tracer that sees nothing, or
@@ -595,14 +595,14 @@ func driveWorldsFor(rows int) int {
 	return max(1, min(rows, parallel))
 }
 
-// calibrate is the calibration row: GET /api/v1/limits under the deployment's shared token, whose
-// request writes nothing, in a window that must hold no write. A write in it is a duty of the rig
-// writing while nothing asked it to, which would land in any row's window.
+// calibrate joins the known workers of GET /api/v1/limits under the shared token, then observes
+// the whole pool for driveCalibrationWindow. A write in that interval catches a background
+// source the completion barriers do not name, even though this request itself writes nothing.
 func (w *driveWorld) calibrate(t *testing.T) {
 	t.Helper()
 	w.tracer.settle(t, "before the calibration row")
 	var response *httptest.ResponseRecorder
-	statements := w.tracer.window(t, "the calibration row", func() {
+	statements := w.tracer.window(t, "the calibration row", driveCalibrationWindow, func() {
 		request := drivenRequest(httptest.NewRequest(http.MethodGet, "/api/v1/limits", nil))
 		request.Header.Set("Authorization", "Bearer agent-token")
 		response = w.rig.serve(request)
@@ -625,7 +625,7 @@ func (w *driveWorld) precheck(t *testing.T) {
 		t.Helper()
 		w.tracer.settle(t, "before "+what)
 		var response *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
+		statements := w.tracer.window(t, what, 0, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: GET %s answered %d %s", what, target, response.Code, response.Body.String())
 		}
@@ -689,7 +689,7 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 			w.startPersonalPair(t)
 		}
 		var answer *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
+		statements := w.tracer.window(t, what, 0, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++
 		tally.statements += len(statements)
 		for _, write := range requireReadsWrites(t, what, statements) {
@@ -771,7 +771,7 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 			}
 			world.tracer.settle(t, "before "+target)
 			var answer *httptest.ResponseRecorder
-			statements := world.tracer.window(t, target, func() { answer = world.rig.serve(writer.request(t, target)) })
+			statements := world.tracer.window(t, target, 0, func() { answer = world.rig.serve(writer.request(t, target)) })
 			if answer.Code != http.StatusOK {
 				t.Fatalf("GET %s answered %d %s", target, answer.Code, cutBody(answer.Body.String()))
 			}
