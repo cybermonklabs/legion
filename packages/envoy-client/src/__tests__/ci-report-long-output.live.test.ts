@@ -15,7 +15,10 @@ import { buildGoBinaries } from "../../test/envoy-stack";
 // `go test -json` run of a module example.com/acc: TestSeventyK prints "START-MARKER of
 // TestSeventyK", 70 lines of 1023 "s", "END-MARKER of TestSeventyK" and fails; TestThreeK prints
 // its start marker, 3000 "k" and its end marker and fails, and its stored text is the control,
-// which starts at its start whatever the reader keeps of a long output.
+// which starts at its start whatever the reader keeps of a long output. ci-report runs as the
+// action runs it (C3), under the real `agent-secrets result-grant`, so the CLI writes through the
+// broker's airlock proxy with the run's placeholder alone; the checks are those of
+// test/fixtures/ci-report-long-output/spec/output.yaml.
 
 const { PATH: SHELL_PATH = "" } = process.env;
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
@@ -92,7 +95,7 @@ describe.skipIf(!dispatchStackEnabled)("a long output of a test, as Dispatch kee
       checkRunId: 4201,
     });
     const child = Bun.spawn(
-      [
+      stack.jobCommand([
         join(work, "bin", "ci-report"),
         "--dir",
         ".dispatch/spec",
@@ -104,7 +107,7 @@ describe.skipIf(!dispatchStackEnabled)("a long output of a test, as Dispatch kee
         stack.project,
         "--dispatch-cli",
         `${process.execPath} ${ENTRY}`,
-      ],
+      ]),
       {
         cwd: dir,
         env: {

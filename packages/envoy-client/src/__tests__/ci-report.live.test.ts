@@ -13,10 +13,14 @@ import { buildGoBinaries } from "../../test/envoy-stack";
 import { routeAnswer } from "../../test/route-answers";
 
 // The fixture CI job of v-recorder: the last step of a job, packages/envoy's ci-report, run as
-// the job's own process in a checkout of the job's commit, over the job's go test report. It
-// calls this checkout's real `dispatch` CLI once for each check whose test ran, and the CLI writes
-// the result through the real secrets broker to the real Dispatch server of the CI results stack
-// (test/ci-results-stack.ts). Each row reads the stored rows back as a person reads them.
+// the job's own process in a checkout of the job's commit, over the job's go test report, as the
+// action .github/actions/dispatch-results runs it (C3): under the real `agent-secrets
+// result-grant`, which trades the job's GitHub token at the real secrets broker for the proxy
+// placeholder of the run's result grant. ci-report calls this checkout's real `dispatch` CLI once
+// for each check whose test ran; the CLI holds that placeholder and no Dispatch credential, and
+// writes the result through the broker's airlock proxy, which puts the run's results token in its
+// place, to the real Dispatch server of the CI results stack (test/ci-results-stack.ts). Each row
+// reads the stored rows back as a person reads them.
 //
 // The reports in test/fixtures/ci-report are what `go test -json -count=1 -trimpath ./...` wrote
 // for a module example.com/acme/probe of two tests, TestProbe and TestSecondProbe:
@@ -25,7 +29,8 @@ import { routeAnswer } from "../../test/route-answers";
 // go-test-first-fails.jsonl with its three package events, and those alone, changed to a passing
 // package ("PASS", "ok", "pass"): a job whose own outcome is success while its named test failed,
 // which go test itself never writes. test/fixtures/ci-report/spec holds the two checks of job
-// go-checks that name those tests, and spec-without-the-second-check the first alone.
+// go-checks that name those tests, and spec-without-the-second-check the first alone, each as
+// one spec file, probe.yaml, in the form `spec-check print` writes.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
@@ -33,6 +38,8 @@ const { PATH: SHELL_PATH = "" } = process.env;
 
 /** The CLI entry ci-report runs, as a CI job's shell reaches it: this checkout's own `dispatch`. */
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+/** The step's `--dispatch-cli`: this checkout's CLI, run by this Bun. */
+const DISPATCH_CLI = `${process.execPath} ${ENTRY}`;
 /** The fixtures, outside src/: each job that compiles envoy-client reads src/, and none of those
  *  jobs reads these. */
 const FIXTURES = join(import.meta.dir, "..", "..", "test", "fixtures", "ci-report");
@@ -48,6 +55,24 @@ const REF = "refs/heads/topic/fixture-job";
 const JOB = "go-checks";
 const PROBE = "probe-passes";
 const SECOND = "second-probe-passes";
+
+/** The workflow file of the result entry, which Dispatch reads at a run's commit to know which
+ *  job makes a check run (ci-results-stack.ts's WORKFLOW, which the stack does not export). */
+const WORKFLOW_PATH = ".github/workflows/ci-results.yaml";
+/** That workflow file at a commit whose job go-checks has a matrix of two legs, a and b: GitHub
+ *  names each leg's check run `go-checks (<leg>)`, and Dispatch takes that name as a leg of
+ *  go-checks only where the file at the commit makes go-checks a matrix job. */
+const MATRIX_WORKFLOW = `name: ci-results
+on: push
+jobs:
+  go-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        leg: [a, b]
+    steps:
+      - run: go test ./...
+`;
 
 // Reserved here, at the file's module scope: the file's own `afterAll` removes each once the
 // `describe` below has stopped every process writing into it.
@@ -162,8 +187,9 @@ describe.skipIf(!dispatchStackEnabled)(
     }
 
     /** A new checkout whose .dispatch/spec is a copy of `spec`, committed with the message
-     *  `name`, and the stand-in of GitHub serving those files at that commit. */
-    function checkoutOf(name: string, spec: string): Checkout {
+     *  `name`, and the stand-in of GitHub serving those files at that commit, with the stack's
+     *  workflow file there, or `workflow` in its place. */
+    function checkoutOf(name: string, spec: string, workflow?: string): Checkout {
       const dir = join(work, "checkouts", name);
       cpSync(spec, join(dir, ".dispatch", "spec"), { recursive: true });
       git(dir, "init", "-q");
@@ -171,6 +197,9 @@ describe.skipIf(!dispatchStackEnabled)(
       git(dir, "commit", "-q", "-m", name);
       const sha = git(dir, "rev-parse", "HEAD").trim();
       running().setFiles(sha, join(dir, ".dispatch", "spec"));
+      if (workflow !== undefined) {
+        running().github.setFile(running().repository, sha, WORKFLOW_PATH, workflow);
+      }
       return { dir, sha };
     }
 
@@ -183,30 +212,59 @@ describe.skipIf(!dispatchStackEnabled)(
       return { sha: checkout.sha, ref: REF, job: JOB, runAttempt: 1, checkRunId, ...overrides };
     }
 
-    /** The job's last step: ci-report in the checkout, over the report `fixture`, for the checks
-     *  of `job`, with the job's variables, `overrides` over them, and nothing of this process's
-     *  own but PATH. */
+    /** The run of the leg `leg` of the matrix job JOB: GitHub names its check run `JOB (<leg>)`,
+     *  and its step reports the checks of JOB. */
+    function legOf(
+      checkout: Checkout,
+      checkRunId: number,
+      leg: string,
+      overrides: Partial<JobRun> = {}
+    ): JobRun {
+      return jobOf(checkout, checkRunId, { job: `${JOB} (${leg})`, ...overrides });
+    }
+
+    /** What a row may change of the job's last step. */
+    interface StepOptions {
+      /** The step's `--job`, JOB by default. */
+      readonly job?: string;
+      /** The step's `--dispatch-cli`, DISPATCH_CLI by default. */
+      readonly dispatchCli?: string;
+      /** A DISPATCH_URL of the step's own, set inside the grant (`env DISPATCH_URL=<url>`
+       *  ci-report): `agent-secrets result-grant` runs nothing when the DISPATCH_URL it is given
+       *  names a host the airlock does not bind. */
+      readonly dispatchUrl?: string;
+      /** More variables of the job's, for `agent-secrets result-grant` and its child. */
+      readonly env?: Readonly<Record<string, string>>;
+    }
+
+    /** The job's last step, as the action runs it: ci-report under `agent-secrets result-grant`
+     *  in the checkout, over the report `fixture`, with the job's variables and nothing of this
+     *  process's own but PATH. */
     async function lastStep(
       checkout: Checkout,
       run: JobRun,
       fixture: string,
-      job: string = JOB,
-      overrides: Readonly<Record<string, string>> = {}
+      options: StepOptions = {}
     ): Promise<Reported> {
+      const step = [
+        ciReport,
+        "--dir",
+        ".dispatch/spec",
+        "--job",
+        options.job ?? JOB,
+        "--report",
+        join(FIXTURES, fixture),
+        "--project",
+        running().project,
+        "--dispatch-cli",
+        options.dispatchCli ?? DISPATCH_CLI,
+      ];
       const child = Bun.spawn(
-        [
-          ciReport,
-          "--dir",
-          ".dispatch/spec",
-          "--job",
-          job,
-          "--report",
-          join(FIXTURES, fixture),
-          "--project",
-          running().project,
-          "--dispatch-cli",
-          `${process.execPath} ${ENTRY}`,
-        ],
+        running().jobCommand(
+          options.dispatchUrl === undefined
+            ? step
+            : ["env", `DISPATCH_URL=${options.dispatchUrl}`, ...step]
+        ),
         {
           cwd: checkout.dir,
           env: {
@@ -215,7 +273,7 @@ describe.skipIf(!dispatchStackEnabled)(
             DISPATCH_STATE_DIR: cliState,
             GITHUB_SHA: run.sha,
             ...running().jobEnv(run),
-            ...overrides,
+            ...options.env,
           },
           stdout: "pipe",
           stderr: "pipe",
@@ -238,14 +296,15 @@ describe.skipIf(!dispatchStackEnabled)(
       return (await running().results(commit)) as unknown as Row[];
     }
 
-    /** The job `run` writing a pass of `check` at its own commit itself, with the real CLI and
-     *  not through the step: the command's exit status and what it printed on both streams. */
+    /** The job `run` writing a pass of `check` at its own commit itself, with the real CLI under
+     *  `agent-secrets result-grant` and not through the step: the command's exit status and what
+     *  it printed on both streams. */
     async function writeItself(
       run: JobRun,
       check: string
     ): Promise<{ code: number; printed: string }> {
       const written = Bun.spawn(
-        [
+        running().jobCommand([
           process.execPath,
           ENTRY,
           "result",
@@ -257,7 +316,7 @@ describe.skipIf(!dispatchStackEnabled)(
           "pass",
           "--commit",
           run.sha,
-        ],
+        ]),
         {
           env: {
             PATH: SHELL_PATH,
@@ -366,7 +425,7 @@ describe.skipIf(!dispatchStackEnabled)(
     }, 120_000);
 
     test("a check of the approved list that the files at the commit do not hold gets no call, no line and no result", async () => {
-      expect(readFileSync(join(SPEC, "probe.md"), "utf8")).toContain(`#${SECOND} `);
+      expect(readFileSync(join(SPEC, "probe.yaml"), "utf8")).toContain(`\nid: ${SECOND}\n`);
       expect(readFileSync(join(FIXTURES, "go-test-all-pass.jsonl"), "utf8")).toContain(
         '"Action":"pass","Package":"example.com/acme/probe","Test":"TestSecondProbe"'
       );
@@ -395,15 +454,15 @@ describe.skipIf(!dispatchStackEnabled)(
     // job, changes no check: the step reads the commit's files through git.
     test("a spec file that an earlier step changed and did not commit: the step reports the checks of the commit", async () => {
       const checkout = checkoutOf("changed-after-commit", SPEC);
-      const file = join(checkout.dir, ".dispatch", "spec", "probe.md");
+      const file = join(checkout.dir, ".dispatch", "spec", "probe.yaml");
       const committed = readFileSync(file, "utf8");
       const changed = committed.replace(
-        'selector="example.com/acme/probe TestSecondProbe" job="go-checks"',
-        'selector="example.com/acme/probe TestSecondProbe" job="lint"'
+        "selector: example.com/acme/probe TestSecondProbe\n  job: go-checks\n",
+        "selector: example.com/acme/probe TestSecondProbe\n  job: lint\n"
       );
       expect(changed).not.toBe(committed);
       writeFileSync(file, changed);
-      expect(git(checkout.dir, "status", "--porcelain")).toBe(" M .dispatch/spec/probe.md\n");
+      expect(git(checkout.dir, "status", "--porcelain")).toBe(" M .dispatch/spec/probe.yaml\n");
 
       const reported = await lastStep(checkout, jobOf(checkout, 851), "go-test-second-fails.jsonl");
 
@@ -422,21 +481,21 @@ describe.skipIf(!dispatchStackEnabled)(
     // tree that the graph logic refuses, and Dispatch refuses a write of it, naming the same first
     // problem. The first assertion holds both answers, so a failure shows which of them moved.
     test("files at the commit that the graph logic refuses get no call and no result, and the step names the first problem that Dispatch names", async () => {
-      // Parse reads each block of these files, and Validate refuses the two statements that no
+      // Parse reads each node of these files, and Validate refuses the two statements that no
       // check serves.
       const spec = join(work, "specs", "statements-without-a-check");
       cpSync(SPEC, spec, { recursive: true });
       for (const [file, id] of [
-        ["lonely.md", "a-lonely-statement"],
-        ["z-lonely.md", "another-lonely-statement"],
+        ["lonely.yaml", "a-lonely-statement"],
+        ["z-lonely.yaml", "another-lonely-statement"],
       ] as const) {
         writeFileSync(
           join(spec, file),
-          `:::requirement{#${id} kind="behavior"}\nThe probe keeps one claim.\n:::\n`
+          `---\ntype: requirement\nid: ${id}\nkind: behavior\ntext:\n  - The probe keeps one claim.\n`
         );
       }
       const leaf = "leaf-without-check: no statement is under it and no check serves it";
-      const first = `.dispatch/spec/lonely.md:1: a-lonely-statement: ${leaf}`;
+      const first = `.dispatch/spec/lonely.yaml:1: a-lonely-statement: ${leaf}`;
 
       const checkout = checkoutOf("refused-tree", spec);
       const run = jobOf(checkout, 801);
@@ -456,7 +515,7 @@ describe.skipIf(!dispatchStackEnabled)(
       }).toEqual({ step: { code: 2, lines: [], first }, dispatch: { code: 1, first } });
       expect(problems).toEqual([
         first,
-        `.dispatch/spec/z-lonely.md:1: another-lonely-statement: ${leaf}`,
+        `.dispatch/spec/z-lonely.yaml:1: another-lonely-statement: ${leaf}`,
       ]);
       expect(reported.stderr).toContain("the tree is refused, so no result is written");
       expect(await rowsAt(checkout.sha)).toEqual([]);
@@ -475,7 +534,7 @@ describe.skipIf(!dispatchStackEnabled)(
         checkout,
         jobOf(checkout, 502, { job: "envoy-go" }),
         "go-test-all-pass.jsonl",
-        "envoy-go"
+        { job: "envoy-go" }
       );
       expect({ code: own.code, lines: own.lines }).toEqual({ code: 0, lines: [] });
       // envoy-go's step set to report go-checks' checks: Dispatch reads the job from envoy-go's
@@ -502,26 +561,18 @@ describe.skipIf(!dispatchStackEnabled)(
     }, 120_000);
 
     test("each leg of a matrix writes its own result, and a second attempt of one leg leaves the other leg's row as it was", async () => {
-      const checkout = checkoutOf("matrix", SPEC);
+      const checkout = checkoutOf("matrix", SPEC, MATRIX_WORKFLOW);
       const probeRows = async (): Promise<Row[]> =>
         (await rowsAt(checkout.sha)).filter((row) => row.attestation.predicate.check === PROBE);
 
-      const legA = await lastStep(
-        checkout,
-        jobOf(checkout, 601, { legName: "a" }),
-        "go-test-all-pass.jsonl"
-      );
-      const legB = await lastStep(
-        checkout,
-        jobOf(checkout, 602, { legName: "b" }),
-        "go-test-first-fails.jsonl"
-      );
+      const legA = await lastStep(checkout, legOf(checkout, 601, "a"), "go-test-all-pass.jsonl");
+      const legB = await lastStep(checkout, legOf(checkout, 602, "b"), "go-test-first-fails.jsonl");
       expect([legA.code, legB.code]).toEqual([0, 0]);
       const before = (await probeRows()).find((row) => row.attestation.predicate.leg === "a");
 
       const again = await lastStep(
         checkout,
-        jobOf(checkout, 603, { legName: "b", runAttempt: 2 }),
+        legOf(checkout, 603, "b", { runAttempt: 2 }),
         "go-test-all-pass.jsonl"
       );
       expect(again.code).toBe(0);
@@ -549,15 +600,11 @@ describe.skipIf(!dispatchStackEnabled)(
     }, 120_000);
 
     test("each stored result of each leg of a matrix job holds the member leg, with the values of its own leg", async () => {
-      const checkout = checkoutOf("matrix-leg", SPEC);
-      const legA = await lastStep(
-        checkout,
-        jobOf(checkout, 612, { legName: "a" }),
-        "go-test-all-pass.jsonl"
-      );
+      const checkout = checkoutOf("matrix-leg", SPEC, MATRIX_WORKFLOW);
+      const legA = await lastStep(checkout, legOf(checkout, 612, "a"), "go-test-all-pass.jsonl");
       const legB = await lastStep(
         checkout,
-        jobOf(checkout, 613, { legName: "b" }),
+        legOf(checkout, 613, "b"),
         "go-test-second-fails.jsonl"
       );
       expect([legA.code, legB.code]).toEqual([0, 0]);
@@ -678,18 +725,16 @@ describe.skipIf(!dispatchStackEnabled)(
     // layer answered, and Dispatch answers a write's 2xx only after the write committed. The CLI
     // prints {"landed_without_answer":"ANSWER_LOST"} and exits 0. The step counts that one result
     // as written, and its line says that the answer was lost, with no id. The job's token is
-    // traded at the stack's real broker; only Dispatch is a stand-in.
+    // traded at the stack's real broker by the real `agent-secrets result-grant`; only Dispatch is
+    // a stand-in, which the step's own DISPATCH_URL names inside the grant (StepOptions), over
+    // plain HTTP, which the grant's HTTPS_PROXY does not take.
     test("a write whose 201 echoes its key and gives no stored result counts as written, and its line says that the answer was lost", async () => {
       const checkout = checkoutOf("answer-lost", SPEC_WITHOUT_SECOND);
       const { seen, server } = answeringDispatch(true);
       try {
-        const reported = await lastStep(
-          checkout,
-          jobOf(checkout, 951),
-          "go-test-all-pass.jsonl",
-          JOB,
-          { DISPATCH_URL: `http://127.0.0.1:${server.port}` }
-        );
+        const reported = await lastStep(checkout, jobOf(checkout, 951), "go-test-all-pass.jsonl", {
+          dispatchUrl: `http://127.0.0.1:${server.port}`,
+        });
         expect({ ...stepAnswer(reported), posts: seen.posts }).toEqual({
           code: 0,
           lines: [
@@ -721,13 +766,9 @@ describe.skipIf(!dispatchStackEnabled)(
       const checkout = checkoutOf("no-echo", SPEC_WITHOUT_SECOND);
       const { seen, server } = answeringDispatch(false);
       try {
-        const reported = await lastStep(
-          checkout,
-          jobOf(checkout, 952),
-          "go-test-all-pass.jsonl",
-          JOB,
-          { DISPATCH_URL: `http://127.0.0.1:${server.port}` }
-        );
+        const reported = await lastStep(checkout, jobOf(checkout, 952), "go-test-all-pass.jsonl", {
+          dispatchUrl: `http://127.0.0.1:${server.port}`,
+        });
         const answer = stepAnswer(reported);
         expect({
           code: answer.code,
@@ -793,13 +834,9 @@ describe.skipIf(!dispatchStackEnabled)(
       );
       const { seen, server } = answeringDispatch(false, JSON.stringify(stored));
       try {
-        const reported = await lastStep(
-          checkout,
-          jobOf(checkout, 953),
-          "go-test-all-pass.jsonl",
-          JOB,
-          { DISPATCH_URL: `http://127.0.0.1:${server.port}` }
-        );
+        const reported = await lastStep(checkout, jobOf(checkout, 953), "go-test-all-pass.jsonl", {
+          dispatchUrl: `http://127.0.0.1:${server.port}`,
+        });
         expect({ ...stepAnswer(reported), posts: seen.posts }).toEqual({
           code: 1,
           lines: [

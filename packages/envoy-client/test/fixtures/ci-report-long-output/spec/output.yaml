@@ -1,0 +1,38 @@
+---
+type: requirement
+id: the-output-is-read
+kind: behavior
+text:
+  - Each result keeps the verdict and the start of what its test wrote.
+---
+type: check
+id: three-k-output
+serves: the-output-is-read
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acc/output TestThreeK
+  job: go-checks
+claim: The test that writes 3000 characters passes.
+procedure_text:
+  - The program runs the test one time.
+  - It must find no failure.
+failing_example:
+  - A test that fails.
+---
+type: check
+id: seventy-k-output
+serves: the-output-is-read
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acc/output TestSeventyK
+  job: go-checks
+claim: The test that writes 70 KiB passes.
+procedure_text:
+  - The program runs the test one time.
+  - It must find no failure.
+failing_example:
+  - A test that fails.
