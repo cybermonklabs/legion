@@ -1947,6 +1947,7 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 // by its line alone, since a name of no key's shape is no typo of a key. A password holding a "'",
 // which ends a URL for the URL rule, is the case no rule on the text could cut.
 func TestStopPrintsTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	for name, credential := range map[string]string{
 		"a password and a user name":        "madeUpStopUser0123:madeUpStopPassword0123",
 		"a password holding a single quote": "madeUpStopUser0123:madeUpStop'Password0123",
@@ -1974,6 +1975,7 @@ func TestStopPrintsTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
 // (printRefusal), and a URL pasted where a key goes, a made-up user name and password in its
 // userinfo, is named by its line alone: `legion state --config` here.
 func TestOperatorCommandsPrintTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	const credential = "madeUpStateUser0123:madeUpStatePassword0123"
 	legionState(t)
 	config, _ := workflowConfig(t, 13370, "\"https://"+credential+"@cache.example\": 1\n")
@@ -2663,6 +2665,7 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 // (redact.URL), a made-up password holding a "'" included, in its first line when the daemon
 // answers and in its refusal when the daemon cannot be reached.
 func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	const credential = "madeUpStateUser0123:madeUpState'Password0123"
 	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{}}`
@@ -2705,6 +2708,7 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 // it in plain words, and `legion claims list`, an operator command, names an unreachable daemon
 // through redact.URL, holding no part of a made-up token written as the user.
 func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	t.Run("an address that does not parse", func(t *testing.T) {
 		const head = "madeUpStateHead0123"
 		t.Chdir(t.TempDir())
