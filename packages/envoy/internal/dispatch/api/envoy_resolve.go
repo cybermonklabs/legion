@@ -645,17 +645,17 @@ func receiptError(failure *string) string {
 // branch, and only the body branch records a reply. So this transaction owes the receipt when
 // settle wrote the row, or when the row whose claim it still holds carries a reply_id.
 //
-// receiptOf builds that receipt from the row the transaction leaves, whichever of the two it
-// is, stating what the row records rather than what this send reported - so every attempt
-// carries exactly one receipt and that receipt agrees with its row. reported is the receipt of
-// the attempt as the send reported it, built before the transaction: its owner, the comment's or
-// the message's, is the one locked first, and the receipt appended is of the same attempt, so
-// of that owner. The receipt appended differs from reported only where settle wrote another
-// outcome than the send reported: a delivery's settle (completeCommentDelivery,
-// completeMessageDelivery) first reads, under the owner lock, whether the outbox already read
-// the listener's notice that the copy it kept for a role ended (keptDeliveryExpired), and
-// finding it writes the attempt failed in place of queued, in its one guarded update, so the
-// receipt states that failure.
+// The receipt appended is receiptOf of the row the transaction leaves: the row settle wrote, or,
+// on the answered branch, the row whose claim this sender still holds, with its reply. It states
+// what that row records rather than what this send reported, so every attempt carries exactly one
+// receipt and that receipt agrees with its row. reported is the attempt row the caller means to
+// write, built before the transaction - what the send reported, or a supersede's failure - and the
+// owner of its receipt (receiptOf(reported)), the comment's or the message's, is the one locked
+// first. Every row the transaction can leave is of the same attempt, so its receipt has that owner
+// too. A delivery's settle (completeCommentDelivery, completeMessageDelivery) first reads, under
+// the owner lock, whether the outbox already read the listener's notice that the copy it kept for
+// a role ended (keptDeliveryExpired), and finding it writes the attempt failed in place of queued,
+// in its one guarded update, so the receipt states that failure.
 //
 // stated queues what the attempt states in the node and tuple store in the batch that appends the
 // receipt, right after the receipt: the node of the session a sent attempt reached
@@ -668,7 +668,7 @@ func receiptError(failure *string) string {
 func settleDeliveryAttempt[T any](
 	ctx context.Context,
 	s *server,
-	reported model.Event,
+	reported T,
 	settle func(context.Context, pgx.Tx) (T, error),
 	answered func(context.Context, pgx.Tx) (row T, mine bool, replyID *string, err error),
 	receiptOf func(T) model.Event,
@@ -680,7 +680,7 @@ func settleDeliveryAttempt[T any](
 		return zero, err
 	}
 	defer tx.Rollback(ctx)
-	if err := s.deps.Events.LockOwners(ctx, tx, reported); err != nil {
+	if err := s.deps.Events.LockOwners(ctx, tx, receiptOf(reported)); err != nil {
 		return zero, err
 	}
 	attempt, err := settle(ctx, tx)
@@ -720,24 +720,32 @@ func settleDeliveryAttempt[T any](
 	return attempt, nil
 }
 
-// keptDeliveryExpired is the failure an attempt of post is settled with, and true, when its send
-// reported the copy the listener kept for a role (target, "role:" and the role, routeRole) as
-// queued under envelopeID and the outbox has already read the listener's notice that that copy
-// ended with no session taking it (store.ReadKeptDeliveryExpiry, kept_delivery_expiries): the
-// failure says whether the copy's forward may have reached the role's holder
-// (model.KeptDeliveryExpiredError). It reads, in tx, under the post's owner lock, which is what
-// orders it against the outbox's record of the notice, and answers false for any other attempt
+// keptDeliveryExpired is the state, error and envelope an attempt of post records, given the ones
+// its send reported: state, failure and envelopeID as they are, or, when the send reported the
+// copy the listener kept for a role (target, "role:" and the role, routeRole) as queued under
+// envelopeID and the outbox has already read the listener's notice that that copy ended with no
+// session taking it (store.ReadKeptDeliveryExpiry, kept_delivery_expiries), failed, the failure
+// that says whether the copy's forward may have reached the role's holder
+// (model.KeptDeliveryExpiredError), and no envelope - what the outbox's own settle would have left
+// had it found the attempt queued. It reads, in tx, under the post's owner lock, which is what
+// orders it against the outbox's record of the notice, and answers any other attempt as reported
 // without a read: one that is not queued, names no envelope, or is not to a role. The record names
 // the role the attempt targets, so a notice stored for another role's copy is never found for it.
-func keptDeliveryExpired(ctx context.Context, tx pgx.Tx, post listenerwire.DispatchPost, target, state string, envelopeID *string) (string, bool, error) {
+func keptDeliveryExpired(
+	ctx context.Context, tx pgx.Tx, post listenerwire.DispatchPost, target, state string, failure, envelopeID *string,
+) (string, *string, *string, error) {
 	role := routeRole(target)
 	if role == "" || state != model.DeliveryStateQueued || envelopeID == nil {
-		return "", false, nil
+		return state, failure, envelopeID, nil
 	}
 	forwardUnconfirmed, found, err := store.ReadKeptDeliveryExpiry(ctx, tx,
 		store.KeptDeliveryExpiry{EnvelopeID: *envelopeID, Role: role, PostKind: post.Kind, PostID: post.ID})
-	if err != nil || !found {
-		return "", false, err
+	if err != nil {
+		return "", nil, nil, err
 	}
-	return model.KeptDeliveryExpiredError(forwardUnconfirmed), true, nil
+	if !found {
+		return state, failure, envelopeID, nil
+	}
+	expired := model.KeptDeliveryExpiredError(forwardUnconfirmed)
+	return model.DeliveryStateFailed, &expired, nil, nil
 }

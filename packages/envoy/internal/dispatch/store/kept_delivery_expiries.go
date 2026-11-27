@@ -5,21 +5,23 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// KeptDeliveryExpiryRetention is how long a kept_delivery_expiries row is kept after the outbox
-// recorded it (recorded_at): 73 hours, the copy's hour on the role's kept lane (the listener's
-// roleKeepWindow, cmd/listener/role_keep.go) plus the listener's dedupe window
-// (contracts.DeliveryDuplicateWindow, 72 hours). Only the settle of an attempt whose send reported
-// the copy's envelope reads the row (ReadKeptDeliveryExpiry), and a send reports it when it kept
-// the copy, or when it repeats that send's key inside the dedupe window, which the listener
-// answers with the copy it keeps under the key. Both are sent inside the dedupe window from when
-// the copy was kept, which is before its notice was recorded, and the copy's hour on top of it is
-// room for a settle still in flight at the window's end: no settle still to come reads a row older
-// than the bound, and PruneKeptDeliveryExpiries deletes it.
+// KeptDeliveryExpiryRetention is the retention of a kept_delivery_expiries row, counted from
+// recorded_at. A row is kept for 73 hours after the outbox recorded it. That is the copy's hour on
+// the role's kept lane, plus a margin of 72 hours for a Dispatch outage. The margin is set equal
+// to contracts.DeliveryDuplicateWindow. The row has one reader: Dispatch's write of queued after
+// the listener's 202 kept answer (ReadKeptDeliveryExpiry). Dispatch can be down between the
+// listener's notice and that write. The long bound keeps the row through such an outage. The rows
+// are small.
+//
+// The hour is the listener's roleKeepWindow (cmd/listener/role_keep.go), and a test there holds
+// the two equal (TestTheKeptDeliveryRetentionsHourIsTheKeepWindow). PruneKeptDeliveryExpiries
+// deletes a row past the bound.
 const KeptDeliveryExpiryRetention = time.Hour + contracts.DeliveryDuplicateWindow
 
 // KeptDeliveryExpiry names one copy of Dispatch's delivery of a post to a role that the listener
@@ -70,15 +72,19 @@ func ReadKeptDeliveryExpiry(ctx context.Context, tx pgx.Tx, expiry KeptDeliveryE
 	return forwardUnconfirmed, true, nil
 }
 
-// PruneKeptDeliveryExpiries deletes in tx every kept_delivery_expiries row the outbox recorded
-// more than KeptDeliveryExpiryRetention ago on the database's clock, which no settle will read,
-// and answers how many it deleted. It is the outbox's, on the publisher hold's holder, in the
-// expiry pass that records the rows (internal/dispatch/outbox, pruneKeptDeliveryExpiries). The
-// table holds a row only for each copy whose end was recorded inside the bound, so the statement
-// reads all of it rather than an index of recorded_at.
-func PruneKeptDeliveryExpiries(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `
-		delete from kept_delivery_expiries where recorded_at < now() - make_interval(secs => $1)
-	`, KeptDeliveryExpiryRetention.Seconds())
+// PruneKeptDeliveryExpiries deletes every kept_delivery_expiries row the outbox recorded more than
+// KeptDeliveryExpiryRetention ago on the database's clock, and answers how many it deleted. It is
+// the outbox's, in the expiry pass that records the rows (internal/dispatch/outbox,
+// pruneKeptDeliveryExpiries), and it is one statement, fenced in its own SQL on the duty hold the
+// outbox runs under, as the outbox's own statements are (expiryRecordQuery): it deletes nothing
+// unless duty_holds names holder live for hold on the database's clock. The table holds a row only
+// for each copy whose end was recorded inside the bound, so the statement reads all of it rather
+// than an index of recorded_at.
+func PruneKeptDeliveryExpiries(ctx context.Context, pool *Pool, hold string, holder uuid.UUID) (int64, error) {
+	tag, err := pool.Exec(ctx, `
+		delete from kept_delivery_expiries
+		where recorded_at < now() - make_interval(secs => $1)
+		  and exists (select 1 from duty_holds where name = $2 and holder = $3 and expires_at > now())
+	`, KeptDeliveryExpiryRetention.Seconds(), hold, holder)
 	return tag.RowsAffected(), err
 }

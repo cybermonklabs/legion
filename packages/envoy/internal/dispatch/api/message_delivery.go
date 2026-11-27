@@ -742,11 +742,12 @@ func (s *server) completeMessageDelivery(
 	outcome sendOutcome,
 ) (model.MessageDelivery, error) {
 	state, failure := deliveryOutcome(outcome.failure, outcome.queued)
-	// The receipt of the attempt as this send reported it, read off the row it is about to write.
-	reported := messageDeliveryReceipt(message, actor, model.MessageDelivery{
+	// The attempt as this send reported it, the row it is about to write.
+	reported := model.MessageDelivery{
 		MessageID: message.ID, Attempt: pending.attempt, Delivery: pending.resolved.Delivery,
-		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: outcome.duplicate, Error: failure,
-	}, pending.resolved.title)
+		SessionID: pending.resolved.attemptSessionID, EnvelopeID: outcome.envelopeID, State: state,
+		Duplicate: outcome.duplicate, Error: failure,
+	}
 	return settleDeliveryAttempt(ctx, s, reported,
 		// The outcome is recorded on the pending attempt this sender claimed, and the row it
 		// left returned; pgx.ErrNoRows says the attempt is no longer that row. The copy the
@@ -754,21 +755,18 @@ func (s *server) completeMessageDelivery(
 		// send's report is recorded: the attempt is then recorded failed, with no envelope, as
 		// the outbox's own settle would have left it had it found the attempt queued.
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
-			envelopeID, written, writtenFailure := outcome.envelopeID, state, failure
 			post := listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: message.ID}
-			expired, ended, err := keptDeliveryExpired(ctx, tx, post, messageTarget(message.Target), state, outcome.envelopeID)
+			written, writtenFailure, envelopeID, err := keptDeliveryExpired(ctx, tx, post, messageTarget(message.Target),
+				reported.State, reported.Error, reported.EnvelopeID)
 			if err != nil {
 				return model.MessageDelivery{}, err
-			}
-			if ended {
-				envelopeID, written, writtenFailure = nil, model.DeliveryStateFailed, &expired
 			}
 			return scanMessageDelivery(tx.QueryRow(ctx, `
 				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7, session_id = $8
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
-				message.ID, pending.attempt, pending.claimedAt, envelopeID, written, writtenFailure, outcome.duplicate,
-				pending.resolved.attemptSessionID,
+				message.ID, pending.attempt, pending.claimedAt, envelopeID, written, writtenFailure, reported.Duplicate,
+				reported.SessionID,
 			))
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {

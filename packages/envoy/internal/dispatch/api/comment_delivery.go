@@ -764,21 +764,17 @@ func (s *server) completeCommentDelivery(
 	sent := recorded
 	sent.State, sent.Error = deliveryOutcome(outcome.failure, outcome.queued)
 	sent.Duplicate, sent.EnvelopeID = outcome.duplicate, outcome.envelopeID
-	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
+	return settleDeliveryAttempt(ctx, s, sent,
 		// The outcome is recorded on the pending attempt this sender claimed, and the row it
 		// left returned; pgx.ErrNoRows says the attempt is no longer that row. The copy the
 		// listener kept for a role may have ended, and the outbox read its notice, before this
 		// send's report is recorded: the attempt is then recorded failed, with no envelope, as
 		// the outbox's own settle would have left it had it found the attempt queued.
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			row := sent
 			post := listenerwire.DispatchPost{Kind: listenerwire.DispatchPostComment, ID: comment.ID}
-			failure, expired, err := keptDeliveryExpired(ctx, tx, post, row.Target, row.State, row.EnvelopeID)
+			state, failure, envelopeID, err := keptDeliveryExpired(ctx, tx, post, sent.Target, sent.State, sent.Error, sent.EnvelopeID)
 			if err != nil {
 				return model.CommentDelivery{}, err
-			}
-			if expired {
-				row.State, row.Error, row.EnvelopeID = model.DeliveryStateFailed, &failure, nil
 			}
 			return scanCommentDelivery(tx.QueryRow(ctx, `
 				update comment_deliveries
@@ -786,9 +782,9 @@ func (s *server) completeCommentDelivery(
 				where comment_id = $1 and target = $2 and attempt = $3
 				  and state = 'pending' and claimed_at = $4
 				returning `+commentDeliveryColumns,
-				comment.ID, row.Target, claim.attempt, claim.claimedAt,
-				row.EnvelopeID, row.State, row.Error, row.Duplicate,
-				row.SessionID, row.ResolveError,
+				comment.ID, sent.Target, claim.attempt, claim.claimedAt,
+				envelopeID, state, failure, sent.Duplicate,
+				sent.SessionID, sent.ResolveError,
 			))
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
@@ -846,7 +842,7 @@ func (s *server) supersedeCommentDelivery(
 ) (model.CommentDelivery, error) {
 	failed := bound
 	failed.State, failed.Error = deliveryOutcome(mentionSupersededError, false)
-	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, failed),
+	return settleDeliveryAttempt(ctx, s, failed,
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
 			return scanCommentDelivery(tx.QueryRow(ctx, `
 				update comment_deliveries set state = 'failed', error = $5, claimed_at = null

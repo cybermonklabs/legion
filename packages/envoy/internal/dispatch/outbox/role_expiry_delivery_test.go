@@ -946,10 +946,9 @@ func TestAKeptDeliverysNoticeOfAnotherRoleSettlesNothingAndBlocksNothing(t *test
 }
 
 // The record of a kept delivery's end (kept_delivery_expiries) is deleted once it is older than
-// its retention (store.KeptDeliveryExpiryRetention, 73 hours: the copy's hour plus the listener's
-// dedupe window), by the expiry pass's first run: no send still to come reports that copy's
-// envelope, so no settle reads the record. One younger than the bound stays, since a settle can
-// still read it. With the prune taken away, the old record stays too.
+// its retention (store.KeptDeliveryExpiryRetention, 73 hours: the copy's hour plus a margin of 72
+// hours for a Dispatch outage), by the expiry pass's first run. One younger than the bound stays,
+// since a settle can still read it. With the prune taken away, the old record stays too.
 func TestARecordOfAKeptDeliverysEndIsPrunedOnceItIsPastItsRetention(t *testing.T) {
 	ctx := context.Background()
 	rig := newRoleRig(t)

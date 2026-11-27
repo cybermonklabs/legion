@@ -2746,8 +2746,14 @@ Before rolling back past `20261124134448`, run `select (select count(*) from out
 Migration `20261127073000_kept_delivery_expiries` creates `kept_delivery_expiries`, one row for each copy of Dispatch's delivery of a post that the listener kept for a role's first holder and whose expiry notice the outbox has read (`settleKeptDelivery` in `internal/dispatch/outbox/role_expiry_notices.go`), keyed by the copy's envelope id, the role, and the post's kind and id, with whether the listener began to forward the copy and never confirmed that forward (`forward_unconfirmed`).
 The outbox settles the attempts that are `queued` under the copy's envelope when it reads the notice, and records the row whether or not any is, because the API records an attempt `queued` in a transaction of its own and a notice can be read while the attempt is still `pending`.
 The API's settle reads the row under the same owner lock (`settleDeliveryAttempt` in `internal/dispatch/api`) and records the attempt `failed` in place of `queued`, so the attempt ends settled in either order, with the error that says whether the holder may already have the message.
-A row is kept for 73 hours after the outbox recorded it: the copy's hour on the role's kept lane (`roleKeepWindow` in `cmd/listener`) plus the listener's dedupe window (`contracts.DeliveryDuplicateWindow`, 72 hours).
-A send reports a copy's envelope only when it kept the copy, or when it repeats that send's key inside the dedupe window, so no settle still to come reads a row past that bound, and the outbox's expiry pass deletes it there (`pruneKeptDeliveryExpiries` in `internal/dispatch/outbox/role_expiry.go`, `store.KeptDeliveryExpiryRetention`), on its first pass and at most every 30 seconds after, on the publisher hold's holder.
+A row is kept for 73 hours after the outbox recorded it.
+That is the copy's hour on the role's kept lane (`roleKeepWindow` in `cmd/listener`), plus a margin of 72 hours for a Dispatch outage.
+The margin is set equal to `contracts.DeliveryDuplicateWindow`.
+The row has one reader: Dispatch's write of `queued` after the listener's `202 kept` answer.
+Dispatch can be down between the listener's notice and that write.
+The long bound keeps the row through such an outage.
+The rows are small.
+The outbox's expiry pass deletes a row past the bound (`pruneKeptDeliveryExpiries` in `internal/dispatch/outbox/role_expiry.go`, `store.KeptDeliveryExpiryRetention`), on its first pass and at most every 30 seconds after, on the publisher hold's holder.
 The migration names no existing table, so a plain `create table` in the runner's transaction locks nothing a request takes, and the release before it neither reads nor writes the table, so that release runs over the new schema unchanged and the census answers `0`.
 That release passes a delivery's notice over with one Error line, since its source event id is no number, so it writes no row while it serves, and nothing needs draining before a rollback past `20261127073000`: a row is only the record of a notice, and the release before has no settle that would read it.
 

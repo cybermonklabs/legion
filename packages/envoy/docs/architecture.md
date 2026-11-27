@@ -834,9 +834,7 @@ notice's role (a message whose own target is another role, a comment none of who
 that role), so a notice stored for one role never settles or records anything for another role's
 attempts of the same post. It locks the owner, records the end of the copy in
 `kept_delivery_expiries` (keyed by the copy's envelope id, the role, and the post's kind and id,
-with `forward_unconfirmed`; the expiry pass deletes a row once it is older than 73 hours, the
-copy's hour plus the listener's 72-hour dedupe window, past which no send reports the copy's
-envelope), and settles every attempt of the post to that role that still names
+with `forward_unconfirmed`), and settles every attempt of the post to that role that still names
 the copy's envelope, reads `queued` and names no session and no reply: `failed`, with one of two
 fixed errors (`model.KeptDeliveryExpiredError`): that the listener kept the message for the role
 and no session took it before the listener dropped it, or, when the notice's forward is
@@ -853,7 +851,12 @@ recorded the attempt `queued` finds it still `pending` and settles nothing, but 
 and the outbox's cursor moves on past it, held back by no attempt: the API's settle takes the same
 owner lock, reads that record before it writes `queued`, and records the attempt `failed` with the
 same error and a receipt that says so (`settleDeliveryAttempt`), so the attempt ends settled
-whichever of the two comes first.
+whichever of the two comes first. A `kept_delivery_expiries` row is kept for 73 hours after the
+outbox recorded it. That is the copy's hour on the role's kept lane, plus a margin of 72 hours for
+a Dispatch outage. The margin is set equal to `contracts.DeliveryDuplicateWindow`. The row has one
+reader: Dispatch's write of `queued` after the listener's `202 kept` answer. Dispatch can be down
+between the listener's notice and that write. The long bound keeps the row through such an outage.
+The rows are small. The expiry pass deletes a row past the bound.
 It records each other notice in `outbox_role_copy_expiries`, keyed by the event, the role and
 the attempt, which is the outbox's own next attempt for that pair (the notice's own attempt is
 logged), so a repeated notice reopens the event's delivery to that role once. It then keeps the

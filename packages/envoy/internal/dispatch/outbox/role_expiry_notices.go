@@ -568,10 +568,9 @@ func laneCopyAt(ctx context.Context, reader KeptLaneReader, role string, seq uin
 // publish route kept (bus.KeptCopyDispatchDelivery, bus.DispatchPostEventID) - under sourceEventID
 // and dedupeKey, which is what a notice of either names. item's kind is the one the listener
 // judged it by (bus.ClassifyKeptCopy), so a copy is never an outbox copy to the listener and a
-// delivery's to this read, and a want that is neither kind names no copy.
+// delivery's to this read.
 func copyOfEvent(item contracts.Envelope, want bus.KeptCopyKind, sourceEventID, dedupeKey string) bool {
-	return want.IsDispatch() && bus.ClassifyKeptCopy(item) == want &&
-		item.SourceEventID == sourceEventID && item.DedupeKey == dedupeKey
+	return bus.ClassifyKeptCopy(item) == want && item.SourceEventID == sourceEventID && item.DedupeKey == dedupeKey
 }
 
 // routedToRole reports, in tx, whether the outbox ever routed eventID to role: the role's topic is

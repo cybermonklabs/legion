@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/roles"
 )
 
@@ -38,5 +39,18 @@ func TestTheTakeoverCopysBoundsHoldTogether(t *testing.T) {
 		roles.ResolutionTooOld(now.Add(-roles.ForwardFenceAge+time.Second), now) ||
 		!roles.ResolutionTooOld(now.Add(-roles.ForwardFenceAge), now) {
 		t.Error("roles.ResolutionTooOld: want false for a zero resolution and one younger than the fence, true at the fence")
+	}
+}
+
+// Dispatch keeps the record of a kept delivery's end (kept_delivery_expiries) for
+// dispatchstore.KeptDeliveryExpiryRetention: the copy's hour on the role's kept lane, plus a margin
+// of 72 hours for a Dispatch outage, set equal to contracts.DeliveryDuplicateWindow. The copy's
+// hour is the keep window, which lives here, so a change to the keep window that leaves the
+// retention fails here.
+func TestTheKeptDeliveryRetentionsHourIsTheKeepWindow(t *testing.T) {
+	t.Parallel()
+	if hour := dispatchstore.KeptDeliveryExpiryRetention - contracts.DeliveryDuplicateWindow; hour != roleKeepWindow {
+		t.Errorf("dispatchstore.KeptDeliveryExpiryRetention less contracts.DeliveryDuplicateWindow = %s, want the keep window, %s",
+			hour, roleKeepWindow)
 	}
 }
