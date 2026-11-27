@@ -1,4 +1,6 @@
 export type {
+  AccessGroup,
+  AccessGroupInput,
   Actor,
   ActorAct,
   ActorOrigin,
@@ -173,6 +175,7 @@ export type {
   InboxReadRequest,
   InboxReadResponse,
   InboxRow,
+  InvitationAnswer,
   Issue,
   IssueAskRow,
   IssueAskThreadRow,
@@ -246,6 +249,8 @@ export type {
   PriorityWorkParked,
   ProgressCount,
   Project,
+  ProjectAccess,
+  ProjectAccessInput,
   ProjectDefaultAssignee,
   ProjectDefaultRepository,
   RecordResponse,

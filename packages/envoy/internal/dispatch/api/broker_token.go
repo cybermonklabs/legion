@@ -13,12 +13,15 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -317,3 +320,62 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)
 	return actor, false, nil
 }
+
+// recordedIssuer is issuer as people.sub_issuer spells it, and whether people records accounts of
+// it at all: "" for Dispatch's sign-in issuer, the outside origin itself where passkey sign-in is
+// on (Deps.Passkeys), and false for any other, each compared as oidc.CanonicalIssuer spells it.
+func (s *server) recordedIssuer(issuer string) (string, bool) {
+	switch canonical := oidc.CanonicalIssuer(issuer); {
+	case s.deps.SignInIssuer != "" && canonical == s.deps.SignInIssuer:
+		return "", true
+	case s.deps.Passkeys != nil && canonical == s.deps.Passkeys.Store().Issuer():
+		return canonical, true
+	}
+	return "", false
+}
+
+// timeOrNull is t as a statement parameter, nil (SQL null) for the zero time.
+func timeOrNull(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// brokerCredentialMargin is how long after people recorded an address's Google account a broker
+// credential recording no account must have been made to count as made after it
+// (brokerAccountReplaced). Two things can put a credential the replaced account made after the
+// recording by the clocks, and the margin has to cover both, failing closed:
+//
+//   - The relay. An approve by the replaced account's credential that passed its last check
+//     (approverStanding) just before the replacing sign-in committed is relayed, and the broker
+//     makes the machine login in its own transaction later. Dispatch sends the decision within
+//     its own time after that check, and its client (cipher.Client's defaultTimeout, 5 s) bounds
+//     how long the request takes to reach the broker; the broker's handler then has its request
+//     deadline, 45 s (cmd/cipherd requestDeadline), to begin the transaction whose start is the
+//     login's created_at, so a late commit does not move it. So 50 s and Dispatch's own time.
+//   - The two clocks. The credential's time is the broker database's now() and the recording's
+//     is Dispatch's database's clock_timestamp(), so a broker clock ahead of Dispatch's by d moves
+//     every credential d later. Both databases run outside the cluster, managed, on Google's
+//     infrastructure, whose hosts take their time from Google's NTP (metadata.google.internal):
+//     on 2026-11-17 a GCP host of the same project read 2 µs slow of it (chronyc tracking, ±187 µs
+//     a sample, 0.65 ms root dispersion), and the production broker's and Dispatch's own hosts read
+//     within [-31, +131] ms and [-21, +90] ms of that host by their HTTP Date headers (a bound the
+//     round trip limits). The databases' own clocks could not be read from here. So healthy
+//     clocks are well under a second apart; what the margin really covers is a clock whose
+//     synchronization has failed and drifts.
+//
+// Five minutes less that 50 s relay leaves under 250 s of skew, less Dispatch's own time between
+// its check and its request, before a credential could be admitted wrongly: at a quartz drift of
+// 50 ppm, 4.3 s a day (a typical crystal's tolerance, not a measured one), a database clock would
+// have to run unsynchronized for about 58 days to use it up, which monitoring of either database
+// meets long before. A skew refuses, never admits. The
+// cost is one sign-in at the broker again for a credential recording no account made within five
+// minutes after its address's account was recorded, which after the recording a broker makes only
+// for an approve that named no account: one relayed to a broker whose settings answered without
+// approver_fields (an older broker, or a pod of one during a roll; cipher.Client.TakesApproverFields);
+// every other approve names the account (credentialSubjectSQL).
+const brokerCredentialMargin = 5 * time.Minute
+
+// brokerCredentialMarginSQL is brokerCredentialMargin as an SQL interval.
+var brokerCredentialMarginSQL = fmt.Sprintf("interval '%d seconds'", int(brokerCredentialMargin/time.Second))

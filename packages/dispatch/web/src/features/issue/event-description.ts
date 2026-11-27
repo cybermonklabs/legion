@@ -114,6 +114,8 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return `Priority ${event.payload.change}: ${event.payload.id}`;
     case "project.access_changed":
       return `Access changed: ${event.payload.change.replace("_", " ")}`;
+    case "access_group.changed":
+      return `Group ${event.payload.change}: ${event.payload.name}`;
     case "ask.resolved":
       return askResolvedParts(event);
     case "ask.answered":

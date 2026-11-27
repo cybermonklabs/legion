@@ -39,6 +39,7 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
+  AccessGroup,
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
@@ -443,6 +444,16 @@ export function isCredentialFeatureOff(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "FEATURE_OFF";
 }
 
+// A read of the whole deployment - the pending credential requests among them - answers this 403
+// to a viewer that is not open: a restricted member, or a credential acting for one. A full
+// member's credential reads it whatever projects it lists, as the shared token does. It is
+// definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
+export function isDeploymentReadRefused(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
+  );
+}
+
 // The delivery timeline answers this 404 until someone sets its configuration: definitive like the
 // two above, since retrying changes nothing until the settings form is saved.
 export function isDeliveryNotConfigured(error: unknown): boolean {
@@ -532,6 +543,7 @@ export function isAgentListRefilling(error: unknown): boolean {
 // past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
 // couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 403) return false;
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
@@ -1165,6 +1177,136 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ) {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
+  }
+
+  /** Who may see `project` and who changes that: its owner, its visibility, and the people (by
+   *  email) and groups (by name) its access list names, each sorted. Needs the `person` scope. */
+  getProjectAccess(project: string) {
+    return this.read("/api/v1/projects/{key}/access", { key: project });
+  }
+
+  /** Gives the project to another full member (`owner`) or sets its visibility; only its owner
+   *  calls it (`403 PROJECT_OWNER_REQUIRED`). Answers the project's access as the write left it.
+   *  This and the four access-list writes below need the `person` and `approve` scopes. */
+  patchProjectAccess(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/access", "patch">,
+    bounds: WriteBounds
+  ) {
+    return this.patch("/api/v1/projects/{key}/access", { key: project }, input, bounds);
+  }
+
+  /** Names a person on the project's access list by email; the owner's alone. */
+  putProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/access/people/{email}",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Takes a person off the project's access list; the owner's alone. */
+  deleteProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.remove(
+      "/api/v1/projects/{key}/access/people/{email}",
+      { email, key: project },
+      bounds
+    );
+  }
+
+  /** Makes a person from outside the link that enrolls their passkey: `{url, made_at, expires_at}`,
+   *  the outside origin's `/enroll#<token>`, when Dispatch made it and the moment 24 hours on when
+   *  it stops, and it ends any earlier unused link of theirs for the project. The owner's alone,
+   *  from a browser session (`403 BROWSER_SESSION_REQUIRED` for a token). The answer holds the
+   *  token, so Dispatch keeps none of it under the write's key: a repeat is `409 KEY_COMMITTED`, a
+   *  link made whose answer is gone, and a new press makes a new link. */
+  createProjectInvitation(project: string, email: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/projects/{key}/access/people/{email}/invitations",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** The owner's Reset of a person from outside: deletes their passkeys and their unused links of
+   *  every project, ends their sign-in, and revokes their personal tokens and the device logins
+   *  they approved, at once. Answers the project's access as the write left it. */
+  resetProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/projects/{key}/access/people/{email}/reset",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Names a group on the project's access list (`404 GROUP_NOT_FOUND` for none of that name);
+   *  the owner's alone. */
+  putProjectAccessGroup(project: string, name: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/access/groups/{name}",
+      { key: project, name },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Takes a group off the project's access list; the owner's alone. */
+  deleteProjectAccessGroup(project: string, name: string, bounds: WriteBounds) {
+    return this.remove(
+      "/api/v1/projects/{key}/access/groups/{name}",
+      { key: project, name },
+      bounds
+    );
+  }
+
+  /** One page of the groups an access list can name, by name: at most 100 after the name `after`,
+   *  with `next` naming where the next page starts, absent on the last page. */
+  listAccessGroupsPage(after?: string) {
+    return this.read("/api/v1/access-groups", {}, after === undefined ? undefined : { after });
+  }
+
+  /** Every group an access list can name, by name, each with its owner and its members' emails:
+   *  every page of `listAccessGroupsPage`, read in turn. Settings → Groups and the Access tab's
+   *  group picker both read this whole list. A page's `next` is the last name it holds, so the
+   *  cursor only moves on; a `next` the read has already passed as `after` would read the same
+   *  pages again for good, so the read stops there and fails naming it. */
+  async listAccessGroups(): Promise<AccessGroup[]> {
+    const groups: AccessGroup[] = [];
+    const passed = new Set<string>();
+    let after: string | undefined;
+    do {
+      const page = await this.listAccessGroupsPage(after);
+      groups.push(...(page.groups ?? []));
+      after = page.next;
+      if (after !== undefined) {
+        if (passed.has(after)) {
+          throw new Error(
+            `GET /api/v1/access-groups named next ${JSON.stringify(after)} again, a page it already answered, so the groups were not read whole`
+          );
+        }
+        passed.add(after);
+      }
+    } while (after !== undefined);
+    return groups;
+  }
+
+  /** Makes group `name` with its writer as owner, or writes its members again for its owner
+   *  (`403 GROUP_OWNER_REQUIRED` for anyone else). This and the delete below need the `person`
+   *  and `approve` scopes, as the access-list writes do. */
+  putAccessGroup(
+    name: string,
+    input: Body<"/api/v1/access-groups/{name}", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/access-groups/{name}", { name }, input, bounds);
+  }
+
+  /** Deletes group `name`, which takes it off every access list; its owner's alone. */
+  async deleteAccessGroup(name: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/access-groups/{name}", { name }, bounds);
   }
 
   /** Sets the repository an issue of the project resolves to when neither the issue nor an issue

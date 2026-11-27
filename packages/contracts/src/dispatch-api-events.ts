@@ -8,6 +8,7 @@ import type {
 } from "./dispatch-api-asks";
 import type { CommentDeliveryEventPayload, CommentEventPayload } from "./dispatch-api-comments";
 import type {
+  AccessGroupChangedEventPayload,
   ArchitectureSourceUpdatedEventPayload,
   ArchitectureSyncedEventPayload,
   ArchitectureSyncFailedEventPayload,
@@ -155,6 +156,12 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "project.access_changed";
       readonly payload: ProjectAccessChangedEventPayload;
+    })
+  /** A group's write: it names no owner, so `issue_key` is null and `project` empty, and it never
+   *  notifies. */
+  | (DispatchEventBase & {
+      readonly type: "access_group.changed";
+      readonly payload: AccessGroupChangedEventPayload;
     })
   | (DispatchEventBase & { readonly type: "issue.created"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.updated"; readonly payload: IssueEventPayload })
@@ -368,6 +375,7 @@ export type EventType = DispatchEvent["type"];
 /** Each member of `EventType` once: a record over the union, so the compiler refuses a type left
  *  out of it and a key that is no type. */
 const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
+  "access_group.changed": true,
   "architecture.sync_failed": true,
   "architecture.synced": true,
   "artifact.approved": true,

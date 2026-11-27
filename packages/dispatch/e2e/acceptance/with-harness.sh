@@ -21,11 +21,13 @@
 #       DISPATCH_DEFAULT_ASSIGNEE=alice bash e2e/acceptance/create-document.sh'
 #
 # The command runs with every variable of the stack exported, `DISPATCH_E2E_PORT` among them, and
-# `e2e-token` is the agent bearer the harness pins. The `curl` is the harness's dev sign-in, which
-# records `alice` as a person who has signed in, so the project the driver creates may name her as
-# its default assignee. The exit status is the command's own, so a pipeline reads it with
-# `${PIPESTATUS[0]}` or `set -o pipefail`. Everything this writes goes under `mktemp`, and it
-# removes exactly what it made.
+# `e2e-token` is the agent bearer the harness pins. Under DISPATCH_E2E_ACCESS_ISSUER=1 they include
+# DISPATCH_E2E_ACCESS_TOKEN_FILE, the file holding the secrets broker's service-account token
+# (e2e/harness-access.ts), which membership-answer.sh reads. The `curl` is the harness's dev
+# sign-in, which records `alice` as a person who has signed in, so the project the driver creates
+# may name her as its default assignee. The exit status is the command's own, so a pipeline reads
+# it with `${PIPESTATUS[0]}` or `set -o pipefail`. Everything this writes goes under `mktemp`, and
+# it removes exactly what it made.
 set -uo pipefail
 
 if [[ $# -eq 0 ]]; then

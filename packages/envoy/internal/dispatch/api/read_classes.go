@@ -110,6 +110,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/settings/project-default-assignees":                     {Writes: readWritesNothing},
 	"GET /api/v1/settings/new-issue":                                     {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/access":                                  {Writes: readWritesNothing},
+	"GET /api/v1/access-groups":                                          {Writes: readWritesNothing},
 	"GET /api/v1/settings/delivery":                                      {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/legion/daemon":                           {Writes: readWritesNothing},
 	"GET /api/v1/projects/{key}/legion/board":                            {Writes: readWritesNothing},
@@ -191,6 +192,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/credential-requests":                                    {Writes: readWritesNothing},
 	"GET /api/v1/credential-grants":                                      {Writes: readWritesNothing},
 	"GET /api/v1/machine-logins":                                         {Writes: readWritesNothing},
+	"GET /api/v1/access/projects/{key}":                                  {Writes: readWritesNothing},
+	"GET /api/v1/access/person":                                          {Writes: readWritesNothing},
+	"GET /api/v1/access/private-projects":                                {Writes: readWritesNothing},
+	"GET /api/v1/access/projects/{key}/repositories":                     {Writes: readWritesNothing},
 	"GET /api/v1/signins":                                                {Writes: readWritesNothing},
 	"GET /api/v1/credentials/capabilities":                               {Writes: readWritesNothing},
 	// The test hooks' GET rows, which read this process's memory.

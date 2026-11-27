@@ -782,6 +782,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}
 		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
 			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
+		// The two allow-lists narrow that verifier, so they render inside it, each only when set:
+		// unset, Dispatch admits every account of the issuer and the audience, and no account
+		// reads the routes of the read class accessAccount.
+		if len(s.oidcAccounts) > 0 {
+			appEnv = append(appEnv, valueEnv("DISPATCH_OIDC_ACCOUNTS", strings.Join(s.oidcAccounts, ",")))
+		}
+		if len(s.accessAccounts) > 0 {
+			appEnv = append(appEnv, valueEnv("DISPATCH_ACCESS_ACCOUNTS", strings.Join(s.accessAccounts, ",")))
+		}
 	}
 	if s.projectOwnerFallback != "" {
 		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_OWNER_FALLBACK", s.projectOwnerFallback))

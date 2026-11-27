@@ -11,6 +11,7 @@ import {
 } from "../api/event-feed";
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
+  accessGroupsQuery,
   advancesIssuesQuery,
   agentMessagesQuery,
   architectureSourcesQuery,
@@ -23,6 +24,7 @@ import {
   prioritiesQuery,
   priorityHistoryQuery,
   prioritySummaryQuery,
+  projectAccessQuery,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectIssuesQuery,
@@ -54,6 +56,8 @@ beforeAll(async () => {
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
+  // Settings → Groups and the Access tab's group picker.
+  accessGroups: { key: accessGroupsQuery().queryKey },
   // The work under one priority, as a scoped issues table reads it: the priority's own page.
   advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
   // A fault list of the Priorities page: the work under any priority standing in backlog or
@@ -157,6 +161,7 @@ const READS = {
   otherDocumentPage: { data: { id: "artifact-2" }, key: ["artifact-ref", "CORE/notes-md"] },
   otherHandoffs: { key: ["handoffs", "CORE-9"] },
   otherIssueMessage: { key: messageQuery("CORE-9", "message-9").queryKey },
+  otherProjectAccess: { key: projectAccessQuery("OTHER").queryKey },
   otherProjectAsks: { key: ["asks", "OTHER-1"] },
   otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
@@ -183,6 +188,8 @@ const READS = {
   // One priority's page margin, its history, under the same prefix.
   priorityHistory: { key: priorityHistoryQuery("linkage-closure").queryKey },
   prioritySummary: { key: prioritySummaryQuery().queryKey },
+  // CORE's Access tab: who may see the project and who changes that.
+  projectAccess: { key: projectAccessQuery("CORE").queryKey },
   projectDefaultAssignees: { key: projectDefaultAssigneesQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
@@ -1871,11 +1878,60 @@ test("a priority.updated of a deleted priority refetches no issue read that does
   ]);
 });
 
-// No read of the dashboard carries a project's owner, visibility or access list yet, so a change of
-// them refreshes nothing. The feed knows the type, so it is no unknown one, which would refresh
-// every query.
-test("a project.access_changed refreshes no read", () => {
-  expect(refreshedReads(eventsByType["project.access_changed"])).toEqual([]);
+/** One write of CORE's access by alice, as the server appends it: owned by the project, naming no
+ *  issue, quiet, and carrying the project and the change alone. */
+function accessWrite(change: string): DispatchEvent {
+  return event(
+    "project.access_changed",
+    { change, project: "CORE" },
+    { actor: { id: "alice", kind: "user" }, issue_key: null, notify: false }
+  );
+}
+
+// Every change of a project's access - a person or a group named or taken off, the project given
+// to another owner - moves its Access tab and nothing else: no list, no issue and no other
+// project's tab carries who may see CORE.
+test.each([
+  "person_added",
+  "group_removed",
+  "owner",
+] as const)("a project.access_changed of %s refreshes that project's access alone", (change) => {
+  const incoming = accessWrite(change);
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([
+    { queryKey: projectAccessQuery("CORE").queryKey },
+  ]);
+  expect(refreshedReads(incoming)).toEqual(["projectAccess"]);
+});
+
+// A switch of the project's visibility moves its Access tab and its row of the project list, which
+// carries the visibility: a reader who sees the project either way holds it, and no other list,
+// issue or project's tab carries it.
+test("a project.access_changed of visibility refreshes that project's access and the project list", () => {
+  const incoming = accessWrite("visibility");
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([
+    { queryKey: projectAccessQuery("CORE").queryKey },
+    { queryKey: projectsQuery().queryKey },
+  ]);
+  expect(refreshedReads(incoming).sort()).toEqual(["projectAccess", "projects"]);
+});
+
+// A group belongs to no project, so its make, write or delete names none: it moves the one list
+// of groups, which Settings and every Access tab's picker read. A delete also takes the group off
+// each list that named it, and the server appends a project.access_changed for each of those.
+test.each([
+  "created",
+  "updated",
+  "deleted",
+] as const)("an access_group.changed of a %s group refreshes the group list alone", (change) => {
+  const incoming = event(
+    "access_group.changed",
+    { change, name: "crew" },
+    { actor: { id: "alice", kind: "user" }, issue_key: null, notify: false, project: undefined }
+  );
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([
+    { queryKey: accessGroupsQuery().queryKey },
+  ]);
+  expect(refreshedReads(incoming)).toEqual(["accessGroups"]);
 });
 
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
@@ -1953,8 +2009,13 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   ),
   "project.access_changed": event(
     "project.access_changed",
-    { change: "owner", project: "PROJ" },
+    { change: "person_added", project: "PROJ" },
     { issue_key: null, project: "PROJ" }
+  ),
+  "access_group.changed": event(
+    "access_group.changed",
+    { change: "created", name: "crew" },
+    { issue_key: null, project: undefined }
   ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),

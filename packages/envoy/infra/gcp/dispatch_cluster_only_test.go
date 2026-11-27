@@ -189,6 +189,8 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "example-broker-audience" }},
 		{"oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience }},
 		{"oidcIssuer", func(a *gcp.DispatchArgs) { a.OidcIssuer = dispatchOidcIssuer }},
+		{"oidcAccounts", func(a *gcp.DispatchArgs) { a.OidcAccounts = []string{dispatchBrokerAccount} }},
+		{"accessAccounts", func(a *gcp.DispatchArgs) { a.AccessAccounts = []string{dispatchBrokerAccount} }},
 		{"projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner@example.com" }},
 		{"privateProjects", func(a *gcp.DispatchArgs) { a.PrivateProjects = []string{"PRIV"} }},
 		{"privateBeforeFullSwitch", func(a *gcp.DispatchArgs) { a.PrivateBeforeFullSwitch = []string{"PRIV"} }},

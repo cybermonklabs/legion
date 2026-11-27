@@ -9,6 +9,7 @@ import {
   type FetchImplementation,
   isCredentialFeatureOff,
   isDeliveryNotConfigured,
+  isDeploymentReadRefused,
   isDocumentNewerContent,
   isDocumentSchemaError,
   isReferencesTimeout,
@@ -1013,6 +1014,43 @@ test(
     expect(isRetryableQueryError(referencesTimeoutError)).toBe(false);
   }
 );
+
+test("a read of the whole deployment refused to a restricted member is definitive and not retried", async () => {
+  const refused = await createApiClient(
+    stubFetch(() =>
+      Response.json(
+        { code: "DEPLOYMENT_READ_REFUSED", error: "this caller is a restricted member" },
+        { status: 403 }
+      )
+    ).fetch
+  )
+    .getCredentialPending()
+    .catch((error: unknown) => error);
+  const forbidden = new ApiError(403, { code: "FORBIDDEN", error: "forbidden" });
+
+  expect(isDeploymentReadRefused(refused)).toBe(true);
+  expect(isRetryableQueryError(refused)).toBe(false);
+  // Only that code: another 403 is not the deployment's refusal.
+  expect(isDeploymentReadRefused(forbidden)).toBe(false);
+});
+
+test("isRetryableQueryError retries no 403, whatever its code, and still retries a 5xx", () => {
+  // A 403 is Dispatch's permanent answer to this credential: a deployment read refused to a
+  // restricted member, a route for a role the caller does not hold, a write it may not make.
+  // Asking again sends the same credential, so every read leaves it after one try.
+  for (const code of [
+    "DEPLOYMENT_READ_REFUSED",
+    "RESTRICTED_MEMBER",
+    "ACCESS_ACCOUNT_REQUIRED",
+    "FORBIDDEN",
+    undefined,
+  ]) {
+    const refusal = new ApiError(403, { code, error: "refused" });
+    expect({ code, retried: isRetryableQueryError(refusal) }).toEqual({ code, retried: false });
+  }
+  expect(isRetryableQueryError(new ApiError(500, { code: "INTERNAL", error: "boom" }))).toBe(true);
+  expect(isRetryableQueryError(new ApiError(409, { code: "CONFLICT", error: "again" }))).toBe(true);
+});
 
 test("a refusal keeps the server's Retry-After in delta-seconds, and no delay for a date or junk", async () => {
   const refusal = (headers: Record<string, string>) =>

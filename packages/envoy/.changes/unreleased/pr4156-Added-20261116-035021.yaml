@@ -1,0 +1,5 @@
+kind: Added
+body: 'A deployment that admits Kubernetes service-account tokens now names the accounts it admits: `DISPATCH_OIDC_ACCOUNTS` is the subjects whose verified tokens sign in, and a token of any other account is 401 SERVICE_ACCOUNT_NOT_ADMITTED before any read or write, on every route that reads a credential and on both sockets. `DISPATCH_ACCESS_ACCOUNTS` names the accounts that read the membership answer, `GET /api/v1/access/projects/{key}?person=` and `GET /api/v1/access/person?person=`, which the secrets broker reads with its own projected token; a caller with no credential is 401 NO_IDENTITY, and every other caller is 403 ACCESS_ACCOUNT_REQUIRED. A deployment that names no account admits service-account tokens exactly as it did before.'
+time: 2026-11-16T03:50:21.657942492Z
+custom:
+    Issue: pr4156

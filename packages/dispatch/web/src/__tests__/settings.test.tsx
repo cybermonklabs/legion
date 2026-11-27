@@ -50,6 +50,7 @@ test("a human creates a project from Settings and it appears in the project pick
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
@@ -113,6 +114,7 @@ test("a human creates a project from Settings and it appears in the project pick
     getInbox.mockRestore();
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
+    listAccessGroups.mockRestore();
     getCredentialPending.mockRestore();
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
@@ -142,6 +144,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+  const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
@@ -180,6 +183,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     getInbox.mockRestore();
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
+    listAccessGroups.mockRestore();
     getCredentialPending.mockRestore();
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
@@ -238,6 +242,7 @@ function renderSettings(projects: string[]): {
     spyOn(api, "getMyState").mockResolvedValue({}),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "listAgentTokens").mockResolvedValue([]),
+    spyOn(api, "listAccessGroups").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
     spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getLegionDaemon").mockResolvedValue(null),

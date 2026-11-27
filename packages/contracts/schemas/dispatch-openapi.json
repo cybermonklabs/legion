@@ -45,6 +45,409 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/access-groups": {
+      "get": {
+        "description": "Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. The owner may hand the group to another full member. Needs the person scope. It pages, at most limit groups (1-100, default 100) after the name after, and next names where the next page starts.",
+        "operationId": "getApiV1AccessGroups",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessGroupPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
+    "/api/v1/access-groups/{name}": {
+      "put": {
+        "description": "Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person and approve scopes. An owner holds at most 100 groups; one more is 400 CAP_EXCEEDED.",
+        "operationId": "putApiV1AccessGroupsByName",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessGroupInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessGroup"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "deployment"
+      },
+      "delete": {
+        "description": "Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person and approve scopes.",
+        "operationId": "deleteApiV1AccessGroupsByName",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/access/person": {
+      "get": {
+        "description": "One person's member kind as the membership answer spells it: {person, member_kind, held, as_of, not_held_until} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (\u0026account_issuer=\u0026account_subject=), as the project answer carries it; held is whether Dispatch holds the person's personal tokens and broker credentials until they sign in again (false for a login nobody has signed in with, and left out, with status 200 and member_kind still answered, when that could not be read), and as_of the database time of the read the answer rests on; under DISPATCH_IDENTITY=iap alone, every answer that is not held carries not_held_until, the time it stops being served (the last active Workspace Directory answer plus 24 hours), which is as_of itself for a person no active answer confirmed in 24 hours or no row holds, and a held answer carries none; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "operationId": "getApiV1AccessPerson",
+        "parameters": [
+          {
+            "name": "person",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_issuer",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_subject",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "credential_created_at",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/access/private-projects": {
+      "get": {
+        "description": "Every private project's Slack channels and when they last changed, for the secrets broker's own service-account token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "operationId": "getApiV1AccessPrivateProjects",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivateProjectsAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/access/projects/{key}": {
+      "get": {
+        "description": "The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels, slack_channels_changed_at} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. It names no repositories. With \u0026account_issuer=\u0026account_subject=, the Google account the credential being checked records, the answer also carries holder: false when Dispatch records another account for the person (an account of another issuer included), and then visible is false; true when it records that one or none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND; half an account, or an account with no person, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "operationId": "getApiV1AccessProjectsByKey",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "person",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_issuer",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_subject",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "credential_created_at",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/access/projects/{key}/repositories": {
+      "get": {
+        "description": "The repositories the secrets broker relays to an edge listener for the GitHub events of a project: {project, repositories}, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and [] when no issue resolves to one. It is read by the one rule of which repositories a project owns, which the GitHub proxy reads too: a repository the project maps and no issue of it resolves to is not in it, and no rename is read. An unknown key is 404 PROJECT_NOT_FOUND; an issue whose parent chain is deeper than 32 links, or loops, is 503 REPOSITORIES_UNRESOLVED naming it, never a shorter list. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "operationId": "getApiV1AccessProjectsByKeyRepositories",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectRepositoriesAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/agents": {
       "get": {
         "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. Only the sessions the caller may see: a session of a project it sees, or its own.",
@@ -10792,6 +11195,124 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/projects/{key}/access/groups/{name}": {
+      "put": {
+        "description": "Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
+        "operationId": "putApiV1ProjectsByKeyAccessGroupsByName",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAccess"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "project"
+      },
+      "delete": {
+        "description": "Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
+        "operationId": "deleteApiV1ProjectsByKeyAccessGroupsByName",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAccess"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/projects/{key}/access/people/{email}": {
       "put": {
         "description": "Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL; whatever DISPATCH_SIGNIN_PASSKEY says, an address that holds a passkey a link of someone other than the project's owner enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, since that passkey would read this project too, until that link's maker resets the person. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
@@ -10848,6 +11369,182 @@
         "x-oauth-scopes": [
           "person",
           "approve"
+        ],
+        "x-write-scope": "project"
+      },
+      "delete": {
+        "description": "Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it records that Dispatch owes the secrets broker the revocation of every machine login the member approved, whatever other list still names them, which Dispatch pays after the commit, again until the broker confirms; the removal never waits on the broker, and waits for an approval of the member's that Dispatch is relaying, holding no lock of the project's while it does. A removal that owes nothing, from a list that does not name the person or of a full member, holds up no approval of theirs. A removal that finds the member on the list only once it holds the project's lock, their addition having committed meanwhile, is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or another removal of theirs is in progress, and changes nothing, for the owner to remove them again in a few seconds. Whatever DISPATCH_SIGNIN_PASSKEY says, it also ends the person's unused links of the project, and, once no project's owner is them and no list names them directly, ends a restricted member's account in the same transaction, as the owner's Reset does: a new passkey subject, which revokes their personal tokens and owes the broker the old account's revocation, then their sign-in ended and their passkeys deleted. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.",
+        "operationId": "deleteApiV1ProjectsByKeyAccessPeopleByEmail",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAccess"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/access/people/{email}/invitations": {
+      "post": {
+        "description": "Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, made_at, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, made_at now, and expires_at 24 hours after now, both on the database's clock; made_at is the key the link is listed by in the owner's access answer (open_invitations) while it can still enroll someone. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes.",
+        "operationId": "postApiV1ProjectsByKeyAccessPeopleByEmailInvitations",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/access/people/{email}/reset": {
+      "post": {
+        "description": "Reset a person the project's access list names directly, in one transaction: record that Dispatch owes the secrets broker the revocation of the machine logins they approved, delete their unused links of every project, give their address a new passkey account, which revokes their personal tokens and owes the broker the revocation of the old account, and end their sign-in and delete their passkeys, so they sign in again only with a new link and nothing the old account made or approved acts again; they stay on the list. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER, read again under the address's lock; a Reset that finds a restricted member on the list only once it holds the project's lock is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or a removal of theirs is in progress, and changes nothing; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. Answers the project's access. Needs the person and approve scopes.",
+        "operationId": "postApiV1ProjectsByKeyAccessPeopleByEmailReset",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAccess"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
         ],
         "x-write-scope": "project"
       }
@@ -13631,7 +14328,7 @@
     },
     "/api/v1/whoami": {
       "get": {
-        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, project_scope, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it (a pod's service account as system:serviceaccount:\u003cnamespace\u003e:\u003cname\u003e, a workflow as \u003crepository\u003e/\u003cworkflow path\u003e@\u003cref\u003e, or a Google account), null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the project key that credential's token names, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names public, which names no one project, answers null; a token that names a project writes other projects' objects as a credential that names none does, a private project it does not name excepted; project_scope is the project scope of an access token the secrets broker issued, left out for every other credential: named for a token an operator's or a job's entry mapped to its project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project and so writes wherever a token that names no project may, person for a person's own token and for a machine's token that names no person, and none for a read entry's token, while a token narrowed to reading answers the word it narrows; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, under the project scope person, and false for every other credential, a job's token, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A Legion daemon's own broker token answers [\"legion-status\"]: with DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a Legion issue that PATCH /api/v1/issues/{key} and POST /api/v1/issues/{key}/status-change refuse to every other credential, but for the owning architect's status write: a broker-issued token whose session the daemon's own token published as the architect of an issue above writes done, backlog, icebox or triage. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.",
+        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, project_scope, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it (a pod's service account as system:serviceaccount:\u003cnamespace\u003e:\u003cname\u003e, a workflow as \u003crepository\u003e/\u003cworkflow path\u003e@\u003cref\u003e, or a Google account), null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the project key that credential's token names, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names public, which names no one project, answers null; a token that names a project writes other projects' objects as a credential that names none does, a private project it does not name excepted; project_scope is the project scope of an access token the secrets broker issued, left out for every other credential: named for a token an operator's or a job's entry mapped to its project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project and so writes wherever a token that names no project may, person for a person's own token and for a machine's token that names no person, and none for a read entry's token, while a token narrowed to reading answers the word it narrows; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, under the project scope person, and false for every other credential, a job's token, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A Legion daemon's own broker token answers [\"legion-status\"]: with DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a Legion issue that PATCH /api/v1/issues/{key} and POST /api/v1/issues/{key}/status-change refuse to every other credential, but for the owning architect's status write: a broker-issued token whose session the daemon's own token published as the architect of an issue above writes done, backlog, icebox or triage. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE.",
         "operationId": "getApiV1Whoami",
         "parameters": [
           {
@@ -14041,6 +14738,142 @@
           "accepted_at",
           "accepted_as",
           "body"
+        ],
+        "type": "object"
+      },
+      "AccessAnswer": {
+        "properties": {
+          "holder": {
+            "type": "boolean"
+          },
+          "member_kind": {
+            "enum": [
+              "full",
+              "restricted",
+              "none"
+            ],
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "person": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "slack_channels": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "slack_channels_changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "visibility": {
+            "enum": [
+              "public",
+              "private"
+            ],
+            "type": "string"
+          },
+          "visible": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project",
+          "visibility",
+          "owner",
+          "person",
+          "member_kind",
+          "visible",
+          "slack_channels",
+          "slack_channels_changed_at"
+        ],
+        "type": "object"
+      },
+      "AccessGroup": {
+        "properties": {
+          "members": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "not_signed_in": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "owner",
+          "members",
+          "not_signed_in"
+        ],
+        "type": "object"
+      },
+      "AccessGroupInput": {
+        "properties": {
+          "members": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "members"
+        ],
+        "type": "object"
+      },
+      "AccessGroupPage": {
+        "properties": {
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/AccessGroup"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "groups"
         ],
         "type": "object"
       },
@@ -23011,6 +23844,27 @@
         ],
         "type": "object"
       },
+      "InvitationAnswer": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "made_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
       "Issue": {
         "properties": {
           "advances": {
@@ -27233,6 +28087,41 @@
         },
         "type": "object"
       },
+      "PersonAnswer": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "held": {
+            "type": "boolean"
+          },
+          "holder": {
+            "type": "boolean"
+          },
+          "member_kind": {
+            "enum": [
+              "full",
+              "restricted",
+              "none"
+            ],
+            "type": "string"
+          },
+          "not_held_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "member_kind",
+          "as_of"
+        ],
+        "type": "object"
+      },
       "PersonNode": {
         "properties": {
           "created_at": {
@@ -27932,6 +28821,46 @@
         ],
         "type": "object"
       },
+      "PrivateProjectChannels": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "slack_channels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "slack_channels_changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "slack_channels",
+          "slack_channels_changed_at"
+        ],
+        "type": "object"
+      },
+      "PrivateProjectsAnswer": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/PrivateProjectChannels"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "type": "object"
+      },
       "ProgressCount": {
         "properties": {
           "done": {
@@ -28254,6 +29183,24 @@
         "required": [
           "project",
           "issues"
+        ],
+        "type": "object"
+      },
+      "ProjectRepositoriesAnswer": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "repositories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project",
+          "repositories"
         ],
         "type": "object"
       },

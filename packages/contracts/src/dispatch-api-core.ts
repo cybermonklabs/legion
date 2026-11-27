@@ -43,8 +43,9 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
  *  the credential's own person on every route a person reaches through the dashboard, and
  *  `approve` settles what a person settles — a document review, a decision's Keep, the answer of
  *  an approval ask, a machine-login decision, a credential-grant, machine-login or sign-in revoke,
- *  and minting, changing or revoking a personal token. A credential holding `approve` holds
- *  `person` too, and no token the secrets broker issued holds `approve`. */
+ *  minting, changing or revoking a personal token, and a change to a project's access list,
+ *  visibility, owner or Slack channels or to a group an access list can name. A credential
+ *  holding `approve` holds `person` too, and no token the secrets broker issued holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
@@ -424,8 +425,9 @@ export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPa
 
 /** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
  *  channels committed. It names the project and which change it was, and nothing else: no email,
- *  group name or channel id, since every reader of the project's events reads it. It is owned by
- *  the project and wakes nobody. */
+ *  group name or channel id, since every reader of the project's events reads it, and the list is
+ *  `GET /api/v1/projects/{key}/access`'s, under that route's own rule. It is owned by the project
+ *  and wakes nobody; every reader that resolved what its caller may see resolves it again. */
 export const ProjectAccessChangedEventPayloadSchema = z
   .strictObject({
     project: z.string(),
@@ -444,3 +446,12 @@ export const ProjectAccessChangedEventPayloadSchema = z
 export type ProjectAccessChangedEventPayload = z.output<
   typeof ProjectAccessChangedEventPayloadSchema
 >;
+
+/** `access_group.changed`: one group was made, had its members or owner written, or was deleted.
+ *  A group belongs to no project, so the event names no owner (`issue_key` null, `project` empty),
+ *  wakes nobody and the outbox publishes it on no subject. */
+export const AccessGroupChangedEventPayloadSchema = z
+  .strictObject({ name: z.string(), change: z.enum(["created", "updated", "deleted"]) })
+  .readonly();
+
+export type AccessGroupChangedEventPayload = z.output<typeof AccessGroupChangedEventPayloadSchema>;

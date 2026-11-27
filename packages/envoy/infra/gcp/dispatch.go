@@ -371,12 +371,27 @@ type DispatchArgs struct {
 	// Turning this on opens Dispatch to every workload that can get a token for that audience
 	// under that issuer: such a caller reaches every one of Dispatch's authAny routes, the
 	// writes among them (an issue's create and status, a message), as a service actor, and a
-	// service actor holds no scope and no subject list, so Dispatch admits whatever subject
-	// the token names (serviceTokenActor, internal/dispatch/api/server.go). Only the
-	// audience bounds it. Pick one no other workload of the cluster asks the kubelet for, and
-	// leave it unset where no caller needs it.
+	// service actor holds no scope, so with oidcAccounts unset Dispatch admits whatever subject
+	// the token names (serviceTokenActor, internal/dispatch/api/server.go) and only the
+	// audience bounds it. Pick one no other workload of the cluster asks the kubelet for, set
+	// oidcAccounts to the subjects that call, and leave the audience unset where no caller
+	// needs it.
 	OidcAudience string `pulumi:"oidcAudience,optional"`
 	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
+	// OidcAccounts is DISPATCH_OIDC_ACCOUNTS, comma-joined: the Kubernetes service-account
+	// subjects, each system:serviceaccount:<namespace>:<name>, whose tokens the verifier admits.
+	// Unset or empty renders nothing, and Dispatch admits every account of the issuer and the
+	// audience, as it did before the input existed. It narrows the verifier oidcAudience turns
+	// on, so it is refused without oidcAudience, as oidcIssuer is.
+	OidcAccounts []string `pulumi:"oidcAccounts,optional"`
+	// AccessAccounts is DISPATCH_ACCESS_ACCOUNTS, comma-joined: the service-account subjects that
+	// may read the routes of Dispatch's read class accessAccount (cmd/dispatch's README lists
+	// them), the secrets broker's system:serviceaccount:dispatch:envoy-broker in production. Where
+	// oidcAccounts is set, Dispatch refuses to boot with an access account it leaves out; with
+	// oidcAccounts unset, every account is admitted and any may be an access account. Unset or
+	// empty renders nothing, and no account reads those routes. It is refused without
+	// oidcAudience, as oidcIssuer is.
+	AccessAccounts []string `pulumi:"accessAccounts,optional"`
 
 	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
 	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
@@ -750,14 +765,19 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 			return fmt.Sprintf("allowedNamespaces[%d]", i), true
 		}
 	}
-	for i, cidr := range args.LoadBalancerSourceRanges {
-		if bus.HoldsSeed(cidr) {
-			return fmt.Sprintf("loadBalancerSourceRanges[%d]", i), true
-		}
-	}
-	for i, cidr := range args.TrustedProxyRanges {
-		if bus.HoldsSeed(cidr) {
-			return fmt.Sprintf("trustedProxyRanges[%d]", i), true
+	for _, list := range []struct {
+		input  string
+		values []string
+	}{
+		{"loadBalancerSourceRanges", args.LoadBalancerSourceRanges},
+		{"trustedProxyRanges", args.TrustedProxyRanges},
+		{"oidcAccounts", args.OidcAccounts},
+		{"accessAccounts", args.AccessAccounts},
+	} {
+		for i, value := range list.values {
+			if bus.HoldsSeed(value) {
+				return fmt.Sprintf("%s[%d]", list.input, i), true
+			}
 		}
 	}
 	if args.AzureFederationAudience != nil && bus.HoldsSeed(*args.AzureFederationAudience) {
@@ -829,7 +849,9 @@ type Dispatch struct {
 // no second origin, and signInPasskey is set only with outsideOrigin and signInOn.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
-// field here. existingCluster is the input of that name, its name and location checked
+// field here. oidcAccounts and accessAccounts are set only beside oidcAudience, and
+// projectOwnerFallback "" and an empty privateProjects or privateBeforeFullSwitch render nothing.
+// existingCluster is the input of that name, its name and location checked
 // (resolveDispatchExistingCluster), which NewDispatch looks the cluster up by and runs Dispatch
 // in, and nil without that input, where the component makes a cluster of its own.
 // existingDatabaseInstance is true while the input of that name is set, where the component makes
@@ -857,6 +879,7 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
+	oidcAccounts, accessAccounts                []string
 	projectOwnerFallback                        string
 	privateProjects, privateProjectsIgnored     []string
 	privateBeforeFullSwitch                     []string
@@ -1222,6 +1245,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
+		{"oidcAccounts", len(args.OidcAccounts) > 0},
+		{"accessAccounts", len(args.AccessAccounts) > 0},
 		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
 		{"privateProjects", len(args.PrivateProjects) > 0},
 		{"privateBeforeFullSwitch", len(args.PrivateBeforeFullSwitch) > 0},
@@ -1597,9 +1622,27 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // refuseDispatchAccessValues refuses, when the stack plans, the access values Dispatch refuses at
-// boot, naming the input, so one typo never reaches a Deployment whose one replica would then not
-// start: an owner fallback that is not a lowercase email.
+// boot (cmd/dispatch checkAccessSettings), naming the input, so one typo never reaches a Deployment
+// whose one replica would then not start: an account that is not a service account's subject, an
+// access account a set oidcAccounts leaves out, and an owner fallback that is not a lowercase email.
 func refuseDispatchAccessValues(args *DispatchArgs) error {
+	for _, list := range []struct {
+		input    string
+		accounts []string
+	}{{"oidcAccounts", args.OidcAccounts}, {"accessAccounts", args.AccessAccounts}} {
+		for i, account := range list.accounts {
+			if !principal.ServiceAccountSubject.MatchString(account) {
+				return core.InputErrorf(list.input, "%s[%d] %q is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>, one account to an entry", list.input, i, account)
+			}
+		}
+	}
+	if len(args.OidcAccounts) > 0 {
+		for i, account := range args.AccessAccounts {
+			if !slices.Contains(args.OidcAccounts, account) {
+				return core.InputErrorf("accessAccounts", "accessAccounts[%d] %q is not among oidcAccounts: an access account must be one the deployment admits", i, account)
+			}
+		}
+	}
 	if fallback := args.ProjectOwnerFallback; fallback != "" && principal.CheckPersonLogin(fallback) != nil {
 		return core.InputErrorf("projectOwnerFallback", "projectOwnerFallback must be a lowercase email, the one a full member signed in with")
 	}
@@ -1950,13 +1993,21 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("agentSecretsUrl", "agentSecretsUrl must carry no user, password, query or fragment: it is rendered as a plain environment variable (not echoed)")
 		}
 	}
-	// The service-account verifier is one required input and one override, not a group: the
-	// audience turns it on and the issuer defaults to the cluster's own, so an issuer sent
-	// without an audience would configure nothing and is refused rather than dropped. Dispatch
-	// itself refuses half the pair (oidc.ConfigFromEnv), which is why the component renders
-	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
-	if args.OidcIssuer != "" && args.OidcAudience == "" {
-		return dispatchSettings{}, core.InputErrorf("oidcAudience", "oidcAudience is required when oidcIssuer is set")
+	// The service-account verifier is one required input, one override and two allow-lists, not
+	// a group: the audience turns it on, the issuer defaults to the cluster's own, and the two
+	// lists narrow which accounts it admits and which of them are access accounts, so any of the
+	// three sent without an audience would configure nothing and is refused rather than dropped.
+	// Dispatch itself refuses half the issuer-audience pair (oidc.ConfigFromEnv), which is why the
+	// component renders DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
+	// The refusal names oidcAudience, the input the operator has to set.
+	if args.OidcAudience == "" {
+		if err := refuseDispatchInputsWithout("oidcAudience", "the audience turns on Dispatch's service-account verifier, which oidcIssuer, oidcAccounts and accessAccounts only configure", []dispatchInput{
+			{"oidcIssuer", args.OidcIssuer != ""},
+			{"oidcAccounts", len(args.OidcAccounts) > 0},
+			{"accessAccounts", len(args.AccessAccounts) > 0},
+		}); err != nil {
+			return dispatchSettings{}, core.InputErrorf("oidcAudience", "%w", errors.Unwrap(err))
+		}
 	}
 	// The issuer is the URL Dispatch discovers keys from and compares every token's iss to, so it is
 	// held to the shape the hub listener's is: an empty query or fragment, which url.Parse reads as
@@ -2064,6 +2115,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
+	s.oidcAccounts = args.OidcAccounts
+	s.accessAccounts = args.AccessAccounts
 	s.projectOwnerFallback = args.ProjectOwnerFallback
 	s.privateProjects, s.privateProjectsIgnored = dispatchPrivateProjects(args.PrivateProjects)
 	s.privateBeforeFullSwitch, s.privateBeforeFullSwitchIgnored = dispatchPrivateProjects(args.PrivateBeforeFullSwitch)

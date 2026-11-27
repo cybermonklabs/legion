@@ -455,6 +455,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		HorizonWarnEvery:        horizontest.StallWarning,
 		OIDC:                    options.oidc,
 		OIDCAccounts:            options.oidcAccounts,
+		AccessAccounts:          options.accessAccounts,
 		SignInIssuer:            options.signInIssuer,
 		Passkeys:                passkeysOf(t, options, database.Pool),
 		RestrictedAdmission:     restrictedAdmissionOf(options.admitsRestricted, database.Pool),

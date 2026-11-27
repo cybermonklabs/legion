@@ -229,6 +229,14 @@ var readSources = map[string]readSource{
 	"GET /api/v1/projects/{key}/access":   reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
 	"GET /api/v1/credential-requests":     reads("the deployment's pending credential requests a signed-in person decides", nil, readclass.Deployment),
 	"GET /api/v1/machine-logins":          reads("the deployment's machine logins, a service's among them", nil, readclass.Deployment),
+	"GET /api/v1/access-groups":           reads("the deployment's access groups, which no project owns", nil, readclass.Deployment),
+
+	// The membership answer the secrets broker reads, and the repository answer it relays to the
+	// edge listener.
+	"GET /api/v1/access/projects/{key}":              reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
+	"GET /api/v1/access/person":                      reads("one person's member kind and whether Dispatch holds them, read by the broker's service account alone", nil, readclass.AccessAccount),
+	"GET /api/v1/access/private-projects":            reads("every private project's Slack channels and when each list changed, read by the broker's service account alone", nil, readclass.AccessAccount),
+	"GET /api/v1/access/projects/{key}/repositories": reads("the repositories one project's issues resolve to, read by the broker's service account alone", byProject, readclass.AccessAccount),
 
 	// The test hooks, mounted only where a deployment turns them on.
 	"GET /api/v1/artifacts/_test/rooms":              reads("the document rooms this process holds", nil, readclass.TestHook),

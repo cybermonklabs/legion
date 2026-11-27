@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+import { usesAccessIssuer } from "./harness-access";
 import { usesFakeBroker } from "./harness-broker";
 import { usesFakeEmbedder } from "./harness-embedder";
 import type { HarnessListenerKey } from "./harness-ports";
 import { binaryB, harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
-import { harnessSignIn, oidcSignIn } from "./harness-signin";
+import { googleSignIn, harnessSignIn, oidcSignIn, signInClientId } from "./harness-signin";
 
 /** One process the harness starts and how it reports its port. */
 export interface HarnessListener {
@@ -29,6 +30,11 @@ export interface HarnessListener {
    *  variable, and hands the row the keeper's unix socket in `keeperEnv`; set, it hands the row
    *  that port in `portEnv`. */
   readonly heldAhead?: { readonly keeperEnv: string; readonly portEnv: string };
+  /** Set for a row that keeps a file a caller of the harness reads: the variable that names the
+   *  file. e2e/harness-start.ts names a path for it in the harness's own directory before any row
+   *  starts, hands that path to every row under this variable, returns it with the ports, and
+   *  removes the directory when the harness stops. The row writes the file before it reports. */
+  readonly fileVariable?: string;
   /** The line it prints once it serves, whose one group is the port it serves on. */
   readonly report: RegExp;
   /** A path that answers 200 once it is ready, when listening is not enough. */
@@ -70,37 +76,63 @@ const dispatchServer = {
 // exactly as A does and no run names a port.
 // Both sign cookies with one key, so a person signed in through whichever answered stays signed
 // in on the other: under dev sign-in the key their one shared value derives, under
-// DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts) one DISPATCH_SIGNING_KEY, beside the dev OIDC
-// issuer's client secret. Each is generated here, once per run, since each run-server.sh is a
-// process of its own. Every importer generates its own, and only the process that starts the
-// servers hands its own to them.
+// DISPATCH_E2E_SIGNIN=oidc or google (e2e/harness-signin.ts) one DISPATCH_SIGNING_KEY, beside the
+// dev OIDC issuer's client secret. Each is generated here, once per run, since each run-server.sh
+// is a process of its own. Every importer generates its own, and only the process that starts the
+// servers hands its own to them. One server under google takes the same inputs, since it has no
+// dev sign-in to derive a key from; one server under dev sign-in takes none and signs with a key
+// of its own.
 const clientSecret = randomBytes(32).toString("base64url");
 
-function dispatchListeners(): HarnessListener[] {
-  if (harnessProcessCount === 1) {
-    return [{ ...dispatchServer, id: "dispatch", key: "dispatch", name: "the Dispatch server" }];
+/** What every server of this run is handed for its sign-in, with `sharedKey` its cookie key:
+ *  under google the client, the Workspace domain it admits and the host of its second origin as
+ *  well (e2e/run-server.sh). */
+function signInInputs(sharedKey: string): Record<string, string> {
+  switch (harnessSignIn) {
+    case "oidc":
+      return {
+        DISPATCH_E2E_SIGNIN_CLIENT_ID: oidcSignIn.clientId,
+        DISPATCH_E2E_SIGNIN_CLIENT_SECRET: clientSecret,
+        DISPATCH_E2E_SIGNIN_GROUP: oidcSignIn.group,
+        DISPATCH_E2E_SIGNING_KEY: sharedKey,
+      };
+    case "google":
+      return {
+        DISPATCH_E2E_SIGNIN_CLIENT_ID: googleSignIn.clientId,
+        DISPATCH_E2E_SIGNIN_CLIENT_SECRET: clientSecret,
+        DISPATCH_E2E_SIGNIN_DOMAIN: googleSignIn.domain,
+        DISPATCH_E2E_SIGNIN_OUTSIDE_HOST: googleSignIn.outsideHost,
+        DISPATCH_E2E_SIGNING_KEY: sharedKey,
+      };
+    case "dev":
+      return { DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY: sharedKey };
   }
+}
+
+function dispatchListeners(): HarnessListener[] {
   const sharedKey = randomBytes(32).toString("base64url");
+  if (harnessProcessCount === 1) {
+    return [
+      {
+        ...dispatchServer,
+        ...(harnessSignIn === "dev" ? {} : { env: signInInputs(sharedKey) }),
+        id: "dispatch",
+        key: "dispatch",
+        name: "the Dispatch server",
+      },
+    ];
+  }
   const webDistB = process.env.DISPATCH_E2E_WEB_DIST_B;
   const heldAhead = {
     keeperEnv: "DISPATCH_E2E_LISTEN_FROM",
     portEnv: "DISPATCH_E2E_SERVER_PORT",
   } as const;
-  const signInInputs: Record<string, string> =
-    harnessSignIn === "oidc"
-      ? {
-          DISPATCH_E2E_SIGNIN_CLIENT_ID: oidcSignIn.clientId,
-          DISPATCH_E2E_SIGNIN_CLIENT_SECRET: clientSecret,
-          DISPATCH_E2E_SIGNIN_GROUP: oidcSignIn.group,
-          DISPATCH_E2E_SIGNING_KEY: sharedKey,
-        }
-      : { DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY: sharedKey };
   // What one server gets of its own: B's web dist and B's prebuilt binary, each left out where
   // the caller named none, so B runs this checkout's build as A does. A DISPATCH_E2E_SERVER_BIN
   // in the harness's own environment reaches both, since each row's environment is the
   // harness's with these on top.
   const inputs = (webDist: string | undefined, binary: string | undefined) => ({
-    ...signInInputs,
+    ...signInInputs(sharedKey),
     ...(webDist ? { DISPATCH_E2E_SERVER_WEB_DIST: webDist } : {}),
     ...(binary ? { DISPATCH_E2E_SERVER_BIN: binary } : {}),
   });
@@ -140,27 +172,56 @@ function dispatchListeners(): HarnessListener[] {
   ];
 }
 
-// Under DISPATCH_E2E_SIGNIN=oidc, the dev OIDC issuer both Dispatch servers sign people in
-// through (e2e/run-signin-issuer.sh), started before them since each takes its URL, built from
+// Under DISPATCH_E2E_SIGNIN=oidc or google, the dev OIDC issuer every Dispatch server signs people
+// in through (e2e/run-signin-issuer.sh), started before them since each takes its URL, built from
 // the port it reports, as DISPATCH_SIGNIN_ISSUER. It serves the code flow for Dispatch's client,
-// with the secret both servers are handed, and signs in oidcSignIn's person, a member of the group
-// they admit, at every authorization.
+// with the secret every server is handed. Under oidc it signs in oidcSignIn's person, a member of
+// the group they admit, at every authorization; under google it signs in only the person a spec
+// queued, so it is handed no person and no group.
 function signInIssuerListeners(): HarnessListener[] {
-  if (harnessSignIn !== "oidc") return [];
+  if (harnessSignIn === "dev") return [];
+  const client = {
+    DISPATCH_E2E_SIGNIN_CLIENT_ID: signInClientId,
+    DISPATCH_E2E_SIGNIN_CLIENT_SECRET: clientSecret,
+  };
   return [
     {
       argv: ["bash", script("run-signin-issuer.sh")],
       bootMs: serverBootMs,
       deployed: false,
-      env: {
-        DISPATCH_E2E_SIGNIN_AS: oidcSignIn.person,
-        DISPATCH_E2E_SIGNIN_CLIENT_ID: oidcSignIn.clientId,
-        DISPATCH_E2E_SIGNIN_CLIENT_SECRET: clientSecret,
-        DISPATCH_E2E_SIGNIN_GROUP: oidcSignIn.group,
-      },
+      env:
+        harnessSignIn === "oidc"
+          ? {
+              ...client,
+              DISPATCH_E2E_SIGNIN_AS: oidcSignIn.person,
+              DISPATCH_E2E_SIGNIN_GROUP: oidcSignIn.group,
+            }
+          : client,
       id: "signin-issuer",
       key: "signinIssuer",
       name: "the dev OIDC issuer",
+      report: /issuer listening url=http:\/\/127\.0\.0\.1:(\d+)$/,
+    },
+  ];
+}
+
+// Under DISPATCH_E2E_ACCESS_ISSUER=1 (e2e/harness-access.ts), the dev OIDC issuer that stands in
+// for the cluster's ServiceAccount token issuer (e2e/run-access-issuer.sh): it keeps the secrets
+// broker's projected token in the file the harness names for it, and the server, started after it
+// since it takes the issuer's URL as DISPATCH_OIDC_ISSUER, lets that account read the membership
+// answer. It reports `issuer listening url=http://127.0.0.1:<port>` once the file is written, as
+// the other two issuers do.
+function accessIssuerListeners(): HarnessListener[] {
+  if (!usesAccessIssuer) return [];
+  return [
+    {
+      argv: ["bash", script("run-access-issuer.sh")],
+      bootMs: serverBootMs,
+      deployed: false,
+      fileVariable: "DISPATCH_E2E_ACCESS_TOKEN_FILE",
+      id: "access-issuer",
+      key: "accessIssuer",
+      name: "the access issuer",
       report: /issuer listening url=http:\/\/127\.0\.0\.1:(\d+)$/,
     },
   ];
@@ -206,15 +267,17 @@ function realBrokerListeners(): HarnessListener[] {
 }
 
 // Every listener the harness can start, in the order e2e/harness-start.ts starts them: the fakes,
-// then under DISPATCH_E2E_SIGNIN=oidc the dev OIDC issuer, then the Dispatch server (in
-// two-process mode the round-robin proxy and the two servers behind it), whose environment names
-// the fakes' ports and the issuer's, then the real broker's dev issuer and the real broker, then
-// the plain-HTTP proxy, which forwards to the server's origin. A deployed run starts only those
-// marked `deployed`: its Dispatch server is already up, and the fake GitHub serves only a server
-// this run starts. The fake broker is listed exactly when the harness switch points this run's
-// server at it (e2e/harness-broker.ts), never for a deployed run, the real broker and its
-// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts), and the
-// fake embedder exactly when this run's server embeds there (e2e/harness-embedder.ts).
+// then under DISPATCH_E2E_SIGNIN=oidc or google the dev OIDC issuer, then under
+// DISPATCH_E2E_ACCESS_ISSUER=1 the access issuer, then the Dispatch server (in two-process mode
+// the round-robin proxy and the two servers behind it), whose environment names the fakes' ports
+// and the issuers', then the real broker's dev issuer and the real broker, then the plain-HTTP
+// proxy, which forwards to the server's origin. A deployed run starts only those marked
+// `deployed`: its Dispatch server is already up, and the fake GitHub serves only a server this run
+// starts. The fake broker is listed exactly when the harness switch points this run's server at it
+// (e2e/harness-broker.ts), never for a deployed run, the real broker and its issuer exactly when a
+// spec of this run can reach them (e2e/harness-real-broker.ts), the fake embedder exactly when
+// this run's server embeds there (e2e/harness-embedder.ts), and the access issuer exactly when the
+// server reads the membership answer for its account (e2e/harness-access.ts).
 // e2e/harness-start.ts is the only starter: the stack pool (e2e/harness-pool.ts, which
 // Playwright's globalSetup runs), `bun run dispatch:local` (e2e/local-instance.ts) and the docs
 // media harness all start this table through it.
@@ -264,6 +327,7 @@ export const harnessListeners: readonly HarnessListener[] = [
       ]
     : []),
   ...signInIssuerListeners(),
+  ...accessIssuerListeners(),
   ...dispatchListeners(),
   ...realBrokerListeners(),
   {

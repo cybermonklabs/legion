@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -31,7 +30,7 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, dave)
-	seed.addPrincipal(t, seedPrivate, access.PrincipalPerson, dave)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
 	seedHubSettings(t, seed.database)
 	clock := newNoonHubClock()
 	now := clock.Now()

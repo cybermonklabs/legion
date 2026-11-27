@@ -553,8 +553,8 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	result := decodeBody[recordedResult](t, asCarol(http.MethodPost, "/api/v1/issues/"+issue+"/results",
 		resultBody("k1", "pass", headCommit, nil))).Result.ID
 	const group = "priv-readers"
-	seed.putGroup(t, group, seedCarol)
-	seed.addPrincipal(t, seedPrivate, access.PrincipalGroup, group)
+	asCarol(http.MethodPut, "/api/v1/access-groups/"+group, map[string]any{"members": []string{seedCarol}})
+	asCarol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/"+group, nil)
 	priority := createdID(t, asCarol(http.MethodPost, "/api/v1/priorities", map[string]any{"title": "A priority PRIV's people steer"}))
 	// A repository PUB maps, an issue of which PRIV's issue links (privateHeldURL). No route
 	// writes a mapping now, so it is stored as the last release left it.

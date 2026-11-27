@@ -46,7 +46,9 @@ export type DispatchWritingBox =
   | "issue-title"
   | "delivery-production-jobs"
   | "delivery-population-authors"
-  | "delivery-excluded-repos";
+  | "delivery-excluded-repos"
+  | "access-group-members"
+  | "access-group-members-edit";
 
 /**
  * What a box's write makes:
@@ -73,6 +75,7 @@ export type DispatchWritingBox =
  * - `priority-title`: a priority's title.
  * - `issue-title`: an issue's title.
  * - `delivery-settings`: the delivery settings of this Dispatch.
+ * - `access-group`: the members of one of this Dispatch's access groups.
  */
 export type DispatchWriting =
   | "comment"
@@ -92,7 +95,8 @@ export type DispatchWriting =
   | "priority-description"
   | "priority-title"
   | "issue-title"
-  | "delivery-settings";
+  | "delivery-settings"
+  | "access-group";
 
 /** One row of DISPATCH_WRITING_BOXES: one write of one box. */
 export interface DispatchWritingBoxRow {
@@ -204,6 +208,10 @@ export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever ask
 /** Why the delivery settings boxes have no picker. */
 const SETTINGS_REASON =
   "One setting per line rather than prose: a job name, a login or an owner/repo, which a reference would not name.";
+
+/** Why the access group members boxes have no picker. */
+const GROUP_MEMBERS_REASON =
+  "A list of email addresses, comma or line separated, rather than prose: a reference would not name a member.";
 
 /** The words of the writes that tell nobody they name, by write, for `writingHint` to look up. */
 const QUIET_WORDS: Partial<Record<DispatchWriting, string>> = DISPATCH_WRITING_HINT_QUIET;
@@ -608,6 +616,28 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Excluded repositories",
     reason: SETTINGS_REASON,
     write: "delivery-settings",
+  },
+  // Settings' Groups section: a new group's members, and the members of a group being edited.
+  // Neither takes a picker.
+  {
+    box: "access-group-members",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/settings/GroupsSection.tsx"],
+    issueRows: false,
+    reach: "Members",
+    reason: GROUP_MEMBERS_REASON,
+    write: "access-group",
+  },
+  {
+    box: "access-group-members-edit",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/settings/GroupsSection.tsx"],
+    issueRows: false,
+    reach: "Members of <GROUP>",
+    reason: GROUP_MEMBERS_REASON,
+    write: "access-group",
   },
 ];
 

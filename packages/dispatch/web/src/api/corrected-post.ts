@@ -223,6 +223,7 @@ export const REFUSAL_FAMILIES: Readonly<Record<string, RefusalWrite>> = {
  * someone reads its answer and puts it in one (`corrected-post-families.test.ts`).
  */
 export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
+  "access-groups": "this Dispatch's access groups and their members",
   "agent-artifacts": "a session's files and their names",
   "agent-tokens": "the reader's agent tokens: names, scopes and times",
   "agents issue-picker": "the issues the Agents page's picker offers: keys and titles",
@@ -266,6 +267,7 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "priorities history": "one priority's history of its own fields",
   "priorities summary": "the two counts of work under no priority and parked under one",
   project: "a project's documents by name, as `artifacts` lists an issue's",
+  "project-access": "a project's owner, visibility and access list",
   "project-default-assignees": "each project's default assignee",
   projects: "the projects",
   "references questions": "which asks a source cites, by id (census C.15)",

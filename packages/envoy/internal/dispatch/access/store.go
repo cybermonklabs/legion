@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1041,4 +1040,10 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 		return nil, err
 	}
 	return appended, nil
+}
+
+// ReadProjectWritten is readProjectWritten for an owner's write of the api package that changes no
+// list (api.resetProjectAccessPerson): the project's access as tx left it, after the owner's check.
+func ReadProjectWritten(ctx context.Context, tx pgx.Tx, key string) (model.ProjectAccess, error) {
+	return readProjectWritten(ctx, tx, key)
 }

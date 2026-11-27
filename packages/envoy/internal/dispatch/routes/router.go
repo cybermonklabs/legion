@@ -166,6 +166,11 @@ type AppContextOptions struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
+	// OIDCAccounts are the service-account subjects the API admits, and AccessAccounts those that
+	// read the routes of the read class accessAccount (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS,
+	// DISPATCH_ACCESS_ACCOUNTS). See api.DepsInput.
+	OIDCAccounts   []string
+	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
@@ -323,6 +328,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		App:                     opts.App,
 		GitHubAPIBase:           opts.GitHubAPIBase,
 		OIDC:                    opts.OIDC,
+		OIDCAccounts:            opts.OIDCAccounts,
+		AccessAccounts:          opts.AccessAccounts,
 		RestrictedAdmission:     restricted,
 		Standing:                opts.Standing,
 		BrokerTokens:            opts.BrokerTokens,
@@ -720,7 +727,10 @@ type whoamiAnswer struct {
 // (api.ErrEventHeadUnproven: an event insert open since before every mark, with no horizon proven
 // or persisted), which ends on its own and which the page asks again for as long as it lasts.
 // Every other failure (the database or the horizon's pool not answering) is
-// EVENT_HEAD_READ_FAILED, which the page retries a few times and then shows as an error.
+// EVENT_HEAD_READ_FAILED, which the page retries a few times and then shows as an error. The
+// person's member kind is read last (access.MemberKind): one it cannot read is a 503
+// IDENTITY_UNAVAILABLE, never a whoami without it, so a restricted member is never shown a full
+// member's rail. A router with no Store, a test's, reads none.
 func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	email, ok := r.login(w, req)
 	if !ok {
@@ -740,6 +750,21 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	answer := whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email, Origins: r.ctx.origins}
+	if r.ctx.Store != nil {
+		kind, err := access.MemberKind(req.Context(), r.ctx.Store.Pool, email)
+		if err != nil {
+			if req.Context().Err() == nil {
+				slog.Warn("dispatch: whoami could not read the person's member kind", "error", err)
+			}
+			writeCodeError(w, http.StatusServiceUnavailable, "the person's member kind could not be read", "IDENTITY_UNAVAILABLE")
+			return
+		}
+		// Only the restricted kind is written, never string(kind), which would add "full" to
+		// every full member's answer.
+		if kind == model.MemberRestricted {
+			answer.MemberKind = model.MemberAnswerRestricted
+		}
+	}
 	api.WriteJSON(w, http.StatusOK, answer)
 }
 

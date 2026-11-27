@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  Dispatch's membership answer, `GET /api/v1/access/projects/{key}`, no longer names a project's
+  repositories: it answers `{project, visibility, owner, person, member_kind, visible,
+  slack_channels}`. GitHub events carry no project, so no reader needs them. No Dispatch release
+  has served the field. The secrets broker's `projectaccess.Answer` drops `Repositories` with it,
+  and nothing in the broker read it.
+time: 2026-11-19T16:04:56Z
+custom:
+    Issue: pr4156

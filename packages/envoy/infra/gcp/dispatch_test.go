@@ -69,6 +69,14 @@ const (
 	dispatchOidcIssuer   = "https://container.googleapis.com/v1/projects/example-other/locations/us-central1/clusters/example-other-dispatch"
 )
 
+// dispatchBrokerAccount is the secrets broker's Kubernetes service account, the one subject the
+// production stack lists in both oidcAccounts and accessAccounts, and dispatchReaderAccount
+// another workload's, which Dispatch admits without making it an access account.
+const (
+	dispatchBrokerAccount = "system:serviceaccount:dispatch:envoy-broker"
+	dispatchReaderAccount = "system:serviceaccount:example-agents:example-reader"
+)
+
 // dispatchBrokerAndAppArgs is dispatchArgs with both optional groups set: the secrets-broker relay
 // (agentSecretsUrl with agentSecretsAudience) and the GitHub App (appClientId, appId and the
 // existing Kubernetes Secret and key that hold the private key). It sets oidcAudience with them,
@@ -835,6 +843,12 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the OIDC audience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = seed }},
 		{"a seed inside the OIDC issuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, "https://"+lower+".internal.example"
+		}},
+		{"a seed in an OIDC account", "oidcAccounts[1]", func(a *gcp.DispatchArgs) {
+			a.OidcAudience, a.OidcAccounts = dispatchOidcAudience, []string{dispatchBrokerAccount, "system:serviceaccount:dispatch:" + lower}
+		}},
+		{"a seed in an access account", "accessAccounts[0]", func(a *gcp.DispatchArgs) {
+			a.OidcAudience, a.AccessAccounts = dispatchOidcAudience, []string{"system:serviceaccount:dispatch:" + lower}
 		}},
 		{"a seed inside the project owner fallback", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = lower + "@example.com" }},
 		{"a seed as the app client ID", "appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = seed }},
@@ -2746,14 +2760,86 @@ func requireOptionalEnv(t *testing.T, env map[string]any, name, want string) {
 	require.Equal(t, want, env[name])
 }
 
-// A value Dispatch refuses at boot is refused when the stack plans, naming the input, so one typo
-// never reaches a Deployment whose one replica would then not start: an owner fallback that is no
-// lowercase email.
+// oidcAccounts and accessAccounts narrow the verifier oidcAudience turns on: DISPATCH_OIDC_ACCOUNTS
+// is the subjects Dispatch admits, and DISPATCH_ACCESS_ACCOUNTS the subjects that may read the
+// membership answer, each comma-joined in the order given. Each renders only when its input is
+// set: with neither, Dispatch admits every account of the issuer and the audience, as before the
+// inputs existed, and no account reads the answer.
+func TestDispatchRendersTheServiceAccountListsOnlyWhenSet(t *testing.T) {
+	for _, row := range []struct {
+		name             string
+		edit             func(*gcp.DispatchArgs)
+		accounts, access string
+	}{
+		{name: "an audience alone", edit: func(*gcp.DispatchArgs) {}},
+		{
+			name:     "admitted accounts",
+			edit:     func(a *gcp.DispatchArgs) { a.OidcAccounts = []string{dispatchBrokerAccount, dispatchReaderAccount} },
+			accounts: dispatchBrokerAccount + "," + dispatchReaderAccount,
+		},
+		{
+			name: "admitted accounts and the membership answer's readers",
+			edit: func(a *gcp.DispatchArgs) {
+				a.OidcAccounts = []string{dispatchBrokerAccount, dispatchReaderAccount}
+				a.AccessAccounts = []string{dispatchBrokerAccount}
+			},
+			accounts: dispatchBrokerAccount + "," + dispatchReaderAccount, access: dispatchBrokerAccount,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.OidcAudience = dispatchOidcAudience
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.NoError(t, err)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
+			requireOptionalEnv(t, env, "DISPATCH_OIDC_ACCOUNTS", row.accounts)
+			requireOptionalEnv(t, env, "DISPATCH_ACCESS_ACCOUNTS", row.access)
+		})
+	}
+}
+
+// The two account lists narrow the verifier the audience turns on, so either sent with no
+// oidcAudience would configure nothing: each is refused by the resolver, naming itself, before the
+// component registers anything, as oidcIssuer is.
+func TestDispatchRefusesAServiceAccountListWithNoAudience(t *testing.T) {
+	for _, row := range []struct {
+		input string
+		edit  func(*gcp.DispatchArgs)
+	}{
+		{"oidcAccounts", func(a *gcp.DispatchArgs) { a.OidcAccounts = []string{dispatchBrokerAccount} }},
+		{"accessAccounts", func(a *gcp.DispatchArgs) { a.AccessAccounts = []string{dispatchBrokerAccount} }},
+	} {
+		t.Run(row.input, func(t *testing.T) {
+			args := dispatchArgs()
+			row.edit(args)
+			m, err := runDispatch(t, args, true)
+			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: oidcAudience is required when "+row.input+" is set")
+			requireInputError(t, err, "oidcAudience")
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
+		})
+	}
+}
+
+// A value Dispatch refuses at boot (cmd/dispatch checkAccessSettings) is refused when the stack
+// plans, naming the input, so one typo never reaches a Deployment whose one replica would then not
+// start: an account that is no service account's subject (a comma in one would also split it in
+// two, as the list is rendered comma-joined), an access account a set oidcAccounts leaves out, and
+// an owner fallback that is no lowercase email.
 func TestDispatchRefusesAnAccessValueDispatchWouldRefuseAtBoot(t *testing.T) {
+	const reader = "system:serviceaccount:legion:reader"
 	for _, row := range []struct {
 		name, want string
 		edit       func(*gcp.DispatchArgs)
 	}{
+		{"an oidc account that is no subject", "oidcAccounts[0]", func(a *gcp.DispatchArgs) { a.OidcAccounts = []string{"envoy-broker"} }},
+		{"an access account with a comma", "accessAccounts[0]", func(a *gcp.DispatchArgs) {
+			a.AccessAccounts = []string{dispatchBrokerAccount + "," + reader}
+		}},
+		{"an access account the oidc accounts leave out", "accessAccounts[0]", func(a *gcp.DispatchArgs) {
+			a.OidcAccounts = []string{dispatchBrokerAccount}
+			a.AccessAccounts = []string{reader}
+		}},
 		{"an owner fallback that is no email", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner" }},
 		{"an owner fallback that is not lowercase", "projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "Owner@example.com" }},
 	} {

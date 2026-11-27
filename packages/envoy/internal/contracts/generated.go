@@ -336,6 +336,7 @@ const DispatchEventBodyMax = 32000
 // TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
 // fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
 var DispatchEventTypes = []string{
+	"access_group.changed",
 	"architecture.sync_failed",
 	"architecture.synced",
 	"artifact.approved",

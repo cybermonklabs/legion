@@ -88,6 +88,11 @@ var writeProbes = map[string]writeProbe{
 	"PUT /api/v1/projects/{key}/default-assignee":                          {byProject, `{"assignee":"alice"}`},
 	"PATCH /api/v1/projects/{key}/access":                                  {byProject, `{"visibility":"public"}`},
 	"PUT /api/v1/projects/{key}/access/people/{email}":                     {readProbe{"key": probeProject, "email": probeEmail}, ""},
+	"DELETE /api/v1/projects/{key}/access/people/{email}":                  {readProbe{"key": probeProject, "email": probeEmail}, ""},
+	"POST /api/v1/projects/{key}/access/people/{email}/invitations":        {readProbe{"key": probeProject, "email": probeEmail}, ""},
+	"POST /api/v1/projects/{key}/access/people/{email}/reset":              {readProbe{"key": probeProject, "email": probeEmail}, ""},
+	"PUT /api/v1/projects/{key}/access/groups/{name}":                      {readProbe{"key": probeProject, "name": probeGroup}, ""},
+	"DELETE /api/v1/projects/{key}/access/groups/{name}":                   {readProbe{"key": probeProject, "name": probeGroup}, ""},
 	"PUT /api/v1/projects/{key}/gated-steps":                               {byProject, `{` + probeActor + `,"steps":[]}`},
 	"PUT /api/v1/projects/{key}/proven-sessions":                           {byProject, `{` + probeActor + `}`},
 	"DELETE /api/v1/projects/{key}/proven-sessions":                        {byProject, ""},
@@ -185,4 +190,7 @@ type noProjectWrite struct {
 // no object of a private project for it to reach and writeProbes holds no entry for it. Its class
 // is scopeDeployment, which refuses every caller that is not open, and the acceptance driver holds
 // each row to that refusal for every such caller (RouteProbe.NoProject).
-var noProjectWrites = map[string]noProjectWrite{}
+var noProjectWrites = map[string]noProjectWrite{
+	"PUT /api/v1/access-groups/{name}":    {"an access group is the deployment's, which no project owns", `{"members":[]}`},
+	"DELETE /api/v1/access-groups/{name}": {"an access group is the deployment's, which no project owns", ""},
+}

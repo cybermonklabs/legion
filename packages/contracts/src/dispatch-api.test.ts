@@ -92,7 +92,9 @@ test("review event validation preserves approved byte hashes and their provenanc
 
 test("a project.access_changed payload names the project and the change, and no access list", () => {
   // The event is read by every reader of the project's events, so it carries no email, group name
-  // or channel id, nor the time the channels changed.
+  // or channel id, nor the time the channels changed: the list and its time are
+  // GET /api/v1/projects/{key}/access's, under that route's own rule. Payloads stored with the
+  // list are rewritten by the access-events scrub before any project is private.
   const change = { project: "CORE", change: "slack_channels" } as const;
   expect(ProjectAccessChangedEventPayloadSchema.parse(change)).toEqual(change);
   for (const extra of [
