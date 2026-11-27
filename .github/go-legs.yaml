@@ -336,6 +336,7 @@ packages/envoy:
       - internal/roles                          # 5 s
       - internal/legionagents                   # 4 s
       - internal/legionrole
+      - internal/legionclaim
       - internal/bus/kvrecords                  # 4 s
       - internal/googleidentity                 # 3 s
       - internal/webhook                        # 3 s
