@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `dispatch request-approval` says which later versions make an approval stale: on an issue
+  Dispatch has converted to one tree, one that changes a requirement, a criterion, a check, the
+  memo or their relations, and on any other document a change outside the ask blocks. A document
+  write that superseded an approval says that it comes back when someone approves, or when a later
+  write leaves what it covers as the approved version held it: the query's digest on a converted
+  issue, the approved text exactly on any other document.
+time: 2026-11-27T18:49:28Z
+custom:
+    Issue: INFRA-1253

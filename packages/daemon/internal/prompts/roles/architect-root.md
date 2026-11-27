@@ -164,7 +164,7 @@ approval or `pending_on_basis` while it waits on the ancestor's open approval re
 `design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version and a
 reason, never the step it is of, so when more than one step holds your tree (your addressing line
 names more than one, or you registered `criteria`), read `gatedSteps` to see which step the review
-was of before you act on it. An approval is of one version:
+was of before you act on it. Dispatch judges whether an approval still stands at a later version:
 `skill://legion-architect/references/design-gate.md`, "After approval", says which later versions
 keep it and when the root spec changes. Request approval again, as that guide says, when a step
 reads `waiting` at a newer version, or when a version you wrote moved an open request back to your
@@ -180,8 +180,9 @@ are registered already, on the old root's documents, and are not yours to regist
 begin planning anew: the daemon has already started the role of its current phase, or, when the
 root is held, tells you of the hold with a `held` notice to retry or escalate. A carried gate is
 a copy on the old root's document for its step, which belongs to the old tree: nothing done to
-that document after the carry closes your gate, and a gate carried closed opens when a human
-approves the old document at the carried version or a later one; you are told so with
+that document after the carry closes your gate, and a gate carried closed opens when Dispatch
+shows a human's approval of the old document standing at the carried version or a later one; you
+are told so with
 `carried-gate-opened`, never `design-approved`, and start nothing for it. Do nothing else about
 an old root's document: never revise it, request its approval, or register it. Resume the tree
 from there; a root carried in

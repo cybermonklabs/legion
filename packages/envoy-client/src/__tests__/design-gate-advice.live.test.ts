@@ -42,7 +42,7 @@ function planNextStep(issue: string, version: number): string {
 
 /** The first sentence: the version this write stored and the approval it staled. */
 function storedSentence(version: number, approvedBy: string): string {
-  return `Stored version ${version}, superseding version ${version - 1}, which ${approvedBy} approved. That approval is stale until someone approves version ${version} or a later write stores the text of version ${version - 1} again exactly, with no ask block in it decided since.`;
+  return `Stored version ${version}, superseding version ${version - 1}, which ${approvedBy} approved. That approval is stale until someone approves version ${version} or a later write leaves what it covers as version ${version - 1} held it: on an issue Dispatch has converted to one tree, the digest of the document's query; on any other document, the text of version ${version - 1} again exactly, with no ask block in it decided since.`;
 }
 
 /** The clause between them, for the issues whose design gates record the document written. */

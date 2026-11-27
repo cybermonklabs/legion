@@ -5959,8 +5959,9 @@ Each item below names a path with its method and identity, then its purpose.
   An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
   A reopening `status` (any but `done`) opens again exactly the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
   The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
-  For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
-  A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
+  For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
+  On a document of an issue Dispatch has not converted to one tree, it also carries an approval to that version, as that version's own write does on an open issue; on a converted issue's query document it carries none, and an approval stands at that version where the version leaves the digest of its query equal to the approved one.
+  A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and, on an unconverted issue's document, carries the approval.
 
 - `/api/v1/issues/{key}/status-change` (POST; cookie, trusted header, or bearer)
 
@@ -6931,8 +6932,8 @@ Each item below names a path with its method and identity, then its purpose.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
   A person's answer, resolve, decline, close or reopen of an ask writes one version, which changes only its block's `state`, `answered_by` and `answered_at` when that is the version's whole change:
-  a standing approval carries to it and the row keeps its turn, but a close withdraws the row and its version carries no approval, until the reopen's carries it.
-  If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
+  a standing approval stands across it and the row keeps its turn, but a close withdraws the row, and on a document of an issue Dispatch has not converted to one tree the close's version carries no approval, until the reopen's carries it.
+  If text that a person was editing in the browser is settled into the same version, the request goes back to its agent, and the approval stands only on a converted issue's query document whose digest that text leaves equal.
   A second call does one of two things, by what the row waits on:
 
   - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:
@@ -6952,7 +6953,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 
   Record a plan review's approval of a plan version: `{version}`, the version the review read.
-  It writes an `approved` review of kind `plan_review` and emits `artifact.approved`, so every read of the document shows it approved and a later version makes it stale, as a spec's approval goes stale.
+  It writes an `approved` review of kind `plan_review` and emits `artifact.approved`, so every read of the document shows it approved until a later version changes what it covers, as a spec's approval goes stale: on an issue Dispatch has converted to one tree, its `plan_task` and `plan_role` blocks and their relations, and on any other, its text, but where Dispatch carries the approval to that version.
   It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec and a project document named `plan.md` included
   — an issue document whose `role` is `plan`, or an issue's markdown document a rolling deploy left with no role whose slug is `plan-md`, is the plan, and a file uploaded as `plan.md` is not
   — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.

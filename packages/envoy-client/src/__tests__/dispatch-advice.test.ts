@@ -1352,7 +1352,7 @@ describe("dispatch_doc_edit's ask block checks", () => {
 // a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
   const stored =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no ask block in it decided since.";
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write leaves what it covers as version 14 held it: on an issue Dispatch has converted to one tree, the digest of the document's query; on any other document, the text of version 14 again exactly, with no ask block in it decided since.";
   const nextStep =
     "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
   const supersededLine = `${stored} ${nextStep}`;

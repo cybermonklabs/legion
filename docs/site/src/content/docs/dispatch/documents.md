@@ -110,8 +110,8 @@ with the approval state:
 | Chip | Meaning |
 | --- | --- |
 | `Awaiting approval` | Approval was requested and nobody has reviewed this version yet. |
-| `Approved v12` | Version 12 is approved, and it is the latest version. |
-| `Approved v12 · changed since` | Version 12 was approved, then a later version changed the document, and Dispatch did not carry the approval to it (below). |
+| `Approved v12` | Version 12 is approved, and Dispatch finds that approval standing at the latest version. |
+| `Approved v12 · changed since` | Version 12 was approved, then a later version changed what that approval covers (below). |
 | `Changes requested` | A reviewer asked for changes. |
 
 Choose the chip to see the review history. Beside it:
@@ -127,7 +127,17 @@ shows what changed between that version and the one you are asked to approve, wi
 block left out of both, so you read what changed outside the questions you already answered; the
 agent's summary names it in a sentence.
 
-Your answer to an ask block writes one version. When your answer is that version's whole change,
+Dispatch judges whether your approval still stands at a later version. On an issue Dispatch has
+converted to one tree, an approval of its spec or Verification document covers the digest of that
+document's query: the spec's memo callout and its criterion and requirement nodes, or the
+Verification document's check nodes. A later version that changes one of them, or their
+relations, leaves the document `changed since`. A version that leaves the digest equal keeps your
+approval, and the chip goes on naming the version you approved: a prose edit, your answer to an
+ask block, a reading, a restore of the approved text or a recorded result. Dispatch records no
+new review for it.
+
+On an issue Dispatch has not converted yet, approval follows the text. Your answer to an ask block
+writes one version. When your answer is that version's whole change,
 the version changes only the ask block's `state` and, where you answered, `answered_by` and
 `answered_at`, and Dispatch carries your approval across it; it carries no approval of its own.
 The version carries the approval only when the person's answer, resolve or decline is its whole

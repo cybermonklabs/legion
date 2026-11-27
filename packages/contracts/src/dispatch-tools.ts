@@ -1791,8 +1791,10 @@ export const dispatchToolSpecs = [
       "resolved asks cannot be edited. An ask that lives as an `ask` block in a document is written " +
       "in the document too, changing only the fields you name - pass urgency alone and the " +
       "question's wording, formatting, links and comment anchors are untouched - so the edit " +
-      "writes a document version and closes a spec's design gate until that version is approved; " +
-      "text the block cannot carry back unchanged is refused, naming the field - an option label " +
+      "writes a document version. On an issue Dispatch has converted to one tree, that version " +
+      "keeps the spec's approval, since an ask is no node the spec's query reads; on an issue it " +
+      "has not converted, it closes the spec's design gate until that version is approved. Text " +
+      "the block cannot carry back unchanged is refused, naming the field - an option label " +
       'containing ": ", the separator between a label and its description, is one example.',
     arguments: (z) => ({
       ask: z
@@ -2369,12 +2371,22 @@ export const dispatchToolSpecs = [
       "call while it already waits on the human hands nothing back: the same summary changes " +
       "nothing, and a different one is refused, since it would rewrite the card the human is " +
       "reading. Approve and Request changes each close the request, so the next call opens a new " +
-      "one. Call it once per revision, when the revision is complete, never after each edit. An " +
-      "approval goes stale when the document changes outside its ask blocks after it, until " +
-      "a later version's text is exactly the approved version's again, as when an accidental " +
-      "edit is undone exactly, and no ask block in it was decided since: that version " +
-      "carries the approval and the document reads approved at it, so nothing is requested for " +
-      "it. When the document does not read approved, request approval again once that revision " +
+      "one. Call it once per revision, when the revision is complete, never after each edit. " +
+      "Dispatch judges whether an approval stands at a later version. On the spec, Verification " +
+      "document or plan of an issue Dispatch has converted to one tree, an approval covers the " +
+      "digest of the document's query: the spec's memo callout and its criterion and requirement " +
+      "nodes, the Verification document's check nodes, or the plan's plan_task and plan_role " +
+      "blocks. A version that changes one of them or their relations makes the approval stale; a " +
+      "version that leaves the digest equal, such as a prose edit, a change to an ask's " +
+      "attributes, a reading, the approved text restored or a recorded result, keeps the document " +
+      "approved at it, so nothing is requested for it. On any other document an approval goes " +
+      "stale when the document changes outside its ask blocks after it. A later version carries " +
+      "the approval when its text is exactly the approved version's again, as when an accidental " +
+      "edit is undone exactly, and no ask block in it was decided since, or when its every change " +
+      "is a reading inside a decision or an answered ask, an ask block attribute the server owns, " +
+      "or the write of Dispatch's decisions step: the document then reads approved at it, so " +
+      "nothing is requested for it. When the document does " +
+      "not read approved, request approval again once that revision " +
       "is complete and " +
       HUMAN_AGREED_TO_DOCUMENT +
       ", with a one-sentence summary naming what changed since the earlier approval: the card " +
@@ -2382,14 +2394,15 @@ export const dispatchToolSpecs = [
       "A human's answer, resolve, decline, close or reopen of an ask writes one version. When " +
       "the answer, resolve, decline, close or reopen is that version's whole change, the version " +
       "changes only the server-owned attributes of the ask's block: its state, and who answered " +
-      "and when. An approval carries across the version an answer, a resolve or a decline writes, " +
-      "and the request keeps whoever held its turn. The version carries an approval only when the " +
-      "person's answer, resolve or decline is its whole change. If text that a person was editing " +
-      "in the browser is settled into the same version, the approval does not carry, and the " +
-      "request goes back to its agent. A close's version carries none, so the " +
-      "approval reads stale until the reopen's version carries it. A new " +
-      "version of a Legion root spec closes its armed design gate until a human approves it; a " +
-      "carried approval reopens it too. " +
+      "and when. An approval stands across the version an answer, a resolve or a decline writes " +
+      "when that is its whole change, and the request keeps whoever held its turn. If text that a " +
+      "person was editing in the browser is settled into the same version, the request goes back " +
+      "to its agent, and the approval stands only on a converted issue's document whose digest " +
+      "that text leaves equal. On any other document a close's version carries no approval, so " +
+      "the approval reads stale until the reopen's version carries it. A Legion root spec's armed " +
+      "design gate follows Dispatch's verdict: a version that makes the approval stale closes it " +
+      "until a human approves, and a version at which the approval stands keeps it open or opens " +
+      "it again. " +
       "Refused, with nothing sent, while the document holds an open ask block, even when a " +
       "human asked for approval: the refusal names each block; ask the human to answer or waive " +
       "it first. " +
@@ -2430,8 +2443,11 @@ export const dispatchToolSpecs = [
       "Record the plan review's approval of an issue's plan at the version it reviewed. A plan is " +
       "approved by that review, never by a person: dispatch request-approval on a plan is refused " +
       "409 PLAN_APPROVED_BY_REVIEW, so no plan approval ever reaches a human's Inbox. The approval " +
-      "is pinned to the version named, so a later plan version makes it stale and the review runs " +
-      "again. Refused 409 NOT_PLAN_DOCUMENT on any other document, the issue's spec included, and " +
+      "is of the version named, and a later plan version that changes what it covers makes it " +
+      "stale, so the review runs again: on an issue Dispatch has converted to one tree, a change " +
+      "to a plan_task or plan_role block or their relations; on an issue it has not converted, " +
+      "any version the approval does not carry to by its text. Refused 409 NOT_PLAN_DOCUMENT on " +
+      "any other document, the issue's spec included, and " +
       "400 INVALID_REVIEW for a version the plan does not have. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
