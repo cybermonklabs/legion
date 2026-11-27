@@ -47,9 +47,10 @@ import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measure
 import type { PointMark } from "./current-point";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
+import { chipName } from "./first-line";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
-import { chipName, isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
+import { isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
@@ -73,7 +74,7 @@ import {
   nodeStateWord,
 } from "./page-words";
 import { RowText, useOutOfTabOrder } from "./RowText";
-import { titleReading } from "./tree-drafts";
+import { titleReading } from "./statement-rules";
 
 /**
  * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
@@ -1212,7 +1213,7 @@ export function NodeEdges({
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <NodeReference
+        <Chip
           chip={chip}
           issue={issue}
           key={`also:${chip.ref}`}
@@ -1221,13 +1222,7 @@ export function NodeEdges({
         />
       ))}
       {node.chips.map((chip) => (
-        <NodeReference
-          chip={chip}
-          issue={issue}
-          key={chip.ref}
-          label={chip.label}
-          tabStops={tabStops}
-        />
+        <Chip chip={chip} issue={issue} key={chip.ref} label={chip.label} tabStops={tabStops} />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1272,7 +1267,7 @@ export function NodeEdges({
  * length, then ` · edited` (`EditedMark`), drawn after the cut, so no cut takes the mark
  * (deleted-post R2 and R3).
  */
-function NodeReference({
+function Chip({
   chip,
   issue,
   label,

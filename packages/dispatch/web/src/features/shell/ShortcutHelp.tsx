@@ -1,10 +1,10 @@
 import { type ReactNode, useRef, useState } from "react";
 
-import { SearchBox } from "../../components/SearchBox";
 import {
   backdrop50,
   borderDefault,
   card,
+  inputClasses,
   kbdHint,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -40,12 +40,10 @@ function keyTokens(keys: string): { key: string; token: string }[] {
     }));
 }
 
-/** Every scope's heading in `?`; the compiler checks this record covers `KeymapScope`. */
-export const SCOPE_LABELS: Record<KeymapScope, string> = {
+const SCOPE_LABELS: Record<KeymapScope, string> = {
   agents: "Agents",
   architecture: "Architecture",
   board: "Board",
-  delivery: "Delivery",
   dialog: "Dialog",
   document: "Document",
   global: "Global",
@@ -58,11 +56,8 @@ export const SCOPE_LABELS: Record<KeymapScope, string> = {
  * Section order in `?`: the shell's own scope, then page scopes outermost first, then dialogs.
  * Registration order would do, except React runs child layout effects first, so a page that
  * mounts straight into its Board would list `board` above `project`.
- *
- * A scope left out here is drawn nowhere, which no type catches: `ShortcutHelp.test.tsx` holds
- * this list to the scopes `SCOPE_LABELS` names.
  */
-export const SCOPE_ORDER: readonly KeymapScope[] = [
+const SCOPE_ORDER: readonly KeymapScope[] = [
   "global",
   "project",
   "architecture",
@@ -71,7 +66,6 @@ export const SCOPE_ORDER: readonly KeymapScope[] = [
   "document",
   "inbox",
   "agents",
-  "delivery",
   "dialog",
 ];
 
@@ -124,12 +118,13 @@ export function ShortcutHelp({
             <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>
               Keyboard shortcuts
             </h2>
-            <SearchBox
-              className="min-w-0 flex-1"
-              label="Filter shortcuts"
-              onChange={setFilter}
+            <input
+              aria-label="Filter shortcuts"
+              className={`block min-h-11 min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+              onChange={(event) => setFilter(event.target.value)}
               placeholder="Filter"
               ref={filterRef}
+              type="search"
               value={filter}
             />
             <button

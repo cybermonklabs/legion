@@ -3217,9 +3217,9 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
 });
 
 // Outside the new issue page Referenced by is as on every other page: a read that fails after the
-// list answered draws its line over that list, and Retry is held while the read it sent is out,
-// never disabled, as it is in Details.
-test("outside Details, Referenced by draws its line over the list it holds, and its Retry is held while the read it sent is out", async () => {
+// list answered draws its line over that list, and Retry is disabled while the read it sent is
+// out.
+test("outside Details, Referenced by draws its line over the list it holds, and its Retry is disabled while the read it sent is out", async () => {
   const user = userEvent.setup();
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
@@ -3244,12 +3244,9 @@ test("outside Details, Referenced by draws its line over the list it holds, and 
     getReferences.mockImplementationOnce(() => new Promise(() => undefined));
     await user.click(retry);
     await waitFor(() =>
-      expect(retry, "Retry outside Details is not held while its read is out").toHaveAttribute(
-        "aria-disabled",
-        "true"
-      )
+      expect(retry, "Retry outside Details is not disabled while its read is out").toBeDisabled()
     );
-    expect(retry, "Retry outside Details is disabled while its read is out").not.toBeDisabled();
+    expect(retry, "Retry outside Details reads aria-disabled").not.toHaveAttribute("aria-disabled");
   } finally {
     view.unmount();
     queryClient.clear();
@@ -3848,10 +3845,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await user.click(await evalsOption());
     await user.keyboard("{Escape}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    // While its write is out the control says so, and is named for it (`priorityTriggerName`).
-    const control = await screen.findByRole("button", {
-      name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
-    });
+    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     // Refused while its write is out, by the rule Add reads (`usableControl`): `disabled`, or
     // `aria-disabled` where the shared control stays focusable while it is busy.
     await waitFor(() =>
@@ -4080,12 +4074,7 @@ test.each(FIRST_ADDED)(
         expect(
           document.activeElement,
           "the add landed, and the line gave the focus back to no add control beside Add"
-        ).toBe(
-          // Held until the read after its write is drawn, the control is named for its save.
-          screen.queryByRole("button", {
-            name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
-          })
-        )
+        ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
       );
       await act(async () => reread.resolve(readBack));
       const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
@@ -4492,12 +4481,7 @@ test("a refused first priority whose read draws another session's priority leave
       expect(
         document.activeElement,
         "the line gave the focus back to no add control beside Add"
-      ).toBe(
-        // Held until the read after its write is drawn, the control is named for its save.
-        screen.queryByRole("button", {
-          name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
-        })
-      )
+      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
     );
     await act(async () =>
       reread.resolve({ ...advancesOnly, advances: [{ id: "PRI-9", inherited: false }] })
@@ -4530,10 +4514,7 @@ test("an event's read of another session's first priority while the reader's is 
   try {
     await addFirstPriority(user);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    // Held while the write is out, the control is named for its save (`priorityTriggerName`).
-    const control = await screen.findByRole("button", {
-      name: priorityTriggerName("CORE-1", true, CONTROL_NAME_WORDS),
-    });
+    const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
     await waitFor(() => expect(document.activeElement).toBe(control));
     expect(
       control,
@@ -4571,9 +4552,7 @@ test("a refused first priority whose set an event's read draws after the write e
   try {
     await addFirstPriority(user);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    // Named for its save until the write and the reads after it have ended
-    // (`priorityTriggerName`), so it is found by its own name once they have.
-    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+    const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
     await waitFor(() =>
       expect(
         control,
@@ -6914,7 +6893,12 @@ test("with no pin, Pinned reads None and sends no request", async () => {
     expect(within(pins).queryAllByRole("link")).toHaveLength(0);
     // The panel's reads have gone out by the time the Repository row has read the project list.
     await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
-    expect(pinReads.asks, "Pinned read the issue's questions with no pin").not.toHaveBeenCalled();
+    // Details reads the issue's open asks of its own, for the approval requests that wait on the
+    // reader (`useWaitingRequests`); Pinned's read is of every ask.
+    expect(
+      pinReads.asks.mock.calls.filter(([, state]) => state === "all"),
+      "Pinned read the issue's questions with no pin"
+    ).toEqual([]);
     expect(
       pinReads.comments,
       "Pinned read the issue's comments with no pin"
@@ -6972,13 +6956,18 @@ test("with a pin, a window focus past 30 s reads none of Pinned's questions, com
   const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
+    // Details reads the issue's open asks of its own, for the approval requests that wait on the
+    // reader (`useWaitingRequests`); Pinned's read is of every ask.
+    const pinnedAsks = () => pinReads.asks.mock.calls.filter(([, state]) => state === "all");
     await waitFor(() => {
-      for (const read of Object.values(pinReads)) expect(read).toHaveBeenCalledTimes(1);
+      expect(pinnedAsks()).toHaveLength(1);
+      expect(pinReads.comments).toHaveBeenCalledTimes(1);
+      expect(pinReads.messages).toHaveBeenCalledTimes(1);
       expect(client.isFetching()).toBe(0);
     });
     await focusPastStaleness(client);
     await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
-    expect(pinReads.asks, "a window focus read Pinned's questions again").toHaveBeenCalledTimes(1);
+    expect(pinnedAsks(), "a window focus read Pinned's questions again").toHaveLength(1);
     expect(pinReads.comments, "a window focus read Pinned's comments again").toHaveBeenCalledTimes(
       1
     );
@@ -7992,5 +7981,86 @@ test("Details' places for the people, the focused row's facts and the history dr
     const view = render(<Place issue={issue} state={undefined} />);
     expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
     view.unmount();
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-header-count (R10): Details draws Approve and Request changes on
+// its Approval row wherever no approval request waits on the reader, and leaves them to the
+// header while one does, by the approval-request items of the one rule of what waits
+// (`useWaitingRequests`). An approval of the reader's that a newer version made stale is an item
+// of Dashboard's list but no request, so it moves no control: Details keeps both. An open request
+// on the document that waits on the reader takes them to the header.
+test("a stale approval moves no approval control", async () => {
+  const { getIssue, pinReads, restore } = stubIssueApi();
+  const stale: IssueDetails = {
+    ...issue,
+    artifacts: [
+      {
+        ...specArtifact,
+        approval: {
+          at: "2026-09-10T00:00:00Z",
+          by: { id: "alice", kind: "user" },
+          latest_version: 3,
+          state: "stale",
+          version: 2,
+        },
+      },
+    ],
+  };
+  getIssue.mockResolvedValue(stale);
+  const { queryClient, unmount } = renderDetails();
+  const actions = () =>
+    within(screen.getByTestId("issue-details-approval-steps")).queryAllByRole("button", {
+      name: /^(Approve|Request changes)\b/,
+    });
+
+  try {
+    await waitFor(() => expect(pinReads.asks).toHaveBeenCalledWith("CORE-1", "open"));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await screen.findByTestId("issue-details-approval-steps");
+    expect(actions().length, "the stale approval moved Details' approval controls").toBeGreaterThan(
+      0
+    );
+
+    pinReads.asks.mockImplementation(async (_key, state) =>
+      state === "open"
+        ? [
+            {
+              anchor: null,
+              answer: null,
+              artifact_id: specArtifact.id,
+              asked_of: null,
+              asked_of_at: null,
+              asked_of_by: null,
+              author: { id: "session-1", kind: "session" },
+              block_id: null,
+              created_at: "2026-09-11T00:00:00Z",
+              edited_at: null,
+              id: "ask-approval",
+              issue_key: "CORE-1",
+              kind: "approval",
+              last_reply: null,
+              multiple: false,
+              options: [],
+              question: "Approve the spec?",
+              state: "open",
+              urgency: "med",
+              waiting_on: "human",
+              waiting_on_person: "alice",
+            },
+          ]
+        : []
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["asks", "CORE-1", "open"] });
+    });
+    await waitFor(() =>
+      expect(actions(), "a request waiting on the reader left Details' approval controls").toEqual(
+        []
+      )
+    );
+  } finally {
+    unmount();
+    restore();
   }
 });

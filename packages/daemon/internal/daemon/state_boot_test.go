@@ -82,6 +82,7 @@ func seedBootStore(t *testing.T, cfg config.Config, issue string, earlier bool, 
 // a message an earlier run left. A state row an earlier run left unpublished holds a lower
 // sequence, so the lane publishes it first, and the boot event follows it one sequence above.
 func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
+	t.Parallel()
 	const earlierRun = "1c9e4b7a-6d2f-4a83-9b05-e8f7d3c2a160"
 	for _, tc := range []struct {
 		name    string
@@ -206,6 +207,7 @@ func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 // publish, and GET /legion/v1/state serves no `daemon.stateRun`, the run a reader takes a starting
 // point's messages from.
 func TestADaemonWithNoDispatchURLWritesAndPublishesNoStateEvent(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	listener := newNoticeListener()
 	envoy := httptest.NewServer(listener)

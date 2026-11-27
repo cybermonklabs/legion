@@ -1,7 +1,6 @@
 import {
   agentRow,
   type FakeSession,
-  issueOption,
   openAgents,
   pickAgentFilter,
   plannerSession,
@@ -203,7 +202,7 @@ test.describe("agents page pins", () => {
       await page.keyboard.press("Enter");
       await expect(field).toBeFocused();
       await toggle.click();
-      await issueOption(silentRow, "CORE-1").click();
+      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
       await field.click();
       await page.keyboard.press("End");
       await page.keyboard.type("can you take this");
@@ -388,7 +387,7 @@ test.describe("agents page pins", () => {
 
       await page.keyboard.press("Enter");
       await silentRow.getByRole("button", { name: "Choose issue" }).click();
-      await issueOption(silentRow, "CORE-1").click();
+      await silentRow.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
       await expect(field).toHaveValue(`${silentMention} `);
       await pasteFile(field, "notes.md", "# Notes\n");
       const uploading = silentRow.getByRole("button", { name: "Uploading file…" });

@@ -537,11 +537,10 @@ const barRows: readonly BarRow[] = [
       await shoot(page, "01-empty");
       // "/" in the empty box opens the filters; the Filters button closes them.
       await searchBox(page).press("/");
-      const filters = page.getByRole("dialog", { name: "Filters" });
-      await expect(filters).toBeVisible();
+      await expect(bar(page).getByTestId("search-filters-panel")).toBeVisible();
       await shoot(page, "01-filters");
-      await bar(page).getByRole("button", { name: "Filters" }).click();
-      await expect(filters).toHaveCount(0);
+      await bar(page).getByTestId("search-filters-button").click();
+      await expect(bar(page).getByTestId("search-filters-panel")).toHaveCount(0);
       await searchBox(page).fill(words);
       await expect(bar(page).locator(`#search-option-issue-${seed.bar.mount}`)).toBeVisible();
       await expect(answerPanel(page)).toHaveAttribute("data-state", "ended", {

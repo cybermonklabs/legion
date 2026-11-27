@@ -20,7 +20,6 @@ import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { navigateInApp } from "./sends";
 import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type Request, type TestInfo, test } from "./test";
-import { assertPageFits } from "./unclipped";
 
 // The files a row uploads are written in that row's own output directory, which Playwright gives
 // each row of each worker (`testInfo.outputPath`): two workers running these rows at once would
@@ -60,27 +59,6 @@ async function confirmUpload(page: Page): Promise<void> {
   await page.getByRole("button", { exact: true, name: "Upload" }).click();
 }
 
-// Whole inside the window: no part of `control` left of the window's left edge or past its right
-// edge, where a phone reader can neither see nor press it. `name` is what a failure calls it. The
-// window is the width the browser was given, not `window.innerWidth`: a page wider than a phone's
-// window widens `innerWidth` to the page (`assertPageFits`, `unclipped.ts`), so a 480 px control
-// on a 390 px phone sits inside an `innerWidth` of 504. The failure names both.
-async function expectWithinWindow(page: Page, control: Locator, name: string): Promise<void> {
-  await expect(control).toBeVisible();
-  const [box, innerWidth] = await Promise.all([
-    control.boundingBox(),
-    page.evaluate(() => window.innerWidth),
-  ]);
-  const windowWidth = page.viewportSize()?.width;
-  if (box === null || windowWidth === undefined) {
-    throw new Error(`expected ${name} to have a box in a window of a set width`);
-  }
-  const right = box.x + box.width;
-  const where = `${name} spans ${box.x}px to ${right}px (${box.width}px wide) in a ${windowWidth}px window (innerWidth ${innerWidth}px)`;
-  expect(box.x, where).toBeGreaterThanOrEqual(0);
-  expect(right, where).toBeLessThanOrEqual(windowWidth);
-}
-
 // `page.request` sends the page's session cookie and no `Origin`, and the server refuses a
 // cookie-authenticated write whose `Origin` is not the dashboard's (enforceCookieOrigin).
 function postAsPage(page: Page, path: string, data?: object) {
@@ -107,57 +85,10 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openArtifacts(page, testInfo.project.name === "iphone");
-  // The tab's own slot of the control row ran a staged upload off a 390 px window once (CI run
-  // 43204682061), and #3508 put the `New document` control in that same slot beside `Upload`. So
-  // on the phone each control there lies whole inside the window and takes a press, and the form
-  // `New document` opens fits too.
-  if (testInfo.project.name === "iphone") {
-    const newDocument = page.getByRole("button", { exact: true, name: "New document" });
-    const pickFile = page.getByRole("button", { exact: true, name: "Upload" });
-    await expectWithinWindow(page, newDocument, "New document");
-    await expectWithinWindow(page, pickFile, "Upload");
-    // Playwright holds the chooser the press opens, and it is left unanswered: nothing is staged.
-    const chooser = page.waitForEvent("filechooser");
-    await pickFile.click();
-    await chooser;
-    await newDocument.click();
-    const newDocumentForm = page.getByRole("form", { name: "New document" });
-    await expectWithinWindow(
-      page,
-      newDocumentForm.getByRole("textbox", { exact: true, name: "Title" }),
-      "the New document form's Title field"
-    );
-    await expectWithinWindow(
-      page,
-      newDocumentForm.getByRole("button", { exact: true, name: "Create" }),
-      "the New document form's Create"
-    );
-    await newDocumentForm.getByRole("button", { exact: true, name: "Cancel" }).click();
-    await expect(newDocumentForm).toHaveCount(0);
-  }
 
   const upload = page.getByLabel("Upload artifact");
   const diagramUpload = await diagramFile(testInfo);
   await upload.setInputFiles(diagramUpload);
-  // What run 43204682061 caught: the staged file takes the slot's line, and its Summary field and
-  // the two presses that store or discard it stay inside the window.
-  if (testInfo.project.name === "iphone") {
-    await expectWithinWindow(
-      page,
-      page.getByRole("textbox", { exact: true, name: "Summary (optional)" }),
-      "the staged upload's Summary field"
-    );
-    await expectWithinWindow(
-      page,
-      page.getByRole("button", { exact: true, name: "Upload" }),
-      "the staged upload's Upload"
-    );
-    await expectWithinWindow(
-      page,
-      page.getByRole("button", { exact: true, name: "Cancel" }),
-      "the staged upload's Cancel"
-    );
-  }
   await confirmUpload(page);
   const diagram = page.getByTestId("artifact-diagram-png");
   await expect(diagram).toContainText("diagram.png");
@@ -279,9 +210,9 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await openMargin.click();
     await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
     await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
-    // `scrollWidth <= innerWidth` cannot fail on a phone, which widens `innerWidth` to a page
-    // wider than its window; `assertPageFits` holds `innerWidth` to the window as well.
-    await assertPageFits(page);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true);
   }
 });
 
@@ -415,12 +346,8 @@ test("the version history compares two versions of a document with the change vi
   await page.goto(`/issues/${issue.key}/artifacts/notes-md`);
   const compare = page.getByRole("region", { name: "Compare versions for notes.md" });
   await compare.getByRole("button", { name: "Show comparison" }).click();
-  // Each side is a list, portalled out of the region, and the one open list's options are the
-  // ones pressed.
-  await compare.getByRole("button", { name: "Compare notes.md from" }).click();
-  await page.getByRole("option", { name: /^Version 1(?: — |$)/ }).click();
-  await compare.getByRole("button", { name: "Compare notes.md to" }).click();
-  await page.getByRole("option", { name: /^Version 2(?: — |$)/ }).click();
+  await compare.getByLabel("Compare notes.md from").selectOption("1");
+  await compare.getByLabel("Compare notes.md to").selectOption("2");
   const changed = compare.getByTestId("change-view").locator('[data-change="changed"]');
   await expect(changed).toHaveCount(1);
   await expect(changed.locator("del")).toHaveText(["three"]);
@@ -455,7 +382,7 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
   await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
 });
 
-// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of ten
+// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of eleven
 // tabs with each tab's box measured, at 390 px and back, then the comment margin hidden and shown
 // again.
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
@@ -477,8 +404,8 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   const tabs = tablist.getByRole("tab");
-  await expect(tabs).toHaveCount(10);
-  // Every tab lies whole inside the tablist, which never scrolls sideways: ten tabs that do not
+  await expect(tabs).toHaveCount(11);
+  // Every tab lies whole inside the tablist, which never scrolls sideways: eleven tabs that do not
   // fit its width wrap onto a further line (dispatch://INFRA-5200, the layout rule's 4). A tab is
   // one line, at most 48 px tall: the tabs wrap between tabs, never inside one.
   const wholeInTablist = (tab: Locator) =>
@@ -504,6 +431,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveText([
+    "Dashboard",
     "Spec",
     "Verification",
     "Plan",
@@ -515,7 +443,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     "Decisions",
     "Collaborators",
   ]);
-  // At 390 px the ten tabs take more than one line.
+  // At 390 px the eleven tabs take more than one line.
   const tops = await tabs.evaluateAll((nodes) =>
     nodes.map((node) => Math.round(node.getBoundingClientRect().top))
   );
@@ -542,10 +470,10 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
-  const specTab = page.getByRole("tab", { name: "Spec" });
-  await expect(specTab).toBeFocused();
-  await wholeInTablist(specTab);
-  expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  const dashboardTab = page.getByRole("tab", { exact: true, name: "Dashboard" });
+  await expect(dashboardTab).toBeFocused();
+  await wholeInTablist(dashboardTab);
+  expect((await dashboardTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   await page.keyboard.press("End");
   await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
@@ -557,7 +485,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await activityTab.click();
   await expect(activityTab).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "Show margin" }).click();
-  // The count of ten above settled the tabs, so one read lists them all.
+  // The count of eleven above settled the tabs, so one read lists them all.
   for (const tab of await tabs.all()) {
     await wholeInTablist(tab);
   }

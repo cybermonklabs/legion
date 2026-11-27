@@ -1,7 +1,7 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
@@ -13,7 +13,6 @@ import {
 } from "../../__tests__/commits";
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -176,9 +175,7 @@ function renderControl() {
   queryClient.setQueryData(listKey, [summary]);
   queryClient.setQueryData(inboxKey, [inboxRow]);
   const user = userEvent.setup();
-  // What the trigger's name says after its label - the person it holds, as a `<select>` says its
-  // value - and the text of its badge.
-  const commits = recordCommits<string | null>(() => drawnPick(trigger()));
+  const commits = recordCommits<string | null>(() => drawnPick(select()));
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CachedControl commits={commits} />
@@ -196,29 +193,33 @@ function renderControl() {
   };
 }
 
-/** The control's label: what its trigger's name starts with, before the badge's words, and its
- *  listbox's name with ` options` after it. */
-const ASSIGNEE = "Assignee of CORE-1";
-
-function trigger(): HTMLButtonElement {
-  return screen.getByRole("button", { name: pickNamed(ASSIGNEE) }) as HTMLButtonElement;
+function select(): HTMLSelectElement {
+  return screen.getByRole("combobox", { name: "Assignee of CORE-1" }) as HTMLSelectElement;
 }
 
 test("AssigneeControl reads who has signed in only once the reader reaches for it, then lists Unassigned first", async () => {
-  const { listUsers, unmount, user } = renderControl();
+  const { listUsers, unmount } = renderControl();
   try {
     // Mounted with the badge showing, nothing has been requested: a fresh issue load costs no
     // read of who has signed in.
     expect(screen.getByText("alice", { selector: "span" })).toBeTruthy();
-    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} alice`);
+    expect([...select().options].map((option) => option.textContent)).toEqual([
+      "Unassigned",
+      "alice",
+    ]);
     expect(listUsers).not.toHaveBeenCalled();
 
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(trigger());
-    await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
-    const list = await openList(user, ASSIGNEE);
-    await waitFor(() => expect(rows(list)).toEqual(["Unassigned", "✓alice", "bob"]));
+    fireEvent.focus(select());
+    await waitFor(() =>
+      expect([...select().options].map((option) => option.textContent)).toEqual([
+        "Unassigned",
+        "alice",
+        "bob",
+      ])
+    );
     expect(listUsers).toHaveBeenCalledTimes(1);
+    expect(select().value).toBe("alice");
   } finally {
     unmount();
   }
@@ -229,9 +230,10 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    await user.hover(trigger());
-    await pick(user, ASSIGNEE, "bob");
-    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} bob`));
+    await user.hover(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    await user.selectOptions(select(), "bob");
+    await waitFor(() => expect(select().value).toBe("bob"));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)?.[0]?.issue?.assignee).toBe("bob");
@@ -250,9 +252,9 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
 
 // A pick shows from its press on, in every commit. The pick reaches the issue's cache in a
 // microtask of the press, and the control's host only when TanStack Query tells the cache's
-// observers, in a browser a timer later, which the row holds back. The list closes on the pick,
-// and its trigger draws the person the control holds, so a commit before that timer that drew the
-// assignee the pick replaces is a frame of it on screen (INFRA-3904).
+// observers, in a browser a timer later, which the row holds back. The select that showed the
+// pick as it was made is put back to its `value` within the press, so a commit before that timer
+// that drew the assignee the pick replaces is a frame of it on screen (INFRA-3904).
 test("AssigneeControl draws the pick in every commit from the pick on, while its host still passes the assignee it replaces", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
@@ -260,13 +262,11 @@ test("AssigneeControl draws the pick in every commit from the pick on, while its
   let notifications: HeldNotifications | undefined;
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(trigger());
-    const list = await openList(user, ASSIGNEE);
-    await waitFor(() => expect(rows(list)).toHaveLength(3));
-    const bob = within(list).getByRole("option", { name: "bob" });
-    const fromPick = commits.markAt(bob, "click");
+    fireEvent.focus(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    const fromPick = commits.markAt(select(), "change");
     notifications = holdNotifications();
-    await user.click(bob);
+    await user.selectOptions(select(), "bob");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
     );
@@ -295,12 +295,13 @@ test("AssigneeControl sends null for Unassigned", async () => {
   const { unmount, user } = renderControl();
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(trigger());
-    await pick(user, ASSIGNEE, "Unassigned");
+    fireEvent.focus(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    await user.selectOptions(select(), "");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
     );
-    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} Unassigned`));
+    await waitFor(() => expect(select().value).toBe(""));
     expect(screen.getByText("Unassigned", { selector: "span" })).toBeTruthy();
   } finally {
     unmount();
@@ -339,8 +340,9 @@ test.each([
     }
     try {
       // A focus with no press before it: user-event has no form for a bare focus.
-      fireEvent.focus(trigger());
-      await pick(user, ASSIGNEE, "Unassigned");
+      fireEvent.focus(select());
+      await waitFor(() => expect(select().options.length).toBe(3));
+      await user.selectOptions(select(), "");
       await waitFor(() =>
         expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
       );
@@ -376,11 +378,12 @@ test("AssigneeControl rolls back and shows the server's refusal when the person 
   const { queryClient, unmount, user } = renderControl();
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(trigger());
-    await pick(user, ASSIGNEE, "bob");
+    fireEvent.focus(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    await user.selectOptions(select(), "bob");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent('"bob" has not signed in to Dispatch');
-    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} alice`);
+    expect(select().value).toBe("alice");
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary]);
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
   } finally {
@@ -398,18 +401,19 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
   const { queryClient, unmount, user } = renderControl();
   try {
     act(() => {
-      trigger().focus();
+      select().focus();
     });
-    await pick(user, ASSIGNEE, "bob");
+    await waitFor(() => expect(select().options.length).toBe(3));
+    await user.selectOptions(select(), "bob");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
     );
     // A disabled control drops focus and leaves the tab order for the length of the save.
-    expect(trigger().disabled).toBe(false);
-    expect(trigger()).toHaveFocus();
+    expect(select().disabled).toBe(false);
+    expect(select()).toHaveFocus();
 
-    await pick(user, ASSIGNEE, "Unassigned");
-    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} Unassigned`);
+    await user.selectOptions(select(), "");
+    expect(select().value).toBe("");
     expect(patchIssue).toHaveBeenCalledTimes(1);
     await act(async () => {
       first.resolve({ ...issue, assignee: "bob" });
@@ -417,7 +421,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: null }, keyedAttempt);
-    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} Unassigned`);
+    expect(select().value).toBe("");
     await act(async () => {
       second.resolve({ ...issue, assignee: null });
       await second.promise;
@@ -425,79 +429,10 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
     );
-    expect(trigger()).toHaveFocus();
+    expect(select()).toHaveFocus();
   } finally {
     unmount();
     patchIssue.mockRestore();
-  }
-});
-
-// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The issue header's Assignee is such a list: its options are the people who have
-// signed in, which grow with the team. Opened, it holds a text box of its own, a word typed into
-// it leaves only the people who match, and a pick reassigns the issue and puts the focus back on
-// the control. Opened again it stands on the person it holds, and Enter there writes nothing.
-test("the issue header's Assignee list holds a text box that narrows its people, and a pick reassigns the issue", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, assignee: "bob" });
-  const { unmount, user } = renderControl();
-  try {
-    const before = new Set(textBoxes());
-    await user.click(screen.getByRole("button", { name: pickNamed("Assignee of CORE-1") }));
-    // The people are read once the reader reaches for the control.
-    await waitFor(() =>
-      expect(screen.queryAllByRole("option", { name: /^bob\b/ }).length).toBeGreaterThan(0)
-    );
-    const own = textBoxes().filter((box) => !before.has(box));
-    expect(own, "the Assignee list holds no text box of its own").toHaveLength(1);
-    const list = listOf(own[0] as HTMLElement);
-    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    await user.type(own[0] as HTMLElement, "bo");
-    await waitFor(() =>
-      expect(
-        within(list).queryAllByRole("option", { name: /^alice\b/ }),
-        `"bo" leaves alice in the Assignee list`
-      ).toHaveLength(0)
-    );
-    expect(
-      within(list).queryAllByRole("option", { name: /^Unassigned\b/ }),
-      `"bo" leaves Unassigned in the Assignee list`
-    ).toHaveLength(0);
-    await user.click(within(list).getByRole("option", { name: /^bob\b/ }));
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
-    );
-    expect(screen.queryByRole("listbox", { name: "Assignee of CORE-1 options" })).toBeNull();
-    expect(trigger()).toHaveFocus();
-    await waitFor(() => expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} bob`));
-
-    await user.keyboard("{Enter}");
-    await screen.findByRole("listbox", { name: "Assignee of CORE-1 options" });
-    await user.keyboard("{Enter}");
-    expect(screen.queryByRole("listbox", { name: "Assignee of CORE-1 options" })).toBeNull();
-    await act(async () => {});
-    expect(patchIssue).toHaveBeenCalledTimes(1);
-  } finally {
-    unmount();
-    patchIssue.mockRestore();
-  }
-});
-
-// INFRA-3135, round 12: a list whose read failed says so. Until the people answer, the list holds
-// Unassigned and the person the issue names; when the read fails it still holds them, and says
-// the rest could not be loaded, as the ask card's hand-on list does.
-test("the issue header's Assignee list says the people could not be loaded when their read fails", async () => {
-  const { listUsers, unmount, user } = renderControl();
-  listUsers.mockRejectedValue(new Error("users unreachable"));
-  try {
-    const list = await openList(user, ASSIGNEE);
-    const panel = list.parentElement as HTMLElement;
-    expect(await within(panel).findByText("Could not load the people list.")).toBeTruthy();
-    expect(rows(list)).toEqual(["Unassigned", "✓alice"]);
-  } finally {
-    unmount();
   }
 });
 
@@ -510,10 +445,10 @@ test("an assignee the reader stopped says Retry asks again under its key, not a 
   );
   const { queryClient, unmount, user } = renderControl();
   try {
-    const list = await openList(user, ASSIGNEE);
-    await waitFor(() => expect(rows(list)).toEqual(["Unassigned", "✓alice", "bob"]));
+    await user.hover(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
     jest.useFakeTimers();
-    await userOnFakeClock().click(within(list).getByRole("option", { name: /^bob\b/ }));
+    await userOnFakeClock().selectOptions(select(), "bob");
     await stopTheLateWrite(queryClient);
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(

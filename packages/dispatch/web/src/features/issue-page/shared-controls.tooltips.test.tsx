@@ -1225,10 +1225,7 @@ const repoNothingResolved: Mount = {
     return <RepoControl issueKey="CORE-5" project="CORE" repo={null} resolvedRepo={null} />;
   },
   settle: async (view) => {
-    // The mount is drawn on both surfaces: inside `NoTooltips` the repository is `main`'s box,
-    // labelled by the control's name, and outside it the shared list's trigger, whose name starts
-    // with the same words, its list's name.
-    await within(view.container).findByLabelText("Repository of CORE-5");
+    await within(view.container).findByRole("combobox", { name: "Repository of CORE-5" });
   },
 };
 
@@ -1470,8 +1467,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     [
       "alice",
       localTime("2026-10-08T00:00:00Z"),
-      "Copy reference dispatch://CORE-1/ask/ask-2",
+      // The card's reference stands under the ask body, after its submit (INFRA-5702 R16).
       "Add a reason to send Request changes",
+      "Copy reference dispatch://CORE-1/ask/ask-2",
     ],
   ],
   // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
@@ -1569,27 +1567,13 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     mountNamed(
       "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
     ),
-    // The default is now the shared list's, from #3729: outside `NoTooltips` each repository,
-    // in a row of Details or not, is the list's badge, whose `title` says what it shows - the
-    // issue's own repository, that an inherited one is inherited or the project's default, and
-    // an empty one where no repository resolves - and no clear control is drawn. The badge's
-    // name ends in an ellipsis where its row is too narrow for it, so the badge's own `title`
-    // gives back the whole name with what it means; "No repository" draws none.
+    // Outside `NoTooltips` a row of Details draws `main`'s box, its clear control with it.
     [
-      "acme/api",
-      "acme/api",
-      "Inherited or the project's default",
-      "acme/web, inherited or the project's default",
-      "",
-      "acme/app",
-      "acme/app",
-      "Inherited or the project's default",
-      "acme/site, inherited or the project's default",
+      "Clear it, and the issue inherits a repository again",
+      "Clear it, and the issue inherits a repository again",
     ],
   ],
-  // The default is now the shared list's, from #3729: the badge of an issue with no repository
-  // carries an empty `title`.
-  [repoNothingResolved, [""]],
+  [repoNothingResolved, []],
   [componentsWithPicker, []],
   [componentPickerSaving, []],
   [
@@ -2139,6 +2123,7 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
+  "features/ask-body/AskBody.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
   "features/inbox/AskThread.tsx",
@@ -2757,41 +2742,53 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
 // Inside `NoTooltips` the repository's clear control carries no `title`: its name stays `main`'s,
 // and its description, in the page's mark, says what the `title` said, that the issue then
 // inherits a repository. A value that is not owner/name, written with Enter, draws `main`'s
-// refusal in the page's failed red, with the page's mark. Outside `NoTooltips` the repository is
-// the shared list (#3729), whose own behaviour `features/issue/RepoControl.test.tsx` holds.
+// refusal in the page's failed red, with the page's mark. Outside, the control keeps `main`'s
+// `title` and no description, and the refusal `main`'s red and no mark.
 test("inside NoTooltips the repository's clear control is described by what its title said, and a refusal is the page's failed red", async () => {
   const user = userEvent.setup();
   const clearExplains = "Clear it, and the issue inherits a repository again";
-  const view = draw(
-    <>
-      <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
-      <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
-    </>,
-    "inside"
-  );
-  try {
-    const scope = within(view.container);
-    const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
-    const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
-    expect(clear.getAttribute("title")).toBeNull();
-    expect(
-      scope.getByRole("button", {
-        description: clearExplains,
-        name: "Clear the repository of CORE-1",
-      })
-    ).toBe(clear);
-    expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
-
-    await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
-    const refusal = scope.getByRole("alert");
-    expect(refusal.textContent).toBe("Write the repository as owner/name.");
-    expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
-    expect(classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))).toEqual(
-      []
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <>
+        <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
+        <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
+      </>,
+      surface
     );
-    expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
-  } finally {
-    undraw(view);
+    try {
+      const scope = within(view.container);
+      const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+      const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
+      if (surface === "inside") {
+        expect(clear.getAttribute("title")).toBeNull();
+        expect(
+          scope.getByRole("button", {
+            description: clearExplains,
+            name: "Clear the repository of CORE-1",
+          })
+        ).toBe(clear);
+        expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+      } else {
+        expect(clear.getAttribute("title")).toBe(clearExplains);
+        expect(description).toBeNull();
+      }
+
+      await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
+      const refusal = scope.getByRole("alert");
+      expect(refusal.textContent).toBe("Write the repository as owner/name.");
+      if (surface === "inside") {
+        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
+        expect(
+          classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
+        ).toEqual([]);
+        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+      } else {
+        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
+        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
+      }
+    } finally {
+      undraw(view);
+    }
   }
 });
 

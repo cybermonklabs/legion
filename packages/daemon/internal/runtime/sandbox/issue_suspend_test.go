@@ -241,6 +241,7 @@ func issueSecrets(sandbox string) []string {
 // own Sandbox, whose labels name the issue and its tree: it asks authorize once, and where
 // authorize answers false it acts on nothing.
 func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.T) {
+	t.Parallel()
 	for _, end := range []struct {
 		name string
 		call func(*Runtime, context.Context, string, string, func(context.Context) (bool, error)) error

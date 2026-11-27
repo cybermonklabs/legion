@@ -1,28 +1,21 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
-import { NoTooltips } from "../issue-page/NoTooltips";
-import { ANSWER_LINES, CONTROL_LABELS } from "../issue-page/page-words";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import {
-  IssuePriorityLine,
-  PRIORITY_TRIGGER_AFTER_CHIP,
-  priorityTriggerName,
-} from "./IssuePriorityLine";
+import { IssuePriorityLine, PRIORITY_TRIGGER_AFTER_CHIP } from "./IssuePriorityLine";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -456,127 +449,3 @@ test("a closed issue reads its priorities and writes none of them", async () => 
     view.unmountAll();
   }
 });
-// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The issue header's priorities picker is such a list: its options are every live
-// priority, which grow with the priorities page. Opened, it holds a text box of its own, and a
-// word typed into it leaves only the priorities that match.
-test("the priorities picker holds a text box that narrows the priorities", async () => {
-  const user = userEvent.setup();
-  const view = renderLine([{ id: "evals-now", inherited: false }]);
-  try {
-    const before = new Set(textBoxes());
-    await user.click(view.trigger());
-    const listbox = await view.picker();
-    await waitFor(() =>
-      expect(within(listbox).queryAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1)
-    );
-    const own = textBoxes().filter((box) => !before.has(box));
-    expect(own, "the priorities picker holds no text box of its own").toHaveLength(1);
-    await user.type(own[0] as HTMLElement, "oss");
-    await waitFor(() =>
-      expect(
-        within(listbox).queryAllByRole("option", { name: /Evals collecting data now$/ }),
-        `"oss" leaves #1 in the priorities picker`
-      ).toHaveLength(0)
-    );
-    expect(
-      within(listbox).queryAllByRole("option", { name: /Rocq and Lean speed work restarted$/ }),
-      `"oss" leaves #2 in the priorities picker`
-    ).toHaveLength(0);
-    expect(within(listbox).getAllByRole("option", { name: /OSS Verify\b/ })).toHaveLength(1);
-  } finally {
-    view.unmountAll();
-  }
-});
-
-// Inside `NoTooltips` the picker's trigger stays held (`aria-disabled`) while its write and the
-// reads after it are out, and a press of it opens nothing. It says so in the page's words,
-// "Saving priorities…", in place of what it draws otherwise - "+" beside a priority, "Add a
-// priority" on an issue that advances none - as the labels' control says "Saving labels…", and
-// its name begins with those words (WCAG 2.5.3): "Saving priorities of CORE-9". Once what held it
-// is answered it draws its own words again, under its own name. A line beside a priority reads
-// the priorities again after the write, and that read is held; a line that advances none reads
-// them only while its picker is open, so its write itself is held.
-test.each([
-  ["advancing one", [{ id: "evals-now", inherited: false }], "+", "Edit priorities", "reread"],
-  ["advancing none", [], CONTROL_LABELS.add_priority, "Add a priority to CORE-9", "write"],
-] as const)(
-  "inside NoTooltips the held trigger of a line %s says it saves the priorities, and is named by those words",
-  async (_case, advances, drawn, name, held) => {
-    const user = userEvent.setup();
-    const answered = Promise.withResolvers<void>();
-    const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(body);
-    const patchIssue = answerIssuePatches().mockResolvedValue({} as never);
-    if (held === "reread") {
-      listPriorities.mockResolvedValueOnce(body).mockImplementationOnce(async () => {
-        await answered.promise;
-        return body;
-      });
-    } else {
-      patchIssue.mockImplementation(async () => {
-        await answered.promise;
-        return {} as never;
-      });
-    }
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const view = render(
-      <MemoryRouter>
-        <QueryClientProvider client={queryClient}>
-          <NoTooltips>
-            <IssuePriorityLine
-              disabled={false}
-              inRow
-              issue={{ advances: [...advances], advances_revision: REVISION, key: "CORE-9" }}
-            />
-          </NoTooltips>
-        </QueryClientProvider>
-      </MemoryRouter>
-    );
-    const q = within(view.container);
-    const savingName = priorityTriggerName("CORE-9", advances.length === 0, {
-      ANSWER_LINES,
-      CONTROL_LABELS,
-    });
-    /** The trigger by `named`, with what it draws and whether it is held. */
-    const read = (named: string) => {
-      const trigger = q.getByRole<HTMLButtonElement>("button", { name: named });
-      return {
-        ariaDisabled: trigger.getAttribute("aria-disabled"),
-        disabled: trigger.disabled,
-        text: trigger.textContent,
-      };
-    };
-    try {
-      expect(read(name)).toEqual({ ariaDisabled: null, disabled: false, text: drawn });
-      await user.click(q.getByRole("button", { name }));
-      const listbox = await screen.findByRole("listbox", { name: "Priorities options" });
-      await user.click(
-        await within(listbox).findByRole("option", {
-          name: "#2 Rocq and Lean speed work restarted",
-        })
-      );
-      await user.click(q.getByRole("button", { name }));
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      if (held === "reread") await waitFor(() => expect(listPriorities).toHaveBeenCalledTimes(2));
-
-      expect(savingName).toBe("Saving priorities of CORE-9");
-      await waitFor(() => expect(q.queryByRole("button", { name: savingName })).not.toBeNull());
-      expect(read(savingName)).toEqual({
-        ariaDisabled: "true",
-        disabled: false,
-        text: ANSWER_LINES.saving_priorities,
-      });
-      await user.click(q.getByRole("button", { name: savingName }));
-      expect(screen.queryAllByRole("listbox", { name: "Priorities options" })).toHaveLength(0);
-
-      await act(async () => answered.resolve());
-      await waitFor(() => expect(q.queryByRole("button", { name })).not.toBeNull());
-      expect(read(name)).toEqual({ ariaDisabled: null, disabled: false, text: drawn });
-    } finally {
-      view.unmount();
-      queryClient.clear();
-      listPriorities.mockRestore();
-      patchIssue.mockRestore();
-    }
-  }
-);

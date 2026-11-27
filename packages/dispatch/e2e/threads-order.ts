@@ -20,7 +20,6 @@ import {
   listComments,
   markThreadRead,
 } from "./api";
-import { displayChoice, openDisplayMenu } from "./filters";
 import { inboxPane } from "./inbox-pane";
 import { asSession, THREAD_SESSION } from "./inbox-threads";
 import { settledState } from "./settled";
@@ -214,10 +213,13 @@ export async function expand(card: Locator): Promise<void> {
  *  browser; every other surface reads the same choice. */
 export async function setThreadOrder(page: Page, value: "newest" | "oldest"): Promise<void> {
   if (!page.url().endsWith("/")) await page.goto("/");
-  const menu = await openDisplayMenu(page);
-  await displayChoice(menu, "Thread order", value).click();
-  // Shut again by its own trigger, so the portalled panel covers nothing the row drives next.
-  await page.getByRole("button", { exact: true, name: "View" }).click();
+  await page.locator("[data-inbox-view]").click();
+  const menu = page.getByRole("menu", { name: "View" });
+  await menu
+    .getByRole("group", { name: "Thread order" })
+    .locator(`[data-inbox-view-choice="${value}"]`)
+    .click();
+  await page.locator("[data-inbox-view]").click();
   await expect(menu).toHaveCount(0);
 }
 

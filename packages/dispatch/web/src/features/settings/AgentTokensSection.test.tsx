@@ -6,7 +6,6 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
-import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -556,24 +555,6 @@ test("a read-only token's row shows its scopes and offers no box to change them"
   }
 });
 
-// A token not revoked draws its Revoke, so the token table's box takes no Tab stop of its own
-// (`TableShell`'s `holdsControls`); a list of revoked tokens draws no control - their scope boxes
-// are disabled and no Revoke is offered - and its box keeps the browser's default.
-test("the token table's box takes tabindex -1 while a token is live, and none while every token is revoked", async () => {
-  let restore = renderMintForm([{ ...token, revoked_at: "2026-09-13T00:00:00Z" }]);
-  try {
-    const revoked = await screen.findByRole("table", { name: "Agent tokens" });
-    expect(within(revoked).getByText("Revoked")).toBeDefined();
-    expect(revoked.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
-    restore();
-    restore = renderMintForm([token]);
-    const revoke = await screen.findByRole("button", { name: "Revoke architect" });
-    expect(revoke.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
-  } finally {
-    restore();
-  }
-});
-
 // Settings offers Set P0, the scope a priority of 0 needs, only where Dispatch says the person at
 // the browser holds it: the section reads `GET /api/v1/whoami` and draws the box, on the mint form
 // and on the row of each token that writes, once its scopes name p0. While that read has not
@@ -1027,86 +1008,6 @@ test("a lost mint with several tokens made since the press lists them and revoke
     page.restore();
   }
 });
-
-// A token's scope box, its Revoke and New token are each held while their write is out, by
-// `aria-disabled`, never `disabled` (`pressHeld`): the control the reader pressed keeps the focus,
-// and a second press sends nothing.
-test.each([
-  { name: "Approve and control credentials (architect)", press: " ", role: "checkbox" },
-  { name: "Revoke architect", press: "{Enter}", role: "button" },
-  { name: "New token", press: "{Enter}", role: "button" },
-] as const)(
-  "$name, held while its write is out, keeps the focus, and a second press sends nothing",
-  async ({ name, press, role }) => {
-    const user = userEvent.setup();
-    const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([
-      { ...token, scopes: ["person"] },
-    ]);
-    // The writes' answer, held until the case refuses it inside `act`.
-    const answer = Promise.withResolvers<never>();
-    const writes = [
-      spyOn(api, "setAgentTokenScopes").mockReturnValue(answer.promise),
-      spyOn(api, "revokeAgentToken").mockReturnValue(answer.promise),
-      spyOn(api, "createAgentToken").mockReturnValue(answer.promise),
-    ];
-    const originalConfirm = window.confirm;
-    window.confirm = () => true;
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    try {
-      render(
-        <QueryClientProvider client={queryClient}>
-          <AgentTokensSection />
-        </QueryClientProvider>
-      );
-      await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
-      await user.click(screen.getByLabelText("Token label"));
-      await user.paste("reviewer");
-      await pressHeld(user, screen.getByRole(role, { name }), {
-        name,
-        press,
-        sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
-      });
-    } finally {
-      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
-      cleanup();
-      queryClient.clear();
-      window.confirm = originalConfirm;
-      listAgentTokens.mockRestore();
-      for (const write of writes) write.mockRestore();
-    }
-  }
-);
-
-// The lost mint's replace offer is held while its revoke, and the mint after it, are out, by
-// `aria-disabled`, never `disabled` (`pressHeld`): the button the reader pressed keeps the focus,
-// and a second press asks nothing and sends nothing.
-test.each([
-  { made: ["lost"], name: "Revoke it and mint another" },
-  { made: ["first", "second"], name: "Revoke the one created" },
-] as const)(
-  "$name, held while its revoke is out, keeps the focus, and a second press sends nothing",
-  async ({ made, name }) => {
-    const listed = made.map((id, index) => madeAt(id, "reviewer", 60_000 * (index + 1)));
-    const page = await mintLostWith(userEvent.setup(), [...listed, token], [true]);
-    // The revoke's answer, held until the case gives it inside `act`.
-    const revoked = Promise.withResolvers<void>();
-    page.revokeAgentToken.mockReturnValue(revoked.promise);
-
-    try {
-      const [pressed] = await screen.findAllByRole("button", { name: new RegExp(`^${name}`) });
-      if (pressed === undefined) throw new Error(`The section drew no ${name}`);
-      await pressHeld(page.user, pressed, {
-        name,
-        sent: () => page.revokeAgentToken.mock.calls.length,
-      });
-      expect(page.asked).toHaveLength(1);
-    } finally {
-      await act(async () => revoked.resolve());
-      page.restore();
-    }
-  }
-);
 
 // A lost mint's replacement holds what the lost token held, read included: a read-only token's
 // replacement is read only too, never a token that writes.

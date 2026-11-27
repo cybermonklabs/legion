@@ -5,13 +5,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
-import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { pickIn } from "../../__tests__/issue-picks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -37,11 +35,9 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
-import { AskAssignWritesProvider } from "./AssignToMe";
-import { SnoozeWrites } from "./ask-snooze-fixture";
+import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
-import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -277,23 +273,6 @@ function runtimeWith(
   };
 }
 
-/** The Inbox's hand-on writes over `children`, as the Inbox provides them to every card it draws
- *  (`useAskHandOnWrites`), with each set of asks whose hand-on is out handed to `onOut` as it
- *  changes. */
-function HandOnWrites({
-  children,
-  onOut,
-}: {
-  children: ReactNode;
-  onOut: (out: ReadonlySet<string>) => void;
-}): ReactNode {
-  const writes = useAskHandOnWrites();
-  useEffect(() => {
-    onOut(writes.out);
-  }, [onOut, writes.out]);
-  return <AskHandOnWritesContext value={writes}>{children}</AskHandOnWritesContext>;
-}
-
 function renderPane({
   ask,
   createEditor,
@@ -320,34 +299,24 @@ function renderPane({
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   seed(client);
   const answered: string[] = [];
-  /** Each set of asks whose snooze write was out, in order, as the list holding the writes saw
-   *  it. */
-  const snoozesOut: string[][] = [];
-  const recordOut = (out: ReadonlySet<string>) => {
-    snoozesOut.push([...out]);
-  };
-  /** Each set of asks whose hand-on was out, in order, as the list holding the writes saw it. */
-  const handOnsOut: string[][] = [];
-  const recordHandOnsOut = (out: ReadonlySet<string>) => {
-    handOnsOut.push([...out]);
-  };
+  /** Every registration the head's Snooze made, in order: `[askId, live]`. */
+  const snoozeLiveness: (readonly [string, boolean])[] = [];
+  /** Every registration a card's hand-on made, in order: `[askId, live]`. */
+  const handOnLiveness: (readonly [string, boolean])[] = [];
   const tree = (row: InboxRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
-            <HandOnWrites onOut={recordHandOnsOut}>
-              <SnoozeWrites onOut={recordOut}>
-                {/* The head reads the Inbox's Assign to me of its ask (`ReadingPaneHead`). */}
-                <AskAssignWritesProvider>
-                  <ReadingPane
-                    onAnswered={(id) => answered.push(id)}
-                    row={{ ask: row, kind: "ask" }}
-                    viewer="alice"
-                  />
-                </AskAssignWritesProvider>
-              </SnoozeWrites>
-            </HandOnWrites>
+            <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
+              <ReadingPane
+                onAnswered={(id) => answered.push(id)}
+                onAssignWrite={() => {}}
+                onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
+                row={{ ask: row, kind: "ask" }}
+                viewer="alice"
+              />
+            </AskHandOnLiveContext>
           </MarginProvider>
         </DocumentRuntime.Provider>
       </QueryClientProvider>
@@ -357,11 +326,11 @@ function renderPane({
   return {
     answered,
     client,
-    handOnsOut,
+    handOnLiveness,
     opened,
     rerender: (row: InboxRow) => view.rerender(tree(row)),
     runtime: fake,
-    snoozesOut,
+    snoozeLiveness,
     view,
   };
 }
@@ -1074,19 +1043,20 @@ test("a question in no document is today's card", async () => {
   }
 });
 
-test("the head's Snooze writes through the list's snooze writes, so the list keeps the row the column is on", async () => {
+test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
   const held = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
-  const { snoozesOut, view } = renderPane({ ask: issueAsk() });
+  const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
 
   try {
-    const snooze = await screen.findByLabelText("Snooze CORE-1: Which approach?");
-    await pickIn(user, () => snooze, "Tomorrow");
-    // The optimistic snooze folds the row into Later and the column follows the list, so the
-    // head goes with the row it wrote about. The list holds the write, and keeps the row while
-    // the write is out.
-    await waitFor(() => expect(snoozesOut.at(-1)).toEqual(["ask-a"]));
+    await user.selectOptions(
+      await screen.findByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    // The optimistic snooze folds the row into Later and the column follows the list, so a
+    // head that kept its write to itself would be unmounted with the row it wrote about.
+    await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
   } finally {
     held.resolve({ snoozed_until: "2026-10-31T09:00:00Z" });
     view.unmount();
@@ -1094,7 +1064,7 @@ test("the head's Snooze writes through the list's snooze writes, so the list kee
   }
 });
 
-test("the column's card hands on through the list's hand-on writes, so the list keeps the row the column is on", async () => {
+test("the column's card registers its hand-on, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
   // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
   const row = issueAsk({
@@ -1108,18 +1078,16 @@ test("the column's card hands on through the list's hand-on writes, so the list 
     { login: "alice" },
     { login: "bob" },
   ]);
-  const { handOnsOut, view } = renderPane({ ask: row });
+  const { handOnLiveness, view } = renderPane({ ask: row });
 
   try {
-    // The list of people is portalled onto the body, so its option is reached from the screen.
-    await user.click(await screen.findByLabelText("Hand this question to"));
-    await user.click(await screen.findByRole("option", { name: /^bob\b/ }));
+    await user.selectOptions(await screen.findByLabelText("Hand this question to"), "bob");
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
-    // The control sits in the card, not in the head, so the write reaches the list through the
-    // context the Inbox provides rather than through a prop of this column's: the optimistic
-    // `waiting_on_person` takes the row out of that list as the write starts, and the list
-    // holds the write, and keeps the row while it is out.
-    await waitFor(() => expect(handOnsOut.at(-1)).toEqual(["ask-a"]));
+    // The control sits in the card, not in the head, so the registration reaches the list
+    // through the context the Inbox provides rather than through a prop of this column's: the
+    // optimistic `waiting_on_person` takes the row out of that list as the write starts, and
+    // the card that wrote is the only surface a refusal is shown on.
+    await waitFor(() => expect(handOnLiveness).toEqual([["ask-a", true]]));
   } finally {
     held.resolve({ ...row, asked_of: null, waiting_on_person: "bob" });
     view.unmount();
@@ -1146,7 +1114,7 @@ test("a project document's head names the project and the document, and opens it
   try {
     expect(await screen.findByText("CORE · Design notes")).toBeDefined();
     // Neither applies to a project document: it has no priority and nobody is assigned to it.
-    expect(screen.queryByRole("button", { name: /^Priority of / })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     runtime.sync();
@@ -1869,6 +1837,8 @@ function renderThread(
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
+              onAssignWrite={() => {}}
+              onSnoozeLive={() => {}}
               row={{ kind: "thread", thread: row }}
               viewer="alice"
             />

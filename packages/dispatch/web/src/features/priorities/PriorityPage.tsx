@@ -8,11 +8,9 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
-import { addressPath, copyAddress } from "../../lib/page-address";
 import { card, linkHoverText, linkText, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
-import { buildProjectPath } from "../refs/routes";
 import { useKeymapScope } from "../shell/keymap";
 import { FIELD_CHIP, HEADING_BOX, InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
@@ -279,10 +277,7 @@ function PriorityShown({
                   <Link
                     className={`mr-3 ${linkText} ${linkHoverText}`}
                     key={project}
-                    to={addressPath(
-                      buildProjectPath({ kind: "issues", project }),
-                      selectIssues(copyAddress(), keys, title)
-                    )}
+                    to={`/projects/${project}/issues?${selectIssues(new URLSearchParams(), keys, title)}`}
                   >
                     Open in {project}
                   </Link>

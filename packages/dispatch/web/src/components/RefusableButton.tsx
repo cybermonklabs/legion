@@ -38,10 +38,8 @@ const PAGE_LOOKS: Record<keyof typeof LOOKS, string> = {
  * click on a refused button does nothing, a submit button's included, so the refusal holds
  * whatever the host's handler checks; a form's other ways to submit (Ctrl/Cmd+Enter) remain the
  * host's to refuse. A host that keeps its line blank until a person tries takes that press as
- * `onRefusedPress`. `busy` - a press already in flight, which its label names - holds the button
- * the same way, by `heldPress`'s rule (`held-press.ts`): `aria-disabled`, never `disabled`, so the
- * button the reader pressed keeps the focus, and a press of it does nothing, a submit button's
- * included. A busy press is no refused one: `onRefusedPress` does not hear it.
+ * `onRefusedPress`. Only `busy` - a press already in flight, which its label names - disables it
+ * outright.
  */
 export function RefusableButton({
   busy,
@@ -55,8 +53,7 @@ export function RefusableButton({
   refusalShownBy,
   type = "button",
 }: {
-  /** The label while a press is in flight, which holds the button: `aria-disabled`, and a press
-   *  that does nothing. */
+  /** The label while a press is in flight; the one state that renders `disabled`. */
   readonly busy?: string;
   readonly children: ReactNode;
   /** Placement only: the button's look, refused or not, is this component's. */
@@ -81,13 +78,10 @@ export function RefusableButton({
     <>
       <button
         aria-describedby={description === "" ? undefined : description}
-        aria-disabled={refusal === null && busy === undefined ? undefined : true}
+        aria-disabled={refusal === null ? undefined : true}
         className={`${(tooltips ? LOOKS : PAGE_LOOKS)[look]} ${className}`}
+        disabled={busy !== undefined}
         onClick={(event) => {
-          if (busy !== undefined) {
-            event.preventDefault();
-            return;
-          }
           if (refusal !== null) {
             event.preventDefault();
             onRefusedPress?.();
@@ -108,3 +102,6 @@ export function RefusableButton({
     </>
   );
 }
+
+// The page's looks, which the decision card's own buttons draw too (`DecisionCard.tsx`'s `TONES`).
+export { PAGE_LOOKS };

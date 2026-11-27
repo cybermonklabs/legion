@@ -253,6 +253,11 @@ func recordedContractAtOrBelow(n int) int {
 // controller's, below that entry's number (entryNumber(replacesContract)). They follow strip too,
 // and placedByPod places the caller of a registration that carries the key by its pod.
 //
+// The agent actions' row takes off `phaseNotRestarted`, the one key the claim start entry
+// (contract_20261127094305_claim-start.go) added to the controller's agent actions' answer, below
+// that entry's number (entryNumber(claimStartContract)). It follows strip, and placedByPod places
+// the caller of an answer that carries the key by its pod.
+//
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in, the one row of the numbered entries' stand-ins (standIns). A
 // settings key no reader types is owed neither a stand-in nor a band, whatever a contract did to
@@ -329,6 +334,15 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			registration.Replaces = ""
 		}
 		return registration, took
+	case AnswerAgentAction:
+		action, isAction := body.(AgentActionResponse)
+		if !isAction {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(claimStartContract) {
+			action.PhaseNotRestarted = ""
+		}
+		return action, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
 		// contract describes a shape for them (writeUnparsedAnswer).
@@ -1126,8 +1140,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with its own change's number, and answers.go's SupportedContracts names the constant rather
-// than its number for that reason.
+// with dispatch://INFRA-4401's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const repositoriesLiveContract = 202
 
 // cachesSourceContract is the daemon contract dispatch://INFRA-4036 landed under (version.go's
@@ -1407,6 +1421,21 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 		issue.Assignments[i].Plan = ""
 	}
 	return issue, true
+}
+
+// withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added to
+// the state; nothing else of that contract is a key of this route. `repo` is left as it is: it
+// names the repository the issue works, which every contract since 31 carries. Each pair is
+// written from one value of the record, a correction (record.Issue.RepoCorrection) or a change
+// still to be made (record.Issue.RepoChange), and only where there is one, so the band reports a
+// move only for an issue that carries one of the four.
+func withoutRepositoryCorrection(issue Issue) (Issue, bool) {
+	moved := issue.RepoBefore != "" || issue.RepoCorrectedAt != nil ||
+		issue.RepoChangePending != "" || issue.RepoChangeReason != ""
+	issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+	issue.RepoChangePending, issue.RepoChangeReason = "", ""
+	return issue, moved
 }
 
 // withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
@@ -2310,9 +2339,10 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records, for a refusal whose body is a
-// PauseFailure or a PlanRefusal, and for a registration, a role's or the controller's, that
-// carries `replaces`, and false for every other answer. Those answers' shapes moved at
-// pauseContract, at OwnerPlanContract and at the replaces entry, and their writers answer from no
+// PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that
+// carries `replaces`, and for an agent action's answer that carries `phaseNotRestarted`, and false
+// for every other answer. Those answers' shapes moved at pauseContract, at OwnerPlanContract, at
+// the replaces entry and at the claim start entry, and their writers answer from no
 // snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
 // that replaces no session is the same body at every contract, so it reads none. Every other
 // answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
@@ -2337,6 +2367,9 @@ func placedByPod(id AnswerID, body any) bool {
 	case AnswerRegisterController:
 		registration, isRegistration := body.(ControllerRegisterResponse)
 		return isRegistration && registration.Replaces != ""
+	case AnswerAgentAction:
+		action, isAction := body.(AgentActionResponse)
+		return isAction && action.PhaseNotRestarted != ""
 	default:
 		return false
 	}

@@ -1,6 +1,6 @@
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createIssue, createProject, editArtifact, getArtifact, getIssueArtifactText } from "./api";
-import { documentEditor, openSpec, pickVersion } from "./editor";
+import { documentEditor, openSpec } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -91,7 +91,7 @@ test("an email address written into a spec is a mailto link in the editor and in
 
     // The past version renders the same links through the read-only view, which opens one on a
     // plain click.
-    await pickVersion(page, written);
+    await page.getByRole("combobox", { name: "Version" }).selectOption(String(written));
     const versionView = page.getByTestId("version-view");
     const first = versionView.getByRole("link", { name: "first@b.test" });
     await expect(first).toHaveAttribute("href", "mailto:first@b.test");

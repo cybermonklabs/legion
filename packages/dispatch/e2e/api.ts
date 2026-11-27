@@ -418,6 +418,12 @@ export function getIssueDecisions(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/legion`: the issue's Legion state as the sampler recorded the daemon
+ *  of its project, which Dashboard's track and agents part draw from. */
+export function getIssueLegion(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/legion", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
@@ -636,6 +642,16 @@ export function markThreadRead(threadId: string, readThrough: string, options: A
     { body: { read_through: readThrough }, params: { id: threadId } },
     options
   );
+}
+
+/** `POST /api/v1/me/inbox/read`: the Inbox's **Mark all read** - mark every unread thread the
+ *  list route answers under the same narrowing whose newest write is at or before
+ *  `body.read_through`. Answers how many threads it marked. */
+export function markInboxRead(
+  body: Body<"/api/v1/me/inbox/read", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/me/inbox/read", { body }, options);
 }
 
 /** `PUT /api/v1/me/asks/{id}/snooze`: the caller's own snooze on an Inbox row, until

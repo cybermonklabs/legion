@@ -118,7 +118,7 @@ export async function phase<T>(
  *  opening to put the focus on a row of it (`expectOpeningLanded`), so a row that leaves the
  *  focus for the page after this (`focusThePage`, `unfoldEveryBranch`) leaves it for good. */
 export async function openIssue(page: Page, key: string): Promise<void> {
-  await page.goto(`/issues/${key}`);
+  await page.goto(`/issues/${key}/conversation`);
   await expectIssuePageDrawn(page);
   await expectOpeningLanded(page);
 }
@@ -294,8 +294,8 @@ const SEED_DRAWN_MS = 30_000;
  * questions, decisions, results and blocks arrive after it, and the batched names last
  * (`useIssueTree.ts`), so a reading taken as soon as the tree exists may find a row, or a chip's
  * name, not drawn yet. The needs chip of `t2` draws nothing until the names have come
- * (`NodeRow.tsx`'s `NodeReference`), so it stands for them. Each poll first opens every branch a
- * fold left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
+ * (`NodeRow.tsx`'s `Chip`), so it stands for them. Each poll first opens every branch a fold
+ * left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
  */
 export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void> {
   const ids = [
@@ -1016,7 +1016,7 @@ export function longWords(lead: string, count: number): string {
   return paragraphs.join("\n\n");
 }
 
-/** The node id of block `block` of the document `slug` (`tree-drafts.ts`'s `blockNodeId`). */
+/** The node id of block `block` of the document `slug` (`statement-rules.ts`'s `blockNodeId`). */
 export function blockNode(slug: string, block: string): string {
   return `${slug}#b-${block}`;
 }

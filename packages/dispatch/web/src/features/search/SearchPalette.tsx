@@ -1,6 +1,6 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -14,20 +14,8 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
-import type {
-  GoingContextInput,
-  GoingLine,
-  Project,
-  SearchOperator,
-  SearchResult,
-} from "../../api/types";
-import { ControlRow } from "../../components/ControlRow";
-import { filterChips } from "../../components/filter-chips";
-import { MultiSelect } from "../../components/MultiSelect";
-import { PanelTrigger } from "../../components/PanelTrigger";
+import type { GoingContextInput, GoingLine, Project, SearchResult } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { SearchBox } from "../../components/SearchBox";
-import { useNestedPanels } from "../../components/useNestedPanels";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop50,
@@ -36,7 +24,6 @@ import {
   card,
   dangerText,
   expandedButtonAccent,
-  inputClasses,
   kbdHint,
   searchHitBg,
   searchHitText,
@@ -77,7 +64,7 @@ import {
 } from "../going/RunControls";
 import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
-import { issueStatuses, statusText } from "../project/board-model";
+import { statusText } from "../project/board-model";
 import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
@@ -104,13 +91,9 @@ import { dropFiling, fileLineWords, filingParent, useBarOpen, useFiling } from "
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
+import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
-import {
-  type SearchBarFilters,
-  type SearchFilterName,
-  searchFilterChips,
-  searchRequest,
-} from "./search-filters";
+import { type SearchBarFilters, searchFilterChips, searchRequest } from "./search-filters";
 import {
   groupResults,
   hitIsItsIssue,
@@ -142,6 +125,7 @@ const CONTINUE_OPTION_ID = "search-option-continue";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
 const RECENT_GROUP_ID = "search-group-recent";
+const FILTERS_PANEL_ID = "search-filters-panel";
 
 /** How recent a conversation is for the bar to offer "Continue" on it as it opens (design v3,
  *  Keys): the last hour. */
@@ -839,172 +823,6 @@ function CommandGroup({
   );
 }
 
-/** What a chip removed puts back, under the name `searchFilterChips` gives it. */
-const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
-  author: { author: undefined },
-  project: { project: undefined },
-  status: { status: undefined },
-  updatedSince: { updatedSince: undefined },
-};
-
-/** The two lists the panel opens inside itself, which `useNestedPanels` keeps one open at a time,
- *  as the Delivery page's facets are. */
-type FilterListName = "project" | "status";
-
-/**
- * The Filters button at the box's right and the panel it opens (design v3, state 1), which hold
- * the four narrowings the bar offers and the search syntax help, and show nowhere else: a
- * project, an issue status, an author and the day since which the item was last written, then
- * the three operator forms the words can use, each marked where the query uses it
- * (`SearchOperators`). The button says how many narrowings are on (`Filters · 2`), and "/" in the
- * empty box opens it, which is why the bar holds it open or shut (`open`). Each narrowing is a
- * control in the panel while it is unset and a chip in the bar's control row once the person has
- * chosen, and pressing that chip drops that narrowing alone and brings its control back.
- *
- * The project and the status are each picked from the shared list's single-pick mode
- * (`MultiSelect`), a text box over the options that narrows them. Its `option` rows join neither
- * the rows this dialog's arrows walk nor the hits a reader is told there are: the list is
- * portalled to the body (`AnchoredPanel`), outside the dialog. A pick takes its control out of
- * the panel, and the panel hands the focus to the control now at its place (`PanelTrigger`).
- *
- * The author is typed rather than picked: an item's author is a person's login or a session id,
- * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
- * half-typed login never searches. The box keeps what was typed while the panel is shut, so a
- * reader who opens it again finds their half-typed login where they left it.
- *
- * The Project list is drawn from the bar's one read of the projects, which can still be out or
- * have failed when the panel opens: it says which, as the Agents composer's Issue list does,
- * rather than call an unread list empty.
- */
-function SearchNarrowing({
-  count,
-  filters,
-  onFilters,
-  onOpenChange,
-  open,
-  operators,
-  projects,
-}: {
-  /** How many narrowings are on. */
-  count: number;
-  filters: SearchBarFilters;
-  onFilters: (filters: SearchBarFilters) => void;
-  onOpenChange: (open: boolean) => void;
-  open: boolean;
-  /** The operator forms the answer read the query as using. */
-  operators: readonly SearchOperator[];
-  projects: UseQueryResult<Project[]>;
-}): ReactNode {
-  const projectList = projects.data ?? emptyProjects;
-  const filterList = useNestedPanels<FilterListName>(open);
-  const [author, setAuthor] = useState("");
-  const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
-  const takeAuthor = () => {
-    const typed = author.trim();
-    if (typed !== "") {
-      setAuthor("");
-      set({ author: typed });
-    }
-  };
-
-  return (
-    <PanelTrigger
-      align="right"
-      count={count === 0 ? undefined : count}
-      label="Filters"
-      onOpenChange={(next) => {
-        // Shutting the panel is leaving the author box as much as moving off it is: a press
-        // outside takes the box away with the panel, before it could lose focus on its own.
-        if (!next) takeAuthor();
-        onOpenChange(next);
-      }}
-      open={open}
-      stacked
-      // Held down while the panel shows, as History is while it shows.
-      triggerClassName={`${secondaryButtonCompact} ${expandedButtonAccent}`}
-    >
-      {() => (
-        <>
-          {filters.project === undefined ? (
-            <MultiSelect
-              {...filterList("project")}
-              emptyMessage={
-                projects.isPending
-                  ? "Loading projects…"
-                  : projects.isError || projectList.length > 0
-                    ? "No project matches that."
-                    : "No projects yet"
-              }
-              error={projects.isError ? "Could not load projects." : null}
-              label="Project"
-              mode="single"
-              onPick={(project) => set({ project })}
-              options={projectList.map((project) => project.key)}
-              searchLabel="Search projects"
-            />
-          ) : null}
-          {filters.status === undefined ? (
-            <MultiSelect
-              {...filterList("status")}
-              emptyMessage="No status matches that."
-              label="Status"
-              mode="single"
-              onPick={(status) => set({ status })}
-              optionLabel={statusText}
-              options={issueStatuses}
-              searchLabel="Search statuses"
-            />
-          ) : null}
-          {filters.author === undefined ? (
-            <SearchBox
-              className="w-full"
-              label="Author"
-              onBlur={takeAuthor}
-              onChange={setAuthor}
-              onKeyDown={(event) => {
-                // An Enter that ends or moves an input method's composition is the composition's
-                // (`inputMethodKey`).
-                if (event.key === "Enter" && !inputMethodKey(event.nativeEvent)) {
-                  event.preventDefault();
-                  takeAuthor();
-                }
-              }}
-              placeholder="Author"
-              value={author}
-            />
-          ) : null}
-          {/* The date box carries its words on screen: a browser draws an empty one as its own
-              date format and nothing else, so without them a reader cannot tell what the box
-              narrows. */}
-          {filters.updatedSince === undefined ? (
-            <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              Updated since
-              <input
-                className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-                onChange={(event) => {
-                  // A date the reader types is taken once its year is whole: an engine reports a
-                  // valid date from the year's first digit (Chromium reads `2` as the year 0002),
-                  // and taking that would narrow to a year the reader is still typing and draw
-                  // the box away from under their next keys. The box holds no `value` of its
-                  // own: React puts a controlled empty value back after every change it hands
-                  // here, so Chromium's date would be emptied at each digit before its year is
-                  // whole.
-                  const { value } = event.target;
-                  if (Number(value.slice(0, 4)) >= 1000) {
-                    set({ updatedSince: value });
-                  }
-                }}
-                type="date"
-              />
-            </label>
-          ) : null}
-          <SearchOperators inUse={operators} />
-        </>
-      )}
-    </PanelTrigger>
-  );
-}
-
 export function SearchPalette({
   onClose,
   open,
@@ -1177,9 +995,7 @@ function PaletteDialog({
   // this one. The page's project rides with them, under the parameter that narrows nothing,
   // and it is the chip's project at every level because every level sits in one project.
   const narrowed = searchRequest(filters, scope.targets.project);
-  // What is on, in the words the person chose it in: one chip of the control row for each
-  // narrowing, and the control of that narrowing stays out of the panel while its chip is up.
-  const narrowings = searchFilterChips(filters);
+  const filterCount = searchFilterChips(filters).length;
   // The one search the list reads, in two tiers the hook answers as one. Everything below -
   // the hits, the operators the query was read as and the message under the list - reads this
   // one answer, so the list, what it says about itself and the highlight all speak of one
@@ -1645,26 +1461,26 @@ function PaletteDialog({
   });
   // The box, one element in every state of the bar, so the person's focus and words stay in it as
   // the bar turns from the search into the conversation and back. Before Enter it is the combobox
-  // of the list under it; as a conversation it is a plain text box. It is the shared search box
-  // (`SearchBox`), bare, since its frame draws the border: the frame holds the context chip on
-  // its left and, before Enter, the Filters button on its right; each keeps its place, empty
-  // where it does not show, so the input is the same element throughout. It takes words past the
-  // search's limit, which the bar names under the list rather than cutting them.
+  // of the list under it; as a conversation it is a plain text box. Its frame holds the context
+  // chip on its left and, before Enter, the Filters button on its right; each keeps its place,
+  // empty where it does not show, so the input is the same element throughout.
+  const listParts = talking
+    ? {}
+    : {
+        "aria-activedescendant": activeRow?.id,
+        "aria-controls": "search-results",
+        "aria-expanded": rows.length > 0,
+        role: "combobox",
+      };
   const box = (
     <BoxFrame chip={scope.chip} chipTitle={scope.chipTitle}>
-      <SearchBox
-        bare
+      <input
+        {...listParts}
+        aria-label={talking ? "Ask the command bar" : "Search"}
         className={boxInputClassName}
-        combobox={
-          talking
-            ? undefined
-            : { activeId: activeRow?.id, controls: "search-results", expanded: rows.length > 0 }
-        }
         data-testid="bar-box"
-        label={talking ? "Ask the command bar" : "Search"}
-        maxLength={null}
-        onChange={(value) => {
-          setQuery(value);
+        onChange={(event) => {
+          setQuery(event.target.value);
           // A new query is a new list, so the highlight is undecided again and the first
           // hits to answer it take the head.
           setActive({ hits: "", id: null, left: false });
@@ -1682,15 +1498,17 @@ function PaletteDialog({
         value={query}
       />
       {talking ? null : (
-        <SearchNarrowing
-          count={narrowings.length}
-          filters={filters}
-          onFilters={setFilters}
-          onOpenChange={setFiltersOpen}
-          open={filtersOpen}
-          operators={operators}
-          projects={projects}
-        />
+        <button
+          aria-controls={FILTERS_PANEL_ID}
+          aria-expanded={filtersOpen}
+          // Pressed while the filters show, as History is pressed while it shows.
+          className={`${secondaryButtonCompact} ${expandedButtonAccent}`}
+          data-testid="search-filters-button"
+          onClick={() => setFiltersOpen((shown) => !shown)}
+          type="button"
+        >
+          {filterCount === 0 ? "Filters" : `Filters · ${filterCount}`}
+        </button>
       )}
     </BoxFrame>
   );
@@ -1761,30 +1579,10 @@ function PaletteDialog({
           <div
             className={`shrink-0 p-3 ${history ? "hidden" : ""} ${talking ? "border-t" : "border-b"} ${borderDefault}`}
           >
-            {/* The bar's one row of controls (`ControlRow`): the box, with the Filters button
-                at its right before Enter, and under it a chip for each narrowing that is on. The
-                row stands in every state of the bar, so the box in it stays the same element. */}
-            <ControlRow
-              chips={
-                talking
-                  ? undefined
-                  : filterChips(
-                      narrowings.map(({ label, name }) => ({
-                        key: name,
-                        label,
-                        remove: () => setFilters({ ...filters, ...FILTER_REMOVALS[name] }),
-                      }))
-                    )
-              }
-              search={
-                <div className="min-w-0 flex-1">
-                  <BoxRow
-                    box={box}
-                    hint={talking ? boxHint(asking, query) : undefined}
-                    onStop={asking.stop}
-                  />
-                </div>
-              }
+            <BoxRow
+              box={box}
+              hint={talking ? boxHint(asking, query) : undefined}
+              onStop={asking.stop}
             />
             {refusal === undefined ? null : (
               <p className={`mt-2 text-xs ${dangerText}`} role="alert">
@@ -1794,6 +1592,23 @@ function PaletteDialog({
           </div>
           {talking || history ? null : (
             <div className="flex min-h-0 flex-col overflow-y-auto" ref={searchPartsRef}>
+              {/* What narrows the search and what the words themselves can do, behind the
+                  Filters button: the chips the reader has added with the controls for the rest,
+                  and the three operator forms. */}
+              {filtersOpen ? (
+                <div
+                  className={`shrink-0 border-b ${borderDefault}`}
+                  data-testid="search-filters-panel"
+                  id={FILTERS_PANEL_ID}
+                >
+                  <SearchFilterBar
+                    filters={filters}
+                    onFilters={setFilters}
+                    projects={projects.data ?? emptyProjects}
+                  />
+                  <SearchOperators inUse={operators} />
+                </div>
+              ) : null}
               {/* On a Dispatch with no answering model, the one sentence that says so, in the
                   line on top's place (design v3, state 13); search works as usual. */}
               {answersOff && queryEnabled ? (
@@ -1819,11 +1634,11 @@ function PaletteDialog({
               )}
               {rows.length === 0 ? null : (
                 // The list takes the room its column leaves it once the parts above it (the
-                // no-model line, the answer card) and under it are drawn, which ends where the
-                // frame clips, and keeps one row's height (5rem) where that room is less: there
-                // the column scrolls, and the arrows' scroll into view brings the row into the
-                // column's view as well as the list's, so a window that holds the box and one row
-                // shows the row the reader is on whole, whatever stands above the list.
+                // Filters panel, the no-model line, the answer card) and under it are drawn, which
+                // ends where the frame clips, and keeps one row's height (5rem) where that room is
+                // less: there the column scrolls, and the arrows' scroll into view brings the row
+                // into the column's view as well as the list's, so a window that holds the box and
+                // one row shows the row the reader is on whole, whatever stands above the list.
                 <div
                   className="max-h-[60vh] min-h-20 flex-1 overflow-y-auto"
                   id="search-results"

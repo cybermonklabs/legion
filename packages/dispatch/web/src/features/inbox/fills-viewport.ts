@@ -1,6 +1,7 @@
-import { useNavigationState, usePageAddress } from "../../lib/page-address";
+import { useLocation } from "react-router-dom";
+
+import { parseInboxSearch } from "../refs/routes";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
-import { parseInboxSearch } from "./inbox-route";
 import { inboxEntryState } from "./pane-selection";
 
 /**
@@ -14,8 +15,7 @@ import { inboxEntryState } from "./pane-selection";
  */
 export function useInboxFillsViewport(): boolean {
   const wide = useMediaQuery(READING_PANE_QUERY);
-  const { search } = usePageAddress();
-  const state = useNavigationState();
+  const { search, state } = useLocation();
   return (
     wide ||
     (parseInboxSearch(search).item !== undefined &&

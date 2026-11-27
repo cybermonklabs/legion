@@ -13,9 +13,8 @@ import { matchPath } from "react-router-dom";
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
-import { addressPath } from "../../lib/page-address";
-import { agentsAddress } from "../agents/agent-search";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
+import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
   type BlockTarget,
   blockFragment,
@@ -37,6 +36,7 @@ export type IssueRoute =
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
+  | { key: string; kind: "dashboard" }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -96,8 +96,7 @@ export type PagedReferenceRoute = Exclude<DispatchReferenceRoute, { kind: "perso
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
  * `unassigned` - because a person's email is not a word this page invented, so it rides in
- * `InboxRoute.assignees` rather than in that type's `filters` (`features/inbox/inbox-route.ts`,
- * which holds the Inbox's address grammar; these are the words it reads and writes).
+ * `InboxRoute.assignees` rather than in `filters` below.
  */
 export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
 export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
@@ -127,26 +126,41 @@ export type InboxShow = (typeof INBOX_SHOWS)[number];
  *  priority, a thread with no urgency, a row belonging to no project. */
 export const NO_FILTER_VALUE = "none";
 
-/** The values the priority, urgency and type fields offer, in the order the control lists
- *  them. */
+/** The values each filter field offers, in the order the control lists them. A project key is
+ *  whatever the workspace holds, so that field takes any non-empty word and `none`. */
 export const INBOX_PRIORITY_VALUES = ["P0", "P1", "P2", "P3", NO_FILTER_VALUE] as const;
 export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const;
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
 
-/** Each filter field's vocabulary, the one table both the address and the Filter panel read:
- *  the words the address keeps for the field (`features/inbox/inbox-route.ts` drops any other,
- *  which would match no row), and the values the field's control lists, in that order. `project`
- *  has none, because a project key is whatever somebody created: the address keeps any
- *  non-empty word, and the control lists the keys its rows carry and then `none`. */
-export const INBOX_FILTER_VOCABULARY: Readonly<
-  Record<InboxFilterField, readonly string[] | undefined>
-> = {
-  priority: INBOX_PRIORITY_VALUES,
-  project: undefined,
-  type: INBOX_TYPE_VALUES,
-  urgency: INBOX_URGENCY_VALUES,
-};
-
+/** The Inbox at `/`, optionally narrowed to one agent's asks (`?agent=<session id>`); with
+ *  `section=needs-you` only the asks waiting on the viewer are shown. Every field below is
+ *  absent while it holds its default, so a plain `/` is the Inbox as it opens. */
+export interface InboxRoute {
+  agent?: string;
+  /** The row the Inbox has selected, the one its reading pane shows: an ask's id, or a thread's
+   *  `reply:<thread id>` / `agent:<message id>` (`rowId`, `features/inbox/list-row.ts`). The
+   *  address is the whole memory of that selection, so a link carries the reader's place. */
+  item?: string;
+  section?: "needs-you";
+  /** The text the Inbox's search box narrows the list by, as typed. It is a field of the route
+   *  rather than a search parameter of its own because `buildInboxPath` rebuilds the whole query
+   *  string from this type and `usePaneSelection` navigates with it on every selection change, so
+   *  a parameter outside the type would be dropped by the next `j`. */
+  q?: string;
+  /** Who the listed asks are for. Absent is the page's default, the reader's own work; an empty
+   *  array is the cleared filter, every question; a value is a person's lowercase email or the
+   *  literal `unassigned`. */
+  assignees?: readonly string[];
+  /** `?show=dismissed`, the View menu's **Show** switch on **Dismissed**: what the reader has
+   *  dismissed out of their Inbox, newest dismissal first. Absent is the Inbox itself, every
+   *  undismissed row, read or not. */
+  show?: "dismissed";
+  sort?: InboxSort;
+  group?: InboxGroupBy;
+  /** The chosen values of each filter field, one comma list per field in the address. A field
+   *  with nothing chosen is absent, never an empty array. */
+  filters?: Partial<Record<InboxFilterField, readonly string[]>>;
+}
 export type IssueTab =
   | "spec"
   | "verification"
@@ -157,6 +171,7 @@ export type IssueTab =
   | "artifacts"
   | "activity"
   | "decisions"
+  | "dashboard"
   | "collaborators";
 
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
@@ -262,6 +277,9 @@ export function issueTabForRoute(
   }
   if (route.kind === "decisions") {
     return "decisions";
+  }
+  if (route.kind === "dashboard") {
+    return "dashboard";
   }
   if (route.kind === "artifact") {
     return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
@@ -491,6 +509,12 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "decisions") {
     return { key, kind: "decisions" };
   }
+  // Dashboard's tab is a page of the web alone, out of `PLAIN_ISSUE_TABS`: its path opens the tab,
+  // and no reader of text reads `dispatch://<KEY>/dashboard` or this path as a reference
+  // (`pageRoutes`), as the server's `text` reads neither.
+  if (target === "dashboard") {
+    return { key, kind: "dashboard" };
+  }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
@@ -567,11 +591,25 @@ export function buildMachinePath(host: string): string {
   return `/machines/${encodeURIComponent(host)}`;
 }
 
+/** The `?machine=` the Agents page filters on, named once here so the page reading it
+ *  (`useAgentMachine`) and the links building it cannot drift apart. */
+export const AGENTS_MACHINE_PARAM = "machine";
+
+/** The `?role=` the Agents page narrows to, the page a `dispatch://role/<token>` reference
+ *  opens (`buildReferencePath`), named here beside the filter it stands with. */
+export const AGENTS_ROLE_PARAM = "role";
+
 /** The `?component=` the Architecture pane holds its selected component in, the page a
  *  `dispatch://<PROJECT>/component/<id>` reference opens (`buildReferencePath`), named once
  *  here so the pane reading it (`features/architecture/ArchitecturePage.tsx`) and the link
  *  building it cannot drift apart. */
 export const ARCHITECTURE_COMPONENT_PARAM = "component";
+
+/** The Agents page narrowed to one machine, `/agents?machine=<host>`: the link a machine's own
+ *  page sends a reader to its sessions by. */
+export function buildAgentsMachinePath(host: string): string {
+  return `/agents?${new URLSearchParams({ [AGENTS_MACHINE_PARAM]: host })}`;
+}
 
 /** The machine `/machines/<machine>` names, its segment percent-decoded as every other segment
  *  is (`decodedSegment`); `undefined` for any other path and for a segment naming nothing. */
@@ -654,6 +692,10 @@ function pageRoutes(
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
   }
+  // Dashboard's path names nothing in text, as the server's `text` reads it (`parseIssuePath`).
+  if (route.kind === "dashboard") {
+    return undefined;
+  }
   // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
   // whatever its fragment, as the server's `text` and the agent client read the page.
   if (route.kind === "decisions") {
@@ -730,6 +772,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   // verification, plan, steps, activity, children, artifacts, collaborators and the
   // conversation's `log` - were references the server refused to read.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
+    return issue;
+  }
+  // Dashboard's tab is the issue, as every other tab is, though no reference names the tab.
+  if (route.kind === "dashboard") {
     return issue;
   }
   if (route.kind === "decisions") {
@@ -970,6 +1016,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} log`;
     case "decisions":
       return `${route.key} decisions`;
+    case "dashboard":
+      return `${route.key} dashboard`;
     case "artifact":
       return `${route.key} ${route.slug}${block}`;
     case "ask":
@@ -1062,22 +1110,13 @@ export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string
   switch (route.kind) {
     case "agent-artifact": {
       const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
-      // The version a document opens at is the document's own parameter, which R5 leaves as it
-      // is rather than moving into `lib/page-address.ts`.
       return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
     }
     case "agent-session":
       return `/agents/${encodeURIComponent(route.session)}/live`;
     case "role":
-      // The Agents page narrowed to the role, written by that page's own address grammar
-      // (`agentsAddress`), so the link is the address its role picker writes. A role token is
-      // `[a-z0-9-]+` (`roleTokenOnlyPattern`), which that grammar carries whole at any length:
-      // a token the reference grammar reads never reaches the plain page, which is here only
-      // because `agentsAddress` answers `null` for a list it cannot carry.
-      return agentsAddress({ roles: [route.role] }) ?? "/agents";
+      return `/agents?${new URLSearchParams({ [AGENTS_ROLE_PARAM]: route.role })}`;
     case "component": {
-      // The Architecture page is outside the six directories whose addresses R5 moves into
-      // `lib/page-address.ts`, so its `?component=` is built here as that page reads it.
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
       return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
     }
@@ -1126,6 +1165,9 @@ export function buildIssuePath(route: IssueRoute): string {
   if (route.kind === "decisions") {
     return `${issue}/decisions`;
   }
+  if (route.kind === "dashboard") {
+    return `${issue}/dashboard`;
+  }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;
     return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
@@ -1154,7 +1196,138 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.item !== undefined) {
     query.set(route.item.kind, route.item.id);
   }
-  return addressPath(document, query);
+  const search = query.toString();
+  return search === "" ? document : `${document}?${search}`;
+}
+
+/** The values a filter field accepts, or undefined for the one field whose vocabulary is the
+ *  workspace's own: a project key is whatever somebody created, so only `none` is reserved. */
+function filterVocabulary(field: InboxFilterField): readonly string[] | undefined {
+  if (field === "priority") return INBOX_PRIORITY_VALUES;
+  if (field === "urgency") return INBOX_URGENCY_VALUES;
+  return field === "type" ? INBOX_TYPE_VALUES : undefined;
+}
+
+/**
+ * The page's `?assignee=` deliberately spells its default the opposite way round from the
+ * server's own `?assignee=` on `GET /api/v1/inbox`
+ * (`packages/envoy/internal/dispatch/api/inbox.go`), where an absent parameter means everybody:
+ * here absent means the reader alone and `assignee=everyone` means everybody, so the same name
+ * now means different things on the two sides and neither reads the other's URL.
+ *
+ * Every other field is absent while it holds its default, so the Inbox as it opens is `/` and a
+ * link says only what the reader changed. A value this build does not know - an older link, a
+ * typo - is dropped rather than refused: the list is a client-side split of what the two reads
+ * answered, so an unknown word would match no row anyway.
+ */
+export function parseInboxSearch(search: string): InboxRoute {
+  const params = new URLSearchParams(search);
+  const agent = params.get("agent");
+  const route: InboxRoute = {};
+  if (agent !== null && agent !== "") {
+    route.agent = agent;
+  }
+  const item = params.get("item")?.trim() ?? "";
+  if (item !== "") {
+    route.item = item;
+  }
+  if (params.get("section") === "needs-you") {
+    route.section = "needs-you";
+  }
+  // Neither trimmed nor cut: a reader mid-word has a trailing space that is part of what they
+  // typed, and the box rewrites no address a link arrived with.
+  const q = params.get("q");
+  if (q !== null && q !== "") {
+    route.q = q;
+  }
+  // Nothing refuses an email the page has never heard of: the filter is a client-side split of
+  // one inbox response, so an unlisted or misspelled person simply matches no row.
+  const assignees: string[] = [];
+  let everyone = false;
+  for (const raw of params.getAll("assignee")) {
+    const value = raw.trim().toLowerCase();
+    if (value === "") continue;
+    if (value === EVERYONE_FILTER_VALUE) {
+      everyone = true;
+      continue;
+    }
+    if (!assignees.includes(value)) assignees.push(value);
+  }
+  if (assignees.length > 0 || everyone) {
+    route.assignees = assignees;
+  }
+  if (params.get("show") === "dismissed") {
+    route.show = "dismissed";
+  }
+  const sort = params.get("sort");
+  if (sort !== null && sort !== "newest" && (INBOX_SORTS as readonly string[]).includes(sort)) {
+    route.sort = sort as InboxSort;
+  }
+  const group = params.get("group");
+  if (
+    group !== null &&
+    group !== "priority" &&
+    (INBOX_GROUP_BYS as readonly string[]).includes(group)
+  ) {
+    route.group = group as InboxGroupBy;
+  }
+  const filters: Partial<Record<InboxFilterField, readonly string[]>> = {};
+  for (const field of INBOX_FILTER_FIELDS) {
+    const vocabulary = filterVocabulary(field);
+    const chosen: string[] = [];
+    for (const raw of params.getAll(field)) {
+      for (const part of raw.split(",")) {
+        const value = part.trim();
+        if (value === "" || chosen.includes(value)) continue;
+        if (vocabulary !== undefined && !vocabulary.includes(value)) continue;
+        chosen.push(value);
+      }
+    }
+    if (chosen.length > 0) filters[field] = chosen;
+  }
+  if (Object.keys(filters).length > 0) {
+    route.filters = filters;
+  }
+  return route;
+}
+
+export function buildInboxPath(route: InboxRoute = {}): string {
+  const query = new URLSearchParams();
+  if (route.agent !== undefined) {
+    query.set("agent", route.agent);
+  }
+  if (route.item !== undefined) {
+    query.set("item", route.item);
+  }
+  if (route.section !== undefined) {
+    query.set("section", route.section);
+  }
+  if (route.q !== undefined) {
+    query.set("q", route.q);
+  }
+  if (route.assignees !== undefined) {
+    if (route.assignees.length === 0) {
+      query.append("assignee", EVERYONE_FILTER_VALUE);
+    }
+    for (const assignee of route.assignees) {
+      query.append("assignee", assignee);
+    }
+  }
+  if (route.show !== undefined) {
+    query.set("show", route.show);
+  }
+  if (route.sort !== undefined && route.sort !== "newest") {
+    query.set("sort", route.sort);
+  }
+  if (route.group !== undefined && route.group !== "priority") {
+    query.set("group", route.group);
+  }
+  for (const field of INBOX_FILTER_FIELDS) {
+    const chosen = route.filters?.[field];
+    if (chosen !== undefined && chosen.length > 0) query.set(field, chosen.join(","));
+  }
+  const search = query.toString();
+  return search === "" ? "/" : `/?${search}`;
 }
 
 /**

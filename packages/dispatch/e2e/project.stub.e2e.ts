@@ -17,7 +17,7 @@ import {
   createProjectDocument,
   patchIssue,
 } from "./api";
-import { chooseDisplay, filterPicker, openFilterPanel, pickFilterOption } from "./filters";
+import { filterPicker, pickFilterOption } from "./filters";
 import { stubbed } from "./stub/stub-test";
 import { assertPageFits } from "./unclipped";
 
@@ -103,11 +103,8 @@ phoneTest(
     await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
     await expectTouchTarget(filterPicker(page, "Status"));
     await expectTouchTarget(filterPicker(page, "Labels"));
-    // Needs you and Unread are chips in the panel the row's one **Filters** trigger opens.
-    const flags = await openFilterPanel(page);
-    await expectTouchTarget(flags.getByRole("button", { exact: true, name: "Needs you" }));
-    await expectTouchTarget(flags.getByRole("button", { name: "Unread" }));
-    await page.keyboard.press("Escape");
+    await expectTouchTarget(page.getByRole("button", { exact: true, name: "Needs you" }));
+    await expectTouchTarget(page.getByRole("button", { name: "Unread" }));
     await filterPicker(page, "Status").click();
     await expectTouchTarget(page.getByRole("option", { name: /^Todo,/ }));
     await page.keyboard.press("Escape");
@@ -178,8 +175,9 @@ referencesTest(
     await expect(references).not.toContainText("depth");
     await expect(page.getByText("more references beyond 8 hops")).toHaveCount(0);
     const tabs = page.getByRole("main").getByRole("tab");
-    await expect(tabs).toHaveCount(10);
+    await expect(tabs).toHaveCount(11);
     for (const [index, name] of [
+      "Dashboard",
       "Spec",
       "Verification",
       "Plan",
@@ -227,8 +225,7 @@ bandsTest(
     await expect(shippedLink).toHaveCount(0);
     await pickFilterOption(page, "Status", "Done");
     await expect(shippedLink).toBeVisible();
-    await chooseDisplay(page, "Group by", "status");
-    await page.keyboard.press("Escape");
+    await page.getByRole("combobox", { name: "Group by" }).selectOption("status");
     const done = page.getByRole("button", { name: /Done.*1 issue/ });
     await done.click();
     await expect(shippedLink).toHaveCount(0);

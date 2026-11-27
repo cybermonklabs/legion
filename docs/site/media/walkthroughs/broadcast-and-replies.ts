@@ -3,7 +3,6 @@
 // narration line was written to its measured clip and starts at the cue it names.
 import type { Page } from "@playwright/test";
 
-import { listOf, listTrigger } from "../../../../packages/dispatch/e2e/filters";
 import { sessionIds } from "../../../../packages/dispatch/e2e/session-ids";
 import { type DispatchWorkspace, dispatchApi, expect, seedDispatchWorkspace } from "../harness";
 import { linger, pointTo, type Walkthrough } from "../recording";
@@ -102,23 +101,11 @@ const broadcastAndReplies: Walkthrough<Seeded> = {
         }
       },
       act: async (page, _seeded, cue) => {
-        // The line names the page as it opens, and the filter as the pointer sets it: the row's
-        // one Filter, named with how many narrowings are on, opens the panel that holds the
-        // machine control.
+        // The line names the page as it opens, and the filter as the pointer sets it.
         await linger(page, 0.3);
-        const filter = page.getByRole("button", { name: /^Filter · \d+$/ });
-        await pointTo(page, filter);
-        await filter.click();
-        const machine = page.getByRole("button", { name: "Filter by machine" });
+        const machine = page.getByRole("combobox", { name: "Machine" });
         await pointTo(page, machine);
-        await machine.click();
-        const host = page.getByRole("option", { exact: true, name: "build-host" });
-        await pointTo(page, host);
-        await host.click();
-        // Escape closes the machine's list, then the panel, and the list under them shows.
-        await page.keyboard.press("Escape");
-        await page.keyboard.press("Escape");
-        await expect(filter).toHaveText("Filter · 1");
+        await machine.selectOption("build-host");
         const matching = page.getByText("3 matching", { exact: true });
         await expect(matching).toBeVisible();
         // The pointer goes to the filter's count of agents, then to the select-all box as the
@@ -132,16 +119,10 @@ const broadcastAndReplies: Walkthrough<Seeded> = {
         cue("select");
         await expect(page.getByText("3 of 3 matching selected", { exact: true })).toBeVisible();
         const composer = page.getByRole("region", { name: "Broadcast" });
-        // The mode is the shared list's single pick: its trigger opens the list, and Send is the
-        // steer option in it.
-        const mode = listTrigger(composer, "Delivery mode");
+        const mode = composer.getByRole("combobox", { name: "Delivery mode" });
         await linger(page, 1.65);
         await pointTo(page, mode);
-        await mode.click();
-        const steer = listOf(mode).getByRole("option", { exact: true, name: "Send" });
-        await pointTo(page, steer);
-        await steer.click();
-        await expect(mode).toHaveAccessibleName("Delivery mode Send");
+        await mode.selectOption("steer");
         cue("mode");
         await linger(page, 1.6);
         const message = composer.getByRole("textbox", { name: "Broadcast message" });

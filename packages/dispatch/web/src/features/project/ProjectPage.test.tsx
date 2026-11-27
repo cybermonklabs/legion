@@ -227,28 +227,6 @@ test("the bare project path opens on Architecture when the project has sources, 
   }
 });
 
-test("the bare project path with a query opens on Architecture without it when the project has sources", async () => {
-  const page = renderPage(
-    "/projects/CORE?label=frontend&q=core",
-    undefined,
-    "alice",
-    [],
-    [coreSource]
-  );
-  try {
-    // The filter parameters are the Issues tab's; the Architecture tab carries no query.
-    await waitFor(() =>
-      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/architecture")
-    );
-    expect(screen.getByRole("tab", { name: "Architecture" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-  } finally {
-    page.restore();
-  }
-});
-
 test("the bare project path opens on Issues with the filter parameters forwarded when there is no source, and the tab is absent", async () => {
   const page = renderPage("/projects/CORE?label=frontend&q=core");
   try {
@@ -277,6 +255,35 @@ test("any other failure of the source lookup is shown, never silently turned int
     expect(screen.queryByRole("tab", { name: "Issues" })).not.toBeInTheDocument();
   } finally {
     page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: on Issues, the Architecture tab exists only
+// once the source read says there is a source, so Navigation says the read is still out, or that
+// it failed and can be retried, rather than gaining a tab from a read the reader never saw.
+test("on Issues, Navigation says the source read is pending, or failed with a Retry that brings the Architecture tab", async () => {
+  const user = userEvent.setup();
+  const pending = renderPage("/projects/CORE/issues", undefined, "alice", [], "pending");
+  try {
+    expect(await screen.findByText("Checking for an architecture…")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+  } finally {
+    pending.restore();
+  }
+
+  const failed = renderPage("/projects/CORE/issues", undefined, "alice", [], new ApiError(500, {}));
+  try {
+    const alert = await screen.findByText(/^Could not check for an architecture\./);
+    expect(alert).toHaveAttribute("role", "alert");
+    failed.listProjectArchitectureSources.mockResolvedValue([coreSource]);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("tab", { name: "Architecture" })).toBeInTheDocument();
+    expect(screen.queryByText("Could not check for an architecture.")).not.toBeInTheDocument();
+  } finally {
+    failed.restore();
   }
 });
 
@@ -487,7 +494,7 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
   }
 });
 
-test("List table and Board control row share the URL's status, labels and search", async () => {
+test("List table and Board strip share the URL's status, labels and search", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
@@ -497,7 +504,7 @@ test("List table and Board control row share the URL's status, labels and search
     expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Board" }));
-    expect(await screen.findByRole("button", { name: "Filters · 2" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "List" }));
@@ -510,7 +517,7 @@ test("List table and Board control row share the URL's status, labels and search
   }
 });
 
-test("typing v in the control row's search input never toggles the view", async () => {
+test("typing v in the strip's search input never toggles the view", async () => {
   const user = userEvent.setup();
   const viewKey = "dispatch.project.issue-view:alice";
   const page = renderPage("/projects/CORE?label=frontend");

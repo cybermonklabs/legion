@@ -10,7 +10,6 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
-import { listTrigger, pickFromList } from "./filters";
 import { handTo } from "./hand-on";
 import { inboxList, inboxPane, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -108,15 +107,14 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
       })
       .toBe(true);
 
-    // Two taps answer it: the option, then Answer. The note disclosure stays shut - a reader who
-    // picks an option is done - and nothing else is pressed.
+    // Two taps answer it: the option, then Answer. The answer box stands in place and keeps
+    // nothing the reader did not type - a reader who picks an option is done - and nothing else
+    // is pressed.
     const card = block.locator("article[data-testid^=ask-]");
-    const disclosure = card.getByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
-    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    const answerBox = card.locator("[data-ask-answer]");
+    await expect(answerBox).toHaveValue("");
     await card.getByRole("radio", { exact: true, name: "Ledger first" }).click();
-    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    await expect(answerBox).toHaveValue("");
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
 
     // The answered row leaves the list and the Inbox read behind it, and the next row is shown.
@@ -348,9 +346,7 @@ test("an options-only answer the server refuses keeps its question in the column
   }
 });
 
-test("Enter opens the selected decision block's note field and puts the focus in it", async ({
-  browser,
-}) => {
+test("Enter puts the focus in the selected decision block's answer field", async ({ browser }) => {
   const seed = await seedInbox();
   const alice = await asUser(browser, "alice");
   try {
@@ -362,18 +358,16 @@ test("Enter opens the selected decision block's note field and puts the focus in
     const card = pane
       .locator(`[data-dispatch-ask-block="${DECISION_BLOCK}"]`)
       .locator("article[data-testid^=ask-]");
-    const disclosure = card.getByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
-    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    const answerBox = card.locator("[data-ask-answer]");
+    await expect(answerBox).toBeVisible();
+    await expect(answerBox).not.toBeFocused();
 
-    // One Enter, the key the Inbox offers for answering the selected question: the note field
-    // opens AND the reader is in it. A field that opens without the focus leaves every later
+    // One Enter, the key the Inbox offers for answering the selected question: the reader is in
+    // the answer field, which stands in place. A field without the focus leaves every later
     // keystroke to the Inbox's own keys - `j` walks the list while the reader believes they are
     // writing an answer.
     await page.keyboard.press("Enter");
-    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    await expect(card.locator("[data-ask-answer]")).toBeFocused();
+    await expect(answerBox).toBeFocused();
 
     // What the reader types then reaches the answer, and the selection stays where it was.
     await page.keyboard.type("Ledger first, for the lease.");
@@ -413,11 +407,11 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     const reads = logReads(page, inboxRead);
     await page.goto(INBOX);
     await selectRow(page, ask.id);
-    const picker = listTrigger(page, `Priority of ${issue.key}`);
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
+    const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
 
-    await pickFromList(picker, "P1");
-    await expect.poll(() => shown.values.at(-1)).toBe("P1");
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A rename of the issue, straight to the server: its live event has the Inbox read the
@@ -432,10 +426,10 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     expectReadWhileHeld(reads, held, renamedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "P1",
+      "1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
+    await expect(picker).toHaveValue("1");
   } finally {
     await alice.close();
   }
@@ -675,12 +669,7 @@ test("on a phone the reading view answers a decision block, steps and approves a
 
     // A question's card in the view hands it on, as the card in its row did.
     await selectRow(page, seed.plainAskId);
-    await handTo(
-      pane
-        .locator(`[data-ask-hand-on="${seed.plainAskId}"]`)
-        .getByRole("button", { name: "Hand this question to" }),
-      "bob"
-    );
+    await handTo(pane.locator(`select[data-ask-hand-on="${seed.plainAskId}"]`), "bob");
     await expect
       .poll(async () => (await getAsk(seed.plainAskId, { login: "alice" })).ask.waiting_on_person)
       .toBe("bob");

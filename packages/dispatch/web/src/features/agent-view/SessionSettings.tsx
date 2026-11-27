@@ -65,9 +65,9 @@ function choice(value: string, selected: string | undefined, testId: string): Re
 }
 
 /**
- * A header picker's choice: its change switches the live session, so the select keeps a
- * keyboard-step rule of its own (`markKeyStep` below). The select's own keys only move its
- * choice, so a keyboard reader can pass one model to reach the next; `Enter` picks
+ * A header picker's choice: its change switches the live session, so the rule is the one the
+ * Agents issue picker keeps (`markKeyStep` in `AgentMessageComposer.tsx`). The select's own keys
+ * only move its choice, so a keyboard reader can pass one model to reach the next; `Enter` picks
  * the choice reached (and stops there); a pick made with the pointer or in the native popup picks
  * at once; and leaving the select without picking, or the session reporting a new value, puts it
  * back on `reported`. Once not being stepped the select shows the reported value alone, a pick
@@ -189,10 +189,10 @@ export function SessionSettings({
  * What the latest switch is doing, and why a session shows less than the pickers: each on a
  * line of its own under the row the pickers sit in (INFRA-812, R6).
  *
- * Under the row rather than in it, because the row holds the seven parts R6 names and scrolls
- * sideways at a phone width: a line of prose inside that scroller is a flex item like any
- * other, shrinks to a sliver beside the pickers and stacks a word per line, which made the row
- * taller than the transcript on a 390 px screen and pushed the message box under the keyboard.
+ * Under the row rather than in it, because the row holds the seven parts R6 names and its facts
+ * wrap as groups: a status sentence inside the row would be one more flex item among the
+ * pickers, which shrinks to a sliver beside them and stacks a word per line, and on a 390 px
+ * screen made the row taller than the transcript and pushed the message box under the keyboard.
  * A line under the row is read where it always was, at any width.
  *
  * Where the line quotes the session's reply, a stored message, the reply is drawn by the

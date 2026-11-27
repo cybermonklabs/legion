@@ -1,7 +1,7 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -24,7 +24,6 @@ import {
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
-import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -144,70 +143,6 @@ test("the change form opens with the caret in its field", async () => {
     ).toBe(field);
   } finally {
     unmount();
-  }
-});
-
-// A keyboard reader who presses Keep stays on it while the Keep is out: Keep is held
-// (`heldPress`, `aria-disabled`), never disabled, which would drop the focus to the page's body in
-// a browser and does here under `emulateChromiumFocusFixup`, and a second press keeps nothing more. The
-// controls are drawn with no row around them, so the focus stays the control's own: in the tree
-// the press hands it to the decision's row (`keepFocusOnRow`).
-test("Keep keeps the focus while its Keep is out, held rather than disabled, and a second press keeps nothing", async () => {
-  // Dispatch never answers the Keep.
-  const keepDecision = spyOn(api, "keepDecision").mockImplementation(
-    () => new Promise<never>(() => {})
-  );
-  const user = userEvent.setup();
-  const { unmount } = renderActions();
-  const stopFocusFixup = emulateChromiumFocusFixup();
-  try {
-    const keep = await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision });
-    act(() => keep.focus());
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(keepDecision).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(keep).toHaveAttribute("aria-disabled", "true"));
-    expect(keep).toBeEnabled();
-    expect(keep, "Keep dropped the focus while its Keep was out").toHaveFocus();
-    await user.keyboard("{Enter}");
-    await user.click(keep);
-    expect(keepDecision, "a second press of Keep kept the decision again").toHaveBeenCalledTimes(1);
-  } finally {
-    stopFocusFixup();
-    unmount();
-    keepDecision.mockRestore();
-  }
-});
-
-// The same for Send change, the form's submit button: while the send reads the decisions document
-// and while the comment is out it is held, never disabled, so the focus the press gave it is still
-// on it once the comment is out, and a second press - Enter on it, or a click - submits nothing:
-// no second read of the document and no second comment.
-test("Send change keeps the focus while its change is out, held rather than disabled, and a second press sends nothing", async () => {
-  // Dispatch never answers the send.
-  const createComment = spyOn(api, "createComment").mockImplementation(
-    () => new Promise<never>(() => {})
-  );
-  const user = userEvent.setup();
-  const { text, unmount } = renderActions();
-  const stopFocusFixup = emulateChromiumFocusFixup();
-  try {
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
-    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
-    const send = screen.getByRole("button", { name: CONTROL_LABELS.send_change });
-    act(() => send.focus());
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(send).toHaveAttribute("aria-disabled", "true"));
-    expect(send).toBeEnabled();
-    expect(send, "Send change dropped the focus while its change was out").toHaveFocus();
-    await user.keyboard("{Enter}");
-    await user.click(send);
-    expect(text, "a second press read the decisions document again").toHaveBeenCalledTimes(1);
-    expect(createComment, "a second press sent the change again").toHaveBeenCalledTimes(1);
-  } finally {
-    stopFocusFixup();
-    unmount();
-    createComment.mockRestore();
   }
 });
 
@@ -513,11 +448,6 @@ const OWN: Decision = {
   text: "## Draw it once\n\nDraw it once.",
 };
 
-/** The decisions document that holds `ABOVE` and `OWN`, below its title and `intro`. */
-function twoDecisionsText(intro: string): string {
-  return `# Decisions of CORE-1\n\n${intro}\n\n${ABOVE.text}\n\n${OWN.text}`;
-}
-
 /** The 409 Dispatch answers a comment whose anchor quote stands in `places` places of the
  *  document and whose occurrence names none of them: `TARGET_AMBIGUOUS` with each place, as
  *  `writeAmbiguousTarget` writes `pmdoc.ErrTargetAmbiguous` (`api/handler_errors.go`). */
@@ -532,77 +462,6 @@ function ambiguousQuote(quote: string, places: number): ApiError {
     error: `"${quote}" matches ${places} places; pass a zero-based occurrence, or quote more of the surrounding text`,
   });
 }
-
-// Decision 92: two decisions can open with the same sentence, and Dispatch refuses a quote that
-// matches more than one place unless the write names which. A Change names its own decision's
-// place: here the quote also stands, earlier, in the decision above it, so it is the second.
-test("a Change names which place of the quote is its decision's own", async () => {
-  const createComment = spyOn(api, "createComment").mockImplementation(
-    () => new Promise<never>(() => {})
-  );
-  const user = userEvent.setup();
-  const { unmount } = renderActions(
-    { ...read, decisions: [ABOVE, OWN] },
-    twoDecisionsText("The decisions this issue made.")
-  );
-  try {
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
-    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
-    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
-    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    expect(createComment.mock.calls[0]?.[1]?.anchor).toEqual({
-      artifact: document_.id,
-      occurrence: 1,
-      quote: "Draw it once.",
-    });
-  } finally {
-    unmount();
-    createComment.mockRestore();
-  }
-});
-
-// Decision 92 as amended: the server counts a quote's places over the whole decisions document,
-// so the send reads the document's text once, when the reader sends, and counts over its reading
-// (`markdown_tree`), never over the decisions read alone. Here the document's intro, which no
-// decision holds, quotes the decision too, so its own place is the third: a count over the
-// decisions read says the second, and a send with no reading names none. A refusal Dispatch
-// still makes is drawn in the page's words, the draft kept.
-test("a Change's send reads the decisions document once and counts its quote's places over it", async () => {
-  const createComment = spyOn(api, "createComment").mockRejectedValue(
-    ambiguousQuote("Draw it once.", 3)
-  );
-  const user = userEvent.setup();
-  const { text, unmount } = renderActions(
-    { ...read, decisions: [ABOVE, OWN] },
-    twoDecisionsText("Draw it once. That is the rule of every decision below.")
-  );
-  try {
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
-    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
-    expect(
-      text,
-      "the document's text was read before the reader sent the Change"
-    ).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
-    const alert = await screen.findByRole("alert");
-    expect(text, "the send read the document's text other than once").toHaveBeenCalledTimes(1);
-    expect(text).toHaveBeenCalledWith(document_.id);
-    expect(createComment).toHaveBeenCalledTimes(1);
-    expect(
-      createComment.mock.calls[0]?.[1]?.anchor,
-      "the Change's place was not counted over the decisions document's reading"
-    ).toEqual({ artifact: document_.id, occurrence: 2, quote: "Draw it once." });
-    expect(alert.textContent).toBe(ANSWER_LINES.change_not_sent);
-    expect(document.body.textContent, "the row draws the server's own words").not.toContain(
-      "occurrence"
-    );
-    const field = screen.getByLabelText(CONTROL_LABELS.your_change);
-    expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Say where.");
-  } finally {
-    unmount();
-    createComment.mockRestore();
-  }
-});
 
 // With no reading of the document - its text read failed - the Change names no place: Dispatch
 // takes it where the quote stands once, and refuses it where the quote stands more than once,

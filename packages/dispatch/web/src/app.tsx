@@ -34,7 +34,6 @@ import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
-import { buildInboxPath } from "./features/inbox/inbox-route";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -62,6 +61,7 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
+  buildInboxPath,
   buildPersonPath,
   buildProjectPath,
   liveViewSessionOf,
@@ -560,10 +560,12 @@ function ShellProviders({
  * The signed-in frame, in three named groups in this order:
  *
  * - **Navigation**: below the compact width, a top bar - the title, the Inbox count or Peek, the
- *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, with the
- *   navigation itself in a drawer the reader opens with Menu. From the compact width up it is
- *   the sidebar, or the rail the reader collapses it to; the issue frame draws its icon rail
- *   from the `md` width instead and opens the same drawer from it.
+ *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, and inside
+ *   that row one count at a time, each whole, where it is still too narrow; Menu is its own item
+ *   at the right, in reach however the counts wrap. The navigation itself is in a drawer the
+ *   reader opens with Menu. From the compact width up it is the sidebar, or the rail the reader
+ *   collapses it to; the issue frame draws its icon rail from the `md` width instead and opens
+ *   the same drawer from it.
  * - **Main**: the page (`<main>`).
  * - **Margin**: the details column, which the reader collapses or resizes (`MarginColumn`).
  *
@@ -997,12 +999,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // One count on one control: the work waiting on the reader and the threads they have not
   // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
   // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
-  // from this bar stays beside it, without the count it used to carry. Until every read the
-  // count adds up has answered (`useInboxCount`) the control is drawn without a number.
-  const counted = inboxCount !== undefined && inboxCount !== 0;
-  const inboxLabel = counted ? `Inbox ${inboxCount}` : "Inbox";
+  // from this bar stays beside it, without the count it used to carry.
+  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
   const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-    counted ? `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}` : railHoverBg
+    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
   }`;
 
   return (
@@ -1060,37 +1060,37 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
             ref={shellBarRef}
           >
-            {/* The title never shrinks and no count breaks its own words: the counts that do not
-                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {routeIsInbox(location.pathname) ? (
-                <span className={inboxBadgeClass}>{inboxLabel}</span>
-              ) : (
-                <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
+              <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
+                {routeIsInbox(location.pathname) ? (
+                  <span className={inboxBadgeClass}>{inboxLabel}</span>
+                ) : (
+                  <>
+                    <button
+                      aria-label="Peek at the inbox without leaving this page"
+                      className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                      onClick={() => setInboxDrawerOpen(true)}
+                      type="button"
+                    >
+                      Peek
+                    </button>
+                    <Link className={inboxBadgeClass} to="/">
+                      {inboxLabel}
+                    </Link>
+                  </>
+                )}
+                {unreadReplies === 0 ? null : (
+                  <Link
+                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                    to="/agents"
                   >
-                    Peek
-                  </button>
-                  <Link className={inboxBadgeClass} to="/">
-                    {inboxLabel}
+                    {unreadRepliesLabel(unreadReplies)}
                   </Link>
-                </>
-              )}
-              {unreadReplies === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to="/agents"
-                >
-                  {unreadRepliesLabel(unreadReplies)}
-                </Link>
-              )}
+                )}
+              </span>
             </div>
             <button
               aria-expanded={navigationOpen}

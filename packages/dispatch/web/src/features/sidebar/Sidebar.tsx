@@ -99,10 +99,16 @@ function PinnedAgentRow({
   );
 }
 
-/** One rail entry: a key, its title, and the open-ask count when there is one. */
+/** One rail entry. Its groups, in this order: Name (the label and its detail, one item) and Count
+ *  (the open-ask count, when there is one). A pinned issue or a project reads its key with its
+ *  title beside it, the title wrapping inside the Name item; a page of the app (`detailUnder`)
+ *  reads its name with the description on a line of its own under it, so a description never
+ *  stands as a second column that wraps into three lines beside a one-word name. Name shrinks and
+ *  wraps inside itself, so Count keeps its place beside it. */
 function RailRow({
   badge,
   detail,
+  detailUnder = false,
   label,
   onNavigate,
   selected,
@@ -110,6 +116,7 @@ function RailRow({
 }: {
   badge: number | undefined;
   detail: string;
+  detailUnder?: boolean;
   label: string;
   onNavigate: (() => void) | undefined;
   selected: boolean;
@@ -127,8 +134,27 @@ function RailRow({
         onClick={onNavigate}
         to={to}
       >
-        <span className="shrink-0 font-medium whitespace-nowrap">{label}</span>
-        <span className={`min-w-0 flex-1 ${railSecondaryText}`}>{detail}</span>
+        <span
+          className={
+            detailUnder
+              ? "flex min-w-0 flex-1 flex-col"
+              : "flex min-w-0 flex-1 items-baseline gap-2"
+          }
+        >
+          {detailUnder ? (
+            <>
+              <span className="font-medium">{label}</span>
+              <span className={`text-xs font-normal ${railSecondaryText}`}>{detail}</span>
+            </>
+          ) : (
+            <>
+              <span className="shrink-0 font-medium whitespace-nowrap">{label}</span>
+              <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${railSecondaryText}`}>
+                {detail}
+              </span>
+            </>
+          )}
+        </span>
         {badge === undefined ? null : (
           <span
             className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs ${railBadgeBg} ${railBadgeText}`}
@@ -141,6 +167,16 @@ function RailRow({
   );
 }
 
+/**
+ * The navigation, in the sidebar or the phone's drawer. Its groups, top to bottom, each a section
+ * of its own: the hide control; Inbox (the Inbox link with its count, then Peek, on one line);
+ * Agents (the Agents link with its new replies, then the fold beside it, on one line, and the
+ * pinned agents under them while the fold is open); Pages (Priorities, Delivery and Pipeline, each
+ * a `RailRow` with its description under its name); Pinned (one `RailRow` per pinned issue, while
+ * any is pinned); Projects (one `RailRow` per project); and Settings. Each line keeps its count
+ * and its control at its right; its name shrinks and wraps inside it, so nothing scrolls sideways
+ * at the sidebar's width.
+ */
 export function Sidebar({
   onHide,
   onNavigate,
@@ -172,7 +208,6 @@ export function Sidebar({
       : prioritySummary.work_under_no_priority.count + prioritySummary.priority_work_parked.count;
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
-  // None until every read it adds up has answered, so the link is drawn without it meanwhile.
   const inboxCount = useInboxCount();
   const agentState = useQuery(userAgentStateQuery()).data;
   const unreadReplies = totalUnreadReplies(agentState);
@@ -229,7 +264,7 @@ export function Sidebar({
             to="/"
           >
             <span>Inbox</span>
-            {inboxCount === undefined || inboxCount === 0 ? null : (
+            {inboxCount === 0 ? null : (
               <span
                 className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
               >
@@ -310,6 +345,7 @@ export function Sidebar({
             <RailRow
               badge={priorityFaults}
               detail="Priorities and the work under them"
+              detailUnder
               label="Priorities"
               onNavigate={onNavigate}
               // The entry stands for the whole of the priorities, so it stays lit on one
@@ -323,6 +359,7 @@ export function Sidebar({
             <RailRow
               badge={undefined}
               detail="Deploys, merges, and pipeline failures"
+              detailUnder
               label="Delivery"
               onNavigate={onNavigate}
               selected={location.pathname === "/delivery"}
@@ -331,6 +368,7 @@ export function Sidebar({
             <RailRow
               badge={undefined}
               detail="CI and deploy step timings"
+              detailUnder
               label="Pipeline"
               onNavigate={onNavigate}
               selected={location.pathname === "/pipeline"}

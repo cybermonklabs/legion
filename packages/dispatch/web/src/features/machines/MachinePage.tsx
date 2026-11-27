@@ -4,7 +4,8 @@ import { Link, useLocation } from "react-router-dom";
 
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { useCappedAddressParam } from "../../lib/page-address";
+import { TruncatedText } from "../../components/TruncatedText";
+import { useCappedSearchParam } from "../../lib/query-param";
 import {
   borderDefault,
   dangerText,
@@ -17,11 +18,10 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { agentsAddress } from "../agents/agent-search";
 import { tallyBySession } from "../agents/ask-tally";
 import { useAgents } from "../conversation/useAgents";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
-import { parseMachinePath } from "../refs/routes";
+import { buildAgentsMachinePath, parseMachinePath } from "../refs/routes";
 import { relativeTimeLabel } from "../refs/Timestamp";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -85,7 +85,7 @@ function MachineView({ host }: { host: string }): ReactNode {
   // is a link, the back button means something across a window change, and one window is
   // deep-linkable. The server is in the value because tmux numbers windows per server, so a
   // bare `@1` would name a window on every server of the machine at once (`windowChoice`).
-  const [picked] = useCappedAddressParam("window");
+  const [picked] = useCappedSearchParam("window");
   // What the viewer is owed, read once for the page from the two queries the shell already
   // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
   // the four states, and the page adds no request of its own.
@@ -120,10 +120,6 @@ function MachineView({ host }: { host: string }): ReactNode {
     age === undefined
       ? undefined
       : (relativeTimeLabel(new Date(age.oldestSeen), now) ?? "just now");
-  // The Agents page narrowed to this host, written by that page's own address grammar
-  // (`agentsAddress`), which carries a host's name whole at any length. It answers no link only
-  // for a narrowing it cannot carry, an empty name among them, and then none is drawn.
-  const agentsLink = agentsAddress({ machines: [host] });
 
   return (
     <section aria-label={`Machine ${host}`} data-machine={host} data-testid="machine-page">
@@ -138,11 +134,9 @@ function MachineView({ host }: { host: string }): ReactNode {
         </h1>
         <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
           <span>{sessionCountSentence(model.summary)}</span>
-          {agentsLink === null ? null : (
-            <Link className={`${linkText} ${linkHoverText}`} to={agentsLink}>
-              Agents on this machine
-            </Link>
-          )}
+          <Link className={`${linkText} ${linkHoverText}`} to={buildAgentsMachinePath(host)}>
+            Agents on this machine
+          </Link>
         </p>
       </header>
       {model.sharedName ? (
@@ -185,6 +179,14 @@ function MachineView({ host }: { host: string }): ReactNode {
   );
 }
 
+/**
+ * One tmux server of the machine. Its groups, in this order, each on a line of its own: Heading
+ * (the socket, and its pid when two servers share it), the note on which windows have agents,
+ * Windows (the window navigation) and the drawn window. In Windows every window is a pick of its
+ * own, and the strip wraps onto as many lines as the windows need: nothing scrolls sideways, so
+ * every window stays in sight and one press away at any width. A window's name that is wider than
+ * the strip shortens to an ellipsis inside its own pick, with the whole name as the pick's title.
+ */
 function ServerPart({
   counts,
   now,
@@ -220,16 +222,15 @@ function ServerPart({
       <p className={`mt-1 text-xs ${textMutedOnCanvas}`} data-testid="machine-windows-with-agents">
         {WINDOWS_WITH_AGENTS}
       </p>
-      <ul
-        className="mt-2 mb-3 flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin]"
-        data-testid="window-strip"
-      >
+      <ul className="mt-2 mb-3 flex flex-wrap items-center gap-2" data-testid="window-strip">
         {windows.map((entry) => {
           const current = entry.window.windowId === drawn?.window.windowId;
           return (
-            <li key={entry.window.windowId}>
+            <li className="min-w-0 max-w-full" key={entry.window.windowId}>
+              {/* `max-w-full` bounds the pick below 1280 px too, where `styles.css` draws every
+                  link as an inline-flex box that `block` does not override. */}
               <Link
-                className={`block rounded-lg border px-2 py-1 text-xs whitespace-nowrap ${
+                className={`block max-w-full truncate rounded-lg border px-2 py-1 text-xs ${
                   current
                     ? `${selectedCardBorder} ${selectedCardBg} ${textPrimaryOnCanvas}`
                     : `${borderDefault} ${textSecondaryOnCanvas}`
@@ -237,11 +238,14 @@ function ServerPart({
                 data-picked={current ? "true" : "false"}
                 data-testid="window-pick"
                 data-window={entry.window.windowId}
+                title={`${entry.sessionName}:${entry.window.windowIndex} ${entry.window.windowName}`}
                 to={`?${new URLSearchParams({
                   window: windowChoice(server.socket, server.serverPid, entry.window.windowId),
                 })}`}
               >
-                {entry.sessionName}:{entry.window.windowIndex} {entry.window.windowName}
+                <TruncatedText>
+                  {entry.sessionName}:{entry.window.windowIndex} {entry.window.windowName}
+                </TruncatedText>
               </Link>
             </li>
           );

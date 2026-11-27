@@ -527,11 +527,11 @@ const PROJECT_WORDS = /^(the project )(\S+)$/u;
 /**
  * The conversation's box, in the bar and in the panel (design v3, states 1, 2 and 10): one frame
  * holding the context chip on its left (`chip`, cut where the chip ends, its whole words in
- * `chipTitle`), then `children` - the input, and in the bar before Enter its Filters button, the
- * shared panel trigger (`PanelTrigger`) - so the chip stands in the same place on every surface.
- * A project's chip shows its key alone, "OPS", as the design draws a chip, and keeps "the project
- * OPS" for a screen reader and its tooltip, so it stays whole beside Stop in the panel. Where the
- * frame is narrow, the chip is cut before the input's words are (`boxInputStyle`).
+ * `chipTitle`), then `children` - the input, and in the bar before Enter its Filters button - so
+ * the chip stands in the same place on every surface. A project's chip shows its key alone,
+ * "OPS", as the design draws a chip, and keeps "the project OPS" for a screen reader and its
+ * tooltip, so it stays whole beside Stop in the panel. Where the frame is narrow, the chip is cut
+ * before the input's words are (`boxInputStyle`).
  */
 export function BoxFrame({
   children,

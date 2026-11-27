@@ -140,9 +140,7 @@ test("the rail's New issue button opens the create dialog, preselecting the page
   const dialog = page.getByRole("dialog", { name: "Create issue" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("textbox", { name: "Title" })).toBeFocused();
-  await expect(dialog.getByRole("button", { name: /^Project(?: |$)/ })).toHaveAccessibleName(
-    new RegExp(`^Project ${scene.project} · `)
-  );
+  await expect(dialog.getByRole("combobox", { name: "Project" })).toHaveValue(scene.project);
 });
 
 // One count, one colour: the Inbox badge means the viewer must act, and a reader who learns it

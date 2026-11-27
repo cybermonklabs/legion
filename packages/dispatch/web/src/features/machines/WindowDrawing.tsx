@@ -319,9 +319,7 @@ export function WindowDrawing({
   );
 }
 
-/** The drawing itself: one filled rectangle per pane, each at the layout's own percentages. It is
- *  the window's panes in the layout's order, as `PaneList` lists them, so each rectangle is an
- *  item of an `<ol>`, placed where the layout puts it. */
+/** The drawing itself: one filled rectangle per pane, each at the layout's own percentages. */
 function PaneBoxes({
   counts,
   height,
@@ -337,7 +335,7 @@ function PaneBoxes({
 }): ReactNode {
   const rows = drawnPanes(layout, panes);
   return (
-    <ol
+    <div
       className={`relative w-full overflow-hidden rounded-lg ${surfaceMutedStrongBg}`}
       data-columns={layout.root.width}
       data-rows={layout.root.height}
@@ -345,7 +343,7 @@ function PaneBoxes({
       style={{ height: `${height}px` }}
     >
       {rows.map(({ cell, pane, paneIndex }) => (
-        <li
+        <div
           className="absolute overflow-hidden"
           data-agent={pane?.session.session_id}
           data-pane={cell.paneId}
@@ -369,9 +367,9 @@ function PaneBoxes({
           >
             <PaneBody compact={false} counts={counts} now={now} pane={pane} paneIndex={paneIndex} />
           </div>
-        </li>
+        </div>
       ))}
-    </ol>
+    </div>
   );
 }
 

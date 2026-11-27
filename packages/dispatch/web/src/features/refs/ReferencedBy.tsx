@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import type { Ref, RefObject } from "react";
+import type { ButtonHTMLAttributes, Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { DisplayTree, GraphEdge, GraphReferences } from "../../api/types";
-import { heldPress } from "../../components/held-press";
 import {
   borderDefault,
   linkHoverText,
@@ -332,11 +331,15 @@ export function ReferencedBy({
   reference: string;
   /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
    *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
-   *  the read the press sent has ended, since that press then took nothing away. Where it is
-   *  passed, the failure line stands while the list holds no answer and a read of it has failed
-   *  (`standsFailed`), in place of the loading line, as Details' own lines do, so the line stays
-   *  while the read Retry sent is out. The new issue page's Details passes it. Elsewhere the line
-   *  stands while the last read failed. */
+   *  the read the press sent, or joined, has ended, since that press then took nothing away. Where
+   *  it is passed, the failure line stands while the list holds no answer and a read of it has
+   *  failed (`standsFailed`), in place of the loading line, as Details' own lines do, so the line
+   *  stays while the read Retry sent is out, and Retry keeps its focus then: it is drawn
+   *  `aria-disabled`, in place of `disabled`, since Chromium moves the focus of a control that
+   *  turns disabled to the page's body, and a press while the read is out joins it
+   *  (`cancelRefetch: false`) and sends nothing new. The new issue page's Details passes it.
+   *  Elsewhere the line stands while the last read failed, and Retry is `disabled` while its read
+   *  is out. */
   retried?: RefObject<boolean>;
   /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`). */
   retryRef?: Ref<HTMLButtonElement>;
@@ -357,16 +360,22 @@ export function ReferencedBy({
       Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
   const groups = groupBySource(edges ?? []);
-  // Retry's press. Where the host notes it (`retried`), the press is noted, and forgotten again
-  // where the read it sent ends failed.
-  const retry =
+  // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
+  // every page.
+  const retryInDetails:
+    | Pick<ButtonHTMLAttributes<HTMLButtonElement>, "aria-disabled" | "disabled" | "onClick">
+    | undefined =
     retried === undefined
-      ? () => void query.refetch()
-      : () => {
-          retried.current = true;
-          void query.refetch({ cancelRefetch: false }).then((answer) => {
-            if (answer.isError) retried.current = false;
-          });
+      ? undefined
+      : {
+          "aria-disabled": query.isFetching || undefined,
+          disabled: false,
+          onClick: () => {
+            retried.current = true;
+            void query.refetch({ cancelRefetch: false }).then((answer) => {
+              if (answer.isError) retried.current = false;
+            });
+          },
         };
   // Where the host notes Retry's press - Details - the line stands while the read stands failed
   // (`standsFailed`), as Details says each of its own reads failed: a refresh that fails over the
@@ -390,11 +399,11 @@ export function ReferencedBy({
       {failed ? (
         <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
           <span>Referenced by unavailable.</span>
-          {/* Held while a read of the list is out (`heldPress`), never disabled: it keeps the
-              focus and its Tab stop, and a press of it sends nothing then. */}
           <button
             className={`font-medium underline ${linkText} ${linkHoverText}`}
-            {...heldPress(query.isFetching, retry)}
+            disabled={query.isFetching}
+            onClick={() => void query.refetch()}
+            {...retryInDetails}
             ref={retryRef}
             type="button"
           >

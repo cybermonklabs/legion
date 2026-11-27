@@ -48,13 +48,11 @@ const asker = {
   as: "agent" as const,
 };
 
-/** The ask card's hand-on control, wherever that card is drawn: the trigger of the list of
- *  people, inside the badge the card marks with its ask's id. Every query for it is scoped to
- *  the card's own ask rather than to a bare role, since a page can draw many cards. */
+/** The ask card's hand-on control, wherever that card is drawn. It is a native `<select>`, which
+ *  is also what the Inbox's own filters are built from, so every query for it is scoped to the
+ *  card's own ask rather than to a bare role. */
 function handOnControl(scope: Locator | Page, askId: string): Locator {
-  return scope
-    .locator(`[data-ask-hand-on="${askId}"]`)
-    .getByRole("button", { name: "Hand this question to" });
+  return scope.locator(`select[data-ask-hand-on="${askId}"]`);
 }
 
 /** Every band heading the Inbox list is drawing, with its count. */
@@ -160,7 +158,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(alicePage, moved.id)).toBeVisible();
     await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(2);
     await expect(bandHeadings(alicePage)).toHaveText(["Waiting on you (2)"]);
-    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
+    await expect(alicePage.getByText(/^Blocked on you: 2 items/)).toBeVisible();
     await expect(
       agentRow(aliceAgents, asker.actor.id).getByRole("link", { name: "Needs you 2" })
     ).toBeVisible();
@@ -168,7 +166,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(bandHeadings(bobPage)).toHaveText(["Waiting on you (1)"]);
-    await expect(bobPage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
+    await expect(bobPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
     await expect(
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
@@ -180,7 +178,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await selectRow(alicePage, moved.id);
     const rowControl = handOnControl(inboxPane(alicePage), moved.id);
     await expect(rowControl).toHaveCount(1);
-    await expect(rowControl).toHaveAccessibleName("Hand this question to Asked of alice");
+    await expect(rowControl).toHaveValue("alice");
     await expect(inboxPane(alicePage)).toContainText("Asked of alice");
     await handTo(rowControl, "bob");
     await expect(alicePage.locator(`[data-inbox-reading-row="${stays.id}"]`)).toBeVisible();
@@ -188,12 +186,11 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await handsOff(alicePage);
 
     // 3. Without a reload, the row leaves her list and enters his, and every count beside it
-    // follows: the band's own, the Blocked on you control's, and the per-person number on the
-    // Agents page.
+    // follows: the band's own, the banner's, and the per-person number on the Agents page.
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
     await expect(alicePage.locator("[data-inbox-row]")).toHaveCount(1);
     await expect(bandHeadings(alicePage)).toHaveText(["Waiting on you (1)"]);
-    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
+    await expect(alicePage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
     await expect(
       agentRow(aliceAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
@@ -201,7 +198,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(bobPage, moved.id)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(2);
     await expect(bandHeadings(bobPage)).toHaveText(["Waiting on you (2)"]);
-    await expect(bobPage.getByRole("button", { name: /^Blocked on you: 2 items/ })).toBeVisible();
+    await expect(bobPage.getByText(/^Blocked on you: 2 items/)).toBeVisible();
     await expect(
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 2" })
     ).toBeVisible();
@@ -242,7 +239,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await selectRow(bobPage, moved.id);
     const paneControl = handOnControl(inboxPane(bobPage), moved.id);
     await expect(paneControl).toHaveCount(1);
-    await expect(paneControl).toHaveAccessibleName("Hand this question to Asked of bob");
+    await expect(paneControl).toHaveValue("bob");
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(1);
 
     const docPage = await alice.newPage();
@@ -354,7 +351,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
     const assignee = page.getByLabel(`Assignee of ${issue.key}`);
-    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} carol`);
+    await expect(assignee).toHaveValue("carol");
 
     const bobPage = await bob.newPage();
     await bobPage.goto("/?group=waiting-on");
@@ -367,7 +364,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
       home
     );
     expect(assigned.code, `${assigned.stdout}${assigned.stderr}`).toBe(0);
-    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} bob`);
+    await expect(assignee).toHaveValue("bob");
     await expect(inboxRow(bobPage, ask.id)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
 
@@ -378,9 +375,9 @@ test("an agent sets and clears the issue assignee from the command", async ({
       home
     );
     expect(cleared.code, `${cleared.stdout}${cleared.stderr}`).toBe(0);
-    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} Unassigned`);
+    await expect(assignee).toHaveValue("");
     await expect(
-      page.getByTestId("issue-header").getByText("Unassigned", { exact: true })
+      page.getByTestId("issue-header").locator("span", { hasText: /^Unassigned$/ })
     ).toBeVisible();
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
 
@@ -392,7 +389,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
     expect(stranger.code).not.toBe(0);
     expect(`${stranger.stdout}${stranger.stderr}`).toContain("ASSIGNEE_NOT_ALLOWED");
     expect((await getIssue(issue.key)).assignee).toBeNull();
-    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} Unassigned`);
+    await expect(assignee).toHaveValue("");
 
     // 4. The same call on a closed issue is refused too: a closed issue takes no assignee until
     // somebody reopens it.

@@ -4,7 +4,6 @@ import {
   agentRow,
   type FakeSession,
   openAgentFilter,
-  openAgentFilters,
   pickAgentFilter,
   setLiveSessions,
   setSessionLive,
@@ -138,8 +137,7 @@ function filterOptions(page: Page): Locator {
   return page.getByRole("option");
 }
 
-/** Opens one filter's panel and leaves it open, which is where its text box is. The three sit
- *  in the panel the row's one **Filter** trigger opens, so that is opened first. */
+/** Opens one filter's panel and leaves it open, which is where its text box is. */
 async function openFilter(page: Page, filter: "group" | "machine" | "role"): Promise<void> {
   await openAgentFilter(page, filter);
   await expect(page.getByRole("listbox")).toHaveCount(1);
@@ -348,7 +346,6 @@ test("each filter on the Agents page is a multi-select with a text box, a count 
 
     // Ticking narrows: with `Idle` alone the two quiet sessions are gone from the list.
     await pickAgentFilter(page, "group", "Quiet");
-    await openAgentFilters(page);
     await expect(agentFilter(page, "group")).toHaveText("Group · 1");
     await expect(shownAgentRows(page).locator("h2")).toHaveText(["Dozing", "Silent"]);
 

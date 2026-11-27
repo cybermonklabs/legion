@@ -242,81 +242,74 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("ThreadPane | ThreadDocumentBody | address prop | thread={row}", {
     reason: REASONS[10],
   }),
-  ...answers("InboxBody | ReadingPane | conditional | !(subject === undefined) ? …", {
+  ...answers("Inbox | ReadingPane | conditional | !(subject === undefined) ? …", {
     reason: REASONS[12],
   }),
-  ...answers('InboxBody | ReadingPane | conditional | (mode === "columns") ? …', {
+  ...answers('Inbox | ReadingPane | conditional | (mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers('InboxBody | ReadingPane | conditional | !(mode === "columns") ? …', {
+  ...answers('Inbox | ReadingPane | conditional | !(mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers("InboxBody | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[12] }),
+  ...answers("Inbox | ReadingPane | conditional | (readingView) ? …", { reason: REASONS[12] }),
   ...answers(
-    "InboxBody | ReadingPane | early return | if (inbox.isPending || whoAmI.isPending) return …",
+    "Inbox | ReadingPane | early return | if (inbox.isPending || whoAmI.isPending) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "InboxBody | ReadingPane | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
+    "Inbox | ReadingPane | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
+    { reason: REASONS[12] }
+  ),
+  ...answers("Inbox | ReadingPane | conditional | if (shown.length === 0 && held === undefined)", {
+    reason: REASONS[12],
+  }),
+  ...answers(
+    "Inbox | ReadingPane | early return | if (shown.length === 0 && held === undefined) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "InboxBody | ReadingPane | conditional | if (shown.length === 0 && held.length === 0)",
-    {
-      reason: REASONS[12],
-    }
-  ),
-  ...answers(
-    "InboxBody | ReadingPane | early return | if (shown.length === 0 && held.length === 0) return …",
-    { reason: REASONS[12] }
-  ),
-  ...answers(
-    "InboxBody | ReadingPane | address prop | row={subject}",
+    "Inbox | ReadingPane | address prop | row={subject}",
     cells(`${HOST} · the column moves to another row, then back`)
   ),
-  ...answers("InboxBody | ThreadCardRow | key | <ThreadCardRow key={id}>", { reason: REASONS[13] }),
-  ...answers("InboxBody | ThreadCardRow | address prop | <ThreadCardRow {...shared}>", {
+  ...answers("Inbox | ThreadCardRow | key | <ThreadCardRow key={id}>", { reason: REASONS[13] }),
+  ...answers("Inbox | ThreadCardRow | address prop | <ThreadCardRow {...shared}>", {
     reason: REASONS[13],
   }),
-  ...answers('InboxBody | ThreadCardRow | conditional | !(row.kind === "ask") ? …', {
+  ...answers('Inbox | ThreadCardRow | conditional | !(row.kind === "ask") ? …', {
     reason: REASONS[13],
   }),
-  ...answers('InboxBody | ThreadCardRow | early return | if (mode !== "cards") return …', {
+  ...answers('Inbox | ThreadCardRow | early return | if (mode !== "cards") return …', {
     reason: REASONS[12],
   }),
-  ...answers("InboxBody | ThreadCardRow | conditional | drawn by drawn.flatMap(…)", {
+  ...answers("Inbox | ThreadCardRow | conditional | drawn by drawn.flatMap(…)", {
     reason: REASONS[13],
   }),
-  ...answers('InboxBody | ThreadCardRow | conditional | (mode === "columns") ? …', {
+  ...answers('Inbox | ThreadCardRow | conditional | (mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers("InboxBody | ThreadCardRow | conditional | <div hidden={readingView}>", {
+  ...answers("Inbox | ThreadCardRow | conditional | <div hidden={readingView}>", {
     reason: REASONS[12],
   }),
   ...answers(
-    "InboxBody | ThreadCardRow | early return | if (inbox.isPending || whoAmI.isPending) return …",
+    "Inbox | ThreadCardRow | early return | if (inbox.isPending || whoAmI.isPending) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "InboxBody | ThreadCardRow | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
+    "Inbox | ThreadCardRow | early return | if (inbox.isError || viewer === undefined || place === undefined) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
-    "InboxBody | ThreadCardRow | conditional | if (shown.length === 0 && held.length === 0)",
-    {
-      reason: REASONS[12],
-    }
-  ),
-  ...answers(
-    "InboxBody | ThreadCardRow | early return | if (shown.length === 0 && held.length === 0) return …",
+    "Inbox | ThreadCardRow | conditional | if (shown.length === 0 && held === undefined)",
     { reason: REASONS[12] }
   ),
-  ...answers('InboxBody | ThreadCardRow | conditional | !(mode === "columns") ? …', {
+  ...answers(
+    "Inbox | ThreadCardRow | early return | if (shown.length === 0 && held === undefined) return …",
+    { reason: REASONS[12] }
+  ),
+  ...answers('Inbox | ThreadCardRow | conditional | !(mode === "columns") ? …', {
     reason: REASONS[12],
   }),
-  ...answers("InboxBody | ThreadCardRow | address prop | thread={row.thread}", {
-    reason: REASONS[13],
-  }),
+  ...answers("Inbox | ThreadCardRow | address prop | thread={row.thread}", { reason: REASONS[13] }),
   ...answers(
     'ThreadPane | AskThreadPane | early return | if (row.kind === "agent") return …',
     cells(`${HOST} · the column moves to another row, then back`)
@@ -368,8 +361,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("InboxDrawer | Inbox | early return | if (!open) return …", { reason: REASONS[12] }),
   ...answers("InboxDrawer | Inbox | address prop | filter={filter}", { reason: REASONS[12] }),
   ...answers("InboxDrawer | Inbox | address prop | pane={false}", { reason: REASONS[12] }),
-  ...answers("Inbox | InboxBody | address prop | filter={filter}", { reason: REASONS[12] }),
-  ...answers("Inbox | InboxBody | address prop | pane={pane}", { reason: REASONS[12] }),
   ...answers('AppShell | InboxPage | route | <Route path="/">', { reason: REASONS[12] }),
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {
     reason: REASONS[12],
@@ -377,75 +368,43 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("AppShell | InboxDrawer | address prop | open={inboxDrawerOpen}", {
     reason: REASONS[12],
   }),
-  ...answers('InboxBody | ReadingPane | form | (mode === "columns") ? …', { reason: REASONS[13] }),
-  ...answers("InboxBody | ReadingPane | form | (readingView) ? …", { reason: REASONS[13] }),
-  ...answers("InboxBody | ReadingPane | form | <div className>", { reason: REASONS[13] }),
-  ...answers('InboxBody | ThreadCardRow | form | (mode === "columns") ? …', {
+  ...answers('Inbox | ReadingPane | form | (mode === "columns") ? …', { reason: REASONS[13] }),
+  ...answers("Inbox | ReadingPane | form | (readingView) ? …", { reason: REASONS[13] }),
+  ...answers("Inbox | ReadingPane | form | <div className>", { reason: REASONS[13] }),
+  ...answers('Inbox | ThreadCardRow | form | (mode === "columns") ? …', { reason: REASONS[13] }),
+  ...answers('Inbox | ThreadCardRow | form | if (mode !== "cards") return …', {
     reason: REASONS[13],
   }),
-  ...answers('InboxBody | ThreadCardRow | form | if (mode !== "cards") return …', {
-    reason: REASONS[13],
-  }),
-  ...answers("InboxBody | ThreadCardRow | form | <div hidden={readingView}>", {
-    reason: REASONS[13],
-  }),
-  ...answers("InboxBody | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
-  ...answers("InboxBody | ThreadCardRow | form | <section className>", { reason: REASONS[13] }),
+  ...answers("Inbox | ThreadCardRow | form | <div hidden={readingView}>", { reason: REASONS[13] }),
+  ...answers("Inbox | ThreadCardRow | form | <div className>", { reason: REASONS[13] }),
   ...answers("InboxPage | Inbox | form | <section className>", { reason: REASONS[13] }),
   ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[13] }),
-  ...answers("InboxBody | - | form | (columns) ? …", { reason: REASONS[13] }),
-  ...answers(
-    'InboxBody | - | form | if (stop === null && lost && mode === "columns" && presented.current.length > 0) return …',
-    { reason: REASONS[13] }
-  ),
-  ...answers(
-    "InboxBody | - | form | if (stop !== null && lost && paneSelection.id !== noted.question)",
-    { reason: REASONS[13] }
-  ),
-  ...answers(
-    "InboxBody | - | form | if (keysOnShownRow && paneSelection.selectedNow.current === id)",
-    {
-      reason: REASONS[13],
-    }
-  ),
-  ...answers("InboxBody | - | form | if (shownQuestion.current === paneSelection.id) return …", {
+  ...answers("Inbox | - | form | (columns) ? …", { reason: REASONS[13] }),
+  ...answers("Inbox | - | form | if (keysOnShownRow && paneSelection.selectedNow.current === id)", {
     reason: REASONS[13],
   }),
-  ...answers("InboxBody | - | form | (keysOnShownRow) ? …", { reason: REASONS[13] }),
-  ...answers('InboxBody | - | form | if (mode === "columns" && focusInPane())', {
+  ...answers("Inbox | - | form | if (shownQuestion.current === paneSelection.id) return …", {
+    reason: REASONS[13],
+  }),
+  ...answers("Inbox | - | form | (keysOnShownRow) ? …", { reason: REASONS[13] }),
+  ...answers('Inbox | - | form | if (mode === "columns" && focusInPane())', {
     reason: REASONS[13],
   }),
   ...answers("useReadingViewLanding | - | form | if (!columns)", { reason: REASONS[13] }),
-  ...answers('InboxBody | - | form | (mode === "list") ? …', { reason: REASONS[13] }),
-  ...answers('InboxBody | - | form | if (mode === "list") return …', { reason: REASONS[13] }),
-  ...answers('InboxBody | - | form | (mode === "reading") ? …', { reason: REASONS[13] }),
-  // The selection bar's hand-off reads the row open in the reading view below the column's width
-  // (`barOpenRow`) to choose where its landing goes, as the reading mode's branch above does: it
-  // draws nothing, so no box moves with it.
-  ...answers("InboxBody | - | form | (barOpenRow === undefined) ? …", { reason: REASONS[13] }),
+  ...answers('Inbox | - | form | (mode === "list") ? …', { reason: REASONS[13] }),
+  ...answers('Inbox | - | form | if (mode === "list") return …', { reason: REASONS[13] }),
+  ...answers('Inbox | - | form | (mode === "reading") ? …', { reason: REASONS[13] }),
   ...answers(
-    "InboxBody | - | form | (id === barOpenRow && view?.dataset.inboxReadingRow === id) ? …",
+    'Inbox | - | form | if (mode === "list" && inHand(COPY_REF_SELECTOR) === null) return …',
     { reason: REASONS[13] }
   ),
-  // The names' effect keeps the open row named past its press's own name until the selection is
-  // handed on from it (`openRowTaken`), for that hand-off alone: it draws nothing either.
-  ...answers("InboxBody | - | form | (taken) ? …", { reason: REASONS[13] }),
-  ...answers(
-    'InboxBody | - | form | if (mode === "list" && inHand(COPY_REF_SELECTOR) === null) return …',
-    { reason: REASONS[13] }
-  ),
-  ...answers("InboxBody | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
-  ...answers("InboxBody | - | form | (paneSelection.id === undefined) ? …", {
+  ...answers("Inbox | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
+  ...answers("Inbox | - | form | (paneSelection.id === undefined) ? …", { reason: REASONS[13] }),
+  ...answers('Inbox | - | form | if (mode === "columns" && focusInPane()) return …', {
     reason: REASONS[13],
   }),
-  ...answers("InboxBody | - | form | if (box === null && keysOnShownRow) return …", {
-    reason: REASONS[13],
-  }),
-  ...answers('InboxBody | - | form | if (mode === "columns" && focusInPane()) return …', {
-    reason: REASONS[13],
-  }),
-  ...answers("InboxBody | - | form | if (!rowLeft) return …", { reason: REASONS[13] }),
-  ...answers("InboxBody | - | form | if (columns) return …", { reason: REASONS[13] }),
+  ...answers("Inbox | - | form | if (!rowLeft) return …", { reason: REASONS[13] }),
+  ...answers("Inbox | - | form | if (columns) return …", { reason: REASONS[13] }),
   ...answers("usePaneSelection | - | form | (columns || entry.inboxDefaultPick !== true) ? …", {
     reason: REASONS[13],
   }),
@@ -457,7 +416,7 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers("usePaneSelection | - | form | (columns) ? …", { reason: REASONS[13] }),
   ...answers(
-    'InboxBody | - | form | if (mode === "list" && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) return …',
+    'Inbox | - | form | if (mode === "list" && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) return …',
     { reason: REASONS[13] }
   ),
   ...answers("usePaneSelection | - | form | (id === undefined && !columns) ? …", {

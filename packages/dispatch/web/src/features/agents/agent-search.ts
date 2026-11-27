@@ -1,14 +1,9 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
+
 import type { Agent, InboxRow } from "../../api/types";
-import {
-  type AddressSpec,
-  type AddressValues,
-  cappedTextParam,
-  commaListParam,
-  fieldsAddress,
-  useAddressFields,
-} from "../../lib/page-address";
-import { AGENT_GROUPS, type AgentGroup } from "./agent-groups";
+import { useCappedSearchParam } from "../../lib/query-param";
+import { AGENTS_MACHINE_PARAM, AGENTS_ROLE_PARAM } from "../refs/routes";
+import type { AgentGroup } from "./agent-groups";
 
 /**
  * What narrows the agent list: any number of groups, machines and roles, and a free-text
@@ -22,87 +17,60 @@ export interface AgentFilters {
   readonly search: string;
 }
 
-/** The page's whole narrowing as the address spells it: the free-text query (`?q=`), and the
- *  groups, machines and roles each as one comma-separated parameter (`?group=`, `?machine=`,
- *  `?role=`). A link from another page reaches them through `agentsAddress`, below: a machine's
- *  page links to that machine's sessions, and a `dispatch://role/<token>` reference opens the
- *  page narrowed to its role (`features/refs/routes.ts`). Every one of them is absent while
- *  nothing is picked, so a plain `/agents` is the page as it opens and unticking the last value
- *  does not bring the filter back on reload. A module-level constant, since its identity is what
- *  `useAddressFields` memoizes on. */
-const AGENT_FILTER_SPEC = {
-  group: commaListParam(),
-  machine: commaListParam(),
-  q: cappedTextParam(),
-  role: commaListParam(),
-} satisfies AddressSpec;
-
-/** The parameters a change of the narrowing writes, each under its name in `AGENT_FILTER_SPEC`.
- *  A field `changed` leaves out writes nothing, so its parameter stays as it stands. */
-function addressFields(
-  changed: Partial<AgentFilters>
-): Partial<AddressValues<typeof AGENT_FILTER_SPEC>> {
-  const written: Partial<AddressValues<typeof AGENT_FILTER_SPEC>> = {};
-  if (changed.groups !== undefined) written.group = changed.groups;
-  if (changed.machines !== undefined) written.machine = changed.machines;
-  if (changed.roles !== undefined) written.role = changed.roles;
-  if (changed.search !== undefined) written.q = changed.search;
-  return written;
+/** The page's three URL-backed filter fields, each through the same capped, history-`replace`d
+ *  hook `useIssueFilters` uses: the free-text query (`?q=`), the machines (`?machine=`) and the
+ *  roles (`?role=`), the last two through `useListParam`. `groups` stays plain component state.
+ *  All three parameters live here rather than in the page, so the control around them can be
+ *  rebuilt without moving them. */
+export function useAgentSearch(): readonly [string, (next: string) => void] {
+  return useCappedSearchParam("q");
 }
 
-/** The Agents page narrowed by `narrowing` (`/agents?machine=<host>` for one machine's
- *  sessions): the link another page sends a reader here by. It is written through the page's
- *  own grammar and the field names `useAgentFilters`'s setter writes, so it is the address that
- *  setter writes from a plain `/agents` for the same narrowing, encoded the same way. Every
- *  machine name and every role has its link whole, at any length, since a list is never cut.
- *  `null` where the grammar cannot carry the narrowing whole (`fieldsAddress`): a search past
- *  `SEARCH_QUERY_MAX`, which `?q=` cuts, or an empty name in a list. The caller draws no link. */
-export function agentsAddress(narrowing: Partial<AgentFilters>): string | null {
-  return fieldsAddress("/agents", AGENT_FILTER_SPEC, addressFields(narrowing));
-}
-
-/** One frozen empty list, so an address naming no value of a filter gives the page the same
- *  value every render rather than new filter state. */
-const NONE: readonly string[] = [];
+/** One frozen empty list, so an address naming none of a filter's values gives the page the
+ *  same value every render rather than new filter state. */
+const NO_VALUES: readonly string[] = [];
 
 /**
- * The page's whole narrowing, read from the address and written back to it (R5: this page's
- * narrowing goes through `lib/page-address.ts` alone). All four fields live here rather than in
- * the page, so the control around them can be rebuilt without moving them.
+ * One of the page's list-valued filters, read from and written to the address parameter
+ * `param` through the same capped, history-`replace`d hook `useIssueFilters` uses.
  *
- * The machines are the address's own `?machine=` rather than part of `?q=`: the free-text query
- * matches the directory as well as the machine, so `?q=<host>` would also find a session whose
- * directory holds the machine's name, while `/machines/<machine>`'s link to
- * `/agents?machine=<host>` must name exactly the sessions on that machine. Each control is a
- * multi-select, so its parameter carries the picked values as a comma-separated list:
- * `?machine=relay-1` is the one machine that link has always meant, and two picked machines
- * read `?machine=relay-1,relay-2`.
- *
- * A group the address names that this build does not know is dropped, and the groups are read
- * back in the one order the page draws them in, whatever order they were ticked in.
- *
- * The setter takes the fields that changed and writes those alone: each caller hands it only
- * the field its control moves. `q` is cut at `SEARCH_QUERY_MAX` when written, so a write of all
- * four would cut a longer search a link carried as soon as an unrelated control moved. The
- * three lists are written whole; the page refuses a pick that would take one past that bound
- * (`AgentFilterBar`).
+ * Each control is a multi-select, so its parameter carries what is picked as a comma-separated
+ * list: `?machine=relay-1` is the one machine that link has always meant, two picked machines
+ * read `?machine=relay-1,relay-2`, and unticking the last one deletes the parameter, so a
+ * reload does not bring the filter back.
  */
-export function useAgentFilters(): readonly [
-  AgentFilters,
-  (changed: Partial<AgentFilters>) => void,
+function useListParam(
+  param: string
+): readonly [readonly string[], (next: readonly string[]) => void] {
+  const [value, setValue] = useCappedSearchParam(param);
+  const picked = useMemo(() => {
+    const values = value.split(",").filter((one) => one !== "");
+    return values.length === 0 ? NO_VALUES : values;
+  }, [value]);
+  const setPicked = useCallback((next: readonly string[]) => setValue(next.join(",")), [setValue]);
+  return [picked, setPicked] as const;
+}
+
+/**
+ * The machine filter, which is the address's own `?machine=` rather than part of `?q=`: the
+ * free-text query matches the directory as well as the machine, so `?q=<host>` would also find
+ * a session whose directory holds the machine's name, while `/machines/<machine>`'s link to
+ * `/agents?machine=<host>` must name exactly the sessions on that machine.
+ */
+export function useAgentMachines(): readonly [
+  readonly string[],
+  (next: readonly string[]) => void,
 ] {
-  const [values, set] = useAddressFields(AGENT_FILTER_SPEC);
-  const filters = useMemo<AgentFilters>(
-    () => ({
-      groups: AGENT_GROUPS.filter((group) => values.group.includes(group)),
-      machines: values.machine.length === 0 ? NONE : values.machine,
-      roles: values.role.length === 0 ? NONE : values.role,
-      search: values.q,
-    }),
-    [values]
-  );
-  const setFilters = (changed: Partial<AgentFilters>) => set(addressFields(changed));
-  return [filters, setFilters] as const;
+  return useListParam(AGENTS_MACHINE_PARAM);
+}
+
+/**
+ * The role filter, the address's own `?role=`: it is the page a `dispatch://role/<token>`
+ * reference opens (`buildReferencePath`), so the link must survive a reload and a share, which
+ * component state would not.
+ */
+export function useAgentRoles(): readonly [readonly string[], (next: readonly string[]) => void] {
+  return useListParam(AGENTS_ROLE_PARAM);
 }
 
 /** Every word `search` names, lowercased; an empty query has none. The page splits this once per

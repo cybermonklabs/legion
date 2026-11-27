@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, AskBlockArtifact, InboxRow, MyReplyRow } from "../../api/types";
@@ -9,6 +9,7 @@ import {
   secondaryButtonCompact,
   textMutedOnCanvas,
 } from "../../theme/classes";
+import { EarlierApproval } from "../ask-body/EarlierApproval";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
@@ -16,10 +17,9 @@ import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildReferencePath, documentRoute, itemRoute } from "../refs/routes";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
-import { AssignToMe, useAskAssign } from "./AssignToMe";
+import { AssignToMe } from "./AssignToMe";
 import { askIssueKey } from "./ask-name";
 import { DismissControl } from "./DismissControl";
-import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
@@ -114,10 +114,19 @@ export interface ReadingPaneHeadProps {
   ask: InboxRow;
   /** The reader's own answer or review landed. */
   onAnswered: (askId: string) => void;
+  /** The reader's own Assign to me from this head started (`live`), or has stopped being in
+   *  flight or refused: the Inbox counts the row leaving its filter while the write is out, and
+   *  on the render after it ends, as the reader's own move, not as a row that left on its own. */
+  onAssignWrite: (askId: string, live: boolean) => void;
   /** Moves the column to the next block marked as changed; undefined when nothing is marked. */
   onNextChange: (() => void) | undefined;
   /** Moves the column to the decision block; undefined when the question is not one. */
   onSkipToAnswer: (() => void) | undefined;
+  /** Registers the question while this head's Snooze write is in flight or failed, exactly as
+   *  a row's own control registers its own: the Inbox keeps a live row listed, so the control
+   *  holding `Snoozing…`, a refusal and its Retry is not unmounted by the fold the optimistic
+   *  snooze causes - the column follows that row, so the fold would take this head with it. */
+  onSnoozeLive: (askId: string, live: boolean) => void;
   /** The heading of the section the column is opened at, once the block has drawn. */
   sectionBlockId: string | undefined;
   viewer: string | undefined;
@@ -133,26 +142,33 @@ export interface ReadingPaneHeadProps {
  * the page `openPagePath` names.
  *
  * With the column on, `h`, `o` and `y` look inside the column rather than inside the selected
- * row (`hand()` returns the column in `Inbox.tsx`), and the selected short row beside it draws no
- * Snooze and no copy-ref control at all. So this head draws the same three controls the card row
- * draws — `[data-inbox-snooze]`, `[data-inbox-owner]` and the copy-ref control — and the keys
- * find them here. Another short row draws its own Snooze only while a snooze of its ask is out or
- * refused (`AskShortRow`).
+ * row (`hand()` returns the column in `Inbox.tsx`), and the short row beside it draws no Snooze
+ * and no copy-ref control at all. So this head draws the same three controls the card row draws
+ * — `[data-inbox-snooze]`, `[data-inbox-owner]` and the copy-ref control — and the keys find
+ * them here.
  */
 export function ReadingPaneHead({
   artifact,
   ask,
   onAnswered,
+  onAssignWrite,
   onNextChange,
   onSkipToAnswer,
+  onSnoozeLive,
   sectionBlockId,
   viewer,
 }: ReadingPaneHeadProps): ReactNode {
-  // The Inbox holds the Assign to me write, by ask, so it outlives this head, which goes when the
-  // reader moves the selection (`AskAssignWritesProvider`). The optimistic assignee takes the
-  // issue out of `isUnassigned` at the press, so the head draws the control while that write is
-  // out or refused as well: `Assigning…`, and a refusal with its Retry.
-  const assign = useAskAssign(ask.id);
+  // The Inbox row keeps "Assign to me" mounted while its write is in flight or failed, so
+  // `Assigning…` and a refusal are shown by the instance that wrote rather than lost to the
+  // optimistic update that takes the issue out of `isUnassigned`. The head does the same.
+  const [assignLive, setAssignLive] = useState(false);
+  const onAssignLive = useCallback(
+    (askId: string, live: boolean) => {
+      onAssignWrite(askId, live);
+      setAssignLive(live);
+    },
+    [onAssignWrite]
+  );
   const { name, reads } = useControlName(ask, undefined);
   const page = openPagePath(ask, sectionBlockId);
   const reference = itemRoute("ask", ask, ask.document);
@@ -176,15 +192,14 @@ export function ReadingPaneHead({
       )}
       {ask.issue_key !== null &&
       viewer !== undefined &&
-      (isUnassigned({ ask, kind: "ask" }) || assign.pending || assign.failed) ? (
-        <AssignToMe askId={ask.id} issueKey={ask.issue_key} viewer={viewer} />
+      (isUnassigned({ ask, kind: "ask" }) || assignLive) ? (
+        <AssignToMe askId={ask.id} issueKey={ask.issue_key} onLive={onAssignLive} viewer={viewer} />
       ) : null}
-      {/* The Inbox holds the write this Snooze makes, by ask, so it outlives this head, which
-          goes when the reader moves the selection (`useAskSnoozeWrites`). */}
       {reads}
       <SnoozeControl
         askId={ask.id}
         label={name}
+        onLive={onSnoozeLive}
         snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
       />
       {reference === undefined ? null : <CopyRefButton route={reference} />}

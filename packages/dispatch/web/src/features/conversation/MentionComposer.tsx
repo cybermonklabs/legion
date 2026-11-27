@@ -30,7 +30,6 @@ import {
 } from "../../api/client";
 import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
-import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -47,6 +46,7 @@ import {
   dangerHoverBorder,
   dangerText,
   dismissButtonText,
+  focusBorder,
   focusRing,
   hoverToDangerText,
   linkHoverText,
@@ -54,7 +54,11 @@ import {
   pageComposer,
   pageComposerControl,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageMutedText,
+  pagePaperBg,
+  pageQuietText,
   primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
@@ -90,6 +94,7 @@ import { StopTrying } from "../writes/StopTrying";
 import { endedStopped, stoppedNote } from "../writes/useKeyedWrite";
 import { KEY_HOURS } from "../writes/write-words";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
+import type { AgentNames } from "./CachedAuthor";
 import {
   type AskOptionDraft,
   type Draft,
@@ -431,6 +436,27 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
       }));
 }
 
+/**
+ * The colours of a reply's quote, of the body's box with its label and the line under it, and of
+ * the composer's muted lines (`foot`: the line under Send, the paste line, the status lines,
+ * Cancel reply's ×), by the palette the host hands (`MentionComposerProps.palette`), as
+ * `issue-page/DecisionActions.tsx` keeps its own: `main`'s are the classes every surface of
+ * today's pages draws, and on the new issue page the quote is the page's (`ReplyQuote`'s
+ * `palette`), the box the page's field, which keeps `main`'s focus rule, its label the muted
+ * grey, and the line under the box and the muted lines the quiet grey, as the ask body's answer
+ * box draws them (`AskBody`'s `ON_PAGE`). Send is the page's inside `NoTooltips` whatever the
+ * host hands (`RefusableButton`'s `PAGE_LOOKS`).
+ */
+const TONES = {
+  main: { field: undefined, foot: textMutedOnSurfaceMuted, hint: undefined, label: undefined },
+  page: {
+    field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+    foot: pageQuietText,
+    hint: `text-xs ${pageQuietText}`,
+    label: `block text-sm font-medium ${pageMutedText}`,
+  },
+} as const;
+
 /** The key of a draft kept for another address than the composer shows, as its line or its offer
  *  is drawn: its whole address - the words a margin compose was at, the reply it answers and the
  *  statement the issue page's box was on - which no two drafts kept under one name share. Two the
@@ -631,8 +657,7 @@ function OutlineRefusal({
   /** Omitted for a refusal a retry cannot get past; no Retry is drawn then. */
   readonly onRetry?: () => void;
   readonly retryLabel: string;
-  /** Holds Retry while the retried request is out (`heldPress`): it keeps the focus and its Tab
-   *  stop, and a press of it sends nothing then. */
+  /** Holds Retry while the retried request is out. */
   readonly retrying: boolean;
 }): ReactNode {
   return (
@@ -644,8 +669,9 @@ function OutlineRefusal({
       <p>{message}</p>
       {onRetry === undefined ? null : (
         <button
-          className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${pageComposerControl}`}
-          {...heldPress(retrying, onRetry)}
+          className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
+          disabled={retrying}
+          onClick={onRetry}
           type="button"
         >
           {retryLabel}
@@ -657,6 +683,10 @@ function OutlineRefusal({
 
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
+  /** How the quote of the post a reply answers names its author: `live`, as everywhere, or
+   *  `cache`, from the registry the cache already holds, which starts no agents read when the
+   *  composer draws (`ReplyQuote`). */
+  readonly agentNames?: AgentNames;
   readonly anchor?: ComposerAnchor;
   /** What the host says in place of the server's words when it refused this send for a mark the
    *  document no longer holds (`ANCHOR_MISSING`) and could not write that mark again: the margin's
@@ -736,6 +766,10 @@ interface MentionComposerProps {
    *  that comes without a count is the host's move - another row, another thread, a Reply on a
    *  message - and what the composer holds stays with the address it was made for. */
   readonly ownMoves?: number;
+  /** The palette the reply's quote, the body's box with its label and the line under it, and the
+   *  composer's muted lines draw in (`TONES`): `main`'s, unless the host hands the new issue
+   *  page's, as Dashboard's thread items there do (dispatch://INFRA-3940 R13). */
+  readonly palette?: keyof typeof TONES;
   readonly replyTo?: ReplyTarget | null;
   /** The post `replyTo` quotes, as the host's read of it stands now (`ReplyParent`), whose
    *  deletion and edit the quote marks. `replyTo` is a copy taken when Reply was pressed, which a
@@ -769,33 +803,8 @@ interface MentionComposerProps {
   readonly onKindChange?: (kind: ComposerKind) => string | undefined;
 }
 
-/** The keys that only move the focus or the caret, which a send's hold on the composer lets
- *  through: the reader can still move about the draft, and leave the composer by keyboard. */
-const MOVING_KEYS: Readonly<Record<string, true>> = {
-  ArrowDown: true,
-  ArrowLeft: true,
-  ArrowRight: true,
-  ArrowUp: true,
-  End: true,
-  Home: true,
-  PageDown: true,
-  PageUp: true,
-  Tab: true,
-};
-
-/** Whether a key the send's hold stops (`stopHeldComposerKey`) is one the hold keeps from the
- *  browser too, as one the composer acts on or one that would type: Enter, with a modifier or
- *  none; Escape; Ctrl/Cmd+K; and, held with no Ctrl or Cmd, a character, Backspace or Delete.
- *  Every other Ctrl/Cmd chord and every function key stay the browser's, so find, copy, select
- *  all, reload, print and zoom still work while the send is out. */
-function heldFromBrowser(event: KeyboardEvent): boolean {
-  const { key } = event;
-  if (key === "Enter" || key === "Escape") return true;
-  if (event.ctrlKey || event.metaKey) return key.toLowerCase() === "k";
-  return key.length === 1 || key === "Backspace" || key === "Delete";
-}
-
 export function MentionComposer({
+  agentNames = "live",
   agents: suppliedAgents,
   anchor,
   anchorRefusal,
@@ -820,6 +829,7 @@ export function MentionComposer({
   outline,
   owner,
   ownMoves = 0,
+  palette = "main",
   replyParent,
   replyTo = null,
   saveEdit,
@@ -1437,7 +1447,7 @@ export function MentionComposer({
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
    *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React draws the fieldset held. From here on the held send keeps the draft, so the
+   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
    *  unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
@@ -1446,22 +1456,13 @@ export function MentionComposer({
       forgetUnsent();
       return sentRequest(refused);
     });
-  /** The hold on the draft from Send's own task on, before React draws the fieldset held: the
-   *  fieldset's capture stops every click, input, change, paste and drop bound for a control in
-   *  it - so no file goes into a draft that is out, and no press acts - and every key but the
-   *  ones that only move the focus or the caret (`stopHeldComposerKey`), so Escape raises no
-   *  Discard prompt. A key it stops reaches no handler of the
-   *  composer's. The browser's own action for that key is cancelled only for a key the composer
-   *  acts on or one that would type (`heldFromBrowser`). */
+  /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
+   *  fieldset's capture stops every key, click, input and change bound for a control in it - so
+   *  Escape raises no Discard prompt over a draft that is out. */
   const stopHeldComposerInput = (event: SyntheticEvent) => {
     if (!outgoing.sendingNow()) return;
     event.preventDefault();
     event.stopPropagation();
-  };
-  const stopHeldComposerKey = (event: KeyboardEvent) => {
-    if (MOVING_KEYS[event.key] === true || !outgoing.sendingNow()) return;
-    event.stopPropagation();
-    if (heldFromBrowser(event)) event.preventDefault();
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1559,6 +1560,13 @@ export function MentionComposer({
       unsupportedOptions.every((option) => option.capabilities.includes(mode))
   );
 
+  const tones = TONES[palette];
+  // The theme's muted token, shadowed in this function by the palette's, so `main`'s lines that
+  // name it stay as they are (spec R26): on `main`'s palette it is the token itself (`TONES.main`
+  // reads the import, at module scope), and on the new page's every muted line of the composer -
+  // the line under Send, the paste line, the status lines, Cancel reply's × - is the page's quiet
+  // grey. Nothing in this function names it above this line.
+  const textMutedOnSurfaceMuted = tones.foot;
   // The parts both looks draw alike, each where its look puts it: the prompt that asks before a
   // draft is thrown away, the drafts kept beside the field, what a send to the mentioned sessions
   // would do, and the upload and the send's own state.
@@ -1642,6 +1650,9 @@ export function MentionComposer({
         ));
   // The colours the send's own lines are drawn in: the page's on the issue page's box, whose
   // whole look is the page's own, and the dashboard's on every other surface.
+  // Here `textMutedOnSurfaceMuted` is the palette's (its shadow above, `TONES[palette].foot`), so
+  // on `palette` `page` (Dashboard's thread item on the new page) `quietTone` is the page's quiet
+  // grey.
   const mutedTone = outlined ? pageMutedText : textMutedOnSurface;
   const quietTone = outlined ? pageMutedText : textMutedOnSurfaceMuted;
   const failedTone = outlined ? pageFailedText : dangerText;
@@ -1847,18 +1858,13 @@ export function MentionComposer({
       ? (outline?.uploading ?? "Uploading file…")
       : undefined;
   // What both looks hand their held fieldset alike: the hold on every control of the draft while
-  // a send is out. The fieldset is held, never disabled: `aria-disabled` on it, each text field in
-  // it read-only (`heldField`) and each press refused by its capture (`stopHeldComposerInput`,
-  // `stopHeldComposerKey`). The browser takes the focus off a control that turns disabled, so a
-  // disabled fieldset would drop the reader who sent from the box or from Send onto the page.
+  // a send is out (`stopHeldComposerInput`).
   const heldFieldset = {
-    "aria-disabled": sending || undefined,
+    disabled: sending,
     onChangeCapture: stopHeldComposerInput,
     onClickCapture: stopHeldComposerInput,
-    onDropCapture: stopHeldComposerInput,
     onInputCapture: stopHeldComposerInput,
-    onKeyDownCapture: stopHeldComposerKey,
-    onPasteCapture: stopHeldComposerInput,
+    onKeyDownCapture: stopHeldComposerInput,
   };
   // The issue page's line reads each party its write is delivered to by its name, where its host
   // names the list (`OutlineNames.targets`): a role by its own name, and a session by its name as
@@ -1898,7 +1904,6 @@ export function MentionComposer({
           body={body}
           description={outline.names?.description}
           fieldRef={field}
-          held={sending}
           issueKey={pickerIssue}
           label={bodyLabel}
           labelHidden
@@ -2000,12 +2005,14 @@ export function MentionComposer({
       {replyTo === null ? null : (
         <div className="flex items-center gap-1">
           <ReplyQuote
+            agentNames={agentNames}
             author={replyTo.actor}
             className="min-w-0 flex-1"
             deleted={postDeletion(replyParent)}
             edited={replyParent?.edited_at}
             excerpt={replyParent === undefined ? "" : replyTo.excerpt}
             excerptTree={replyParent === undefined ? undefined : replyTo.excerptTree}
+            palette={palette}
             source={textSourceOf(
               replyTo.parentKind,
               replyTo.id,
@@ -2019,9 +2026,8 @@ export function MentionComposer({
               reply: the control would do nothing there, and the draft stays in the field. */}
           {standing ? null : (
             <button
-              aria-disabled={sending || undefined}
               aria-label="Cancel reply"
-              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none refused:cursor-not-allowed refused:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
+              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
               onClick={cancelReply}
               type="button"
             >
@@ -2074,7 +2080,6 @@ export function MentionComposer({
         <MentionField
           body={replacement}
           fieldRef={replacementField}
-          held={sending}
           issueKey={pickerIssue}
           label="Replacement"
           onChange={(change) => {
@@ -2089,11 +2094,13 @@ export function MentionComposer({
       ) : null}
       <MentionField
         body={body}
+        fieldClassName={tones.field}
         fieldRef={field}
-        held={sending}
+        hintClassName={tones.hint}
         inline={inline}
         issueKey={pickerIssue}
         label={bodyLabel}
+        labelClassName={tones.label}
         labelHidden={compact}
         onChange={onBodyChange}
         onDrop={homes.drop}
@@ -2131,13 +2138,9 @@ export function MentionComposer({
           <label
             className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
           >
-            {/* A held box is dimmed as the browser dims a disabled one. `aria-disabled:` reads the
-                send's hold alone: `refused:` also reads the native disable of the fieldset around
-                it while a draft is offered, where the browser dims the box already. */}
             <input
-              aria-disabled={sending || undefined}
               checked={multiple}
-              className={`size-4 rounded aria-disabled:opacity-50 ${borderStrong} ${checkboxAccent} ${focusRing}`}
+              className={`size-4 rounded ${borderStrong} ${checkboxAccent} ${focusRing}`}
               onChange={(event) => setMultiple(event.target.checked)}
               type="checkbox"
             />
@@ -2162,7 +2165,6 @@ export function MentionComposer({
                     fieldRef={(handle) => {
                       optionLabelFields.current[index] = handle;
                     }}
-                    held={sending}
                     inline
                     issueKey={pickerIssue}
                     label={`Option ${index + 1} label`}
@@ -2186,7 +2188,6 @@ export function MentionComposer({
                   />
                   <MentionField
                     body={option.description}
-                    held={sending}
                     inline
                     issueKey={pickerIssue}
                     label={`Option ${index + 1} description`}

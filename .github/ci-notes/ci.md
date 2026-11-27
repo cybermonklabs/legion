@@ -617,7 +617,7 @@ the same helper, so both filters hold the same patterns.
 dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of the
 dispatch command its rows spawn through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` and `packages/dispatch/e2e/dispatch-cli.ts#runDispatch`, dispatch_two_builds_go's
 set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
-(`build:dispatch`) compiles nothing outside the first: not legion-api.ts.
+(`build:dispatch`) compiles nothing outside the first.
 
 ## dispatch_browser: The workflow that holds every browser step, which this job
 
@@ -831,7 +831,7 @@ to nothing of the browser half, which the dispatch_two_builds filter names.
 
 The two-build job: its Go step's reads, the dispatch_two_builds_go filter's, named again so the job runs for the
 change that starts the step, and the browser half,
-`bun run e2e:multiprocess -- cross-build.multiprocess` in packages/dispatch: the
+`bun run e2e:multiprocess:run -- cross-build.multiprocess` in packages/dispatch: the
 harness and spec under e2e/, the two SPA builds (web/, the editor package and the
 patches it takes, the notices script the build runs), the Dispatch server
 e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script
@@ -2781,15 +2781,19 @@ to one area's code can run that area's legs:
   one step was, so more slots on one runner would add load where more runners add none.
 - envoy-go's other steps, which ran one after another before the unit step and after it, each on a
   runner of its own beside the legs: envoy-go-alone, the rows that measure time; envoy-go-race-impossible,
-  the rest of the plain run the race build cannot make (the bus's allocation count and the documents
-  package's memory bounds and render storms); envoy-go-skips, the skip counter's own test, the
-  store-form count and the two vets; and envoy-go-natslive, the container-backed matrix, the
-  integration suite and the callout check.
-- envoy-go-race's step in five legs: the listener's tests in two, a group each
+  the rest of the plain run the race build cannot make (the bus's allocation count, the priorities
+  read's four tests over its corpus of production's counts and the documents package's memory
+  bounds and render storms), the four (`PG_STAT_STATEMENTS_TESTS`) on a second Postgres that
+  preloads pg_stat_statements, started by the job on port 5433 for them; envoy-go-skips, the skip
+  counter's own test, the store-form count and the two vets; and envoy-go-natslive, the
+  container-backed matrix, the integration suite and the callout check.
+- envoy-go-race's step in six legs: the listener's tests in two, a group each
   (`.github/go-legs/packages/envoy/cmd/listener.yaml`, written by `.github/scripts/go_legs_groups.py`
   as the daemon's are), the bus with the registry store, the session cache, kvwatch and the NATS
-  credentials, Dispatch's store and delivery, and the NATS auth service with the sign-in code flow,
-  which also runs the forced-order steps.
+  credentials, Dispatch's delivery with the NATS auth service and the sign-in code flow, and the
+  Dispatch store's tests in two more, a group each
+  (`.github/go-legs/packages/envoy/internal/dispatch/store.yaml`), the last of which also runs the
+  forced-order steps.
 
 envoy-go-alone runs the rows whose assertion is a bound on how long something takes, on a runner
 nothing else loads, since beside a leg's other packages such a row measures the load as much as the
@@ -2811,6 +2815,17 @@ each; the race legs, with the listener whole in one, 1,057, 577, 671 and 362 s, 
 forced-order steps' minute in the last. cmd/listener ran 902 s alone, 226 serial tests summing
 781 s and 698 parallel ones 824 s at its -parallel 8, so its tests are split in two groups,
 modelled at 442 s each.
+
+The Dispatch store and delivery then shared a leg, and the store set the job's time: in the 12
+green merge groups of 2026-11-27 10:48Z-16:49Z that leg was the longest of the five every time,
+639-715 s as a job, the store's package 583-654 s and delivery's 511-537 s beside it. Both
+packages spend most of that in their serial tests, which wait rather than compute: in throwaway
+run 46045787549 (main 45c293ad, vmstat every 2 s and each test process's CPU time) the store's
+serial tests took 362 s of its 630 s with its process using 0.38 of a core, and delivery's 459 s
+of its 530 s at 0.09 of a core; the listener's legs and the bus's are the same shape, their
+serial tests at 0.03-0.11 of a core. Serial tests of one package cannot run beside each other, so
+the store's are split in two groups, each a leg of its own, and delivery moves beside the NATS
+auth service, whose leg was idle as well.
 
 The rules the legs keep are the daemon's
 ([ci-job-daemon-go.md](ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs)): each package
@@ -2848,8 +2863,9 @@ are rebalanced from their own times. Two more are envoy's own:
 What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s for a race leg, so
 the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
 a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
-and envoy-go-skips start no test container and run no Bun, so they pull no test image (their
-Postgres service's image aside), install nothing and set no testcontainers variable.
+and envoy-go-skips run no test that starts a container and run no Bun, so they pull no test image
+(their Postgres service's image aside, which envoy-go-race-impossible also runs as its second
+Postgres), install nothing and set no testcontainers variable.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 
@@ -2932,8 +2948,8 @@ say why the document service runs alone.
 api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
 runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
 746.718 s. The packages left in envoy-go-race shared one runner until their sum, about 4,000 s
-of package time over four slots, set that job's 20 minutes; they now run in five legs, a runner
-each, the listener's tests split over two of them
+of package time over four slots, set that job's 20 minutes; they now run in six legs, a runner
+each, the listener's tests split over two of them and the Dispatch store's over two more
 ([why](#why-envoys-go-tests-run-in-legs)). Running a heavy package apart also reads its seconds
 as its own job's, and leaves the others' numbers standing when one is red.
 

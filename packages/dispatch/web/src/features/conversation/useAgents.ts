@@ -3,12 +3,7 @@ import { useMemo } from "react";
 
 import { isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
-import {
-  agentsQuery,
-  EMPTY_AGENTS,
-  useAgentListFailure,
-  useRegistryPolling,
-} from "../refs/agent-registry";
+import { agentsQuery, EMPTY_AGENTS, useRegistryPolling } from "../refs/agent-registry";
 
 /**
  * The agent registry list. `agents` keeps the rows of the last successful read through a failed
@@ -19,9 +14,6 @@ import {
  * list gave through a failed refresh, as the live view's header and transcript line do from the
  * kept rows. `refilling` is the failed read's reason when Envoy answered that its list is
  * refilling (`isAgentListRefilling`), which a view says in place of an unreachable listener.
- * Each field says what the list's reads last settled, as the registry's do (`useAgentRegistry`):
- * `isPending` holds only until a first read settles, and a failure - `isError`, `error` and
- * `refilling` - stands through every later read until one succeeds.
  * `refreshWhileOpen` keeps the list fresh through the shell's one poller (`AgentRegistryPoller`)
  * while this caller is mounted and enabled, instead of an interval of its own.
  */
@@ -38,7 +30,7 @@ export function useAgents(
   refilling: boolean;
 } {
   useRegistryPolling(enabled && refreshWhileOpen);
-  const { data, error, errorUpdateCount, refetch, status } = useQuery({
+  const { data, error, isError, isPending, refetch } = useQuery({
     ...agentsQuery(),
     enabled,
     // The poller refreshes what a polled caller reads; refetching it again on mount would put
@@ -46,26 +38,19 @@ export function useAgents(
     refetchOnMount: !refreshWhileOpen,
   });
   const agents = data ?? EMPTY_AGENTS;
-  // What the reads last settled, rather than what a read is doing now: a list that has only ever
-  // failed goes back to pending, with no error, while each later read is out, and a view that read
-  // that as no answer yet would put its loading state in place of the failure it said, and say the
-  // failure again when the read lands on it. A failure counts once it is recorded
-  // (`errorUpdateCount`) and stands until a read succeeds, with its reason (`useAgentListFailure`).
-  const current = status === "success";
-  const isError = !current && errorUpdateCount > 0;
-  const failure = useAgentListFailure(error);
-  const refilling = isError && isAgentListRefilling(failure);
+  const current = !isError && data !== undefined;
+  const refilling = isError && isAgentListRefilling(error);
 
   return useMemo(
     () => ({
       agents,
       current,
-      error: isError ? (failure instanceof Error ? failure.message : "network error") : undefined,
+      error: error instanceof Error ? error.message : isError ? "network error" : undefined,
       isError,
-      isPending: !current && !isError,
+      isPending,
       refetch,
       refilling,
     }),
-    [agents, current, failure, isError, refetch, refilling]
+    [agents, current, error, isError, isPending, refetch, refilling]
   );
 }

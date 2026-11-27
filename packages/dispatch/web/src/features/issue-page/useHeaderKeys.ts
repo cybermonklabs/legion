@@ -1,6 +1,5 @@
 import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
-import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
@@ -16,6 +15,7 @@ import { usableControl } from "./usable-control";
  */
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
+const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = `select[aria-label="${PROPERTY_LABELS.status}"]`;
 
 /** The group around `node` that a control of the header opens and shuts (`aria-expanded`) and
@@ -85,34 +85,22 @@ function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonEle
 }
 
 /**
- * The line at the outline's foot while it answers a question: the question's options are its
- * chips there, which the keyboard reaches, so its controls own the keys as an ask card's do.
- */
-const ANSWER_LINE = "form[data-answering]";
-
-/**
- * Whether focus is outside every `<input>`, every ask card and the line that answers a question.
- * `0`-`3` and `Shift+P` are the two keys that write the issue without focusing a control, so they
- * are the two that have to say where the reader is not: a digit typed straight after picking a
- * question's option belongs to that control's own surface, not to the issue's priority. The
- * registry passes single keys through every control that takes no typed text, so this is the
- * page's own question to answer.
+ * Whether focus is outside every `<input>` and outside every ask card. `0`-`3` and `Shift+P` are
+ * the two keys that write the issue without focusing a control, so they are the two that have to
+ * say where the reader is not: a digit typed straight after picking a question's option belongs
+ * to that control's own surface, not to the issue's priority. The registry passes single keys
+ * through every control that takes no typed text, so this is the page's own question to answer.
  *
  * A focused `<button>` is deliberately not excluded. Every single-key binding in the registry
  * fires from one: a digit has no native meaning on a button, and after any click - a view, a
  * disclosure, Copy - focus sits on the button that was clicked, which is where a reader reaching
- * for the next shortcut stands. An ask card's buttons and the answer line's are the exception,
- * and that is what `outsideAskCard` (`inbox/ask-card.ts`, the one definition both pages read) and
- * `ANSWER_LINE` cover: there, the question's controls own the keys. `e` opens a control rather
- * than write, so a stray press is visible and undoable and it is offered throughout.
+ * for the next shortcut stands. An ask card's buttons are the exception, and that is what
+ * `outsideAskCard` covers (`inbox/ask-card.ts`, the one definition both pages read): there, the
+ * question's controls own the keys. `e` opens a control rather than write, so a stray press is
+ * visible and undoable and it is offered throughout.
  */
 function outsideInputsAndAskCards(): boolean {
-  const active = document.activeElement;
-  return (
-    !(active instanceof HTMLInputElement) &&
-    outsideAskCard() &&
-    active?.closest(ANSWER_LINE) == null
-  );
+  return !(document.activeElement instanceof HTMLInputElement) && outsideAskCard();
 }
 
 /**
@@ -146,15 +134,15 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => headerControl(PRIORITY_TRIGGER_SELECTOR)?.focus(),
-      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null,
+      run: () => headerControl(PRIORITY_SELECT)?.focus(),
+      when: () => headerControl(PRIORITY_SELECT) !== null,
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
+      when: () => headerControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
       // Edit title's click opens the editor, and a focus does not, so the key clicks it: a
@@ -198,13 +186,10 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => focusedApprovalAction("request-changes") !== null,
     },
     {
-      // `s` puts the focus in a native select and `p` on the priority list's trigger. There every
-      // single-key binding is suspended, and the next keystroke is the control's own: the
-      // select's type-ahead, or the list's search, which a character typed on its closed trigger
-      // opens. So `t` picks Todo or Testing, or opens the priority list, rather than start a
-      // view's chord. Escape is the way back out, as it is on the Inbox rows, the board's cards
-      // and the architecture rows. The priority's trigger keeps the focus while it is held
-      // (`aria-disabled`), so Escape leaves it then too.
+      // `s` and `p` put focus in a native select, where every single-key binding is suspended
+      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
+      // rather than start a view's chord. Escape is the way back out, as it is on the Inbox
+      // rows, the board's cards and the architecture rows.
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -212,10 +197,7 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
-        return (
-          active === headerControl(STATUS_SELECT) ||
-          active === document.querySelector(HEADER)?.querySelector(PRIORITY_TRIGGER_SELECTOR)
-        );
+        return active === headerControl(STATUS_SELECT) || active === headerControl(PRIORITY_SELECT);
       },
     },
   ]);

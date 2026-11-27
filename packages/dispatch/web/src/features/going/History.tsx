@@ -4,9 +4,9 @@ import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState 
 import { goingConversationsQuery } from "../../api/queries";
 import type { GoingConversation } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { SearchBox } from "../../components/SearchBox";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
+  inputClasses,
   surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnSurface,
@@ -290,20 +290,18 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
   }
 
   return (
-    // The section notes where the focus went, so the first row is marked as Enter's only while
-    // the focus is in the filter box.
     <section
       aria-label="History"
       className="max-h-[50vh] min-h-0 overflow-y-auto px-3 py-2"
       data-testid="going-history"
-      onFocus={(event) => setInBox(event.target === box.current)}
     >
-      <SearchBox
-        className="w-full"
+      <input
+        aria-label="Filter history"
+        className={`block w-full rounded-lg border px-3 py-1.5 text-sm outline-none ${inputClasses(true)}`}
         data-testid="going-history-filter"
-        label="Filter history"
         onBlur={() => setInBox(false)}
-        onChange={setFilter}
+        onChange={(event) => setFilter(event.target.value)}
+        onFocus={() => setInBox(true)}
         onKeyDown={(event) => {
           // A key of an input method's composition is the input method's (`inputMethodKey`): the
           // Enter that confirms a conversion opens no conversation.
@@ -319,6 +317,7 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         }}
         placeholder="Filter history…"
         ref={box}
+        type="search"
         value={filter}
       />
       {shown}

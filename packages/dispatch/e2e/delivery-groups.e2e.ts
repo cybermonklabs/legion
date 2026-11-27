@@ -1,12 +1,10 @@
 import { seedSessionGroupsFixture } from "./delivery-seed";
-import { listTrigger, openFilterPanel, pickFromList } from "./filters";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
-/** The Parent agent column filter's option names, as it labels them (`<value>, <n> PR(s)`).
- *  The narrowing is that column's own, so it hangs off the funnel in its header. */
+/** The Parent agent facet's option names, as the facet labels them (`<value>, <n> PR(s)`). */
 async function parentAgentOptions(page: Page): Promise<string[]> {
-  await page.getByRole("button", { name: /^Filter Parent agent/ }).click();
+  await page.getByRole("button", { name: /^Parent agent: / }).click();
   const options = page.getByRole("listbox", { name: "Parent agent options" }).getByRole("option");
   await expect(options.first()).toBeVisible();
   const names = await options.evaluateAll((elements) =>
@@ -34,8 +32,6 @@ test("grouping two sessions makes them one Parent agent @pr", async ({ browser }
     "Reviewer, 1 PR",
   ]);
 
-  // **Edit groups** is in the panel the row's one **Filter** trigger opens.
-  await openFilterPanel(page);
   await page.getByRole("button", { name: "Edit groups" }).click();
   const editor = page.getByRole("dialog", { name: "Session groups" });
 
@@ -72,16 +68,16 @@ test("the window control changes what the page counts", async ({ browser }) => {
   await page.goto("/delivery?mode=list");
   await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
 
-  await pickFromList(listTrigger(page, "Window"), "Last 7 days");
+  await page.getByLabel("Window").selectOption("7d");
   await expect(page).toHaveURL(/[?&]window=7d/);
   await expect(page.getByText("2 PRs in current filter/window")).toBeVisible();
 
-  await pickFromList(listTrigger(page, "Window"), "Custom range…");
+  await page.getByLabel("Window").selectOption("custom");
   await page.getByRole("textbox", { name: "From", exact: true }).fill(utcDaysAgo(21));
   await page.getByRole("textbox", { name: "To", exact: true }).fill(utcDaysAgo(19));
   await page.getByRole("button", { name: "Apply" }).click();
   await expect(page).toHaveURL(/[?&]from=.*&to=/);
-  await expect(page.getByText("1 PR in current filter/window")).toBeVisible();
+  await expect(page.getByText("1 PRs in current filter/window")).toBeVisible();
 
   // 120 days ago through 19 days ago spans 102 days, past the server's 84.
   await page.getByRole("textbox", { name: "From", exact: true }).fill(utcDaysAgo(120));
@@ -89,7 +85,7 @@ test("the window control changes what the page counts", async ({ browser }) => {
   await expect(page.getByRole("alert")).toHaveText(
     /^The window can span at most 84 days; this range spans \d+\.$/
   );
-  await expect(page.getByText("1 PR in current filter/window")).toBeVisible();
+  await expect(page.getByText("1 PRs in current filter/window")).toBeVisible();
 
   await context.close();
 });

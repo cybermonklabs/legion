@@ -6,7 +6,7 @@ import {
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { agentRow, issueOption } from "./agents";
+import { agentRow } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
@@ -200,9 +200,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // lists everyone who has signed in.
       await expectRow(page, field, "agents-row-composer", "agent-message");
       await row.getByRole("button", { name: "Choose issue" }).click();
-      // The issue pick is the shared list (`components/MultiSelect.tsx`): its options read as the
-      // issue's key and title, and a click on one picks it (`issueOption`).
-      await issueOption(row, world.host).click();
+      await row.getByRole("combobox", { name: "Issue" }).selectOption(world.host);
       await expectRow(page, field, "agents-row-composer", "comment", () =>
         composerSend(page, "Comment", row).click()
       );
@@ -388,7 +386,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expectRow(page, field, "decisions-change", "comment", () =>
         page
           .getByRole("form", { name: `Change ${DECISION}` })
-          .getByRole("button", { exact: true, name: "Send" })
+          .getByRole("button", { exact: true, name: "Send change" })
           .click()
       );
     },
@@ -518,7 +516,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   "issue-page-composer": {
     drive: async (page, world) => {
       await withIssuePage(page.context(), "alice");
-      await page.goto(`/issues/${world.host}`);
+      await page.goto(`/issues/${world.host}/conversation`);
       await expectIssuePageDrawn(page);
       const box = page.getByTestId("issue-composer");
       const field = box.locator("[data-issue-composer] textarea");

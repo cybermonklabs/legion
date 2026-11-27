@@ -82,7 +82,6 @@ test("an ask is a thread: replies before and after answering, then a live agent 
   const thread = margin.getByTestId(`thread-${ask.id}`);
 
   // Alice asks back from the same compact composer that can submit her answer.
-  await card.getByRole("button", { name: "Add a note or answer in your own words" }).click();
   await card.getByLabel("Your answer").fill("Any blockers first?");
   await card.getByRole("button", { name: "Ask back" }).click();
   await expect(thread.getByText("Any blockers first?")).toBeVisible();
@@ -443,7 +442,7 @@ test("a session retraction leaves its reason on the card and removes the human's
   const inboxPage = await alice.newPage();
   await inboxPage.goto("/");
   await expect(inboxRow(inboxPage, ask.id)).toBeVisible();
-  await expect(inboxPage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
+  await expect(inboxPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
 
   const issuePage = await alice.newPage();
   await issuePage.goto(`/issues/${issue.key}`);
@@ -460,9 +459,9 @@ test("a session retraction leaves its reason on the card and removes the human's
     bobSession
   );
 
-  // The retraction takes the question out of the human's Inbox, live: the Blocked on you control
-  // counts what the server lists, and it goes with no reload once nothing waits on the reader.
-  await expect(inboxPage.getByRole("button", { name: /^Blocked on you:/ })).toHaveCount(0);
+  // The retraction takes the question out of the human's Inbox, live: the "Blocked on you"
+  // strip counts what the server lists, and it drops with no reload.
+  await expect(inboxPage.getByText(/^Blocked on you:/)).toHaveCount(0);
   // The row itself: a question the server withdraws leaves the list at once, at every width and
   // with no reload - a withdrawn question with a live answer form invites an answer the server
   // refuses, and nothing holds a row the reader has not touched (INFRA-575).

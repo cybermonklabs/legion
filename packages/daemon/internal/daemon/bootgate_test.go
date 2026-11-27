@@ -831,12 +831,13 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 // stands. The argument and the value are made-up credentials, as `env NAME=<token>` or a proxy
 // URL with a password would hand one.
 func TestTheLoadProbeQuotesNoWordOfTheLaunchPrefix(t *testing.T) {
+	t.Parallel()
 	const argument, value = "madeUpPrefixArgument0123", "madeUpPrefixValue0123"
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	echoing := filepath.Join(t.TempDir(), "echoing-prefix")
 	script := "#!/bin/sh\necho \"$0: proxy refused $1, and again:$1; token ${2#*=} rejected\" >&2\nexit 3\n"
-	if err := os.WriteFile(echoing, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(echoing, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gate.prefix = []string{echoing, argument, "OMP_TOKEN=" + value}

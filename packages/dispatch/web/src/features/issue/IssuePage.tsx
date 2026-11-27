@@ -1,3 +1,4 @@
+import * as React from "react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
@@ -35,17 +36,21 @@ import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
 import { DecisionsPanel } from "./DecisionsPanel";
-import { IssueHeader, STATUS_TRIGGER_SELECTOR } from "./IssueHeader";
+import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
 import { issuePriority } from "./issue-priority";
-import { PRIORITY_TRIGGER_SELECTOR } from "./PriorityControl";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
 import { useIssueDetail } from "./useIssueDetail";
 import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
+
+/** Dashboard, today's first tab, in a chunk of its own that the browser fetches only when the
+ *  reader opens the tab (dispatch://INFRA-5702/spec#b-r-today-tab): this is the one import of
+ *  today's page that reaches it (R14). */
+const DashboardTab = React.lazy(() => import("../dashboard/DashboardTab"));
 
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
@@ -106,22 +111,21 @@ function ItemLandingFailure({
 const HEADER = "[data-issue-header]";
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const TITLE_BUTTON = 'button[aria-label="Edit title"]';
+const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
+const STATUS_SELECT = 'select[aria-label="Status"]';
+const TITLE_HEADING = 'h1[tabindex="0"]';
 
-/** The header control `selector` names, or `null` when it is absent or refuses input: disabled,
- *  or held with `aria-disabled` (the status's and the priority's triggers on a closed issue or
- *  while a save is in flight, the labels' trigger while their save is out, `IssueLabels`). It is
- *  the one fact both the key's `run` and the `when` that offers it read, so a shortcut is listed
- *  exactly while its control would take a click. */
+/** The header control `selector` names, or `null` when it is absent or refuses input (a closed
+ *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
+ *  so a shortcut is listed exactly while its control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
     return null;
   }
-  const refused =
-    node.getAttribute("aria-disabled") === "true" ||
-    (node instanceof HTMLButtonElement && node.disabled);
-  return refused ? null : node;
+  const disabled =
+    (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
+  return disabled ? null : node;
 }
 
 /**
@@ -272,22 +276,22 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       id: "status",
       keys: "s",
       label: "Focus the status",
-      run: () => usableControl(STATUS_TRIGGER_SELECTOR)?.focus(),
-      when: () => usableControl(STATUS_TRIGGER_SELECTOR) !== null,
+      run: () => usableControl(STATUS_SELECT)?.focus(),
+      when: () => usableControl(STATUS_SELECT) !== null,
     },
     {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
-      run: () => usableControl(PRIORITY_TRIGGER_SELECTOR)?.focus(),
-      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null,
+      run: () => usableControl(PRIORITY_SELECT)?.focus(),
+      when: () => usableControl(PRIORITY_SELECT) !== null,
     },
     {
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
+      when: () => usableControl(PRIORITY_SELECT) !== null && outsideInputsAndAskCards(),
     },
     {
       id: "labels",
@@ -297,14 +301,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The header draws its Edit title button only while the issue is open, so the key is
-      // offered exactly while the title can be edited. The key presses that button, which opens
-      // the editor when it is activated and not when it takes the focus.
+      // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
+      // `onFocus` does not open the editor, so the key is offered exactly while it edits.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_BUTTON)?.click(),
-      when: () => usableControl(TITLE_BUTTON) !== null,
+      run: () => usableControl(TITLE_HEADING)?.focus(),
+      when: () => usableControl(TITLE_HEADING) !== null,
     },
     {
       id: "pin",
@@ -314,12 +317,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
     {
-      // `s` and `p` put the focus on an option list's trigger, the status's or the priority's.
-      // There every single-key binding is suspended, and the next keystroke is the control's own:
-      // the list's search, which a character typed on its closed trigger opens. So `t` opens the
-      // list with `t` in its text box rather than start the tab chord. Escape is the way back
-      // out, as it is on the Inbox rows, the board's cards and the architecture rows. Each
-      // trigger keeps the focus while it is held (`aria-disabled`), so Escape leaves it then too.
+      // `s` and `p` put focus in a native select, where every single-key binding is suspended
+      // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
+      // rather than start the tab chord. Escape is the way back out, as it is on the Inbox
+      // rows, the board's cards and the architecture rows.
       id: "back",
       inEditable: true,
       keys: "Escape",
@@ -327,11 +328,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       run: () => (document.activeElement as HTMLElement | null)?.blur(),
       when: () => {
         const active = document.activeElement;
-        const header = document.querySelector(HEADER);
-        return (
-          active === header?.querySelector(STATUS_TRIGGER_SELECTOR) ||
-          active === header?.querySelector(PRIORITY_TRIGGER_SELECTOR)
-        );
+        return active === usableControl(STATUS_SELECT) || active === usableControl(PRIORITY_SELECT);
       },
     },
     ...tabChords.map(({ keys, label, tab }) => ({
@@ -360,6 +357,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     children: activeTab === "children",
     collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
+    dashboard: activeTab === "dashboard",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
@@ -478,6 +476,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           ) : undefined
         }
       />
+      <div
+        aria-hidden={activeTab !== "dashboard"}
+        aria-labelledby="issue-dashboard-tab"
+        hidden={activeTab !== "dashboard"}
+        id="issue-dashboard-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.dashboard ? (
+          <React.Suspense fallback={null}>
+            <DashboardTab issueKey={issueKey} page="today" />
+          </React.Suspense>
+        ) : null}
+      </div>
       <div
         aria-hidden={activeTab !== "spec"}
         aria-labelledby="issue-spec-tab"

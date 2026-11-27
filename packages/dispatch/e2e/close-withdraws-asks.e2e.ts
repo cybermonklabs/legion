@@ -11,13 +11,7 @@ import {
   requestApproval,
   withOpenedAsk,
 } from "./api";
-import {
-  connectedDot,
-  countDocumentSockets,
-  documentEditor,
-  pickVersion,
-  reconnectedSockets,
-} from "./editor";
+import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -128,9 +122,7 @@ async function openIssueAndInbox(
 /** The block hosts the open, answerable card. */
 async function expectOpenDecision(decision: Locator): Promise<void> {
   await expect(decision.getByRole("radio", { name: "Ship Release it" })).toBeVisible();
-  await expect(
-    decision.getByRole("button", { name: "Add a note or answer in your own words" })
-  ).toBeVisible();
+  await expect(decision.getByRole("textbox", { name: "Your answer" })).toBeVisible();
   await expect(decision.getByTestId("ask-resolution-badge")).toHaveCount(0);
 }
 
@@ -147,9 +139,7 @@ async function expectWithdrawn(
   // The server's reason repeats the sentence, so the card does not show it.
   await expect(decision).not.toContainText("Withdrawn by the close of");
   await expect(decision.getByRole("radio")).toHaveCount(0);
-  await expect(
-    decision.getByRole("button", { name: "Add a note or answer in your own words" })
-  ).toHaveCount(0);
+  await expect(decision.getByRole("textbox", { name: "Your answer" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Awaiting approval" })).toHaveCount(0);
   // The close takes every one of the issue's questions out of the Inbox. From 1280 px the
   // reading column is showing one of them, and a row the reader is reading is held where they
@@ -183,7 +173,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     expect((await getArtifactVersion(seeded.artifactId, before)).markdown).toContain(
       ':::ask{#decision urgency="high" multiple="false" state="open"'
     );
-    await pickVersion(page, before);
+    await page.getByRole("combobox", { name: "Version" }).selectOption(String(before));
     const saved = page
       .getByRole("region", { name: `Document version ${before}` })
       .locator('[data-dispatch-ask-block="decision"]');
@@ -193,7 +183,7 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await expect(saved.getByTestId("ask-resolution-badge")).toHaveCount(0);
     await expect(saved).not.toContainText("Withdrawn");
     await expect(saved).not.toContainText("Resolved");
-    await pickVersion(page, null);
+    await page.getByRole("combobox", { name: "Version" }).selectOption("");
 
     // The close dropped the document's socket, and its reconnect is admitted read-only while the
     // issue is closed: the page a person who reopens after the draw holds, which the Reopen below
