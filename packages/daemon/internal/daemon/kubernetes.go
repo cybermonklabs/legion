@@ -215,7 +215,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	opts.LaunchTakes = p.launchRounds.takes
 	opts.LaunchTook = p.launchRounds.took
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
-		p.memoryGuardKills, p.volumeReports)
+		p.memoryGuardKills, p.volumeReports, nil)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -628,9 +628,13 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
+//
+// leakCheckBuilt is nil in production. A test passes it to receive the leak-check reader the
+// factory built and put into opts.LeakCheck, so the test checks that reader and not one it built
+// itself (controllerSweepKindRuntime).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
-	reports *volumeTrimReports) runtimeFactory {
+	reports *volumeTrimReports, leakCheckBuilt func(sandbox.LeakCheckReader)) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository,
 		held func() bool) (runtime.Runtime, error) {
@@ -655,6 +659,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
 		// role whose launcher names a tag under a named check with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
+		if leakCheckBuilt != nil {
+			leakCheckBuilt(opts.LeakCheck)
+		}
 		// Each process an issue pod's memory guard ends, and each the controller pod's ends,
 		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
@@ -883,13 +890,13 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 }
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
-// pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
+// pod's workspace-init clones with an installation token minted for the owner of the repository it
+// fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
 // permission at read: appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache
 // could write with. Every refusal is returned as it came, with no second mint: GitHub's trouble
-// (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
-// owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
-// lease asks for (appauth.ErrNarrowingRefused) alike.
+// (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the owner
+// (appauth.ErrNotInstalled), and an installation that is not granted what the reading lease asks
+// for (appauth.ErrNarrowingRefused) alike.
 //
 // That last one once fell back to the owner's own write token, since a request naming a
 // repository the installation did not reach was refused with the same 422 as a permission it
@@ -904,13 +911,13 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 // configured rename moved to another owner is turned here, once, into the name whose installation
 // holds it now (serving): nothing under runtime/sandbox knows of a rename.
 //
-// Only the token follows the rename. Every address those three sites build — the pod's feed, its
-// clone, and the repository cache's volume and Service — stays the repository the record names,
-// which a transfer must not move: GitHub's own documentation of a transfer says "All links to the
-// previous repository location are automatically redirected to the new location. When you use
-// `git clone`, `git fetch`, or `git push` on a transferred repository, these commands will
-// redirect to the new repository location or URL", so a clone or a fetch addressed at the name
-// the record keeps reaches the repository GitHub holds today.
+// Only the token follows the rename. Every address those three sites build — the pod's clone and
+// the repository cache's volume and Service — stays the repository the record names, which a
+// transfer must not move: GitHub's own documentation of a transfer says "All links to the previous
+// repository location are automatically redirected to the new location. When you use `git clone`,
+// `git fetch`, or `git push` on a transferred repository, these commands will redirect to the new
+// repository location or URL", so a clone or a fetch addressed at the name the record keeps reaches
+// the repository GitHub holds today.
 type implementTokens struct {
 	apps    appauth.Tokens
 	serving func(ghrepo.Repository) ghrepo.Repository
