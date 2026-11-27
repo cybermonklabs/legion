@@ -9,9 +9,9 @@
 //
 // It records what it was started with — its argv, the session, whether it resumed, and each
 // --append-system-prompt value with the text Oh My Pi takes from it (systemPromptText) — in
-// <cwd>/standin-<pid>.json once registered, for the test to read. A prompt whose message is
-// "ignore SIGTERM" makes it ignore SIGTERM from then on: a process that will not end itself, so a
-// stop has to fall back to killing its pane.
+// <cwd>/standin-<pid>.json once registered, renamed into place whole, for the test to read. A
+// prompt whose message is "ignore SIGTERM" makes it ignore SIGTERM from then on: a process that
+// will not end itself, so a stop has to fall back to killing its pane.
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -125,7 +126,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(cwd, fmt.Sprintf("standin-%d.json", report.Pid)), encoded, 0o600); err != nil {
+	if err := writeWhole(filepath.Join(cwd, fmt.Sprintf("standin-%d.json", report.Pid)), encoded); err != nil {
 		return err
 	}
 	if err := post(daemon+"/legion/v1/claims/ready", claim.ReadyRequest{
@@ -137,6 +138,28 @@ func run() error {
 		return err
 	}
 	return serve(os.Stdin, os.Stdout)
+}
+
+// writeWhole writes data to a 0600 temporary file in path's directory and renames it over path, so
+// a reader sees no file or the whole of it. os.WriteFile creates path before it writes a byte, and
+// the test reads the report as soon as it exists: a read between the two parsed an empty or
+// part-written report. The temporary file is removed when any step fails.
+func writeWhole(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	_, err = tmp.Write(data)
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		return errors.Join(err, os.Remove(tmp.Name()))
+	}
+	return nil
 }
 
 // systemPromptText is the text Oh My Pi 18.16.0 takes from one --append-system-prompt value: a
