@@ -164,7 +164,7 @@ func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testi
 		}
 	}
 
-	overtaken, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
+	overtaken, response, err := documentDialer(t).Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		status := "no response"
 		if response != nil {
