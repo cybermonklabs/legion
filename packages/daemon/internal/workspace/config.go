@@ -20,6 +20,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 // CommandTimeout is the slow-command budget both runtimes' provisioning gives every command it
@@ -272,6 +274,10 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, command.Timeout)
 	defer cancel()
+	// CONTROL ONLY (#5206 far-budget row): the budget passes at the leader's own exit, before Wait
+	// has read that exit (runPassingTheBudgetAtTheLeadersExit).
+	bounded, passAtLeadersExit, endStandIn := testwait.StandInDeadline(bounded)
+	defer endStandIn()
 
 	executable, ok := r.tools[command.Argv[0]]
 	if !ok {
@@ -339,7 +345,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
-	err = child.Run()
+	err = runPassingTheBudgetAtTheLeadersExit(child, passAtLeadersExit, killed)
 	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
 		(*hook)(command, child.ProcessState)
 	}
@@ -355,6 +361,29 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	result.ExitCode = child.ProcessState.ExitCode()
 	return result, nil
+}
+
+// runPassingTheBudgetAtTheLeadersExit is CONTROL ONLY (#5206 far-budget row): child.Run, but the
+// budget passes at the leader's own exit. It waits for the leader to exit without reaping it
+// (waitid WNOWAIT), passes the budget then, and lets exec's Cancel stop the group before Wait
+// reads the exit: the child the leader left in its group takes the SIGTERM, the unreaped leader
+// holds the group through the grace, and the stop counts as the budget's kill. A command that
+// exited on its own is then reported as timed out.
+func runPassingTheBudgetAtTheLeadersExit(child *exec.Cmd, pass func(error), killed func() bool) error {
+	if err := child.Start(); err != nil {
+		return err
+	}
+	var info unix.Siginfo
+	for {
+		if err := unix.Waitid(unix.P_PID, child.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil); !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	pass(context.DeadlineExceeded)
+	for until := time.Now().Add(10 * time.Second); !killed() && time.Now().Before(until); {
+		time.Sleep(time.Millisecond)
+	}
+	return child.Wait()
 }
 
 // guardedWorkspace is what a jj command has opened after guardWorkspace held each untrusted path
