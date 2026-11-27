@@ -177,6 +177,18 @@ export interface MarkedList {
  * it unmade. A window `blur` ends the key's wait without a read and removes its listeners, even if
  * the keyup never comes.
  *
+ * **Handed on.** The page's own hand-off, or any move of the focus to a control that stays that
+ * the hand-off did not make, ends what is owed, and the hand-off never takes the focus back from
+ * such a control: after a snooze made with a row's own key, the Inbox's hand-off (its R8, through
+ * its pane selection) puts the focus on the row of the item after the snoozed asks while the bar's
+ * going owes a landing too. Where the focus stands is noted once the landing is owed, and again
+ * after each move the hand-off makes itself (`park`, `holdOnStop`), and read when the landing is
+ * made, once the foot's pass has run: a focus that stands elsewhere then, and not on the page's
+ * body, on the list's own stop or in a row the list names as leaving, ends it unmade. So a focus
+ * that a row's going drops onto the body is still landed. A reader's own act is read by
+ * **Cancelled**, which ends what is owed as the act comes, before any landing, and what its read
+ * owes again is noted afresh.
+ *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
  * row nor to the page's body. One case is not answered yet: a bar action that a dialog confirms,
  * as the parent-status confirmation dialog for Move to epic does, ends on the body, because the
@@ -193,6 +205,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // What is owed, from the bar's going until the landing is made or the reader acts. Null in Idle
   // and once it is settled. Its identity is the token a landing waiting on the foot's pass checks.
   const owed = useRef<Owed | null>(null);
+  // Where the focus stood once the landing was owed, or once the hand-off itself last moved it
+  // (`park`, `holdOnStop`): the landing reads a focus the page has moved on from there to a control
+  // that stays as the page's own hand-off (Handed on).
+  const owedFocus = useRef<Element | null>(null);
   // The read of where the reader's act left the focus, which `owe` puts off until the act has been
   // answered (`afterAnswer`), as this render wrote it below: it can owe the landing again, through
   // `owePlace`, which is written after `owe` and owes through it.
@@ -274,6 +290,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         });
       }
       owed.current = entry;
+      owedFocus.current = document.activeElement;
     },
     [settle]
   );
@@ -285,6 +302,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     (live: MarkedList, next: Exclude<OwedFor, { readonly kind: "place" }>): void => {
       owe(next);
       holdOnStop(live);
+      owedFocus.current = document.activeElement;
     },
     [owe]
   );
@@ -331,9 +349,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     [drawLast, waitDrawn]
   );
   /** Makes the owed landing once the foot's pass has given the list its room back: the place, or
-   *  the named target the page has now drawn. Reads the floats again before fitting the list
-   *  (`MarkedList`'s `fit`), so the first fit uses the room the list keeps. A later commit asks
-   *  again while the same landing is owed, and the first answer settles it. A windowed table's
+   *  the named target the page has now drawn, unless the page has moved the focus on since to a
+   *  control that stays, which ends it unmade (Handed on). Reads the floats again before fitting
+   *  the list (`MarkedList`'s `fit`), so the first fit uses the room the list keeps. A later commit
+   *  asks again while the same landing is owed, and the first answer settles it. A windowed table's
    *  own landing is the table's. */
   const landAfterFootPass = useCallback(() => {
     const place = owed.current;
@@ -342,6 +361,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       if (owed.current !== place) return;
       settle();
       const live = latest.current;
+      if (focusMovedOn(live, owedFocus.current)) return;
       footPassNow();
       live.fit?.();
       landNow(live, place.last, place.to);
@@ -350,7 +370,10 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   const parkOrLand = useCallback(
     (live: MarkedList, last: string | null, to: LandingTarget | undefined) => {
       if (anyLeaving(live)) {
-        if (focusOnDocument()) park(live, last, to);
+        if (focusOnDocument()) {
+          park(live, last, to);
+          owedFocus.current = document.activeElement;
+        }
         return;
       }
       landAfterFootPass();
@@ -494,6 +517,17 @@ function holdOnStop(list: MarkedList): void {
 function focusInLeavingRow(list: MarkedList): boolean {
   const { leaving } = list;
   return leaving !== undefined && listRowContains(list, document.activeElement, leaving);
+}
+
+/** Whether the focus stands somewhere other than `noted`, where it stood once the landing was
+ *  owed or once the hand-off itself last moved it, on a control that stays: not on the page's
+ *  body, not on the list's own stop, and in no row the list names as leaving
+ *  (`useLastMarkedPlace`'s Handed on). */
+function focusMovedOn(list: MarkedList, noted: Element | null): boolean {
+  const focused = document.activeElement;
+  return (
+    focused !== noted && !focusOnDocument() && focused !== list.list() && !focusInLeavingRow(list)
+  );
 }
 
 /** Whether a drawn row of the list contains `target`, limited to rows `matches` accepts if given. */
