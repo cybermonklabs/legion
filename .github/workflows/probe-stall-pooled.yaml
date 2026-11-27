@@ -1,0 +1,228 @@
+name: Probe envoy-session-stall pooled
+
+# The steps of `.github/workflows/ci.yaml#envoy-session-stall` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      leg:
+        type: string
+        required: true
+      slots:
+        type: string
+        required: false
+        default: ''
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-session-stall:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      LEGION_E2E_ENVOY_STACK: "1"
+      HARNESS_POOL_SLOTS: ${{ inputs.slots }}
+      LEGION_E2E_DISPATCH_STACK: "1"
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Sample CPU every 5 s
+        run: |
+          nproc; lscpu | grep -E 'Model name|^CPU\(s\)'
+          TZ=UTC nohup vmstat -n -t 5 > "$RUNNER_TEMP/vmstat.log" 2>&1 < /dev/null &
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's
+      # e2e-local.sh does.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      - name: Build contracts for the stall suites
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Mark the suites' start
+        run: date -u +%s > "$RUNNER_TEMP/suites-start"
+      # The Dispatch server, which each of the four Dispatch suites below builds
+      # (test/dispatch-stack.ts), and the NATS auth service, which the broker credential tests build
+      # beside natsd: the go-envoy entry holds the objects of neither, so the first build of each in
+      # a run compiles it. One step after another, only the first Dispatch suite paid that compile
+      # (22.6 s to its first row against 5.9 s for the next, job 140522567454); queued in the pool,
+      # the four started within 16 s of each other and each compiled it again (66.8, 31.2, 16.3 and
+      # 16.6 s of CPU, job 140590752284). This step compiles both once, before any suite starts, so
+      # no suite's rows share the processors with that compile and each suite that builds either
+      # links it from this run's build cache. A go build of two main packages links them and
+      # writes neither binary.
+      - name: Build the Dispatch server and the NATS auth service once for the suites below
+        run: go build ./cmd/dispatch ./internal/testnats/cmd/calloutd
+        working-directory: packages/envoy
+      # The suites below, each a Bun suite or the shell smoke against a stack of its own, mostly
+      # wait out the real windows and timers they are about: nats.js's ping and dial timers, the
+      # listener's live window, gone horizon and reap interval. As one step after another they were
+      # 508 s of this job's 556 s median (17 green merge-group jobs, runs 45956128163 to
+      # 46003911119, 2026-11-27), and the runner's four cores were 9.6 to 10.5 % busy over them
+      # (vmstat every 5 s, four jobs of probe run 46024057392). Each step below keeps its name and
+      # hands its suite to .github/scripts/harness-pool.sh, which queues it and returns; the suites
+      # then run beside each other, no more at once than the runner has cores, in the order
+      # queued, and "Wait for the script harnesses and judge them" is their verdict and prints each
+      # one's log (.github/ci-notes/ci.md#the-harness-pool). What each suite runs is its own: every
+      # stack builds its binaries into a scratch directory of its own and keeps its servers' state
+      # there, its servers serve on ports the kernel chose for them, and each Dispatch stack makes
+      # a database of its own (packages/envoy-client/test/envoy-stack.ts, test/dispatch-stack.ts,
+      # packages/pi-envoy/scripts/smoke-role-takeover.sh). The checkout, the Postgres service and
+      # the Go module and build caches are shared. The suites are queued longest first, by the step
+      # medians of those 17 jobs, so the shorter ones fill the other cores around the longest: the
+      # smoke 113 s, envoy-client's NATS stall 105 s, the session state rig 84 s, claude-envoy's
+      # stall 72 s, the broker credential tests 44 s, pi-envoy's stall 32 s, the design-gate advice
+      # 26 s, the comment mention 17 s, the keyed resend 8 s and the moved-approval advice 7 s.
+      #
+      # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
+      # with real client processes against a listener and natsd this job already sets Go up for.
+      # It needs no model provider and no deployment, so unlike the other smokes in
+      # packages/pi-envoy/scripts it runs here.
+      - name: Role takeover smoke
+        run: .github/scripts/harness-pool.sh start packages/pi-envoy/scripts/smoke-role-takeover.sh bash packages/pi-envoy/scripts/smoke-role-takeover.sh
+      - name: Stall test of envoy-client's NATS connection options
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/nats-stall.test.ts bun test src/__tests__/nats-stall.test.ts
+        working-directory: packages/envoy-client
+      # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
+      # this one as a file because of the leading "./".
+      - name: Session state rig of a stalled session
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/test/session-stall.ts bun test ./test/session-stall.ts
+        working-directory: packages/envoy-client
+      - name: Stall test of claude-envoy
+        run: ../../.github/scripts/harness-pool.sh start packages/claude-envoy/tests/envoy-channel-stall.test.ts bun test tests/envoy-channel-stall.test.ts
+        working-directory: packages/claude-envoy
+      # A session's broker-token credential on a real natsd behind the real NATS auth service
+      # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
+      # while the stub broker is away, every reconnect refused and the connection admitted again
+      # once a token is live (slice E2, t-e-9); and a session switch that subscribes
+      # the new session's subject only once the connection is admitted with its token (t-e-10).
+      - name: Broker credential tests on a hub behind the auth service
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/nats-credential.test.ts bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
+        working-directory: packages/envoy-client
+      # Through the package's own test script, so the file's hooks get the one --timeout that
+      # packages/pi-envoy/package.json sets, as the pi-envoy job's run gives them.
+      - name: Stall test of pi-envoy
+        run: ../../.github/scripts/harness-pool.sh start packages/pi-envoy/extensions/envoy.test.ts bun run test extensions/envoy.test.ts -t "NATS path freezes"
+        working-directory: packages/pi-envoy
+      # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
+      # the server this suite starts is built from this tree, so what it asserts is the sentence a
+      # person reads in a terminal rather than one rendered from a stub.
+      - name: Design-gate advice of the real CLI against a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/design-gate-advice.live.test.ts bun test src/__tests__/design-gate-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
+      # target, which is what lets an agent write to the owner of a subject and leave the retry
+      # to Dispatch.
+      - name: Comment mention of the real CLI against a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/comment-mention.live.test.ts bun test src/__tests__/comment-mention.live.test.ts
+        working-directory: packages/envoy-client
+      # A keyed write a real Dispatch refused because it could not resolve the caller.
+      # The client of this tree sends it again under its own key against a server of this tree,
+      # started with an OIDC issuer nothing serves, and the issue holds the comment once.
+      # It needs the same Postgres and Go this job already has.
+      - name: A refused keyed write resent under its key against a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/dispatch-keyed-resend-live.test.ts bun test src/__tests__/dispatch-keyed-resend-live.test.ts
+        working-directory: packages/envoy-client
+      # The moved-approval-request advice over the same real CLI and real Dispatch
+      # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
+      # open approval request back from the person is the field the CLI reads and prints.
+      - name: Moved-approval advice of the real CLI against a real Dispatch
+        run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/moved-approval-advice.live.test.ts bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # The verdict on the suites the steps above queued: it waits for the last of them, prints
+      # each one's log in a group of its own with its wall and CPU seconds, and fails naming each
+      # suite that failed (.github/scripts/harness-pool.sh). A job that passed every step to here
+      # queued all of its suites, so a wait that finds none fails it; one that failed before the
+      # suite steps has nothing to judge, and --allow-none keeps that from adding a second error
+      # to the first. `!cancelled()` rather than `always()`: the runner signals a running step on
+      # a cancel only when its condition no longer holds, and the wait answers that signal by
+      # naming each suite still running with its log so far; `exec`, so the signal reaches the
+      # wait itself.
+      - id: harness-wait
+        name: Wait for the script harnesses and judge them
+        if: ${{ !cancelled() }}
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          args=()
+          if [[ $JOB_STATUS != success ]]; then args+=(--allow-none); fi
+          exec .github/scripts/harness-pool.sh wait "${args[@]}"
+      # A job cancelled, or past its timeout, before the step above began: name each suite it
+      # queued as it is, with its log so far, rather than lose them with the job.
+      - name: Name the script harnesses a cancelled job left
+        if: cancelled() && steps.harness-wait.outcome == 'skipped'
+        run: .github/scripts/harness-pool.sh wait --allow-none --now
+      - name: CPU over the suites
+        if: always()
+        run: |
+          end=$(date -u +%s); start=$(cat "$RUNNER_TEMP/suites-start")
+          echo "suites wall $((end - start)) s"
+          python3 - "$RUNNER_TEMP/vmstat.log" "$start" "$end" <<'PY'
+          import sys, datetime, statistics
+          log, start, end = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+          head = None; rows = []
+          for line in open(log):
+              f = line.split()
+              if 'us' in f and 'id' in f: head = f; continue
+              if head is None or not f or not f[0].isdigit(): continue
+              t = int(datetime.datetime.strptime(f[-2] + ' ' + f[-1], '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc).timestamp())
+              if start <= t <= end: rows.append(dict(zip(head, f)))
+          busy = [100 - int(r['id']) for r in rows]; run = [int(r['r']) for r in rows]
+          print(f'samples {len(rows)}; busy mean {statistics.mean(busy):.1f} % p50 {statistics.median(busy)} p90 {sorted(busy)[int(0.9*len(busy))-1]} max {max(busy)}; us mean {statistics.mean(int(r["us"]) for r in rows):.1f} sy {statistics.mean(int(r["sy"]) for r in rows):.1f} wa {statistics.mean(int(r["wa"]) for r in rows):.1f}; run queue mean {statistics.mean(run):.2f}' if rows else 'UNKNOWN: no vmstat sample inside the suites window')
+          PY
+          cat "$RUNNER_TEMP/vmstat.log"

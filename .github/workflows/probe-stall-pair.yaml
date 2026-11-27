@@ -1,0 +1,30 @@
+name: Probe envoy-session-stall serial vs pooled
+
+# Throwaway: a paired measurement of the envoy-session-stall job, serial (main's steps) against
+# the pooled job of ci/envoy-session-stall-pool 444ed9c1, at the same time.
+on:
+  push:
+    branches: [probe/stall-pool-pair]
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+jobs:
+  serial:
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3, 4]
+    uses: ./.github/workflows/probe-stall-serial.yaml
+    with:
+      leg: ${{ matrix.leg }}
+  pooled:
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3, 4, 5, 6]
+    uses: ./.github/workflows/probe-stall-pooled.yaml
+    with:
+      leg: ${{ matrix.leg }}
