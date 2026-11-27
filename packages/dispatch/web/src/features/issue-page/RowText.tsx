@@ -30,7 +30,7 @@ import {
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
-import { titleReading } from "./tree-drafts";
+import { titleReading } from "./statement-rules";
 
 /**
  * A node's own text, as its row in the outline draws it (R16, R20, R34), and the words of the
@@ -52,7 +52,7 @@ import { titleReading } from "./tree-drafts";
  * page's one batched read of what its references point at, which the page publishes
  * (`refs/reference-names.tsx`), and a party by its own read. An issue reads as its key and
  * title, and a block or a document as a chip in place, named as a tie's chip is, in the plain
- * words the shared projection reads a name to (`tree-drafts.ts`'s `treeContext`, part G's R4),
+ * words the shared projection reads a name to (`target-naming.ts`'s `treeContext`, part G's R4),
  * so a numbered step keeps its number (decisions 66 and 88). A short reference that two or more
  * targets answer to names no one of them: the page publishes it as ambiguous, apart from the
  * names (`KnownReferences.ambiguous`), and it is drawn as its author wrote it, with no link

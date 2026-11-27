@@ -71,6 +71,10 @@ type fakeGitHub struct {
 	// stalls is how long one path's answer is held back before it is given, which is how a test
 	// makes GitHub slower than the pass's own bound (stall).
 	stalls map[string]time.Duration
+	// stalled is called as the stand-in begins holding an answer back (stall, stallQuery), which
+	// is the moment a test that ends the pass's bound itself ends it (boundEndsAtTheStall). Nil
+	// calls nothing, and the answer waits out its stall or its caller's end.
+	stalled func()
 	// answerCodes is the status one path is answered with in place of its route's answer, which
 	// is how a test makes GitHub give up on or refuse that one read (answerStatus).
 	answerCodes map[string]int
@@ -312,9 +316,13 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		failed = true
 	}
 	stall := f.stalls[r.URL.Path]
+	stalled := f.stalled
 	status := f.answerCodes[r.URL.Path]
 	f.mu.Unlock()
 	if stall > 0 {
+		if stalled != nil {
+			stalled()
+		}
 		// GitHub is slower to answer this than the pass has left. The caller giving up on the
 		// request closes its context here, so the answer is abandoned at once rather than held
 		// until the wait is over, which would keep the server's own Close waiting at the end of
@@ -508,6 +516,14 @@ func (f *fakeGitHub) stall(path string, wait time.Duration) {
 		return
 	}
 	f.stalls[path] = wait
+}
+
+// atStall makes the stand-in call stalled as it begins holding an answer back (stall,
+// stallQuery), before it waits.
+func (f *fakeGitHub) atStall(stalled func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stalled = stalled
 }
 
 // answerStatus answers every request to path with status and GitHub's short message for it,

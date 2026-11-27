@@ -144,8 +144,9 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   kubectl -n agent-sandbox-system get deployment agent-sandbox-controller
   ```
 
-- **The image probe refuses.** The daemon runs the worker image's launch probes in a probe Sandbox,
-  `legion-probe-<project>-<digest prefix>`, and quotes the probe's log. The causes it names:
+- **The image probe refuses.** The daemon runs the worker image's plugin load probe and capability
+  check in a probe Sandbox, `legion-probe-<project>-<digest prefix>`, and quotes the probe's log.
+  The causes it names:
   - the image's plugin speaks another daemon contract than this binary: run the `legion` binary
     from the same commit as the image ([Upgrade](/legion/legion/running-legion/#upgrade));
   - the registry does not have the image (`… failed its probe: the registry does not have image
@@ -1035,9 +1036,13 @@ stood, is the usual cause — the command prints a second line under the claim's
 claim is back in a new session owing no task and why nothing restarted its phase, and the
 controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
 empty answer: the claim is running with no work, so clear what the line names and run the
-command again to hand the claim its phase's task. `phaseNotRestarted` carries that sentence or
-the one about the forget or the start that was refused after the claim was stopped, and never
-both.
+command again to hand the claim its phase's task. `phaseNotRestarted` carries at most one
+sentence: that one; a start that waits for an admission slot its issue does not hold, naming the
+issues the issue waits on, where the claim stays failed or retired, or runs with its task waiting,
+until the slot comes; a start refused after the recorded session was already left behind, with
+the state that leaves the claim in; or the forget or the start that was refused after the claim
+was stopped. The plain `legion claims retry` prints the wait's sentence the same way, and the
+controller's own `retry` answers it in the `phaseNotRestarted` of its answer.
 
 When a failed architect's session was lost with its volume, clear the stopped claim's matching
 record before retrying:
