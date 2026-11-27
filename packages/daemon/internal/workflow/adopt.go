@@ -81,6 +81,13 @@ func (e *Engine) closedTreesMember(ctx context.Context, tx pgx.Tx, member record
 	if member.Phase != phase.Admitted {
 		return false, nil
 	}
+	// A member whose generation is a next change is work the daemon started after its own merge
+	// (record.OnNextChange, D10): another tree's release would clear that change with the whole
+	// new record it writes (moveIntoTree), so no release takes it, and it waits at admitted until
+	// its own tree runs again.
+	if record.OnNextChange(member) {
+		return false, nil
+	}
 	root, err := e.store.Issue(ctx, tx, member.Tree)
 	if err != nil || root == nil {
 		return false, err

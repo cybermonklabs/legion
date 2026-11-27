@@ -218,6 +218,11 @@ func (e *Engine) waitNamesDefects(ctx context.Context, tx pgx.Tx, issue record.I
 	if issue.Phase == phase.Verifying {
 		return e.judgeCloseNoting(ctx, tx, issue, withdrawn)
 	}
+	// An open next change ends with no pull request once each reason it carries is resolved, a
+	// reported defect by its withdrawal, so a report or a withdrawal judges the change (D7).
+	if issue.NextChange != 0 {
+		return e.judgeOpenChange(ctx, tx, issue, withdrawn)
+	}
 	if !record.StandsIn(issue, phase.Retro, phase.Merging) && len(issue.CloseWait) == 0 {
 		return nil
 	}
