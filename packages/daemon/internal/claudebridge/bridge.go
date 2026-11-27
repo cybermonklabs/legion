@@ -172,7 +172,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	b.frames = shimwire.NewWriter(&b.encoded)
 	if poster := startDaemonPoster(cfg, b.log); poster != nil {
 		b.reports = &turnReports{daemonPoster: poster}
-		b.requests = startModelRequests(poster)
+		b.requests = startModelRequests(poster, cfg.requestWindows)
 	}
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.

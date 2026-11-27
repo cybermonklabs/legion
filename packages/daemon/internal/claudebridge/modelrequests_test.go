@@ -17,13 +17,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// windowClock is a Config.Clock on which only the model requests' batch window passes, and only
-// when the row moves it: advance moves it on and fires each window due by then, and fire moves it
-// on by requestWindow. A window is requestWindow long, or what is left of it since the newest line
-// of an open request was read (modelRequests' armLocked). The turn outcome's bound is as long as
-// a window (reportTimeout) and passes with it; every other timer of the bridge's (otherTimers)
-// never fires on it, so a row reads what the bridge sent before the window, at it, and at the
-// turn's end apart.
+// windowClock is a Config.Clock that moves only when the row moves it, on which no timer of the
+// bridge's fires (After), and the model requests' window timer (window, modelRequests.windowAfter),
+// which fires once the row moves the clock to its due: advance moves the clock on and fires each
+// window due by then, and fire moves it on by requestWindow. So a row reads what the bridge sent
+// before a window, at it, and at the turn's end apart, and no other timer of the bridge's is taken
+// for a window, whatever its length.
 type windowClock struct {
 	mu      sync.Mutex
 	waiting []windowTimer
@@ -36,25 +35,30 @@ type windowTimer struct {
 	fires chan time.Time
 }
 
-// otherTimers is the length of each timer of the bridge's but a window and the turn outcome's
-// bound: the stop's Grace, drainTimeout and flushTimeout, the inbox's flush and a report of model
-// requests' bound. No window a row arms is as long as one of them.
-var otherTimers = []time.Duration{Grace, drainTimeout, flushTimeout, inboxFlushTimeout, requestReportTimeout}
-
 func (c *windowClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.at
 }
 
-func (c *windowClock) After(d time.Duration) <-chan time.Time {
+// After is each timer of the bridge's but the window: a channel nothing sends on, so none fires.
+func (c *windowClock) After(time.Duration) <-chan time.Time { return make(chan time.Time) }
+
+// window is the model requests' window timer (modelRequests.windowAfter), which fires once the
+// clock reaches its due.
+func (c *windowClock) window(d time.Duration) <-chan time.Time {
 	fires := make(chan time.Time, 1)
-	if d <= requestWindow && !slices.Contains(otherTimers, d) {
-		c.mu.Lock()
-		c.waiting = append(c.waiting, windowTimer{due: c.at.Add(d), fires: fires})
-		c.mu.Unlock()
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waiting = append(c.waiting, windowTimer{due: c.at.Add(d), fires: fires})
 	return fires
+}
+
+// set puts the clock at at, firing nothing.
+func (c *windowClock) set(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = at
 }
 
 // advance moves the clock on by d, fires each window due by then, and answers how many.
@@ -74,8 +78,8 @@ func (c *windowClock) advance(d time.Duration) int {
 	return fired
 }
 
-// fire moves the clock on by requestWindow, which fires each window the bridge has asked for
-// since the clock last moved, and answers how many it fired.
+// fire moves the clock on by requestWindow, which fires each window due by then, and answers how
+// many it fired.
 func (c *windowClock) fire() int { return c.advance(requestWindow) }
 
 // requestsRig is a rig whose pane names a daemon that takes both of the bridge's reports: each
@@ -247,10 +251,14 @@ const (
 // uncached input tokens and nothing about a refusal. The daemon's route decodes each report
 // strictly (newRequestsRig), so a member a request does not name fails the row that sent it.
 func TestBridgeReportsModelRequests(t *testing.T) {
+	// Not parallel: startRig sets TMPDIR with t.Setenv.
+
 	// The window sends every answer seen so far, including the last one whose result has not
 	// arrived. The result must not send any of those IDs twice.
 	t.Run("partial", func(t *testing.T) {
 		r := newRequestsRig(t)
+		// Place the bridge's clock at the first request's timestamp, as a live bridge's is.
+		r.clock.set(time.Date(2026, time.November, 26, 5, 13, 16, 266_000_000, time.UTC))
 		r.prompt("p1", "replay subagent-turn.jsonl")
 		r.expect("agent_start", nil)
 		r.untilAnswer()
@@ -282,8 +290,6 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 			{session: capturedSubagent, model: capturedModel, endedAt: "2026-11-26T05:13:16.34Z", uncached: "49"},
 			{session: capturedSession, model: capturedModel, endedAt: "2026-11-26T05:13:16.441Z", uncached: "49"},
 		})
-		// The turn outcome's own bound is as long as the window (reportTimeout), so it is read
-		// before the window is fired: the fire would end that report's call.
 		select {
 		case outcome := <-r.outcomes:
 			want := claim.TurnOutcomeRequest{BootToken: testBootToken, Generation: 4, Sequence: 1, Outcome: claim.TurnClean}

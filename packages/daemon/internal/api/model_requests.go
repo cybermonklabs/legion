@@ -4,9 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -33,12 +31,13 @@ import (
 // The generation is the authenticated launch's: a body naming another is refused as stale.
 //
 // The batch is one fact (intake.ModelRequests) under an id that names the claim, the generation
-// and the batch's ids, each with the end it reports. The fact keeps no processed mark (intake's
-// keepsMark), which would be a row for ever for each report: a batch sent again applies again
-// and keeps nothing twice, since the store keeps each request once by the claim, the generation
-// and its id; a batch carrying an id already held keeps that id's first report, but for a later
-// end, to which the store moves the request (record.Store.KeepModelRequests): the Claude Code
-// bridge reports a request again with the end of a block of it that came after its report.
+// and the batch's ids. The id only names the fact: the fact keeps no processed mark (intake's
+// keepsMark), which would be a row for ever for each report, so nothing reads the id for a
+// duplicate. A batch sent again applies again and keeps nothing twice, since the store keeps each
+// request once by the claim, the generation and its id; a batch carrying an id already held keeps
+// that id's first report, but for a later end, to which the store moves the request
+// (record.Store.KeepModelRequests): the Claude Code bridge reports a request again with the end of
+// a block of it that came after its report.
 func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 	var req claim.ModelRequestsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireGeneration(w, r, req.Generation) {
@@ -60,7 +59,7 @@ func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 	for i, request := range req.Requests {
 		ids[i] = request.ID
 	}
-	result, err := s.apply(r.Context(), "api", modelRequestsFactID(token, generation, req.Requests),
+	result, err := s.apply(r.Context(), "api", modelRequestsFactID(token, generation, ids),
 		intake.ModelRequests{Claim: token, Generation: generation, Requests: req.Requests})
 	if err != nil {
 		s.logFailure("api: keep a report of model requests", "claim", token, "generation", generation, "error", err)
@@ -162,16 +161,10 @@ func modelRequestsProblem(requests []claim.ModelRequest) string {
 }
 
 // modelRequestsFactID names a batch's fact: the claim, the launch generation and a digest of the
-// batch's ids, each with the instant it reports the request ended, in order of the ids, so the
-// same batch sent again names the same fact, and a batch of other ids, or one that reports a later
-// end of a request already held, a fact of its own. The fact keeps no processed mark under it
-// (intake's keepsMark): the store keeps each request once by its own key.
-func modelRequestsFactID(token claim.Token, generation uint64, requests []claim.ModelRequest) string {
-	keys := make([]string, len(requests))
-	for i, request := range requests {
-		keys[i] = request.ID + "\t" + request.EndedAt.UTC().Format(time.RFC3339Nano)
-	}
-	slices.Sort(keys)
-	sum := sha256.Sum256([]byte(strings.Join(keys, "\n")))
+// batch's ids. The id only names the fact, in an error about it (intake.ApplyFact): the fact keeps
+// no processed mark (intake's keepsMark), so nothing reads the id for a duplicate, and the store
+// keeps each request once by its own key.
+func modelRequestsFactID(token claim.Token, generation uint64, ids []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(ids, "\n")))
 	return fmt.Sprintf("model-requests:%s:%d:%x", token, generation, sum)
 }

@@ -73,6 +73,9 @@ type Config struct {
 	// the stop against those bounds by moving the clock, not by how long a loaded machine took.
 	// No other wall-clock wait is in the bridge (TestTheBridgeWaitsOnlyOnItsClock).
 	Clock Clock
+	// requestWindows, where a test names it, is the timer the model requests' window runs on in
+	// place of Clock's (modelRequests.windowAfter), so a row moves the window alone.
+	requestWindows func(time.Duration) <-chan time.Time
 }
 
 // Clock measures report age and supplies the bridge's timers.

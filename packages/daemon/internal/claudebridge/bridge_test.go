@@ -451,6 +451,10 @@ func startRig(t *testing.T, extra []string, clock Clock, args ...string) *rig {
 	outR, outW := io.Pipe()
 	logged := &lockedBuffer{}
 	cfg.Stdin, cfg.Stdout, cfg.Log, cfg.Clock = inR, outW, logged, clock
+	// A row of the model requests' window moves the window alone (windowClock.window).
+	if windows, ok := clock.(*windowClock); ok {
+		cfg.requestWindows = windows.window
+	}
 	r := &rig{t: t, daemon: inW, frames: make(chan map[string]any, 100), record: record, gate: gate,
 		log: logged, done: make(chan int, 1)}
 	ctx, cancel := context.WithCancel(context.Background())

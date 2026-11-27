@@ -59,7 +59,7 @@ func newModelRequestRig(t *testing.T, answer func(http.ResponseWriter, []string,
 	r.reporter = startModelRequests(&daemonPoster{
 		url: daemon.URL, generation: 4, bootToken: testBootToken,
 		client: daemon.Client(), clock: r.clock, log: log.New(r.logged, "", 0),
-	})
+	}, r.clock.window)
 	return r
 }
 
@@ -202,11 +202,13 @@ func TestModelRequestsWindowFlushesOpenRequestDuringLongToolCall(t *testing.T) {
 }
 
 // The role's own request and a subagent's interleave: each session has its own open request,
-// which only a later line of that session, the turn's result, or requestWindow with no line of it
-// closes. The window the first block armed comes while both are being written and sends neither;
-// the subagent's tool result closes the subagent's request alone; the next window comes when the
-// role's newest line is requestWindow old and sends both, each once, ended at its own last block.
+// which only a later line of that session, the turn's result, or a due window closes. The window
+// the first block armed comes while both are being written, sees the oldest end has moved on, and
+// sends neither; the subagent's tool result closes the subagent's request alone; the next window
+// is due requestSendMargin before requestWindow after the role's newest line and sends both, each
+// once, ended at its own last block.
 func TestModelRequestsKeepsOneOpenRequestPerSession(t *testing.T) {
+	t.Parallel()
 	r := newModelRequestRig(t, nil)
 	start := r.clock.Now()
 	at := func(s int) time.Time { return start.Add(time.Duration(s) * time.Second) }
@@ -230,34 +232,112 @@ func TestModelRequestsKeepsOneOpenRequestPerSession(t *testing.T) {
 }
 
 // A tool call written across the window: the request's first block at 10:00:50, its next at
-// 10:00:58, the window its first block armed at 10:01:05 while its tool call is still being
+// 10:00:58, the window its first block armed at 10:01:04.75 while its tool call is still being
 // written, and the tool call's block at 10:01:10. No window sends the request while its newest
-// line is younger than requestWindow, so it goes once the tool has run for requestWindow, ended at
-// its tool call: its tokens count in 10:01, the minute it ended in, not in 10:00.
+// line is younger than requestWindow - requestSendMargin, so it goes once that much time has
+// passed since its tool call, within requestWindow of its end: its tokens count in 10:01, the
+// minute it ended in, not in 10:00.
 func TestModelRequestsWindowWaitsForAToolCallBeingWritten(t *testing.T) {
+	t.Parallel()
 	r := newModelRequestRig(t, nil)
 	start := time.Date(2026, time.November, 26, 10, 0, 50, 0, time.UTC)
-	r.clock.mu.Lock()
-	r.clock.at = start
-	r.clock.mu.Unlock()
+	r.clock.set(start)
 	at := func(s int) time.Time { return start.Add(time.Duration(s) * time.Second) }
 	r.assistant("tool-call", at(0))
 	r.moveTo(t, at(8))
 	r.assistant("tool-call", at(8))
-	r.fireWindow(t, at(15))
+	r.fireWindow(t, at(15).Add(-requestSendMargin))
 	r.noBatch(t)
 	r.moveTo(t, at(20))
 	r.assistant("tool-call", at(20))
-	r.fireWindow(t, at(23))
+	r.fireWindow(t, at(23).Add(-requestSendMargin))
 	r.noBatch(t)
-	// The tool runs, and no line comes for requestWindow.
-	r.fireWindow(t, at(35))
+	// The tool runs, and no line comes: the window sends requestSendMargin before requestWindow.
+	r.moveTo(t, at(35).Add(-requestSendMargin-time.Millisecond))
+	r.fireWindow(t, at(35).Add(-requestSendMargin))
 	r.expectEnds(t, reportedEnd{"tool-call", capturedSession, at(20)})
 	r.awaitAnswer(t)
 	r.toolResult("")
 	r.assistant("after-tool", at(40))
 	r.result()
 	r.expectEnds(t, reportedEnd{"after-tool", capturedSession, at(40)})
+}
+
+// The role's own requests and a subagent's end a second or more apart, and the bridge reads each
+// line a quarter of a second after Claude Code wrote it. One window serves both sessions, so each
+// window that sends sends one report with every request the bridge holds, never a report for each
+// session a second apart, and each request goes within requestWindow of its end on the bridge's
+// clock, not requestWindow after the bridge read its line. The row moves the clock a tick at a
+// time, so a report's time is the window's to within a tick.
+func TestModelRequestsStaggeredSessionsShareOneWindow(t *testing.T) {
+	t.Parallel()
+	r := newModelRequestRig(t, nil)
+	start := r.clock.Now()
+	at := func(s int) time.Time { return start.Add(time.Duration(s) * time.Second) }
+	const read, tick = 250 * time.Millisecond, 50 * time.Millisecond
+	lines := []struct {
+		id, agent string
+		end       time.Time
+	}{
+		{"role-1", "", at(0)}, {"sub-1", capturedSubagent, at(1)},
+		{"role-2", "", at(20)}, {"sub-2", capturedSubagent, at(21)},
+		{"role-2", "", at(22)}, {"sub-2", capturedSubagent, at(27)},
+		{"role-3", "", at(40)}, {"sub-3", capturedSubagent, at(41)},
+	}
+	type report struct {
+		at       time.Time
+		requests []claim.ModelRequest
+	}
+	var reports []report
+	for r.clock.Now().Before(at(70)) {
+		for len(lines) != 0 && !r.clock.Now().Before(lines[0].end.Add(read)) {
+			r.block(lines[0].id, lines[0].agent, lines[0].end)
+			lines = lines[1:]
+		}
+		r.reporter.mu.Lock()
+		armed := r.reporter.window
+		r.reporter.mu.Unlock()
+		if r.clock.advance(tick) == 0 {
+			continue
+		}
+		testwait.Eventually(t, "the window to be acted on", func() bool {
+			r.reporter.mu.Lock()
+			defer r.reporter.mu.Unlock()
+			return r.reporter.window != armed
+		})
+		r.awaitAnswer(t)
+		for drained := false; !drained; {
+			select {
+			case batch := <-r.posts:
+				reports = append(reports, report{at: r.clock.Now(), requests: batch})
+			default:
+				drained = true
+			}
+		}
+	}
+	sent := map[string]reportedEnd{}
+	for i, report := range reports {
+		if i > 0 && report.at.Sub(reports[i-1].at) < requestWindow-requestSendMargin {
+			t.Errorf("the bridge sent a report at +%s, %s after the one before: more than one report in a window",
+				report.at.Sub(start), report.at.Sub(reports[i-1].at))
+		}
+		for _, request := range report.requests {
+			if report.at.After(request.EndedAt.Add(requestWindow)) {
+				t.Errorf("%s, ended at +%s, went at +%s: later than requestWindow after its end",
+					request.ID, request.EndedAt.Sub(start), report.at.Sub(start))
+			}
+			sent[request.ID] = reportedEnd{request.ID, request.Session, request.EndedAt}
+		}
+	}
+	for _, want := range []reportedEnd{
+		{"role-1", capturedSession, at(0)}, {"sub-1", capturedSubagent, at(1)},
+		{"role-2", capturedSession, at(22)}, {"sub-2", capturedSubagent, at(27)},
+		{"role-3", capturedSession, at(40)}, {"sub-3", capturedSubagent, at(41)},
+	} {
+		if got := sent[want.id]; got.session != want.session || !got.end.Equal(want.end) {
+			t.Errorf("the bridge last reported %s as %v, want %v", want.id, got, want)
+		}
+	}
 }
 
 // A block of a request whose report is on its way opens the request again. That report fails, and

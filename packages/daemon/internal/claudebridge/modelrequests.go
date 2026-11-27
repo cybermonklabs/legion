@@ -14,9 +14,18 @@ import (
 )
 
 // requestWindow is how long after a model request's end the bridge may hold its report: a quarter
-// of the minute the provider's headroom reads, so a pane sends at most four reports a minute
-// (dispatch://INFRA-5899, spec, "The model requests").
+// of the minute the provider's headroom reads (dispatch://INFRA-5899, spec, "The model requests").
+// One window serves the whole bridge, whatever session a request ran in: a window that sends
+// sends every request the bridge holds in one report, and the next sends no sooner than
+// requestWindow - requestSendMargin after it, so a pane's windows send at most one report each
+// 14.75 s, about four a minute. A turn's end sends what is left at once (modelRequests).
 const requestWindow = 15 * time.Second
+
+// requestSendMargin is how much sooner than requestWindow after a request's end the window that
+// sends it is due: room for the window's own work before the report leaves, and for a line the
+// bridge read only after a window sent though Claude Code wrote it before, so a report leaves
+// within requestWindow of the end of each request it holds, on the bridge's clock.
+const requestSendMargin = 250 * time.Millisecond
 
 // requestReportTimeout bounds one report's call, as reportTimeout bounds a turn outcome's: a
 // daemon that takes the connection and never answers costs the report its window, and the
@@ -52,49 +61,54 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 //
 // Each session (sessionOfLine) has at most one open request, the one its lines are of: a session
 // runs one request at a time, so a later line of the session, or the turn's `result`, closes it,
-// and a line of another session closes nothing. A request whose newest line is requestWindow old
-// on the bridge's clock is closed too, so a request is reported within requestWindow of its last
-// block however long the tool it called runs. Neither close can know that no block of the request
-// follows: Claude Code writes a tool's result while the request's next tool call is still being
-// written (testdata/background-during-prompt.jsonl:7,10,11), and a block can take longer than
+// and a line of another session closes nothing. A window closes every open request too, so a
+// request is reported within requestWindow of its last block however long the tool it called
+// runs. No close can know that no block of the request follows: Claude Code writes a tool's result
+// while the request's next tool call is still being written
+// (testdata/background-during-prompt.jsonl:7,10,11), and a block can take longer than
 // requestWindow to write. So a block of a closed request opens it again, with that block's end: a
 // request not yet sent is taken back from what is pending, and one already sent goes again under
 // the same id with the later end, which the daemon moves the request to
 // (record.Store.KeepModelRequests). No block is left out of its request's end.
 //
-// The first request arms a window, which fires when the oldest newest line of an open request is
-// requestWindow old, or requestWindow after it was armed where none is open. It closes each open
-// request that is due, sends what is pending, and arms the next window while a request is open. A
-// result sends any pending requests now. Overflow drains on an answer that keeps at least one
-// request. Otherwise a failed or incomplete report can retry at the next window or result; only
-// IDs the daemon did not keep go again. Requests past the keep window and reports the daemon
+// One window serves the bridge, whatever session a request ran in. It is due requestSendMargin
+// before requestWindow from the oldest end of a request open or pending, and no sooner than
+// requestWindow - requestSendMargin after the last flush (windowDueLocked). The first request
+// arms it. A window that fires before it is due, since a block moved the oldest end on, is armed
+// again for that end; one that is due closes every open request and sends what is pending in one
+// report (flushLocked), as a result does at once. Overflow drains on an answer that keeps at least
+// one request. Otherwise a failed or incomplete report can retry at the next window or result;
+// only IDs the daemon did not keep go again. Requests past the keep window and reports the daemon
 // refuses (a 4xx) are dropped with a line. Every report names the launch's boot token. Nothing in
 // the bridge's loop waits on a report.
 type modelRequests struct {
 	*daemonPoster
+	// windowAfter is the timer the window runs on: the bridge's clock's, or a test's
+	// (Config.requestWindows), which moves the window alone.
+	windowAfter func(time.Duration) <-chan time.Time
 
 	mu sync.Mutex
-	// open is each session's open request, by its session; counted every id closed once.
-	open    map[string]*openRequest
-	counted map[string]bool
+	// open is each session's open request, by its session.
+	open map[string]*claim.ModelRequest
 	// pending holds requests until they are kept or dropped. due records a window or result
 	// that called for another send while one was underway.
 	pending []claim.ModelRequest
 	sending bool
 	due     bool
+	// flushed is when the bridge last closed every open request and sent what was pending, at a
+	// window or a result (flushLocked), on the bridge's clock.
+	flushed time.Time
 	// A firing with a different window number was canceled by a result.
 	window, windows uint64
 }
 
-// openRequest is a session's open request, and when the bridge read its newest line, on the
-// bridge's clock.
-type openRequest struct {
-	claim.ModelRequest
-	seen time.Time
-}
-
-func startModelRequests(poster *daemonPoster) *modelRequests {
-	return &modelRequests{daemonPoster: poster, open: map[string]*openRequest{}, counted: map[string]bool{}}
+// startModelRequests is the bridge's producer of model requests, its window on windows, or on the
+// bridge's clock where windows is nil (Config.requestWindows).
+func startModelRequests(poster *daemonPoster, windows func(time.Duration) <-chan time.Time) *modelRequests {
+	if windows == nil {
+		windows = poster.clock.After
+	}
+	return &modelRequests{daemonPoster: poster, windowAfter: windows, open: map[string]*claim.ModelRequest{}}
 }
 
 // streamLine is what read takes of one stream-json line of Claude Code's.
@@ -122,9 +136,7 @@ func (r *modelRequests) read(line streamLine) {
 		r.assistant(line)
 	case "result":
 		// The turn is over, and each request a host reports is reported by its turn's end.
-		r.closeOpenLocked(func(*openRequest) bool { return true })
-		r.window = 0
-		r.sendLocked()
+		r.flushLocked()
 	default:
 		r.closeLocked(sessionOfLine(line))
 	}
@@ -149,7 +161,7 @@ func (r *modelRequests) assistant(line streamLine) {
 	}
 	end := endOf(line)
 	if open := r.open[session]; open != nil && open.ID == m.ID {
-		open.EndedAt, open.seen = later(open.EndedAt, end), r.clock.Now()
+		open.EndedAt = later(open.EndedAt, end)
 		return
 	}
 	r.closeLocked(session)
@@ -163,13 +175,11 @@ func (r *modelRequests) assistant(line streamLine) {
 	// A block of a request closed already (modelRequests' doc): the request opens again with this
 	// block's end, taken back from what is pending where it was not sent yet, and sent again
 	// under its id where it was.
-	if r.counted[m.ID] {
-		if i := slices.IndexFunc(r.pending, func(p claim.ModelRequest) bool { return p.ID == m.ID }); i >= 0 {
-			request.EndedAt = later(r.pending[i].EndedAt, end)
-			r.pending = slices.Delete(r.pending, i, i+1)
-		}
+	if i := slices.IndexFunc(r.pending, func(p claim.ModelRequest) bool { return p.ID == m.ID }); i >= 0 {
+		request.EndedAt = later(r.pending[i].EndedAt, end)
+		r.pending = slices.Delete(r.pending, i, i+1)
 	}
-	r.open[session] = &openRequest{ModelRequest: request, seen: r.clock.Now()}
+	r.open[session] = &request
 	r.armLocked()
 }
 
@@ -181,18 +191,15 @@ func (r *modelRequests) closeLocked(session string) {
 		return
 	}
 	delete(r.open, session)
-	r.counted[open.ID] = true
-	r.pending = append(r.pending, open.ModelRequest)
+	r.pending = append(r.pending, *open)
 }
 
-// closeOpenLocked queues each open request that is due, in the order they ended, so a report lists
-// the requests of its sessions as they happened. The caller holds r.mu.
-func (r *modelRequests) closeOpenLocked(due func(*openRequest) bool) {
+// closeOpenLocked queues every open request, in the order they ended, so a report lists the
+// requests of its sessions as they happened. The caller holds r.mu.
+func (r *modelRequests) closeOpenLocked() {
 	var sessions []string
-	for session, open := range r.open {
-		if due(open) {
-			sessions = append(sessions, session)
-		}
+	for session := range r.open {
+		sessions = append(sessions, session)
 	}
 	slices.SortFunc(sessions, func(a, b string) int {
 		return cmp.Or(r.open[a].EndedAt.Compare(r.open[b].EndedAt), cmp.Compare(r.open[a].ID, r.open[b].ID))
@@ -228,21 +235,43 @@ func later(a, b time.Time) time.Time {
 	return a
 }
 
-// armLocked arms a window for what is open or pending, if none is armed: it fires when the oldest
-// newest line of an open request is requestWindow old, or requestWindow from now where no request
-// is open. The caller holds r.mu.
-func (r *modelRequests) armLocked() {
-	if r.window != 0 || (len(r.pending) == 0 && len(r.open) == 0) {
-		return
+// earlier is the earlier of a and b, b where a is zero, none yet.
+func earlier(a, b time.Time) time.Time {
+	if a.IsZero() || b.Before(a) {
+		return b
 	}
-	now := r.clock.Now()
-	wait := requestWindow
+	return a
+}
+
+// windowDueLocked is when the window is due, and whether the bridge holds a request, open or
+// pending: requestSendMargin before requestWindow from the oldest end among them, so each goes
+// within requestWindow of its end, but no sooner than requestWindow - requestSendMargin after the
+// last flush, so the windows send one report each that long at most and a report the daemon
+// failed goes again no sooner. The caller holds r.mu.
+func (r *modelRequests) windowDueLocked() (time.Time, bool) {
+	if len(r.open) == 0 && len(r.pending) == 0 {
+		return time.Time{}, false
+	}
+	var oldest time.Time
 	for _, open := range r.open {
-		wait = min(wait, open.seen.Add(requestWindow).Sub(now))
+		oldest = earlier(oldest, open.EndedAt)
+	}
+	for _, request := range r.pending {
+		oldest = earlier(oldest, request.EndedAt)
+	}
+	return later(oldest, r.flushed).Add(requestWindow - requestSendMargin), true
+}
+
+// armLocked arms the window, if none is armed and the bridge holds a request, to fire when it is
+// due (windowDueLocked). The caller holds r.mu.
+func (r *modelRequests) armLocked() {
+	due, held := r.windowDueLocked()
+	if r.window != 0 || !held {
+		return
 	}
 	r.windows++
 	r.window = r.windows
-	window, fires := r.window, r.clock.After(max(wait, 0))
+	window, fires := r.window, r.windowAfter(max(due.Sub(r.clock.Now()), 0))
 	go func() {
 		<-fires
 		r.mu.Lock()
@@ -251,13 +280,23 @@ func (r *modelRequests) armLocked() {
 			return
 		}
 		r.window = 0
-		now := r.clock.Now()
-		r.closeOpenLocked(func(open *openRequest) bool { return !now.Before(open.seen.Add(requestWindow)) })
-		r.sendLocked()
-		if len(r.open) != 0 {
+		// Nothing is held any more, or a block moved the oldest end on since the window was armed.
+		if due, held := r.windowDueLocked(); !held || r.clock.Now().Before(due) {
 			r.armLocked()
+			return
 		}
+		r.flushLocked()
 	}()
+}
+
+// flushLocked closes every open request and sends what is pending, at a window that is due or at
+// a turn's result, and cancels the window armed: the next request arms the next. The caller holds
+// r.mu.
+func (r *modelRequests) flushLocked() {
+	r.closeOpenLocked()
+	r.window = 0
+	r.flushed = r.clock.Now()
+	r.sendLocked()
 }
 
 // sendLocked sends the oldest pending requests, up to claim.MaxModelRequests, unless a report is
