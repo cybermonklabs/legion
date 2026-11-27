@@ -1,0 +1,5 @@
+kind: Added
+body: The Dispatch API document and its generated types carry `needs` on each task of a plan (`PlanTask`) and of the steps read (`StepTask`), and `planned` (`PlannedStep`, `{step, name, state}`) on the steps read. The `dispatch_steps` tool's description names the line it prints for each task of the plan. The form of the task a step record names, its rule in words and its 64 bytes are stated here (`STEP_TASK_PATTERN`, `STEP_TASK_RULE_WORDS`, `STEP_TASK_MAX`) and generated into Go (`contracts.StepTaskPattern`, `StepTaskRule`, `StepTaskMax`), which Dispatch's step write and plan write read, and the Legion daemon reads through `github.com/sjawhar/envoy/steprecord` to hold a `plan_task` block's id to the same form.
+time: 2026-11-22T04:01:22.090029928Z
+custom:
+    Issue: pr4948

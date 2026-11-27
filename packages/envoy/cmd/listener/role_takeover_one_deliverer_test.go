@@ -316,6 +316,7 @@ func requireNoKeptCopyEnded(t *testing.T, rig *delivererRig) {
 // as bytes (hearMarks), so a frame that reached one is counted by its mark however little of it a
 // reader of JSON takes, with the issued_at it carries.
 func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
+	t.Parallel()
 	t.Run("1 after a takeover the previous holder registers again and receives none of the role's messages, each reaches the new holder, one relay line per message", func(t *testing.T) {
 		rig := newDelivererRig(t)
 		const (
@@ -803,8 +804,9 @@ func newRelayBench(b *testing.B) *relayBench {
 		roleDeadLetters:     met.NewCounter("bench_role_dead_letters", "bench"),
 		roleKeptUndecodable: met.NewCounter("bench_role_kept_undecodable", "bench"),
 		publishDeadLetter:   client.PublishStoredAs,
+		publishExpiryNotice: client.PublishKeptCopyExpiry,
 		keepPublish:         client.PublishStoredAck,
-		deferredUnplaceable: newUnplaceableDeferrals(),
+		deferredUnplaceable: newUnplaceableDeferrals(0),
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
 		consumerGrant:       &consumerGrantAnswer{},

@@ -96,11 +96,14 @@ interrupts a running daemon — only its next start.
 
 `secrets get <NAME> --no-request` prints `{"key":"<NAME>","tier":"agent"}` or
 `{"key":"<NAME>","tier":"human","grant":<bool>}` and never opens a request. Only a `human` key is
-fetched; anything else refuses with `App private key <NAME> is readable by agent-tier callers; move
-it to a daemon-only store`. `loadGitHubApps` iterates the two roles and `spawnSync` blocks, so at
-most one broker request is pending — the using-secrets "one at a time" rule holds without code.
-There is deliberately no daemon-imposed timeout: the broker's 90 s approval window (the CLI waits
-120 s) is the failure, reported as `secrets get <NAME> --value failed (exit N): <stderr>`.
+fetched; anything else refuses with `github_apps.<app>.private_key_secret: the App private key it
+names is readable by agent-tier callers; move it to a daemon-only store` (no refusal names the key,
+which can be the key itself pasted where its name goes). `loadGitHubApps` iterates the two roles
+and `spawnSync` blocks, so at most one broker request is pending — the using-secrets "one at a
+time" rule holds without code. There is deliberately no daemon-imposed timeout: the broker's 90 s
+approval window (the CLI waits 120 s) is the failure, reported as
+`github_apps.<app>.private_key_secret: secrets get [the key name] --value failed (exit N): <stderr>`,
+the key's name standing as `[the key name]` in the stderr too.
 
 An agent-tier key's `--value` also works tokenless from any stdin — that is what let the live boot
 use a fake `secrets` that fabricated only the tier status and delegated `--value` to the real binary

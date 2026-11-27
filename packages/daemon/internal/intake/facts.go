@@ -704,6 +704,18 @@ type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
 
+// LingerDeadline is the moment a root's linger the admission block reads runs out, applied as a
+// synthetic fact by the daemon's one timer for it (internal/daemon's wakeAtLingerDeadlines) and
+// never decoded from an event: the block changes at that deadline with no write at all (admit's
+// queueAdmissionBlock), and an admission pass runs only on a fact, so this is the fact that runs
+// one there. Admission is the only handler that acts on it, and does nothing but end its pass with
+// the block judged, which admit's block rule (Admission.Apply) always does for this fact, and
+// written where it moved, which queues that change's state event. It carries nothing: the pass
+// reads the whole project and the clock.
+type LingerDeadline struct{}
+
+func (LingerDeadline) namedIssue() (string, bool) { return "", false }
+
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
 // projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
@@ -2006,7 +2018,7 @@ type Result struct {
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
-// Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
+// Reasons is set on a refused plan alone (PlanRefused): the reasons of its causes, each naming
 // its task where it has one, which the route writes beside the code; every other refusal is its
 // code and its sentence, and carries none.
 type Refusal struct {
@@ -2016,11 +2028,12 @@ type Refusal struct {
 	Reasons []plan.Refusal
 }
 
-// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
-// cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that removes a running task or changes more of it than its text
-// (plan.RunningChange). The message holds every reason in its order, so a reader of the sentence
-// alone reads every cause.
+// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with its reasons:
+// register_plan answers it for a plan that plan.FromBlocks cannot read, or that plan.Supported or
+// plan.Validate refuses, each naming the first plan.MostReasons causes of each kind and counting
+// the rest, and the workflow for a version that removes a running task or changes more of it than
+// its text (plan.RunningChange). The message holds every reason given, in its order, so a reader
+// of the sentence alone reads every reason the list holds.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {

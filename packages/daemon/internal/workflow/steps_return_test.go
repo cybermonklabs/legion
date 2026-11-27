@@ -205,7 +205,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 
 	t.Run("a plan whose one step is the tester is refused: it has no implementer", func(t *testing.T) {
 		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
-		refusals := append(plan.Validate(given, record.BuiltinDeployment), plan.Supported(given)...)
+		refusals := plan.Refusals(given, record.BuiltinDeployment)
 		want := []plan.Refusal{
 			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
 			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet."},

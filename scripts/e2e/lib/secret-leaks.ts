@@ -8,9 +8,9 @@
 //
 // A role Secret holds, beside its credentials (`LAUNCHER_TOKEN`, each owner's hosts.yml under
 // `github-hosts-<owner>`), two keys that hold none and whose values a pod carries in plain text by
-// design: `github-default`, the gh bundle's default owner, which every issue pod's workspace-fetch
-// and workspace-init args name as `<owner>/<repo>` and in the cache URL, and each owner's config.yml
-// under `github-config-<owner>` (runtime/sandbox/names.go GitHubDefaultKey, GitHubConfigKey;
+// design: `github-default`, the gh bundle's default owner, which every issue pod's workspace-init
+// `--repo <owner>/<repo>` argument and `LEGION_REPOSITORY_CACHE_URL` environment value name, and
+// `github-config-<owner>` (runtime/sandbox/names.go GitHubDefaultKey, GitHubConfigKey;
 // relaunch.go writeLauncherSecrets). Those two are excluded by name, and every other key of every
 // Secret is judged, so a credential key the daemon adds later is judged without a change here.
 //

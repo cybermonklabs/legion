@@ -217,13 +217,6 @@ export function parseCanonicalBlockReference(value: string): DispatchBlockRefere
 }
 
 /**
- * The attribute that places a typed block under another block of its plan: a `block[]` attribute
- * holding at most one reference, because a block has one parent. Go's twin is
- * `pmdoc.ParentAttribute`.
- */
-export const PARENT_ATTRIBUTE = "parent";
-
-/**
  * The pointers a typed block's `block[]` attribute holds, as markdown writes it: the empty string
  * for none, else canonical block references (`parseCanonicalBlockReference`) joined by exactly one
  * space, with none leading or trailing and none repeated. Undefined for any other value, which is

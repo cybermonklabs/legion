@@ -124,12 +124,18 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 		}
 	}
 
-	// R of the shipped manifest at the version after its own: the elements it stages for that
-	// version count there, and future, which the staged manifest below only reads, adds nothing.
 	shipped := SchemaVersion()
-	restoreRaised, err := UseManifestForTest(manifestAheadForTest(t, func(*BlockSchema, int) {}))
+	// The build that stages future reads one version above the shipped manifest, so it also creates
+	// each element the shipped manifest reads and creates only from that version. Its R where future
+	// is not creatable is so the R of the shipped manifest with its version raised by one, which
+	// future, read only, leaves as it is.
+	raised, err := json.Marshal(storeManifestAhead(t, func(*BlockSchema, int) {}))
 	if err != nil {
-		t.Fatalf("install the shipped manifest at the version after its own: %v", err)
+		t.Fatalf("encode the shipped manifest raised to version %d: %v", shipped+1, err)
+	}
+	restoreRaised, err := UseManifestForTest(raised)
+	if err != nil {
+		t.Fatalf("install the shipped manifest raised to version %d: %v", shipped+1, err)
 	}
 	raisedCreatable := SchemaCreatable()
 	restoreRaised()
@@ -162,7 +168,7 @@ func TestAnElementThisBuildReadsButCannotCreateIsReadAndNeverCreated(t *testing.
 		t.Fatalf("SchemaVersion() = %d, want %d", got, want)
 	}
 	if got := SchemaCreatable(); got != raisedCreatable {
-		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's %d at the version after its own", got, raisedCreatable)
+		t.Fatalf("SchemaCreatable() where future is not creatable = %d, want the shipped manifest's raised to version %d, %d", got, shipped+1, raisedCreatable)
 	}
 	versions, declared := Element{Kind: TypedBlockElement, Name: "future"}.Versions()
 	if !declared || versions != (BlockElementVersions{Since: shipped + 1, CreatableSince: shipped + 2}) {
@@ -288,10 +294,10 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4, 5 and 13 add each have a row of their own
+// elements versions 4, 5 and 6 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
 // TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
-// TestTheAttributeVersionThirteenAddsIsReadAtThirteenAndCreatedFromFourteen).
+// TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -427,90 +433,68 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 }
 
-// The plan_task block's parent attribute, which manifest version 13 adds (the block a task block
-// stands under), is the first element a release reads and does not create: a build at version 13
-// reads it and creates it from version 14. So this build reads a stored plan task carrying one and
-// edits a document that already holds one. It refuses a write that puts one into a document that
-// holds none, saying it cannot write it yet. A build at version 12, the release before, does not
-// declare the attribute, and reads a stored plan task carrying one as an element it does not know
-// (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT).
-func TestTheAttributeVersionThirteenAddsIsReadAtThirteenAndCreatedFromFourteen(t *testing.T) {
-	const adds = 13
-	attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: "parent"}
-	versions, declared := attribute.Versions()
-	if !declared || versions.Since != adds || versions.CreatableSince != adds+1 {
-		t.Fatalf("attribute parent of plan_task = %+v, %t; want since %d and creatable_since %d", versions, declared, adds, adds+1)
-	}
-	if SchemaVersion() != adds {
-		t.Fatalf("SchemaVersion() = %d; this row holds the release at version %d, which reads parent and does not create it", SchemaVersion(), adds)
-	}
-	const markdown = ":::plan_task{#t2 parent=\"dispatch://ACME-1/artifact/plan-md#b-t1\"}\nBody.\n:::\n"
-	stored, err := Parse(markdown)
-	if err != nil {
-		t.Fatalf("this build reads a plan task carrying parent: %v", err)
-	}
-	_, err = ParseForWrite(markdown, nil)
-	if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), `this Dispatch build reads attribute "parent" of typed block "plan_task" but cannot write it yet`) {
-		t.Errorf("this build writing a plan task carrying parent into no document = %v, want ErrSchema saying it reads parent but cannot write it yet", err)
-	}
-	if _, err := ParseForWrite(markdown+"\n:::plan_task{#t3 parent=\"dispatch://ACME-1/artifact/plan-md#b-t1\"}\nMore.\n:::\n", stored); err != nil {
-		t.Errorf("this build writing a second plan task carrying parent into a document that holds one = %v, want it taken", err)
-	}
+// The check block's marks, subject and program (what a check reads - code, production or the
+// graph - and which deployed program it reads), are read from manifest version 6, N, and created
+// from version 7, N+1: the first elements a release reads one release before it creates them. A
+// build at N reads a check carrying either, and writes one only into a document that already holds
+// that mark, so no write of it puts one into a document that holds none; a build at N-1, the
+// release before, declares the check block but neither mark, so it creates none and reads a stored
+// check carrying one as an element it does not know (ErrUnknownElement, answered 409
+// DOC_NEWER_CONTENT). Each build is the embedded manifest as of its version (manifestAsOf), so each
+// assertion holds whether this build is N or N+1.
+func TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne(t *testing.T) {
+	const n = 6
+	const withoutIt = ":::check{#b-c1}\nBody.\n:::\n"
+	for _, mark := range []struct{ name, markdown string }{
+		{name: "subject", markdown: ":::check{#b-c1 subject=\"production\"}\nBody.\n:::\n"},
+		{name: "program", markdown: ":::check{#b-c1 program=\"dispatch\"}\nBody.\n:::\n"},
+	} {
+		t.Run(mark.name, func(t *testing.T) {
+			element := Element{Kind: AttributeElement, Block: "check", Name: mark.name}
+			if versions, declared := element.Versions(); !declared || versions.Since != n || versions.CreatableSince != n+1 {
+				t.Errorf("attribute %s of check = %+v, %t; want since %d and creatable_since %d", mark.name, versions, declared, n, n+1)
+			}
 
-	before := adds - 1
-	restore, err := UseManifestForTest(manifestAsOf(t, before))
-	if err != nil {
-		t.Fatalf("install the manifest as of version %d: %v", before, err)
-	}
-	t.Cleanup(restore)
-	if _, declared := (Element{Kind: AttributeElement, Block: "plan_task", Name: "parent"}).Versions(); declared {
-		t.Fatalf("a build at version %d declares parent, which version %d adds", before, adds)
-	}
-	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "parent") {
-		t.Errorf("a build at version %d writing a plan task carrying parent = %v, want ErrUnknownElement naming it", before, err)
-	}
-	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
-		t.Errorf("a build at version %d reading a stored plan task carrying parent = %v, want ErrUnknownElement", before, err)
-	}
-}
+			restoreN, err := UseManifestForTest(manifestAsOf(t, n))
+			if err != nil {
+				t.Fatalf("install the manifest as of version %d: %v", n, err)
+			}
+			t.Cleanup(restoreN)
+			stored, err := Parse(mark.markdown)
+			if err != nil {
+				t.Fatalf("a build at version %d reading a stored check carrying %s: %v", n, mark.name, err)
+			}
+			refusal := "this Dispatch build reads " + element.String() + " but cannot write it yet"
+			if _, err := ParseForWrite(mark.markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
+				t.Errorf("a build at version %d writing a check carrying %s into a document that holds none = %v, want ErrSchema saying %q", n, mark.name, err, refusal)
+			}
+			if _, err := ParseForWrite(mark.markdown+"\nMore.\n", stored); err != nil {
+				t.Errorf("a build at version %d writing a document that already holds %s = %v, want it written", n, mark.name, err)
+			}
+			restoreN()
 
-// A test process creates each element its manifest stages for the next version once it is told
-// to (CreateStagedForTest), as Dispatch's test setting DISPATCH_TEST_CREATE_STAGED tells it. Until
-// then a write that puts parent into a document that holds none is refused, and once told the
-// same write is taken. The setting changes what a write may create and nothing a reader is told:
-// SchemaCreatable stays as it was. The store's installer installs the manifest again at each
-// wake, and the setting outlives that reinstall. Its restore makes the process refuse the write
-// again.
-func TestATestProcessCreatesAStagedElementOnlyWhenTold(t *testing.T) {
-	const markdown = ":::plan_task{#t2 parent=\"dispatch://ACME-1/artifact/plan-md#b-t1\"}\nBody.\n:::\n"
-	const refusal = `this Dispatch build reads attribute "parent" of typed block "plan_task" but cannot write it yet`
-	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
-		t.Fatalf("a write of parent before the process is told = %v, want ErrSchema saying %q", err, refusal)
-	}
-	creatable := SchemaCreatable()
-
-	restore := CreateStagedForTest()
-	t.Cleanup(restore)
-	if _, err := ParseForWrite(markdown, nil); err != nil {
-		t.Fatalf("a write of parent once the process is told = %v, want it taken", err)
-	}
-	if got := SchemaCreatable(); got != creatable {
-		t.Errorf("SchemaCreatable() once the process is told = %d, want the %d it was", got, creatable)
-	}
-	var reinstalled BlockSchema
-	if err := json.Unmarshal(SchemaJSON(), &reinstalled); err != nil {
-		t.Fatalf("decode the installed manifest: %v", err)
-	}
-	if err := installStoreManifest(t, reinstalled); err != nil {
-		t.Fatalf("install the manifest again, as the store's installer does at a wake: %v", err)
-	}
-	if _, err := ParseForWrite(markdown, nil); err != nil {
-		t.Fatalf("a write of parent after the manifest's reinstall = %v, want it taken", err)
-	}
-
-	restore()
-	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
-		t.Errorf("a write of parent after the restore = %v, want it refused again", err)
+			before := n - 1
+			restore, err := UseManifestForTest(manifestAsOf(t, before))
+			if err != nil {
+				t.Fatalf("install the manifest as of version %d: %v", before, err)
+			}
+			t.Cleanup(restore)
+			if !IsTypedBlock("check") {
+				t.Fatalf("a build at version %d does not declare the check block, which version 3 adds", before)
+			}
+			if _, err := Parse(withoutIt); err != nil {
+				t.Errorf("a build at version %d reading a check without %s = %v, want no error", before, mark.name, err)
+			}
+			if _, err := ParseForWrite(withoutIt, nil); err != nil {
+				t.Errorf("a build at version %d writing a check without %s = %v, want no error", before, mark.name, err)
+			}
+			if _, err := ParseForWrite(mark.markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), mark.name) {
+				t.Errorf("a build at version %d writing a check carrying %s = %v, want ErrUnknownElement naming it", before, mark.name, err)
+			}
+			if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+				t.Errorf("a build at version %d reading a stored check carrying %s = %v, want ErrUnknownElement", before, mark.name, err)
+			}
+		})
 	}
 }
 

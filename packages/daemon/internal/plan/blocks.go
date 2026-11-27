@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/steprecord"
 )
 
 // The two types of block a plan holds. Every other block of the document is its prose.
@@ -36,12 +38,15 @@ type Block struct {
 // task of the plan and is kept in Elements for Validate. Each task keeps who its parent is, its
 // `parent` whole, in ParentRef. A task block whose parent is an id that no block of blocks holds
 // stands at the top with that id in Task.MissingParent, which Validate refuses. A `needs` word
-// that names an element of document moves to Task.ElementNeeds (elementNeeds). A document with no
-// task block is read as a plan with no task, which Validate refuses. It answers an error only for
-// a block it cannot read at all: a task or a role with no id, one id on two such blocks, a task
-// block whose `parent` is not one reference or names a block of document by an id that does not
-// decode (ParentOf), or whose `steps` is outside the grammar (ParseSteps), and task blocks whose
-// parents make a cycle (Places); the error names the block. blocks is not changed.
+// that names an element of document moves to Task.ElementNeeds (elementNeeds), and each other
+// need is the id of the task it names (resolveNeeds), so no plan holds a need of a task as a word.
+// A document with no task block is read as a plan with no task, which Validate refuses. It answers
+// an error only for a block it cannot read at all: a task or a role with no id, one id on two such
+// blocks, a task block whose id is outside Dispatch's task form (steprecord.TaskIDHolds), whose
+// steps Dispatch could never record, whose `parent` is not one reference or names a block of
+// document by an id that does not decode (ParentOf), or whose `steps` is outside the grammar
+// (ParseSteps), and task blocks whose parents make a cycle (Places); the error names the block,
+// its id or word quoted (quoted). blocks is not changed.
 func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
@@ -56,12 +61,19 @@ func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan,
 			return Plan{}, fmt.Errorf("a %s block has no id, so no step of the plan can be named", block.Type)
 		}
 		if earlier, ok := typeOf[block.ID]; ok {
-			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", block.ID, earlier, block.Type)
+			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", quoted(block.ID), earlier, block.Type)
 		}
 		typeOf[block.ID] = block.Type
 		if block.Type == RoleBlockType {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
+		}
+		if !steprecord.TaskIDHolds(block.ID) {
+			// The error gives no length of its own: quoted's mark gives the length of what the URL
+			// rule left of a cut id, and the length of the id as written would give away the length
+			// of a credential it holds.
+			return Plan{}, fmt.Errorf("the task %s has an id outside the form of a task id, %s, so Dispatch could record none of its steps",
+				quoted(block.ID), steprecord.TaskIDRule)
 		}
 		parent, err := ParentOf(block.Attributes["parent"], document)
 		if err != nil {
@@ -96,7 +108,7 @@ func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan,
 		task.PartOf = place.Task
 		p.Tasks = append(p.Tasks, task)
 	}
-	return elementNeeds(p, document), nil
+	return resolveNeeds(elementNeeds(p, document)), nil
 }
 
 // taskOf is one `plan_task` block as a task, before Places says where it stands. `needs` is its
@@ -142,10 +154,10 @@ func elementOf(block Block, task Task, place Place, under string) Element {
 // moved to Task.ElementNeeds in the block's order, each once. A word names an element where it
 // names a block of the plan's document whose id is an element's (idInDocument). A reference to a
 // block of another document or another issue names none, whatever its id. Every other word stays
-// whole in Task.Needs, in its order. Validate refuses each word it moves, since Legion does not
-// carry out an element, and Supported refuses each word it keeps. Each word moved is looked up in
-// a set of the words moved already, so the read takes time linear in the words of a block, where a
-// scan of the moved list for each word would be quadratic.
+// whole in Task.Needs, in its order, for resolveNeeds. Validate refuses each word it moves, since
+// Legion does not carry out an element. Each word moved is looked up in a set of the words moved
+// already, so the read takes time linear in the words of a block, where a scan of the moved list
+// for each word would be quadratic.
 func elementNeeds(p Plan, document string) Plan {
 	if len(p.Elements) == 0 {
 		return p
@@ -174,6 +186,26 @@ func elementNeeds(p Plan, document string) Plan {
 	return p
 }
 
+// resolveNeeds is p with each task's Needs as task ids: each word's id after its last "#b-",
+// decoded as Dispatch encodes a block id (neededID), or the word itself where it holds no "#b-".
+// The ids keep the order the block writes the words in, and a task a block names twice is needed
+// once. A word whose id is no task of p stays in Task.Unresolved, once however often the block
+// writes it, and Validate refuses it. It reads the words elementNeeds left, so a word that names
+// an element is never one of them.
+func resolveNeeds(p Plan) Plan {
+	ids := make(map[string]bool, len(p.Tasks))
+	for _, task := range p.Tasks {
+		ids[task.ID] = true
+	}
+	tasks := make([]Task, len(p.Tasks))
+	for i, task := range p.Tasks {
+		task.Needs, task.Unresolved = resolved(task.Needs, ids)
+		tasks[i] = task
+	}
+	p.Tasks = tasks
+	return p
+}
+
 // idInDocument is the id of the block of document that word names, read as neededID reads it: a
 // reference to a block of document (`<document>#b-<id>`, as ParentOf reads a `parent`), or a word
 // that is no `dispatch://` reference, the id of a block of the plan's own document. It is "" for a
@@ -184,6 +216,34 @@ func idInDocument(word, document string) string {
 		return ""
 	}
 	return neededID(word)
+}
+
+// resolved is one task's `needs` words as the ids of the tasks of ids they name, and the words
+// that name none, each kept once in the block's order. Each word is looked up in a set of what
+// is kept already, so the read takes time linear in the words, where a scan of the kept list for
+// each word would be quadratic in the words of one block, and one `needs` attribute within
+// Dispatch's document limit holds hundreds of thousands of words.
+// TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU time, since no count
+// kept here would see a scan.
+func resolved(words []string, ids map[string]bool) (needs, unresolved []string) {
+	if len(words) == 0 {
+		return nil, nil
+	}
+	needed, left := map[string]bool{}, map[string]bool{}
+	for _, word := range words {
+		id := neededID(word)
+		switch {
+		case !ids[id]:
+			if !left[word] {
+				left[word] = true
+				unresolved = append(unresolved, word)
+			}
+		case !needed[id]:
+			needed[id] = true
+			needs = append(needs, id)
+		}
+	}
+	return needs, unresolved
 }
 
 // pin is the `@v<N>` that pins a reference to version N, as Dispatch reads one.
@@ -245,7 +305,9 @@ func ChangedTasks(held, next Plan) []string {
 	return changed
 }
 
-// sameBlock says whether two tasks of one id say the same thing.
+// sameBlock says whether two tasks of one id say the same thing: their needs are compared as the
+// tasks they name. Neither side holds a word that names no task: the held plan is read from stored
+// rows, and a later version passed Validate, which refuses each such word.
 func sameBlock(a, b Task) bool {
 	return a.Text == b.Text && sameBesideText(a, b)
 }

@@ -21,7 +21,7 @@ var topLevelTestName = regexp.MustCompile(`^Test(?:[A-Z0-9_][A-Za-z0-9_]*)?$`)
 func ParseSelector(selector string) (importPath, name string, err error) {
 	path, test, ok := strings.Cut(selector, " ")
 	if !ok || !importPathForm(path) || !topLevelTestName.MatchString(test) {
-		return "", "", fmt.Errorf("%w: %q", ErrSelector, selector)
+		return "", "", fmt.Errorf("%w: %q", ErrSelector, Cut(selector))
 	}
 	return path, test, nil
 }
@@ -32,7 +32,7 @@ func ParseSelector(selector string) (importPath, name string, err error) {
 // refuses, is an error wrapping ErrSelector.
 func MatchTests(t Test, ran []TestOutcome) ([]TestOutcome, error) {
 	if t.Runner != "go" {
-		return nil, fmt.Errorf("%w: runner %q", ErrSelector, t.Runner)
+		return nil, fmt.Errorf("%w: runner %q", ErrSelector, Cut(t.Runner))
 	}
 	path, name, err := ParseSelector(t.Selector)
 	if err != nil {

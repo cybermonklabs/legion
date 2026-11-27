@@ -2,7 +2,7 @@ import { blockPointersProblem } from '@legion/contracts';
 import type { Node as ProseMirrorNode, NodeType } from '@milkdown/kit/prose/model';
 import type { EditorState, Transaction } from '@milkdown/kit/prose/state';
 
-import { blockPointerRefusal, findBlock, parentProblem } from './block-pointers.js';
+import { blockPointerRefusal, findBlock } from './block-pointers.js';
 import { creatable, creatableValue, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
 import { BLOCK_ID_ATTR, blockIdOf } from './editor/schema/block-ids.js';
 
@@ -83,7 +83,7 @@ function validateValue(typeName: string, name: string, attribute: BlockAttribute
       if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
         throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be an array of block references`);
       }
-      const problem = blockPointersProblem(value as readonly string[]) ?? parentProblem(name, value as readonly string[]);
+      const problem = blockPointersProblem(value as readonly string[]);
       if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
     }
   }

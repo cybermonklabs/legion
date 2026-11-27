@@ -19,6 +19,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/githubrate"
+	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -62,6 +64,13 @@ type workflowRuntime struct {
 	admission *admit.Admission
 	handlers  []intake.Handler
 	dispatch  dispatch.Client
+	// recordStore is the Postgres store openWorkflow builds records over (projectRecords), kept so
+	// the boot can turn its state events on once the boot event is queued (publishRecordStates).
+	recordStore *record.Postgres
+	// stateRun is the run id the boot turned the state events on under (publishRecordStates), the
+	// `run` of every state message this daemon run publishes, which the state route serves as
+	// `daemon.stateRun` (source.stateRun). The boot writes it once, before the API serves.
+	stateRun string
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -169,6 +178,11 @@ type workflowRuntime struct {
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
+	// lingerWake carries the deadline each admission pass that judges the block reports (admit's
+	// block rule, Admission.Apply), the next moment that block can change with no write, to the
+	// daemon's one timer for it (wakeAtLingerDeadlines); openWorkflow registers it with the
+	// admission pass.
+	lingerWake *lingerWake
 	// outboxSweep is how often the outbox sweeps its lanes (overrides.outboxSweep), which attach
 	// hands the outbox (outbox.sweepEvery); zero is outboxLease.
 	outboxSweep time.Duration
@@ -358,6 +372,14 @@ type workflowRuntime struct {
 	// readBounds are the bounds of the runtime's reads for a repository and of the refresher's
 	// waits, nil for the production ones (reads). Only a test sets them (withReads).
 	readBounds *repositoryReadBounds
+	// rates is the GitHub rate reading (rateReader), which run starts beside the other loops:
+	// the reading of the token manager the workflow makes itself, and nil beside a token source
+	// a test supplies, whose calls nothing counts.
+	rates *rateReader
+	// ownsTransport says the workflow put the process's REST client on its rate counter's
+	// transport (countingTokens), which stop gives back, so no later boot or test inherits it. A
+	// workflow over a supplied token source put nothing there, and resets nothing.
+	ownsTransport bool
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -726,17 +748,34 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	ctx = store.WithTransactionTracking(ctx)
 	log.Info("legion workflow boot stage", "stage", "config")
 	tokens := suppliedTokens
+	var owned *appauth.Manager
+	var rates *rateReader
 	if tokens == nil {
-		// The workflow owns a manager it makes: a boot that fails before the workflow is returned
-		// closes it, so a token_command still waiting on a grant does not outlive the boot.
-		owned := appauth.New(cfg.GitHubApps, appauth.Options{Log: log})
+		// Every call the daemon makes to GitHub with an installation token counts on that
+		// installation (countingTokens): the manager's own and every workflow read's, all through
+		// the process's REST client. The rate reading logs the counts beside GitHub's own counters.
+		// The manager mints at the same GitHub root as the workflow reads (empty is
+		// api.github.com).
+		var counter *githubrate.Counter
+		owned, counter = countingTokens(cfg.GitHubApps, githubAPI, log)
 		tokens = owned
-		defer func() {
-			if opened == nil {
-				owned.Close()
-			}
-		}()
+		rates = newRateReader(owned, counter, cfg.GitHubApps, cfg.Project, githubAPI, log)
 	}
+	// The process runs one workflow, which owns the REST client's transport and the manager it
+	// made. A boot that fails before returning the workflow gives the transport back and closes
+	// the manager, so neither the counter nor a token_command outlives the failed boot.
+	ownsTransport := owned != nil
+	defer func() {
+		if opened != nil {
+			return
+		}
+		if owned != nil {
+			owned.Close()
+		}
+		if ownsTransport {
+			githubrest.SetTransport(nil)
+		}
+	}()
 	installs, ok := tokens.(appauth.Installations)
 	if !ok {
 		return nil, fmt.Errorf("the GitHub App token source answers no App installation on a repository, which the daemon reads both role Apps' installations on each repository it works with")
@@ -759,6 +798,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
 		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, graphQLShare: cfg.GitHubGraphQLShare, appCalls: appCalls,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
+		rates:           rates, ownsTransport: ownsTransport,
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.
@@ -777,9 +817,12 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The database is shared by every project's daemon: the workflow reads this project's issues.
 	// The rows the workflow writes through these records wake the outbox's lanes (projectRecords),
 	// through the runtime, since the outbox itself is built later (attach), and each write that can
-	// change the live records asks the refresher to read them again at its commit (wakeLive).
+	// change the live records asks the refresher to read them again at its commit (wakeLive). The
+	// record store is kept beside the scoped records for the switch that turns its state events on
+	// (publishRecordStates).
 	w.catchUps = &catchUpPacing{ctx: ctx, pool: st.Pool(), pacer: pacer, now: clock, wake: w.wakeOutbox, log: log}
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log, catchUps: w.catchUps}
+	w.recordStore = record.NewStore()
+	w.records = projectRecords{Store: w.recordStore, project: cfg.Project, wake: w.wakeOutbox, live: w.wakeLive, log: log, catchUps: w.catchUps}
 	w.pool = st.Pool()
 	engineCfg := engineConfig(cfg, reviewAppLogin, hookPrompts)
 	// The engine reads and writes the pod tables of the idle release through the store's own
@@ -806,23 +849,12 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Clock = clock
 	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
-	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
-	// The project's declared experiments decide what each unit admission records is drawn for.
-	// A project whose file writes neither the `memory` block nor an `experiments` key declares
-	// the memory experiment all the same, at mode off, whose draw records each new tree at no
-	// variant (config.Project.ExperimentsDeclared).
-	w.admission.UseExperiments(cfg.ExperimentsDeclared())
-	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
-	// has stopped at: the loader gives six hours to a file that names no key, so the pass
-	// always runs under a number somebody chose.
-	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
-	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
-	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
-	// config.Config.WorkerBackground).
-	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
-	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
-	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
-	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
+	w.admission = workflowAdmission(w.records, w.engine, cfg, clock, log)
+	// Every admission pass that judges the block reports the next linger deadline it reads, and
+	// the daemon's one timer for it runs a pass then (wakeAtLingerDeadlines, which run starts). A
+	// pass reports only with the state events on, which the boot turns on after this.
+	w.lingerWake = newLingerWake()
+	w.admission.UseLingerWake(w.lingerWake.arm)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -977,19 +1009,21 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 
 // roleHoldersPublishWindow is how far back the boot looks for a claim change that a release
 // before this one made and did not publish (queueRoleHoldersPublish): a claim whose last write is
-// older and that is not live is not read. No plan gives the number a reason beyond bounding the
-// boot's read. Each issue inside it costs the boot one outbox row and its lane one PUT, so a
-// longer window costs a boot one more of each for every issue whose claims last changed inside the
-// longer span.
+// older and that does not hold its role is not read. No plan gives the number a reason beyond
+// bounding the boot's read. Each issue inside it costs the boot one outbox row and its lane one
+// PUT, so a longer window costs a boot one more of each for every issue whose claims last changed
+// inside the longer span.
 const roleHoldersPublishWindow = 7 * 24 * time.Hour
 
 // queueRoleHoldersPublish queues one role-holder publication for each issue of the project that has
-// a live claim, or a claim that changed in the last roleHoldersPublishWindow (RecentClaimIssues),
-// in one transaction. Every claim write of this release that changes a holder queues its own
-// publication in its own transaction (store's putClaim), so this pass recovers no change of this
-// release. It publishes what a release that published nothing left: a daemon that upgrades from
-// such a release starts over running sessions that Dispatch has never been told of, and a roll
-// forward after a rollback to one finds the claims that release changed. A claim that release
+// a claim that holds its role (supervise.HoldsRole), or a claim that changed in the last
+// roleHoldersPublishWindow (RecentClaimIssues), in one transaction. Every claim write of this
+// release that changes a holder queues its own publication in its own transaction (store's
+// putClaim), so this pass recovers no change of this release. It publishes what a release that
+// published nothing, or another set, left: a daemon that upgrades from such a release starts over
+// sessions that Dispatch has never been told of, or, from a release that left a claim the idle
+// release suspended out of the set, over such a claim whose role Dispatch no longer names, and a
+// roll forward after a rollback to one finds the claims that release changed. A claim that release
 // ended longer than roleHoldersPublishWindow before the roll forward stays listed on Dispatch
 // until the next change of a claim on its issue. A boot that cannot write the rows fails the boot,
 // as the design-gates pass does, and queueing rather than writing means a Dispatch that is down
@@ -1080,7 +1114,7 @@ func (w *workflowRuntime) wakeRoleHolders(issue string) {
 //
 // The session is named only while the claim holds it (plan E's t-e-54): a claim the boot could not
 // suspend can record another claim's session, or one no claim holds, and its step's record would
-// show that session as the one at work, as the role-holder publication would (LiveRoleHolders,
+// show that session as the one at work, as the role-holder publication would (RoleHolders,
 // which leaves it out). The check only reads. It asks the machine first (Machine.Admits: no lock,
 // no store call), and where the machine has not seen the answer, as after a restart, it reads
 // claim_sessions in the fact's own transaction (record.SessionHeld), one select under a
@@ -1155,6 +1189,34 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		Experiments:  cfg.ExperimentsDeclared(),
 		WorkspaceDir: engineWorkspaceDir(cfg),
 	}
+}
+
+// workflowAdmission is the workflow's admission over records and engine, as openWorkflow builds it
+// from cfg, on the daemon's one clock. The state's architect-stalled arms are this admission's
+// reading (source.architectStalls), so the state fixtures build theirs with it too
+// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds).
+func workflowAdmission(records record.Store, engine *workflow.Engine, cfg config.Config, clock func() time.Time, log *slog.Logger) *admit.Admission {
+	admission := admit.New(records, engine, cfg.AdmissionCap, cfg.Project, log)
+	// The admission stamps and measures on the same one clock as the engine, so the
+	// architect-stalled arms the state serves are judged at the state's own instant.
+	admission.UseClock(clock)
+	// The project's declared experiments decide what each unit admission records is drawn for.
+	// A project whose file writes neither the `memory` block nor an `experiments` key declares
+	// the memory experiment all the same, at mode off, whose draw records each new tree at no
+	// variant (config.Project.ExperimentsDeclared).
+	admission.UseExperiments(cfg.ExperimentsDeclared())
+	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
+	// has stopped at: the loader gives six hours to a file that names no key, so the pass
+	// always runs under a number somebody chose.
+	admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
+	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
+	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
+	// config.Config.WorkerBackground).
+	admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	admission.UseP0Bound(cfg.AdmissionP0Bound)
+	return admission
 }
 
 // engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,
@@ -2357,6 +2419,16 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		w.tickEntrySweep(store.ForConcurrentWorker(running))
 		return nil
 	})
+	if w.rates != nil {
+		group.Go(func() error {
+			w.rates.run(running)
+			return nil
+		})
+	}
+	group.Go(func() error {
+		w.wakeAtLingerDeadlines(store.ForConcurrentWorker(running))
+		return nil
+	})
 	group.Go(func() error {
 		// The start read is the daemon's one read of every issue in the workflow: it covers the
 		// deliveries GitHub made while the daemon was down, which nothing redelivers.
@@ -2594,7 +2666,9 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 		if downtime < warnEvery || (!warnedAt.IsZero() && time.Since(warnedAt) < warnEvery) {
 			continue
 		}
-		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", conn.LastError())
+		// The last error by its class (natsconn.ConnectionClass): a failed redial's names the server
+		// by its host and port.
+		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", natsconn.ConnectionClass(conn.LastError()))
 		warnedAt = time.Now()
 	}
 }
@@ -2926,5 +3000,9 @@ func (w *workflowRuntime) stop() {
 	w.closeNATS()
 	if closer, ok := w.tokens.(interface{ Close() }); ok {
 		closer.Close()
+	}
+	if w.ownsTransport {
+		// An owned counter must not outlive this workflow in a later boot or test.
+		githubrest.SetTransport(nil)
 	}
 }

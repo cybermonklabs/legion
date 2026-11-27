@@ -49,9 +49,32 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 	return s.Refresh(readCtx, sessionID)
 }
 
+// leaderHolderSessions is roleHolderSessions for the one resolution that reads the leaders: a role
+// send that asks to be kept and names no source session, which the route refuses with nothing kept
+// when its role has no live holder (roleSend.noHolder). A `keep: false` send and a send whose keep
+// failed are refused on a "no live holder" too, and read the cache; roleSend.resolve says why
+// they need no read of the leaders. Its holder is always read from the session bucket stream's
+// leader (bucketSessionEntry), never from the cache and never by a direct get. A cached record
+// read live can pass its live deadline before the resolution judges it (roles.ResolveHolder reads
+// the holder's state again), and on a replicated bucket a copy that has not applied a
+// registration made a moment ago answers that the session has no record; either would refuse the
+// send for a holder that can take it. nats.ErrKeyNotFound is the leader's word that no record
+// stands, as it is Holder's.
+type leaderHolderSessions struct{ *session.SessionRegistry }
+
+func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
+	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, roleHolderReadTimeout)
+}
+
 // writeRoleHolderError writes the 404 of a role whose claim has no live holder
-// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+// (roleHolderRefusal).
 func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resolution) {
+	writeJSON(w, http.StatusNotFound, roleHolderRefusal(role, result))
+}
+
+// roleHolderRefusal is the body of the 404 of a role whose claim has no live holder
+// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+func roleHolderRefusal(role string, result roles.Resolution) listenerwire.RoleRefusal {
 	response := listenerwire.RoleRefusal{
 		Reason:        result.State,
 		ClaimRevision: result.ClaimRevision,
@@ -78,7 +101,7 @@ func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resol
 			lastSeen,
 		)
 	}
-	writeJSON(w, http.StatusNotFound, response)
+	return response
 }
 
 // writeRoleClaimUnreadable answers a role-holder resolution that read a claim record it cannot
@@ -87,10 +110,10 @@ func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resol
 // Retry-After, naming the role and the record. It returns the status it wrote, for the publish
 // route's record (refuseRoleClaimUnreadable).
 func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int {
-	writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf(
+	writeJSONError(w, listenerwire.FaultStatus, fmt.Sprintf(
 		"envoy: the claim record of role %s is unreadable: %s", role, err,
 	))
-	return http.StatusInternalServerError
+	return listenerwire.FaultStatus
 }
 
 // liveSessionEntry is sessionID's record and the state that record puts its session in, for a
@@ -287,11 +310,11 @@ const (
 //     window leaves its holder.
 //   - This listener's own renewal of role's claim for the holder failed inside liveWindow
 //     (store.Registry.RenewalFailedWithin, which says what clears that record and how long it
-//     stands): a claim read or write that did not answer or failed, or a registration whose
-//     store work failed before its renewal could run (store.Registry.RecordRenewalFailures,
-//     from subscribeHandler). The record is this listener's own and is lost at a restart, and a
-//     claim may reach another listener, so the repair's bound and not this record is what
-//     bounds the harm.
+//     stands): a claim read or write that did not answer or failed, or a registration that
+//     failed before its renewal could run, at its store work or at a consumer call that met a
+//     NATS reconnect (store.Registry.RecordRenewalFailures, from subscribeHandler). The record
+//     is this listener's own and is lost at a restart, and a claim may reach another listener,
+//     so the repair's bound and not this record is what bounds the harm.
 func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
 	if claim.HeldByProcess(claimantInstanceID) {
 		return roleTakenFromHolder, nil

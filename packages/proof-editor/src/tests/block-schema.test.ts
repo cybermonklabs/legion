@@ -3,8 +3,7 @@ import { DISPATCH_BLOCK_POINTER_VALUES } from '@legion/contracts';
 import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState } from '@milkdown/kit/prose/state';
 
-import { parentProblem } from '../block-pointers.js';
-import { typedBlockSpec, validateBlockSchema, type BlockSchema, type BlockTypeSchema } from '../block-schema.js';
+import { typedBlockSpec, type BlockSchema, type BlockTypeSchema } from '../block-schema.js';
 import { createHeadlessProof } from '../lib-headless.js';
 import { createTypedBlockCommands } from '../typed-block-commands.js';
 
@@ -513,39 +512,4 @@ await test('a pasted typed block carrying a refused block pointer is not read as
   const parsed = rule.getAttrs(section({ 'data-proof-block-attr-serves': value }));
   assert(parsed !== false && parsed !== null && JSON.stringify(parsed.serves) === JSON.stringify(value.split(' ')), `parsed = ${JSON.stringify(parsed)}`);
   assert(rule.getAttrs(section({ 'data-proof-block-attr-serves': 'dispatch://CORE-1/artifact/spec#b-x' })) === false, 'a refused pointer was parsed as the typed block');
-});
-
-await test('a parent holds at most one reference, and only a block[] attribute is a parent', async () => {
-  const first = 'dispatch://ACME-1/artifact/plan-md#b-t1';
-  const second = 'dispatch://ACME-1/artifact/plan-md#b-t3';
-  const refusal = 'holds 2 references; a block has one parent, so it holds at most one';
-  assert(parentProblem('parent', [first, second]) === refusal, `parentProblem of two parents = ${parentProblem('parent', [first, second])}`);
-  assert(parentProblem('parent', [first]) === undefined, 'parentProblem refused one parent');
-  assert(parentProblem('needs', [first, second]) === undefined, 'parentProblem refused a needs of two blocks');
-  const schema = {
-    version: 1,
-    types: [
-      {
-        name: 'plan_task',
-        content: 'paragraph+',
-        render: 'host',
-        attributes: { needs: { kind: 'block[]', targets: ['plan_task'] }, parent: { kind: 'block[]' } },
-      },
-    ],
-  } as const;
-  const proof = await createHeadlessProof({ blockSchema: schema });
-  const one = `:::plan_task{#t2 parent="${first}"}\nDo it.\n:::\n`;
-  assert(proof.serializeMarkdown(proof.parseMarkdown(one)) === one, 'a plan task under one block did not round-trip');
-  const error = thrownBy(() => proof.parseMarkdown(`:::plan_task{#t2 parent="${first} ${second}"}\nDo it.\n:::\n`));
-  assert(error?.message.includes(refusal) === true, `a plan task under two blocks: refusal = ${error?.message}`);
-  let state = EditorState.create({ schema: proof.schema, doc: proof.parseMarkdown(':::plan_task{#t2}\nDo it.\n:::\n') });
-  const commands = createTypedBlockCommands({ blockSchema: schema, getState: () => state, dispatch: (tr) => { state = state.apply(tr); } });
-  assert(commands.setBlockAttributes('t2', { parent: [first] }), 'the command refused one parent');
-  assert(thrownBy(() => commands.setBlockAttributes('t2', { parent: [first, second] }))?.message.includes(refusal) === true, 'the command took two parents');
-  assert(commands.setBlockAttributes('t2', { needs: [first, second] }), 'the command refused a needs of two blocks');
-  for (const kind of ['string', 'string[]'] as const) {
-    const refused = { version: 1, types: [{ name: 'plan_task', content: 'paragraph+', render: 'host', attributes: { parent: { kind } } }] };
-    const invalid = thrownBy(() => validateBlockSchema(refused as unknown as BlockSchema));
-    assert(invalid?.message.includes('places a block in its tree, so it must be a block[] attribute') === true, `a ${kind} parent: ${invalid?.message}`);
-  }
 });

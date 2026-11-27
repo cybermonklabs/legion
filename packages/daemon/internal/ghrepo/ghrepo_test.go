@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+// IsName is the character rule Parse holds a name to, and no more: a name as gh reads it, `.git`
+// and dots included, passes, and one holding a character GitHub serves no name with does not.
+func TestIsName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"widgets": true, "widgets.git": true, "my_repo-2.x": true, ".": true,
+		"": false, "a b": false, "x%zz": false, "x?t=1": false, "x#f": false, "x@y": false, "x:y": false, strings.Repeat("a", 101): false,
+	} {
+		if got := IsName(name); got != want {
+			t.Errorf("IsName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // Parse holds every input to one rule: exactly `<owner>/<name>`, both non-empty, no whitespace,
 // no `.` or `..` segment, and GitHub's own grammar for each name, and each refusal names the input
 // and the value. The names GitHub allows parse, dotted and underscored ones included.

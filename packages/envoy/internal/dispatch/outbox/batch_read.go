@@ -32,8 +32,11 @@ type pendingEvent struct {
 	nextAttempt  *time.Time
 	attempts     int
 	destinations []string
-	slug         string
-	routing      routing
+	// refused is the event's refused_destinations: each subject NATS refused for good, with the
+	// error it was refused with (sendState refused). The event sends nothing to it again.
+	refused map[string]string
+	slug    string
+	routing routing
 	// candidates are the owner's events that are due and that the batch's choice of owners found
 	// (readBatch), and windowSize how many of the owner's events the batch read before it kept the
 	// first batchSize due ones: a candidate a window read whole does not hold is one past it.
@@ -144,7 +147,7 @@ const readBatchSQL = `
 	select e.id, coalesce(i.last_seq, ar.last_seq, p.last_seq, 0),
 	       e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''),
 	       e.seq, e.type, e.actor, e.notify, e.created_at, e.payload, e.attempt_count,
-	       e.published_destinations, coalesce(ar.slug, ''), coalesce(i.route, ai.route),
+	       e.published_destinations, e.refused_destinations, coalesce(ar.slug, ''), coalesce(i.route, ai.route),
 	       coalesce(case when i.claimed_by ->> 'kind' = 'session' then i.claimed_by ->> 'id' end, ''),
 	       coalesce(e.issue_key, e.artifact_id::text, e.project_key), r.due, r.next_attempt_at, r.candidates,
 	       r.window_size
@@ -184,7 +187,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 	defer rows.Close()
 	for rows.Next() {
 		var item pendingEvent
-		var actor, payload []byte
+		var actor, payload, refused []byte
 		var destinations []pgtype.Text
 		var owner *string
 		if err := rows.Scan(
@@ -201,6 +204,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 			&payload,
 			&item.attempts,
 			&destinations,
+			&refused,
 			&item.slug,
 			&item.routing.route,
 			&item.routing.claimant,
@@ -241,6 +245,11 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 			} else if err := json.Unmarshal(payload, &item.event.Payload); err != nil {
 				item.failure = fmt.Errorf("decode event payload: %w", err)
 				item.failureLog = "dispatch outbox: decode event payload"
+			} else if refused != nil {
+				if err := json.Unmarshal(refused, &item.refused); err != nil {
+					item.failure = fmt.Errorf("decode event refused destinations: %w", err)
+					item.failureLog = "dispatch outbox: decode event refused destinations"
+				}
 			}
 		}
 		pending = append(pending, item)

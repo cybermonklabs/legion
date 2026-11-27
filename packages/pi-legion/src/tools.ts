@@ -373,9 +373,7 @@ function stateSummary(state: LegionState): string {
   const pause = pauseSummary(state);
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
-    lines.push(
-      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`
-    );
+    lines.push(`admission cap ${admission.cap}`);
     const p0 = p0Summary(state);
     if (p0 !== undefined) lines.push(p0);
     lines.push(
@@ -441,8 +439,7 @@ function stateSummary(state: LegionState): string {
     lines.push(`${key} ${issue.phase} ${issue.status}`);
     if (issue.phase === "done" || issue.phase === "unrecorded") continue;
     if (issue.slot !== undefined) {
-      const lent = issue.slot.lentTo === undefined ? "" : ` lent ${issue.slot.lentTo}`;
-      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}${lent}`);
+      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}`);
     }
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {
@@ -918,7 +915,8 @@ export function createLegionTool(deps: {
         "plan Legion took, each task with its steps. A task that runs carries `running`, a list of one entry: the act it stands at " +
         "now, with its place and the role whose agent works it. That agent reads no new start, so send it a message for a decision " +
         "that is for it now. Legion records nothing when it refuses a " +
-        "plan it does not carry out, with one reason for each cause (PLAN_REFUSED, which also refuses a version that removes a running task " +
+        "plan it does not carry out, with a reason for each cause, the first reasons of each kind and one more that counts the rest of " +
+        "that kind (PLAN_REFUSED, which also refuses a version that removes a running task " +
         "or changes more of it than its text: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +

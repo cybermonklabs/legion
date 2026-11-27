@@ -124,16 +124,17 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 }
 
 // FromBlocks reads each `plan_task` block as a task, in the document's order, with what each
-// attribute says; each `needs` value is kept whole, as the block writes it. A block whose Parent is
-// a task with a sub-owner is a part of that task, by its id, and each block's `parent` is kept
-// whole as who its parent is (ParentRef), a requirement of another document among them. Each
+// attribute says: each `needs` word as the id of the task it names, and a word that names no task
+// of the plan kept whole in Unresolved. A block whose parent is a task with a sub-owner is a part
+// of that task, by its id, and each block's `parent` is kept whole as who its parent is
+// (ParentRef), a requirement of another document among them. Each
 // `plan_role` block is a role the plan defines, named by its id. Every other block is the
 // document's prose and no part of the plan.
 func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	p, err := FromBlocks("plan-md", planDocument, 3, []Block{
 		{ID: "intro", Type: "paragraph", Text: "Why the issue is split so."},
 		{ID: "d", Type: "plan_task", Attributes: map[string]string{
-			"needs":  "dispatch://ACME-1/artifact/plan-md#b-a dispatch://ACME-1/artifact/plan-md#b-c@v2",
+			"needs":  "dispatch://ACME-1/artifact/plan-md#b-f1 dispatch://ACME-1/artifact/plan-md#b-c@v2",
 			"serves": "dispatch://ACME-1/spec#b-r1",
 			"steps":  "implementer:cd reviewer:r",
 			"parent": "dispatch://ACME-1/spec#b-r1",
@@ -148,7 +149,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 		t.Fatalf("FromBlocks: %v", err)
 	}
 	want := Plan{ArtifactID: "plan-md", Version: 3, RoleBlocks: []string{"prober"}, Tasks: []Task{
-		{ID: "d", Needs: []string{"dispatch://ACME-1/artifact/plan-md#b-a", "dispatch://ACME-1/artifact/plan-md#b-c@v2"}, ParentRef: "dispatch://ACME-1/spec#b-r1",
+		{ID: "d", Needs: []string{"f1"}, Unresolved: []string{"dispatch://ACME-1/artifact/plan-md#b-c@v2"}, ParentRef: "dispatch://ACME-1/spec#b-r1",
 			Steps: []Step{{Role: "implementer", Key: "cd"}, {Role: "reviewer", Key: "r"}}, Text: "What task D does."},
 		{ID: "f", Owner: "architect", Text: "What this part must reach."},
 		{ID: "f1", PartOf: "f", ParentRef: "dispatch://ACME-1/artifact/plan-md#b-f", Merges: true,
@@ -189,34 +190,19 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	}
 }
 
-// MovesBackPairs is every pair of two different workflow phases but the 14 no line of a task
+// CanMoveBack holds every pair of two different workflow phases but the 14 no line of a task
 // Supported takes makes as a move back, written out here rather than read from the checks: each
 // step phase to retro or to merging, and retro to merging, since the retro and the merge end every
 // line, and implementing to testing, reviewing or accepting, since the steps that read the
 // implementer's pull request come after it. Among the 28: a move back of another order than
 // today's (testing-reviewing, on implementer reviewer tester), a planner's move back to the
 // implementer (planning-implementing, on implementer planner), and the merge's move back to the
-// retro. CanMoveBack answers each pair as the list holds it, and the list is a fresh slice.
-func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
+// retro.
+func TestCanMoveBackHoldsTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
 		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
-	}
-	var want []string
-	for _, pair := range phase.MovePairs() {
-		if !slices.Contains(never, pair) {
-			want = append(want, pair)
-		}
-	}
-	got := MovesBackPairs()
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("MovesBackPairs() = %q (%d), want %q (%d)", got, len(got), want, len(want))
-	}
-	for _, pair := range []string{"testing-reviewing", "planning-implementing", "merging-retro"} {
-		if !slices.Contains(got, pair) {
-			t.Errorf("MovesBackPairs() leaves out %s", pair)
-		}
 	}
 	for _, pair := range phase.MovePairs() {
 		from, to, _ := phase.ParsePair(pair)
@@ -225,8 +211,9 @@ func TestMovesBackPairsAreTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 			t.Errorf("CanMoveBack(%s, %s) = %t, want %t", from, to, can, fires)
 		}
 	}
-	got[0] = "rubbish"
-	if MovesBackPairs()[0] == "rubbish" {
-		t.Fatal("MovesBackPairs returned the stored slice, which a caller can overwrite")
+	for _, move := range [][2]phase.Phase{{phase.Testing, phase.Reviewing}, {phase.Planning, phase.Implementing}, {phase.Merging, phase.Retro}} {
+		if !CanMoveBack(move[0], move[1]) {
+			t.Errorf("CanMoveBack(%s, %s) = false, want a move back", move[0], move[1])
+		}
 	}
 }
