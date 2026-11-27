@@ -438,13 +438,22 @@ func (c *cache) dropHeldRecords(set *listedSet, inventory map[string]bool) {
 	}
 }
 
+// packsWriteBound is the write deadline each /packs answer sets on its connection for the write and
+// flush of its body alone (servePacks), while it holds packsGate's read side. An answer is a few
+// kilobytes for a clone narrowed to one branch, which a reader that reads takes in moments; a reader
+// that stops reading has the write fail at this bound, its connection broken and the gate let go,
+// rather than hold a narrowing (which waits at the gate holding the clone's write lock, so /tar's
+// snapshots wait too), a drop of the set or a publication for as long as it stays connected. A
+// client's own timeout, such as a provision's one-minute ask (workspace's packsAsk), bounds only a
+// client that keeps to it; this bounds the server's write whatever the reader does. /tar sets no
+// deadline: its stream is long by design, and it holds no gate.
+const packsWriteBound = 30 * time.Second
+
 // lockPacks takes packsGate's write side, for a change of what /packs may answer, and answers its
 // unlock. Each /packs answer holds the read side from its last check through its write
-// (servePacks), so the change waits for an answer that checked before it to be written whole, and
-// every answer after it sees it. An answer is a few kilobytes for a clone narrowed to one branch, so
-// its write goes into the connection's buffers at once; a reader that stops reading ends its own
-// request within a provision's one-minute ask (workspace's packsAsk). packsGateBlocked, a test's
-// seam, runs where the gate is held already.
+// (servePacks), so the change waits for an answer that checked before it to be written whole, or
+// for its write to fail at the answer's write deadline (packsWriteBound), and every answer after it
+// sees it. packsGateBlocked, a test's seam, runs where the gate is held already.
 func (c *cache) lockPacks() func() {
 	if !c.packsGate.TryLock() {
 		if c.packsGateBlocked != nil {
@@ -477,7 +486,8 @@ func (c *cache) setListed(set *listedSet) {
 // one listed: one gone unready or installed while it signed answers 503 with none of the
 // addresses, since its objects may be the ones the new set left out, whose retirement counts from
 // that switch. So a narrowing, a fresh fill and a switch each wait for an answer that passed that
-// check to be written, and no answer is written after the change it did not see. It answers 503
+// check to be written, or for its write to fail at its deadline (packsWriteBound), and no answer
+// is written after the change it did not see. It answers 503
 // too while the cache is not ready with its clone narrowed to its default branch, as /tar does (a
 // narrowing's repack, a fetch that left it unnarrowed), while the cache has listed no set (its
 // first sync has not ended, or has failed, or a narrowing or a fresh fill dropped the set listed
@@ -523,11 +533,18 @@ func (c *cache) servePacks(w http.ResponseWriter, r *http.Request) {
 		c.packsChecked()
 	}
 	// The answer goes to the connection before the gate is let go, its length stated so the flush
-	// keeps the framing the server would give it, rather than at the handler's return.
+	// keeps the framing the server would give it, rather than at the handler's return, and within
+	// the answer's write deadline (packsWriteBound). The deadline is cleared once the answer is out,
+	// so a later request on the same kept-alive connection, a /tar stream among them, holds none of
+	// it; a write that failed breaks the connection, which the server then closes.
+	answer := http.NewResponseController(w)
+	_ = answer.SetWriteDeadline(time.Now().Add(c.packsWrite))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	_, _ = w.Write(body)
-	_ = http.NewResponseController(w).Flush()
+	_, wrote := w.Write(body)
+	if flushed := answer.Flush(); wrote == nil && flushed == nil {
+		_ = answer.SetWriteDeadline(time.Time{})
+	}
 }
 
 // narrowedAndReady reports whether /healthz answers ready with the clone narrowed to its default
