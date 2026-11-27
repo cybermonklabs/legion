@@ -261,10 +261,13 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // rows of the list carry the one line it shows. The field itself is handed the
       // `ask-answer` row (`AskCard.tsx`, `writing={dispatchWritingBox("ask-answer",
       // "ask-answer")}`), so that row's claim is the one its party list draws, and Answer is the
-      // send its delivery is held to on the bus (`expectBusSend`).
-      await expectRow(page, field, "ask-answer", "ask-answer", () =>
-        card.getByRole("button", { exact: true, name: "Answer" }).click()
-      );
+      // send its delivery is held to on the bus (`expectBusSend`). The words a delivering row
+      // writes end in a question mark (`DELIVERED_WORDS`), so Answer first offers the choice a
+      // question-shaped draft gets, and the answer is sent by its "Answer with it anyway".
+      await expectRow(page, field, "ask-answer", "ask-answer", async () => {
+        await card.getByRole("button", { exact: true, name: "Answer" }).click();
+        await card.getByRole("button", { exact: true, name: "Answer with it anyway" }).click();
+      });
     },
   },
   "ask-decline-note": {
