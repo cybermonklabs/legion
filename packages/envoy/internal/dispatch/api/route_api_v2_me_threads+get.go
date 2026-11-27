@@ -29,7 +29,10 @@ var _ = declareRow(func(s *server) routeRow {
 			"repeatable-read snapshot " +
 			"every row was read in, which is what a mark-all passes back as its read mark. Each row names the thread, its " +
 			"owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the " +
-			"session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is " +
+			"session's live view), root_author, the actor who wrote the thread's root in the shape of the reply's author " +
+			"(the ask's asker, the root comment's author or the root message's author, as stored, so a root the Legion " +
+			"daemon wrote reads as its session legion-daemon:<PROJECT>; an agent row carries none), the newest reply's " +
+			"author, first line and time, the caller's read mark, whether it is " +
 			"unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal " +
 			"mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies.",
 		Handler:  s.listMyThreadsV2,

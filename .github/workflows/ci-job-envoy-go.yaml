@@ -324,9 +324,10 @@ jobs:
   envoy-go-race-impossible:
     name: envoy-go (race-impossible)
     runs-on: ubuntu-24.04-arm
-    # The step's two lines run one after another, each under its own 10-minute -timeout, after
-    # about 2 minutes of setup, so 25.
-    timeout-minutes: 25
+    # The step's three lines run one after another, each under its own 10-minute -timeout, 30
+    # minutes at most after about 2 of setup and the pg_stat_statements Postgres's own
+    # timeout-minutes of 3, so 35.
+    timeout-minutes: 35
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -345,7 +346,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -381,14 +382,48 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+      # The priorities read's four tests over its corpus of production's counts run on a Postgres
+      # that preloads pg_stat_statements (PG_STAT_STATEMENTS_TESTS in
+      # .github/scripts/ci_job_reads.py): the bound's test reads each statement's database time from
+      # it, and INFRA-5791's checks run the four on such a server. A server loads that module only
+      # at its start, and the service above starts on the one command line
+      # .github/scripts/postgres-service-settings.sh --command prints, which check-workflow-files.sh's
+      # rule 7 holds every Postgres service to and which preloads nothing, so this step starts one
+      # more Postgres, from the service's own image, which the runner already holds, on port 5433,
+      # with the settings those checks name, and holds it to preloading the module before the step
+      # below, "Test what the race build cannot run at all or at full size", runs the four on it.
+      # Its 3 minutes bound the seconds a server takes to start.
+      - name: Start a Postgres that preloads pg_stat_statements
+        timeout-minutes: 3
+        run: |
+          docker run -d --name pg-stat-statements -e POSTGRES_PASSWORD=ci -p 5433:5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 -c shared_preload_libraries=pg_stat_statements -c max_connections=200
+          for _ in $(seq 1 60); do docker exec pg-stat-statements pg_isready -q -U postgres -h 127.0.0.1 && break; sleep 2; done
+          docker exec pg-stat-statements psql -U postgres -h 127.0.0.1 -Atc 'show shared_preload_libraries' | grep -qx pg_stat_statements
       # The tests the race detector makes impossible that measure no time, which the race job of
       # each of these packages therefore cannot make, so envoy-go keeps a plain run of exactly
       # them: internal/bus counts HoldsSeed's allocations, which the race runtime's own
-      # allocations would be counted into; and the documents package measures the heap a room
-      # keeps, which the detector's shadow memory and instrumentation move. Those are out of the
-      # race build altogether (//go:build !race), and the two render-reuse storms run fewer seeds
-      # and fewer edits under it (raceEnabled), so this is their full-size run. The documents
-      # package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
+      # allocations would be counted into; the API's priorities read's four tests run over a corpus
+      # of production's counts (13,298 issues, 678,943 events), whose seed is heavy work, and the
+      # bound's test prints read times, which the detector stretches; and the documents package
+      # measures the heap a room keeps, which the detector's shadow memory and instrumentation move.
+      # Those are out of the race build altogether (//go:build !race), and the two render-reuse
+      # storms run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
+      # run. The API's line runs the four on the Postgres the step above starts
+      # (DISPATCH_TEST_DATABASE_URL): the bound's test reads each statement's database time from
+      # pg_stat_statements, which a server loads only at its start, and the service starts on the
+      # one command line every Postgres service is held to, which preloads nothing. The four assert
+      # no time: the bound's test holds the answers of the reads it times and their shape under
+      # each plan (the statements, the round trips and the event probes) and prints their times,
+      # which c-both-forms' step, outside CI, holds to the bound, and the other three hold answers,
+      # walks and buffer ratios on clones of the corpus
+      # the first of them builds once per test binary (storetest.OpenFrom),
+      # so they run in its go test, on the same server. On a four-CPU build pod (c4d-highmem-8,
+      # INFRA-5791), the bound's test (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took
+      # 47.1 s for the corpus's build and its 840 reads,
+      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 1.4 s,
+      # TestThePrioritiesReadWalksIssuesOnceOnTheCorpus 1.3 s and
+      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 4.5 s, 54.4 s for the package's run. The
+      # documents package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
       # envoy-go-race-docs' run of the rest of it does, since it is the one package that registers
       # a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v, so its TestMain's count of
       # services left alive prints. The rows of that run that measure time (the xid window tests,
@@ -405,6 +440,7 @@ jobs:
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5433/postgres?sslmode=disable' go test -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestThePrioritiesReadWalksIssuesOnceOnTheCorpus)$' ./internal/dispatch/api
           GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run

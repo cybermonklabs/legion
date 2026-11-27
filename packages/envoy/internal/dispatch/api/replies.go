@@ -112,7 +112,8 @@ const (
 // shows: who wrote the newest write someone else made and its text (last_reply_id: a comment for
 // an ask or a comment thread, a message for a message thread, or the ask itself when that write is
 // its answer, read as the answerer and the answer's options and text), what the thread is about
-// (the ask's question, or its root's text), where it lives (the row's own owner columns, its
+// (the ask's question, or its root's text) and who wrote it (the ask's asker, or its root's
+// author, as stored), where it lives (the row's own owner columns, its
 // issue's priority and its project), how far the caller has read it, whether it is still unread,
 // how many writes in it they have not read, the document mark its root is anchored to, and the
 // version a dismissal of the row is held to (user_threads.version, migration 20261105093500).
@@ -209,7 +210,7 @@ const myRepliesPageRest = `
 	       coalesce(rc.created_at, rm.created_at, p.replied_at, a.created_at, root.created_at, mroot.created_at),
 	       i.priority, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
-	       p.version
+	       p.version, coalesce(a.author, root.author, mroot.author)
 	from page p
 	-- The thread's own root and the reply the row shows, each read by its id. They are laterals
 	-- with an offset-0 fence rather than joins because a join leaves the planner free to hash the
@@ -222,17 +223,17 @@ const myRepliesPageRest = `
 	-- person may dismiss any thread they wrote in (PATCH /api/v2/me/marks/thread/{id} under the
 	-- version GET of that mark answers), and a row's reply time is never null.
 	left join lateral (
-		select a.id, a.question, a.anchor, a.answer, a.created_at
+		select a.id, a.question, a.anchor, a.answer, a.created_at, a.author
 		from asks a where p.kind = 'ask' and a.id = p.thread_id
 		offset 0
 	) a on true
 	left join lateral (
-		select root.body, root.anchor, root.created_at, root.edited_at, root.deleted_at, root.deleted_by
+		select root.body, root.anchor, root.created_at, root.edited_at, root.deleted_at, root.deleted_by, root.author
 		from comments root where p.kind = 'comment' and root.id = p.thread_id
 		offset 0
 	) root on true
 	left join lateral (
-		select mroot.body, mroot.created_at, mroot.edited_at, mroot.deleted_at, mroot.deleted_by
+		select mroot.body, mroot.created_at, mroot.edited_at, mroot.deleted_at, mroot.deleted_by, mroot.author
 		from messages mroot where p.kind = 'message' and mroot.id = p.thread_id
 		offset 0
 	) mroot on true
@@ -816,7 +817,7 @@ func (s *server) readMyReplyRows(
 		var row model.MyReplyRow
 		var issueKey, issueTitle, project, slug, name, replyID *string
 		var subject, body string
-		var author, anchor, subjectDeletedBy, replyDeletedBy []byte
+		var author, rootAuthor, anchor, subjectDeletedBy, replyDeletedBy []byte
 		var subjectEditedAt, subjectDeletedAt, replyDeletedAt *time.Time
 		var isAnswer bool
 		var readThrough time.Time
@@ -830,7 +831,7 @@ func (s *server) readMyReplyRows(
 			&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
 			&replyID, &isAnswer, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
 			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
-			&row.DismissedAt, &version,
+			&row.DismissedAt, &version, &rootAuthor,
 		); err != nil {
 			return nil, fmt.Errorf("scan my reply: %w", err)
 		}
@@ -864,6 +865,12 @@ func (s *server) readMyReplyRows(
 		if author != nil {
 			if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
 				return nil, fmt.Errorf("decode my reply author: %w", err)
+			}
+		}
+		if rootAuthor != nil {
+			row.RootAuthor = &model.Actor{}
+			if err := json.Unmarshal(rootAuthor, row.RootAuthor); err != nil {
+				return nil, fmt.Errorf("decode my reply root author: %w", err)
 			}
 		}
 		if len(anchor) > 0 {

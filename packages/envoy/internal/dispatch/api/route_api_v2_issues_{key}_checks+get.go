@@ -8,7 +8,9 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodGet, Pattern: "/issues/{key}/checks", Auth: authAny, Versions: onlyV2,
 		Description: "The checks of the issue's Verification document in document order, each with its attributes " +
-			"(when, surface, run, negative_control, ci_check, subject, program), its text - a link's text, never its target - the version " +
+			"(when, surface, run, negative_control, ci_check, subject, program), serves (the references of the statements its " +
+			"block's serves attribute names, each as the block writes it, in the block's order; absent where the block " +
+			"names none), its text - a link's text, never its target - the version " +
 			"its words last changed in and their digest, and results, every result recorded against it from any issue, " +
 			"newest first by when the recording transaction began. Each check carries compared_with, the commits and " +
 			"branches its results are compared with: for a before_merge check every pull request head Dispatch holds " +
