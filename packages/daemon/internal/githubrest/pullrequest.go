@@ -57,17 +57,6 @@ func (p PullRequest) HeadRepository() string {
 	return p.Head.Repo.FullName
 }
 
-// OpenPullRequestOn is the open pull request on branch of the client's repository, repository,
-// and whether there is one: the first GitHub lists of OpenPullRequestsOn's, whatever its base. Of
-// the reads that have only a branch, the handoff's read of an implementer's branch alone takes it.
-func (c Client) OpenPullRequestOn(ctx context.Context, repository ghrepo.Repository, branch string) (PullRequest, bool, error) {
-	pulls, err := c.OpenPullRequestsOn(ctx, repository, branch)
-	if err != nil || len(pulls) == 0 {
-		return PullRequest{}, false, err
-	}
-	return pulls[0], true, nil
-}
-
 // OpenPullRequestsOn is each open pull request on branch of the client's repository, repository
 // (GET /pulls?head=<owner>:<branch>&state=open), in the order GitHub lists them, newest first. A
 // branch can hold several, each onto a base of its own (dispatch://INFRA-5910 D1), so a read that

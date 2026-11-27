@@ -1,0 +1,148 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "pullRequests",
+        "pullRequests.*",
+        "pullRequests.*.head",
+        "pullRequests.*.linked",
+        "pullRequests.*.mergeState",
+        "pullRequests.*.number",
+        "pullRequests.*.repo",
+        "pullRequests.*.reviewDecision",
+        "pullRequests.*.state",
+        "pullRequests.*.task"
+      ],
+      "addValues": {
+        "holdReason": [
+          "pull-requests"
+        ],
+        "pullRequests.*.mergeState": [
+          "behind",
+          "blocked",
+          "clean",
+          "dirty",
+          "draft",
+          "has_hooks",
+          "unknown",
+          "unstable"
+        ],
+        "pullRequests.*.state": [
+          "closed",
+          "merged",
+          "open"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.pullRequests",
+        "issues.*.pullRequests.*",
+        "issues.*.pullRequests.*.head",
+        "issues.*.pullRequests.*.linked",
+        "issues.*.pullRequests.*.mergeState",
+        "issues.*.pullRequests.*.number",
+        "issues.*.pullRequests.*.repo",
+        "issues.*.pullRequests.*.reviewDecision",
+        "issues.*.pullRequests.*.state",
+        "issues.*.pullRequests.*.task"
+      ],
+      "addValues": {
+        "admission.held.*.reason": [
+          "pull_requests"
+        ],
+        "issues.*.holdReason": [
+          "pull-requests"
+        ],
+        "issues.*.pullRequests.*.mergeState": [
+          "behind",
+          "blocked",
+          "clean",
+          "dirty",
+          "draft",
+          "has_hooks",
+          "unknown",
+          "unstable"
+        ],
+        "issues.*.pullRequests.*.state": [
+          "closed",
+          "merged",
+          "open"
+        ]
+      }
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "admission.held.*.reason",
+      "values": [
+        "pull_requests"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.holdReason",
+      "values": [
+        "pull-requests"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "holdReason",
+      "values": [
+        "pull-requests"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.pullRequests.*.state",
+      "values": [
+        "closed",
+        "merged",
+        "open"
+      ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.pullRequests.*.mergeState",
+      "values": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "pullRequests.*.state",
+      "values": [
+        "closed",
+        "merged",
+        "open"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "pullRequests.*.mergeState",
+      "values": [
+        "behind",
+        "blocked",
+        "clean",
+        "dirty",
+        "draft",
+        "has_hooks",
+        "unknown",
+        "unstable"
+      ]
+    }
+  ]
+}

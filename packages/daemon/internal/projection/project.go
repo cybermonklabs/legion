@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,11 +155,21 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	for _, check := range openChecks {
 		checks[check.Issue] = append(checks[check.Issue], check)
 	}
-	// Every issue's pull request, by issue key, in one statement for the whole state rather than a
-	// read an issue (record.Store.PullRequestsOf). It loads none of what each pull request
-	// remembers of its settled heads: the state shows none of it, a read of one pull request would
-	// load up to 32 rows of it for every issue, and the state writes no record back.
-	pullRequests, err := in.Store.PullRequestsOf(ctx, in.Tx, keys)
+	// Every issue's set of pull requests, by issue key, in one statement for the whole state rather
+	// than a read an issue (record.Store.PullRequestSetsOf): each pull request of each task of its
+	// plan and each pull request it links, in any repository (dispatch://INFRA-5910 D2), which the
+	// issue serves under `pullRequests`. Beside it every issue's merge, the pull request of the task
+	// that merges, in two statements (record.Store.PullRequestsOf): what the issue serves as its own
+	// pull request where none of its set is open (issuePullRequest, decision 13), and the own pull
+	// request of the task that merges, whose decision is the reviewer's (ownPullRequests). Neither
+	// loads what each pull request remembers of its settled heads: the state shows none of it, a read
+	// of one pull request would load up to 32 rows of it for every issue, and the state writes no
+	// record back.
+	sets, err := in.Store.PullRequestSetsOf(ctx, in.Tx, keys)
+	if err != nil {
+		return api.State{}, err
+	}
+	merges, err := in.Store.PullRequestsOf(ctx, in.Tx, keys)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -377,20 +388,34 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
-		// The issue's own pull request is its merge's: the row of its first task with a merge still
-		// to come, else of its last merge, read for the whole state above (record.Store.PullRequestsOf,
-		// by the rule record.Store.MergePullRequest reads by), and so is what its review round waits
-		// on from GitHub. Each task's own pull request is served on that task (taskViews), so the
-		// review round of a task that does not merge keeps its served pull request there.
-		var pr *record.PullRequest
-		if recorded, found := pullRequests[issue.Key]; found {
-			pr = &recorded
+		// The issue's own pull request is the newest open one of its set, else its merge, the row
+		// of its first task with a merge still to come, else of its last merge (issuePullRequest,
+		// dispatch://INFRA-5910 decision 13), and what its review round waits on from GitHub is that
+		// pull request's. Each pull request of the set is served under `pullRequests`, each with the
+		// decision of its own review round (reviewerOn), and each task's own pull request on that
+		// task (taskViews), so the review round of a task keeps its served pull request there. The
+		// rows of the tasks' pull requests are read once, for an issue with plan rows alone: they
+		// say which pull request of the set is a task's own.
+		var merge *record.PullRequest
+		if recorded, found := merges[issue.Key]; found {
+			merge = &recorded
 		}
-		merges := reviewerOf(reviewer, pr)
-		view.PullRequest = pullRequestView(pr, merges)
-		view.MergeWait = mergeWaitView(issue, merges, pr)
-		if tasks := tasksOf[issue.Key]; len(tasks) > 0 {
-			if view.Tasks, err = taskViews(ctx, in, issue, tasks, reviewer); err != nil {
+		tasks := tasksOf[issue.Key]
+		var taskRows []record.PullRequest
+		if len(tasks) > 0 {
+			if taskRows, err = in.Store.TaskPullRequestRows(ctx, in.Tx, issue.Key); err != nil {
+				return api.State{}, err
+			}
+		}
+		owns := ownPullRequests(merge, taskRows)
+		set := sets[issue.Key]
+		pr := issuePullRequest(set, merge)
+		bearing := reviewerOn(reviewer, pr, pr != nil && owns[keyOf(*pr)])
+		view.PullRequest = pullRequestView(pr, bearing)
+		view.PullRequests = setPullRequestViews(set, reviewer, owns)
+		view.MergeWait = mergeWaitView(issue, bearing, pr)
+		if len(tasks) > 0 {
+			if view.Tasks, err = taskViews(ctx, in, issue, tasks, taskRows, reviewer); err != nil {
 				return api.State{}, err
 			}
 		}
@@ -946,8 +971,9 @@ func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.Pull
 }
 
 // pullRequestView is pr as the state serves it (api.PullRequestView), nil for none: the issue's
-// own pull request and each task's are built here alike. reviewer is the reviewer's row as it
-// bears on pr (reviewerOf), whose decision is the latest review round's.
+// own pull request, each of its set and each task's are built here alike. reviewer is the
+// reviewer's row as it bears on pr (reviewerOf, reviewerOn), whose decision is the latest review
+// round's.
 func pullRequestView(pr *record.PullRequest, reviewer record.PhaseRow) *api.PullRequestView {
 	if pr == nil {
 		return nil
@@ -976,6 +1002,92 @@ func reviewerOf(reviewer record.PhaseRow, pr *record.PullRequest) record.PhaseRo
 	return reviewer
 }
 
+// pullKey names one pull request as the record keys it: its repository, compared without case,
+// and its number.
+type pullKey struct {
+	repo   string
+	number int
+}
+
+// keyOf is pr's pullKey.
+func keyOf(pr record.PullRequest) pullKey {
+	return pullKey{repo: strings.ToLower(pr.Repo), number: pr.Number}
+}
+
+// ownPullRequests is each pull request of an issue that is a task's own (dispatch://INFRA-5910
+// decision 5), by its pullKey: merge, the own pull request of the task that merges, or the issue's
+// own where it has no plan rows (record.Store.PullRequestsOf), and the first row of each task of
+// taskRows, the rows of an issue with plan rows in the order record.Store.TaskPullRequestRows
+// answers them, each task's own first. Rows of no task are none of them.
+func ownPullRequests(merge *record.PullRequest, taskRows []record.PullRequest) map[pullKey]bool {
+	owns := map[pullKey]bool{}
+	if merge != nil {
+		owns[keyOf(*merge)] = true
+	}
+	for at, row := range taskRows {
+		if row.Task != "" && (at == 0 || taskRows[at-1].Task != row.Task) {
+			owns[keyOf(row)] = true
+		}
+	}
+	return owns
+}
+
+// issuePullRequest is the pull request an issue serves as its own (api.Issue.PullRequest,
+// dispatch://INFRA-5910 decision 13): of set, its set of pull requests, the newest open one, the
+// one GitHub changed last (record.PullRequest.HeadUpdatedAt, a pull request with none the oldest),
+// then the higher number; where none of set is open, merge, the issue's merge; nil for neither.
+func issuePullRequest(set []record.PullRequest, merge *record.PullRequest) *record.PullRequest {
+	var newest *record.PullRequest
+	for at := range set {
+		pr := &set[at]
+		if pr.State != record.PullRequestOpen {
+			continue
+		}
+		if newest == nil || pr.HeadUpdatedAt.After(newest.HeadUpdatedAt) ||
+			pr.HeadUpdatedAt.Equal(newest.HeadUpdatedAt) && pr.Number > newest.Number {
+			newest = pr
+		}
+	}
+	if newest != nil {
+		return newest
+	}
+	return merge
+}
+
+// reviewerOn is the reviewer's row as it bears on pr, a pull request of the issue's set or its
+// merge, holding the decision of pr's own review round (dispatch://INFRA-5910 decision 7), as the
+// workflow judges that round: for a task's own pull request (own) the row as reviewerOf reads it;
+// for a pull request the issue links that is no task's own the row holding the decision pr holds
+// itself (record.PullRequest.ReviewDecision, workflow's decisionRow); and for another pull request
+// of a task that the issue does not link, which no round reviews, the zero row.
+func reviewerOn(reviewer record.PhaseRow, pr *record.PullRequest, own bool) record.PhaseRow {
+	switch {
+	case pr == nil || own:
+		return reviewerOf(reviewer, pr)
+	case pr.Linked:
+		reviewer.Decision = pr.ReviewDecision
+		return reviewer
+	}
+	return record.PhaseRow{}
+}
+
+// setPullRequestViews is set, an issue's set of pull requests in its order, as the state serves it
+// under `pullRequests` (api.SetPullRequestView), nil for none: each pull request with its task,
+// whether the issue links it, and the decision of its own review round, read from reviewer, the
+// issue's reviewer's row, and owns, the pull requests that are a task's own (reviewerOn).
+func setPullRequestViews(set []record.PullRequest, reviewer record.PhaseRow, owns map[pullKey]bool) []api.SetPullRequestView {
+	if len(set) == 0 {
+		return nil
+	}
+	views := make([]api.SetPullRequestView, len(set))
+	for at := range set {
+		pr := &set[at]
+		views[at] = api.SetPullRequestView{PullRequestView: *pullRequestView(pr, reviewerOn(reviewer, pr, owns[keyOf(*pr)])),
+			Task: pr.Task, Linked: pr.Linked}
+	}
+	return views
+}
+
 // countedTask is the task of tasks, the tasks of an issue's plan, whose counts of returns the
 // issue's implementer's view shows: the task whose step the implementer's row runs (running,
 // record.PhaseRow.StepTask), or the plan's one task where the row runs none of them, as a row no
@@ -992,18 +1104,14 @@ func countedTask(tasks []record.PlanTask, running string) (record.PlanTask, bool
 }
 
 // taskViews is tasks, the tasks of issue's plan in task id order, as the state serves them
-// (api.TaskView), from two reads of the issue: the act each task stands at
-// (record.Store.TaskActs) and each task's own pull request as its row alone
-// (record.Store.TaskPullRequestRows), one statement whatever the count of tasks, since the state
+// (api.TaskView), from the act each task stands at (record.Store.TaskActs) and prs, each task's
+// pull request rows as record.Store.TaskPullRequestRows answers them, each task's own first, which
+// the caller reads once for the issue, one statement whatever the count of tasks, since the state
 // reads no settled head.
 // reviewer is the issue's reviewer's row, which bears on the pull request of the task whose step
 // it runs (reviewerOf).
-func taskViews(ctx context.Context, in Inputs, issue record.Issue, tasks []record.PlanTask, reviewer record.PhaseRow) ([]api.TaskView, error) {
+func taskViews(ctx context.Context, in Inputs, issue record.Issue, tasks []record.PlanTask, prs []record.PullRequest, reviewer record.PhaseRow) ([]api.TaskView, error) {
 	acts, err := in.Store.TaskActs(ctx, in.Tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	prs, err := in.Store.TaskPullRequestRows(ctx, in.Tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}

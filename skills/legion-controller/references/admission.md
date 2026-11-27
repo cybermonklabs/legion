@@ -67,6 +67,7 @@ Name them in the day's report and take nothing for them.
 | `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
 | `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
 | `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
+| `pull_requests` | Its close waits for a pull request of its set: a linked one still open, one whose read is still owed, or one in a repository Legion does not serve or cannot read; no merge is in hand, and `heldBy` is absent | That pull request merges, or a person takes its link off; then the issue closes |
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
 

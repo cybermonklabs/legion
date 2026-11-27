@@ -136,6 +136,16 @@
         "state": "merged",
         "reviewDecision": "approved"
       },
+      "pullRequests": [
+        {
+          "repo": "acme/widgets",
+          "number": 1239,
+          "head": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
+          "state": "merged",
+          "reviewDecision": "approved",
+          "linked": false
+        }
+      ],
       "designGate": {
         "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
         "currentVersion": 4,
@@ -333,11 +343,33 @@
       },
       "pullRequest": {
         "repo": "acme/widgets",
-        "number": 1247,
-        "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+        "number": 1253,
+        "head": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
         "state": "open",
-        "mergeState": "blocked"
+        "mergeState": "blocked",
+        "reviewDecision": "approved"
       },
+      "pullRequests": [
+        {
+          "repo": "acme/widgets",
+          "number": 1247,
+          "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+          "state": "open",
+          "mergeState": "blocked",
+          "task": "a",
+          "linked": false
+        },
+        {
+          "repo": "acme/widgets",
+          "number": 1253,
+          "head": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+          "state": "open",
+          "mergeState": "blocked",
+          "reviewDecision": "approved",
+          "task": "b",
+          "linked": false
+        }
+      ],
       "designGate": {
         "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
         "currentVersion": 7,
@@ -910,6 +942,16 @@
         "state": "open",
         "reviewDecision": "approved"
       },
+      "pullRequests": [
+        {
+          "repo": "acme/widgets",
+          "number": 1251,
+          "head": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+          "state": "open",
+          "reviewDecision": "approved",
+          "linked": false
+        }
+      ],
       "designGate": {
         "artifactId": "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
         "currentVersion": 5,
@@ -1016,6 +1058,17 @@
         "mergeState": "behind",
         "reviewDecision": "approved"
       },
+      "pullRequests": [
+        {
+          "repo": "zeta/tools",
+          "number": 642,
+          "head": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+          "state": "open",
+          "mergeState": "behind",
+          "reviewDecision": "approved",
+          "linked": false
+        }
+      ],
       "designGate": {
         "artifactId": "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
         "currentVersion": 2,

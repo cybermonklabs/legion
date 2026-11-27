@@ -32,9 +32,13 @@ import (
 //   - d stands at its first step, which waits for the end of its task's join;
 //   - h is held at its first step, its owner having escalated the failed claim;
 //   - m is the task that merges, which needs c, d, h, x and y, stopped at its first step with a
-//     pull request of its own;
+//     pull request of its own, which carries GitHub's clock where b's carries none;
 //   - x stands at its first step, which waits for its agent k;
 //   - y runs its first step on the agent k.
+//
+// The issue serves both pull requests as its set, each with its task and its own review decision,
+// and the newest open one of them, m's, as its own (dispatch://INFRA-5910 decision 13), whose
+// round waits on nothing, since the reviewer runs b's step.
 //
 // The fault it catches is a served state that names no task, or names each task's act, wait or
 // pull request from the issue rather than from the task: its controls are the projection that
@@ -101,7 +105,8 @@ func TestTheStateServesEachTaskOfAnIssue(t *testing.T) {
 		must(t, records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 42,
 			Branch: branches["b"], Base: "main", HeadSHA: "hb", State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, Generation: 1}))
 		must(t, records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 40,
-			Branch: branches["m"], Base: "main", HeadSHA: "hm", State: record.PullRequestOpen, MergeState: record.MergeStateClean, Generation: 1}))
+			Branch: branches["m"], Base: "main", HeadSHA: "hm", State: record.PullRequestOpen, MergeState: record.MergeStateClean, Generation: 1,
+			HeadUpdatedAt: given}))
 		// The reviewer's row runs b's step, whose review approved the head b's pull request stands
 		// at: the round waits on GitHub's merge state for it, which the record holds `blocked`.
 		must(t, records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "legion-legion-legion-208-r",
@@ -149,12 +154,20 @@ func TestTheStateServesEachTaskOfAnIssue(t *testing.T) {
 	if !reflect.DeepEqual(view.Tasks, want) {
 		t.Fatalf("%s serves the tasks\n%s\nwant\n%s", key, wireText(t, view.Tasks), wireText(t, want))
 	}
-	// The issue's own pull request is the merge's, m's, and none of b's: b's review round is
-	// served on b alone.
-	merge := &api.PullRequestView{Repo: "acme/widgets", Number: 40, Head: "hm", State: "open", MergeState: "clean"}
-	if !reflect.DeepEqual(view.PullRequest, merge) || view.MergeWait != nil {
-		t.Fatalf("%s serves the pull request %s and the merge wait %s, want the merge's %s and none",
-			key, wireText(t, view.PullRequest), wireText(t, view.MergeWait), wireText(t, merge))
+	// The issue's own pull request is the newest open one of its set, m's, which carries GitHub's
+	// clock where b's carries none, and its round waits on nothing: b's review round is served on b
+	// alone. The set is both, in number order, each with its task and its own decision.
+	newest := &api.PullRequestView{Repo: "acme/widgets", Number: 40, Head: "hm", State: "open", MergeState: "clean"}
+	if !reflect.DeepEqual(view.PullRequest, newest) || view.MergeWait != nil {
+		t.Fatalf("%s serves the pull request %s and the merge wait %s, want the newest open one, %s, and none",
+			key, wireText(t, view.PullRequest), wireText(t, view.MergeWait), wireText(t, newest))
+	}
+	set := []api.SetPullRequestView{
+		{PullRequestView: *newest, Task: "m"},
+		{PullRequestView: *want[1].PullRequest, Task: "b"},
+	}
+	if !reflect.DeepEqual(view.PullRequests, set) {
+		t.Fatalf("%s serves the pull requests %s, want %s", key, wireText(t, view.PullRequests), wireText(t, set))
 	}
 }
 

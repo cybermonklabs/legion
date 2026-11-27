@@ -173,8 +173,8 @@ func assertOpenOnItsBase(t *testing.T, pool *store.Pool, after string, number in
 //     reads #86's record by its repository and its number, so it moves #86 and leaves #87 at its
 //     own head.
 //
-// The fault it catches is a read by the branch that answers one pull request
-// (githubrest.Client.OpenPullRequestOn answers the first GitHub lists), a pick of the first row of
+// The fault it catches is a read by the branch that answers one pull request (the first GitHub
+// lists of githubrest.Client.OpenPullRequestsOn's), a pick of the first row of
 // a task (issueRecords.pullRequest, openRecord's record.Store.PullRequestRowOfTask), and a record
 // keyed by the issue and the branch, so the second pull request's row takes the place of the
 // first's.

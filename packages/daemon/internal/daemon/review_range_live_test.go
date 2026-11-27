@@ -381,7 +381,7 @@ func (g *reviewRangeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && isRepository && len(parts) == 2:
 		_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
 	case r.Method == http.MethodGet && isRepository && len(parts) == 3 && parts[2] == "pulls":
-		// The query names the branch as `<owner>:<branch>` (githubrest's OpenPullRequestOn).
+		// The query names the branch as `<owner>:<branch>` (githubrest's OpenPullRequestsOn).
 		_, branch, _ := strings.Cut(r.URL.Query().Get("head"), ":")
 		pull, open := g.pulls[branch]
 		if !open {

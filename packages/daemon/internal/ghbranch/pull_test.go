@@ -59,9 +59,9 @@ func TestOpenPullRequestAnswersTheOneThatIsOpen(t *testing.T) {
 // newest first, its order when the list names none, and oldest first.
 //
 // The fault it catches is the fallback taking the first open pull request GitHub lists on the head
-// whatever its base (githubrest.Client.OpenPullRequestOn): listed newest first, the open onto main
-// answers #2, the draft onto the other base, and its caller records that as the pull request it
-// opened.
+// whatever its base (the first of githubrest.Client.OpenPullRequestsOn's): listed newest first,
+// the open onto main answers #2, the draft onto the other base, and its caller records that as the
+// pull request it opened.
 func TestEachReadByBranchTakesEveryOpenPullRequestOnIt(t *testing.T) {
 	t.Parallel()
 	const head, otherBase = "legion/ACME-1", "legion/ACME-1-ci-base"

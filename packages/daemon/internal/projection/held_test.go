@@ -264,15 +264,16 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 
 	// heldBy is absent where no issue holds the one that waits — a root whose label is off, a task
-	// that was stopped, an issue the pass names nowhere — which is a nil slice the wire form then
-	// omits, and not an empty array. at_work is beside them: the accepted ancestor in merging
-	// reads it, and nothing holds it (record.HeldAtWork).
+	// that was stopped, an issue whose close waits for a pull request of its set, an issue the pass
+	// names nowhere — which is a nil slice the wire form then omits, and not an empty array. at_work
+	// is beside them: the accepted ancestor in merging reads it, and nothing holds it
+	// (record.HeldAtWork).
 	for _, row := range got.Admission.Held {
 		wire, err := json.Marshal(row)
 		if err != nil {
 			t.Fatalf("marshal the held row of %s: %v", row.Issue, err)
 		}
-		holds := !slices.Contains([]record.HeldReason{record.HeldLabelOff, record.HeldTaskStopped, record.HeldAtWork, record.HeldUnclassified}, row.Reason)
+		holds := !slices.Contains([]record.HeldReason{record.HeldLabelOff, record.HeldTaskStopped, record.HeldPullRequests, record.HeldAtWork, record.HeldUnclassified}, row.Reason)
 		if (row.HeldBy != nil) != holds || strings.Contains(string(wire), `"heldBy"`) != holds {
 			t.Errorf("the held row of %s reads %s, want heldBy carried %t under the word %s", row.Issue, wire, holds, row.Reason)
 		}

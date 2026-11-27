@@ -1231,8 +1231,9 @@ test("a move back may go to step and name the place it returns to", () => {
 
 // The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
 // `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
-// `design_gate`, and contract 219 added `children_before_retro` and `task_stopped` after
-// `accepted_ancestor`.
+// `design_gate`, contract 219 added `children_before_retro` and `task_stopped` after
+// `accepted_ancestor`, and entry 20261127183022 (pull-requests) added `pull_requests`, an issue
+// whose close waits for a pull request of its set, after `task_stopped`.
 test("the held words are the daemon's, with awaiting_children before design_gate", () => {
   expect(LEGION_HELD_REASONS).toEqual([
     "tree_closed",
@@ -1247,6 +1248,7 @@ test("the held words are the daemon's, with awaiting_children before design_gate
     "accepted_ancestor",
     "children_before_retro",
     "task_stopped",
+    "pull_requests",
     "at_work",
     "unclassified",
   ]);
@@ -1549,6 +1551,60 @@ test("an issue's checks carry each of its open production checks", () => {
   ]);
 
   closed.checks = [{ ...older, role: "" }, closed.check];
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+// Entry 20261127183022 (pull-requests): each issue carries each pull request of its set under
+// `pullRequests`, each with its task and whether the issue links it, and `pullRequest` is the
+// newest open one of them. The state golden's LEGION-208 holds task a's #1247 and task b's #1253,
+// which GitHub changed last, so `pullRequest` is #1253. A served issue whose set holds a pull
+// request the issue links in another repository parses, and so does an issue held from merging for
+// its pull requests; a state outside the three words of `state` is refused.
+test("an issue's pullRequests carry each pull request of its set", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        phase: string;
+        heldFrom?: string;
+        holdReason?: string;
+        pullRequest?: Record<string, unknown>;
+        pullRequests?: Record<string, unknown>[];
+      }
+    >;
+  };
+  const two = state.issues["LEGION-208"];
+  if (two === undefined || two.pullRequests === undefined) {
+    throw new Error("state fixture lacks LEGION-208 or its pullRequests");
+  }
+  expect(two.pullRequests.map((pull) => [pull.number, pull.task, pull.linked])).toEqual([
+    [1247, "a", false],
+    [1253, "b", false],
+  ]);
+  expect(two.pullRequest?.number).toBe(1253);
+
+  two.pullRequests.push({
+    repo: "acme/gadgets",
+    number: 7,
+    head: "0".repeat(40),
+    state: "open",
+    linked: true,
+  });
+  two.phase = "held";
+  two.heldFrom = "merging";
+  two.holdReason = "pull-requests";
+  const parsed = LegionStateResponse.safeParse(state);
+  expect(parsed.error?.issues ?? []).toEqual([]);
+  expect(parsed.data?.issues["LEGION-208"]?.pullRequests?.at(-1)).toEqual({
+    repo: "acme/gadgets",
+    number: 7,
+    head: "0".repeat(40),
+    state: "open",
+    linked: true,
+  });
+  expect(parsed.data?.issues["LEGION-208"]?.holdReason).toBe("pull-requests");
+
+  two.pullRequests.push({ repo: "acme/gadgets", number: 8, state: "draft", linked: false });
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
@@ -2098,12 +2154,15 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2126-09-22T10:10:12Z");
   expect(parsed.issues["LEGION-215"]?.ancestry).toEqual(["LEGION-217", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
-  // body: the operator routes are the only surface that serves it. Each issue's served `tasks`
-  // are read past: a task's `waitsFor.task` is the id of another task of the plan (contract 224),
-  // and no task view carries a pending task.
+  // body: the operator routes are the only surface that serves it. Each issue's served `tasks` and
+  // `pullRequests` are read past: a task's `waitsFor.task` is the id of another task of the plan
+  // (contract 224), a pull request of the set names the id of the task whose branch it is on
+  // (entry 20261127183022 (pull-requests)), and neither carries a pending task.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
   expect(
-    JSON.stringify(parsed, (key, value: unknown) => (key === "tasks" ? undefined : value))
+    JSON.stringify(parsed, (key, value: unknown) =>
+      key === "tasks" || key === "pullRequests" ? undefined : value
+    )
   ).not.toContain('"task"');
 
   // A cause outside the seven words, a linger that is no instant and an empty key in the chain
@@ -3407,8 +3466,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // its `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; contract 275's, which takes `dispatchCredential` off the state; and the issues'
   // checks' band, which serves each issue without its `checks` (`withoutChecks`). Above them
-  // stands the gate-basis entry's band, which takes every root's `treeRuns` and the `gatedSteps`
-  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`). So the golden's
+  // stand the gate-basis entry's band, which takes every root's `treeRuns` and the `gatedSteps`
+  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), and the
+  // pull-requests entry's band, which serves each issue without its `pullRequests`
+  // (`withoutPullRequests`) and leaves `pullRequest`, the newest open one, as it is. So the golden's
   // issues, rows, claim views and stranded claims are compared without them. One value strip
   // stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived at
   // contract 213, so that row is served here without its `source`, every other field of it and
@@ -3467,6 +3528,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         priorityFrom: _priorityFrom,
         tasks: _tasks,
         checks: _checks,
+        pullRequests: _pullRequests,
         ...kept
       } = issue;
       const narrowed: Record<string, unknown> = { ...kept };

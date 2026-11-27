@@ -498,15 +498,18 @@ var stateEnumeratedFields = []EnumeratedField{
 	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
 	// carries a value of it. Its list grew: `children_before_retro` and `task_stopped` arrived
 	// at OwnerPlanContract, after the field, and a row of either word is served as
-	// `unclassified` below that contract (shaping.go's withoutUnadmittedHeldWords); and
+	// `unclassified` below that contract (shaping.go's withoutUnadmittedHeldWords);
 	// `awaiting_children` arrived at gateBasisContract, and a row of it is served as
 	// `children_first` below that contract, the one word the strip stands another in for
-	// (shaping.go's heldReasonStandIn).
+	// (shaping.go's heldReasonStandIn); and `pull_requests` arrived at pullRequestsContract, and a
+	// row of it is served as `unclassified` below that contract.
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 	// `holdReason` of a held issue, why it is held (api.Issue.HoldReason, record.HoldReason).
 	// Older than the floor, and read with a literal of its one value until OwnerPlanContract,
-	// which added `task-stopped` and `children`; an issue held for either is served without
-	// its `holdReason` below that contract (shaping.go's withoutUnadmittedHoldReason).
+	// which added `task-stopped` and `children`, and with an enumeration of those three until
+	// pullRequestsContract, which added `pull-requests`; an issue held for a reason its caller's
+	// contract does not name is served without its `holdReason` (shaping.go's
+	// withoutUnadmittedHoldReason).
 	{Answer: AnswerState, KeyPath: "issues.*.holdReason", Values: holdReasons},
 	// `reason` of one open give-up of the intake, why it gave the message up (api.IntakeGiveUpView,
 	// record.IntakeGiveUpReason). It arrived with `intakeGiveUps`, which is served down below that
@@ -659,10 +662,10 @@ var lineKinds = []EnumeratedValue{
 // not the owner's acceptance, held before its retro for the issues beneath it, and
 // `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
 // it is written out value by value, sorted by value, as waitAnswers is. The gate-basis entry adds
-// `awaiting_children`, a parent waiting on its open children (record.HeldAwaitingChildren), in its
-// own file. It names each constant rather than
-// reading record.HeldReasons, because a word added to the ladder later arrives at its own
-// contract.
+// `awaiting_children`, a parent waiting on its open children (record.HeldAwaitingChildren), and
+// the pull-requests entry `pull_requests`, an issue whose close waits for a pull request of its
+// set (record.HeldPullRequests), each in its own file. It names each constant rather than reading
+// record.HeldReasons, because a word added to the ladder later arrives at its own contract.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
@@ -680,9 +683,11 @@ var heldReasons = []EnumeratedValue{
 }
 
 // holdReasons is every reason an issue's hold can carry (record.HoldReason). `escalated` is older
-// than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting before its retro
-// for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
-// OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is.
+// than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting
+// before its retro for the issues beneath it, and `task-stopped`, a task its owner stopped,
+// arrived at OwnerPlanContract. The pull-requests entry adds `pull-requests`, a close that waits
+// for a pull request of the issue's set (record.HoldForPullRequests), in its own file. Written out
+// value by value, sorted by value, as waitAnswers is.
 var holdReasons = []EnumeratedValue{
 	{Value: string(record.HoldForChildren), Since: OwnerPlanContract},
 	{Value: string(record.HoldEscalated), Since: ServingFloor},

@@ -2061,12 +2061,14 @@ func withoutUnadmittedCapabilitySources(state State, restore int) (State, bool) 
 // withoutUnadmittedHoldReason is the issue with no `holdReason` where that reason is one
 // restore's reader does not admit. It follows the declared table (answers.go's holdReasons) and
 // takes any reason the table holds back from restore (fieldArrivals.heldBack says which reasons
-// and why): today the `task-stopped` and `children` of OwnerPlanContract, and tomorrow any reason
-// the table gives a later arrival. A reader below that contract reads the key with
-// `z.literal("escalated")` and refuses the whole body for another word, and reads it as optional,
-// so such an issue is served as a hold of no reason is: its `heldFrom` and every other field of
-// the hold stay, and so does every escalated hold. `holdReason` is `omitempty`, so the emptied
-// field writes no key.
+// and why): today the `task-stopped` and `children` of OwnerPlanContract and the `pull-requests`
+// of pullRequestsContract, and tomorrow any reason the table gives a later arrival. A reader
+// below OwnerPlanContract reads the key with `z.literal("escalated")`, and one from that contract
+// below pullRequestsContract with a `z.enum` of its three words, each refusing the whole body for
+// another word, and each reads it as optional, so such an issue is served as a hold of no reason
+// is: its `heldFrom` and every other field of the hold stay, merging for a hold for pull-requests,
+// and so does every escalated hold. `holdReason` is `omitempty`, so the emptied field writes no
+// key.
 //
 // The issue is a value of its own and the field a string of it, so the state the source answered
 // is left as it was. It reports whether it took the reason, which is what the log line of this
@@ -2082,10 +2084,10 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 // withoutUnadmittedHeldWords is state whose `admission.held` names no row by a word restore's
 // reader does not admit. It follows the declared table (answers.go's heldReasons) and takes any
 // word the table holds back from restore (fieldArrivals.heldBack says which words and why): today
-// the `children_before_retro` and `task_stopped` of OwnerPlanContract and the
-// `awaiting_children` of gateBasisContract, and tomorrow any word the table gives a later
-// arrival. A reader from heldContract up to such a contract reads `reason` with a `z.enum` of the
-// words before it and refuses the whole body for another.
+// the `children_before_retro` and `task_stopped` of OwnerPlanContract, the `awaiting_children` of
+// gateBasisContract and the `pull_requests` of pullRequestsContract, and tomorrow any word the
+// table gives a later arrival. A reader from heldContract up to such a contract reads `reason`
+// with a `z.enum` of the words before it and refuses the whole body for another.
 //
 // The row is rewritten rather than dropped, which is where this parts company with
 // withoutUnadmittedStrandedStates: an older word does stand for it. A word an older word of the
@@ -2093,10 +2095,11 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 // (heldReasonStandIn): `awaiting_children` as `children_first`, the wait that word named before
 // gateBasisContract gave it its own. Every other such word is served as `unclassified` with no
 // `heldBy`: each issue of the two holds OwnerPlanContract added read `unclassified` at every
-// daemon before that contract, and a word no row of the table declares is no word any older
-// reader is known to admit. `unclassified` and `children_first` both arrived with the field, so
-// every reader that knows the field admits them. So the row is served as that reader read it
-// before, and every other row as it stands.
+// daemon before that contract, an issue held for pull-requests, a hold pullRequestsContract added,
+// is one no word of an older reader names, and a word no row of the table declares is no word any
+// older reader is known to admit. `unclassified` and `children_first` both arrived with the
+// field, so every reader that knows the field admits them. So the row is served as that reader
+// read it before, and every other row as it stands.
 //
 // A state whose rows name no such word is returned as it is, with no copy made. Otherwise the
 // rows are copied before one is written, so the state the source answered is left as it was. It
@@ -2349,6 +2352,17 @@ func withoutP0Start(state State) (State, bool) {
 func withoutResolvedPriority(issue Issue) (Issue, bool) {
 	moved := issue.ResolvedPriority != nil || issue.PriorityFrom != ""
 	issue.ResolvedPriority, issue.PriorityFrom = nil, ""
+	return issue, moved
+}
+
+// withoutPullRequests is the issue with no `pullRequests`, the key pullRequestsContract added to
+// the state and the record; `pullRequest`, the newest open pull request of the issue's set, stays,
+// which is the one pull request a reader before it reads (dispatch://INFRA-5910 D8). The field is
+// `omitempty`, so the band reports a move only for an issue whose set holds a pull request. Issue
+// is a value, so the state the source answered is left as it was.
+func withoutPullRequests(issue Issue) (Issue, bool) {
+	moved := len(issue.PullRequests) > 0
+	issue.PullRequests = nil
 	return issue, moved
 }
 
