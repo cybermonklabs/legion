@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
@@ -254,11 +255,12 @@ func TestProbeIsUnknown(t *testing.T) {
 // Every line the probe logs names the lookup without envoy_url's userinfo, where a deployment
 // writes the listener's credential: a made-up token written as the user, and a made-up password
 // holding a "'", which a text rule stops reading at. The lookup is named as redact.URL shows such a
-// URL, its scheme and the mark of a URL with credentials, then its path; the unreachable one also
-// logs the HTTP client's error, without its quote of the URL. The probe requests the lookup without
-// the userinfo and sends it as Basic auth, as the HTTP client sends a URL's own, when no bearer
-// token is configured. A password holding an "@" and no host after it (`http://u:p@<tail>`) sends
-// the lookup to its tail, which neither the url field nor the resolver's error names.
+// URL (read from the rule, never written out here), then the lookup's path; the unreachable one
+// also logs the HTTP client's error, without its quote of the URL. The probe requests the lookup
+// without the userinfo and sends it as Basic auth, as the HTTP client sends a URL's own, when no
+// bearer token is configured. A password holding an "@" and no host after it
+// (`http://u:p@<tail>`) sends the lookup to its tail, which neither the url field nor the
+// resolver's error names.
 func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 	const userToken, quotedUserinfo = "madeUpEnvoyToken0123", "legion:madeUpEnvoy'Password0123"
 	withUser := func(base, user string) string { return strings.Replace(base, "://", "://"+user+"@", 1) }
@@ -270,15 +272,20 @@ func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 	for name, base := range map[string]string{"refused": served, "unreachable": gone} {
 		for _, user := range []string{userToken, quotedUserinfo} {
 			var log bytes.Buffer
-			if got := newTestProber(withUser(base, user), "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+			envoyURL := withUser(base, user)
+			if got := newTestProber(envoyURL, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
 				t.Fatalf("%s: Probe = %s, want unknown", name, got)
 			}
-			if !strings.Contains(log.String(), `url="http://[a URL with credentials]/v1/roles/`) {
-				t.Errorf("%s: the log %q does not name the lookup by the mark of a URL with credentials", name, log.String())
+			if want := `url="` + redact.URL(envoyURL) + `/v1/roles/`; !strings.Contains(log.String(), want) {
+				t.Errorf("%s: the log %q does not name the lookup as %s", name, log.String(), want)
 			}
 			// Both made-up credentials begin with this, so it catches either.
 			if strings.Contains(log.String(), "madeUpEnvoy") {
 				t.Errorf("%s: the log names the credential: %s", name, log.String())
+			}
+			// The quoted userinfo's user name, legion, is no part of the check above.
+			if userName, _, _ := strings.Cut(user, ":"); strings.Contains(log.String(), "://"+userName) {
+				t.Errorf("%s: the log names the URL's user name: %s", name, log.String())
 			}
 		}
 	}

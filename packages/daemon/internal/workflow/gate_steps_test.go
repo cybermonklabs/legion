@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -365,6 +366,273 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 			}
 			if told := controllerNoticesOn(t, pool, gatedRoot); len(told) != 0 {
 				t.Fatalf("the controller was told %q after a second pass, want still nothing", told)
+			}
+		})
+	}
+}
+
+// Under a deployment that gates [criteria, spec] the step a resume speaks of (stepInQuestion) need
+// not be the step whose document the act that answered the wait was of: an approval that opens the
+// last closed step leaves every step open, and the resume then speaks of the first required step
+// (criteria); a registration of the other step's document moves a gate wait to that document,
+// whose review answers it while the step in question stays closed; a wait on a question is
+// answered by a review of either document; and the step in question moves when a review of the
+// other document lands after the answer. The answer records the document it was of, the step
+// whose row held it and the version reviewed (record.AnsweredDocument), so the resume names that
+// document and asks the predicate of that step's gate whether the person's review is still their
+// word (SupersedingApproval): it never says an approval the predicate holds standing no longer
+// stands, and never says a changes request the predicate holds standing asks for no revision. What
+// it says of the gate of the step in question is what that gate holds. Both orders of the two
+// steps are driven for an approval. (INFRA-3136 R2, the doubt left by review round 16.) A document
+// registered on the step after the answer, in place of the one reviewed, is named as what that
+// step holds now, the step in question or not: no changes request cleared the approval it took the
+// place of, and the changes request of the document before it still stands (INFRA-3136 R29).
+func TestUnderTwoGatedStepsTheResumeAsksTheReviewOfTheDocumentItWasOf(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// question says the root waits on a question of its architect's, ask-q: the registrations
+		// hand no approval request to the person, and the question is opened after before.
+		question bool
+		// before is applied after the two registrations and before the pass that starts the wait.
+		before []intake.Fact
+		// waitDoc is the document the wait the pass starts is on, "" for the question.
+		waitDoc string
+		answer  intake.Fact
+		// after is applied once the wait is answered, before the resume is rendered.
+		after []intake.Fact
+		by    record.Answer
+		// reviewed is the step whose document the answering act was of, at version reviewedAt (0
+		// for a newer version, which is no review).
+		reviewed    record.DesignStep
+		reviewedDoc string
+		reviewedAt  int
+		// superseded says the predicate holds the person's answering review superseded: the step
+		// holds another document than the one approved.
+		superseded bool
+		want, not  []string
+	}{
+		{
+			name:    "the Verification document approved first, the primary document's approval opens the last closed step",
+			before:  []intake.Fact{stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 7})},
+			waitDoc: gateDoc,
+			answer:  stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 8}),
+			by:      record.AnsweredByApproval, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4,
+			want: []string{"Your primary document version 4 on LEGION-208 was approved.",
+				"Your Verification document is approved at version 5 and the design gate is open", DesignApprovedWake},
+			not: []string{"no longer stands", "Verification document version 4"},
+		},
+		{
+			name:    "the primary document approved first, the Verification document's approval opens the last closed step",
+			before:  []intake.Fact{stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 7})},
+			waitDoc: criteriaDoc,
+			answer:  stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 8}),
+			by:      record.AnsweredByApproval, reviewed: record.DesignStepCriteria, reviewedDoc: criteriaDoc, reviewedAt: 5,
+			want: []string{"Your Verification document version 5 on LEGION-208 was approved.",
+				"Your Verification document is approved at version 5 and the design gate is open", DesignApprovedWake},
+			not: []string{"no longer stands"},
+		},
+		{
+			name:    "a wait on the Verification document, answered by the primary document's approval a registration carries",
+			waitDoc: criteriaDoc,
+			answer: intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4, ApprovedVersion: 4,
+				ApprovedMark: record.EventMark{Seq: 9}, Since: record.EventMark{Seq: 9}},
+			by: record.AnsweredByApproval, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4,
+			want: []string{"Your primary document version 4 on LEGION-208 was approved.", "Your Verification document is not approved at version 5"},
+			not:  []string{"no longer stands", "Verification document version 4", DesignApprovedWake},
+		},
+		{
+			// The criteria step is still closed, so it is the step in question, and the registration
+			// of another document on the spec step after the answer leaves no row holding the
+			// primary document approved. The answer records the spec step it was of
+			// (record.AnsweredDocument.Step), so the resume names the primary document and the
+			// document the spec step holds now, not the Verification document (INFRA-3136 R29).
+			name:    "a wait on the Verification document, answered by the primary document's approval, another primary document registered after it",
+			waitDoc: criteriaDoc,
+			answer: intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4, ApprovedVersion: 4,
+				ApprovedMark: record.EventMark{Seq: 9}, Since: record.EventMark{Seq: 9}},
+			after: []intake.Fact{intake.GateRegistered{Issue: gatedRoot, ArtifactID: "artifact-other", Version: 1, Since: record.EventMark{Seq: 10}}},
+			by:    record.AnsweredByApproval, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4, superseded: true,
+			want: []string{"Your primary document version 4 on LEGION-208 was approved. That approval no longer stands: " +
+				"another document, artifact-other, is now registered as your primary document.", "Your Verification document is not approved at version 5"},
+			not: []string{"Your Verification document version 4", "artifact-criteria", "a later changes request", DesignApprovedWake},
+		},
+		{
+			name:    "a wait on the primary document, answered by the Verification document's approval a registration carries",
+			before:  []intake.Fact{stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 7})},
+			waitDoc: gateDoc,
+			answer: intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 6,
+				ApprovedVersion: 6, ApprovedMark: record.EventMark{Seq: 9}, Since: record.EventMark{Seq: 9}},
+			by: record.AnsweredByApproval, reviewed: record.DesignStepCriteria, reviewedDoc: criteriaDoc, reviewedAt: 6,
+			want: []string{"Your Verification document version 6 on LEGION-208 was approved.", "Your primary document is not approved at version 4"},
+			not:  []string{"no longer stands", "primary document version 6", DesignApprovedWake},
+		},
+		{
+			// The Verification document's approval of version 5 stands below its version 6, so the
+			// step in question is criteria; the person's changes request of the primary document's
+			// version 4 is no review of that document, and an approval of version 5 of another
+			// document is nothing after it.
+			name: "a wait on the Verification document, answered by the primary document's changes request a registration carries",
+			before: []intake.Fact{stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 7}),
+				intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 6,
+					RequestAsk: "ask-criteria", Since: record.EventMark{Seq: 8}}},
+			waitDoc: criteriaDoc,
+			answer: intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4, ChangesRequestedVersion: 4,
+				ChangesReason: "name the rollback path", ChangesRequestedMark: record.EventMark{Seq: 10}, Since: record.EventMark{Seq: 10}},
+			by: record.AnsweredByChanges, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4,
+			want: []string{`A person requested changes to your primary document on LEGION-208 at version 4: "name the rollback path"`,
+				"revise the primary document as they ask", "Your Verification document is not approved at version 6"},
+			not: []string{"asks for no revision now", "changes to your Verification document"},
+		},
+		{
+			// Both steps are closed, so the step in question is criteria; the person's approval of
+			// the primary document answers the question wait and stands.
+			name:     "a question wait, answered by the primary document's approval while the Verification document is closed",
+			question: true,
+			answer:   stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 10}),
+			by:       record.AnsweredByApproval, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4,
+			want: []string{"Your primary document version 4 on LEGION-208 was approved.", "Your Verification document is not approved at version 5"},
+			not:  []string{"no longer stands", "Verification document version 4", DesignApprovedWake},
+		},
+		{
+			// The Verification document's approval of version 5 stands below its version 6, so the
+			// step in question is criteria, and the changes request is of the primary document.
+			name:     "a question wait, answered by the primary document's changes request below the Verification document's approval",
+			question: true,
+			before: []intake.Fact{stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 7}),
+				intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 6, Since: record.EventMark{Seq: 8}}},
+			answer: intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactChangesRequested, Version: 4,
+				Reason: "name the rollback path", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 10}},
+			by: record.AnsweredByChanges, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4,
+			want: []string{`A person requested changes to your primary document on LEGION-208 at version 4: "name the rollback path"`,
+				"revise the primary document as they ask", "Your Verification document is not approved at version 6"},
+			not: []string{"asks for no revision now", "changes to your Verification document"},
+		},
+		{
+			// A newer version of the primary document answers the wait on it; the person's changes
+			// request of the Verification document after the answer closes the criteria step, which
+			// is then the step in question.
+			name:    "a wait on the primary document, answered by its newer version, the Verification document closed after it",
+			before:  []intake.Fact{stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 7})},
+			waitDoc: gateDoc,
+			answer: intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5,
+				RequestWaitsOnAgent: true, Mark: record.EventMark{Seq: 8}},
+			after: []intake.Fact{intake.DispatchArtifact{Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactChangesRequested,
+				Version: 5, Reason: "tighten the checks", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 9}}},
+			by: record.AnsweredByVersion, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc,
+			want: []string{"A newer version of your primary document on LEGION-208, version 5, handed the approval request back to you.",
+				"Your Verification document is not approved at version 5"},
+			not: []string{"newer version of your Verification document", DesignApprovedWake},
+		},
+		{
+			// INFRA-3136 R29: the architect registers another document on the spec step after the
+			// approval of the primary document answered the wait, which starts a fresh row with no
+			// approval (gateRegistered). No changes request cleared the approval: the step holds
+			// another document, and the resume names it.
+			name:    "a wait on the primary document, answered by its approval, another document registered on the step after it",
+			before:  []intake.Fact{stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 7})},
+			waitDoc: gateDoc,
+			answer:  stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 8}),
+			after:   []intake.Fact{intake.GateRegistered{Issue: gatedRoot, ArtifactID: "artifact-other", Version: 1, Since: record.EventMark{Seq: 9}}},
+			by:      record.AnsweredByApproval, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4, superseded: true,
+			want: []string{"Your primary document version 4 on LEGION-208 was approved. That approval no longer stands: " +
+				"another document, artifact-other, is now registered as your primary document.", "Your primary document is not approved at version 1"},
+			not: []string{"a later changes request", "a later approval", DesignApprovedWake},
+		},
+		{
+			// INFRA-3136 R29: the same registration after the person's changes request of the
+			// primary document answered the wait. The review stands, and the resume says that the
+			// step holds another document now.
+			name:    "a wait on the primary document, answered by its changes request, another document registered on the step after it",
+			before:  []intake.Fact{stepApproval(gatedRoot, criteriaDoc, 5, record.EventMark{Seq: 7})},
+			waitDoc: gateDoc,
+			answer: intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactChangesRequested, Version: 4,
+				Reason: "name the rollback path", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: record.EventMark{Seq: 8}},
+			after: []intake.Fact{intake.GateRegistered{Issue: gatedRoot, ArtifactID: "artifact-other", Version: 1, Since: record.EventMark{Seq: 9}}},
+			by:    record.AnsweredByChanges, reviewed: record.DesignStepSpec, reviewedDoc: gateDoc, reviewedAt: 4,
+			want: []string{`A person requested changes to your primary document on LEGION-208 at version 4: "name the rollback path"`,
+				"The review was of a document since replaced: another document, artifact-other, is now registered as your primary document.",
+				"Your primary document is not approved at version 1"},
+			not: []string{"asks for no revision now"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := stepsEngine(twoSteps(), nil)
+			apply := applyFacts(t, pool, engine)
+			seedGatedTree(t, pool)
+			bindStep(t, pool, record.DesignStepCriteria, criteriaDoc)
+			// A registration hands its document's approval request to the person, except where the
+			// root waits on a question, whose wait an approval request with the person would take.
+			request := func(ask string) string {
+				if tc.question {
+					return ""
+				}
+				return ask
+			}
+			apply("register-criteria", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 5,
+				RequestAsk: request("ask-criteria"), Since: record.EventMark{Seq: 5}})
+			apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4,
+				RequestAsk: request("ask-spec"), Since: record.EventMark{Seq: 6}})
+			for i, fact := range tc.before {
+				apply(fmt.Sprintf("before-%d", i), fact)
+			}
+			if tc.question {
+				apply("question", intake.DispatchAskOpened{Key: gatedRoot, Ask: "ask-q", Kind: record.AskQuestion, AuthorSession: askArchitect.ID,
+					Mark: record.EventMark{Seq: 9}})
+			}
+			if entered := reconcileAwaiting(t, pool, engine); len(entered) != 1 || entered[0] != gatedRoot {
+				t.Fatalf("the pass returned %v, want the root, which hands its work to the person", entered)
+			}
+			if waiting := recordedRoot(t, pool).Awaiting; waiting == nil || waiting.Artifact != tc.waitDoc || tc.question != (waiting.Ask == "ask-q") {
+				t.Fatalf("the wait = %+v, want it on %q (the question: %t)", waiting, tc.waitDoc, tc.question)
+			}
+
+			apply("answer", tc.answer)
+			answered := recordedRoot(t, pool).Awaiting
+			var recorded record.AnsweredDocument
+			if answered != nil && answered.AnsweredDocument != nil {
+				recorded = *answered.AnsweredDocument
+			}
+			if want := (record.AnsweredDocument{Version: tc.reviewedAt, Artifact: tc.reviewedDoc, Step: tc.reviewed}); answered == nil ||
+				answered.AnsweredAt == nil || answered.AnsweredBy != tc.by || recorded != want {
+				t.Fatalf("the wait = %+v, want it answered by %s of %s on the %s step, version %d", answered, tc.by, tc.reviewedDoc, tc.reviewed,
+					tc.reviewedAt)
+			}
+			for i, fact := range tc.after {
+				apply(fmt.Sprintf("after-%d", i), fact)
+			}
+			var gates map[record.DesignStep]record.DesignGate
+			var task string
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				var err error
+				if gates, err = record.NewStore().GatesOf(t.Context(), tx, gatedRoot); err != nil {
+					return err
+				}
+				task, err = ResumeAwaitedRootTask(t.Context(), tx, record.NewStore(), gatedRoot, *answered, twoSteps())
+				return err
+			})
+			// The predicate's answer for the person's answering review is the resume's to say: it
+			// may not say a review the predicate holds standing no longer stands, or the other way
+			// round.
+			if tc.by != record.AnsweredByVersion {
+				review := Decision{Kind: record.DecisionDesignApproved, Step: tc.reviewed, Artifact: tc.reviewedDoc, Version: tc.reviewedAt}
+				if tc.by == record.AnsweredByChanges {
+					review.Kind, review.Mark = record.DecisionDesignChangesRequested, answered.Since
+				}
+				if superseded := SupersedingApproval(gateOf(gates, tc.reviewed), true, review); (superseded != nil) != tc.superseded {
+					t.Fatalf("SupersedingApproval(the %s gate, %+v) = %+v, want it superseded: %t", tc.reviewed, review, superseded, tc.superseded)
+				}
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(task, want) {
+					t.Errorf("resume task %q, want it to name %q", task, want)
+				}
+			}
+			for _, not := range tc.not {
+				if strings.Contains(task, not) {
+					t.Errorf("resume task %q, want no %q", task, not)
+				}
 			}
 		})
 	}

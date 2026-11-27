@@ -145,13 +145,15 @@ type NatsHubArgs struct {
 }
 
 // NATSUserArgs are one nkey user of the hub. Exactly one of machineId, listenerMachineId,
-// dispatchMachineId, daemon, and permissions selects the user's grant. nkey is named as aws:User
-// names it, so a consumer running both clouds spells a user alike.
+// dispatchMachineId, daemon, and permissions selects the user's grant. githubWebhook goes only
+// with listenerMachineId. nkey is named as aws:User names it, so a consumer running both clouds
+// spells a user alike.
 type NATSUserArgs struct {
 	Name              string           `pulumi:"name"`
 	NKey              string           `pulumi:"nkey"`                       // the user's public key; never its seed
 	MachineID         *string          `pulumi:"machineId,optional"`         // permissions = core.HostPermissions(machineId): the user a host's listener and its sessions share
 	ListenerMachineID *string          `pulumi:"listenerMachineId,optional"` // permissions = core.ListenerHostPermissions(listenerMachineId): a listener's own user, which no session shares
+	GitHubWebhook     bool             `pulumi:"githubWebhook,optional"`     // only with listenerMachineId: permissions = core.WebhookListenerHostPermissions(listenerMachineId), for the listener that receives GitHub's webhook
 	DispatchMachineID *string          `pulumi:"dispatchMachineId,optional"` // permissions = core.DispatchPermissions(dispatchMachineId): Dispatch's user; the id is the listener's beside it
 	Daemon            bool             `pulumi:"daemon,optional"`            // permissions = core.DaemonPermissions()
 	Permissions       *PermissionsArgs `pulumi:"permissions,optional"`       // explicit
@@ -312,9 +314,6 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	}
 	if args.Subnetwork != nil && args.Network == nil {
 		return settings{}, core.InputErrorf("subnetwork", "subnetwork is set without network; the firewall needs the network the subnetwork belongs to")
-	}
-	if args.Listener != nil && args.AuthCallout != nil {
-		return settings{}, listenerBesideCallout("listener")
 	}
 	var hubListener *listenerUser
 	if args.Listener != nil {
@@ -493,16 +492,6 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value stri
 	}
 }
 
-// listenerBesideCallout refuses input, the hub's own listener, beside authCallout. Today the
-// listener connects to NATS as a user whose seed the hub stores; behind the auth service it is to
-// connect through the service with a service identity of its own instead, which arrives with
-// dispatch://INFRA-840's task t-e-13. Until then a hub with authCallout runs no listener.
-func listenerBesideCallout(input string) error {
-	return core.InputErrorf(input, "%s and authCallout: the hub's own listener connects to NATS as a user whose seed the hub stores (%s.nkey and its seed secret); "+
-		"behind the auth service it connects with a service identity instead, and its service identity arrives with dispatch://INFRA-840 (t-e-13), "+
-		"so until then a hub with authCallout runs no listener of its own", input, input)
-}
-
 // calloutRefusal is a refusal of the hub's authorization, with core's refusal of the callout, a
 // core.InputError naming core's field callout, named instead as the hub's input authCallout; any
 // other passes unchanged, privateProjects' among them, which the hub's input shares the name of.
@@ -582,11 +571,17 @@ type userKind struct {
 }
 
 // userKinds is the one table of every kind of hub user. The machine-id entries also drive the
-// hub's seed scan, shared machine-id check, and duplicate-durable check.
+// hub's seed scan, shared machine-id check, and duplicate-durable check. A listenerMachineId user
+// with githubWebhook takes the webhook listener's set, the one listener grant that may publish
+// GitHub's lane.
 func userKinds(u NATSUserArgs) [5]userKind {
+	listenerHost := core.ListenerHostPermissions
+	if u.GitHubWebhook {
+		listenerHost = core.WebhookListenerHostPermissions
+	}
 	return [5]userKind{
 		{input: "machineId", id: u.MachineID, set: u.MachineID != nil, grant: core.HostPermissions},
-		{input: "listenerMachineId", id: u.ListenerMachineID, set: u.ListenerMachineID != nil, grant: core.ListenerHostPermissions},
+		{input: "listenerMachineId", id: u.ListenerMachineID, set: u.ListenerMachineID != nil, grant: listenerHost},
 		{input: "dispatchMachineId", id: u.DispatchMachineID, set: u.DispatchMachineID != nil, fixed: core.DispatchDurables(), grant: core.DispatchPermissions},
 		{input: "daemon", set: u.Daemon, grant: func(string) core.Permissions { return core.DaemonPermissions() }},
 		{input: "permissions", set: u.Permissions != nil, grant: func(string) core.Permissions {
@@ -636,18 +631,24 @@ type listenerUser struct {
 // core's shared machine-id rule and names a listener durable and queue group. An id whose durable
 // repeats another user's, of any kind, or the hub's own listener's (bus.ListenerDurable turns a
 // space into a hyphen, so "a b" and "a-b" collide) is refused as a core.InputError naming the later
-// input. Every other refusal of its own is a core.InputError too: a user's names users, the
-// listener's nkey is named under the listener's path, and the session user's nkey names
-// sessionUser, as authorizationRefusal names core's refusals of the same users. The hub's own
-// refusals name a user by its index alone: they come before core has read the names, so quoting
-// one could quote a seed. callout and privateProjects pass to core as they are: core derives
-// auth_users from the users above and refuses, as a core.InputError naming privateProjects, a
-// private project beside any of them but the callout's service user, and a service user granted
-// more than an auth service needs. With privateProjects the hub also refuses a service user that
-// names an entry of another kind than permissions: a machineId, listenerMachineId,
-// dispatchMachineId or daemon entry is a client whose seed that client stores, and naming it the
-// service's would let it connect past the service by that seed. Quoting the service user's name is
-// safe there: seededInput has refused a seed in it.
+// input. Every other refusal of its own is a core.InputError too: a user's names users (its
+// githubWebhook, for the refusal below), the listener's nkey is named under the listener's path,
+// and the session user's nkey names sessionUser, as authorizationRefusal names core's refusals of
+// the same users. The hub's own refusals name a user by its index alone: they come before core has
+// read the names, so quoting one could quote a seed. A listener machine id with githubWebhook takes
+// the webhook listener's set (userKinds); githubWebhook beside any other kind is refused as a
+// core.InputError naming it.
+// callout and privateProjects pass to core as they are: core derives auth_users from the users
+// above, the listener's and the session user's included. So beside a callout the listener's user
+// is admitted by its nkey alone, as every user of users is, and a client presenting no credential
+// still becomes the session user: none of them reaches the auth service. core refuses, as a
+// core.InputError naming privateProjects, a private project beside any of them but the callout's
+// service user, the listener's seeded user included, and a service user granted more than an auth
+// service needs. With privateProjects the hub also refuses a service user that names an entry of
+// another kind than permissions: a machineId, listenerMachineId, dispatchMachineId or daemon entry
+// is a client whose seed that client stores, and naming it the service's would let it connect past
+// the service by that seed. Quoting the service user's name is safe there: seededInput has refused
+// a seed in it.
 func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserArgs, callout *nats.AuthCalloutArgs, privateProjects bool) (core.Authorization, error) {
 	if len(users) == 0 && l == nil {
 		return core.Authorization{}, core.InputErrorf("users", "users: at least one user is required, or a listener")
@@ -665,6 +666,10 @@ func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserAr
 		kind, err := selectedUserKind(where, u)
 		if err != nil {
 			return core.Authorization{}, err
+		}
+		if u.GitHubWebhook && kind.input != "listenerMachineId" {
+			return core.Authorization{}, core.InputErrorf(where+".githubWebhook",
+				"%s.githubWebhook is set beside %s; it names the listener that receives GitHub's webhook, so only a listenerMachineId user takes it", where, kind.input)
 		}
 		if privateProjects && callout != nil && u.Name == callout.ServiceUser && kind.input != "permissions" {
 			return core.Authorization{}, core.InputErrorf("privateProjects",

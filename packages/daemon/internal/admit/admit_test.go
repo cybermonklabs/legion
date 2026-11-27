@@ -278,18 +278,18 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1, Decided: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
-			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
+			Task: "Working copy: branch legion/LEGION-209.\nContinue mid-phase child. Issue: LEGION-209. Phase: testing. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-211", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Retro,
-			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Working copy: branch legion/LEGION-211. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Working copy: branch legion/LEGION-211.\nContinue retro child. Issue: LEGION-211. Phase: retro. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-212", payload: record.IssueBranch{Generation: 1}},
 	})
 }
 
 // A re-admitted tree's merging child is resumed in merging with its review round's decision gone:
 // the re-admission clears the generation, which empties that decision with the rest of the tree's
-// handoffs (record.ClearTreeGeneration). Its merger's resume task names no approved head, as no
-// task does any more (workflow's task): the merger merges the head it reads.
+// handoffs (workflow.Engine.ClearTreeGeneration). Its merger's resume task names no approved head,
+// as no task does any more (workflow's task): the merger merges the head it reads.
 func TestAResumedMergerKeepsNoReviewDecisionAcrossGenerations(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -315,7 +315,7 @@ func TestAResumedMergerKeepsNoReviewDecisionAcrossGenerations(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1, Decided: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Working copy: branch legion/LEGION-209.\nContinue merging child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		rows, err := record.NewStore().Phases(context.Background(), tx, "LEGION-209")
@@ -363,7 +363,7 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1, Decided: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Working copy: branch legion/LEGION-209.\nContinue awaiting child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		child, err := record.NewStore().Issue(context.Background(), tx, "LEGION-209")
@@ -584,15 +584,12 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				var id int64
 				inTx(t, pool, func(tx pgx.Tx) {
-					if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
+					if id, err = record.NewStore().EnqueueID(context.Background(), tx, row); err != nil {
 						t.Fatalf("enqueue %s: %v", payload.Op, err)
 					}
 				})
-				var id int64
-				if err := pool.QueryRow(context.Background(), `select max(id) from outbox`).Scan(&id); err != nil {
-					t.Fatalf("read the %s row's id: %v", payload.Op, err)
-				}
 				return id
 			}
 			putClaim := func(token claim.Token, project, tree, state string, serving uint64, lastStart int64) {
@@ -1114,7 +1111,10 @@ func TestReconcileReleasesSlotWhoseDispatchStatusLeftActiveSet(t *testing.T) {
 
 func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// The admission runs for CAPTURE, the project the captured event names, so the issue is
+	// recorded under it and holds one of CAPTURE's own slots: the state's admission.active lists
+	// the project's own slot holders alone (blockers.JudgeAdmission).
+	admission := newAdmissionForProject(t, "CAPTURE", 1, config.DesignGate("").Steps(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	js := testJetStream(t)
 	consumers, err := intake.OpenConsumers(context.Background(), js, pool, intake.ConsumerSpec{Project: "CAPTURE", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, NakDelay: time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {

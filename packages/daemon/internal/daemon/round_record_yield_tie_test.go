@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -27,15 +28,17 @@ func TestARoundsCallThatYieldsGivesATieToTheNewestRecord(t *testing.T) {
 		// roundFirst writes the round's record before the launch's, so the launch's is the newer.
 		roundFirst bool
 		says, not  string
+		repository string
 	}{
-		{name: "the_round's_record_is_the_newer", says: passedOverCommit, not: launchReadCommit},
-		{name: "control:_the_launch's_record_is_the_newer", roundFirst: true, says: launchReadCommit, not: passedOverCommit},
+		{name: "the_round's_record_is_the_newer", says: passedOverCommit, not: launchReadCommit, repository: podUpdateRepo},
+		{name: "control:_the_launch's_record_is_the_newer", roundFirst: true, says: launchReadCommit, not: passedOverCommit, repository: "example/launch-read"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			rig := podlessKeptVolumeRound(t)
 			taken := withPodTaken(rig, "launch-volume-1")
-			read := workspaceRead{round: podUpdateRound, by: viaIssue, at: rig.clock.Now(), work: roundUnpushed}
+			taken.Repository = "example/launch-read"
+			read := workspaceRead{round: podUpdateRound, by: viaIssue, at: rig.clock.Now(), work: roundUnpushed, origin: ghrepo.MustParse(podUpdateRepo)}
 			var round string
 			recordRound := func() {
 				recorded, ok := rig.s.recordRoundReplacement(rig.ctx, podUpdateIssue, podUpdateRound, podUpdatePod, roundBreakingDrift, read)
@@ -79,6 +82,9 @@ func TestARoundsCallThatYieldsGivesATieToTheNewestRecord(t *testing.T) {
 			told := rig.architectNotices(record.WorkspaceTakenNotice)
 			if len(told) != 1 || !strings.Contains(told[0].Reason, tc.says) || strings.Contains(told[0].Reason, tc.not) {
 				t.Fatalf("the architect was told %+v, want one workspace-taken notice naming %s, the newer record's commit, and not %s", told, tc.says, tc.not)
+			}
+			if !strings.Contains(told[0].Reason, "read the issue branch of the repository `"+tc.repository+"`") {
+				t.Fatalf("the notice does not point to the selected read's repository %s: %s", tc.repository, told[0].Reason)
 			}
 		})
 	}

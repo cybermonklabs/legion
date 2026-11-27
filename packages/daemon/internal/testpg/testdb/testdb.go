@@ -54,9 +54,12 @@ import (
 const Image = "mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4"
 
 // SkipMessage is what a test is skipped with when there is no Postgres to run it against. It is
-// exported for the packages whose own skip says the same thing (internal/daemon's testDSN).
+// exported for the packages whose own skip says the same thing (internal/daemon's testDSN). It
+// names the pgvector image CI's Postgres services run (.github/ci-images.yaml, its pgvector row)
+// rather than Image: the daemon tests that boot a scratch Dispatch run Dispatch's migrations,
+// which need the vector extension that Image lacks.
 const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against. In a Legion pod, read skill://legion-worker/references/tools.md, \"The database your tests use\"; never the sessions database. Elsewhere, start one and set it:\n" +
-	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 " + Image + "\n" +
+	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 docker.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11\n" +
 	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
 	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
 

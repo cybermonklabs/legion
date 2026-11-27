@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -23,7 +24,10 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // (openPodUpdateUnderLimits): posted to every claim of the issue that has run a worker, and to
 // every claim whose launch waits on the pod (openPodUpdate, postedClaims), charged to the
 // project's limits as the sweep charges an opening (recordPodUpdateOpening), and carried from then
-// on by the sweep alone. Its reasons say the controller asked for it (requestedPodUpdateReasons).
+// on by the sweep alone. Its reasons say the controller asked for it (requestedPodUpdateReasons),
+// and it records the repository the pod was built from at its open, as a drift's round does
+// (podBuiltFrom), so each message of the round on the issue names the work by that repository
+// where a correction has moved the issue's record since (roundMove).
 // The sweep asks each role of the pod, at the first sweep that reads the round recorded on its
 // claim, to push its work and answer ready_for_update (askRound). The round reaches its end once
 // every role it asks has answered, no turn runs and no claim with a process in the pod reports
@@ -213,8 +217,12 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	if err != nil {
 		return api.PodUpdateResponse{}, nil, fmt.Errorf("read whether a project's pause holds the pod of %s: %w", issue, err)
 	}
+	built, err := s.podBuiltFrom(ctx, issue, group)
+	if err != nil {
+		return api.PodUpdateResponse{}, nil, fmt.Errorf("read the repository the pod of %s was built from: %w", issue, err)
+	}
 	clock := s.roundClockAt(now, holds[issue])
-	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, told, pod, requestedPodUpdateReasons, clock)
+	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, told, pod, requestedPodUpdateReasons, built, clock)
 	if step.pauseHeld {
 		return refusePodUpdate(api.PodUpdatePauseHeld,
 			"a project's pause holds the pod %s of %s: the pause kept the pod and the work on its disk for the roles it stopped, and no update round opens over it until the hold ends. The hold ends when the project is resumed with a role of the pod running, or when a role of the pod is ready again. Nothing was opened; ask again then", pod, issue)
@@ -227,6 +235,21 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 			"issue", issue, "round", round, "pod", pod, "roles", namesOf(asked))
 	}
 	return api.PodUpdateResponse{Round: round, Reasons: step.reasons, Opened: step.opened}, tokens, nil
+}
+
+// podBuiltFrom is the repository the group's pod was built from, read through the claim the walk
+// reads it through (podRepository) and parsed as the walk parses it (parsePodRepository), for the
+// round the project's controller asks for (postRequestedPodUpdate). That round records it at its
+// open, as a drift's round records the repository groupDrift read (supervise.Claim.UpdateRepository),
+// and the zero Repository for a pod that names none. A read that fails is an error, and the request
+// opens no round on it: the open fixes the round's terms, so a round opened on it would record no
+// repository for its whole life, which is why the walk opens none on such a read either (podUnread).
+func (s *supervision) podBuiltFrom(ctx context.Context, issue string, group []supervise.Claim) (ghrepo.Repository, error) {
+	pod, err := podRepository(ctx, s.runtime, slices.Values(group))
+	if err != nil {
+		return ghrepo.Repository{}, err
+	}
+	return s.parsePodRepository(issue, pod), nil
 }
 
 // defaultPodRoundRecordBound is how long the controller's request waits for the walk's turn

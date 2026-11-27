@@ -20,7 +20,8 @@ import (
 // subjects (specgraph.Derive), and prints them; with units.json, it also prints whether each wait
 // on a statement ends at the head of main and the cycle of waits (specgraph.WaitCycle). It answers
 // 0 for a scenario it reads, and 2, with one line on stderr naming the file and the fault, for one
-// it does not, or for arguments it does not take.
+// it does not, or for arguments it does not take. The line of a fault of a file of the scenario is
+// "spec-check: <dir>/<file>: <fault>", with ":<line>" after the file for a line of a spec file.
 func runState(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("state", flag.ContinueOnError)
 	scenarioFlag := flags.String("scenario", "", "the directory of a scenario")
@@ -85,9 +86,11 @@ func runState(args []string, stdout, stderr io.Writer) int {
 // statement, in the order of Derive, so the text names each check that --json reports, then, at
 // the head of main, each wait of each unit; and, with units, the cycle of waits. A statement, check
 // or wait line starts with fixed text and passes through runnerlog.Printable, so no text of the
-// scenario starts a line of the runner's log or names a workflow command.
+// scenario starts a line of the runner's log or names a workflow command. Each value of the
+// scenario that a line names, an id, a commit, a branch, a deploy or a transaction, is cut
+// (specgraph.Cut); the states themselves are keyed by the whole ids.
 func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgraph.State, cycle []string) {
-	current, _ := scenario.Approved.Current() // ReadApproved refused every block that would be a problem here
+	current, _ := scenario.Approved.Current() // ReadApproved refused every document that would be a problem here
 	serves := make(map[string]string, len(current.Checks))
 	for _, c := range current.Checks {
 		serves[c.ID] = c.Serves
@@ -99,11 +102,12 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 		subject := scenario.Subjects[i]
 		switch {
 		case subject.Branch != "":
-			say(stdout, "subject %s, the head of %s", subject.Commit, subject.Branch)
+			say(stdout, "subject %s, the head of %s", specgraph.Cut(subject.Commit), specgraph.Cut(subject.Branch))
 		case subject.GraphTx != "":
-			say(stdout, "subject %s, the commit that production runs at deploy %s, and the graph at transaction %s", subject.Commit, subject.Deploy, subject.GraphTx)
+			say(stdout, "subject %s, the commit that production runs at deploy %s, and the graph at transaction %s",
+				specgraph.Cut(subject.Commit), specgraph.Cut(subject.Deploy), specgraph.Cut(subject.GraphTx))
 		default:
-			say(stdout, "subject %s, the commit that production runs at deploy %s", subject.Commit, subject.Deploy)
+			say(stdout, "subject %s, the commit that production runs at deploy %s", specgraph.Cut(subject.Commit), specgraph.Cut(subject.Deploy))
 		}
 		checks := make(map[string]specgraph.CheckState, len(state.Checks))
 		checksOf := map[string][]specgraph.CheckState{} // by the statement each serves, in the order of state.Checks
@@ -114,14 +118,14 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 		own := make(map[string]string, len(state.Statements))
 		for _, s := range state.Statements {
 			own[s.ID] = s.Own
-			printLine(stdout, "statement %s: %s", s.ID, statementText(s, checks, scenario.Approved))
+			printLine(stdout, "statement %s: %s", specgraph.Cut(s.ID), statementText(s, checks, scenario.Approved))
 			for _, c := range checksOf[s.ID] {
-				printLine(stdout, "  check %s: %s", c.ID, checkText(c))
+				printLine(stdout, "  check %s: %s", specgraph.Cut(c.ID), checkText(c))
 			}
 		}
 		for _, c := range state.Checks {
 			if _, statement := own[serves[c.ID]]; !statement {
-				printLine(stdout, "check %s (serves no current statement): %s", c.ID, checkText(c))
+				printLine(stdout, "check %s (serves no current statement): %s", specgraph.Cut(c.ID), checkText(c))
 			}
 		}
 		if scenario.Units == nil || subject.Branch != "main" {
@@ -130,9 +134,9 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 		for _, u := range units {
 			for _, statement := range slices.Sorted(slices.Values(u.WaitsOn)) {
 				if state.WaitEnds(statement) {
-					printLine(stdout, "wait of %s on %s: ends", u.ID, statement)
+					printLine(stdout, "wait of %s on %s: ends", specgraph.Cut(u.ID), specgraph.Cut(statement))
 				} else {
-					printLine(stdout, "wait of %s on %s: holds (%s)", u.ID, statement, stateWords(own[statement]))
+					printLine(stdout, "wait of %s on %s: holds (%s)", specgraph.Cut(u.ID), specgraph.Cut(statement), stateWords(own[statement]))
 				}
 			}
 		}
@@ -144,11 +148,16 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 		say(stdout, "cycle of waits: none")
 		return
 	}
-	say(stdout, "cycle of waits: %s", strings.Join(cycle, " -> "))
+	named := make([]string, len(cycle))
+	for i, id := range cycle {
+		named[i] = specgraph.Cut(id)
+	}
+	say(stdout, "cycle of waits: %s", strings.Join(named, " -> "))
 }
 
-// statementText is the state of a statement as a line of text says it.
+// statementText is the state of a statement as a line of text says it, each id cut.
 func statementText(s specgraph.StatementState, checks map[string]specgraph.CheckState, approved specgraph.Approved) string {
+	detail := specgraph.Cut(s.Detail)
 	switch s.Reason {
 	case specgraph.ReasonChecksTrue:
 		if s.PartlyChecked {
@@ -158,42 +167,42 @@ func statementText(s specgraph.StatementState, checks map[string]specgraph.Check
 	case specgraph.ReasonNotBuilt:
 		switch {
 		case s.Detail != s.ID:
-			return fmt.Sprintf("not built (the files do not hold the approved text of %s)", s.Detail)
+			return fmt.Sprintf("not built (the files do not hold the approved text of %s)", detail)
 		case s.EarlierText:
 			versions := approved.Nodes[s.ID].Versions
 			return fmt.Sprintf("not built (the files hold approved version %d, and version %d is current)", s.HeldVersion, versions[len(versions)-1].Version)
 		}
 		return "not built (the files do not hold its approved text)"
 	case specgraph.ReasonCheckFalse:
-		return fmt.Sprintf("not met (check %s is false)", s.Detail)
+		return fmt.Sprintf("not met (check %s is false)", detail)
 	case specgraph.ReasonSupporterNotMet:
-		return fmt.Sprintf("not met (supporter %s is not met)", s.Detail)
+		return fmt.Sprintf("not met (supporter %s is not met)", detail)
 	case specgraph.ReasonCheckUnknown:
-		return fmt.Sprintf("unknown (check %s: %s)", s.Detail, checks[s.Detail].Reason)
+		return fmt.Sprintf("unknown (check %s: %s)", detail, checks[s.Detail].Reason)
 	case specgraph.ReasonSupporterUnknown:
-		return fmt.Sprintf("unknown (supporter %s: unknown)", s.Detail)
+		return fmt.Sprintf("unknown (supporter %s: unknown)", detail)
 	case specgraph.ReasonSupporterNotBuilt:
-		return fmt.Sprintf("unknown (supporter %s: not built)", s.Detail)
+		return fmt.Sprintf("unknown (supporter %s: not built)", detail)
 	case specgraph.ReasonNoCheck:
 		if s.Detail == s.ID {
 			return "unknown (no check serves it)"
 		}
-		return fmt.Sprintf("unknown (statement %s has no check)", s.Detail)
+		return fmt.Sprintf("unknown (statement %s has no check)", detail)
 	}
-	return fmt.Sprintf("%s (%s %s)", stateWords(s.State), s.Reason, s.Detail)
+	return fmt.Sprintf("%s (%s %s)", stateWords(s.State), s.Reason, detail)
 }
 
-// checkText is the state of a check as a line of text says it. A failing example whose planted_on
-// names no commit of the history also names that commit.
+// checkText is the state of a check as a line of text says it, the commit cut. A failing example
+// whose planted_on names no commit of the history also names that commit.
 func checkText(c specgraph.CheckState) string {
 	switch c.State {
 	case specgraph.CheckTrue:
-		return fmt.Sprintf("true (passed, counted from %s)", c.From)
+		return fmt.Sprintf("true (passed, counted from %s)", specgraph.Cut(c.From))
 	case specgraph.CheckFalse:
-		return fmt.Sprintf("false (failed, counted from %s)", c.From)
+		return fmt.Sprintf("false (failed, counted from %s)", specgraph.Cut(c.From))
 	}
 	if c.Reason == specgraph.ReasonPlantedOnOutside {
-		return fmt.Sprintf("%s (%s %s)", c.State, c.Reason, c.Detail)
+		return fmt.Sprintf("%s (%s %s)", c.State, c.Reason, specgraph.Cut(c.Detail))
 	}
 	return fmt.Sprintf("%s (%s)", c.State, c.Reason)
 }

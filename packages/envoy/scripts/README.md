@@ -80,7 +80,7 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 
 - `reread`: registers 3,000 `old` and 3,000 `both` sessions, then recreates the session bucket
   holding `both` with changed titles and 3,000 `new`, the interest bucket the same way with changed
-  topics, and the session bucket again with the very records it holds (only its creation time
+  directories, and the session bucket again with the very records it holds (only its creation time
   changes). Each new bucket carries 100,000 delete markers among its records, so the read outlasts
   many list answers. Every `old` and `both` row must be listed until the read's completed
   `cache warm-up` line, a delivered row never goes back, and the list is exactly the bucket after
@@ -108,7 +108,16 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
   new bucket. A listener that finds a recreate only by the self-health tick's `Check` fails both
   shapes: the longer one shows nothing of the new bucket before the tick, the shorter one part of
   it. `refillrig recreate -fill-log` records when each record of the fill was acknowledged, so a
-  read that begins before the fill is done is judged against what the bucket held.
+  read that begins before the fill is done is judged against what the bucket held. NATS sends the
+  first 2 MB of the new bucket at once, without waiting for the listener (the push consumer's
+  flow-control window). In an agent pod with 2 CPUs it had sent all 3,001 records about 18 ms after
+  the read began, and the stop on the finding line came 0.2 to 24 ms after that line. A stop that
+  comes after the send holds nothing back, and the shape is `INVALID`: the one at 24 ms was. So a
+  shape that is `INVALID` runs again on a fresh NATS and listener, up to three attempts in all, with
+  a later attempt's evidence in `recreate-live/<shape>-attempt-<n>`. A missed window is never a
+  pass, so another attempt changes no judgement. A `PASS` or `FAIL` on a later attempt says so and
+  quotes the `INVALID` reason of each earlier attempt. Three `INVALID` attempts give `INVALID`, with
+  all three reasons.
 - `refuse`: a start on 40,000-record buckets, where every list answer is the refilling `503` with
   `Retry-After: 5` or the whole bucket and no gauge has a sample while its list refuses; NATS down
   past the 2-minute stale bound, where both lists answer the refilling `503` and `/metrics` has
@@ -124,12 +133,22 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 Each scenario prints `verdict <scenario> PASS <what it saw>`, `FAIL <reason>`, or
 `INVALID <reason>` when the run missed the window it was there to observe (no poll inside the read,
 a scan that finished before the interruption, a read that began before the bucket was filled, a
-self-health tick inside the read of `recreate-live`), which is never a pass. It exits 0 when every
-verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and
-`--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
-scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
-`$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+self-health tick inside the read of `recreate-live`), which is never a pass. `recreate-live` runs an
+`INVALID` shape again, up to three attempts (above). It exits 0 when every verdict passes, 1 on a
+`FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and `--natsd-bin` run other builds,
+such as the merge base's for a negative control. The evidence (each scenario's listener and NATS
+logs and every poll, one JSON line each) goes to `--out` (default `$TMPDIR/envoy-e2e-refill`).
+`E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the ports.
+
+A record's set and variant are in what the listener keeps of it: the session id names the set, a
+session row's title (`refill <set> <index> v<n>`) and an interest row's directory
+(`/refill/<set>/v<n>`) name the variant. The listener drops a registration's topic that no stream
+subject captures, so no seeded record carries its variant in a topic. `refillrig register` asks for
+each session's own consumer, as a plugin does: the listener refuses a registration that asks for
+none unless it comes from `@sjawhar/pi-envoy` 14.1.0 or later, and the rig names no plugin.
+
+A full run takes about ten minutes. CI runs it as the `envoy-refill` job of
+`.github/workflows/ci.yaml` on every change its `envoy_refill` filter matches.
 
 ## dev-airlock.sh
 
@@ -1272,8 +1291,9 @@ printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`
   service gives its user (`<kind>/<machine id>`). That list classifies every kind config declares,
   and a session's token; natscallout's
   `TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject` holds it to those kinds
-  and to the grants the service answers (`dispatch`, `edge-listener` and `listener` publish
-  today). Nothing the gate reads links a user to the stack that runs it, so the operator maps each
+  and to the grants the service answers (`dispatch`, `edge-listener`, `listener` and
+  `webhook-listener` publish today). Nothing the gate reads links a user to the stack that runs it,
+  so the operator maps each
   with `--publisher <identity>=<pin key>`, repeated for a user more than one process runs, to a key
   of `daemon-release-gate.sh --listeners`, run beside the gate: `envoy` (the VM hub's listener),
   `envoy-cluster`, `dispatch` (Dispatch's listener) or `dispatch-server`. An edge listener's entry
@@ -1706,20 +1726,23 @@ measurement.
 
 `internal/dispatch/benchtime` is the runner, and each package that owns statement texts carries
 its own `statement_timing_test.go`, all named `TestStatementTimings`: `internal/dispatch/api`,
-`internal/dispatch/refs` and `internal/dispatch/docs`.
+`internal/dispatch/refs`, `internal/dispatch/docs` and `internal/dispatch/sessionanswers`.
 `Pair` takes a named pair of statement texts with their arguments, runs `EXPLAIN (ANALYZE, BUFFERS)` of each alternately on one connection, reports planning plus execution as the median of runs 2 to 12, prints both plans and fails when the after text's median is not below the before text's.
 `Report` is that same two-sided reading with no bound, for a statement whose gain is real but smaller than the run-to-run spread of the parts it shares a statement with: the gate then sits on the piece whose text differs, as a pair of its own.
-The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding and three words), each read from the database at run time, so a re-seed moves them with it.
+`PairBuffers` reads the shared buffers of each side's top plan node, under the plan made for its values and under the generic plan, prints each count with its plan, and fails when the after text does not read fewer under each plan.
+The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding, three words, and the start of the agents' answers window with its three sessions), each read from the database at run time, so a re-seed moves them with it.
+A database seeded before the seed wrote deliveries holds no answers subjects, so every package's `TestStatementTimings` then fails when it binds its subjects: seed the database again with this checkout's `cmd/dispatch-seed`.
 
 ```bash
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
   go test -run TestStatementTimings -v -count=1 -timeout 90m \
-  ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs
+  ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs ./internal/dispatch/sessionanswers
 ```
 
-A statement whose gain needs an index or a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.
+A statement whose gain needs a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.
 `Before` and `After` measure one side of such a statement alone, with its plan and no bound, each line naming the side it read: the after side on a database at this release's schema, the before side on one migrated from the release before it.
 Running this same test against each of the two databases is what puts the two sides together.
+A statement whose gain needs only an index is a pair all the same, as `benchtime`'s package comment says: its before side's `Setup` drops that index, or puts back the one the release before read through, in the measuring transaction, which the run rolls back, so one database holds both sides.
 Each test file says which statement is under which protocol and why.
 
 `TestRelatedTermsRefreshTiming`, in `internal/dispatch/api`, measures the related-terms refresh,
