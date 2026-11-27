@@ -1010,6 +1010,12 @@ type ImageProbe struct {
 	// SkipAgentModels leaves the task agents' models unresolved: the image build's probe, which runs
 	// with none of the operator's model configuration.
 	SkipAgentModels bool
+	// BootRun is the daemon's boot run: `legion probe-image` under LEGION_IMAGE_PROBE_RUN=boot
+	// (bootprobe.ImageProbeRunBoot), which the daemon's probe Sandbox sets. ProbeImage then makes
+	// only the contract probe and the plugin load probe, with the prompt references and the agents'
+	// models, and not the pi.agents probe, the session-storage probe or the Claude lane, which the
+	// image build's run (false) makes beside them.
+	BootRun bool
 }
 
 // defaultProbeTimeout is each image-probe and controller-probe attempt's budget: the default
