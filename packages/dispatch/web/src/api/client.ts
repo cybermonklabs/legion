@@ -1707,8 +1707,9 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/handoffs", { key });
   }
 
-  /** `GET /api/v1/issues/{key}/steps`: each run of each step Legion recorded of the issue, its
-   *  tasks in the order of their first step. An issue Legion never ran answers no task. */
+  /** `GET /api/v1/issues/{key}/steps`: the tasks of the issue's newest plan, each with its needs
+   *  and its planned steps, then each other task that ran, by its first run, each with every run of
+   *  its steps Legion recorded. An issue with no plan and no run answers no task. */
   listSteps(key: string) {
     return this.read("/api/v1/issues/{key}/steps", { key });
   }

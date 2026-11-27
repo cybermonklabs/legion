@@ -1,0 +1,566 @@
+[
+  {
+    "name": "a requirement at the top",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "behavior",
+      "text": ["Legion keeps each claim after a restart."]
+    }
+  },
+  {
+    "name": "a requirement with a parent, serves and about",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "requirement",
+      "id": "a-lost-claim-is-reported",
+      "kind": "behavior",
+      "parent": "legion-keeps-each-claim",
+      "serves": ["a-claim-survives-a-restart"],
+      "about": ["legion"],
+      "text": ["Legion reports each lost claim."]
+    }
+  },
+  {
+    "name": "a structure requirement with about",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "requirement",
+      "id": "legion-reads-issues-only-through-dispatch",
+      "kind": "structure",
+      "about": ["legion-to-dispatch"],
+      "text": ["Legion reads each issue through Dispatch."]
+    }
+  },
+  {
+    "name": "a program check with a test and a time limit",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "check",
+      "id": "a-restart-keeps-the-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "code",
+      "procedure": "program",
+      "test": {
+        "runner": "go",
+        "selector": "example.com/acme/daemon TestARestartKeepsTheClaim",
+        "job": "go-checks"
+      },
+      "time_limit": "720h0m0s",
+      "claim": "The daemon reads the claim after it starts again.",
+      "procedure_text": ["The program claims one issue and starts the daemon again."],
+      "failing_example": ["A daemon with no store."]
+    }
+  },
+  {
+    "name": "a query check",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "check",
+      "id": "each-claim-is-in-the-graph",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "graph",
+      "procedure": "query",
+      "claim": "The graph holds each claim.",
+      "procedure_text": ["A query reads the claims of the graph."],
+      "failing_example": ["A graph with no claims."]
+    }
+  },
+  {
+    "name": "an agent check",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "production",
+      "procedure": "agent",
+      "claim": "The page shows each claim.",
+      "procedure_text": ["An agent reads the page."],
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "a component",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "component",
+      "id": "dispatch",
+      "name": "Dispatch",
+      "kind": "component",
+      "purpose": ["It keeps each issue."]
+    }
+  },
+  {
+    "name": "an interface with two joins",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "component",
+      "id": "legion-to-dispatch",
+      "name": "Legion to Dispatch",
+      "kind": "interface",
+      "joins": ["dispatch", "legion"],
+      "purpose": ["Legion reads issues through it."]
+    }
+  },
+  {
+    "name": "a term",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "term",
+      "id": "work-unit",
+      "name": "work unit",
+      "definition": ["A work unit is work."]
+    }
+  },
+  {
+    "name": "a line that ends in U+00A0",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "term",
+      "id": "work-unit",
+      "name": "work unit",
+      "definition": ["A work unit is work.\u00a0"]
+    }
+  },
+  {
+    "name": "a line with U+2028 inside",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "term",
+      "id": "work-unit",
+      "name": "work unit",
+      "definition": ["A work unit\u2028is work."]
+    }
+  },
+  {
+    "name": "a line with a tab inside",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "term",
+      "id": "work-unit",
+      "name": "work unit",
+      "definition": ["A work unit\tis work."]
+    }
+  },
+  {
+    "name": "a line with an emoji",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "term",
+      "id": "work-unit",
+      "name": "work unit",
+      "definition": ["A work unit is work \ud83d\ude00."]
+    }
+  },
+  {
+    "name": "a text of three lines",
+    "valid": true,
+    "at": [],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "behavior",
+      "text": ["Legion keeps each claim", "after the daemon", "starts again."]
+    }
+  },
+
+  {
+    "name": "no type",
+    "valid": false,
+    "at": [""],
+    "node": { "id": "work-unit", "name": "work unit", "definition": ["A work unit is work."] }
+  },
+  {
+    "name": "a type that is no node kind",
+    "valid": false,
+    "at": ["/type"],
+    "node": {
+      "type": "plan_task",
+      "id": "work-unit",
+      "name": "work unit",
+      "definition": ["A work unit is work."]
+    }
+  },
+  {
+    "name": "no id",
+    "valid": false,
+    "at": [""],
+    "node": { "type": "term", "name": "work unit", "definition": ["A work unit is work."] }
+  },
+  {
+    "name": "an id with a capital letter",
+    "valid": false,
+    "at": ["/id"],
+    "node": {
+      "type": "term",
+      "id": "Step-3",
+      "name": "work unit",
+      "definition": ["A work unit is work."]
+    }
+  },
+  {
+    "name": "an id with a letter outside ASCII",
+    "valid": false,
+    "at": ["/id"],
+    "node": {
+      "type": "term",
+      "id": "café",
+      "name": "work unit",
+      "definition": ["A work unit is work."]
+    }
+  },
+  {
+    "name": "a key that the node does not take",
+    "valid": false,
+    "at": [""],
+    "node": {
+      "type": "term",
+      "id": "work-unit",
+      "name": "work unit",
+      "definition": ["A work unit is work."],
+      "surprise": true
+    }
+  },
+  {
+    "name": "a requirement with no kind",
+    "valid": false,
+    "at": [""],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "text": ["Legion keeps each claim after a restart."]
+    }
+  },
+  {
+    "name": "a kind that is not behavior, structure or property",
+    "valid": false,
+    "at": ["/kind"],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "rule",
+      "text": ["Legion keeps each claim after a restart."]
+    }
+  },
+  {
+    "name": "a requirement with no text",
+    "valid": false,
+    "at": [""],
+    "node": { "type": "requirement", "id": "a-claim-survives-a-restart", "kind": "behavior" }
+  },
+  {
+    "name": "an empty text",
+    "valid": false,
+    "at": ["/text"],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "behavior",
+      "text": []
+    }
+  },
+  {
+    "name": "an empty line",
+    "valid": false,
+    "at": ["/text/0"],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "behavior",
+      "text": [""]
+    }
+  },
+  {
+    "name": "a line with a carriage return",
+    "valid": false,
+    "at": ["/text/0"],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "behavior",
+      "text": ["Legion keeps each claim\rafter a restart."]
+    }
+  },
+  {
+    "name": "a line with a NUL",
+    "valid": false,
+    "at": ["/text/0"],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "behavior",
+      "text": ["Legion keeps each claim\u0000after a restart."]
+    }
+  },
+  {
+    "name": "a text that is a string",
+    "valid": false,
+    "at": ["/text"],
+    "node": {
+      "type": "requirement",
+      "id": "a-claim-survives-a-restart",
+      "kind": "behavior",
+      "text": "Legion keeps each claim after a restart."
+    }
+  },
+  {
+    "name": "a name that is a number",
+    "valid": false,
+    "at": ["/name"],
+    "node": {
+      "type": "term",
+      "id": "work-unit",
+      "name": 12,
+      "definition": ["A work unit is work."]
+    }
+  },
+  {
+    "name": "a structure requirement with no about",
+    "valid": false,
+    "at": [""],
+    "node": {
+      "type": "requirement",
+      "id": "legion-reads-issues-only-through-dispatch",
+      "kind": "structure",
+      "text": ["Legion reads each issue through Dispatch."]
+    }
+  },
+  {
+    "name": "about with one id two times",
+    "valid": false,
+    "at": ["/about"],
+    "node": {
+      "type": "requirement",
+      "id": "legion-reads-issues-only-through-dispatch",
+      "kind": "structure",
+      "about": ["legion", "legion"],
+      "text": ["Legion reads each issue through Dispatch."]
+    }
+  },
+  {
+    "name": "a check that serves two statements",
+    "valid": false,
+    "at": ["/serves"],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a b",
+      "subject": "production",
+      "procedure": "agent",
+      "claim": "The page shows each claim.",
+      "procedure_text": ["An agent reads the page."],
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "a subject that is not code, production or graph",
+    "valid": false,
+    "at": ["/subject"],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "the logs",
+      "procedure": "agent",
+      "claim": "The page shows each claim.",
+      "procedure_text": ["An agent reads the page."],
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "a program check with no test",
+    "valid": false,
+    "at": [""],
+    "node": {
+      "type": "check",
+      "id": "a-restart-keeps-the-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "code",
+      "procedure": "program",
+      "claim": "The daemon reads the claim after it starts again.",
+      "procedure_text": ["The program claims one issue and starts the daemon again."],
+      "failing_example": ["A daemon with no store."]
+    }
+  },
+  {
+    "name": "a test with no job",
+    "valid": false,
+    "at": ["/test"],
+    "node": {
+      "type": "check",
+      "id": "a-restart-keeps-the-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "code",
+      "procedure": "program",
+      "test": { "runner": "go", "selector": "example.com/acme/daemon TestARestartKeepsTheClaim" },
+      "claim": "The daemon reads the claim after it starts again.",
+      "procedure_text": ["The program claims one issue and starts the daemon again."],
+      "failing_example": ["A daemon with no store."]
+    }
+  },
+  {
+    "name": "a query check with a test",
+    "valid": false,
+    "at": ["/test"],
+    "node": {
+      "type": "check",
+      "id": "each-claim-is-in-the-graph",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "graph",
+      "procedure": "query",
+      "test": {
+        "runner": "go",
+        "selector": "example.com/acme/daemon TestARestartKeepsTheClaim",
+        "job": "go-checks"
+      },
+      "claim": "The graph holds each claim.",
+      "procedure_text": ["A query reads the claims of the graph."],
+      "failing_example": ["A graph with no claims."]
+    }
+  },
+  {
+    "name": "a check with no failing example",
+    "valid": false,
+    "at": [""],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "production",
+      "procedure": "agent",
+      "claim": "The page shows each claim.",
+      "procedure_text": ["An agent reads the page."]
+    }
+  },
+  {
+    "name": "a check with no claim",
+    "valid": false,
+    "at": [""],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "production",
+      "procedure": "agent",
+      "procedure_text": ["An agent reads the page."],
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "a check with no procedure",
+    "valid": false,
+    "at": [""],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "production",
+      "procedure": "agent",
+      "claim": "The page shows each claim.",
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "a procedure that is not program, query or agent",
+    "valid": false,
+    "at": ["/procedure"],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "production",
+      "procedure": "programm",
+      "claim": "The page shows each claim.",
+      "procedure_text": ["An agent reads the page."],
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "an agent check with a test",
+    "valid": false,
+    "at": ["/test"],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "production",
+      "procedure": "agent",
+      "test": {
+        "runner": "go",
+        "selector": "example.com/acme/daemon TestARestartKeepsTheClaim",
+        "job": "go-checks"
+      },
+      "claim": "The page shows each claim.",
+      "procedure_text": ["An agent reads the page."],
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "a claim of two lines",
+    "valid": false,
+    "at": ["/claim"],
+    "node": {
+      "type": "check",
+      "id": "the-page-shows-each-claim",
+      "serves": "a-claim-survives-a-restart",
+      "subject": "production",
+      "procedure": "agent",
+      "claim": "The page shows each claim.\nIt shows each check.",
+      "procedure_text": ["An agent reads the page."],
+      "failing_example": ["A page with no claims."]
+    }
+  },
+  {
+    "name": "a component with no purpose",
+    "valid": false,
+    "at": [""],
+    "node": { "type": "component", "id": "dispatch", "name": "Dispatch", "kind": "component" }
+  },
+  {
+    "name": "a component that joins components",
+    "valid": false,
+    "at": ["/joins"],
+    "node": {
+      "type": "component",
+      "id": "dispatch",
+      "name": "Dispatch",
+      "kind": "component",
+      "joins": ["legion"],
+      "purpose": ["It keeps each issue."]
+    }
+  },
+  {
+    "name": "an interface that joins one component",
+    "valid": false,
+    "at": ["/joins"],
+    "node": {
+      "type": "component",
+      "id": "legion-to-dispatch",
+      "name": "Legion to Dispatch",
+      "kind": "interface",
+      "joins": ["legion"],
+      "purpose": ["Legion reads issues through it."]
+    }
+  },
+  {
+    "name": "a term with no definition",
+    "valid": false,
+    "at": [""],
+    "node": { "type": "term", "id": "work-unit", "name": "work unit" }
+  }
+]

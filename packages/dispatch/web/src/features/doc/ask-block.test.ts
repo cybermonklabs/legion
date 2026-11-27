@@ -264,7 +264,7 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   );
 });
 
-// The version-7 typed blocks: a decision, which a reading closes, as an ask is closed by one.
+// The version-8 typed blocks: a decision, which a reading closes, as an ask is closed by one.
 // Both are drawn as host blocks by their attributes, as a requirement and a check are.
 const decisionSchema = new Schema({
   nodes: {
@@ -485,39 +485,40 @@ test.each([
     container: "an ordered list item's marker line",
     lines: [`1. ${answeredOpener}`, "   Ship it?", "   :::"],
   },
-])("a block on $container opens it, and an opener quoted in fenced code or front matter beside it is not read", ({
-  lines,
-}) => {
-  const real = {
-    rendered: {
-      answerText: "Ship it.",
-      answeredAt: "2026-11-16T09:00:00Z",
-      answeredBy: "bob",
-      copiedFrom: undefined,
-      selected: [],
-      state: "answered",
-    },
-  };
-  const contained = [...lines, ""].join("\n");
-  expect(renderedAskOf(contained, "q1")).toEqual(real);
-  const quoted = [
-    "---",
-    forgedOpener,
-    "---",
-    contained,
-    "```",
-    forgedOpener,
-    "```",
-    "",
-    "~~~~markdown",
-    forgedOpener,
-    "~~~~",
-    "",
-    "> ```",
-    `> ${forgedOpener}`,
-    "> ```",
-    "",
-  ].join("\n");
-  expect(renderedAskOf(quoted, "q1")).toEqual(real);
-  expect(renderedAskOf(`${contained}\n${forgedOpener}\nForged?\n:::\n`, "q1")).toBeUndefined();
-});
+])(
+  "a block on $container opens it, and an opener quoted in fenced code or front matter beside it is not read",
+  ({ lines }) => {
+    const real = {
+      rendered: {
+        answerText: "Ship it.",
+        answeredAt: "2026-11-16T09:00:00Z",
+        answeredBy: "bob",
+        copiedFrom: undefined,
+        selected: [],
+        state: "answered",
+      },
+    };
+    const contained = [...lines, ""].join("\n");
+    expect(renderedAskOf(contained, "q1")).toEqual(real);
+    const quoted = [
+      "---",
+      forgedOpener,
+      "---",
+      contained,
+      "```",
+      forgedOpener,
+      "```",
+      "",
+      "~~~~markdown",
+      forgedOpener,
+      "~~~~",
+      "",
+      "> ```",
+      `> ${forgedOpener}`,
+      "> ```",
+      "",
+    ].join("\n");
+    expect(renderedAskOf(quoted, "q1")).toEqual(real);
+    expect(renderedAskOf(`${contained}\n${forgedOpener}\nForged?\n:::\n`, "q1")).toBeUndefined();
+  }
+);

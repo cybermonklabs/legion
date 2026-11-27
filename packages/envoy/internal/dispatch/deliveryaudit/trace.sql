@@ -2,8 +2,10 @@
 -- names (a uuid). Read-only: five selects, each result's first column, section, labels it.
 -- README.md says how to run it (psql --csv -v comment=<uuid>).
 
--- transaction_events: every event the comment's write appended. Events of one transaction share
--- their owner and their created_at (now(), the transaction's start: events.Broker.Append).
+-- transaction_events: every event the comment's write appended, with the destinations each reached
+-- (published_destinations) and those NATS refused for good (refused_destinations: a JSON object of
+-- subject to error, empty when there is none). Events of one transaction share their owner and
+-- their created_at (now(), the transaction's start: events.Broker.Append).
 with created as (
     select e.*
     from events e
@@ -19,7 +21,8 @@ select 'transaction_events' as section,
        case when e.notify then 'true' else 'false' end as notify,
        to_char(e.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_at,
        coalesce(to_char(e.published_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '') as published_at,
-       array_to_string(e.published_destinations, ' ') as published_destinations
+       array_to_string(e.published_destinations, ' ') as published_destinations,
+       coalesce(e.refused_destinations::text, '') as refused_destinations
 from created c
 join events e
   on e.created_at = c.created_at

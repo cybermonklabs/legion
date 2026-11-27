@@ -124,14 +124,15 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 }
 
 // FromBlocks reads each `plan_task` block as a task, in the document's order, with what each
-// attribute says; each `needs` and `part_of` value is kept whole, as the block writes it. Each
+// attribute says: each `needs` word as the id of the task it names, and a word that names no task
+// of the plan kept whole in Unresolved; each `part_of` value whole, as the block writes it. Each
 // `plan_role` block is a role the plan defines, named by its id. Every other block is the
 // document's prose and no part of the plan.
 func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	p, err := FromBlocks("plan-md", 3, []Block{
 		{ID: "intro", Type: "paragraph", Text: "Why the issue is split so."},
 		{ID: "d", Type: "plan_task", Attributes: map[string]string{
-			"needs":  "dispatch://ACME-1/artifact/plan-md#b-a dispatch://ACME-1/artifact/plan-md#b-c@v2",
+			"needs":  "dispatch://ACME-1/artifact/plan-md#b-f1 dispatch://ACME-1/artifact/plan-md#b-c@v2",
 			"serves": "dispatch://ACME-1/spec#b-r1",
 			"steps":  "implementer:cd reviewer:r",
 		}, Text: "What task D does."},
@@ -145,7 +146,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 		t.Fatalf("FromBlocks: %v", err)
 	}
 	want := Plan{ArtifactID: "plan-md", Version: 3, RoleBlocks: []string{"prober"}, Tasks: []Task{
-		{ID: "d", Needs: []string{"dispatch://ACME-1/artifact/plan-md#b-a", "dispatch://ACME-1/artifact/plan-md#b-c@v2"},
+		{ID: "d", Needs: []string{"f1"}, Unresolved: []string{"dispatch://ACME-1/artifact/plan-md#b-c@v2"},
 			Steps: []Step{{Role: "implementer", Key: "cd"}, {Role: "reviewer", Key: "r"}}, Text: "What task D does."},
 		{ID: "f", Owner: "architect", Text: "What this part must reach."},
 		{ID: "f1", PartOf: "dispatch://ACME-1/artifact/plan-md#b-f", Merges: true,

@@ -33,10 +33,14 @@ const nonEmptyString = z.string().min(1);
  * request leaves the agent as it was, but where `fresh_session` went further before that suspension
  * took the agent over: its own suspension of the agent ran, which that suspension then took over,
  * and the agent keeps the session its claim recorded; or it left behind the session its claim
- * recorded, so the agent starts in a new session once it is started. `compact` alone is let past
- * the operator's suspension, since a compaction lifts nothing: an agent that suspension holds takes
- * the compaction's own refusal below, whose sentence names the operator's `legion claims resume` as
- * what starts the agent.
+ * recorded, so the agent starts in a new session once it is started. One request is answered no
+ * code: a `fresh_session` of an agent that was suspended before it, whose forget had already left
+ * the session behind when the operator's suspension refused its resume, answers 200 with that
+ * refusal, naming the operator's command, in `phaseNotRestarted` (dispatch://INFRA-5649 R2), as
+ * every refusal after that forget does; a plugin below the claim-start contract entry still reads
+ * `SUSPENDED_BY_OPERATOR` there. `compact` alone is let past the operator's suspension, since a
+ * compaction lifts nothing: an agent that suspension holds takes the compaction's own refusal
+ * below, whose sentence names the operator's `legion claims resume` as what starts the agent.
  *
  * While the project is paused, every action of the door that would start a turn of an agent —
  * `resume_agent`, `retry` and `fresh_session`, which start its session again, and `compact`,
@@ -102,16 +106,27 @@ export const LegionClaimRequest = z.strictObject({
 });
 
 /** `api.FreshSessionResponse`, what became of a fresh session. It is empty wherever the claim
- * came back and its start ran. `phaseNotRestarted` carries one of two refusals. The first is the
- * workflow's: the claim came back in a new session owing no task, and the workflow refused the
- * restart that would have handed it one, so the claim is running and holds no work. The second
- * is the machine's: this request stopped the claim, and a step that would have brought it back
- * was refused — the forget of the session it recorded, or the start of it in a new session. That
- * sentence names the state the step left the claim in: a suspended claim is one nothing starts
- * by itself, so a fresh session asked again is what starts it, and a claim in any other state is
- * read in `read_state` before anything more is asked of it. Both refusals ride a success answer,
- * because the request changed the claim either way. A reader of the claim cannot tell the first
- * one, since the state records nowhere that the restart did not run. */
+ * came back and its start is under way or queued: the daemon answers once it has written the
+ * claim `launching`, or once it has queued the start of the claim's phase, which runs at once
+ * while the issue holds its admission slot, and `read_state` shows how the start ended — running,
+ * or failed with the start's failure. `phaseNotRestarted` carries one of four sentences. The first is the workflow's
+ * refusal: the claim came back in a new session owing no task, and the workflow refused the
+ * restart that would have handed it one, so the claim is running and holds no work. The second is
+ * a start that waits for an admission slot: the issue holds none while its phase keeps one, so the
+ * start of its phase waits for that slot, and the sentence names the issue and the issues it waits
+ * on. A suspended claim runs again at once and only its phase's task waits; a failed or retired
+ * claim stays failed or retired, with its session left behind, until the slot comes. The third is
+ * a start refused after the session was left behind: the claim stays failed, retired or
+ * suspended with no session, and the sentence names the refusal. The fourth is the machine's:
+ * this request stopped the claim, and a step that would have brought it back was refused — the
+ * forget of the session it recorded, or the start of it in a new session. That sentence names the
+ * state the step left the claim in: a suspended claim is one nothing starts by itself, so a fresh
+ * session asked again is what starts it, and a claim in any other state is read in `read_state`
+ * before anything more is asked of it. Each rides a success answer, because the request changed
+ * the claim either way. A reader of the claim cannot tell the first three, since the state
+ * records nowhere that the restart did not run or that the start waits. A plugin below the daemon
+ * contract entry claim-start (dispatch://INFRA-5649) is answered the second and the third as
+ * before: no sentence, and the refusal as an error. */
 export const LegionFreshSessionResponse = z.object({
   phaseNotRestarted: nonEmptyString.optional(),
 });

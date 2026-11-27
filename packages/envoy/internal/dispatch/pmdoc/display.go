@@ -547,7 +547,7 @@ func displayTypedValues(directive *typedDirective) (Attrs, bool) {
 		if !definition.InMarkdown() {
 			continue
 		}
-		value, err := parseTypedAttributeValue(definition, raw)
+		value, err := parseTypedAttributeValue(name, definition, raw)
 		if err != nil {
 			return nil, false
 		}

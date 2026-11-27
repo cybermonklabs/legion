@@ -116,7 +116,7 @@ const (
 //     graph_tx that it sets has a letter or a digit (subjectFault). A check of production or of
 //     the graph is judged only at a deploy, and a check of the graph reads unknown there when
 //     graph_tx is absent or names a transaction that no result read;
-//   - files/<commit>/: the spec files at the commit of each subject, each a *.md file directly in
+//   - files/<commit>/: the spec files at the commit of each subject, each a *.yaml file directly in
 //     it of at most notes.MaxFileSize bytes, which Parse reads and Validate judges with no problem,
 //     as `spec-check tree` does, and no directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it: it sets commits, [] for none, and each commit
@@ -245,7 +245,7 @@ func readSubjects(fsys fs.FS) ([]ScenarioSubject, error) {
 	return subjects, nil
 }
 
-// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.md, each
+// readScenarioFiles reads the spec files at the commit of each subject, files/<commit>/*.yaml, each
 // at most notes.MaxFileSize bytes, the bound of `spec-check tree` and of Dispatch's importer, parses
 // them and judges the tree by Validate, and refuses the first problem of Parse, or else of
 // Validate, with its file and line.
@@ -276,10 +276,10 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		files := map[string][]byte{}
 		for _, entry := range entries {
 			name := path.Join(dir, entry.Name())
-			if !entry.Type().IsRegular() || path.Ext(entry.Name()) != ".md" {
-				return nil, scenarioFault(name, "the spec files of a commit are *.md files directly in its directory")
+			if !IsFile(entry.Name(), notes.FileKind(entry.Type())) {
+				return nil, scenarioFault(name, "the spec files of a commit are *.yaml files directly in its directory")
 			}
-			if files[entry.Name()], err = readFile(fsys, name, notes.MaxFileSize); err != nil {
+			if files[entry.Name()], err = readScenarioFile(fsys, name, notes.MaxFileSize); err != nil {
 				return nil, &ScenarioError{File: name, Err: err}
 			}
 		}
@@ -293,7 +293,7 @@ func readScenarioFiles(fsys fs.FS, subjects []ScenarioSubject) (map[string]Tree,
 		if len(problems) > 0 {
 			SortProblems(problems)
 			p := problems[0]
-			return nil, &ScenarioError{File: path.Join(dir, p.Pos.File), Line: p.Pos.Line, Err: fmt.Errorf("%s: %s", p.Node, p.Detail)}
+			return nil, &ScenarioError{File: path.Join(dir, p.Pos.File), Line: p.Pos.Line, Err: errors.New(p.Text())}
 		}
 		trees[sub.Commit] = tree
 	}
@@ -448,7 +448,7 @@ func readEach[T any](fsys fs.FS, name, noun, form string) ([]T, error) {
 
 // readJSON decodes the file name into v with decodeJSON, in the form form.
 func readJSON(fsys fs.FS, name string, v any, form string) error {
-	content, err := readFile(fsys, name, fileBound)
+	content, err := readScenarioFile(fsys, name, fileBound)
 	if err != nil {
 		return &ScenarioError{File: name, Err: err}
 	}
@@ -458,8 +458,8 @@ func readJSON(fsys fs.FS, name string, v any, form string) error {
 	return nil
 }
 
-// readFile is the file name of fsys, at most bound bytes of it (readBounded).
-func readFile(fsys fs.FS, name string, bound int) ([]byte, error) {
+// readScenarioFile is the file name of fsys, at most bound bytes of it (readBounded).
+func readScenarioFile(fsys fs.FS, name string, bound int) ([]byte, error) {
 	f, err := fsys.Open(name)
 	if err != nil {
 		return nil, err

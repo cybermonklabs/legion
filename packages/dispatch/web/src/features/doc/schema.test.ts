@@ -51,13 +51,13 @@ function withoutAttributes(schema: BlockSchema, type: string, names: string[]): 
 
 // The page presents the manifest it was built with: its version V, and R, the highest `since`
 // among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
-// computes it. Schema 7 stages the decision and reading blocks and the ask block's `shaped`: it
-// reads them from its version and creates them only from the next. It reads the check block's
-// `subject` and `program` from the version before its own, and creates them only from the next
-// too. So none of them counts toward R, which stays where the same manifest without them has it,
-// below the version before V, and each counts toward R in the manifest at the next version. The
-// numbers come from the manifest, never from a literal here.
-test("the compiled manifest is the page's own: it reads the new blocks, check.subject and check.program before it creates them", () => {
+// computes it. Schema 8 stages the decision and reading blocks and the ask block's `shaped`: it
+// reads them from its version and creates them only from the next. It creates `plan_task.parent`,
+// read from the version before its own, and `check.subject` and `check.program`, read from version
+// 6 and created from version 7. So the new blocks and `ask.shaped` leave R where the same manifest
+// without them has it, at the version before V, and each counts toward R in the manifest at the
+// next version. The numbers come from the manifest, never from a literal here.
+test("the compiled manifest is the page's own: it creates plan_task.parent and check's marks, and reads the new blocks before creating them", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
     "callout",
@@ -69,7 +69,7 @@ test("the compiled manifest is the page's own: it reads the new blocks, check.su
     "reading",
   ]);
   const version = compiledBlockSchema.version;
-  expect(schemaCreatable(compiledBlockSchema)).toBeLessThan(version - 1);
+  expect(schemaCreatable(compiledBlockSchema)).toBe(version - 1);
   const ask = compiledBlockSchema.types.find(({ name }) => name === "ask");
   const decision = compiledBlockSchema.types.find(({ name }) => name === "decision");
   const reading = compiledBlockSchema.types.find(({ name }) => name === "reading");
@@ -99,6 +99,20 @@ test("the compiled manifest is the page's own: it reads the new blocks, check.su
     version
   );
 
+  const task = compiledBlockSchema.types.find(({ name }) => name === "plan_task");
+  const parent = task?.attributes.parent;
+  if (task === undefined || parent === undefined) {
+    throw new Error("the compiled manifest declares the plan_task block's parent");
+  }
+  expect(parent).toMatchObject({
+    creatable_since: version,
+    kind: "block[]",
+    since: version - 1,
+  });
+  expect(schemaCreatable(withoutAttributes(compiledBlockSchema, "plan_task", ["parent"]))).toBe(
+    version - 2
+  );
+
   const check = compiledBlockSchema.types.find(({ name }) => name === "check");
   const subject = check?.attributes.subject;
   const program = check?.attributes.program;
@@ -106,17 +120,9 @@ test("the compiled manifest is the page's own: it reads the new blocks, check.su
     throw new Error("the compiled manifest declares the check block's subject and program");
   }
   for (const attribute of [subject, program]) {
-    expect(attribute.since).toBe(version - 1);
-    expect(attribute.creatable_since).toBe(version + 1);
+    expect(attribute.since).toBe(version - 2);
+    expect(attribute.creatable_since).toBe(version - 1);
   }
-  expect(schemaCreatable(compiledBlockSchema)).toBe(
-    schemaCreatable(withoutAttributes(compiledBlockSchema, "check", ["subject", "program"]))
-  );
-  const raisedWithoutTheNewBlocks = withoutTheNewBlocks(raisedByOne(compiledBlockSchema));
-  expect(schemaCreatable(raisedWithoutTheNewBlocks)).toBe(version - 1);
-  expect(
-    schemaCreatable(withoutAttributes(raisedWithoutTheNewBlocks, "check", ["subject", "program"]))
-  ).toBeLessThan(version - 1);
 });
 
 test("an element the page creates counts toward its creatable version, one it only reads does not", () => {
