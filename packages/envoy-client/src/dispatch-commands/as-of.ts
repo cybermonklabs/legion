@@ -112,6 +112,7 @@ export const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   body: "the bodies of posts deleted or edited since",
   "reply_block/text": "the text of the block a reply answers",
   "reply_block/removed": "whether the block a reply answers was removed",
+  "reply_block/text_tree": "the text tree of the block a reply answers",
   anchor_block: "where each anchored block stands in its document",
   "anchor/orphaned": "whether each anchor's mark was gone",
   "deliveries/*/state": "the state of each delivery",

@@ -32,7 +32,8 @@
     "/*/deliveries/*/session_id",
     "/*/deliveries/*/state",
     "/*/reply_block/removed",
-    "/*/reply_block/text"
+    "/*/reply_block/text",
+    "/*/reply_block/text_tree"
   ],
   "GET /api/v1/artifacts/{id}/events": [
     "/*/payload/answer/id",
@@ -78,6 +79,7 @@
     "/replies/*/deliveries/*/state",
     "/replies/*/reply_block/removed",
     "/replies/*/reply_block/text",
+    "/replies/*/reply_block/text_tree",
     "/route_holder",
     "/route_status",
     "/route_status_reason"
@@ -95,6 +97,7 @@
     "/comment/deliveries/*/state",
     "/comment/reply_block/removed",
     "/comment/reply_block/text",
+    "/comment/reply_block/text_tree",
     "/replies/*/anchor/orphaned",
     "/replies/*/body",
     "/replies/*/deliveries/*/created_at",
@@ -105,7 +108,8 @@
     "/replies/*/deliveries/*/session_id",
     "/replies/*/deliveries/*/state",
     "/replies/*/reply_block/removed",
-    "/replies/*/reply_block/text"
+    "/replies/*/reply_block/text",
+    "/replies/*/reply_block/text_tree"
   ],
   "GET /api/v1/comments/{id}/history": [],
   "GET /api/v1/events/log": [
@@ -137,6 +141,7 @@
     "/*/thread/replies/*/deliveries/*/state",
     "/*/thread/replies/*/reply_block/removed",
     "/*/thread/replies/*/reply_block/text",
+    "/*/thread/replies/*/reply_block/text_tree",
     "/*/thread/route_holder",
     "/*/thread/route_status",
     "/*/thread/route_status_reason",
@@ -215,6 +220,7 @@
     "/*/thread/replies/*/deliveries/*/state",
     "/*/thread/replies/*/reply_block/removed",
     "/*/thread/replies/*/reply_block/text",
+    "/*/thread/replies/*/reply_block/text_tree",
     "/*/thread/route_holder",
     "/*/thread/route_status",
     "/*/thread/route_status_reason",
@@ -232,7 +238,8 @@
     "/*/deliveries/*/session_id",
     "/*/deliveries/*/state",
     "/*/reply_block/removed",
-    "/*/reply_block/text"
+    "/*/reply_block/text",
+    "/*/reply_block/text_tree"
   ],
   "GET /api/v1/issues/{key}/events": [
     "/*/payload/answer/id",
@@ -252,6 +259,7 @@
     "/*/message/deliveries/*/state",
     "/*/message/reply_block/removed",
     "/*/message/reply_block/text",
+    "/*/message/reply_block/text_tree",
     "/*/replies/*/body",
     "/*/replies/*/deliveries/*/created_at",
     "/*/replies/*/deliveries/*/delivery",
@@ -261,7 +269,8 @@
     "/*/replies/*/deliveries/*/session_id",
     "/*/replies/*/deliveries/*/state",
     "/*/replies/*/reply_block/removed",
-    "/*/replies/*/reply_block/text"
+    "/*/replies/*/reply_block/text",
+    "/*/replies/*/reply_block/text_tree"
   ],
   "GET /api/v1/issues/{key}/messages/{id}": [
     "/message/body",
@@ -274,6 +283,7 @@
     "/message/deliveries/*/state",
     "/message/reply_block/removed",
     "/message/reply_block/text",
+    "/message/reply_block/text_tree",
     "/replies/*/body",
     "/replies/*/deliveries/*/created_at",
     "/replies/*/deliveries/*/delivery",
@@ -283,7 +293,8 @@
     "/replies/*/deliveries/*/session_id",
     "/replies/*/deliveries/*/state",
     "/replies/*/reply_block/removed",
-    "/replies/*/reply_block/text"
+    "/replies/*/reply_block/text",
+    "/replies/*/reply_block/text_tree"
   ],
   "GET /api/v1/issues/{key}/results": [
     "/checks/*/ci",
@@ -308,6 +319,7 @@
     "/message/deliveries/*/state",
     "/message/reply_block/removed",
     "/message/reply_block/text",
+    "/message/reply_block/text_tree",
     "/replies/*/body",
     "/replies/*/deliveries/*/created_at",
     "/replies/*/deliveries/*/delivery",
@@ -317,7 +329,8 @@
     "/replies/*/deliveries/*/session_id",
     "/replies/*/deliveries/*/state",
     "/replies/*/reply_block/removed",
-    "/replies/*/reply_block/text"
+    "/replies/*/reply_block/text",
+    "/replies/*/reply_block/text_tree"
   ],
   "GET /api/v1/messages/{id}/history": [],
   "GET /api/v1/projects/{key}/artifacts": [

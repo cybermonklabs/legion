@@ -118,7 +118,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		var comments []model.Comment
 		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
 		if err == nil {
-			err = s.commentsAtTheCut(r.Context(), comments, elementsOf(""))
+			err = s.commentsAtTheCut(r.Context(), comments, elementsOf(""), trees)
 		}
 		if err == nil {
 			reader := s.readDisplayTrees(r.Context(), trees)
@@ -289,6 +289,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// At a cut one call reads the comment and its replies: the comment at /comment, each reply
 	// at /replies/<n>.
+	trees := wantsDisplayTrees(r)
 	if _, atCut := asof.CutFrom(r.Context()); atCut {
 		thread := append([]model.Comment{comments[0]}, replies...)
 		reply := elementsOf("/replies")
@@ -297,12 +298,12 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 				return "/comment"
 			}
 			return reply(index - 1)
-		}); err != nil {
+		}, trees); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reader := s.readDisplayTrees(r.Context(), trees)
 	read := commentRead{Replies: shapedComments(replies, reader)}
 	read.Comment.Comment = comments[0]
 	read.Comment.shape(reader)

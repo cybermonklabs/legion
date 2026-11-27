@@ -919,12 +919,13 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	read, err := s.readMessage(r.Context(), who, r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	read, err := s.readMessage(r.Context(), who, r.PathValue("key"), r.PathValue("id"), trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }); err != nil {
+	if err := s.messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -947,7 +948,7 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }); err != nil {
+	if err := s.messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, wantsDisplayTrees(r)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1089,8 +1090,9 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	trees := wantsDisplayTrees(r)
 	if page != nil {
-		result, err := s.readMessageThreadPage(r.Context(), who, r.PathValue("key"), *page, wantsDisplayTrees(r))
+		result, err := s.readMessageThreadPage(r.Context(), who, r.PathValue("key"), *page, trees)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1118,12 +1120,12 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), who, roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), who, roots, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.messagesAtTheCut(r.Context(), result, elementsOf("")); err != nil {
+	if err := s.messagesAtTheCut(r.Context(), result, elementsOf(""), trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

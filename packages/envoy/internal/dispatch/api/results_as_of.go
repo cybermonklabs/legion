@@ -73,7 +73,8 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 // check that the present read compares with the program's current deploy (readsTheLiveDeploy), it
 // leaves out not_counted, which the present read writes from that deploy now (markNotCounted).
 // Whether the words of a check moved after a result is given where the check's digest at the cut
-// is (checkBlocksAtTheCut), and is left out with the digest elsewhere (reason E).
+// is (checkBlocksAtTheCut), by the same rule the present read uses (checkWordsMoved), and is left
+// out with the digest elsewhere (reason E).
 func checksAtTheCut(ctx context.Context, checks []model.CheckBlock) {
 	at := elementsOf("/checks")
 	for index := range checks {
@@ -95,7 +96,7 @@ func checksAtTheCut(ctx context.Context, checks []model.CheckBlock) {
 				leaveOut(ctx, result+"/check_words_moved")
 				continue
 			}
-			moved := check.SHA256 != check.Results[number].CheckSHA256
+			moved := checkWordsMoved(check, &check.Results[number])
 			check.Results[number].CheckWordsMoved = &moved
 		}
 	}

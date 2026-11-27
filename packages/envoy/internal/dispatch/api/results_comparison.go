@@ -333,13 +333,21 @@ func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) 
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
 		result := &check.Results[index]
-		moved := check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
+		moved := checkWordsMoved(check, result)
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands
 	}
 	markNotCounted(check, compared)
 	check.PassStands = passStandsOf(*check, compared)
+}
+
+// checkWordsMoved reports whether check's words moved after result was recorded: both the digest
+// and the changed version differ, so a check that another renderer version spelled and whose
+// version stayed (refs.BlockIndexing.KeepRespelled) reads false, at the present and at a cut
+// (checksAtTheCut).
+func checkWordsMoved(check *model.CheckBlock, result *model.CheckResult) bool {
+	return check.SHA256 != result.CheckSHA256 && check.Version != result.CheckVersion
 }
 
 // comparedWith is the bases of one check, read once per issue and `when`: two `before_merge`

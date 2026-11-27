@@ -225,10 +225,11 @@ var (
 
 // commentFields are the fields of a comment at prefix: of a comment route's comment, and of each
 // reply of an ask's thread. Not in the plan's list: the text of the block that the reply names,
-// which an item changed after the cut rewrote as it rewrote whether the block is removed; the
-// delivery mode and the session of an attempt, which a send resolves with no event, so for an
-// attempt that no event at the cut dates they are absent too (decision 5); and whether the mark
-// of the comment's anchor was gone, where a write with no event that dates it orphaned the anchor
+// which an item changed after the cut rewrote as it rewrote whether the block is removed, and the
+// tree of that text, which an answer carries for a request with display trees; the delivery mode
+// and the session of an attempt, which a send resolves with no event, so for an attempt that no
+// event at the cut dates they are absent too (decision 5); and whether the mark of the comment's
+// anchor was gone, where a write with no event that dates it orphaned the anchor
 // (CommentAnchorsOrphanedNotGivenStatement).
 func commentFields(prefix string) []AbsentField {
 	return append(postFields(prefix, undatedCommentAttempt), AbsentField{prefix + "/anchor/orphaned", reasonAnchorOrphaned})
@@ -247,6 +248,7 @@ func postFields(prefix string, attempt []string) []AbsentField {
 		{prefix + "/body", reasonBody},
 		{prefix + "/reply_block/text", reasonReplyBlock},
 		{prefix + "/reply_block/removed", reasonReplyBlock},
+		{prefix + "/reply_block/text_tree", reasonReplyBlock},
 	}
 	for _, member := range attempt {
 		fields = append(fields, AbsentField{prefix + "/deliveries/*/" + member, reasonDeliveryState})

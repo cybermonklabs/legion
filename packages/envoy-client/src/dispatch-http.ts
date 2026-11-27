@@ -573,6 +573,10 @@ export interface AsOfRead {
   absent?(pointers: readonly string[]): void;
 }
 
+/** A read that learns any cut its answer names (`Dispatch-As-Of`) and any fields it left out, and
+ *  never sends an `as_of` of its own (`readRoute`, whose URL is `path` alone). */
+export type CutlessRead = Omit<AsOfRead, "asOf"> & { readonly asOf?: never };
+
 /**
  * A read of the present that learns the cut its answer was given at: undefined for an answer of
  * the present, else the cut the last answer named in `Dispatch-As-Of`, which an answer under a
@@ -1810,8 +1814,9 @@ export class DispatchClient {
    *  in `Dispatch-As-Of` and each field it left out in `Dispatch-As-Of-Absent`. The body alone
    *  does not tell a field left out from a field that does not exist, so `read` is told the cut
    *  (`answeredAt`) and those fields' JSON Pointers (`absent`, where it names any), once the
-   *  answer passed every check (`#answeredAtCut`). An answer that names no cut tells it nothing. */
-  async readRoute(path: string, read: AsOfRead = {}): Promise<RouteAnswer> {
+   *  answer passed every check (`#answeredAtCut`). An answer that names no cut tells it nothing.
+   *  `read` takes no `asOf`: the URL is `path` alone, so a cut goes as the `as_of` in `path`. */
+  async readRoute(path: string, read: CutlessRead = {}): Promise<RouteAnswer> {
     return this.#route("GET", path, undefined, read);
   }
 
@@ -2985,7 +2990,7 @@ export class DispatchClient {
     method: "GET" | DispatchApiMethod,
     path: string,
     body?: string,
-    read: AsOfRead = {}
+    read: CutlessRead = {}
   ): Promise<RouteAnswer> {
     const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
     const encoded = body === undefined ? undefined : { content: body, type: "application/json" };

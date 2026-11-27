@@ -63,10 +63,11 @@ func leaveOutRouteReach(ctx context.Context, route *string, place string) {
 }
 
 // threadsAtTheCut names what a past-time answer leaves out of each of threads, the thread at
-// places[index]: the reach of the ask's route, and of each reply what commentsAtTheCut names. One
-// call of commentsAtTheCut reads the replies of every thread, as messagesAtTheCut reads every
-// message of its threads, so a list of threads costs the statements of one.
-func (s *server) threadsAtTheCut(ctx context.Context, threads []*askThread, places []string) error {
+// places[index]: the reach of the ask's route, and of each reply what commentsAtTheCut names.
+// trees is whether the answer carries display trees. One call of commentsAtTheCut reads the
+// replies of every thread, as messagesAtTheCut reads every message of its threads, so a list of
+// threads costs the statements of one.
+func (s *server) threadsAtTheCut(ctx context.Context, threads []*askThread, places []string, trees bool) error {
 	var replies []model.Comment
 	var at []string
 	for index, thread := range threads {
@@ -76,7 +77,7 @@ func (s *server) threadsAtTheCut(ctx context.Context, threads []*askThread, plac
 			replies, at = append(replies, thread.Replies[number].Comment), append(at, reply(number))
 		}
 	}
-	return s.commentsAtTheCut(ctx, replies, func(index int) string { return at[index] })
+	return s.commentsAtTheCut(ctx, replies, func(index int) string { return at[index] }, trees)
 }
 
 // issueAsksAtTheCut names what an issue's ask list at a cut leaves out: of each row, the fields of
@@ -97,7 +98,7 @@ func (s *server) issueAsksAtTheCut(ctx context.Context, asks []model.Ask, rows [
 			threads, places = append(threads, rows[index].Thread), append(places, at(index)+"/thread")
 		}
 	}
-	return s.threadsAtTheCut(ctx, threads, places)
+	return s.threadsAtTheCut(ctx, threads, places, trees)
 }
 
 // openAsksAtTheCut names what open asks at a cut leave out of each of asks: the person an ask
@@ -128,7 +129,7 @@ func (s *server) askAtTheCut(ctx context.Context, read askRead, trees bool) erro
 	if err := s.leaveOutPastAskFields(ctx, []model.Ask{read.Ask.Ask}, func(int) string { return "/ask" }, trees); err != nil {
 		return err
 	}
-	return s.threadsAtTheCut(ctx, []*askThread{&read.askThread}, []string{""})
+	return s.threadsAtTheCut(ctx, []*askThread{&read.askThread}, []string{""}, trees)
 }
 
 // inboxAtTheCut names what the inbox at a cut leaves out of each of rows (decision 10): the
@@ -147,7 +148,7 @@ func (s *server) inboxAtTheCut(ctx context.Context, rows []inboxAsk, trees bool)
 		leaveOut(ctx, at(index)+"/snoozed_until")
 		threads[index], places[index] = &rows[index].Thread, at(index)+"/thread"
 	}
-	if err := s.threadsAtTheCut(ctx, threads, places); err != nil {
+	if err := s.threadsAtTheCut(ctx, threads, places, trees); err != nil {
 		return err
 	}
 	return s.leaveOutPastAskFields(ctx, asks, at, trees)

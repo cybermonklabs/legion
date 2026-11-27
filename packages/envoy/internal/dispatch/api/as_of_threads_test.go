@@ -700,8 +700,10 @@ func TestAnAnswersPollWithASinceAfterTheCutAnswersNothing(t *testing.T) {
 // stood at the cut: its text and that it is not removed. Where the item changed after the cut (a
 // comment or a message edited, an ask answered), the change rewrote the item's blocks and no
 // record keeps them at the cut, so every route that shows the reply leaves out the block's text
-// and whether it is removed, and names both absent (reason E). The block's node and id are the
-// reply's own, and are given.
+// and whether it is removed, and names both absent (reason E). A read with display trees leaves
+// out the tree of that text too, and names it absent, so no word written after the cut reaches
+// the answer through the tree; a read with none gives no tree and names none. The block's node
+// and id are the reply's own, and are given.
 func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOB")
 	handler := world.handler
@@ -753,6 +755,7 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 	} {
 		t.Run(read.target, func(t *testing.T) {
 			doc, absent := world.readAt(t, read.target, cut)
+			treesDoc, treesAbsent := world.readTreesAt(t, read.target, cut)
 			for _, id := range read.changed {
 				place, block := replyBlock(t, doc, id)
 				for _, member := range []string{"text", "removed"} {
@@ -764,6 +767,20 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 						t.Errorf("the answer at the cut names %v absent, want %s", absent, pointerJoin(place, member))
 					}
 				}
+				if namedAbsent(absent, pointerJoin(place, "text_tree")) {
+					t.Errorf("the answer at the cut without display trees names %v absent, want no %s: it gives no tree",
+						absent, pointerJoin(place, "text_tree"))
+				}
+				place, block = replyBlock(t, treesDoc, id)
+				for _, member := range []string{"text", "removed", "text_tree"} {
+					if value, given := block[member]; given {
+						t.Errorf("%s/%s at the cut with display trees is %s, and the item that holds the block changed after the cut: the answer leaves it out",
+							place, member, abbreviateValue(value))
+					}
+					if !namedAbsent(treesAbsent, pointerJoin(place, member)) {
+						t.Errorf("the answer at the cut with display trees names %v absent, want %s", treesAbsent, pointerJoin(place, member))
+					}
+				}
 			}
 			for _, id := range read.changeless {
 				place, block := replyBlock(t, doc, id)
@@ -773,6 +790,14 @@ func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
 				if block["text"] != present["text"] || block["removed"] != false {
 					t.Errorf("%s at the cut is %s, want the block as its unchanged item holds it, %s", place, abbreviateValue(block), abbreviateValue(present))
 				}
+				place, block = replyBlock(t, treesDoc, id)
+				if tree := block["text_tree"]; tree == nil || len(stringsHolding(tree, "Delta.")) == 0 {
+					t.Errorf("%s/text_tree at the cut with display trees is %s, want the tree of the text its unchanged item holds, Delta.",
+						place, abbreviateValue(tree))
+				}
+			}
+			for _, held := range append(stringsHolding(doc, "rewritten after the cut"), stringsHolding(treesDoc, "rewritten after the cut")...) {
+				t.Errorf("%s at the cut holds words written after the cut", held)
 			}
 		})
 	}

@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +22,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -141,11 +147,7 @@ func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 	github.mu.Lock()
 	github.pulls = openPullAt(91, issue.Key)
 	github.mu.Unlock()
-	awaitSettledDocuments(t, database)
-	awaitBackgroundWrites(t, served)
-	safeHorizon(t, served)
-	cut := databaseCut(t, database)
-	time.Sleep(5 * time.Millisecond)
+	cut := settledResultsCut(t, database, served)
 
 	results := "/api/v1/issues/" + issue.Key + "/results"
 	read := func(target string) *httptest.ResponseRecorder {
@@ -242,4 +244,101 @@ func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 		t.Errorf("the present read asked GitHub %d times and moved the stored rows from %+v to %+v, want GitHub asked and a head, a branch answer and an event stored",
 			github.asked.Load()-asked, before, stored)
 	}
+}
+
+// TestARespelledChecksWordsAtACutReadAsTheyReadThen: a check whose text another renderer version
+// stored keeps its changed version when the next version writes it in this build's spelling, and
+// its digest moves (refs.BlockIndexing.KeepRespelled); the block index records no text for it at
+// that version, so at a cut after it the check's digest is that of the other renderer's spelling,
+// the text recorded at its changed version. A result recorded against the check before the
+// respelling and one recorded after it each read check_words_moved false, at the present and at
+// a cut after both: the words moved only where the digest and the version both differ from the
+// result's, as the present read answers it (comparisonReader.answer). A version that rewords the
+// check moves both, and each result reads check_words_moved true at a cut after the rewording,
+// and still false at the cut before it.
+func TestARespelledChecksWordsAtACutReadAsTheyReadThen(t *testing.T) {
+	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
+		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
+	issue := issueInRepository(t, handler, "RSPC", "acme/widgets", "Respelled at a cut")
+	owner := "/api/v1/issues/" + issue.Key
+	uploaded := uploadDocument(t, handler, owner, "verification.md", respelledCheck)
+	writeHead(t, database, "acme/widgets", 65, headCommit, "open", issue.Key)
+	respellVerification(t, database, uploaded.Artifact.ID, uploaded.Version.Number)
+	record := func(what string) model.CheckResult {
+		t.Helper()
+		recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
+		if recorded.Code != http.StatusCreated {
+			t.Fatalf("record a pass of k1 %s: status=%d body=%s", what, recorded.Code, recorded.Body.String())
+		}
+		return decodeBody[recordedResult](t, recorded).Result
+	}
+	earlier := record("against the other renderer's spelling")
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, "A sibling check nobody reworded.", "A sibling check, reworded.", 1))
+	later := record("against this build's spelling")
+	if earlier.CheckVersion != uploaded.Version.Number || later.CheckVersion != uploaded.Version.Number ||
+		earlier.CheckSHA256 != refs.BlockTextSum(respelledCheckBlock) || later.CheckSHA256 == earlier.CheckSHA256 {
+		t.Fatalf("the passes recorded version %d digest %s and version %d digest %s, want version %d for both, the first under the digest of %q and the second under another",
+			earlier.CheckVersion, earlier.CheckSHA256, later.CheckVersion, later.CheckSHA256, uploaded.Version.Number, respelledCheckBlock)
+	}
+
+	results := owner + "/results"
+	// wordsMoved is check_words_moved of each result of k1 in read, by the result's id: "absent"
+	// where the read leaves it out.
+	wordsMoved := func(t *testing.T, read issueResults) map[string]string {
+		t.Helper()
+		moved := map[string]string{}
+		for _, result := range checkOf(t, read, "k1").Results {
+			moved[result.ID] = "absent"
+			if result.CheckWordsMoved != nil {
+				moved[result.ID] = strconv.FormatBool(*result.CheckWordsMoved)
+			}
+		}
+		return moved
+	}
+	both := func(moved bool) map[string]string {
+		return map[string]string{earlier.ID: strconv.FormatBool(moved), later.ID: strconv.FormatBool(moved)}
+	}
+	takeCut := func() asof.Cut { return settledResultsCut(t, database, served) }
+	readAt := func(t *testing.T, cut asof.Cut) issueResults {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, withAsOf(t, results, cut), nil, "alice")
+		if response.Code != http.StatusOK || response.Header().Get(contracts.DispatchAsOfHeader) != cut.String() {
+			t.Fatalf("the read at the cut %s: status=%d %s=%q body=%s", cut, response.Code, contracts.DispatchAsOfHeader,
+				response.Header().Get(contracts.DispatchAsOfHeader), response.Body.String())
+		}
+		return decodeBody[issueResults](t, response)
+	}
+
+	if then := wordsMoved(t, readResults(t, handler, issue.Key)); !maps.Equal(then, both(false)) {
+		t.Fatalf("the present read after the respelling answers check_words_moved %v, want false for both passes", then)
+	}
+	respelled := takeCut()
+	if moved := wordsMoved(t, readAt(t, respelled)); !maps.Equal(moved, both(false)) {
+		t.Errorf("the read at a cut after the respelling answers check_words_moved %v, want false for both passes, as the read then answered", moved)
+	}
+
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, respelledCheckParagraph, "The server records a result against a check, reworded.", 1))
+	if now := wordsMoved(t, readResults(t, handler, issue.Key)); !maps.Equal(now, both(true)) {
+		t.Fatalf("the present read after the rewording answers check_words_moved %v, want true for both passes", now)
+	}
+	reworded := takeCut()
+	if moved := wordsMoved(t, readAt(t, reworded)); !maps.Equal(moved, both(true)) {
+		t.Errorf("the read at a cut after the rewording answers check_words_moved %v, want true for both passes", moved)
+	}
+	if moved := wordsMoved(t, readAt(t, respelled)); !maps.Equal(moved, both(false)) {
+		t.Errorf("the read at the cut before the rewording answers check_words_moved %v after it, want false for both passes", moved)
+	}
+}
+
+// settledResultsCut waits for the database's document and background writes to settle, reads a cut
+// from the database and pauses past it so a later write stands strictly after the cut.
+func settledResultsCut(t *testing.T, database *store.Store, served *server) asof.Cut {
+	t.Helper()
+	awaitSettledDocuments(t, database)
+	settleServed(t, served)
+	cut := databaseCut(t, database)
+	time.Sleep(5 * time.Millisecond)
+	return cut
 }
