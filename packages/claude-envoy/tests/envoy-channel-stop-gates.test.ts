@@ -211,10 +211,10 @@ test("unfollow once the stop has begun drops nothing and sends no removal", asyn
     await waitFor(async () => calls.includes(`unregister ${session}`), "the stop's DELETE")
     const before = calls.length
 
-    const removed = await channel.unfollow([topic])
+    const result = await channel.unfollow([topic])
     await settled()
 
-    expect(removed).toEqual([])
+    expect(result).toEqual({ removed: [] })
     expect(calls.slice(before)).toEqual([])
   } finally {
     deleting.resolve()
@@ -230,7 +230,7 @@ test("control: unfollow with no stop begun drops the topic and sends its removal
   try {
     const before = calls.length
 
-    const removed = await channel.unfollow([topic])
+    const { removed } = await channel.unfollow([topic])
     await settled()
 
     // A wildcard follow covers its base subject too, and the removal drops both.

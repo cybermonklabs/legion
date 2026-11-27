@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -101,20 +101,27 @@ func (r *durableEvents) barrier(t *testing.T) {
 	}, func() string { return "the durable's watch did not record its barrier within 30 s" })
 }
 
-// stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
+// stopWithAHeldHandBack is stopWithAHeldHandBackWithin with the stop's deadline shrunk to
+// stopBudget.
+func stopWithAHeldHandBack(t *testing.T) heldHandBack {
+	t.Helper()
+	return stopWithAHeldHandBackWithin(t, stopBudget)
+}
+
+// stopWithAHeldHandBackWithin starts a holder and a standby, has the holder's handler hold one pull
 // request with a second message of it waiting behind, stops the holder, and holds a write on the
 // holder's link from inside the stop's hand-back of the waiting message, after the connected read
 // has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
 // lock. It returns once the write is held, with the stop under way. The stop's deadline is
-// stopBudget for the intakes' stop budget.
-func stopWithAHeldHandBack(t *testing.T) heldHandBack {
+// the intakes' stopBudget (intakeTuning), set to budget.
+func stopWithAHeldHandBackWithin(t *testing.T, budget time.Duration) heldHandBack {
 	t.Helper()
 	// The holder's handler holds the first message until the row releases it or the stop gives it
 	// up, never until a deadline of its own: the second message has to queue behind it. Set before
 	// the intakes start, whose take-overs read it (intakeTuning.ackWait).
 	tuning := tuningFor(t)
 	tuning.messageTimeout = untilTheBinaryDeadline(t)
-	tuning.stopBudget = stopBudget
+	tuning.stopBudget = budget
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -229,8 +236,19 @@ func (r heldHandBack) handBackPending() bool {
 	}
 }
 
-// stopBudget is the stop's deadline in the rows below (intakeStopBudget).
+// stopBudget is the stop's deadline in the rows below whose stop reaches its deadline with the
+// hand-back still pending (intakeStopBudget): short, since each waits it out.
 const stopBudget = 3 * time.Second
+
+// landingBudget is the stop's deadline in the row whose hand-back must land before it
+// (intakeStopBudget). Every step of that row from the stop's start to the link moving is spent from
+// it: the row's wait for the stop to stop the keyed runner, the handler's answer and acknowledgement
+// once released, the freeze and the lock of the held write, the stop's wait for the held publish
+// (callNATSWait, bus.ConnLockWait), the row's poll for the line that the stop went on without it,
+// and the thaw.
+// A loaded runner can take longer than stopBudget over those, and the stop's deadline then passes
+// before the hand-back lands, so this one is long.
+const landingBudget = 30 * time.Second
 
 // untilTheBinaryDeadline is how long the rows below, and awaitBoundDurable, wait for an event that
 // ends a wait of their own or of the stop's: what the test binary's deadline leaves less
@@ -256,15 +274,19 @@ const (
 	rowWaitUnbounded = time.Hour
 )
 
-// holdLive reports whether the delivery durable's hold still names a holder, live: time left on it
-// (duty.HoldToken).
-func holdLive(t *testing.T, pool *store.Pool) bool {
+// holdLive reports whether the delivery durable's hold is live and names holder, the row's
+// heldDurable.holder. A row's standby takes a released or lapsed hold at its next poll
+// (durableBindInterval), so a read of whether any process holds the hold, made once the holder has
+// let it go, can find the standby's.
+func holdLive(t *testing.T, pool *store.Pool, holder uuid.UUID) bool {
 	t.Helper()
-	_, left, err := duty.HoldToken(t.Context(), pool, intakeHoldName(bus.DispatchDeliveryDurable))
-	if err != nil {
+	var named string
+	if err := pool.QueryRow(t.Context(),
+		"select coalesce((select holder::text from duty_holds where name = $1 and expires_at > now()), '')",
+		intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&named); err != nil {
 		t.Fatalf("read the delivery durable's hold: %v", err)
 	}
-	return left > 0
+	return named == holder.String()
 }
 
 // holdRenewedBeforeItsExpiry reads the expiry the delivery durable's hold has now, then waits until
@@ -394,15 +416,15 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // the stop's deadline keeps the hold renewing until it has (heldDurable.finalizeHandBacks).
 //
 // All three subtests hold a write on the holder's link from inside its stop's hand-back
-// (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers published to
-// the durable and the durable's creations, on a connection of its own, and every step waits for an
-// event. Once the standby has acknowledged the messages the holder left, each also reads the
-// consumer the standby created and requires that it delivered each of them once: a hand-back can
-// make that consumer deliver a message again before the server sends its creation's advisory,
-// where the order alone passes it (requireDeliveredOnceAfterTakeOver).
-//   - a hand-back that lands before the stop's deadline: the link moves once the stop has gone on
-//     without the publish (its log line). The hold is released by the time the stop returns, and the
-//     hand-back reached the server before the standby created the durable.
+// (stopWithAHeldHandBackWithin). Each reads, in the order the server sent them, the answers
+// published to the durable and the durable's creations, on a connection of its own, and every step
+// waits for an event. Once the standby has acknowledged the messages the holder left, each also
+// reads the consumer the standby created and requires that it delivered each of them once: a
+// hand-back can make that consumer deliver a message again before the server sends its creation's
+// advisory, where the order alone passes it (requireDeliveredOnceAfterTakeOver).
+//   - a hand-back that lands before the stop's deadline (landingBudget): the link moves once the
+//     stop has gone on without the publish (its log line). The hold is released by the time the stop
+//     returns, and the hand-back reached the server before the standby created the durable.
 //   - a hand-back still pending at the stop's deadline: the link stays held, and the stop returns
 //     while it is, with the hand-back still pending (handBacksLanded). The hold still names the
 //     holder then, and the standby has not created the durable. With the link still held, the hold is
@@ -416,16 +438,19 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     nats.go's lock first; either way it does not reach the server after the standby creates the
 //     durable.
 //
-// No step waits on a time but the stop's own deadline (intakeStopBudget) and the hold's own expiry;
-// every other wait runs to the test binary's deadline less its margin (untilTheBinaryDeadline) and
-// only guards against an event that never comes. stopWithAHeldHandBack begins the stop only once the
-// second message is queued in the holder, and decides whether the stop's hand-back reached its
-// publish by which comes first, that publish or the holder's Run returning. The negative controls: a
-// stop that withholds its hand-backs fails all three there, as the holder's Run returns; a release
-// that does not wait for the hand-backs fails the first's order;
-// a stop that never releases its hold when a publish was left running fails the first's release; a
-// release made at the deadline with a hand-back pending fails the second's hold; a stop that leaves
-// its hold to lapse with a hand-back pending fails the second's renewal; an untracked finalizer fails
+// The first subtest's stop has a deadline far longer than the row's own steps before the link moves
+// take (landingBudget); a run whose deadline still passed first fails as a control, as the stop then
+// says so (intakeHoldFinalizing) and leaves its hold to its finalizer. The second and third wait out
+// theirs (stopBudget). Beside those deadlines and the hold's own expiry, every wait runs to the test
+// binary's deadline less its margin (untilTheBinaryDeadline) and only guards against an event that
+// never comes. stopWithAHeldHandBackWithin begins the stop only once the second message is queued in
+// the holder, and decides whether the stop's hand-back reached its publish by which comes first,
+// that publish or the holder's Run returning. The negative controls: a stop that withholds its
+// hand-backs fails all three there, as the holder's Run returns; a release that does not wait for
+// the hand-backs fails the second's hold, as its stop returns; a stop that never releases its hold
+// when a publish was left running fails the first's release; a release made at the deadline with a
+// hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
+// pending fails the second's renewal; an untracked finalizer fails
 // the third by returning from its shutdown stop with the hold live; and the holder's -NAK published
 // again while the standby holds the message, with the server holding the creation's advisory until
 // the new consumer has delivered it a second time, fails all three by that second delivery. The count
@@ -435,7 +460,7 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureIntakeLogs(t)
-		row := stopWithAHeldHandBack(t)
+		row := stopWithAHeldHandBackWithin(t, landingBudget)
 		waitFor(t, untilTheBinaryDeadline(t), func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
 		})
@@ -445,7 +470,13 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		case <-time.After(untilTheBinaryDeadline(t)):
 			t.Fatal("the holder's stop did not return once the link moved")
 		}
-		if holdLive(t, row.pool) {
+		// The premise: the hand-back landed before the stop's deadline. A stop whose deadline passed
+		// first has said so (intakeHoldFinalizing) and left its hold to its finalizer, and such a run
+		// reads nothing of a hand-back that lands before the deadline, whatever the hold reads next.
+		if loggedMessage(logs(), intakeHoldFinalizing) {
+			t.Fatalf("control: the premise did not hold: the stop's deadline (landingBudget, %s) passed before its hand-back landed, so this run reads nothing of a hand-back that lands before it; the holder logged %q", landingBudget, loggedMessages(logs()))
+		}
+		if holdLive(t, row.pool, row.holder.intake.holder) {
 			t.Fatalf("the stop kept its hold although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
 		}
 		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
@@ -462,7 +493,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if !row.handBackPending() {
 			t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 		}
-		if !holdLive(t, row.pool) {
+		if !holdLive(t, row.pool, row.holder.intake.holder) {
 			t.Fatal("the stop released its hold with a hand-back still pending, so a standby may recreate the durable before the hand-back reaches the server")
 		}
 		if slices.Contains(row.recorded.since(row.from), durableCreated) {
@@ -517,7 +548,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			t.Fatal("StartIntakes' stop returned while its finalizer was held before release")
 		default:
 		}
-		if !holdLive(t, row.pool) {
+		if !holdLive(t, row.pool, row.holder.intake.holder) {
 			t.Fatal("the hold was released before the finalizer's release step")
 		}
 		close(releaseFinalizer)
@@ -526,7 +557,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		case <-time.After(untilTheBinaryDeadline(t)):
 			t.Fatal("StartIntakes' stop did not return after its finalizer was released")
 		}
-		if holdLive(t, row.pool) {
+		if holdLive(t, row.pool, row.holder.intake.holder) {
 			t.Fatal("the pending hand-back's finalizer released but left its hold live: shutdown could close the pool before releasing it")
 		}
 		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher, row.sequences)

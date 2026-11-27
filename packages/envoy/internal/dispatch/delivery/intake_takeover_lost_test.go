@@ -247,7 +247,7 @@ func worstPhaseTry(t *testing.T) (miss string, arranged bool) {
 		t.Fatalf("read the durable the holder bound: %v", err)
 	}
 	standby := newTakeOverProcess(t, pool, natsURL)
-	reads := &holdReads{intakeLeases: standby.intake.leases}
+	reads := &holdReads{DurableLeases: standby.intake.leases}
 	standby.intake.leases = reads
 	standby.intake.bindEvery = worstPhasePoll
 
@@ -327,7 +327,7 @@ func readsFrom(reads []holdRead, at time.Time) string {
 // then. It notes each statement it sends through Exec too, which while it holds no hold is its
 // take (duty.TryHold).
 type holdReads struct {
-	intakeLeases
+	DurableLeases
 
 	mu    sync.Mutex
 	reads []holdRead
@@ -373,12 +373,12 @@ func (r *holdReads) QueryRow(ctx context.Context, sql string, args ...any) pgx.R
 		r.reads[index].forwarded = time.Now()
 		r.mu.Unlock()
 	}
-	return notedHoldRead{row: r.intakeLeases.QueryRow(ctx, sql, args...), reads: r, index: index}
+	return notedHoldRead{row: r.DurableLeases.QueryRow(ctx, sql, args...), reads: r, index: index}
 }
 
 func (r *holdReads) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
 	sent := time.Now()
-	tag, err := r.intakeLeases.Exec(ctx, sql, arguments...)
+	tag, err := r.DurableLeases.Exec(ctx, sql, arguments...)
 	r.mu.Lock()
 	r.execs = append(r.execs, leaseExec{sent: sent, forwarded: sent, answered: time.Now(), rows: tag.RowsAffected(), err: err})
 	r.mu.Unlock()

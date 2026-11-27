@@ -159,13 +159,14 @@ const (
 // finishTakeOver makes the durable deliver to this intake at create's start, under the consumer
 // lease its caller (takeOver) holds: it deletes the durable when deleteFirst is set, subscribes
 // to create's deliver subject, creates the durable with create, and records the subject alone as
-// the hold's token. pastEnd is the start the rules moved back from past the stream's end to
-// create's, 0 when none was (startPlan); once the create has succeeded it is logged at ERROR, as
-// the session consumers log the start they clamp, since the stream was cut or created again and
-// what it held between the two is gone. Each step that fails is tried again (retryHeld) until it
-// succeeds, this intake no longer holds its hold, the grant refuses it, or takeOverFinishWithin has
-// passed. It runs on a context of its own rather than the run's, so a stop that comes while the
-// durable is deleted does not leave it so.
+// the hold's token; then it runs the owner's take-over callback (bound), if it names one. pastEnd
+// is the start the rules moved back from past the stream's end to create's, 0 when none was
+// (startPlan); once the create has succeeded it is logged at ERROR, as the session consumers log
+// the start they clamp, since the stream was cut or created again and what it held between the two
+// is gone. Each step that fails is tried again (retryHeld) until it succeeds, this intake no longer
+// holds its hold, the grant refuses it, or takeOverFinishWithin has passed. It runs on a context of
+// its own rather than the run's, so a stop that comes while the durable is deleted does not leave
+// it so.
 // Every step is safe to try again: a delete of a durable already gone succeeds, and a create of
 // a durable that a timed-out try did create, with this same config, returns that durable.
 //
@@ -229,6 +230,9 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 	d.recorded, d.subject, d.resumeAt = bound, create.DeliverSubject, create.OptStartSeq
 	d.tuning.log.Info("dispatch delivery: NATS consumer bound", "name", d.name, "subject", create.FilterSubject,
 		"start_seq", create.OptStartSeq, "generation", bus.MetadataGeneration(create.Metadata, consumerGenerationKey))
+	if d.bound != nil {
+		d.bound()
+	}
 	if d.boundHook != nil {
 		d.boundHook()
 	}

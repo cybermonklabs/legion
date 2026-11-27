@@ -26,9 +26,9 @@ import (
 type ConnectOption interface{ apply(*connectOpts) }
 
 // DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
-// WithPromptReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
-// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
-// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
+// WithPromptReconnect, WithWriteDeadline, WithInboxPrefix and WithReconnectErrClock. Dial's name
+// and environment are its parameters, so WithName and WithEnvironment are not DialOptions, and
+// neither are the options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -59,6 +59,7 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	promptReconnect             bool
+	writeDeadline               time.Duration
 	inboxPrefix                 string
 	streamMessageReads          bool
 	// logger is where the client and its connections write their lines (WithLogger):
@@ -78,8 +79,8 @@ type connectOpts struct {
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection, the redial waits of WithPromptReconnect and the inbox prefix of
-// WithInboxPrefix, each when the client asked for it.
+// WithSilentCutDetection, the redial waits of WithPromptReconnect, the write deadline of
+// WithWriteDeadline and the inbox prefix of WithInboxPrefix, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -87,6 +88,9 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	}
 	if o.promptReconnect {
 		settings = append(settings, promptRedial)
+	}
+	if o.writeDeadline > 0 {
+		settings = append(settings, nats.FlusherTimeout(o.writeDeadline))
 	}
 	if o.inboxPrefix != "" {
 		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
@@ -305,6 +309,21 @@ func WithSilentCutDetection() DialOption {
 // replicas is nothing to the hub. The jitter keeps two replicas from dialling in the same instant.
 func WithPromptReconnect() DialOption {
 	return func(o *connectOpts) { o.promptReconnect = true }
+}
+
+// WithWriteDeadline has every connection the client makes, the first and each one it dials to
+// replace a closed one, give each write to its socket at most d (nats.go's FlusherTimeout, which
+// sets the socket's write deadline before each write: timeoutWriter, nats.go v1.55.0). A write
+// holds nats.go's connection lock until it ends, and so does every call that waits for that lock
+// meanwhile: Close, and the ping timer that would notice a silent cut. Without this option a write
+// to a socket that takes no byte holds the lock for nats.go's default of a minute
+// (DefaultFlusherTimeout). The cost: a write the socket has not taken whole within d fails, since
+// each Write has one fixed deadline and the bytes the socket takes do not move it; nats.go closes
+// the socket when the write sent part of a message, and reconnects. So d must stay above the
+// longest a healthy link can take to accept a whole write. envoy-dispatch gives it to its intakes'
+// clients alone (delivery.IntakeWriteDeadline), which publish only small answers.
+func WithWriteDeadline(d time.Duration) DialOption {
+	return func(o *connectOpts) { o.writeDeadline = d }
 }
 
 // WithInboxPrefix has every connection the client makes name its inboxes under prefix in place

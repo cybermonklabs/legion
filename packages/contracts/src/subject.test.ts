@@ -8,6 +8,7 @@ import {
   legacyAgentSubject,
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionStateSubject,
   legionWakeSubject,
   NO_PROJECT,
   roleSubject,
@@ -43,6 +44,7 @@ const builders: Record<string, (...args: string[]) => string> = {
   legacyAgentSubject: (session = "") => legacyAgentSubject(session),
   roleSubject: (project = "", role = "") => roleSubject(project, role),
   legionWakeSubject: (token = "") => legionWakeSubject(token),
+  legionStateSubject: (token = "") => legionStateSubject(token),
 };
 
 const fixture = JSON.parse(

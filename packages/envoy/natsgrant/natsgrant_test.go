@@ -93,7 +93,8 @@ func sinceMergeBase(t *testing.T, base set, name string) set {
 // Every set this package builds is, element for element and in order, the set infra/core built at
 // the merge base, so moving them here rewrites no hub's rendered authorization; the changes since
 // are the listener state bucket's subjects (withListenerState) and the known-session bucket's purge
-// (sinceMergeBase), each added to every set built on listenerGrant, so every row compares the full
+// (sinceMergeBase), each added to every set built on listenerGrant, and the one grant Dispatch
+// gained (withLegionStateDurable), added to the Dispatch set alone, so every row compares the full
 // list.
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
@@ -106,7 +107,7 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 		}{
 			"Listener":     {withListenerState(t, base.Listener[id], id), natsgrant.Listener(id)},
 			"ListenerHost": {withListenerState(t, base.ListenerHost[id], id), natsgrant.ListenerHost(id)},
-			"Dispatch":     {withListenerState(t, base.Dispatch[id], id), natsgrant.Dispatch(id)},
+			"Dispatch":     {withLegionStateDurable(t, withListenerState(t, base.Dispatch[id], id)), natsgrant.Dispatch(id)},
 			"Host":         {withListenerState(t, base.Host[id], id), natsgrant.Host(id)},
 		} {
 			name := name + "(" + strconv.Quote(id) + ")"
@@ -116,7 +117,28 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	requireSet(t, base.SessionPattern, natsgrant.SessionPattern(), "SessionPattern()")
 	requireSet(t, base.Daemon, natsgrant.Daemon(), "Daemon()")
 	require.NotEmpty(t, base.DispatchDurables)
-	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
+	require.Equal(t, append(slices.Clone(base.DispatchDurables), "legion-state-events"), natsgrant.DispatchDurables())
+}
+
+// withLegionStateDurable is dispatch, a Dispatch set of the merge-base fixture, with the grant
+// Dispatch gained after the merge base: the Legion state intake's durable legion-state-events
+// (dispatch://INFRA-3931), which DispatchDurables names after the two the fixture holds, so its
+// four calls follow delivery-jobs' in the publish list. Nothing else of the set moves here: the
+// listener state bucket's subjects and the known-session purge are withListenerState's and
+// sinceMergeBase's.
+func withLegionStateDurable(t *testing.T, dispatch set) set {
+	t.Helper()
+	after := slices.Index(dispatch.Publish, "$JS.ACK.ENVOY_NOTIFICATIONS.delivery-jobs.>")
+	require.GreaterOrEqual(t, after, 0, "the fixture's Dispatch set holds no delivery-jobs acknowledgement")
+	return set{
+		Publish: slices.Insert(slices.Clone(dispatch.Publish), after+1,
+			"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.legion-state-events",
+			"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-state-events.>",
+			"$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.legion-state-events",
+			"$JS.ACK.ENVOY_NOTIFICATIONS.legion-state-events.>",
+		),
+		Subscribe: dispatch.Subscribe,
+	}
 }
 
 // Measure is the measurement user's grant as the deployment renders it once its stream calls and

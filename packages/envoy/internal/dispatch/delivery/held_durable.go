@@ -127,9 +127,11 @@ func parseIntakeHoldToken(token string) intakeHoldToken {
 	return intakeHoldToken{subject: subject, start: sequence}
 }
 
-// intakeLeases is the pool an intake takes its durable's hold and consumer lease on and renews the
-// hold through: store.Pool.Leases, which StartIntakes hands each intake. A *pgxpool.Pool is both.
-type intakeLeases interface {
+// DurableLeases is the pool a held durable takes its hold and consumer lease on and renews the hold
+// through: the reservation ReserveDurableLeases makes of store.Pool.Leases, which StartIntakes hands
+// each intake and a held durable outside this package (NewHeldDurable) takes from its own. A
+// *pgxpool.Pool is both.
+type DurableLeases interface {
 	duty.Leases
 	duty.Holds
 }
@@ -230,7 +232,7 @@ func (t *bindThrottle) reportStandby(logger *slog.Logger, name, message string) 
 // StopDelivering reads from any goroutine.
 type heldDurable struct {
 	nats   *bus.Client
-	leases intakeLeases
+	leases DurableLeases
 	// holder names this intake in its hold's row: each intake draws one as it is built.
 	holder uuid.UUID
 	// throttle is this intake's own standby-log state (bindThrottle).
@@ -267,6 +269,11 @@ type heldDurable struct {
 	// the ack floor each check reads of it (bus.AckFloor). 0 is no start known, while this intake
 	// has bound nothing or created the durable with none.
 	resumeAt uint64
+	// bound, when not nil, is the owner's take-over callback: it runs on the run loop once each
+	// take-over has bound the durable, with the subject recorded and the subscription delivering,
+	// so work it queues on a key (HeldDurable.Queue) runs on that subscription's keyed runner. The
+	// two intakes of this package set none; a held durable outside it names one (NewHeldDurable).
+	bound func()
 	// boundHook, when not nil, runs once a take-over has bound the durable, before the take-over
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
@@ -292,7 +299,7 @@ type heldDurable struct {
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
 // consumer lease on leases, routing each message by key and handing it to handle, timed by tuning.
-func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases intakeLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
+func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases DurableLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{

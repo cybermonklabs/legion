@@ -69,7 +69,7 @@ func TestAHolderThatRenewsBetweenAStandbysReadAndItsLapseTimerKeepsTheHold(t *te
 	publisher := intakeTestClient(t)
 
 	holder := newTakeOverProcess(t, pool, natsURL)
-	renewals := &heldRenewals{intakeLeases: holder.intake.leases}
+	renewals := &heldRenewals{DurableLeases: holder.intake.leases}
 	holder.intake.leases = renewals
 	startIntake(t, holder.intake)
 	// Registered after the holder's run, so it runs before the run's stop: a stop whose release
@@ -93,7 +93,7 @@ func TestAHolderThatRenewsBetweenAStandbysReadAndItsLapseTimerKeepsTheHold(t *te
 	})
 
 	standby := newTakeOverProcess(t, pool, natsURL)
-	reads := &holdReads{intakeLeases: standby.intake.leases}
+	reads := &holdReads{DurableLeases: standby.intake.leases}
 	standby.intake.leases = reads
 
 	landed := len(landedExecs(renewals.noted()))
@@ -213,7 +213,7 @@ func TestAStandbyThatStopsLeavesNoLapseTimerToFire(t *testing.T) {
 	natsURL := testnats.URL(t)
 	holdElsewhere(t, ctx, pool, 6*time.Second)
 	standby := newTakeOverProcess(t, pool, natsURL)
-	reads := &holdReads{intakeLeases: standby.intake.leases}
+	reads := &holdReads{DurableLeases: standby.intake.leases}
 	standby.intake.leases = reads
 
 	before := runtime.NumGoroutine()
@@ -267,7 +267,7 @@ func TestAStandbyWhosePollTakesTheHoldLeavesNoLapseTimerToFire(t *testing.T) {
 	bindAsPreviousBuild(t, intakeTestClient(t))
 
 	standby := newTakeOverProcess(t, pool, natsURL)
-	reads := &holdReads{intakeLeases: standby.intake.leases}
+	reads := &holdReads{DurableLeases: standby.intake.leases}
 	standby.intake.leases = reads
 	letGo := holdElsewhere(t, ctx, pool, 5*time.Second)
 	run := runNotingAttempts(t, standby.intake)
@@ -323,7 +323,7 @@ func TestAStandbyWhosePollTakesTheHoldLeavesNoLapseTimerToFire(t *testing.T) {
 // statement Postgres has not answered waits. Once the holder has taken its durable over, those
 // statements are its hold's renewals alone (duty.Hold.renew). It notes each statement (leaseExec).
 type heldRenewals struct {
-	intakeLeases
+	DurableLeases
 
 	mu    sync.Mutex
 	gate  chan struct{}
@@ -345,7 +345,7 @@ func (r *heldRenewals) Exec(ctx context.Context, sql string, arguments ...any) (
 		}
 	}
 	noted.forwarded = time.Now()
-	tag, err := r.intakeLeases.Exec(ctx, sql, arguments...)
+	tag, err := r.DurableLeases.Exec(ctx, sql, arguments...)
 	noted.answered, noted.rows, noted.err = time.Now(), tag.RowsAffected(), err
 	r.note(noted)
 	return tag, err
