@@ -72,7 +72,7 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	t.Cleanup(func() { commandTimeout = was })
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
-	script := "#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in *slow.yml) sleep 5;; *bad.yml) echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; exit 1;; esac\necho '{\"value\": false}'\n"
+	script := "#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in *slow.yml) sleep 5;; *bad.yml) sleep 0.5; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; exit 1;; esac\necho '{\"value\": false}'\n"
 	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

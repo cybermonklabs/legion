@@ -649,7 +649,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	}
 	t.Run("the gh visibility read", func(t *testing.T) {
 		guard := New(Options{
-			Check: leakguardtest.Write(t, t.TempDir(), passes),
+			Check: leakguardtest.Write(t, t.TempDir(), "sleep 2.5\n"+passes),
 			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh"))),
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -662,7 +662,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", began))
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
-		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git"))
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), "sleep 2.5\n"+passes), Public, neverAnswers(t, "git"))
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		// A local commit and a ref the destination does not hold yet: the guard asks git for the

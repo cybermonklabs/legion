@@ -35,12 +35,19 @@ const theToken = "invented-token-not-a-secret"
 // says. The GraphQL read does what graphql says. `gh auth git-credential get` writes its request to
 // credential and answers password, as `legion gh` answers from the bundle's hosts.yml.
 func transportGh(reads, rest, graphql, credential, password string) string {
+	stall := ""
+	if controlStallOnce != "" {
+		stall = "[ -e " + shQuote(controlStallOnce) + " ] || { : > " + shQuote(controlStallOnce) + "; sleep 1.5; }\n"
+	}
 	return "if [ \"$1\" = auth ]; then\n" +
 		"cat > " + shQuote(credential) + "\n" +
 		"printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=%s\\n' " + shQuote(password) + "\nexit 0\nfi\n" +
-		ghStandIn("echo read >> "+shQuote(reads)+"\n"+rest, graphql)
+		ghStandIn(stall+"echo read >> "+shQuote(reads)+"\n"+rest, graphql)
 }
 
+// controlStallOnce, CONTROL ONLY, is a file whose absence makes gh's REST read wait 1.5 s before it
+// logs itself, once.
+var controlStallOnce string
 // noGraphQL is a GraphQL read that only records that it ran, to record, and fails.
 func noGraphQL(record string) string {
 	return "echo ran >> " + shQuote(record) + "\nexit 1\n"
@@ -613,7 +620,11 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			shorten(t, &ghReadBound, tc.ghBound)
 			shorten(t, &curlReserve, tc.reserve)
-			rig := newTransportRig(t, "sleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+			if tc.stoppedAt == time.Second {
+				controlStallOnce = filepath.Join(t.TempDir(), "stalled")
+				t.Cleanup(func() { controlStallOnce = "" })
+			}
+			rig := newTransportRig(t, "sleep 30\n", noGraphQL, "sleep 3.5\n"+curlAnswers("private"), answersTheRefs)
 			ctx, cancel := context.WithTimeout(context.Background(), tc.caller)
 			t.Cleanup(cancel)
 			began := time.Now()
