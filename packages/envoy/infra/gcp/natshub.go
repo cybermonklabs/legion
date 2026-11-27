@@ -315,6 +315,9 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	if args.Subnetwork != nil && args.Network == nil {
 		return settings{}, core.InputErrorf("subnetwork", "subnetwork is set without network; the firewall needs the network the subnetwork belongs to")
 	}
+	if args.Listener != nil && args.AuthCallout != nil {
+		return settings{}, listenerBesideCallout("listener")
+	}
 	var hubListener *listenerUser
 	if args.Listener != nil {
 		hubListener = &listenerUser{path: "listener", machineID: args.Hostname, nkey: args.Listener.NKey}
@@ -492,6 +495,16 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value stri
 	}
 }
 
+// listenerBesideCallout refuses input, the hub's own listener, beside authCallout. Today the
+// listener connects to NATS as a user whose seed the hub stores; behind the auth service it is to
+// connect through the service with a service identity of its own instead, which arrives with
+// dispatch://INFRA-840's task t-e-13. Until then a hub with authCallout runs no listener.
+func listenerBesideCallout(input string) error {
+	return core.InputErrorf(input, "%s and authCallout: the hub's own listener connects to NATS as a user whose seed the hub stores (%s.nkey and its seed secret); "+
+		"behind the auth service it connects with a service identity instead, and its service identity arrives with dispatch://INFRA-840 (t-e-13), "+
+		"so until then a hub with authCallout runs no listener of its own", input, input)
+}
+
 // calloutRefusal is a refusal of the hub's authorization, with core's refusal of the callout, a
 // core.InputError naming core's field callout, named instead as the hub's input authCallout; any
 // other passes unchanged, privateProjects' among them, which the hub's input shares the name of.
@@ -639,16 +652,13 @@ type listenerUser struct {
 // the webhook listener's set (userKinds); githubWebhook beside any other kind is refused as a
 // core.InputError naming it.
 // callout and privateProjects pass to core as they are: core derives auth_users from the users
-// above, the listener's and the session user's included. So beside a callout the listener's user
-// is admitted by its nkey alone, as every user of users is, and a client presenting no credential
-// still becomes the session user: none of them reaches the auth service. core refuses, as a
-// core.InputError naming privateProjects, a private project beside any of them but the callout's
-// service user, the listener's seeded user included, and a service user granted more than an auth
-// service needs. With privateProjects the hub also refuses a service user that names an entry of
-// another kind than permissions: a machineId, listenerMachineId, dispatchMachineId or daemon entry
-// is a client whose seed that client stores, and naming it the service's would let it connect past
-// the service by that seed. Quoting the service user's name is safe there: seededInput has refused
-// a seed in it.
+// above and refuses, as a core.InputError naming privateProjects, a private project beside any of
+// them but the callout's service user, and a service user granted more than an auth service
+// needs. With privateProjects the hub also refuses a service user that names an entry of another
+// kind than permissions: a machineId, listenerMachineId, dispatchMachineId or daemon entry is a
+// client whose seed that client stores, and naming it the service's would let it connect past the
+// service by that seed. Quoting the service user's name is safe there: seededInput has refused a
+// seed in it.
 func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserArgs, callout *nats.AuthCalloutArgs, privateProjects bool) (core.Authorization, error) {
 	if len(users) == 0 && l == nil {
 		return core.Authorization{}, core.InputErrorf("users", "users: at least one user is required, or a listener")

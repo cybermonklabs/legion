@@ -206,39 +206,6 @@ func TestPrivateProjectsNeedTheAuthService(t *testing.T) {
 	})
 }
 
-// TestPrivateProjectsRefuseTheSeededListener: privateProjects refuses the hub's own session
-// listener, which connects as a user whose seed the hub stores, on gcp:NatsHub and wherever
-// gcp:ClusteredNatsHub declares it (clusteredListenerPlacements), and nothing registers. The
-// refusal is core's, the stored-seed row of TestPrivateProjectsNeedTheAuthService for the
-// listener's user. A hub reaches it since a seeded listener may stand beside authCallout; before,
-// the hubs refused that pair first. Control: make core's users loop in validateCallout skip a user
-// whose Label is "listener", and every subtest fails with "privateProjects was taken beside the
-// session listener".
-func TestPrivateProjectsRefuseTheSeededListener(t *testing.T) {
-	const rest = `: a stored client seed while a project is private; every client connects through the auth service, so callout.serviceUser "example-auth" is the only user`
-	t.Run("gcp:NatsHub", func(t *testing.T) {
-		row := privateProjectsRefusal{who: `the session listener "example-hub"`, want: `privateProjects: listener "example-hub"` + rest}
-		args := privateNatsHub()
-		args.Listener = exampleArgs().Listener
-		requirePrivateProjectsRefusal(t, row, gcp.ResolveNatsHub(args))
-		m, err := run(t, args, nil, true)
-		require.ErrorContains(t, err, row.want)
-		require.Equal(t, []string{gcpProviderType}, m.Types(), "nothing registered beyond the test's provider")
-	})
-	for _, placement := range clusteredListenerPlacements() {
-		t.Run(placement.name, func(t *testing.T) {
-			row := privateProjectsRefusal{who: `the session listener "envoy-hub"`, want: `privateProjects: listener "envoy-hub"` + rest}
-			args := privateClusteredHub()
-			placement.edit(args)
-			_, err := gcp.ResolveClusteredNatsHub(args)
-			requirePrivateProjectsRefusal(t, row, err)
-			m, err := runClustered(t, "example-clustered-hub", args, nil)
-			require.ErrorContains(t, err, row.want)
-			require.Empty(t, m.Registrations(), "nothing registered")
-		})
-	}
-}
-
 // TestAPrivateClusteredHubsChartWaitsForItsNetworkPolicy: with privateProjects the nats chart
 // registers only after the hub pods' NetworkPolicy, whose rules admit the monitoring port, 8222,
 // from no namespace, so no server takes the server tag from the chart's ConfigMap, by reload or by
