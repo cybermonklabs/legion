@@ -23,16 +23,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -86,11 +77,15 @@ function cmdlines(pid: number): string[] {
   return seen;
 }
 
+/** The scratch of each drive, removed after its row whatever the row did. */
+const driveDirs = temporaryDirectories("start-settings-drive");
+
 /** Runs `script` under bash in a directory of its own and answers what the chain was given: every
- *  recorded argument vector, every live one of the service and its children, and the driver's own
- *  output. The driver writes the service's pid to `pid`. */
-function drive(label: string, body: string): { argv: string[]; out: string } {
-  const dir = mkdtempSync(join(tmpdir(), `start-settings-${label}-`));
+ *  recorded argument vector, every live one of the service and its children, the service's own
+ *  environment (/proc/<pid>/environ, which this user reads), and the driver's output. The driver
+ *  writes the service's pid to `pid`. */
+function drive(label: string, body: string): { argv: string[]; environ: string[]; out: string } {
+  const dir = driveDirs(label);
   const bin = join(dir, "bin");
   const record = join(dir, "record");
   mkdirSync(bin, { recursive: true });
@@ -147,6 +142,15 @@ ${body}
     // The driver failed before the service wrote its pid; `out` says why.
   }
   const live = Number.isFinite(pid) && pid > 0 ? cmdlines(pid) : [];
+  let environ: string[] = [];
+  try {
+    if (pid > 0)
+      environ = readFileSync(`/proc/${pid}/environ`, "utf8")
+        .split("\0")
+        .filter((entry) => entry !== "");
+  } catch {
+    // The service ended before it was read; the rows below then find no setting.
+  }
   const recorded = readFileSync(record, "utf8")
     .split("\n")
     .map((line) => line.replaceAll("\0", " "))
@@ -158,8 +162,7 @@ ${body}
   }
   // The keeper of a held start outlives the driver, since it holds the port for the whole run.
   spawnSync("pkill", ["-f", dir], { timeout: 10_000 });
-  rmSync(dir, { force: true, recursive: true });
-  return { argv: [...recorded, ...live], out };
+  return { argv: [...recorded, ...live], environ, out };
 }
 
 describe.skipIf(skipWithout("bash", "python3", "env", "sleep"))(
@@ -179,8 +182,10 @@ until_true 30 "the service to write its pid" test -s "$work/pid"`
       });
     });
 
+    // A start that gives its settings through the environment, and no setting it was not given:
+    // the service's own environment holds DATABASE_URL with the sentinel, and not the driver's HOME.
     test("a plain start gives its settings through the environment alone", () => {
-      const { argv, out } = drive(
+      const { argv, environ, out } = drive(
         "plain",
         `start_with_settings service PATH="$PATH" DATABASE_URL="$database_url" -- "$service" "$work/pid"
 until_true 30 "the service to write its pid" test -s "$work/pid"`
@@ -188,14 +193,18 @@ until_true 30 "the service to write its pid" test -s "$work/pid"`
       expect({
         leaked: argv.filter((line) => line.includes(sentinel)),
         read: argv.length > 0,
+        given: environ.includes(
+          `DATABASE_URL=postgres://dispatch:${sentinel}@127.0.0.1:5999/dispatch`
+        ),
+        inherited: environ.filter((entry) => entry.startsWith("HOME=")),
         out,
-      }).toMatchObject({ leaked: [], read: true });
+      }).toMatchObject({ leaked: [], read: true, given: true, inherited: [] });
     });
 
     // The held shape, through the real held-port.py: the helper holds the port, writes it and
     // execs the service, and the setting is its environment, named to it alone (--pass).
     test("a held start gives its settings through the environment alone, naming them to held-port.py", () => {
-      const { argv, out } = drive(
+      const { argv, environ, out } = drive(
         "held",
         `start_held service service_port LISTEN_FD --setting PATH="$PATH" \\
   --setting DATABASE_URL="$database_url" -- "$service" "$work/pid"
@@ -205,8 +214,19 @@ until_true 30 "the service to write its pid" test -s "$work/pid"`
       expect({
         leaked: argv.filter((line) => line.includes(sentinel)),
         namedToTheHelper: helper.some((line) => line.includes("--pass DATABASE_URL")),
+        given: environ.includes(
+          `DATABASE_URL=postgres://dispatch:${sentinel}@127.0.0.1:5999/dispatch`
+        ),
+        descriptor: environ.includes("LISTEN_FD=3"),
+        inherited: environ.filter((entry) => entry.startsWith("HOME=")),
         out,
-      }).toMatchObject({ leaked: [], namedToTheHelper: true });
+      }).toMatchObject({
+        leaked: [],
+        namedToTheHelper: true,
+        given: true,
+        descriptor: true,
+        inherited: [],
+      });
     });
 
     // The control for the held shape: the same start written the old way, which the reader must
@@ -237,17 +257,57 @@ const assignment = /(?:^|\s)(--env|--setting|--pass)?\s*["']?([A-Z][A-Z0-9_]*)=/
  *  name ending in _FILE is a path to one, which is why the scripts hand those. */
 const secretName = /(?:DATABASE_URL|DSN|TOKEN|PASSWORD|SECRET|PEM|PEM_B64|SEED|_KEY)$/;
 
-/** The secret-named settings one logical line gives a command as its arguments, in order. */
+/** `docker run` or `docker create`: -e and --env give the container a setting, and docker holds
+ *  it in its own arguments until the container has it, an image pull included. */
+const dockerStart = /(?<![\w-])docker\s+(?:container\s+)?(?:run|create)\b/;
+/** A -e or --env that gives a name a value. `-e NAME` alone, whose value docker reads from its
+ *  own environment, gives none. */
+const dockerSetting = /(?:^|\s)(?:-e|--env)(?:\s+|=)["']?([A-Z][A-Z0-9_]*)=(\S*)/g;
+
+/** The secret-named settings one logical line gives a command as its arguments, in order. A value
+ *  docker is given whole in the script's text is in the repository already, so only one the shell
+ *  expands is counted there. */
 function secretArgumentNames(text: string): string[] {
   if (text.trimStart().startsWith("#")) return [];
+  const names: string[] = [];
+  const docker = dockerStart.exec(text);
+  if (docker !== null)
+    for (const hit of text.slice(docker.index + docker[0].length).matchAll(dockerSetting)) {
+      const name = hit[1] ?? "";
+      if (secretName.test(name) && /[$`]/.test(hit[2] ?? "")) names.push(name);
+    }
   const match = startsACommand.exec(text);
-  if (match === null) return [];
-  const after = text.slice(match.index + match[0].length);
-  const names = [...after.matchAll(assignment)]
+  if (match !== null) names.push(...settingsHeld(text.slice(match.index + match[0].length)));
+  return [...new Set(names)];
+}
+
+/** The secret-named settings `text` gives as `NAME=value`, but for the names --setting and --pass
+ *  give alone. */
+function settingsHeld(text: string): string[] {
+  return [...text.matchAll(assignment)]
     .filter((hit) => hit[1] !== "--setting" && hit[1] !== "--pass")
     .map((hit) => hit[2] ?? "")
     .filter((name) => secretName.test(name));
-  return [...new Set(names)];
+}
+
+/** Each array a script assigns (`name=(…)`, `name+=(…)`) whose text holds a secret-named setting
+ *  other than a --setting or --pass, with those settings: a start that splices `"${name[@]}"` gives
+ *  each of them as an argument, though its own line names none. */
+function secretArrays(lines: string[]): Map<string, string[]> {
+  const arrays = new Map<string, string[]>();
+  for (let index = 0; index < lines.length; index++) {
+    const { text, last } = logicalLine(lines, index);
+    index = last;
+    const opened =
+      /^\s*(?:(?:local|declare|typeset)\s+(?:-[a-zA-Z]+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)\+?=\((.*)\)\s*$/s.exec(
+        text
+      );
+    if (opened === null) continue;
+    const held = settingsHeld(opened[2] ?? "");
+    if (held.length > 0)
+      arrays.set(opened[1] ?? "", [...(arrays.get(opened[1] ?? "") ?? []), ...held]);
+  }
+  return arrays;
 }
 
 /** The logical line starting at `lines[from]`: its backslash continuations joined, and, where it
@@ -276,6 +336,15 @@ function logicalLine(lines: string[], from: number): { text: string; last: numbe
   return { text, last: index };
 }
 
+/** What the scan takes as given about the environment the scripts run in:
+ *  - ACCEPT_ROOT is unset, so stage3-4b13b-acceptance.sh's root is the checkout, as it is wherever
+ *    the caller sets nothing, and the scan reads this checkout's libraries there rather than
+ *    excusing them. Where ACCEPT_ROOT is set, that script reads another checkout's libraries,
+ *    which this tree cannot hold.
+ *  - LEGION_E2E_KIND names the kind binary to run (lib/kind-sandbox.sh), so `"$kind_bin" create
+ *    cluster` is that program and not `source` of a file named create. */
+const assumptions = { unset: ["ACCEPT_ROOT"], programs: ["LEGION_E2E_KIND"] } as const;
+
 /** The source scan of `tree` (`./source-scan`), once per tree: every script of its scripts/e2e and
  *  scripts/e2e/lib, and every file a source in one of them reaches, wherever in the tree, read as
  *  the shell reads it. A start that leaks lives as readily in a sourced library as in the script,
@@ -290,7 +359,7 @@ function scanOf(tree: string): SourceScan {
     const scripts = [join(tree, "scripts", "e2e"), join(tree, "scripts", "e2e", "lib")]
       .flatMap((dir) => readdirSync(dir).map((name) => join(dir, name)))
       .filter((path) => path.endsWith(".sh"));
-    found = scanSources(tree, scripts);
+    found = scanSources(tree, scripts, assumptions);
     scans.set(tree, found);
   }
   return found;
@@ -308,18 +377,25 @@ function unreadable(tree: string = repoRoot): string[] {
   return scanOf(tree).refused;
 }
 
-/** Every start among the scanned files whose own arguments carry a setting named for a secret,
- *  as `file:line: NAMES`. */
+/** Every start among the scanned files whose arguments carry a setting named for a secret, its
+ *  own or one an array it splices holds, as `file:line: NAMES`. */
 function startsWithSecretArguments(tree: string = repoRoot): string[] {
   const found: string[] = [];
   for (const path of scanned(tree)) {
     const name = relative(tree, path);
     const lines = readFileSync(path, "utf8").split("\n");
+    const arrays = secretArrays(lines);
     for (let index = 0; index < lines.length; index++) {
       const first = index;
       const { text, last } = logicalLine(lines, index);
       index = last;
       const names = secretArgumentNames(text);
+      const starts =
+        !text.trimStart().startsWith("#") && (startsACommand.test(text) || dockerStart.test(text));
+      if (starts)
+        for (const [array, held] of arrays)
+          if (new RegExp(String.raw`\$\{${array}\[[@*]\]\}`).test(text))
+            for (const secret of held) names.push(`${secret} (through \${${array}[@]})`);
       if (names.length > 0) found.push(`${name}:${first + 1}: ${names.join(" ")}`);
     }
   }
@@ -355,6 +431,30 @@ function inTree(
 }
 
 describe("every start of an e2e script keeps its secrets out of its arguments", () => {
+  // stage3-4b13b-acceptance.sh binds root to ACCEPT_ROOT where the environment sets it, and to
+  // the checkout where it does not. The checkout's scan reads ACCEPT_ROOT as unset, so it reads
+  // that script's default arm: the libraries of this checkout, a leaking one among them.
+  test("a script whose root defaults to the checkout is read through its default, a leak named", () => {
+    inTree(
+      [
+        {
+          path: "packages/legion-planted/lib/leak.sh",
+          text: 'start_process svc env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
+        },
+        {
+          path: "scripts/e2e/defaulted.sh",
+          text: `root=\${ACCEPT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}\n. "$root/packages/legion-planted/lib/leak.sh"`,
+        },
+      ],
+      (tree) => {
+        expect(unreadable(tree)).toEqual([]);
+        expect(startsWithSecretArguments(tree)).toEqual([
+          "packages/legion-planted/lib/leak.sh:2: DATABASE_URL",
+        ]);
+      }
+    );
+  });
+
   // A scan that enumerated nothing answers "no start leaks" exactly as a clean tree does, so what
   // it read is checked before what it found: the files it must have reached, by name, and a floor
   // under the count. Without this a wrong directory, a filter that selects nothing or a walk that
@@ -389,30 +489,15 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
     expect(startsWithSecretArguments()).toEqual([]);
   });
 
-  // Three scripts run what no reading of this tree can know, by design, and the scan names each:
-  // stage3-4b13b-acceptance.sh binds root to ACCEPT_ROOT where the environment sets it, so it can
-  // source another checkout's libraries (its require_process_tree names that case);
-  // plan-pointer-drive.sh reads a stand-in's recorded arguments back with eval; and
-  // lib/arg-max-force.sh runs the command it forces with eval. Those refusals are named here by
-  // file and reason, each must still occur, and nothing else may be refused.
-  test("every library a script of scripts/e2e sources can be read, but the ones named by design", () => {
-    const byDesign: readonly [file: string, reason: string][] = [
-      ["scripts/e2e/stage3-4b13b-acceptance.sh", "$ACCEPT_ROOT comes from the environment"],
-      [
-        "scripts/e2e/stage3-4b13b-acceptance.sh",
-        "could not be read (scripts/e2e/stage3-4b13b-acceptance.sh:",
-      ],
-      ["scripts/e2e/plan-pointer-drive.sh", "eval runs text this scan does not parse"],
-      ["scripts/e2e/lib/arg-max-force.sh", "eval runs text this scan does not parse"],
-    ];
-    const named = ([file, reason]: readonly [string, string], refusal: string) =>
-      refusal.startsWith(`${file}:`) && refusal.includes(reason);
-    expect(
-      unreadable().filter((refusal) => !byDesign.some((entry) => named(entry, refusal)))
-    ).toEqual([]);
-    expect(
-      byDesign.filter((entry) => !unreadable().some((refusal) => named(entry, refusal)))
-    ).toEqual([]);
+  // One script runs text no reading of this tree can know, by design: plan-pointer-drive.sh reads a
+  // stand-in's recorded arguments back with eval. The scan refuses that eval by name, and that
+  // refusal, exactly as the scan writes it, is all it may refuse: a new refusal anywhere, in that
+  // script too, fails this row, and so does this one once it no longer occurs. (lib/arg-max-force.sh
+  // also runs an eval, in a function no script of scripts/e2e calls, which the walk never reaches.)
+  test("every library a script of scripts/e2e sources can be read, but for the one eval named here", () => {
+    expect(unreadable()).toEqual([
+      'scripts/e2e/plan-pointer-drive.sh:288: eval "args=( $(cat "$dir/arg.txt") )": eval runs text this scan does not parse, which may source a library',
+    ]);
   });
 
   // The first direction: a library sourced by a path the scan resolves is read, so a start that
@@ -504,7 +589,7 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
     );
   });
 
-  // The scan reads what it is pointed at: each shape it must find, and the three it must leave
+  // The scan reads what it is pointed at: each shape it must find, and the ones it must leave
   // alone, through the same function the scan uses.
   test("control: the scan finds each shape that writes one, and reads the rest as none", () => {
     expect(
@@ -514,12 +599,19 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
         'start_kept dispatch keeper DISPATCH_LISTEN_FD -- env -i DISPATCH_SIGNING_KEY="$k" "$bin"',
         'python3 "$held_port" exec --fd-env LISTEN_FD -- "$settings" ANTHROPIC_API_KEY="$k" "$b"',
         'env -i PATH="$PATH" DISPATCH_TOKEN="$(cat "$f")" "$cli"',
+        // docker hands -e's value to the container, and holds it in its own arguments until then.
+        'docker run -d --name "$pg" -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/pw")" "$image"',
+        'docker run -d --env DATABASE_URL="$url" "$image"',
+        'docker create --env=DISPATCH_TOKEN="$token" "$image"',
       ].map((line) => secretArgumentNames(line))
     ).toEqual([
       ["DATABASE_URL"],
       ["DISPATCH_AGENT_TOKEN"],
       ["DISPATCH_SIGNING_KEY"],
       ["ANTHROPIC_API_KEY"],
+      ["DISPATCH_TOKEN"],
+      ["POSTGRES_PASSWORD"],
+      ["DATABASE_URL"],
       ["DISPATCH_TOKEN"],
     ]);
     expect(
@@ -530,7 +622,37 @@ describe("every start of an e2e script keeps its secrets out of its arguments", 
         'env -i PATH="$PATH" ENVOY_TOKEN_FILE="$work/envoy-token" "$bin"',
         // A comment naming the shape.
         '# start_process dispatch env -i DATABASE_URL="$url" "$bin"',
+        // The name alone, whose value docker reads from its own environment.
+        'POSTGRES_PASSWORD="$(cat "$work/pw")" docker run -d -e POSTGRES_PASSWORD "$image"',
+        // A value written whole in the script, which the repository holds already.
+        'docker run -d -e POSTGRES_PASSWORD=legion "$image"',
+        // A value given to the container's command, not to docker's -e.
+        'docker run --rm "$image" sh -c "echo $HOME"',
       ].map((line) => secretArgumentNames(line))
-    ).toEqual([[], [], []]);
+    ).toEqual([[], [], [], [], [], []]);
+  });
+
+  // A settings array spliced into a start gives the start every setting it holds as arguments,
+  // though the start's own line names none of them.
+  test("a start that splices a settings array holding a secret is named, and one of names alone is not", () => {
+    inTree(
+      [
+        {
+          path: "scripts/e2e/spliced.sh",
+          text: [
+            'settings=(PATH="$PATH"',
+            '  DATABASE_URL="$url")',
+            'start_process svc env -i "${settings[@]}" "$bin"',
+            'held=(--setting PATH="$PATH" --setting DISPATCH_TOKEN="$token")',
+            'start_held svc port LISTEN_FD "${held[@]}" -- "$bin"',
+          ].join("\n"),
+        },
+      ],
+      (tree) => {
+        expect(startsWithSecretArguments(tree)).toEqual([
+          "scripts/e2e/spliced.sh:4: DATABASE_URL (through ${settings[@]})",
+        ]);
+      }
+    );
   });
 });

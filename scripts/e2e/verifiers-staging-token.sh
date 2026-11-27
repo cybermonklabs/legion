@@ -188,15 +188,6 @@ listener_env=(
 )
 # shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/exec-env.sh
 . "$root/packages/envoy/scripts/lib/exec-env.sh"
-# pass_flags NAME=value... sets `passed` to `--pass NAME` for each, the names held-port.py hands
-# on from its own environment to the binary. Only names travel; the values stay in this shell.
-passed=()
-pass_flags() {
-  local _setting
-  passed=()
-  for _setting in "$@"; do passed+=(--pass "${_setting%%=*}"); done
-}
-
 echo "== the boot refusals"
 cd "$work"
 # Half a pair is a refusal naming the variable that is missing, before any network read.
@@ -214,6 +205,7 @@ expect_refusal "listener, audience without issuer" "$work/refusal-listener-pair.
 held_port=$root/scripts/e2e/lib/held-port.py
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$root/scripts/e2e/lib/port-file.sh"
+# pass_flags (lib/port-file.sh) sets `passed` to the --pass names each boot below hands on.
 # port_of WHAT FILE PID VAR LOG reads the port held-port.py wrote to FILE into VAR, failing with
 # LOG the moment PID exits first (read_port_file, lib/port-file.sh).
 port_of() {

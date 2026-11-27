@@ -1,9 +1,9 @@
 # shellcheck shell=bash
 # The wait for the port file lib/held-port.py writes: `exec` writes it before it runs its command,
 # `keep` once it hands out copies of its socket. lib/rig.sh, scripts/e2e/envoy-session-delivery.sh,
-# packages/envoy/scripts/search-smoke.sh and packages/envoy/scripts/searchbench.sh source it.
-# Sourced, never run: it defines port_file_seconds and read_port_file, and needs nothing of its
-# caller's.
+# scripts/e2e/verifiers-staging-token.sh, packages/envoy/scripts/search-smoke.sh and
+# packages/envoy/scripts/searchbench.sh source it. Sourced, never run: it defines
+# port_file_seconds, read_port_file and pass_flags, and needs nothing of its caller's.
 
 # port_file_seconds bounds read_port_file's wait.
 port_file_seconds=30
@@ -25,4 +25,14 @@ read_port_file() {
     sleep 0.1
   done
   return 2
+}
+
+# pass_flags NAME=value... sets the array `passed` to `--pass NAME` for each: the names held-port.py
+# hands on from its own environment to the command it execs. Only the names travel; the values stay
+# in the caller's shell and reach held-port.py through its environment (exec_with_env,
+# packages/envoy/scripts/lib/exec-env.sh), so none is in any process's arguments.
+pass_flags() {
+  local _setting
+  passed=()
+  for _setting in "$@"; do passed+=(--pass "${_setting%%=*}"); done
 }

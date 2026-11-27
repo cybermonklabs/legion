@@ -128,7 +128,9 @@ until_true() {
 # helper, and a root that is no checkout is still named by the caller's own check rather than by
 # a sourcing failure. A start that needs it and cannot read it fails naming the file.
 exec_env_read=
-_read_exec_env() {
+# read_exec_env sources exec-env.sh once, for a start that gives a program its settings through
+# exec_with_env. A script that starts one of its own, outside the rig's starts, calls it first.
+read_exec_env() {
   [ -z "$exec_env_read" ] || return 0
   [ -r "$root/packages/envoy/scripts/lib/exec-env.sh" ] ||
     fail "a start with settings needs $root/packages/envoy/scripts/lib/exec-env.sh, which this tree does not hold"
@@ -152,16 +154,11 @@ _read_exec_env() {
 start_with_settings() {
   local _name=$1
   shift
-  _read_exec_env
-  # The settings are this function's arguments, which live in this shell's memory and in no
-  # process's. The subshell exports them and execs COMMAND in place, as exec-env.sh's header
-  # says, so <NAME>_pid is COMMAND's own pid. start_process cannot run this: its arguments would
-  # be a command line holding every value.
-  set -m
-  (exec_with_env "$@") </dev/null >>"$evidence/logs/$_name.log" 2>&1 &
-  printf -v "${_name}_pid" '%s' "$!"
-  set +m
-  record_start "$!" || started_at[$!]=gone
+  read_exec_env
+  # start_process runs exec_with_env, a shell function, in the background subshell it forks, so
+  # the settings are that function's arguments, which are in no process's argv; it exports them
+  # and execs COMMAND in place, so <NAME>_pid is COMMAND's own pid.
+  start_process "$_name" exec_with_env "$@"
 }
 
 # setting_flags NAME=value... sets the array `setting_flags` to `--setting NAME=value` for each,
@@ -212,7 +209,7 @@ start_held() {
 # SOURCE_VALUE (--port-file, a fresh one whose port it writes there, removed first; --from, a
 # keeper's), handed over as FD_ENV. A missing COMMAND is refused naming CALLER.
 _held_exec() {
-  local _caller=$1 _name=$2 _fd_env=$3 _flag=$4 _value=$5 _options=() _settings=() _passed=()
+  local _caller=$1 _name=$2 _fd_env=$3 _flag=$4 _value=$5 _options=() _settings=() _with=() passed=()
   shift 5
   while [ $# -gt 0 ] && [ "$1" != -- ]; do
     if [ "$1" = --setting ]; then
@@ -222,7 +219,6 @@ _held_exec() {
         *) fail "$_caller $_name: --setting takes K=V, not $2" ;;
       esac
       _settings+=("$2")
-      _passed+=(--pass "${2%%=*}")
       shift 2
       continue
     fi
@@ -232,17 +228,17 @@ _held_exec() {
   [ $# -gt 1 ] || fail "$_caller $_name: no command after --"
   shift
   [ "$_flag" != --port-file ] || rm -f "$_value"
-  if [ "${#_settings[@]}" -eq 0 ]; then
-    start_process "$_name" python3 "$root/scripts/e2e/lib/held-port.py" exec "$_flag" "$_value" \
-      --fd-env "$_fd_env" "${_options[@]}" -- "$@"
-    return
-  fi
-  # python3 itself runs with exactly the settings, since the first python3 on PATH can be a
-  # version manager's shim that reads HOME and PATH; the helper hands COMMAND the ones --pass
+  # With settings, python3 itself runs with exactly them, since the first python3 on PATH can be a
+  # version manager's shim that reads HOME and PATH, and the helper hands COMMAND the ones --pass
   # names, and nothing Python added to its own environment.
-  start_with_settings "$_name" "${_settings[@]}" -- \
-    python3 "$root/scripts/e2e/lib/held-port.py" exec "$_flag" "$_value" \
-    --fd-env "$_fd_env" "${_options[@]}" "${_passed[@]}" -- "$@"
+  # pass_flags (lib/port-file.sh) sets this function's own `passed`, the local above.
+  if [ "${#_settings[@]}" -gt 0 ]; then
+    read_exec_env
+    _with=(exec_with_env "${_settings[@]}" --)
+    pass_flags "${_settings[@]}"
+  fi
+  start_process "$_name" "${_with[@]}" python3 "$root/scripts/e2e/lib/held-port.py" exec "$_flag" "$_value" \
+    --fd-env "$_fd_env" "${_options[@]}" "${passed[@]}" -- "$@"
 }
 
 # keep_port NAME PORT_VAR starts the keeper NAME, a held-port.py keep that holds one listening

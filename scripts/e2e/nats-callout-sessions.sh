@@ -467,7 +467,11 @@ while IFS= read -r line; do
   value=${value#\"}
   value=${value%\"}
   [ "$name" = PATH ] && value="${value%%:*}:$PATH"
-  printf -v "$name" '%s' "$value"
+  # The sed below keeps names of capitals, digits and underscores, and only one that starts with a
+  # capital or an underscore names a variable (printf -v fails on any other). The case sets only
+  # those, so the source scan (lib/source-scan.ts) reads that this loop leaves the script's own
+  # lower-case variables, such as root, as they are.
+  case $name in [A-Z_]*) printf -v "$name" '%s' "$value" ;; esac
 done < <(sed -n 's/^\(  export [A-Z_0-9]*=.*\)$/\1/p' "$stack_log")
 for required in AGENT_SECRETS_URL ENVOY_URL ENVOY_TOKEN NATS_URLS DEV_STACK_DIR DEV_STACK_PID \
   DEV_STACK_EXCHANGE_TOKEN_FILE DEV_STACK_POD_TOKEN_FILE DEV_STACK_REGISTRAR_TOKEN_FILE \

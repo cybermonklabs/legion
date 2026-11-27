@@ -66,13 +66,17 @@ trap cleanup EXIT
 # network beside the node, its worker stream bound on that container's own address: the pods reach
 # the kind network's containers, while a host firewall can drop what they send the host at the
 # network's gateway. It reads the cluster through kind's internal kubeconfig, whose server is the
-# node's address on that network, and the store by the Postgres container's name there.
+# node's address on that network, and the store by the Postgres container's name there. The store's
+# URL reaches the container through a file of the run's own that only its user reads (--env-file,
+# as lib/session-db.sh does), not through docker's arguments, which every user of the machine can
+# read while the container runs.
 drive() {
+  (umask 077 && printf 'LEGION_E2E_STORE_DSN=postgres://postgres:p@%s:5432/postgres?sslmode=disable\n' "$pg" >"$work/driver.env")
   docker run --rm --name "$driver" --cpus 2 --memory 2g --network kind --user "$(id -u):$(id -g)" \
     -v "$work:$work" -e HOME=/tmp \
     -e LEGION_E2E_KUBECONFIG="$work/kubeconfig-internal" -e LEGION_E2E_KUBE_CONTEXT="$kind_context" \
     -e LEGION_E2E_IMAGE="$image" -e LEGION_E2E_WORK="$work" -e LEGION_E2E_EXPECT="$1" \
-    -e LEGION_E2E_STORE_DSN="postgres://postgres:p@$pg:5432/postgres?sslmode=disable" \
+    --env-file "$work/driver.env" \
     mirror.gcr.io/library/busybox:1.37 sh -c 'LEGION_E2E_STREAM_HOST=$(ip -4 -o addr show eth0 | awk "{print \$4}" | cut -d/ -f1) exec "$0" -test.count=1 -test.timeout=30m -test.v -test.run "^TestTheControllerOrphanSweepLive\$"' "$2"
 }
 
