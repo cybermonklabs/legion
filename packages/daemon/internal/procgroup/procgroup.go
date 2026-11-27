@@ -127,6 +127,7 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		group := -cmd.Process.Pid
+		time.Sleep(600 * time.Millisecond) // PLANT (never merged): the SIGTERM goes 600 ms after the context ended.
 		err := syscall.Kill(group, syscall.SIGTERM)
 		if errors.Is(err, syscall.ESRCH) {
 			// The group was already gone by the time the signal reached it — cmd's own process
