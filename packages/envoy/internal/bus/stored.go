@@ -40,7 +40,10 @@ type StoredMessage struct {
 // nats.ErrMsgNotFound (nothing at or after seq on subject) and nats.ErrStreamNotFound (no such
 // stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied, wrapping the server's
 // permissions violation, when the connection's user may not make the read, reported as soon as the
-// server refuses it rather than once the wait runs out; and ctx's error when ctx ends first.
+// server refuses it rather than once the wait runs out; and ctx's error when ctx ends first. A
+// read made while nats.go connects or reconnects the connection waits for it within ctx, and fails
+// as ErrReconnecting when ctx ends first or when the read fails while the connection is still not
+// connected (requestConfirmed).
 func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint64) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		Seq     uint64 `json:"seq"`
@@ -58,7 +61,8 @@ func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint
 // Its errors are NextStoredMessage's: the stream's own API errors as *nats.APIError, so errors.Is
 // matches nats.ErrMsgNotFound (the stream holds nothing on subject) and nats.ErrStreamNotFound (no
 // such stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied when the
-// connection's user may not make the read; and ctx's error when ctx ends first.
+// connection's user may not make the read; ctx's error when ctx ends first; and ErrReconnecting
+// while NATS is reconnecting (requestConfirmed).
 func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		LastFor string `json:"last_by_subj"`
@@ -198,7 +202,8 @@ func (c *Client) ReadKeptRoleCursor(ctx context.Context, role string) (StoredKep
 // answers an empty list: the state carries a subject only while a message is stored on it.
 //
 // Its errors are the stream's own: nats.ErrStreamNotFound when the stream is gone,
-// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first.
+// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first. A read
+// nats.go refuses while it reconnects the connection is ErrReconnecting (Client.JS).
 func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
@@ -207,7 +212,7 @@ func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 		&nats.StreamInfoRequest{SubjectsFilter: KeptRoleSubject(">")},
 		nats.Context(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("bus: read %s's kept role lanes: %w", Stream, err)
+		return nil, fmt.Errorf("read %s's kept role lanes: %w", Stream, err)
 	}
 	roles := make([]string, 0, len(info.State.Subjects))
 	for subject, held := range info.State.Subjects {
@@ -277,6 +282,17 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // out its whole deadline, since core NATS answers a denied publish to no one but the async error
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
+//
+// Every request SessionConsumers sends goes through it, and so does each stored-message read
+// (storedMessage), so it is the one place their errors are named when NATS is reconnecting. A
+// request made while nats.go connects or reconnects the connection waits for it within ctx
+// (ensureConnWithContext), and a ctx that ends first is
+// `bus: NATS is reconnecting: context deadline exceeded`, with nothing sent. So is a request made
+// while nats.go holds its connection lock through a reconnect's handshake: the wait reads the
+// connection's state within ctx (readWithin), and ends at ctx's end. Any error the request returns
+// once it is made, while the connection reports that state, or while a read of that state within
+// ctx has not answered, is `bus: NATS is reconnecting` (namedOn), with nats.go's error kept in the
+// chain.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -287,15 +303,31 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		return nil, err
 	}
 	conn := c.Connection()
+	reply, err := c.requestConfirmedOn(ctx, conn, subject, data)
+	return reply, namedOn(ctx, conn, err)
+}
+
+// requestConfirmedOn is requestConfirmed's request on conn, once conn can take it. Its error is
+// left for requestConfirmed to name. Its reply subscription ends with the wait (endReplies). The
+// request unsubscribes on the caller's goroutine only for a reply it took while conn was still in
+// the life it subscribed in (connLife). Once nats.go reports conn lost, a reconnect's handshake
+// can hold nats.go's connection lock, which the unsubscribe waits for. So a reply taken then, also
+// one that was waiting in the inbox, ends the inbox off the caller's goroutine.
+func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subject string, data []byte) (*nats.Msg, error) {
+	life := lifeOf(conn).current()
 	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err
 	}
-	defer replies.Unsubscribe()
+	replied := false
+	defer func() { endReplies(replies, replied && lifeCurrent(life)) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
+	}
+	if begins := c.replyWaitBegins.Load(); begins != nil {
+		(*begins)()
 	}
 	reply, waitErr := replies.NextMsgWithContext(ctx)
 	if waitErr != nil {
@@ -304,6 +336,7 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		}
 		return nil, waitErr
 	}
+	replied = true
 	if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
 		return nil, nats.ErrNoResponders
 	}
@@ -339,6 +372,10 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 // a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
 // where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
 // connected, and the case is a shutdown race.
+//
+// Its reply subscription ends as requestConfirmedOn's does (endReplies): on the caller's goroutine
+// only for a reply taken while the connection was still in the life it subscribed in, and off it
+// otherwise.
 func (c *Client) RequestCore(ctx context.Context, subject, reply string, header nats.Header) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -349,18 +386,24 @@ func (c *Client) RequestCore(ctx context.Context, subject, reply string, header 
 		return nil, err
 	}
 	conn := c.Connection()
+	life := lifeOf(conn).current()
 	replies := make(chan *nats.Msg, nats.RequestChanLen)
 	subscription, err := conn.ChanSubscribe(reply, replies)
 	if err != nil {
 		return nil, err
 	}
-	defer subscription.Unsubscribe()
+	replied := false
+	defer func() { endReplies(subscription, replied && lifeCurrent(life)) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
+	if begins := c.replyWaitBegins.Load(); begins != nil {
+		(*begins)()
+	}
 	select {
 	case answer := <-replies:
+		replied = true
 		if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
 			return nil, nats.ErrNoResponders
 		}

@@ -78,7 +78,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
 // writes historical state in migrations and test fixtures. The write and any role-holder
-// publication it queues share one transaction.
+// publication or state event it queues share one transaction (putClaim).
 //
 // It never writes the claim's message mark (claims.message_mark_at): a machine writes the whole
 // claim it holds in memory, so a mark written here would undo one made since that machine read
@@ -101,9 +101,9 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // PutClaimTx is PutClaim inside a caller's transaction: the stop a project's pause makes writes
 // the claim with the pause's records in one transaction (decision 6 of dispatch://INFRA-3759,
 // supervise.Deps.PauseStopped), so a stopped claim never stands without them. Like every claim
-// write it goes through putClaim, so the publication of the issue's role sessions it queues is in
-// the same transaction, and so is the wake of that publication, which runs once the caller's
-// transaction commits.
+// write it goes through putClaim, so the publication of the issue's role sessions and the state
+// event it queues are in the same transaction, and so are the wakes of what it queued, which run
+// once the caller's transaction commits.
 func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	return s.putClaim(ctx, tx, c)
 }
@@ -307,44 +307,112 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 }
 
 // putClaim writes claim c inside tx, the transaction of a claim write and whatever goes with it,
-// and queues the publication of c's issue's role sessions in the same transaction when the write
-// changes the session the row names as the holder of c's role (storedRoleHolder, roleHolder,
-// EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves the
-// states that hold it (supervise.HoldsRole) — it retires, fails, or is suspended by any source but
-// the idle release's — or comes back to them. The idle release's suspension and a pause's stop,
-// which both suspend as released, keep the session and its role, and so does the launch that
-// resumes that session, so none of them queues anything. A write that changes no holder queues
-// nothing, and neither does a write that can queue none
-// (queuesRoleHolders), such as a write of a claim of another project's issue, whose row only that
-// project's daemon runs.
-// A write that queued the publication wakes it once tx commits (wakeRoleHolders), as the hook of
-// tx's commit: no caller wakes it. Every claim write goes through here — PutClaim,
-// PutClaimAndDelivery, RetireDelivery, ReleaseHolds, AdmitClaim, and the pause's stop through
-// PutClaimTx and PutClaimAndDeliveryTx — so whichever decision makes a write, the store holds the
-// change and its publication together, or neither, and the publication is woken once for the
-// commit that queued it.
+// and queues in the same transaction what the write owes Dispatch. The publication of c's issue's
+// role sessions is queued when the write changes the session the row names as the holder of c's
+// role (roleHolder, EnqueueRoleHolders): the agent registers, a new session takes the role, or the
+// claim leaves the states that hold it (supervise.HoldsRole) — it retires, fails, or is suspended
+// by any source but the idle release's — or comes back to them. The idle release's suspension and
+// a pause's stop, which both suspend as released, keep the session and its role, and so does the
+// launch that resumes that session, so none of them queues a publication. The state event is
+// queued when the write moves the state the state route serves at c's issue's role, or lists c's
+// issue first (storedClaim.unlisted, queueClaimState). Both are read against the row the write
+// replaces, read under its lock (lockedClaim). The two switches (queuesRoleHolders, queuesState)
+// depend on no stored row, so putClaim reads them inside tx before it takes that lock: a write for
+// which both are off writes the row without reading it first (upsertClaim) and queues nothing. A
+// write that changes neither queues nothing either. A write of a claim of another project's issue
+// queues no publication, since only that project's daemon runs a row keyed by its issue
+// (queuesRoleHolders).
+// A write that queued a row wakes that row's lane once tx commits, as the hook of tx's commit
+// (wakeRoleHolders, and the state events' wake, PublishState): no caller wakes it. Every claim
+// write goes through here — PutClaim, PutClaimAndDelivery, RetireDelivery, ReleaseHolds,
+// AdmitClaim, and the pause's stop through PutClaimTx and PutClaimAndDeliveryTx — so whichever
+// decision makes a write, the store holds the change and what it queued together, or neither,
+// and each row it queued is woken once for the commit that queued it.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
-	if !s.queuesRoleHolders(c) {
+	holders, state := s.queuesRoleHolders(c), s.queuesState(c)
+	if !holders && state == nil {
 		return upsertClaim(ctx, tx, c)
 	}
-	stored, err := storedRoleHolder(ctx, tx, c)
+	stored, err := lockedClaim(ctx, tx, c, state)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	if err := upsertClaim(ctx, tx, c); err != nil {
 		return err
 	}
-	if roleHolder(c.State, c.SuspendedBy, c.Session) == stored {
-		return nil
+	if holders && roleHolder(c.State, c.SuspendedBy, c.Session) != roleHolder(stored.state, stored.suspendedBy, stored.session) {
+		queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("put claim %s: %w", c.Token, err)
+		}
+		if queued {
+			OnCommit(ctx, func() { s.wakeRoleHolders(c.Issue) })
+		}
 	}
-	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("put claim %s: %w", c.Token, err)
-	}
-	if queued {
-		OnCommit(ctx, func() { s.wakeRoleHolders(c.Issue) })
+	if state != nil {
+		queued, err := queueClaimState(ctx, tx, state, c, stored)
+		if err != nil {
+			return fmt.Errorf("put claim %s: %w", c.Token, err)
+		}
+		if queued {
+			OnCommit(ctx, state.woken)
+		}
 	}
 	return nil
+}
+
+// storedClaim is what the row of a claim holds before a write replaces it (lockedClaim): its state,
+// the source of its suspension and its session, all empty for a claim the store does not hold yet.
+// unlisted is whether the write is the first to list the claim's issue in the state route at all:
+// the issue has no issues row of the daemon's Dispatch project, so the route serves it for its
+// claims alone, at phase unrecorded (internal/projection's Project, over the issues
+// internal/daemon's projectRecords keeps), and no claim of the claim's project names it yet. It is
+// false for a claim the store holds a row of, since that row names the issue already, and it is
+// read only with the state events on (PublishState).
+type storedClaim struct {
+	state       supervise.ClaimState
+	suspendedBy supervise.SuspendSource
+	session     string
+	unlisted    bool
+}
+
+// lockedClaim reads the row of c before c is written, under the row's lock, so that no other write
+// of the claim lands between this read and the write that replaces it. A claim's first row is its
+// admission (AdmitClaim), which is globally serialized, so two first writes of one claim never race
+// past this read. With the state events on (state), a claim the store holds no row of is read for
+// whether the write lists c's issue first (storedClaim.unlisted): whether the issue has a record of
+// state's project, and, only for an issue that has none, whether any claim of c's project names it.
+// That second read is rare, since almost every claim write is of a claim the store already holds,
+// and the claims table has no index on the issue.
+func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
+	var stored storedClaim
+	var storedState, by, session *string
+	err := tx.QueryRow(ctx, `select state, suspended_by, session from claims where token = $1 for update`,
+		string(c.Token)).Scan(&storedState, &by, &session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if state == nil {
+			return stored, nil
+		}
+		if err := tx.QueryRow(ctx, `select case when exists (select 1 from issues where key = $1 and project = $2) then false
+			else not exists (select 1 from claims where issue = $1 and project = $3) end`,
+			c.Issue, state.project, c.Project).Scan(&stored.unlisted); err != nil {
+			return storedClaim{}, fmt.Errorf("read whether %s lists %s first: %w", c.Token, c.Issue, err)
+		}
+		return stored, nil
+	}
+	if err != nil {
+		return storedClaim{}, fmt.Errorf("read the row of %s: %w", c.Token, err)
+	}
+	if storedState != nil {
+		stored.state = supervise.ClaimState(*storedState)
+	}
+	if by != nil {
+		stored.suspendedBy = supervise.SuspendSource(*by)
+	}
+	if session != nil {
+		stored.session = *session
+	}
+	return stored, nil
 }
 
 // upsertClaim writes the row of claim c inside tx, putClaim's transaction.
@@ -834,8 +902,8 @@ func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d su
 
 // PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
 // project's pause makes of a claim that holds a pending delivery (PutClaimTx). The publication of
-// the issue's role sessions the claim's write queues is woken once the caller's transaction
-// commits, as every claim write's is (putClaim).
+// the issue's role sessions and the state event the claim's write queues are woken once the
+// caller's transaction commits, as every claim write's are (putClaim).
 func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) error {
 	if err := s.putClaim(ctx, tx, c); err != nil {
 		return err

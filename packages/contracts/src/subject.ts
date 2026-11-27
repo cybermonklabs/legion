@@ -39,6 +39,23 @@ export function legionWakeSubject<Token extends string>(token: Token): LegionWak
   return `${LEGION_NOTICE_TOPIC_PREFIX}${token}.wake`;
 }
 
+/** What ends the state lane of every Legion deployment (`legionStateSubject`), so that a reader
+ * of every deployment's state lane names them all with one pattern,
+ * `notifications.legion.*.state`. */
+export const LEGION_STATE_SUFFIX = ".state" as const;
+
+export type LegionStateSubject<Token extends string = string> =
+  `${typeof LEGION_NOTICE_TOPIC_PREFIX}${Token}${typeof LEGION_STATE_SUFFIX}`;
+
+/** The state lane of the Legion deployment whose project token is `token`
+ * (`legionProjectToken`), beside its controller and wake lanes: the daemon publishes its state
+ * events here, one message per committed transaction (`legionStateMessage` in `legion-api.ts`),
+ * and Dispatch's durable reads every deployment's lane at once, on
+ * `notifications.legion.*.state`. */
+export function legionStateSubject<Token extends string>(token: Token): LegionStateSubject<Token> {
+  return `${LEGION_NOTICE_TOPIC_PREFIX}${token}${LEGION_STATE_SUFFIX}`;
+}
+
 export const DISPATCH_TOPIC_PREFIX = "notifications.dispatch." as const;
 export const DISPATCH_ISSUE_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}issue.` as const;
 export const DISPATCH_DOCUMENT_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}document.` as const;
@@ -418,6 +435,7 @@ export function whatsappSubject(phone: string, jid: string, kind: string) {
 export type Subject =
   | LegionNoticeSubject
   | LegionWakeSubject
+  | LegionStateSubject
   | AgentSubject
   | LegacyAgentSubject
   | RoleSubject
