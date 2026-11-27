@@ -66,7 +66,7 @@ func TestDecodeTheListenerWakeReport(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			decoded, err := decodeMessage(legionWakeSubject, "CAPTURE", capturedRepositories, envelopeJSON(t, "wake-1", tc.source, tc.payload))
+			decoded, err := decodeMessage(legionWakeSubject, "CAPTURE", capturedRepositories, nil, envelopeJSON(t, "wake-1", tc.source, tc.payload))
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("decode = %v, want poison naming %q", err, tc.wantErr)
@@ -115,7 +115,7 @@ func TestAListenerReportDatedInTheFutureIsReadAsNow(t *testing.T) {
 	t.Parallel()
 	const year9999 = 253370764800000
 	before := time.Now().UTC()
-	decoded, err := decodeMessage(legionWakeSubject, "CAPTURE", capturedRepositories,
+	decoded, err := decodeMessage(legionWakeSubject, "CAPTURE", capturedRepositories, nil,
 		envelopeJSON(t, "wake-forged", "envoy", `{"kind":"listener_ready","at":`+strconv.FormatInt(year9999, 10)+`}`))
 	if err != nil {
 		t.Fatalf("decode the forged report: %v", err)

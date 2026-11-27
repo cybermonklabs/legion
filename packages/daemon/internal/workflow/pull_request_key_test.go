@@ -15,8 +15,8 @@ import (
 )
 
 // sharedBranch is LEGION-208's own branch, from which the tests of two pull requests of one branch
-// open both, and secondBase is the base the second of them is opened onto: INFRA-1276's branch
-// held theorem-labs/agent-infra#3654 onto main and then the draft #3955 onto
+// open both, and secondBase is the base the second of them is opened onto: INFRA-1276's branch in
+// the deployment repository held #3654 onto main and then the draft #3955 onto
 // legion/INFRA-1276-ci-base, and these tests hold #42 onto main and #43 onto secondBase.
 const (
 	sharedBranch = "legion/LEGION-208"
@@ -103,7 +103,7 @@ func assertPushReached(t *testing.T, pool *pgxpool.Pool, after string, before, t
 // rows, and a fact that names a number changes that number's row alone. LEGION-208 stands in
 // testing with no plan rows, so its own branch, legion/LEGION-208, is its work's, and GitHub opens
 // #42 from it onto main and then #43 from it onto legion/LEGION-208-ci-base, as INFRA-1276's branch
-// held theorem-labs/agent-infra#3654 onto main and then the draft #3955 onto
+// in the deployment repository held #3654 onto main and then the draft #3955 onto
 // legion/INFRA-1276-ci-base. Each row of the table is one fact of GitHub's, applied through the
 // engine in the table's order, and after each the record holds both rows as that fact left them:
 //   - the opens record each pull request, onto its own base;

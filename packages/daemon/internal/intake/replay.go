@@ -32,12 +32,15 @@ const replayBatch = 100
 const discardReasonRunes = storetext.FarSideErrorRunes
 
 // Records is what the replay and the discard of give-ups read of the intake (Consumers.Records):
-// the pool the records and every fact are kept in, the consumers' spec, and the repositories
-// GitHub intake hears now, which a replay decodes a GitHub event against as a delivery is decoded.
+// the pool the records and every fact are kept in, the consumers' spec, the repositories GitHub
+// intake hears now, and the decoder's index of the pull requests the issues link (linkIndex), which
+// a replay decodes a GitHub event against as a delivery is decoded. Records built by hand hold no
+// index, and a replay through them decodes as one of a project whose issues link no pull request.
 type Records struct {
 	Pool         store.TxPool
 	Spec         ConsumerSpec
 	Repositories func() []ghrepo.Repository
+	links        *linkIndex
 }
 
 // GiveUps replays and discards a project's give-ups, the messages the intake gave up and keeps
@@ -50,6 +53,7 @@ type GiveUps struct {
 	pool         store.TxPool
 	spec         ConsumerSpec
 	repositories func() []ghrepo.Repository
+	links        *linkIndex
 	handlers     []Handler
 	dropped      *droppedSettlements
 }
@@ -67,7 +71,8 @@ func NewGiveUps(records Records, handlers ...Handler) (*GiveUps, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &GiveUps{pool: records.Pool, spec: spec, repositories: records.Repositories, handlers: handlers, dropped: newDroppedSettlements()}, nil
+	return &GiveUps{pool: records.Pool, spec: spec, repositories: records.Repositories, links: records.links, handlers: handlers,
+		dropped: newDroppedSettlements()}, nil
 }
 
 // RequestError is a replay or a discard refused for what it asks, before any statement: a
@@ -147,8 +152,9 @@ func (g *GiveUps) Replay(ctx context.Context, selector record.IntakeSelector, ca
 }
 
 // replayOne replays given, which this replay claimed, within HandlerLimit, and answers how it
-// ended. The message is decoded against the repositories GitHub intake hears now, then handled as
-// a live delivery is (handleMessage), with no message and no stream position: the read of whether
+// ended. The message is decoded against the repositories GitHub intake hears now and the pull
+// requests the issues link now, then handled as a live delivery is (handleMessage), with no message
+// and no stream position: the read of whether
 // a review's or a settlement's pull request is recorded, the preparations, each with the view of
 // Dispatch it reads now, and the review's reads all run as they do live, so a late fact is judged
 // against the present. An applied fact and a duplicate
@@ -157,7 +163,7 @@ func (g *GiveUps) Replay(ctx context.Context, selector record.IntakeSelector, ca
 // its own (noFact). A failure keeps its error (failed).
 func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, caller string) ReplayedGiveUp {
 	replayed := ReplayedGiveUp{ID: given.ID, Consumer: given.Consumer, StreamSeq: given.StreamSeq}
-	decoded, err := decodeMessage(given.Subject, g.spec.Project, g.repositories(), given.Payload)
+	decoded, err := decodeMessage(given.Subject, g.spec.Project, g.repositories(), g.links, given.Payload)
 	if err != nil {
 		return g.failed(ctx, replayed, err)
 	}

@@ -121,8 +121,11 @@ type envoyEnvelope struct {
 // neither form goes on to the decode, which refuses it (errIssueNameInNeitherForm). The document
 // events the Dispatch durable hears are this project's own (mergeHoldsSubject), so one that does
 // not decode is this daemon's give-up. repositories are its configured repositories: a GitHub
-// event whose payload names another repository is a nil Fact, whatever subject carried it.
-func decodeMessage(subject, project string, repositories []ghrepo.Repository, data []byte) (decodedMessage, error) {
+// event whose payload names another repository is a nil Fact, whatever subject carried it. links
+// is the decoder's index of the pull requests the issues link (linkIndex), nil for none: a pull
+// request event or a push of a branch no issue's name gives is a fact only of a pull request it
+// holds (decodePullRequest, decodePush).
+func decodeMessage(subject, project string, repositories []ghrepo.Repository, links *linkIndex, data []byte) (decodedMessage, error) {
 	if key, legacy, ok := subjectforms.IssueEventKey(subject); ok && !projectIssueKey(key, project) {
 		return decodedMessage{LegacyName: legacy}, nil
 	}
@@ -160,7 +163,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, refused, noHeadRepo, err = decodeGitHubFact(subject, repositories, envelope.Payload)
+		fact, unread, refused, noHeadRepo, err = decodeGitHubFact(subject, repositories, links, envelope.Payload)
 	default:
 		return decodedMessage{}, fmt.Errorf("unsupported durable subject %q", subject)
 	}
@@ -395,6 +398,8 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			// Claim is present on every issue event of a Dispatch that has claims (null for none),
 			// and absent from an event retained from before it did, which says nothing of the claim.
 			Claim json.RawMessage `json:"claim"`
+			// ExternalLinks is the issue's links (issueEventLinks).
+			ExternalLinks json.RawMessage `json:"external_links"`
 		}
 		if err := json.Unmarshal(event.Payload, &issue); err != nil {
 			return nil, fmt.Errorf("decode Dispatch issue payload: %w", err)
@@ -426,11 +431,12 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			actorSession = event.Actor.ID
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
+		links, linksKnown := issueEventLinks(issue.ExternalLinks, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
 			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
 			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
 			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
-			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown, Links: links, LinksKnown: linksKnown}, nil
 	}
 	switch event.Type {
 	case "artifact.approved", "artifact.changes_requested":
@@ -630,6 +636,64 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
+// issueEventLinks reads an issue event's links (external_links) as the pull requests they name,
+// each once, in Dispatch's order (pullRequestLink), and whether the event named the links at all.
+// An absent field (an event of a Dispatch before it sent them) says nothing of them, and so does a
+// null, which Dispatch writes for an issue whose links it did not read (model.Issue's
+// ExternalLinks left nil); a value that is no list of links does too, and is named in unread
+// rather than making the event poison, for the reason a bad priority is. A link whose URL names
+// no pull request is no pull request of the issue, with no note: Dispatch takes any absolute
+// HTTP(S) URL as a link.
+func issueEventLinks(raw json.RawMessage, unread *[]string) ([]PullRequestLink, bool) {
+	if raw == nil {
+		return nil, false
+	}
+	var listed *[]struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		*unread = append(*unread, fmt.Sprintf("external_links %s is no list of links: %v", raw, err))
+		return nil, false
+	}
+	if listed == nil {
+		return nil, false
+	}
+	var links []PullRequestLink
+	for _, link := range *listed {
+		if pull, ok := pullRequestLink(link.URL); ok && !slices.Contains(links, pull) {
+			links = append(links, pull)
+		}
+	}
+	return links, true
+}
+
+// pullRequestURL is the form of a link that names a pull request, the rule of Dispatch's
+// linkedPullRequestTerms (packages/envoy/internal/dispatch/delivery/linked_pull_requests.go):
+// https://github.com/<owner>/<name>/pull/<number>, the owner and the name held to the patterns of
+// GitHub's names that rule reads them with (refs.GitHubOwnerPattern and refs.GitHubNamePattern,
+// written out here, since packages/envoy's internal packages are its own), and the number to nine
+// digits with no leading zero, so that it reads as an int on every platform. A name of `.` or `..`
+// alone is no repository (pullRequestLink).
+var pullRequestURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9][A-Za-z0-9_-]{0,38})/([A-Za-z0-9._-]+)/pull/([1-9][0-9]{0,8})$`)
+
+// pullRequestLink is the pull request url names, and whether it names one (pullRequestURL): its
+// repository lowercased, owner/name, as linkedPullRequestTerms reads it, and its number. A name of
+// `.` or `..` is no repository: a read builds `/repos/{owner}/{name}/...` from the two, and a dot
+// segment would send it up the path. Unlike that rule, which keeps the pull requests of another
+// repository than the issue's alone, a link into the issue's own repository counts too: a pull
+// request the issue links is one of its pull requests wherever it is (D2 of dispatch://INFRA-5910).
+func pullRequestLink(url string) (PullRequestLink, bool) {
+	part := pullRequestURL.FindStringSubmatch(url)
+	if part == nil || part[2] == "." || part[2] == ".." {
+		return PullRequestLink{}, false
+	}
+	number, err := strconv.Atoi(part[3])
+	if err != nil {
+		return PullRequestLink{}, false
+	}
+	return PullRequestLink{Repo: strings.ToLower(part[1] + "/" + part[2]), Number: number}, true
+}
+
 // issueEventPriority reads one of an issue event's priorities, field, `priority` for the issue's
 // own and `resolved_priority` for the one Dispatch resolves it to: Dispatch's 0 for P0 to 3 for P3
 // or null, as the record keeps it (record.DecodePriority); an absent field is none. A value
@@ -763,8 +827,9 @@ func isJSONObject(raw json.RawMessage) bool {
 // decodeChecks dropped: a payload that is no object, names a repository this daemon does not hear,
 // or is of another kind is no checks settlement of this daemon, and is no fact in silence.
 // noHeadRepo is set only for a pull request event of an issue's branch, of a heard repository,
-// that names no head repository (decodePullRequest).
-func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, noHeadRepo bool, err error) {
+// that names no head repository (decodePullRequest). links is the decoder's index of the pull
+// requests the issues link (linkIndex).
+func decodeGitHubFact(subject string, repositories []ghrepo.Repository, links *linkIndex, payload string) (fact Fact, unread []string, refused *checksRefusal, noHeadRepo bool, err error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil || raw == nil {
 		return nil, nil, nil, false, nil
@@ -787,11 +852,11 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	}
 	switch kind {
 	case "pr":
-		fact, noHeadRepo, err = decodePullRequest(repository, raw)
+		fact, noHeadRepo, err = decodePullRequest(repository, links, raw)
 	case "review":
 		fact, unread, err = decodeReview(repository, raw)
 	case "push":
-		fact, err = decodePush(repository, raw)
+		fact, err = decodePush(repository, links, raw)
 	case "checks":
 		var reason string
 		if fact, unread, reason = decodeChecks(subject, repository, raw); reason != "" {
@@ -803,43 +868,52 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	return fact, unread, refused, noHeadRepo, err
 }
 
-// decodePullRequest decodes a pull request's lifecycle event on an issue's branch
-// (claim.BranchIssue) whose head is that branch of the event's repository itself. One on any other
-// branch is no fact, read before anything else of the event, so it is acknowledged without a
-// transaction: the workflow records a pull request only on an issue's branch that a task of the
-// issue holds (PullRequestOpened), and every later event applies only to a recorded one. A
-// repository the daemon hears whose other pull requests open and move many times a minute would
-// otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
-// them changing nothing. Every action carries head_ref.
+// decodePullRequest decodes a pull request's lifecycle event whose head is a branch of the event's
+// repository itself, on an issue's branch (claim.BranchIssue), or of a pull request an issue links
+// (links), on whatever branch. One of any other pull request on any other branch is no fact, read
+// before anything but its branch and number, from the payload and the index in memory, so it is
+// acknowledged without a transaction: the workflow records a pull request only on an issue's
+// branch that a task of the issue holds (PullRequestOpened), or one an issue links, and every
+// later event applies only to a recorded one. A repository the daemon hears whose other pull
+// requests open and move many times a minute would otherwise cost the daemon one transaction
+// under the fact lock (ApplyFact) for every one, all of them changing nothing. Every action
+// carries head_ref and the number. A pull request that only names an issue, in its body, its
+// title or its branch, is none of the issue's (D2 of dispatch://INFRA-5910), and decodes to
+// nothing here.
 //
 // One whose head is a branch of another repository - a fork's, which anyone may open and whose
 // branch may carry any name, an issue's or a task's among them - is no fact either, whatever its
-// branch: it is no issue's, and the workflow records it on no issue. The listener names the
-// repository of the head (head_repo, GitHub's head.repo.full_name), the event's own for a branch
-// of it, compared as GitHub compares names, without case; it leaves the field out once GitHub no
-// longer has the fork, and an event without it names no head of this repository.
+// branch and whether or not an issue links it: it is no issue's, and the workflow records it on no
+// issue. The listener names the repository of the head (head_repo, GitHub's head.repo.full_name),
+// the event's own for a branch of it, compared as GitHub compares names, without case; it leaves
+// the field out once GitHub no longer has the fork, and an event without it names no head of this
+// repository.
 //
-// An event without it is no fact, and noHeadRepo says so, for the consumer to log
-// (consumeMessage): a listener of an earlier release than headRepoListenerRelease sends no
+// An event of an issue's branch without it is no fact, and noHeadRepo says so, for the consumer
+// to log (consumeMessage): a listener of an earlier release than headRepoListenerRelease sends no
 // head_repo at all, and behind it this daemon records no pull request. Nothing in the payload
 // tells that listener's event from a current listener's of a fork GitHub no longer has: the
 // listener writes no empty field (packages/envoy/internal/contracts/normalize.go, payloadJSON),
 // and head_repo is the one field of a pull request's payload the later release added. A
-// head_repo that names another repository, a fork GitHub has, is no such event.
-func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (fact Fact, noHeadRepo bool, err error) {
+// head_repo that names another repository, a fork GitHub has, is no such event. A linked pull
+// request's event without it is no fact with no note, since the line names an issue's branch and
+// such a listener's events of the issues' own branches already raise it.
+func decodePullRequest(repository ghrepo.Repository, links *linkIndex, raw map[string]json.RawMessage) (fact Fact, noHeadRepo bool, err error) {
 	branch, _ := rawString(raw, "head_ref")
-	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+	_, isIssueBranch := claim.BranchIssue(branch)
+	number, numbered := rawNumber(raw, "number")
+	if !isIssueBranch && (!numbered || !links.linked(repository.String(), number)) {
 		return nil, false, nil
 	}
 	headRepo, _ := rawString(raw, "head_repo")
 	if headRepo == "" {
-		return nil, true, nil
+		return nil, isIssueBranch, nil
 	}
 	if !strings.EqualFold(headRepo, repository.String()) {
 		return nil, false, nil
 	}
-	number, action, ok := githubIdentity(raw)
-	if !ok {
+	action, acted := rawString(raw, "action")
+	if !numbered || !acted {
 		return nil, false, nil
 	}
 	repo := repository.String()
@@ -925,13 +999,16 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 		CommitID: commitID, HeadSHA: headSHA, Author: author, Body: body, BodyTruncated: bodyTruncated == "true"}, unread, nil
 }
 
-// decodePush decodes a push to a branch: to an issue's branch, or a task's (claim.BranchIssue), it
-// is the Push the workflow applies to the pull request it records there, and to any other branch it
-// is a BasePush. Each is the notice the daemon gets that a pull request's base moved: the workflow
-// applies a Push as a push to a base as well, since the pull request of a task that needs another
-// is based on that task's branch. GitHub recomputes whether each head on a base still merges into
-// it when the base moves and sends no event for the pull request itself, so a head the record holds
-// as clean goes behind or dirty unheard.
+// decodePush decodes a push to a branch: to an issue's branch, or a task's (claim.BranchIssue), or
+// to the head branch of a pull request an issue links (links), it is the Push the workflow applies
+// to the pull requests it records there, and to any other branch it is a BasePush. Each is the
+// notice the daemon gets that a pull request's base moved: the workflow applies a Push as a push to
+// a base as well, since the pull request of a task that needs another is based on that task's
+// branch, and any branch can be a base. GitHub recomputes whether each head on a base still merges
+// into it when the base moves and sends no event for the pull request itself, so a head the record
+// holds as clean goes behind or dirty unheard. A push names its branch and no pull request, so the
+// head branch of a linked pull request is one the index holds once a read of it told it
+// (Consumers.SetLinkHead); until then a push of it is a BasePush, as it was before the link.
 //
 // A base push costs the daemon one transaction under the fact lock (ApplyFact), which a heard
 // repository that other automation pushes to many times a minute pays per push; the cost is paid
@@ -949,8 +1026,9 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 // Push. Workflow's push refuses a deletion from any other source too, and says why. A push to a
 // base with that after is still a BasePush: the commit it records (record.PullRequest.BaseMoved) is
 // only a mark that the merge state on record may be stale. It is compared for equality and cleared
-// by the next read, and nothing reads it as a commit.
-func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
+// by the next read, and nothing reads it as a commit. So is the deletion of a linked pull request's
+// head branch, which names no head either and may be another pull request's base.
+func decodePush(repository ghrepo.Repository, links *linkIndex, raw map[string]json.RawMessage) (Fact, error) {
 	ref, _ := rawString(raw, "ref")
 	branch, isHead := strings.CutPrefix(ref, "refs/heads/")
 	if !isHead || branch == "" {
@@ -960,7 +1038,7 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 	if !ok || after == "" {
 		return nil, nil
 	}
-	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch && (after == record.NoCommit || !links.headLinked(repository.String(), branch)) {
 		return BasePush{Repo: repository.String(), Branch: branch, After: after}, nil
 	}
 	if after == record.NoCommit {

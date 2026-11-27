@@ -52,7 +52,7 @@ func TestOpenPullRequestAnswersTheOneThatIsOpen(t *testing.T) {
 // once GitHub refuses the open with 422, "A pull request already exists", which GitHub answers
 // for a head that has an open pull request onto the base asked for. legion/ACME-1 holds two open
 // pull requests: #1 onto main and #2, opened after it, onto legion/ACME-1-ci-base, as
-// INFRA-1276's branch held theorem-labs/agent-infra#3654 onto main and the draft #3955 onto
+// INFRA-1276's branch in the deployment repository held #3654 onto main and the draft #3955 onto
 // legion/INFRA-1276-ci-base. Both are read, and neither takes the place of the other: an open onto
 // main answers #1, and an open onto legion/ACME-1-ci-base answers #2, the open pull request on
 // that head whose base is the base the open asked for, in whichever order GitHub lists them:

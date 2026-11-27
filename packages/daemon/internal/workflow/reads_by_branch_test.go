@@ -65,9 +65,9 @@ func assertRowsGone(t *testing.T, pool *pgxpool.Pool, after string, numbers ...i
 // workflow's part of the inventory of those reads, rows b1 to b5 of the plan's decision 20; the
 // daemon's (b6 to b9), the API's (b10) and ghbranch's (b11) hold a test of this name in their own
 // packages. In each row LEGION-208's own branch holds two open pull requests, #42 onto main and #43
-// onto legion/LEGION-208-ci-base, as INFRA-1276's branch held theorem-labs/agent-infra#3654 onto
-// main and the draft #3955 onto legion/INFRA-1276-ci-base: both are read, and neither takes the
-// place of the other.
+// onto legion/LEGION-208-ci-base, as INFRA-1276's branch in the deployment repository held #3654
+// onto main and the draft #3955 onto legion/INFRA-1276-ci-base: both are read, and neither takes
+// the place of the other.
 //   - b1, the synchronize (pullRequestSynchronized): the fact names its pull request's number, and
 //     the synchronize of #42 moves #42's head alone.
 //   - b2, the push (push): it names a branch and no number, and each open pull request on the

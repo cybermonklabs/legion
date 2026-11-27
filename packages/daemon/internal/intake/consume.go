@@ -244,8 +244,10 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 
 // Consumers are this project's three durable JetStream consumers, created before intake runs so a
 // daemon whose stream is missing refuses to boot instead of booting with no intake. repos is the
-// set GitHub intake hears and decodes, which SetRepositories replaces under mu. pool is the
-// Postgres every fact is applied on and every consumer's position is kept in (consumer_positions).
+// set GitHub intake hears and decodes, which SetRepositories replaces under mu; links is the
+// decoder's index of the pull requests the issues link (linkIndex), which LoadLinks, ReplaceLinks
+// and SetLinkHead change under its own lock. pool is the Postgres every fact is applied on and
+// every consumer's position is kept in (consumer_positions).
 // progress is, per durable consumer, what JetStream does not keep: when this daemon opened it and
 // when it last handled a message (Lag). js is the JetStream they were opened on, where each read of
 // the stream's info opens a handle of its own (DispatchTarget, createConsumer); stream is the
@@ -276,6 +278,7 @@ type Consumers struct {
 
 	mu    sync.Mutex
 	repos []ghrepo.Repository
+	links *linkIndex
 }
 
 // OpenConsumers creates or updates this project's Dispatch, GitHub and listener-wake durable
@@ -342,7 +345,8 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPoo
 		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
 	}
 	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, dispatch: dispatch, github: github, wake: wake,
-		maxAge: stream.CachedInfo().Config.MaxAge, remade: remade, sweepEvery: failureSweepEvery, repos: slices.Clone(spec.Repositories)}
+		maxAge: stream.CachedInfo().Config.MaxAge, remade: remade, sweepEvery: failureSweepEvery, repos: slices.Clone(spec.Repositories),
+		links: newLinkIndex(spec.Renames)}
 	opened := spec.Now()
 	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
 	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
@@ -388,9 +392,10 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 }
 
 // Records is what a replay and a discard of this project's give-ups read of the intake
-// (NewGiveUps): the pool, the consumers' spec, and the repositories GitHub intake hears now.
+// (NewGiveUps): the pool, the consumers' spec, the repositories GitHub intake hears now, and the
+// decoder's index of the pull requests the issues link.
 func (c *Consumers) Records() Records {
-	return Records{Pool: c.pool, Spec: c.spec, Repositories: c.repositories}
+	return Records{Pool: c.pool, Spec: c.spec, Repositories: c.repositories, links: c.links}
 }
 
 // openConsumer updates the durable consumer config names, keeping the start position it was created
@@ -774,7 +779,7 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 			metadata = nil
 		}
 		lag.observe(message, metadata)
-		run := consumerRun{spec: c.spec, repositories: c.repositories(), pool: c.pool, maxAge: c.maxAge, names: names, remade: c.remade,
+		run := consumerRun{spec: c.spec, repositories: c.repositories(), links: c.links, pool: c.pool, maxAge: c.maxAge, names: names, remade: c.remade,
 			dropped: dropped, noHeadRepo: noHeadRepo}
 		if consumeMessage(ctx, message, metadata, run, handlers) {
 			progress.handle(c.spec.Now())
@@ -1034,7 +1039,7 @@ func (l *lagWatch) observe(message jetstream.Msg, metadata *jetstream.MsgMetadat
 // the GitHub consumer reads pull request events, so its count is the daemon's.
 func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, run consumerRun, handlers []Handler) bool {
 	spec := run.spec
-	decoded, err := decodeMessage(message.Subject(), spec.Project, run.repositories, message.Data())
+	decoded, err := decodeMessage(message.Subject(), spec.Project, run.repositories, run.links, message.Data())
 	if err != nil {
 		return run.undecodable(ctx, message, metadata, err)
 	}

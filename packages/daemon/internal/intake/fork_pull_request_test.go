@@ -37,7 +37,7 @@ func TestAPullRequestFromAForkIsNoFact(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decoded, err := decodeMessage("notifications.github.sjawhar.legion.pr.9", "LEGION", repositories, envelopeJSON(t, "fork-"+action, "github", string(text)))
+		decoded, err := decodeMessage("notifications.github.sjawhar.legion.pr.9", "LEGION", repositories, nil, envelopeJSON(t, "fork-"+action, "github", string(text)))
 		if err != nil {
 			t.Fatalf("decode the %s of #9 on %s: %v", action, branch, err)
 		}

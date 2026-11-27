@@ -24,14 +24,14 @@ func TestDecodeMessageReadsAnEnvelopeThatCarriesTheRoleFieldAsWithoutIt(t *testi
 		{"the listener's wake report", legionWakeSubject, envelopeJSON(t, "wake-1", "envoy", `{"kind":"role_message","role":"legion-legion-legion-208-implementer","at":`+at+`}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			want, err := decodeMessage(tc.subject, "CAPTURE", capturedRepositories, tc.data)
+			want, err := decodeMessage(tc.subject, "CAPTURE", capturedRepositories, nil, tc.data)
 			if err != nil {
 				t.Fatalf("decode the envelope without the field: %v", err)
 			}
 			if want.Fact == nil {
 				t.Fatal("the envelope without the field decodes to no fact, so the row would compare nothing")
 			}
-			got, err := decodeMessage(tc.subject, "CAPTURE", capturedRepositories, withRoleField(t, tc.data))
+			got, err := decodeMessage(tc.subject, "CAPTURE", capturedRepositories, nil, withRoleField(t, tc.data))
 			if err != nil {
 				t.Fatalf("decode the envelope with the field: %v, want it decoded as without it", err)
 			}

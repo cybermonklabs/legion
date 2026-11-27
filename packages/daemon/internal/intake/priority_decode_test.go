@@ -36,7 +36,7 @@ func TestADispatchIssueEventCarriesItsOwnPriority(t *testing.T) {
 		{name: "no integer", field: `\"priority\":\"high\",`, want: record.NoPriority, unread: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, []byte(strings.Replace(original, anchor, tc.field, 1)))
+			decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, nil, []byte(strings.Replace(original, anchor, tc.field, 1)))
 			if err != nil {
 				t.Fatalf("decode: %v, want no poison", err)
 			}

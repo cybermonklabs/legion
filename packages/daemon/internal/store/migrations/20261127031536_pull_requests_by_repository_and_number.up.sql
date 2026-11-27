@@ -5,12 +5,13 @@
 -- a linked pull request (pull_request_link_read).
 --
 -- 20261122122826 keyed pull_requests by the issue and the branch, so two pull requests on one
--- branch of an issue shared one row, and the second replaced the first: theorem-labs/agent-infra
--- #3654 onto main and the draft #3955 onto legion/INFRA-1276-ci-base stand on one branch, and the
--- draft took #3654's row. GitHub names a pull request by its repository and its number, so that is
--- the key here, and the issue is a column of the row: a pull request belongs to one issue. Every
--- read of a repository name in the record compares it without case (record's PullRequestByNumber),
--- so a unique index on (lower(repo), number) stands beside the key, in place of the index of that
+-- branch of an issue shared one row, and the second replaced the first: the deployment
+-- repository's #3654 onto main and the draft #3955 onto legion/INFRA-1276-ci-base stand on one
+-- branch, and the draft took #3654's row. GitHub names a pull request by its repository and its
+-- number, so that is the key here, and the issue is a column of the row: a pull request belongs to
+-- one issue. Every read of a repository name in the record compares it without case (record's
+-- PullRequestByNumber), so a unique index on (lower(repo), number) stands beside the key, in place
+-- of the index of that
 -- name that 20261102095707 made, and two spellings of one repository cannot make two rows. The
 -- rows that collide without case are merged first: of each set the row in the spelling of its
 -- issue's github_repo stays, then the newest (head_updated_at), then the first by issue and

@@ -20,8 +20,8 @@ import (
 )
 
 // secondBase is the base the second open pull request of legion/CAPTURE-1 is opened onto, as
-// INFRA-1276's branch held theorem-labs/agent-infra#3654 onto main and then the draft #3955 onto
-// legion/INFRA-1276-ci-base.
+// INFRA-1276's branch in the deployment repository held #3654 onto main and then the draft #3955
+// onto legion/INFRA-1276-ci-base.
 const secondBase = "legion/CAPTURE-1-ci-base"
 
 // twoOnTheBranch is GitHub's REST API for acme/widgets holding two open pull requests of one
@@ -157,9 +157,9 @@ func assertOpenOnItsBase(t *testing.T, pool *store.Pool, after string, number in
 // workflow's (b1 to b5), the API's (b10) and ghbranch's (b11) hold a test of this name in their own
 // packages. In each row CAPTURE-1, an issue with no plan rows, has two open pull requests on its
 // branch legion/CAPTURE-1 (twoOnTheBranch): #86 onto main and #87, opened after it, onto
-// legion/CAPTURE-1-ci-base, as INFRA-1276's branch held theorem-labs/agent-infra#3654 onto main and
-// the draft #3955 onto legion/INFRA-1276-ci-base. Both are read, and neither takes the place of the
-// other.
+// legion/CAPTURE-1-ci-base, as INFRA-1276's branch in the deployment repository held #3654 onto
+// main and the draft #3955 onto legion/INFRA-1276-ci-base. Both are read, and neither takes the
+// place of the other.
 //   - b6, the per-issue read's list of the branch (issuePullRequest, openPullRequestOn): with no
 //     pull request recorded, the read records each open pull request GitHub lists on the branch,
 //     and the pull request of the issue's work is #86, the first opened (the plan's decision 5),

@@ -33,11 +33,11 @@ func projectFormIssueCreatedEnvelope(t *testing.T) []byte {
 // form does, and only the old form is reported as such (decodedMessage.LegacyName).
 func TestAnIssueEventDecodesToOneFactInEitherFormOfItsName(t *testing.T) {
 	t.Parallel()
-	old, err := decodeMessage("notifications.dispatch.issue.CAPTURE-4.issue.created", "CAPTURE", capturedRepositories, capturedIssueCreatedEnvelope(t))
+	old, err := decodeMessage("notifications.dispatch.issue.CAPTURE-4.issue.created", "CAPTURE", capturedRepositories, nil, capturedIssueCreatedEnvelope(t))
 	if err != nil {
 		t.Fatalf("decode the old form: %v", err)
 	}
-	current, err := decodeMessage("notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", "CAPTURE", capturedRepositories, projectFormIssueCreatedEnvelope(t))
+	current, err := decodeMessage("notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created", "CAPTURE", capturedRepositories, nil, projectFormIssueCreatedEnvelope(t))
 	if err != nil {
 		t.Fatalf("decode the new form: %v, want the fact the old form decodes to", err)
 	}
@@ -60,7 +60,7 @@ func TestAnotherProjectsIssueEventIsNoFactInEitherForm(t *testing.T) {
 		"notifications.dispatch.issue.CAPTURE-4.issue.created":         true,
 		"notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created": false,
 	} {
-		decoded, err := decodeMessage(subject, "LEGION", capturedRepositories, capturedIssueCreatedEnvelope(t))
+		decoded, err := decodeMessage(subject, "LEGION", capturedRepositories, nil, capturedIssueCreatedEnvelope(t))
 		if err != nil || decoded.Fact != nil || decoded.LegacyName != legacy {
 			t.Errorf("decode %s for LEGION = %#v legacy %v, %v; want no fact, legacy %v, no error", subject, decoded.Fact, decoded.LegacyName, err, legacy)
 		}
@@ -80,7 +80,7 @@ func TestAnIssueNameInNeitherFormIsPoison(t *testing.T) {
 		"notifications.dispatch.issue.CAPTURE.CAPTURE.CAPTURE-4.issue.created",
 		"notifications.dispatch.issue.",
 	} {
-		decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, capturedIssueCreatedEnvelope(t))
+		decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, nil, capturedIssueCreatedEnvelope(t))
 		if !errors.Is(err, errIssueNameInNeitherForm) {
 			t.Errorf("decode %s = %#v, %v; want poison naming a name in neither form", subject, decoded.Fact, err)
 		}

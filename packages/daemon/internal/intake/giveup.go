@@ -175,14 +175,16 @@ func readRemadeFailures(ctx context.Context, pool store.TxPool, project, consume
 }
 
 // consumerRun is what consumeMessage reads beside the message: the consumers' spec, the
-// repositories GitHub intake hears now, the pool, how long the stream keeps a message (its
-// MaxAge, 0 for ever), the issue names the consumer read (issueNames), the open failures of the
-// consumers made again in this boot (remadeFailures), the checks settlements whose drop the
-// consumer logged (droppedSettlements), and the pull request events of an issue's branch with no
-// head repository (pacedCount), whose warning is paced.
+// repositories GitHub intake hears now, the decoder's index of the pull requests the issues link
+// (linkIndex), the pool, how long the stream keeps a message (its MaxAge, 0 for ever), the issue
+// names the consumer read (issueNames), the open failures of the consumers made again in this boot
+// (remadeFailures), the checks settlements whose drop the consumer logged (droppedSettlements), and
+// the pull request events of an issue's branch with no head repository (pacedCount), whose warning
+// is paced.
 type consumerRun struct {
 	spec         ConsumerSpec
 	repositories []ghrepo.Repository
+	links        *linkIndex
 	pool         store.TxPool
 	maxAge       time.Duration
 	names        *issueNames

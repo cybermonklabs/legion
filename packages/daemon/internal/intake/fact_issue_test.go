@@ -22,6 +22,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"Handover":                Handover{Issue: issue},
 		"MergeQueueReadDone":      MergeQueueReadDone{Issue: issue},
 		"ConflictConfirmDone":     ConflictConfirmDone{Issue: issue},
+		"PullRequestLinkReadDone": PullRequestLinkReadDone{Issue: issue},
 		"PullRequestMissing":      PullRequestMissing{Issue: issue},
 		"HandoffComplete":         HandoffComplete{Issue: issue},
 		"BackwardMove":            BackwardMove{Issue: issue},
