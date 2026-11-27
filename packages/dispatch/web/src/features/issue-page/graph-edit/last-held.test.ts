@@ -610,7 +610,9 @@ test("a fragment of no document is read for only once every page of the outline 
   const pages = fixture.paged.pages.map((page) => renamed(page.body) as unknown as TreeAnswer);
   const [first, second] = pages;
   if (first === undefined || second === undefined) throw new Error("the fixture holds no 2 pages");
-  const later = "s2";
+  // The decision of the spec: the first page ends inside the question's criterion, and the
+  // decision stands after it, under the issue.
+  const later = "d1";
   expect(first.nodes?.some((node) => node.block_id === later)).toBe(false);
   expect(second.nodes?.some((node) => node.block_id === later)).toBe(true);
   const events: string[] = [];

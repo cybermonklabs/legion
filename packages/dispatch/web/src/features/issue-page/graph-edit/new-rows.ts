@@ -53,8 +53,9 @@ export const NEW_ROW_WAIT_MS = 120_000;
  *  and the placing `PATCH` read; `under` is the place as the outline draws it: the id of the row
  *  it stands under (`TreeNode.id`), the parent of the own row of the node it was made from, or
  *  that row itself for New row under. The two need not name one node: an ask the asks read
- *  indexed from a block is drawn in that block's row, by its id and its read id
- *  (`tree-nodes.ts`' `treeIdOfNode`), while a criterion under it names the ask's own id. */
+ *  indexed from a block is drawn in that block's row, by the block's id in its document
+ *  (`tree-nodes.ts`' `treeIdOfNode`), while that row's read id, and the parent a criterion under
+ *  it names, is the ask's own id. */
 export interface NewRowAsk {
   readonly author?: Actor;
   readonly blockId: string;

@@ -781,7 +781,8 @@ test("a press on the fallback line tries the act again", async () => {
  *  answer's `parent`, first among that parent's children - an `after` of null, on a block of the
  *  spec, whose band stands first under any parent (dispatch://INFRA-1253 R7) - with the answer's
  *  `placement_seq`, and the parent named as the read names it on the children it holds already;
- *  every other node as `held` holds it. */
+ *  every other node as `held` holds it. The parent holds no conversation node, which the walk
+ *  reads before its ranked children. */
 function movedRead(
   held: TreeAnswer,
   node: TreeAnswerNode,
@@ -2174,9 +2175,10 @@ const QUESTION = nodeOf(converted, "<question>");
 const QUESTION_BLOCK = nodeOf(converted, "<question-block>");
 
 /** The asks read of the fixture's question as the page reads it, naming the block of the spec the
- *  ask was indexed from (`block_artifact`, `block_id`): the outline then draws the ask in that
- *  block's row, by the block's id in the spec and the block's read id, while the criterion under
- *  it names the ask's own id as its parent in the read (`tree-nodes.ts`' `askNodeId`). */
+ *  ask was indexed from (`block_artifact`, `block_id`): the outline then draws the ask and that
+ *  block in one row, by the block's id in the spec (`tree-nodes.ts`' `askNodeId`), with the read id
+ *  of the first of the two the read's walk reaches, the ask, which the criterion under it names as
+ *  its parent in the read. */
 const QUESTION_ASK: Ask = {
   anchor: null,
   answer: null,
@@ -2201,11 +2203,12 @@ const QUESTION_ASK: Ask = {
 };
 
 // R3: Enter at the end of the criterion's text draws the new row right after the criterion, under
-// the row the criterion stands in: the person's question, which the outline draws in the row of
-// the block the asks read indexed it from, by an id and a read id that are not the ask's own id,
-// the parent the read gives the criterion. The caret is in the new row; its one placing PATCH
-// names the ask itself, as the read does, and the placed node keeps the row and the caret.
-test("a new row below a criterion under a question drawn in its block's row stands in that row", async () => {
+// the row the criterion stands in: the person's question, which the outline draws once, in the row
+// of the block the asks read indexed it from. That row's id is the block's id in the spec, not the
+// ask's own id, and its read id is the ask's, the first of the two the read's walk reaches and the
+// parent the read gives the criterion. The caret is in the new row; its one placing PATCH names the
+// ask, and the placed node keeps the row and the caret.
+test("a new row below a criterion under a question stands in the question's row, read as the ask", async () => {
   const user = userEvent.setup();
   holdTreeReads();
   const parent = `ask/${QUESTION.id}`;
@@ -2219,10 +2222,18 @@ test("a new row below a criterion under a question drawn in its block's row stan
     return row;
   });
   expect(CRITERION.parent?.id, "the read gives the criterion another parent").toBe(QUESTION.id);
-  expect(question.dataset.nodeReadId, "the question's row is not the block's").toBe(
-    QUESTION_BLOCK.id
+  expect(question.dataset.nodeId, "the question's row is the ask's own").not.toBe(QUESTION.id);
+  expect(question.dataset.nodeReadId, "the question's row is not read as the ask").toBe(
+    QUESTION.id
   );
   expect(rowOf(live.view, QUESTION), "the ask is drawn in a row of its own").toBeNull();
+  const readAs = [...live.view.container.querySelectorAll<HTMLElement>("[data-node-row]")].filter(
+    (row) => row.dataset.nodeReadId === QUESTION.id || row.dataset.nodeReadId === QUESTION_BLOCK.id
+  );
+  expect(
+    readAs.map((row) => row.dataset.rowKey),
+    "the question is drawn other than once"
+  ).toEqual([question.dataset.rowKey]);
   const questionKey = question.dataset.rowKey ?? "";
   const criterionKey = `${questionKey}>${rowId(CRITERION)}`;
   expect(childKeys(live.view, questionKey), "the criterion stands elsewhere").toContain(

@@ -552,10 +552,10 @@ export interface GraphEditIds {
   readonly message: string;
   readonly planTask: string;
   readonly prose: string;
-  /** The person's question, the ask node the criterion stands under. */
+  /** The person's question, the ask node the criterion stands under, and the read id of the
+   *  question's row: Graph draws the ask and its source block of the spec in one row, read as
+   *  the ask, the first of the two the tree read's walk reaches. */
   readonly question: string;
-  /** The question's source block, whose read id the drawn row carries. */
-  readonly questionRow: string;
   readonly reply: string;
   readonly result: string;
   /** The first, second and third statements, in the spec's order. */
@@ -615,7 +615,6 @@ export async function graphEditIds(page: Page, seed: GraphEditSeed): Promise<Gra
       "person's question",
       (node) => node.kind === "ask" && node.id === criterion.parent?.id
     ).id,
-    questionRow: ownBlock(answer, "q1", "ask").id,
     reply: nodeWhere(
       answer,
       "architect's reply",
@@ -635,7 +634,9 @@ export async function graphEditIds(page: Page, seed: GraphEditSeed): Promise<Gra
   };
 }
 
-/** The ids of the nodes standing directly under `parent` in `answer`, in the read's order. */
+/** The ids of the nodes standing directly under `parent` in `answer`, in the read's order: the
+ *  parent's conversation nodes first, in the order they were written, then its ranked children,
+ *  then its results and its unranked blocks. */
 export function childIds(answer: IssueTreeRead, parent: string): string[] {
   return (answer.nodes ?? []).flatMap((node) =>
     node.parent?.id === parent && node.role !== "context" ? [node.id] : []

@@ -490,8 +490,10 @@ function isOneParagraph(node: TreeAnswerNode): boolean {
 
 /** The `dispatch://` address of the conversation item `parent` is, which a criterion and a
  *  statement under it name as their `parent` (R5): an ask, a comment or a message by its own node,
- *  and an ask by the block of a document it was asked on (its `asked_on` tuple), the row Graph
- *  draws the question as. Undefined for any other parent. */
+ *  and an ask by the block of a document it was asked on (its `asked_on` tuple). Graph draws the
+ *  question once, in that block's row, read as the ask, the first of the two the read's walk
+ *  reaches: a node made under that row stands under the ask, and one an earlier build made there
+ *  stands under the block. Undefined for any other parent. */
 function itemAddress(parent: Parent, held: TreeAnswer): string | undefined {
   const issue = parent.issue ?? held.issue;
   if (Object.hasOwn(ITEM_KINDS, parent.kind))

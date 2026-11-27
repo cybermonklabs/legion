@@ -1077,10 +1077,10 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
     );
 
     // A new prose block under the question becomes a criterion, which stands under the question:
-    // its `parent` names the question's ask, and it keeps the place its PATCH gave it under the
-    // question's row, the ask's block of the spec, which a stored placement holds whatever the
-    // attributes name.
-    await landOn(page, key, ids.questionRow, "the question");
+    // Graph draws the question in one row with its block of the spec, read as the ask, so the one
+    // PATCH that places the new block names the ask as its parent, and the retype, whose `parent`
+    // names the ask too, keeps the place that PATCH gave it.
+    await landOn(page, key, ids.question, "the question");
     const toCriterion = await newRowUnder(page, sent, TYPED.retypedCriterion, "the question");
     await landOn(page, key, toCriterion, "the new prose block under the question");
     await openRowMenu(page, "m", "the new prose block under the question");
@@ -1100,7 +1100,7 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
     expect(
       nodeOf(criterionRead, toCriterion)?.parent?.id,
       "the criterion keeps its place under the question's row"
-    ).toBe(ids.questionRow);
+    ).toBe(ids.question);
 
     await landOn(page, key, ids.statements[0], "the first statement");
     await openRowMenu(page, "press", "the first statement");
@@ -1380,7 +1380,7 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
     const sent = watchNodeRequests(page, key);
 
     for (const { id, reason, under, via, what } of [
-      { id: ids.questionRow, reason: EDIT_LINES.grey_kind, under: true, what: "the question" },
+      { id: ids.question, reason: EDIT_LINES.grey_kind, under: true, what: "the question" },
       {
         id: ids.issueComment,
         reason: EDIT_LINES.grey_kind,
@@ -1425,7 +1425,7 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
       if (under) {
         // New row under writes through part Y's room: owed from the question's offer, every grey
         // above asserted, until the base draws Y's criterion row and its block editor.
-        if (id === ids.questionRow) owedUnless(await criterionEditorGate(page, key));
+        if (id === ids.question) owedUnless(await criterionEditorGate(page, key));
         await expectOffered(
           page,
           EDIT_LABELS.edit_new_under,
@@ -1443,7 +1443,7 @@ test("the menu greys each act a node does not take @phone", async ({ browser }) 
 
     // Both submenus fit the screen too: Lens's on the question, and Retype's on the prose block,
     // the one node of the seed Retype is offered on.
-    await landOn(page, key, ids.questionRow, "the question");
+    await landOn(page, key, ids.question, "the question");
     await openRowMenu(page, "press", "the question");
     await menuEntry(page, LENS_WORDS.act).click();
     await expect(rowSubmenu(page), "Lens opens no submenu on the question").toBeVisible();

@@ -379,19 +379,22 @@ test("an indent names the stored sibling above as parent and its last ranked chi
 
 // No real read makes an Indent ask for the next page: the walk puts a sibling's whole subtree
 // before the node, so a node held after its sibling above holds that sibling's children. This
-// case holds the rule on the first page of the fixture's `paged` read, which ends at the first
-// statement: an Indent whose sibling above closes before the node is answered from the
-// page alone, and the Moves of a node that stands where the page ends wait for the page after it.
+// case holds the rule on the first page of the fixture's `paged` read, which ends at the comment
+// on the third statement: the third statement stands where the page ends, and its Indent, whose
+// sibling above (the second statement) closes before it, is answered from the page alone, while
+// its Moves wait for the page after it.
 test("an indent past the loaded page reads the next pages first", () => {
   expect(firstPage.cursor, "the first page names the next").not.toBeNull();
+  const tree = (firstPage.nodes ?? []).filter((node) => node.role !== "context");
+  expect(tree.at(-1)?.parent?.id, "the first page ends elsewhere").toBe("<comment-on-statement-3>");
   const cut = (node: string) => placementOf({ held: firstPage, node, status: STATUS });
-  expect(cut("<tree/code_block>").indent).toStrictEqual({
-    body: { after: null, parent: "<tree/table>" },
+  expect(cut("<statement-3>").indent).toStrictEqual({
+    body: { after: null, parent: "<statement-2>" },
     kind: "move",
   });
-  expect(cut("<statement-1>").move_down).toEqual({ kind: "read_next" });
+  expect(cut("<statement-3>").move_down).toEqual({ kind: "read_next" });
   // With the whole read held nothing is left to read.
-  expect(place("<statement-1>").move_down.kind).toBe("move");
+  expect(place("<statement-3>").move_down).toEqual(grey("grey_last"));
 });
 
 test("an outdent names the old parent as after only within its document", () => {
@@ -433,18 +436,21 @@ test("a move names the ranked sibling of the same document that stands before th
   expect(place("<statement-3>").move_down).toEqual(grey("grey_last"));
 });
 
-// The first page of the fixture's `paged` read ends at the first statement: the siblings below
-// the first statement, and below the criterion, may be on the next page.
+// The first page of the fixture's `paged` read ends at the comment on the third statement, the
+// last of the criterion's children of the spec, and the criterion's paragraph of the issue's own
+// fragment is on the next page: the siblings below the third statement, and below the criterion,
+// may be on the next page.
 test("a move past the loaded page reads the next page first", () => {
   const cut = (node: string) => placementOf({ held: firstPage, node, status: STATUS });
   expect(firstPage.cursor).not.toBeNull();
-  expect(firstPage.nodes?.some((node) => node.id === "<statement-1>")).toBe(true);
-  expect(firstPage.nodes?.some((node) => node.id === "<statement-2>")).toBe(false);
-  expect(cut("<statement-1>").move_down).toEqual({ kind: "read_next" });
+  expect(firstPage.nodes?.some((node) => node.id === "<statement-3>")).toBe(true);
+  expect(firstPage.nodes?.some((node) => node.id === "<prose-under-criterion>")).toBe(false);
+  expect(cut("<statement-3>").move_down).toEqual({ kind: "read_next" });
   expect(cut("<criterion>").move_down).toEqual({ kind: "read_next" });
-  // The pages together answer it.
-  expect(place("<statement-1>").move_down.kind).toBe("move");
-  expect(place("<check-shared>").move_down).toEqual(grey("grey_last"));
+  // The pages together answer it: the paragraph is of a later band, so no block of the spec
+  // stands below the third statement, and none of the issue's own fragment below the paragraph.
+  expect(place("<statement-3>").move_down).toEqual(grey("grey_last"));
+  expect(place("<prose-under-criterion>").move_down).toEqual(grey("grey_last"));
 });
 
 test("indent, outdent and the two moves are grey at their edges, each with its reason", () => {
@@ -553,6 +559,12 @@ test("new node under stands first among the children of the issue's own fragment
     kind: "new",
     place: { after: "<statement-3>", body: { after: null, parent: "<criterion>" } },
   });
+  // The question's row carries the ask's read id, and the ask's one ranked child, the criterion,
+  // is of the spec: the new row is drawn after it, and the body names the ask by its route id.
+  expect(place("<question>").new_under).toStrictEqual({
+    kind: "new",
+    place: { after: "<criterion>", body: { after: null, parent: "ask/<question>" } },
+  });
 });
 
 test("a new row's moves are grey until the node holds a rank and a placement_seq", () => {
@@ -639,16 +651,27 @@ test("retype keeps the node's place in its parent and serves attributes and grey
   });
 });
 
-test("retype under the question's block names the ask it was asked on as the parent", () => {
-  // Graph draws the question as the block of the spec it was asked on, so a paragraph made under
-  // that row stands under the block; a criterion and a statement there name the ask itself, which
-  // the read joins to its block by the ask's `asked_on` tuple.
+test("retype under the question names the ask as the parent, whether the paragraph stands under the ask or under its block", () => {
+  // Graph draws the question once, in the row of the block of the spec it was asked on, and that
+  // row carries the ask's read id: the read walks the ask before its block, and the first of the
+  // two the walk reaches names the row. A paragraph made under that row stands under the ask, as
+  // the criterion does; one an earlier build made there stands under the block. A criterion and a
+  // statement in either place name the ask: under the ask by its own node, under the block by the
+  // ask the read joins to it with the ask's `asked_on` tuple.
   const question = nodeOf(converted, "<question-block>");
   const asked = converted.tuples?.find(
     (tuple) => tuple.kind === "asked_on" && tuple.to.id === question.id
   );
   expect(asked?.from.id, "the read asks the question on its block").toBe("<question>");
-  const paragraph: TreeAnswerNode = {
+  // The parent the read gives a node that stands under the ask: the criterion's.
+  const toAsk = nodeOf(converted, "<criterion>").parent;
+  expect(toAsk?.kind, "the criterion stands under no ask").toBe("ask");
+  const underAsk: TreeAnswerNode = {
+    ...nodeOf(converted, "<tree/paragraph>"),
+    id: "<paragraph-under-ask>",
+    parent: toAsk,
+  };
+  const underBlock: TreeAnswerNode = {
     ...nodeOf(converted, "<tree/paragraph>"),
     id: "<paragraph-under-question>",
     parent: {
@@ -658,12 +681,17 @@ test("retype under the question's block names the ask it was asked on as the par
       supertag: "ask",
     },
   };
-  const held: TreeAnswer = { ...converted, nodes: [...(converted.nodes ?? []), paragraph] };
-  const retyped = place("<paragraph-under-question>", {}, held).retype;
-  if (retyped.kind !== "retype") throw new Error("Retype is not offered on the paragraph");
+  const held: TreeAnswer = {
+    ...converted,
+    nodes: [...(converted.nodes ?? []), underAsk, underBlock],
+  };
   const ask = { attributes: { parent: "dispatch://<issue>/ask/<question>" }, kind: "to" } as const;
-  expect(retyped.kinds.criterion).toStrictEqual(ask);
-  expect(retyped.kinds.statement).toStrictEqual(ask);
+  for (const paragraph of [underAsk, underBlock]) {
+    const retyped = place(paragraph.id, {}, held).retype;
+    if (retyped.kind !== "retype") throw new Error(`Retype is not offered on ${paragraph.id}`);
+    expect(retyped.kinds.criterion, paragraph.id).toStrictEqual(ask);
+    expect(retyped.kinds.statement, paragraph.id).toStrictEqual(ask);
+  }
 });
 
 test("retype offers the kinds the editor's schema lets it make, so a view offers no statement", () => {
