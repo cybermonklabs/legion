@@ -19,8 +19,8 @@ package api
 // rows there. The person's own read of what a row shows is made later, row by row, as every row of
 // a plan is read (goingReadRow); the named issue is read as the person here, so a refusal of it is
 // the route's words. The bar's person is a sign-in or a personal token, which names no project
-// (callerProject), so the route's project check (refuseStepsOutsideCallerProject) has nothing to
-// hold the steps to.
+// (callerProject), so the route's project scope (planStatusChange leaves out each step whose issue
+// a credential naming one project does not cover) has nothing to hold the steps to.
 
 import (
 	"cmp"
