@@ -8,6 +8,7 @@ import { ApiError, api, NetworkError } from "../../../api/client";
 import { routeUrl } from "../../../api/paths";
 import { queryRetry, queryRetryDelay } from "../../../api/query-client";
 import type { AskRead, CommentRead, MessageRead } from "../../../api/types";
+import { askQuery, useReferenceQuery } from "../../refs/reference-target";
 import askBody from "./fixtures/ask.json";
 import ask404Body from "./fixtures/ask-404.json";
 import comment404Body from "./fixtures/comment-404.json";
@@ -100,21 +101,29 @@ interface Pages {
 }
 
 /** The lookup of `id` on `key`, over a query client with the app's own retry rules. A case
- *  draws it again with what the pages hold then (`rerender`). */
+ *  draws it again with what the pages hold then (`rerender`). `beside` is drawn in the same
+ *  render, before the lookup: another reader on the page, such as a reference to the record. */
 function lookUp(
   key: string,
   id: string,
-  pages: Pages = { held: false }
+  pages: Pages = { held: false },
+  beside: () => unknown = () => undefined
 ): RenderHookResult<ThreadLookup, Pages> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
   });
   drawnClient = client;
-  return renderHook<ThreadLookup, Pages>((now) => useThreadLookup(key, id, now.held), {
-    initialProps: pages,
-    wrapper: ({ children }: { children: ReactNode }) =>
-      createElement(QueryClientProvider, { client }, children),
-  });
+  return renderHook<ThreadLookup, Pages>(
+    (now) => {
+      beside();
+      return useThreadLookup(key, id, now.held);
+    },
+    {
+      initialProps: pages,
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(QueryClientProvider, { client }, children),
+    }
+  );
 }
 
 function recordOf(lookup: ThreadLookup): string | undefined {
@@ -536,6 +545,33 @@ test("a failed read is forgotten once a page holds the id: reading while a write
   expect(recordOf(view.result.current)).toBe(ROOT_ID);
   expect(reads.asked.ask).toEqual([ROOT_ID]);
   expect(reads.asked.comment).toEqual([ROOT_ID]);
+});
+
+test("a failed read is forgotten once while a page holds the id, so a reference to the record reads a route that fails every time once more, and not over and over", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  // A reference to the ask drawn on the page (`RefLink`) reads it under the lookup's own key, and
+  // its read stays enabled once a page holds the id, where the lookup's own is not.
+  view = lookUp(KEY, ASK_ID, { held: false }, () => useReferenceQuery(askQuery(ASK_ID)));
+  await jump(0);
+  // The ask route's read stays refused with its 503 from here on, so every read of it fails.
+  await failOn(reads, "ask");
+  expect(view.result.current.kind).toBe("failed");
+  expect(reads.asked.ask).toEqual(Array(3).fill(ASK_ID));
+  view.rerender({ held: true });
+  await jump(0);
+  expect(view.result.current.kind).toBe("held");
+  // A round of reads, a try and the app's two retries 500 ms apart, ends within 1 s, so ten
+  // rounds would pass here.
+  await tick(10_000);
+  // Three reads before a page held the id, a try and its two retries, and three more as the
+  // reference reads the forgotten failure again, once. That read's failure came after a page held
+  // the id, so it is not forgotten, and no read follows it.
+  expect(
+    reads.asked.ask,
+    "the failing route was read again and again while a page held the id"
+  ).toEqual(Array(6).fill(ASK_ID));
+  expect(view.result.current.kind).toBe("held");
 });
 
 test("a route that loses its connection draws the failed read with Retry", async () => {
