@@ -10,7 +10,7 @@ const REASONS = {
   1: "1. Run under each client: TanStack's own, which the other app-shell rows use, and `DispatchQueryClient`, built as `main.tsx` builds it. While the check holds no answer the first joins a check still out, and the second waits for it and asks again once it lands, so a page that only invalidates draws alice under the first, and alice and then bob under the second.",
   2: '2. `app-sign-out.test.tsx`, "a composer\'s typed text is not shown to another person signed in from another tab", is this cell, and it is not repeated here.',
   3: "3. Signed out (`signedOut`), the page takes the shell and every composer away, which `app-sign-out.test.tsx` holds to the same rule as (2).",
-  4: "4. In `AppShell`, above every host, the layout draws the shell around the page: the compact header with its Menu and the Inbox's Peek (whose drawer is the Inbox files' reason), the navigation drawer and the focus it keeps (`useDialog`), the sidebar or its rail, the main column's classes and its statement that the document scrolls its content (`DOCUMENT_SCROLL_ATTRIBUTE`), by which the foot's hook gives `<main>` its end room below the page (`useFootInset`), and the keyboard fit of a page that fills the screen (`useKeyboardFit`). Each draws or moves something beside the route element and the margin a host is in, never them, so no composer moves, and the rows above make their moves at the test page's width.",
+  4: "4. In `AppShell`, above every host, the layout draws the shell around the page: the compact header with its Menu and the Inbox's Peek (whose drawer is the Inbox files' reason), the navigation drawer and the focus it keeps (`useDialog`), the sidebar or its rail, the left edge the panel at the side widens to (`wideInset`), the main column's classes and its statement that the document scrolls its content (`DOCUMENT_SCROLL_ATTRIBUTE`), by which the foot's hook gives `<main>` its end room below the page (`useFootInset`), and the keyboard fit of a page that fills the screen (`useKeyboardFit`). Each draws or moves something beside the route element and the margin a host is in, never them, so no composer moves, and the rows above make their moves at the test page's width.",
   5: "5. On the new issue page, once its reader turns it on (`issueFrame`), the shell draws the frame's icon rail beside the page where the width allows it (`railFits`, `iconRailShown`) in place of the sidebar and its rail, its navigation sheet over the page at every width (`shellNavigation`: the rail's foot control and the header's `☰` open it), and no compact header of its own, and it draws the navigation's contents compact there (`NavigationContents`' `compact`). Each draws or moves something beside the route element and the margin a host is in, as (4) says, so no composer moves.",
 } as const;
 
@@ -80,6 +80,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[4],
   }),
   ...answers("AppShell | - | form | (!issueFrame && !fillsViewport) ? …", { reason: REASONS[4] }),
+  ...answers("AppShell | - | form | (isCompactViewport) ? …", { reason: REASONS[4] }),
   ...answers(
     "useKeyboardFit | - | form | if (!enabled || element === null || viewport == null) return …",
     { reason: REASONS[4] }
