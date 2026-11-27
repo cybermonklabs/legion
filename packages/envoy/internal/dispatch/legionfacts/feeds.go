@@ -450,20 +450,22 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 // block, which belongs to the project and names no issue. Every stored row's waiting reason reads
 // it (rowsOf, reasonOf): the issue's place in the daemon's line, the blockers the block names and
 // so the column the issue stands in. A blocker that finishes moves an issue from the block's
-// Blocked to its Waiting, and the sampler writes the block alone, since nothing of the issue
-// itself moved. The sampler writes the block whenever any part of it moved, its cap, its active
-// slots and its live trees among them, and those move no reason, so the row is compared with the
-// project's block before it (blockMoved): that block's value is the newest row of the same field
-// observed before this one, one probe of legion_observations_point (migration 20261103170923) in
-// this page's own statement, and only for an admission row. A row that moved the block in what a
-// reason reads is marked (touch.admission), and the pass states the project's open rows beside
-// the rows its other changes touch (rowsToCompute), so the reasons the block moved are computed
-// again; any other row of the block, and the project's settings, which no row reads, mark nothing.
+// Blocked to its Waiting, and the Legion state intake writes the block alone, from the daemon's
+// admission event or from a whole read, since nothing of the issue itself moved. It writes the
+// block whenever any part of it moved, its cap, its active slots and its live trees among them,
+// and those move no reason, so the row is compared with the project's block before it
+// (blockMoved): that block's value is the newest row of the same field observed before this one,
+// one probe of legion_observations_point (migration 20261103170923) in this page's own statement,
+// and only for an admission row. A row that moved the block in what a reason reads is marked
+// (touch.admission), and the pass states the project's open rows beside the rows its other
+// changes touch (rowsToCompute), so the reasons the block moved are computed again; any other row
+// of the block, and the project's settings, which no row reads, mark nothing.
 //
-// It needs no horizon, and that is the one way this cursor differs from the events cursor. One
-// leased sampler writes legion_observations (legion.RunSampler, one pass a minute, one process
-// at a time), so no second writer can hold a lower id open while a higher one commits, and the
-// ids a reader pages by are commit order.
+// It needs no horizon, and that is the one way this cursor differs from the events cursor. The
+// intake writes legion_observations on one runner per project, so the writes of two projects run
+// at once, but every insert into the table takes the observations' lock immediately before it
+// draws its ids and holds it to its commit (legion.ObservationsLockKey): no writer can hold a
+// lower id open while a higher one commits, and the ids a reader pages by are commit order.
 func readObservationPage(ctx context.Context, q Querier, after int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
 		select observation.id, observation.project, observation.issue_key, observation.field = $2,

@@ -8,6 +8,6 @@ body: |-
   heap page for each run through the primary key. The lease pool holds three more connections,
   one for the per-issue Legion facts, one for the day-row refresher, whose first pass in a process
   also seeds every project's evals, and one for the production signals' loop
-  (`store.LeasePoolSize` 30, with the keyword fill's two, the CI verify loop's one, the boot's
-  parent status fix's one and the reference forms drain's one), so a process opens 121
-  connections at most, and `infra/gcp`'s `dispatchConnectionsPerPod` is 121.
+  (`store.LeasePoolSize` 32, with the Legion state intake's three, the keyword fill's two, the CI
+  verify loop's one, the boot's parent status fix's one and the reference forms drain's one), so a
+  process opens 123 connections at most, and `infra/gcp`'s `dispatchConnectionsPerPod` is 123.

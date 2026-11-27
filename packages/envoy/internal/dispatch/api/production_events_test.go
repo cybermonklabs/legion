@@ -963,12 +963,27 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	})
 	failure := writeProductionFailure(t, rig.database, brokerTestProject, "alerts:1", deploy.ID, now.Add(-time.Minute))
 	path := productionEventStatePath(brokerTestProject, failure.ID)
-	readDaemon := func(at time.Time, session string) {
+	// The project's daemon, which its Legion setting names, serves a state whose controllerLocator
+	// names session, and the Legion state intake's whole read records it (readLegionWhole), as a
+	// read of a daemon whose controller registered does.
+	daemon := &fakeLegionDaemon{project: brokerTestProject}
+	daemon.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		daemon.mu.Lock()
+		body := daemon.body
+		daemon.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(daemon.Close)
+	if _, err := legion.PutSettings(context.Background(), rig.database.Pool, brokerTestProject, daemon.URL,
+		model.Actor{Kind: "user", ID: brokerTestPerson}); err != nil {
+		t.Fatalf("name %s's Legion daemon: %v", brokerTestProject, err)
+	}
+	readDaemon := func(session string) {
 		t.Helper()
-		state := legion.State{ControllerLocator: &legion.ControllerLocator{SessionID: session}}
-		if _, err := legion.RecordRead(context.Background(), rig.database.Pool, brokerTestProject, at, 1, state.Observations()); err != nil {
-			t.Fatalf("record a read naming controller %s: %v", session, err)
-		}
+		daemon.read(t, rig.database, fmt.Sprintf(`{"daemon":{"project":%q,"stateSeq":1,"stateId":"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"},
+			"settings":{"dispatch_url":"http://dispatch.internal.example"},"issues":{},
+			"controllerLocator":{"sessionId":%q}}`, brokerTestProject, session))
 	}
 	stateOf := func() prodevents.Event {
 		t.Helper()
@@ -1062,7 +1077,7 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	expectRefusal(t, "a session no read names", asController(map[string]any{
 		"state": "counted", "reason": "It was real.",
 	}), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
-	readDaemon(now.Add(-2*time.Minute), brokerTestSession)
+	readDaemon(brokerTestSession)
 	setState("the controller's reject", asController, prodevents.StateRejected, "A duplicate of the first alert.", session)
 	requireChangeFailRate("after the controller's reject", 0)
 	setState("the controller's re-count", asController, prodevents.StateCounted, "It was real.", session)
@@ -1091,7 +1106,7 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 		t.Fatalf("the reader's refused writes left the row %s (%v), want it as it was, %s", kept, err, unchanged)
 	}
 
-	readDaemon(now.Add(-time.Minute), "ses_successor")
+	readDaemon("ses_successor")
 	expectRefusal(t, "the controller after a read names another session", asController(map[string]any{
 		"state": "rejected", "reason": "Too late.",
 	}), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)

@@ -456,10 +456,12 @@ func LockProject(ctx context.Context, tx pgx.Tx, project string) error {
 // LockRepositories takes the transaction-scoped lock of each repository's delivery ownership, in
 // name order so two transactions taking two of them cannot wait on each other: a save and a
 // default-repository write that would each make one repository the source of a delivery-on project
-// see each other's commit.
+// see each other's commit. Its first key, 6903, is its own: 6900 is the change log's lock
+// (lockChangesStatement), 6901 the Legion observations' (legion.ObservationsLockKey) and 6902 a
+// project's (LockProject), so no repository's name can hash onto another family's lock.
 func LockRepositories(ctx context.Context, tx pgx.Tx, repos []string) error {
 	for _, repo := range lowerSortedSet(repos) {
-		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6901, hashtext($1))`, repo); err != nil {
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6903, hashtext($1))`, repo); err != nil {
 			return fmt.Errorf("lock the deploy repository %s: %w", repo, err)
 		}
 	}

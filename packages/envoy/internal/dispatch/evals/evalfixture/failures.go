@@ -259,8 +259,10 @@ func commitOf(project, what string) string {
 //     and a person's flag of R4 (person); and a passing after-merge check at R1's head, a fail at a
 //     commit no deploy holds and an issue labelled bug linking a deployed pull request, which make
 //     none;
-//   - with controller not "", a Legion read of each project whose controller observation names it
-//     (legion.RecordRead), written where the project's newest read names another session or none.
+//   - with controller not "", for each project, the controller observation of a whole read of its
+//     daemon naming it (legion.FieldController, which legion.ControllerSession reads) and that
+//     read's legion_reads row, written where the project's newest observation names another
+//     session or none.
 //
 // Where a server runs, its loop (signals.Run) reads each input as soon as it commits, so the mode
 // writes them in the order a real record meets them: the issues the pull requests name, then the
@@ -591,9 +593,22 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			if held && named == controller {
 				continue
 			}
-			observations := legion.State{ControllerLocator: &legion.ControllerLocator{SessionID: controller}}.Observations()
-			if _, err := legion.RecordRead(ctx, pool, p, now, 0, observations); err != nil {
-				return FailuresResult{}, err
+			// The row goes in as every insert into legion_observations does: under the
+			// observations' lock (legion.QueueLockObservations), at now or just after the project's
+			// newest row, as a whole read's record writes its rows, so it is the field's newest.
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				batch := &pgx.Batch{}
+				legion.QueueLockObservations(batch)
+				store.QueueExec(batch, "name "+controller+" the controller of "+p, `
+					insert into legion_observations (project, issue_key, field, value, observed_at)
+					select $1, $2, $3, to_jsonb($4::text), greatest($5::timestamptz, max(observed_at) + interval '1 microsecond')
+					from legion_current where project = $1`, p, legion.AdmissionKey, legion.FieldController, controller, now)
+				store.QueueExec(batch, "record the read that names the controller of "+p, `
+					insert into legion_reads (project, read_at, ok, bytes, kind, reason) values ($1, $2, true, 0, 'read', $3)`,
+					p, now, legion.ReadReasonStart)
+				return tx.SendBatch(ctx, batch).Close()
+			}); err != nil {
+				return FailuresResult{}, fmt.Errorf("name %s the controller of %s: %w", controller, p, err)
 			}
 		}
 		result.Controller = &controller

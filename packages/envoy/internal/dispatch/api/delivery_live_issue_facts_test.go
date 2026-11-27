@@ -473,10 +473,10 @@ func closeLegionEntry(entry legionBoardFacts, at time.Time) legionBoardFacts {
 // legionBoardView).
 //
 // The snapshot is the GET route's body at the snapshot's own moment, growth and moments
-// included (k25). A recompute a minute later that no stored row moved, the sampler's next read,
-// sends the header it moved and no issues entry. A write of one row sends that one entry, whole,
-// and none of the entries that only grew. The board a page then holds, each entry closed at the
-// moment of a GET an hour later, is that GET's body to the stored precision.
+// included (k25). A recompute a minute later that no stored row moved, the Legion intake's next
+// record of the daemon, sends the header it moved and no issues entry. A write of one row sends
+// that one entry, whole, and none of the entries that only grew. The board a page then holds, each
+// entry closed at the moment of a GET an hour later, is that GET's body to the stored precision.
 //
 // The hub's clock runs an hour behind the wall clock, which the GET route reads, so the GET is
 // later than every answer the hub sent and every growing value has grown by an hour since.
@@ -521,7 +521,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 	rig.settle(t)
 	held := snapshot.Body
 
-	// The sampler's next read, a minute on: the header carries the read, and no stored row moved.
+	// The Legion intake's next read, a minute on: the header carries it, and no stored row moved.
 	clock.Advance(time.Minute)
 	seedLegionRead(t, rig.database, "INFRA", clock.Now(), "")
 	notifyChannel(t, rig.database, legion.StateChannel, "INFRA")
@@ -531,7 +531,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 			slices.Sorted(maps.Keys(entries)))
 	}
 	if _, set := read.Set["header"]; !set {
-		t.Fatalf("the sampler's read sent %+v, want the header it moved", read.Set)
+		t.Fatalf("the Legion intake's read sent %+v, want the header it moved", read.Set)
 	}
 	held = applyLiveDelta(t, legionBoardView, held, read)
 

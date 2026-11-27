@@ -68,17 +68,20 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 
 // repositoryRows is rows, one repository's cut of a day as a family's day builders build it
 // (DeliveryDay.Rows, LegionDay.Rows), less each row whose part is empty (emptyPart): R12 writes no
-// zero row for a repository, so a repository's day with no input of a series holds no row of it and
-// reads "no data", where the project's own row of the series (repo "") holds its zero row from the
-// series' first input day on (ProjectDay.WithZeros). A lead time of pull requests no deploy has
-// shipped yet, a Legion cut (the roots or the children) that none of the repository's issues of the
-// day is in, and a filing class the repository's filings of the day hold none of are such parts. An
-// empty part adds nothing to a fold, so the repositories' rows that stand still partition the
-// all-repositories row. Every writer of a day takes its rows from those builders, a walk, a page,
-// a span, a settings rewrite and a rebuild alike, and deletes each stored row of the day it does
-// not hold, so a rewrite that leaves a repository's part empty deletes its row, and the delete logs
-// its change and moves the stored figures of its cut as any other. unowned-p0's rows, whose 0 is a
-// count, are WriteUnownedP0Day's, and never pass through here.
+// zero row for a repository, so a repository's day with no input of a series holds no row of it,
+// where the project's own row of the series (repo "") holds its zero row from the series' first
+// input day on (ProjectDay.WithZeros). That is the storage alone: a read of the repository's cut
+// folds a series of an eval it holds no row of on a day that holds another row of the eval as its
+// zero part (cutZeros), and a day that holds no row of the eval reads "no data". A lead time of
+// pull requests no deploy has shipped yet, a Legion cut (the roots or the children) that none of
+// the repository's issues of the day is in, and a filing class the repository's filings of the day
+// hold none of are such parts. An empty part adds nothing to a fold, so the repositories' rows
+// that stand still partition the all-repositories row. Every writer of a day takes its rows from
+// those builders, a walk, a page, a span, a settings rewrite and a rebuild alike, and deletes each
+// stored row of the day it does not hold, so a rewrite that leaves a repository's part empty
+// deletes its row, and the delete logs its change and moves the stored figures of its cut as any
+// other. unowned-p0's rows, whose 0 is a count, are WriteUnownedP0Day's, and never pass through
+// here.
 func repositoryRows(rows []DayRow) []DayRow {
 	return slices.DeleteFunc(rows, func(row DayRow) bool { return emptyPart(row.DayPart) })
 }

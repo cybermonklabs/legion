@@ -30,7 +30,7 @@ import "github.com/sjawhar/envoy/internal/dispatch/store"
 // Two runs each at 4, 6 and 8, interleaved in one 4-CPU pod with Postgres in it, CI's service
 // flags and no test failing: package 243.6/291.3 s, 251.0/226.7 s and 236.9/237.8 s, using 8-19%
 // of the CPUs. The server cost is connections: 8 x ConnectionsPerProcess + SuiteHeadroom + 3
-// reserved = 991, under the 1000 every CI lane's service allows
+// reserved = 1007, under the 1010 every CI lane's service allows
 // (.github/scripts/postgres-service-settings.sh).
 //
 // The peak of each binary of cmd/dispatch with a tag: 3 with multiprocess

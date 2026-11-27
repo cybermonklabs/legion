@@ -30,14 +30,17 @@ import (
 // built from every issue and filing of the day, and one row per repository the eval's input is
 // in, built from that repository's alone, where it counts something: a repository's part that is
 // empty (a cut none of the repository's issues of the day is in, a filing class none of its
-// filings is of) is no row (repositoryRows), since R12 writes no zero row for a repository, and
-// that repository's day reads "no data" for the series. An issue's repository, and a filing's, is
-// the one the issue (the filed issue) resolves to by the rule that fills issue_facts.repo
-// (legionfacts.ReadRepos: its own, an ancestor's, else its project's default repository,
-// refs.IssueRepoTerms), resolved when the day is built rather than read from the stored row. An
-// issue or a filing that resolves to no repository is in the all-repositories row alone, so the
-// repositories' rows add up to that row only where every input resolves to one. Every Legion row
-// reached its project through its own issue, so its via_repository is 0.
+// filings is of) is no row (repositoryRows), since R12 writes no zero row for a repository. That
+// rule is about storage alone: R12 counts a cut's day by the eval, so a read of the repository's
+// cut folds such a series, on a day the cut holds a row of the eval, as the zero part the
+// all-repositories row stores (cutZeros), and only a day the cut holds no row of the eval reads
+// "no data". An issue's repository, and a filing's, is the one the issue (the filed issue)
+// resolves to by the rule that fills issue_facts.repo (legionfacts.ReadRepos: its own, an
+// ancestor's, else its project's default repository, refs.IssueRepoTerms), resolved when the day
+// is built rather than read from the stored row. An issue or a filing that resolves to no
+// repository is in the all-repositories row alone, so the repositories' rows add up to that row
+// only where every input resolves to one. Every Legion row reached its project through its own
+// issue, so its via_repository is 0.
 //
 // legion-splitting has input on a day with a closed issue or a filing, and the other five on a
 // day with a closed issue. legion-idle-time has none on a day before the first UTC midnight at or
@@ -266,16 +269,28 @@ func legionRows(project, repo, slug string, parts []measures.DayPart) []DayRow {
 }
 
 // ZeroLegionDay is project's all-repositories row of every series of each eval slugs names on day,
-// as the day builders build a day with no input (n 0, a zero sum, numerator and denominator, no
-// sample, and zero counts): the explicit zero rows the refresher writes for a series from its
-// first input day on, on a day with no input (ProjectDay.WithZeros). A slug of no Legion eval has
-// none, and neither has the children cut of legion-splitting's root figures, which no day holds.
+// the zero parts of each (zeroLegionParts): the explicit zero rows the refresher writes for a
+// series from its first input day on, on a day with no input (ProjectDay.WithZeros). A slug of no
+// Legion eval has none, and neither has the children cut of legion-splitting's root figures, which
+// no day holds.
 func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 	result := ProjectDay{Project: project, Day: measures.Midnight(day)}
 	for _, slug := range slugs {
-		if build, ok := legionBuilders[slug]; ok {
-			result.Rows = append(result.Rows, legionRows(project, "", slug, build(result.Day, nil, nil))...)
-		}
+		result.Rows = append(result.Rows, legionRows(project, "", slug, zeroLegionParts(slug, result.Day))...)
 	}
 	return result
+}
+
+// zeroLegionParts is the part of every series of the Legion eval slug on day as its day builder
+// builds a day with no input (n 0, a zero sum, numerator and denominator, no sample, and zero
+// counts), none for a slug of no Legion eval: the parts of the all-repositories row's zero rows
+// (ZeroLegionDay), and those a read of a repository's cut folds where its day holds no row of a
+// series (cutZeros). day sets each part's day and nothing else, so a read builds them once and
+// sets the day of each copy it folds (withZeros).
+func zeroLegionParts(slug string, day time.Time) []measures.DayPart {
+	build, ok := legionBuilders[slug]
+	if !ok {
+		return nil
+	}
+	return build(day, nil, nil)
 }

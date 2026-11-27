@@ -100,7 +100,7 @@ func (realJobClock) At(at time.Time, f func()) jobTimer { return time.AfterFunc(
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
 // scheduling its reads by clock, checking each job event against settings, and holding its
 // durable and taking it over under a hold and a lease it takes on leases, timed by tuning.
-func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
+func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
 	j := &JobIntake{
 		pool: pool, github: github, clock: clock, settings: settings,
 		ctx: context.Background(), pending: map[runKey]*pendingRun{},

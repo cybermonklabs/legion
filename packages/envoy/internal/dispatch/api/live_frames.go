@@ -264,9 +264,9 @@ const (
 	// freshness is the hub's one verdict, and a deployment with no delivery-on project is
 	// DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
-	// viewReadsLegion is one project's Legion daemon as the sampler recorded it, and for its board
-	// the stored per-issue facts of the issues the board shows: the view's spec holds that
-	// project, a read of its daemon or a write of its Legion setting marks it
+	// viewReadsLegion is one project's Legion daemon as the Legion intake recorded it, and for its
+	// board the stored per-issue facts of the issues the board shows: the view's spec holds that
+	// project, each record of its daemon or a write of its Legion setting marks it
 	// (dirtyLegionProject), and so does each connection of the hub's listener (dirtyLegionViews),
 	// since the change log carries neither; the one delivery change that touches one is the write
 	// of a facts row of a board's project (touchedBy); it judges no freshness. A project that
@@ -420,13 +420,13 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	//
 	// An entry is sent only when its stored row moved. Each read closes every open row at its own
 	// clock (legionfacts.Row.At), so an open issue's hours, work time, slot hours and last moment
-	// of work, and the as_of they are of, differ on every recompute, a sampler's read once a
-	// minute among them; the entry's revision leaves out every value the entry's growth names
-	// (legionBoardGrowth's fields, which are the entry's own names for the values it grows) and
-	// their as_of, so a recompute that moved only the clock sends no entry, where it would
-	// otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that comes to
-	// grow is left out once its rate joins the growth. What the revision keeps moves whenever the
-	// stored row does: a write of a row whose values moved stamps its updated_at
+	// of work, and the as_of they are of, differ on every recompute, each record the Legion intake
+	// makes of the daemon among them; the entry's revision leaves out every value the entry's
+	// growth names (legionBoardGrowth's fields, which are the entry's own names for the values it
+	// grows) and their as_of, so a recompute that moved only the clock sends no entry, where it
+	// would otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that
+	// comes to grow is left out once its rate joins the growth. What the revision keeps moves
+	// whenever the stored row does: a write of a row whose values moved stamps its updated_at
 	// (legionfacts.WriteProject), and its growth, why it waits, its close and every other value
 	// the entry carries are kept as stored. An entry whose values grow carries its as_of and its
 	// growth, so a page closes the values it holds at its own clock by the rule the read closes

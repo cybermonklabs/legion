@@ -149,7 +149,8 @@ func writable(folded map[string]Statistics) map[string]Statistics {
 // day row (YYYY-MM-DD, null for a series with none), before which a range reads "no data", every
 // statistic null; via_repository, how many of the rows the window's day rows count reached the
 // project through a repository rather than an issue; and days, the window's per-day array of a
-// headline series, one point per day that holds a row of it ([] for a control series).
+// headline series ([] for a control series): one point per day that holds a part of it, a
+// repository cut's zero part of it among them (cutZeros).
 type SeriesValues struct {
 	Series
 	Window        Statistics `json:"window"`
@@ -171,7 +172,9 @@ type DayPoint struct {
 // window and of compare, the compare range, nil for none (DayWindowIn), and firsts, each series'
 // first day (FirstDaysIn). A range that starts before a series' first day, or a series with no first
 // day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
-// the per-day array still answers each day that holds a row (R12).
+// the per-day array still answers each day that holds a row (R12). In a repository's cut, each day
+// that holds a row of the eval also folds the zero part of each series of it the day holds no row
+// of (cutZeros, withZeros): in the window, in the compare range and in the day's own fold.
 //
 // It folds the rows in the one order every fold of them takes (sortWindowRows), which it sorts rows
 // into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
@@ -182,7 +185,6 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	listed, headline := listedAndHeadline(entry)
 	sortWindowRows(rows)
 	var windowParts, compareParts []measures.DayPart
-	byDay := map[time.Time][]measures.DayPart{}
 	via := map[string]int{}
 	for _, row := range rows {
 		part := row.Part
@@ -191,20 +193,24 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 			continue
 		}
 		windowParts = append(windowParts, part)
-		byDay[part.Day] = append(byDay[part.Day], part)
 		via[part.Series] += part.ViaRepository
 	}
 	definition := entry.Definition
+	zeros := cutZeros(definition, rows)
+	windowParts, compareParts = withZeros(windowParts, zeros), withZeros(compareParts, zeros)
 	windowed := FoldStatistics(definition, listed, windowParts, window)
 	var compared map[string]Statistics
 	if compare != nil {
 		compared = FoldStatistics(definition, listed, compareParts, *compare)
 	}
-	// Each day of the window folded alone, by the same fold, for the headline series' arrays.
-	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return a.Compare(b) })
-	daily := make([]dayFold, len(days))
-	for index, day := range days {
-		daily[index] = dayFold{day: day, folded: foldDay(definition, headline, byDay[day], day)}
+	// Each day of the window folded alone, by the same fold, for the headline series' arrays: the
+	// window's parts are in day order, so each day's are one run of them.
+	var daily []dayFold
+	for from := 0; from < len(windowParts); {
+		to := dayEnd(windowParts, from)
+		day := windowParts[from].Day
+		daily = append(daily, dayFold{day: day, folded: foldDay(definition, headline, windowParts[from:to], day)})
+		from = to
 	}
 	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
 }
@@ -230,10 +236,11 @@ func sortWindowRows(rows []WindowRow) {
 	})
 }
 
-// foldDay is the fold of parts, one day's parts of definition's eval, of each of headline, its
-// headline series, that holds a part that day, over that day alone: a day of a headline series'
-// per-day array, which a read of the day rows (SeriesValuesOf) and the stored figures
-// (figureGroup.dayFigure) both answer through it. With no headline series it is empty.
+// foldDay is the fold of parts, one day's parts of definition's eval (a repository cut's zero parts
+// among them, withZeros), of each of headline, its headline series, that holds a part that day,
+// over that day alone: a day of a headline series' per-day array, which a read of the day rows
+// (SeriesValuesOf) and the stored figures (figureGroup.dayFigure) both answer through it. With no
+// headline series it is empty.
 func foldDay(definition Definition, headline []Series, parts []measures.DayPart, day time.Time) map[string]Statistics {
 	kept := map[string]Statistics{}
 	if len(headline) == 0 {
@@ -248,11 +255,94 @@ func foldDay(definition Definition, headline []Series, parts []measures.DayPart,
 	return kept
 }
 
-// dayFold is one day of a window that holds a row of the eval: the fold of that day's rows alone of
-// each headline series that holds a row that day (foldDay).
+// dayFold is one day of a window that holds a row of the eval: the fold of that day's parts alone
+// of each headline series that holds a part that day (foldDay).
 type dayFold struct {
 	day    time.Time
 	folded map[string]Statistics
+}
+
+// cutZeros is the zero parts a fold of rows, definition's eval's rows of one cut, folds beside them
+// (withZeros): where definition is a computed Legion eval and rows are of a repository's cut, the
+// part of each series its zero day builds (zeroLegionParts), and none otherwise. A read that names
+// repositories answers the repository each row is stored under (WindowRow.repo), and every row of
+// the project's own cut is stored under "". R12 counts a cut's day by the eval ("one row per
+// measure per day"): on a day the cut holds a row of the eval, the eval has input there, so a
+// series of it the day holds no row of, because the repository's part of it was empty and is
+// stored as no row (repositoryRows), reads as the zero part the all-repositories row stores for it
+// (dispatch://INFRA-2916/comment/354d442b-ee5c-4d48-8c6a-d876d23be7d7). A series the zero day
+// builds no part of, such as the children cut of legion-splitting's root figures, gets none and
+// keeps reading "no data". The project's own cut needs none: from the eval's first input day on,
+// its rows hold every series the zero day builds on every day (ProjectDay.WithZeros). Nor does a
+// delivery or CI eval: each of those with day rows lists one series (pr-ci's job series are
+// unlisted, and the folds read listed rows alone), so a repository's day that holds a row of the
+// eval holds a row of that series; change-fail-rate, which lists three, has no rows.
+func cutZeros(definition Definition, rows []WindowRow) []measures.DayPart {
+	if len(rows) == 0 || rows[0].repo == "" || !definition.Computed() {
+		return nil
+	}
+	return zeroLegionParts(definition.Slug, rows[0].Part.Day)
+}
+
+// withZeros is parts, one range's parts of an eval in day order, with each of zeros (cutZeros) on
+// each day that holds a part and no part of the zero's series, set on that day, after the day's
+// parts: parts itself where zeros adds none. The zero parts share their samples and counts, which
+// no fold writes.
+func withZeros(parts, zeros []measures.DayPart) []measures.DayPart {
+	if len(zeros) == 0 || len(parts) == 0 {
+		return parts
+	}
+	index := make(map[string]int, len(zeros))
+	for at, zero := range zeros {
+		index[zero.Series] = at
+	}
+	held := make([]bool, len(zeros))
+	// mark sets in held each of zeros whose series the day of parts[from] holds a part of, and
+	// answers the end of that day's parts.
+	mark := func(from int) int {
+		clear(held)
+		to := dayEnd(parts, from)
+		for _, part := range parts[from:to] {
+			if at, found := index[part.Series]; found {
+				held[at] = true
+			}
+		}
+		return to
+	}
+	added := 0
+	for from := 0; from < len(parts); {
+		from = mark(from)
+		for _, marked := range held {
+			if !marked {
+				added++
+			}
+		}
+	}
+	if added == 0 {
+		return parts
+	}
+	filled := make([]measures.DayPart, 0, len(parts)+added)
+	for from := 0; from < len(parts); {
+		to := mark(from)
+		filled = append(filled, parts[from:to]...)
+		for at, zero := range zeros {
+			if !held[at] {
+				zero.Day = parts[from].Day
+				filled = append(filled, zero)
+			}
+		}
+		from = to
+	}
+	return filled
+}
+
+// dayEnd is the end of the run of parts, in day order, that holds the day of parts[from].
+func dayEnd(parts []measures.DayPart, from int) int {
+	to := from + 1
+	for to < len(parts) && parts[to].Day.Equal(parts[from].Day) {
+		to++
+	}
+	return to
 }
 
 // valuesOf is each of listed, an eval's listed series, with its values: windowed and compared, the

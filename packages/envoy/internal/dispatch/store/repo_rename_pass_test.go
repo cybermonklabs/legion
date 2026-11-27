@@ -1199,7 +1199,7 @@ func TestTheRenamePassLocksTheDeliverySettingsTablesBeforeTheirRows(t *testing.T
 	}
 	written := []statement{{sql: `select pg_advisory_xact_lock(6902, hashtext('TOOLS'))`}}
 	for _, repo := range []string{"acme/tools", "cybermonklabs/legion", "sjawhar/legion"} {
-		written = append(written, statement{`select pg_advisory_xact_lock(6901, hashtext($1))`, []any{repo}})
+		written = append(written, statement{`select pg_advisory_xact_lock(6903, hashtext($1))`, []any{repo}})
 	}
 	written = append(written, statement{sql: `
 		insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos,

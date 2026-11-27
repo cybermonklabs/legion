@@ -736,14 +736,14 @@ func TestAnEventsSourceIsSavedAndReadBackThroughTheRoute(t *testing.T) {
 const projectLockWait = `%pg_advisory_xact_lock(6902, hashtext(%`
 
 // heldSaveLocks counts the locks of a settings save that a session of the current database other
-// than $1 holds: a project's delivery lock (6902) and a repository's (6901), each of two keys
+// than $1 holds: a project's delivery lock (6902) and a repository's (6903), each of two keys
 // (objsubid 2: delivery.LockProject, LockRepositories), and the lock of each eval the database
 // holds, of one key whose high half is classid (objsubid 1: evals' lockEvals).
 const heldSaveLocks = `
 	select count(*) from pg_locks
 	where locktype = 'advisory' and granted and pid <> $1
 		and database = (select oid from pg_database where datname = current_database())
-		and ((objsubid = 2 and classid in (6901, 6902))
+		and ((objsubid = 2 and classid in (6902, 6903))
 			or (objsubid = 1 and ((classid::bigint << 32) | objid::bigint) in (
 				select hashtext('eval:' || eval_id)::bigint from evals_current)))`
 

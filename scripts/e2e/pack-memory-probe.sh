@@ -1765,9 +1765,9 @@ fresh_path() {
 # packs are hardlinked, then the original provision's jj commands as the measuring jj recorded
 # them, each with this copy's jj and budget, in its order, in its working directory and with its
 # argv, both rewritten to the fresh root. Each runs as provisioning runs it: without the role's
-# GIT_CONFIG block, which provisioning strips. Its origin is GitHub, and each fresh clone below
-# copies the provisioned clone's local objects. A step that fails ends the replay, since every later
-# step rests on it, and the root is removed once its rows are read.
+# GIT_CONFIG block, which provisioning strips. Its origin is the provisioned clone itself. A step
+# that fails ends the replay, since every later step rests on it, and the root is removed once its
+# rows are read.
 r10_provision() {
   local copy=$1 jj=${copy_jj[$1]} step label cwd n=0 status i source_inodes fresh_inodes
   local -a limit=() argv

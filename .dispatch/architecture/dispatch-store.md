@@ -89,7 +89,7 @@ It holds the items each check offered too, one `write_suggestions` row per item,
 `related`, `decision`, and `other_project`, the role of an answered question of another project.
 That migration drops the narrower check constraint and adds the wider one in one statement, so no moment passes with the column unchecked, and it rewrites no row.
 No release after it writes a `decision` row, and the rows written under that role before it stay, because each is the record of what its own check offered.
-The lease pool has one connection per leased loop, one for the boot's one-time parent status fix (lease `parent-status-fix`), one per caller of a delivery intake's hold and one per caller of the keyword fill's hold, thirty, and the count is not kept by hand:
+The lease pool has one connection per leased name, the boot's one-time parent status fix (lease `parent-status-fix`) among them, per caller of the three intakes' holds and per caller of the keyword fill's hold, thirty-two, and the count is not kept by hand:
 each of those callers reserves its connection by name before the server starts any of its loops, whether or not this configuration runs its loop, and a server whose reservations are not exactly the pool's size refuses to serve, naming them (`store.LeaseCallers`).
 The check sees only callers that reserve a name:
 a goroutine added inside a caller that has reserved already, or one reservation passed to a second consumer, takes a connection nothing counted, and the count still matches.
