@@ -32,12 +32,14 @@ func inFlight[T any](f func() T) <-chan T {
 // process started under that disposition inherits it, so an ignoring command's own sleeps and
 // helpers ignore SIGTERM too.
 //
-// It gives up after a minute, which no row here reaches: each row's budget passes once its command
-// has reported that it is running (budgetPassedOnceExists), so the stop under test is what ends
-// each of these commands. It is what a run whose stop never came leaves behind — a command that
-// ignores SIGTERM stays until something kills it, and a failing row has nothing left to kill it
-// with. Every row reads a timeout, which a command that gave up on its own never reports, so no
-// row passes by that end.
+// It gives up after a minute, which no row here reaches: each row's stop comes once its command has
+// reported that it is running — RunCommand's budget passes then (budgetPassedOnceExists), and
+// execRunner's git has a Timeout of its own that passes only after a git started on time and on its
+// way on time has reported it (stopTimeout) — so the stop under test is what ends each of these
+// commands. It is what a run whose stop never came leaves behind — a command that ignores SIGTERM
+// stays until something kills it, and a failing row has nothing left to kill it with. Every row
+// reads a timeout, which a command that gave up on its own never reports, so no row passes by that
+// end.
 const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`
 
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
@@ -49,41 +51,55 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // the end of its budget is still reported as a timeout rather than as a command that could not be
 // run, which is execRunner.Run reading its kill before it propagates the run's own error.
 //
-// Each row's budget passes at a fact of the run, not at a time: once the command has reported
-// that it is running, its trap installed and its helper ready (budgetPassedOnceExists). A budget
-// counted from before the command started could pass, on a loaded machine, before the command had
-// reached that step, and the stop would then find a command with no trap yet, or a helper not yet
-// ignoring SIGTERM. RunCommand's report still names the second its caller gave it as the budget.
+// RunCommand's rows pass their budget at a fact of the run, not at a time: once the command has
+// reported that it is running, its trap installed and its helper ready (budgetPassedOnceExists). A
+// budget counted from before the command started could pass, on a loaded machine, before the
+// command had reached that step, and the stop would then find a command with no trap yet, or a
+// helper not yet ignoring SIGTERM. RunCommand's report still names the second its caller gave it
+// as the budget. execRunner's row hands its git a caller's context that never ends, so the git's
+// own Timeout is the only thing that can stop it, as in main's row (stopTimeout).
 //
-// Each row still holds RunCommand, and execRunner.Run, to the bound main put on their own part: it
-// starts the command within a second of the call (startBound). That start is the kernel's own
-// record of when it made the command's process (markStart), so a shell that a loaded machine was
-// slow to bring to its first line does not move it, as it moved main's budget, which counted that
-// time too.
+// Each row holds the command to the second main gave it from just before the call to the mark it
+// writes once it is running, split at a fact of the run: the kernel's own record of when it made the
+// command's process (testexec.MarkStart). The runner starts the command within a second of the call
+// (startBound), and the command writes that mark within a second of its start (readyBound), on the
+// same clock (testexec.MarkNow). A runner that brings the command to its first line late inside the
+// command's own process — a shell that sleeps and then execs it — leaves the kernel's start where it
+// was and fails the second. What the split gives up is a run whose two spans each keep their second
+// and together pass it, which main's budget failed: a loaded machine's own delay in bringing a
+// started shell to its mark is in the second span, and main's one second counted it against the
+// runner.
 func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	environment := []string{"PATH=" + os.Getenv("PATH")}
 
 	t.Run("a command that handles SIGTERM removes its lock", func(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
+		readyAt := filepath.Join(dir, "ready-at")
 		budget := time.Second
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
+		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + testexec.MarkNow(`"$4"`) + `; : >"$2"; ` + commandLives
 
 		called := testexec.SinceBoot(t)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt})
 		returned := time.Now()
 		elapsed := returned.Sub(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
 			t.Fatalf("the command never reported that it was running (%v): its budget never passed, so this run proves nothing (RunCommand = %v)", statErr, err)
 		}
-		if began := testexec.StartedAfter(t, mark, called); began > startBound {
+		began := testexec.StartedAfter(t, mark, called)
+		if began > startBound {
 			t.Errorf("RunCommand started its command %s after the call, past the %s it has to start it in (RunCommand = %v)", began, startBound, err)
 		}
+		reached := readyAfterStart(t, mark, readyAt)
+		if reached > readyBound {
+			t.Errorf("the command reported that it was running %s after the kernel started it, past the %s it has to report it in: main gave it one second from the call, and the kernel's start of its process is where this row counts it from (RunCommand = %v)", reached, readyBound, err)
+		}
+		t.Logf("RunCommand started its command %s after the call, and the command reported that it was running %s after its start", began, reached)
 		passed, ok := ctx.Deadline()
 		if !ok {
 			t.Fatalf("the command reported that it was running, but its budget had not passed when the run returned after %s (RunCommand = %v)", elapsed, err)
@@ -103,6 +119,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		dir := t.TempDir()
 		ready, marker := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper-of-this-row")
 		trapped, mark := filepath.Join(dir, "helper-trapped"), filepath.Join(dir, "started")
+		readyAt := filepath.Join(dir, "ready-at")
 		budget := time.Second
 		ctx := budgetPassedOnceExists(t, ready)
 		// Both ignore SIGTERM, so the group's SIGKILL after the grace is what ends them, and the
@@ -127,13 +144,13 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// so a helper nothing stopped is still there however long the row waits for it, and a run
 		// that waits on its pipes for ever fails the wait below rather than ending with the helper.
 		helper := `trap '' TERM; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
-		script := testexec.MarkStart(`"$5"`) + `; sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
+		script := testexec.MarkStart(`"$5"`) + `; sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; ` + testexec.MarkNow(`"$6"`) + `; : >"$1"; ` + commandLives
 
 		returned := make(chan error, 1)
 		called := testexec.SinceBoot(t)
 		started := time.Now()
 		go func() {
-			_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped, mark})
+			_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped, mark, readyAt})
 			returned <- err
 		}()
 		var err error
@@ -147,9 +164,15 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		if _, statErr := os.Stat(ready); statErr != nil {
 			t.Fatalf("the command never reported that it was running (%v): its budget never passed, so this run proves nothing (RunCommand = %v)", statErr, err)
 		}
-		if began := testexec.StartedAfter(t, mark, called); began > startBound {
+		began := testexec.StartedAfter(t, mark, called)
+		if began > startBound {
 			t.Errorf("RunCommand started its command %s after the call, past the %s it has to start it in (RunCommand = %v)", began, startBound, err)
 		}
+		reached := readyAfterStart(t, mark, readyAt)
+		if reached > readyBound {
+			t.Errorf("the command reported that it was running, its helper ready, %s after the kernel started it, past the %s it has to report it in: main gave it one second from the call, and the kernel's start of its process is where this row counts it from (RunCommand = %v)", reached, readyBound, err)
+		}
+		t.Logf("RunCommand started its command %s after the call, and the command reported that it was running, its helper ready, %s after its start", began, reached)
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget's stop ended a command that ignores SIGTERM", err, elapsed)
 		}
@@ -165,29 +188,38 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	t.Run("execRunner reports a command that handled SIGTERM and exited 0 as timed out", func(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
+		readyAt := filepath.Join(dir, "ready-at")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
-		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + testexec.MarkNow(`"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
-		// The git's own Timeout is the rest of the test binary's deadline: the budget that ends
-		// it is the caller's, whose deadline passes once the git reports that it is running, and
-		// execRunner.Run bounds the git by both.
-		timeout := testwait.Remaining(t)
-		run := NewRunner(timeout, map[string]string{"git": fakeGit})
-		ctx := budgetPassedOnceExists(t, ready)
+		// The git's own Timeout is the only thing that can stop it: the caller's context never
+		// ends, so a Run that bounds the git by its caller's context alone runs it until it gives
+		// up on its own (commandLives), exit 0 and not timed out. The Timeout is stopTimeout, so a
+		// git that execRunner.Run started within startBound of the call and that reported that it
+		// was running within readyBound of its start has its trap installed when it passes.
+		run := NewRunner(stopTimeout, map[string]string{"git": fakeGit})
 
 		called := testexec.SinceBoot(t)
 		started := time.Now()
-		result, err := run.Run(ctx, Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
+		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: stopTimeout})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
-			t.Fatalf("the git never reported that it was running (%v): its budget never passed, so this run proves nothing (Run = %v)", statErr, err)
+			startMark, markErr := testexec.ReadStartMark(mark)
+			t.Fatalf("the git never reported that it was running (%v) before its own %s Timeout stopped it, so this run proves nothing; a git started within %s of the call that reports within %s of its start is running by then (its start mark %+v, %v; Run = %v, exit %d, timed out %t after %s)",
+				statErr, stopTimeout, startBound, readyBound, startMark, markErr, err, result.ExitCode, result.TimedOut, elapsed)
 		}
-		if began := testexec.StartedAfter(t, mark, called); began > startBound {
+		began := testexec.StartedAfter(t, mark, called)
+		if began > startBound {
 			t.Errorf("execRunner.Run started its git %s after the call, past the %s it has to start it in (Run = %v)", began, startBound, err)
 		}
+		reached := readyAfterStart(t, mark, readyAt)
+		if reached > readyBound {
+			t.Errorf("execRunner.Run's git reported that it was running %s after the kernel started it, past the %s it has to report it in: main gave it one second from the call, and the kernel's start of its process is where this row counts it from (Run = %v)", reached, readyBound, err)
+		}
+		t.Logf("execRunner.Run started its git %s after the call, and the git reported that it was running %s after its start", began, reached)
 		// exec reports a command whose Cancel succeeded and which then exited cleanly as the
 		// context's error, so a Run that propagated that error before reading its own kill would
 		// report this git as one it could not run, and transientCloneFailure would read the next
@@ -196,10 +228,10 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Fatalf("Run = %v after %s, want no error: the git exited 0 on the timeout's SIGTERM, which is a timeout and not a failure to run", err, elapsed)
 		}
 		if !result.TimedOut || result.ExitCode != 0 {
-			t.Errorf("Run = exit %d, TimedOut %t after %s; want exit 0 and timed out: the timeout stopped a git that handled its SIGTERM and left", result.ExitCode, result.TimedOut, elapsed)
+			t.Errorf("Run = exit %d, TimedOut %t after %s; want exit 0 and timed out: the git's own %s Timeout, the only thing here that can stop it, stopped a git that handled its SIGTERM and left", result.ExitCode, result.TimedOut, elapsed, stopTimeout)
 		}
 		if _, statErr := os.Stat(lock); !os.IsNotExist(statErr) {
-			t.Errorf("the lock the git held is still there (%v) after %s: the timeout's end gave it no SIGTERM to remove it on", statErr, elapsed)
+			t.Errorf("the lock the git held is still there (%v) after %s: the git's own %s Timeout gave it no SIGTERM to remove it on", statErr, elapsed, stopTimeout)
 		}
 	})
 }
@@ -207,8 +239,8 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 // budgetPassedOnceExists is a caller's context whose deadline passes as a budget's does
 // (testwait.StandInDeadline: its Err and its cause context.DeadlineExceeded) once path exists,
 // which the command under test writes once it has reached the step its stop must find it at: a
-// trap installed, a helper ready, a lock taken. A budget counted from before the command started
-// could pass, on a loaded machine, before the command had reached that step. Its Deadline, once
+// trap installed, a helper ready. A budget counted from before the command started could pass, on
+// a loaded machine, before the command had reached that step. Its Deadline, once
 // it has passed, is the moment it passed. A path not there within a minute ends the context as a
 // cancel, so a run still going then reads no budget passed, and the test's cleanup ends it the
 // same way.
@@ -235,5 +267,32 @@ func budgetPassedOnceExists(t *testing.T, path string) context.Context {
 }
 
 // startBound is how soon after the call RunCommand, and execRunner.Run, start the command: main's
-// rows gave each command one second from just before the call to report that it was running.
+// rows gave each command one second from just before the call to report that it was running, and
+// this is that second's first span, to the kernel's start of the command's process.
 const startBound = time.Second
+
+// readyBound is how soon after the kernel started the command it reports that it is running: the
+// second span of main's one second, counted from that start, so the time the runner and the
+// machine took to make the command's process is startBound's and not this span's.
+const readyBound = time.Second
+
+// stopTimeout is the Timeout execRunner's row gives its git, the only thing that can stop it: the
+// two spans of main's second, so a git started within startBound of the call that reports that it
+// is running within readyBound of its start has done so before the Timeout passes.
+const stopTimeout = startBound + readyBound
+
+// readyAfterStart is how long after the kernel started the process that wrote the start mark at mark
+// (testexec.MarkStart) that process wrote the mark at ready (testexec.MarkNow). Both count from boot
+// on one clock, which the two read to within a tick (testexec.ClockTick).
+func readyAfterStart(t *testing.T, mark, ready string) time.Duration {
+	t.Helper()
+	start, err := testexec.ReadStartMark(mark)
+	if err != nil {
+		t.Fatalf("read the command's start mark: %v", err)
+	}
+	at, err := testexec.ReadNowMark(ready)
+	if err != nil {
+		t.Fatalf("read the mark the command wrote once it was running: %v", err)
+	}
+	return at - start.Started
+}
