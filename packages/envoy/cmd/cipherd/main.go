@@ -324,6 +324,10 @@ func main() {
 	// operator transcribes: the grace period must cover it in addition to any preStop pause the
 	// deployment adds, because the pause and this drain are both paid out of the one grace period.
 	drain := time.Duration(cfg.DrainSeconds) * time.Second
+	// CONTROL ONLY: the plant no-drain stops at the signal with no drain.
+	if os.Getenv("ENVOY_CONTROL_PLANT") == "no-drain" {
+		drain = 0
+	}
 	slog.Info("broker stop budget", "drain", wholeSeconds(drain), "shutdown", wholeSeconds(shutdownTimeout),
 		"total", wholeSeconds(drain+shutdownTimeout))
 	// How the broker signs in to its database, logged before anything reaches for AWS or the

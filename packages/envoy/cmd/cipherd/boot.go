@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -341,6 +342,10 @@ func stop(ctx context.Context, s brokerStop) {
 	}
 	s.Log.Info("broker shutting down")
 	shutdownCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	// CONTROL ONLY: the plant old-shutdown gives the shutdown the old 10 s budget.
+	if os.Getenv("ENVOY_CONTROL_PLANT") == "old-shutdown" {
+		shutdownCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+	}
 	defer cancel()
 	// Every port drains out of the one budget, and beside the others rather than one after
 	// another: a command streaming an answer through the proxy and a caller waiting on the API

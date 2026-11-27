@@ -321,6 +321,10 @@ var gcloudSettingsDeadline = 5 * time.Second
 func readGcloudSettings(ctx context.Context, gcloud gcloudCommand) (gcloudSettings, error) {
 	var settings gcloudSettings
 	ctx, cancel := context.WithTimeout(ctx, gcloudSettingsDeadline)
+	// CONTROL ONLY: the plant unbounded-settings reads gcloud's settings with no deadline.
+	if os.Getenv("ENVOY_CONTROL_PLANT") == "unbounded-settings" {
+		ctx, cancel = context.WithCancel(context.WithoutCancel(ctx))
+	}
 	defer cancel()
 	out, err := runGcloud(ctx, gcloud, "config", "list", "--format=json")
 	if err != nil {

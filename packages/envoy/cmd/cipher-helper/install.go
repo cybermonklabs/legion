@@ -321,7 +321,8 @@ WantedBy=default.target
 	case job != "":
 		queued = "job " + job + " for the unit is still queued"
 	}
-	if queued != "" {
+	// CONTROL ONLY: the plant undrain-queued sends undrain with a job still queued.
+	if queued != "" && os.Getenv("ENVOY_CONTROL_PLANT") != "undrain-queued" {
 		fmt.Fprintf(stdout, "the helper is left draining (refusing new sessions): %s, and an undrain now would let a session register on the helper that job may stop; the drain ends with the restart, or by itself within %s of the drain\n", queued, helper.DefaultDrainBound)
 		if restartErr != nil {
 			return fmt.Errorf("%w; %s, so install did not undrain the helper", restartErr, queued)
@@ -345,6 +346,10 @@ var restartTimeout = helper.InstallRestartTimeout
 // restartTimeout.
 func restartHelper() error {
 	ctx, cancel := context.WithTimeout(context.Background(), restartTimeout)
+	// CONTROL ONLY: the plant unbounded-restart waits for the restart with no bound.
+	if os.Getenv("ENVOY_CONTROL_PLANT") == "unbounded-restart" {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 	err := systemctlContext(ctx, "restart", helper.UnitName)
 	if err != nil && ctx.Err() != nil {
