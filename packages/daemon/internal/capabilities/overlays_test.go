@@ -81,7 +81,7 @@ func TestCheckOverlaysRefusesOnlyANonZeroExit(t *testing.T) {
 // judged, and fails. A call in which it timed out after that first act is told apart by what reached
 // the refused file's Oh My Pi:
 //   - its trap recorded a SIGTERM: the timeout's stop reached a live Oh My Pi, whose own run a loaded
-//     machine slowed past its 300 ms. That call is not judged, and the row calls again, within a minute.
+//     machine slowed past its 300 ms, so its exit says nothing of the check.
 //   - it recorded none: Oh My Pi exited on its own, a refusal. A correct check reads that as its own
 //     exit, with one exception: kill succeeds on a zombie, so a refusal whose reap os/exec took only
 //     after the timeout passed is stopped "as a timeout" with no SIGTERM delivered, which looks exactly
@@ -90,7 +90,15 @@ func TestCheckOverlaysRefusesOnlyANonZeroExit(t *testing.T) {
 //     Oh My Pi recorded its SIGTERM, so its timeout passes no sooner than that mark plus 300 ms. A
 //     refusal that exited reapBound or more before that earliest moment would have needed os/exec to
 //     reap it that late, and the row fails it as a refusal read as a timeout. One that exited closer
-//     than that lies in the window no fact outside os/exec orders, and is not judged.
+//     than that lies in the window no fact outside os/exec orders, and its exit is not judged.
+//
+// Either way, no correct check reports the refused file's timeout before the earliest moment it could
+// pass, the slow file's SIGTERM mark plus 300 ms: only the end of the refused file's own budget makes
+// its run time out, and that budget starts after the mark. The row reads the time since boot as soon
+// as CheckOverlays returns, and a call that returned two ticks or more before that moment, more than
+// the two readings together can be off by (testexec.ClockTick), read a refusal as a timeout and
+// fails, however loaded the machine. Any other such call is not judged, and the row calls again,
+// within a minute.
 //
 // A check that stops at the first timeout never runs the refused file at all, and fails the row at once.
 func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
@@ -98,6 +106,8 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	commandTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { commandTimeout = was })
 	const stopBound, reapBound = 5 * time.Second, 200 * time.Millisecond
+	// Each time since boot the row reads, its own and a stand-in's mark, is off by less than a tick.
+	const clockSlack = 2 * testexec.ClockTick
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	// Each call's files are in the directory LEGION_TEST_RUN names. The slow file's run waits until
@@ -154,6 +164,7 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 		}()
 
 		got, err := CheckOverlays(context.Background(), img, []string{slow, bad}, []string{slow, bad})
+		answered := testexec.SinceBoot(t)
 		close(returned)
 
 		// The refused file's own run started where its Oh My Pi logged that file alone.
@@ -168,9 +179,9 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 			if !badStarted {
 				t.Fatalf("call %d: the refused file's run timed out before its Oh My Pi's first act: it must answer inside its %s timeout (CheckOverlays = %q, %v)", calls, commandTimeout, got, err)
 			}
+			slowTermed, slowErr := testexec.ReadNowMark(filepath.Join(run, "slow.termed"))
 			why := "its Oh My Pi recorded the timeout's SIGTERM: the stop reached a live Oh My Pi whose own run outlasted its timeout"
 			if !badTermed {
-				slowTermed, slowErr := testexec.ReadNowMark(filepath.Join(run, "slow.termed"))
 				exited, exitErr := testexec.ReadNowMark(filepath.Join(run, "bad.exiting"))
 				if slowErr != nil || exitErr != nil {
 					t.Fatalf("call %d: the refused file's run read as timed out, its Oh My Pi passed its first act and recorded no SIGTERM, and the row cannot read the marks that order its exit against its timeout (slow file's SIGTERM mark: %v; refused file's exit mark: %v): CheckOverlays = %q, %v", calls, slowErr, exitErr, got, err)
@@ -180,6 +191,9 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 					t.Fatalf("call %d: the refused file's run read as timed out, but its Oh My Pi passed its first act, recorded no SIGTERM, and exited %s before the earliest moment its %s timeout could pass: the check read a refusal as a timeout (CheckOverlays = %q, %v)", calls, reap, commandTimeout, got, err)
 				}
 				why = fmt.Sprintf("its Oh My Pi recorded no SIGTERM and exited only %s before the earliest moment its timeout could pass, inside the window from a zombie's exit to os/exec's reap, which no fact outside os/exec orders", earliest-exited)
+			}
+			if early := slowTermed + commandTimeout - answered; slowErr == nil && early >= clockSlack {
+				t.Fatalf("call %d: the refused file's run read as timed out, but CheckOverlays returned %s before the earliest moment its %s timeout could pass, the slow file's SIGTERM mark plus that timeout: no timeout had ended the run, so the check read a refusal as a timeout (CheckOverlays = %q, %v)", calls, early, commandTimeout, got, err)
 			}
 			if time.Now().Before(until) {
 				t.Logf("call %d is not judged: %s (%v)", calls, why, err)
