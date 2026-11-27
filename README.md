@@ -163,15 +163,19 @@ bun run dispatch:local                                       # Dispatch, seeded 
 ```
 
 In a Legion issue pod, the issue's roles share one memory limit, and a whole run can fill it for
-every role. So there `go -C packages/daemon test ./...`, `go -C packages/envoy test ./...`, the
-whole-package `(cd packages/<package> && bun run typecheck && bun run test)` and
-`.github/scripts/check-biome-tree.sh` are CI's work on the pull request, not the pod's. One named
-test or file stays in the pod: `go -C packages/daemon test ./internal/api -run '^TestName$'`,
-`(cd packages/<package> && bun test <file> -t '<test name>')` and `bun test scripts/<file>`.
-`skills/legion-worker/references/tools.md` sets this rule, where it says what runs in the pod and
-what runs on the pull request. It lets a role run `go -C packages/daemon vet -tags e2e ./...` in
-the pod, and CI's `typecheck` job runs it on the pull request. Where the project's deployment
-instructions send a compile out of the pod, those instructions win, and the vet is then CI's work.
+every role. `skills/legion-worker/references/tools.md` keeps one named test or file in the pod,
+such as `go -C packages/daemon test ./internal/api -run '^TestName$'`,
+`(cd packages/<package> && bun test <file> -t '<test name>')` and `bun test scripts/<file>`. It
+also lets a role compile what it touched there, as one package's `bun run typecheck` does, and
+run `go -C packages/daemon vet -tags e2e ./...`. It sends a whole module's test run, such as
+`go -C packages/daemon test ./...` and `go -C packages/envoy test ./...`, to CI. It does not name
+the whole-package `(cd packages/<package> && bun run typecheck && bun run test)`, whose test run
+is a whole-package suite, or `.github/scripts/check-biome-tree.sh`, which checks the whole tree.
+It leaves the place of such heavy runs to the project's deployment instructions. The four whole
+runs leave the pod, and CI runs each of them, on the pull request or, for a slow suite the pull
+request holds back, in the merge queue. Where the project's deployment instructions name another
+place for a heavy run, or send a compile out of the pod, which takes the typecheck and the vet
+out too, those instructions win.
 
 The Bun test scripts that run a package's files side by side name their worker count:
 `--parallel=4` in `packages/pi-legion`, and `--parallel=8` in `packages/dispatch`'s `test:web` and
