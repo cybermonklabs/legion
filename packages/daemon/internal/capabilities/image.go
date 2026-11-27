@@ -634,8 +634,10 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	cmd.Dir = img.WorkDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	holdDone := controlHold3(&cmd.Stdout, &cmd.Stderr, attempt) // CONTROL ONLY (r63 hold3)
 	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
+	holdDone() // CONTROL ONLY (r63 hold3)
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
