@@ -112,9 +112,10 @@ import (
 // that repository's rows alone (the pull request's repository, the run's), where it counts
 // something: a repository's part that is empty, such as a lead time of the day's pull requests
 // when no deploy has shipped any of them yet, is no row (repositoryRows), since R12 writes no zero
-// row for a repository, and that repository's day reads "no data" for the series. So every row
-// counted is in one repository's rows, and the repositories' rows of a series partition its
-// all-repositories row, an empty part adding nothing: their n, sum, num, den, counts and
+// row for a repository, and that repository's day reads "no data" for the series: each delivery
+// and CI eval with day rows lists one series, so the day holds no row of the eval (cutZeros). So
+// every row counted is in one repository's rows, and the repositories' rows of a series partition
+// its all-repositories row, an empty part adding nothing: their n, sum, num, den, counts and
 // via_repository add up to its own, and their samples are its samples. A family a project holds no
 // row of that day writes no row: the explicit zero rows of a series from its first input day on
 // are the refresher's, in the all-repositories row alone (ZeroDeliveryDay, ProjectDay.WithZeros).
@@ -127,6 +128,17 @@ import (
 // (deliveryRead.days[1:]), and the pull requests alone build the rows of pr-open-to-merge and
 // rework-share, which read no deploy, and the pull requests they count, under no deploy repository
 // (deliveryRead.days[0]).
+//
+// A read of a day that the bound of a window's pull requests refuses (delivery.RefusedWindow, a
+// window holding more than 50,000) costs that day alone
+// (dispatch://INFRA-2916/comment/0d936c90-6b07-4049-bca2-7b08ea901db3): the day holds no row, zero
+// row or item of the evals the refused window decides (DeliveryDay.refuse, refusedEval), so they
+// read "no data" on it, as R12 reads a missing row, and every other day of the read is built as
+// before. The day's own window decides every delivery and CI eval of the day but pr-ci, whose
+// PR-checks runs count for their own pull requests (attribution.check); the window of the rows
+// before the day that one repository's deploys of the day can ship (delivery.Deploys.Earlier)
+// decides that repository's rows of deploy-frequency, deploy-run-success, production-deploy,
+// staging-e2e and staging-deploy, the lead times and pr-ci reading none of it.
 
 // The slugs of the delivery and CI evals (dispatch://INFRA-2916/artifact/plan-md, "The seeded
 // catalogue"): an eval's id is EvalID(project, slug).
@@ -264,6 +276,41 @@ type DeliveryDay struct {
 	// and pushJobs the jobs of each the cards follow.
 	checks, pushes      []dayCIRun
 	checkJobs, pushJobs map[int64][]delivery.DeliveryRunJob
+	// refused is the window of the day's read the bound of a window's read refused, nil where none
+	// did (refuse).
+	refused *delivery.RefusedWindow
+}
+
+// refuse drops from the day what window, a window of its read the bound of a window's read
+// refused, decides, so the day holds no row and no item of those evals (refusedEval): a refusal of
+// the day's own window (Repo "") drops its pull requests, which the lead times, pr-open-to-merge and
+// rework-share count; and a refusal of the day's own window or of the window of the earlier rows
+// of its deploys (Repo, the deploy repository) drops the deploys and the push runs, which count for
+// the projects of the pull requests the deploys ship (attribution.deploy and pushRuns), of the day
+// and before it (delivery.Deploys.ShippedBy). The PR-checks runs stay. Where both windows are
+// refused, the day's own is the one given, which drops the most.
+func (d *DeliveryDay) refuse(window delivery.RefusedWindow) {
+	d.refused = &window
+	if window.Repo == "" {
+		d.prs = nil
+	}
+	d.deploys, d.pushes, d.pushJobs = nil, nil, nil
+}
+
+// refusedEval reports whether a refusal of window drops slug's rows of the day (DeliveryDay.refuse):
+// deploy-frequency, deploy-run-success and the deploy cards' evals for either window, and every
+// other eval but pr-ci for the day's own.
+func refusedEval(window delivery.RefusedWindow, slug string) bool {
+	if _, card := CardOf(slug); card || slug == SlugDeployFrequency || slug == SlugDeployRunSuccess {
+		return true
+	}
+	return window.Repo == "" && slug != SlugPRCI
+}
+
+// refusedEvals is the evals a refusal of window drops the rows of (refusedEval), in
+// deliveryDaySlugs' order.
+func refusedEvals(window delivery.RefusedWindow) []string {
+	return slices.DeleteFunc(slices.Clone(deliveryDaySlugs), func(slug string) bool { return !refusedEval(window, slug) })
 }
 
 // deliveryRead is one UTC day's delivery and CI rows (readDeliveryDays): the day's pull requests
@@ -277,18 +324,39 @@ type deliveryRead struct {
 	Day   time.Time
 	rules []delivery.DeliverySettings
 	days  []DeliveryDay
+	// refused is each window of the day's read the bound of a window's read refused: the day's own
+	// first, then the window of the earlier rows of each repository's deploys, in rules' order;
+	// none where every window was answered.
+	refused []delivery.RefusedWindow
+}
+
+// zeros is project's zero rows of the day (ZeroDeliveryDay) less those of the evals a refused
+// window of the day's read drops (DeliveryDay.refuse): the day reads "no data" for those evals, not
+// zero.
+func (d deliveryRead) zeros(project string) []DayRow {
+	zeros := ZeroDeliveryDay(project, d.Day, d.rules).Rows
+	if len(d.refused) == 0 {
+		return zeros
+	}
+	return slices.DeleteFunc(zeros, func(row DayRow) bool {
+		at := slices.IndexFunc(d.days, func(day DeliveryDay) bool { return day.deployRepo == row.DeployRepo })
+		return at >= 0 && d.days[at].refused != nil && refusedEval(*d.days[at].refused, slugOf(project, row.EvalID))
+	})
 }
 
 // repoReads is what a day reads of one repository as the deploy repository, under settings, its
 // own rule, whose DeployRepo is that repository, whose history starts at since: its deploys, its
-// apply runs and its CI runs; or, of an events repository (IsEventsRepo), its project's posted
-// deploys (posted), which a day's rows read whole (postedDayAs).
+// apply runs and its CI runs, with refused the window of the earlier rows of its deploys the bound
+// of a window's read refused (delivery.DaysDeploys.Refused), nil where none did; or, of an events
+// repository (IsEventsRepo), its project's posted deploys (posted), which a day's rows read whole
+// (postedDayAs).
 type repoReads struct {
 	settings delivery.DeliverySettings
 	since    time.Time
 	deploys  delivery.Deploys
 	applies  delivery.ApplyRows
 	ci       delivery.CIRows
+	refused  *delivery.RefusedWindow
 	posted   postedRecord
 }
 
@@ -317,7 +385,11 @@ type repoReads struct {
 // its part of (a posted deploy that finished before a day finished before each pull request merged
 // on it, so postedDayAs counts it on no day and ships no pull request of the day by it). The reads
 // of the rows depend on none of each other, and are read side by side, and then the reads of what
-// attributes them, side by side too.
+// attributes them, side by side too. A window of a day's read that the bound of a window's read
+// refuses (delivery.RefusedWindow: the day's own, or that of the rows before the day a
+// repository's deploys of the day can ship) drops from that day alone what it decides
+// (DeliveryDay.refuse) and is named in its read (deliveryRead.refused); no refusal fails the read,
+// and every other day is read as before.
 func (s *Store) readDeliveryDays(ctx context.Context, repos []keptRepo, days []time.Time, applyRows map[string]*delivery.ApplyRows,
 	postedRows map[string]postedRecord) ([]deliveryRead, error) {
 	if len(days) == 0 {
@@ -335,9 +407,10 @@ func (s *Store) readDeliveryDays(ctx context.Context, repos []keptRepo, days []t
 		posted   postedRecord
 	}
 	var prs [][]delivery.DeliveryPullRequest
+	var refused []*delivery.RefusedWindow
 	reads := make([]repoDays, len(repos))
 	parts := []func(context.Context) error{func(ctx context.Context) (err error) {
-		if prs, err = delivery.ListPullRequestsOnDays(ctx, pool, days); err != nil {
+		if prs, refused, err = delivery.ListPullRequestsOnDays(ctx, pool, days); err != nil {
 			return fmt.Errorf("read the pull requests of %s: %w", daysOf(days), err)
 		}
 		return nil
@@ -409,8 +482,9 @@ func (s *Store) readDeliveryDays(ctx context.Context, repos []keptRepo, days []t
 				return nil, fmt.Errorf("read the deploy runs of %s from %s on: %w", one.settings.DeployRepo, day.Format(time.DateOnly), err)
 			}
 			dayReads[i].deploys, dayReads[i].applies, dayReads[i].ci = one.deploys.Deploys[d], applies, one.ci[d]
+			dayReads[i].refused = one.deploys.Refused[d]
 		}
-		built[d] = deliveryReadOf(day, repos, prs[d], dayReads, attribute)
+		built[d] = deliveryReadOf(day, repos, prs[d], refused[d], dayReads, attribute)
 	}
 	return built, nil
 }
@@ -419,10 +493,15 @@ func (s *Store) readDeliveryDays(ctx context.Context, repos []keptRepo, days []t
 // that day, alone (days[0]), and the day as read with each of repos as the deploy repository under
 // its own rule, from what reads holds of it, in repos' order (days[1:], dayAs, postedDayAs of an
 // events repository); each row attributed to its projects by attribute, and each pull request's
-// lead times kept in the rows of the first deploy to ship it (firstShipped). The refresher's read of
-// its days (readDeliveryDays) and the read-time path of the delivery and CI evals (ComputeAtRead)
-// both build their days through it.
-func deliveryReadOf(day time.Time, repos []keptRepo, prs []delivery.DeliveryPullRequest, reads []repoReads, attribute attribution) deliveryRead {
+// lead times kept in the rows of the first deploy to ship it (firstShipped). own is the day's own
+// window where the bound of a window's read refused it, nil where it did not: it drops from every
+// one of the day's reads what it decides, and a repository's refused earlier window
+// (repoReads.refused) from that repository's read (DeliveryDay.refuse), before firstShipped picks
+// each pull request's first deploy. The refresher's read of its days (readDeliveryDays) and the
+// read-time path of the delivery and CI evals (ComputeAtRead), which refuses no window, both build
+// their days through it.
+func deliveryReadOf(day time.Time, repos []keptRepo, prs []delivery.DeliveryPullRequest, own *delivery.RefusedWindow, reads []repoReads,
+	attribute attribution) deliveryRead {
 	read := deliveryRead{Day: day, rules: keptRules(repos), days: make([]DeliveryDay, 0, len(repos)+1)}
 	alone := DeliveryDay{Day: day}
 	for _, pr := range prs {
@@ -432,13 +511,27 @@ func deliveryReadOf(day time.Time, repos []keptRepo, prs []delivery.DeliveryPull
 			alone.prs = append(alone.prs, attribute.pullRequest(pr, nil, nil))
 		}
 	}
+	if own != nil {
+		read.refused = append(read.refused, *own)
+		alone.refuse(*own)
+	}
 	read.days = append(read.days, alone)
 	for i, one := range reads {
+		var repoDay DeliveryDay
 		if IsEventsRepo(one.settings.DeployRepo) {
-			read.days = append(read.days, postedDayAs(day, prs, one.posted, repos[i]))
-			continue
+			repoDay = postedDayAs(day, prs, one.posted, repos[i])
+		} else {
+			repoDay = attribute.dayAs(day, prs, one)
 		}
-		read.days = append(read.days, attribute.dayAs(day, prs, one))
+		window := own
+		if one.refused != nil {
+			read.refused = append(read.refused, *one.refused)
+			window = cmp.Or(window, one.refused)
+		}
+		if window != nil {
+			repoDay.refuse(*window)
+		}
+		read.days = append(read.days, repoDay)
 	}
 	firstShipped(read.days[1:])
 	return read

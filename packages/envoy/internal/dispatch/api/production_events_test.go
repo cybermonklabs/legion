@@ -528,12 +528,15 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	})
 	failure := writeProductionFailure(t, rig.database, brokerTestProject, "alerts:1", deploy.ID, now.Add(-time.Minute))
 	path := productionEventStatePath(brokerTestProject, failure.ID)
+	// readDaemon writes the controller observation a whole read of a daemon naming session records
+	// (legion.FieldController under legion.AdmissionKey), at at.
 	readDaemon := func(at time.Time, session string) {
 		t.Helper()
-		state := legion.State{ControllerLocator: &legion.ControllerLocator{SessionID: session}}
-		if _, err := legion.RecordRead(context.Background(), rig.database.Pool, brokerTestProject, at, 1, state.Observations()); err != nil {
-			t.Fatalf("record a read naming controller %s: %v", session, err)
+		value, err := json.Marshal(session)
+		if err != nil {
+			t.Fatalf("encode the controller session %s: %v", session, err)
 		}
+		seedLegionObservation(t, rig.database, brokerTestProject, legion.AdmissionKey, legion.FieldController, string(value), at)
 	}
 	stateOf := func() prodevents.Event {
 		t.Helper()

@@ -254,9 +254,10 @@ const (
 	WaitingPerson  = "person"
 )
 
-// Wait is the daemon's record of what a root waits on, as the sampler wrote it: the kind of wait
-// (`ask`, `gate`, or whatever a later daemon names), when it began, and when a person answered
-// it. An answered root waits for a slot at the front of the queue rather than for a person.
+// Wait is the daemon's record of what a root waits on, as the Legion state intake wrote it: the
+// kind of wait (`ask`, `gate`, or whatever a later daemon names), when it began, and when a person
+// answered it. An answered root waits for a slot at the front of the queue rather than for a
+// person.
 type Wait struct {
 	Kind       string
 	Since      *time.Time

@@ -3580,28 +3580,30 @@ func requireOneBinderThroughout(t *testing.T, pair *dispatchPair, js natsgo.JetS
 	}
 }
 
-// requireOneHoldPerDurable requires that the holds the intakes took for the delivery durables are
-// one per durable and not one per process: duty_holds holds delivery-intake-<durable> and nothing
+// requireOneHoldPerDurable requires that the holds the intakes took for their durables are one
+// per durable and not one per process: duty_holds holds delivery-intake-<durable> and nothing
 // else of that shape. That one name per durable is what every envoy-dispatch process of every
 // build takes (delivery.intakeHoldName), and so what holds every process but one off it; a name
-// of each process's own would hold nobody off.
+// of each process's own would hold nobody off. The Legion state intake's hold is of that shape
+// too, and one per durable like the delivery durables' two: it runs through the same held durable
+// (delivery.NewHeldDurable) in every process with NATS.
 func requireOneHoldPerDurable(t *testing.T, pair *dispatchPair) {
 	t.Helper()
 	rows, err := pair.database.Pool.Query(context.Background(),
 		`select name from duty_holds where name like 'delivery-intake-%' order by name`)
 	if err != nil {
-		t.Fatalf("read the delivery intakes' holds: %v", err)
+		t.Fatalf("read the intakes' holds: %v", err)
 	}
 	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("read the delivery intakes' holds: %v", err)
+		t.Fatalf("read the intakes' holds: %v", err)
 	}
-	want := make([]string, 0, len(deliveryDurables))
-	for _, durable := range deliveryDurables {
+	want := make([]string, 0, len(deliveryDurables)+1)
+	for _, durable := range append(slices.Clone(deliveryDurables), bus.DispatchLegionStateDurable) {
 		want = append(want, "delivery-intake-"+durable)
 	}
 	if !slices.Equal(held, want) {
-		t.Errorf("the delivery intakes hold %v, want the one hold per durable every process takes, %v:\n%s", held, want, pair.buffers())
+		t.Errorf("the intakes hold %v, want the one hold per durable every process takes, %v:\n%s", held, want, pair.buffers())
 	}
 }
 

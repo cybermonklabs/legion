@@ -181,9 +181,11 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // reads the stored figures are folded from, in the folds' order (by day, then by the key each row
 // is stored under, its repository and its series), and every range of FigureLengths ending on or
 // before that day that holds one of them folded by FoldStatistics, and every day before it that
-// holds one folded alone over its headline series. No list is sorted before the fold, so every
-// quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
-// encodeFigures), so a few stored figures are held to values worked out by hand as well
+// holds one folded alone over its headline series, each over its rows' parts and, in a
+// repository's cut, the zero part of each series of the eval a day of them holds no row of
+// (cutZeros, withZeros), as a read of the rows folds them. No list is sorted before the fold, so
+// every quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
+// withZeros, encodeFigures), so a few stored figures are held to values worked out by hand as well
 // (expectPinnedFigures).
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
@@ -242,10 +244,11 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 				for i, row := range held {
 					allParts[i] = row.Part
 				}
+				zeros := cutZeros(entry.Definition, held)
 				within := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
 					lo := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(from) })
 					hi := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(to) })
-					return held[lo:hi], allParts[lo:hi]
+					return held[lo:hi], withZeros(allParts[lo:hi], zeros)
 				}
 				for end := held[0].Part.Day.AddDate(0, 0, 1); !end.After(through); end = end.AddDate(0, 0, 1) {
 					for _, n := range FigureLengths {

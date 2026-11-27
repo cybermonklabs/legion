@@ -514,11 +514,13 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 // merged before the first day is in neither. At the bound, the first day's earlier rows are every
 // one of its pull requests, oldest merge first, and its deploy ships them all, the newest
 // included; the second day's are its one, which its deploy ships. One pull request more before the
-// first day is past the bound, and the read is refused, naming that window and the bound, with no
-// day's rows answered, although the second day's window leaves all but one of its share unused: a
-// limit the windows shared, twice the bound here, answered the first day one pull request more
-// than a window's read holds, and with more still kept the oldest of both days' together, leaving
-// out the newest, which the deploys ship (dispatch://INFRA-2916).
+// first day is past the bound, and the first day alone is refused: no row of its deploys answered
+// and its refusal naming that window and the bound, while the second day is answered as before,
+// although its window leaves all but one of its share unused. A limit the windows shared, twice
+// the bound here, answered the first day one pull request more than a window's read holds, and
+// with more still kept the oldest of both days' together, leaving out the newest, which the
+// deploys ship (dispatch://INFRA-2916); and a refusal of the whole read failed the second day with
+// the first (dispatch://INFRA-2916/comment/0d936c90-6b07-4049-bca2-7b08ea901db3).
 func TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	days := []time.Time{time.Date(2024, 5, 10, 0, 0, 0, 0, time.UTC), time.Date(2024, 5, 11, 0, 0, 0, 0, time.UTC)}
@@ -562,17 +564,32 @@ func TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow(t *testing.T) {
 
 	seedPullRequestsASecondApart(t, ctx, pool, waitingRepo, 1000+MaxPullRequestsPerWindow, 1, days[0].Add(-2*time.Second))
 	read, err = ReadDaysDeploys(ctx, pool, settings, days, true)
-	if err == nil {
-		t.Fatalf("ReadDaysDeploys answered %d earlier pull requests of the first day and %d of the second with no error: the first day's window %s holds %d, past the bound of %d, and the share the second day's window leaves unused is not the first's",
-			len(read.Deploys[0].Earlier.PullRequests), len(read.Deploys[1].Earlier.PullRequests), firstWindow, MaxPullRequestsPerWindow+1, MaxPullRequestsPerWindow)
+	if err != nil {
+		t.Fatalf("ReadDaysDeploys with %d pull requests in the first day's earlier window %s, past the bound of %d: %v, want the first day refused and the second answered",
+			MaxPullRequestsPerWindow+1, firstWindow, MaxPullRequestsPerWindow, err)
 	}
-	if !strings.Contains(err.Error(), firstWindow) || !strings.Contains(err.Error(), strconv.Itoa(MaxPullRequestsPerWindow)) {
-		t.Fatalf("ReadDaysDeploys: %v, want a refusal naming the first day's earlier window %s and the bound %d", err, firstWindow, MaxPullRequestsPerWindow)
+	refused := read.Refused[0]
+	if refused == nil {
+		t.Fatalf("ReadDaysDeploys answered %d earlier pull requests of the first day and refused none: its window %s holds %d, past the bound of %d, and the share the second day's window leaves unused is not the first's",
+			len(read.Deploys[0].Earlier.PullRequests), firstWindow, MaxPullRequestsPerWindow+1, MaxPullRequestsPerWindow)
 	}
-	if !reflect.DeepEqual(read, DaysDeploys{}) {
-		t.Fatalf("ReadDaysDeploys answered %d days' deploys beside its refusal, want none", len(read.Deploys))
+	if !refused.From.Equal(time.Time{}) || !refused.To.Equal(days[0]) || refused.Repo != waitingRepo || refused.Bound != MaxPullRequestsPerWindow ||
+		!strings.Contains(refused.String(), firstWindow) || !strings.Contains(refused.String(), strconv.Itoa(MaxPullRequestsPerWindow)) {
+		t.Fatalf("ReadDaysDeploys refused the first day as %q, want the window of its earlier rows %s of %s and the bound %d", refused, firstWindow, waitingRepo, MaxPullRequestsPerWindow)
 	}
-	t.Logf("past the bound: %v", err)
+	if !reflect.DeepEqual(read.Deploys[0], Deploys{}) {
+		t.Fatalf("ReadDaysDeploys answered %d deploy runs and %d earlier pull requests of the refused first day, want none", len(read.Deploys[0].Started.Runs), len(read.Deploys[0].Earlier.PullRequests))
+	}
+	if read.Refused[1] != nil {
+		t.Fatalf("ReadDaysDeploys refused the second day too (%s), want it answered as before", read.Refused[1])
+	}
+	if second := read.Deploys[1].Earlier.PullRequests; len(second) != 1 || second[0].Repo != waitingRepo || second[0].Number != 1 {
+		t.Fatalf("beside the first day's refusal, the second day's earlier pull requests number %d, want %s#1 alone", len(second), waitingRepo)
+	}
+	if got, want := shipped(1), map[int64][]string{2: {waitingRepo + "#1"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("beside the first day's refusal, the second day's deploys ship %v, want %v", got, want)
+	}
+	t.Logf("past the bound: %s", refused)
 }
 
 // seedPullRequestsASecondApart writes count merged pull requests of repo in one statement, numbered

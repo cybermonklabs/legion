@@ -1,6 +1,6 @@
 package legion
 
-// issue.go holds the one per-issue rule of what the sampler recorded (dispatch://INFRA-4869): how
+// issue.go holds the one per-issue rule of what the Legion intake recorded (dispatch://INFRA-4869): how
 // an issue's newest observations read as its phase, its slot, what it waits on and the claims of
 // its roles (IssueState), and where the project's admission block puts it (AdmissionOf, and
 // Admission's Place, Blockers and BlockersOf). Two readers take an issue through it: the Legion
@@ -38,7 +38,7 @@ type IssueState struct {
 	// Slot is the index of the admission slot the issue holds, nil while it holds none.
 	Slot *int
 	// WaitingOn is what a root in `awaiting_person` waits on, the daemon's object exactly as the
-	// sampler stored it, nil where the issue waits on nothing. It stays bytes: Dispatch records
+	// intake stored it, nil where the issue waits on nothing. It stays bytes: Dispatch records
 	// the wait and does not model it, so a field a later daemon adds reaches every reader, and each
 	// reader takes from it what it shows (the board's card takes three fields).
 	WaitingOn json.RawMessage
@@ -57,7 +57,7 @@ type RoleClaim struct {
 // Observe takes one newest observation into the issue, as legion_current holds it: the field, its
 // value as JSON and when it was recorded. A value that is not the shape the field is read as
 // leaves the field as it stands: the daemon owns the wire shape, and a reader of one names what it
-// expects rather than trusting it. A `null` is the sampler's word for a field the newest good read
+// expects rather than trusting it. A `null` is the intake's word for a field the newest good read
 // no longer carries (recordObservations), so it clears the slot, the wait and a role's claim; a
 // claim whose value is not a string names no state, and is no claim either. A field this does not
 // name, such as the issue's `tree`, is not part of its state. The slot is decoded by the one
@@ -201,9 +201,9 @@ type IssueCurrent struct {
 	// Dispatch stored for the issue, so PhaseSince is when Dispatch first saw it there, not when it
 	// started; after planning, `null`, planning, the current planning is not the first value
 	// stored, so it is seen, and PhaseSince is when the issue came back (dispatch://INFRA-4869's
-	// plan, decision 5). The sampler never writes two equal rows in a row (recordObservations), so
-	// "distinct" changes nothing for its rows; it keeps the answer right for rows another writer
-	// left that break that rule.
+	// plan, decision 5). The intake never writes two equal rows in a row (recordObservations and
+	// recordEvents), so "distinct" changes nothing for its rows; it keeps the answer right for rows
+	// another writer left that break that rule.
 	PhaseStartSeen bool
 	// Admission is the project's admission block as the newest read recorded it, nil while no read
 	// has recorded one: before the first read of a daemon, for a daemon that sends none, and for a
@@ -220,7 +220,7 @@ type IssueCurrent struct {
 // legion_observations before the newest, through the index legion_observations_point (project,
 // issue_key, field, observed_at), so it reads none of the history of any other field or issue.
 //
-// A caller that reads it beside another sampler table does so in one repeatable-read
+// A caller that reads it beside another table of the intake does so in one repeatable-read
 // transaction (Queryer), as the board reads ReadCurrent, so the answer is one moment's.
 func ReadIssue(ctx context.Context, db Queryer, project, key string) (IssueCurrent, error) {
 	rows, err := db.Query(ctx, `

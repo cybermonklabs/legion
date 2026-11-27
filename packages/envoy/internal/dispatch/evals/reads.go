@@ -221,8 +221,13 @@ func EvalIn(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error) 
 // writer made moves no eval's first day, and an eval that reads the deploy repository begins on
 // the first day of the first of its project's repositories to begin. A failure measure's first day
 // is its project's failures_measured_since, or none where its failure measures are off
-// (failureFirstDays). A repository filter still names the project's first day. A repository day
-// without a row reads no data, not zero.
+// (failureFirstDays). A repository filter still names the project's first day. Of a computed Legion
+// eval, every series its zero day builds (zeroLegionParts) has a project row on every day the eval
+// has input, so its first day is the eval's own, on or before the eval's first day in any
+// repository's cut, and a range of a repository's cut that starts on or after that day does not
+// read "no data" for a series with no row of its own. A repository's day that holds no row of the
+// eval reads no data, not zero, and one that holds a row of it reads each such series it holds no
+// row of as its zero part (cutZeros).
 func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deployRepos *DeployRepos) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
 	if len(entries) == 0 {

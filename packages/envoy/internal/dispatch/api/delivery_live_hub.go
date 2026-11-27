@@ -180,13 +180,13 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 // (migration 0100), as a pending change row of the change log's outbox commits (20261117100001),
 // whose drain the hub runs before it reads, and as a drain that moved rows commits, and the
 // delivery package declares it beside the row; delivery_freshness carries the settings row's
-// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified
-// after each read of that project's Legion daemon and after each write of its Legion setting
-// (settings_legion.go), which with Dispatch's own events and the change log's writes of the
-// project's stored facts (touchedBy) is all that moves a Legion board; and
-// workflowstore.RunsChannel carries an issue key and is notified as a write of one of that
-// issue's runs commits, which with the project's notifies on legion.StateChannel is all that
-// moves the issue's legion_issue view.
+// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
+// the Legion intake after each batch of state events it applied and each whole read of that
+// project's Legion daemon, and after each write of its Legion setting (settings_legion.go), which
+// with Dispatch's own events and the change log's writes of the project's stored facts
+// (touchedBy) is all that moves a Legion board; and workflowstore.RunsChannel carries an issue key
+// and is notified as a write of one of that issue's runs commits, which with the project's
+// notifies on legion.StateChannel is all that moves the issue's legion_issue view.
 const deliveryFreshnessChannel = "delivery_freshness"
 
 // deliveryHubFeedBuffer is the hub's slots on the relay's feed: more than one relay page
@@ -609,15 +609,16 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	}
 }
 
-// dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,
-// or whose Legion setting a write just named or removed: its board, and the legion_issue view of
-// each of its issues. The sampler announces every read, failed or not: the header and an issue's
+// dirtyLegionProject marks every Legion view of the project whose Legion daemon Dispatch just
+// recorded, a batch of its state events or a whole read, or whose Legion setting a write just
+// named or removed: its board, and the legion_issue view of each of its issues. The intake
+// announces every whole read, failed or not: the header and an issue's
 // read carry the read itself, so a view whose daemon stopped answering moves as surely as one
 // whose issues did. A setting's write moves every such view too: the board appears or is refused,
 // and an issue's view says whether the project names a daemon (configured). The Legion views are
 // the ones that show a daemon's state: a view that names the project and shows none (an evals
-// view) is left, since the sampler reads each daemon once a minute and nothing such a view shows
-// moves with that read.
+// view) is left, since the intake records each daemon at every batch of its state events and
+// nothing such a view shows moves with that record.
 func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
 	now := h.clock.Now()
 	h.mu.Lock()

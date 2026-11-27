@@ -43,8 +43,8 @@
 #     the copy and another at the drop, and with fsync on each checkpoint waits for the disk.
 #     daemon-go-race's command at 2b43effb in one 4-CPU pod with this image beside it
 #     (dispatch://INFRA-1075): internal/daemon 586.6 s with them on, 261.7 s and 281.3 s off.
-#   max_connections = 1000. The Dispatch lanes need testlimits.ServerConnections plus the
-#     superuser reserve of 3 (980 + 3 = 983 at this writing), which
+#   max_connections = 1010. The Dispatch lanes need testlimits.ServerConnections plus the
+#     superuser reserve of 3 (1004 + 3 = 1007 at this writing), which
 #     .github/scripts/pg-connection-ceiling.sh checks against the server in each such job. That
 #     sum bounds what eight Dispatch processes may open; they open far fewer: cmd/dispatch with
 #     eight at once peaked at 182 and 184 client backends in one pod (and 109 and 133 with four).
@@ -86,7 +86,7 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 # The server's command line, setting by setting, as `show` reports each one.
-settings=(fsync=off full_page_writes=off synchronous_commit=off max_connections=1000 max_prepared_transactions=10)
+settings=(fsync=off full_page_writes=off synchronous_commit=off max_connections=1010 max_prepared_transactions=10)
 # The service's --shm-size=1g, as docker inspect reports HostConfig.ShmSize.
 shm_size=1073741824
 

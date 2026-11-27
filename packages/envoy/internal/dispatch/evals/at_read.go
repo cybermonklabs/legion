@@ -351,7 +351,7 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	withRepo := len(read.Repos) > 0
 	multiDeploy := slices.ContainsFunc(projects, func(project string) bool { return len(read.DeployRepos.Of(project)) > 1 })
 	for i, day := range days {
-		built := deliveryReadOf(day, kept, prs[i], reads[i], attribute)
+		built := deliveryReadOf(day, kept, prs[i], nil, reads[i], attribute)
 		for _, project := range projects {
 			for _, owner := range owners[project] {
 				first := firsts[owner.project]

@@ -10,12 +10,12 @@ import (
 )
 
 // TestAMoveOfTheAdmissionBlockAloneRewritesTheWaitingReasonItMoves: a stored row's waiting reason
-// reads the daemon's admission block (reasonOf), which the sampler records for the project under
-// legion.AdmissionKey and on no issue. An admitted issue with no slot of its own whose blocker
-// finishes is moved from the block's Blocked to its Waiting, and nothing of the issue itself is
-// observed. The pass that reads the new block must rewrite that issue's reason from `blocked` to
-// `ready`, as a computation of the issue answers it, and rewrite no other row: every other open
-// row's reason is the same under both blocks.
+// reads the daemon's admission block (reasonOf), which the Legion state intake records for the
+// project under legion.AdmissionKey and on no issue. An admitted issue with no slot of its own
+// whose blocker finishes is moved from the block's Blocked to its Waiting, and nothing of the
+// issue itself is observed. The pass that reads the new block must rewrite that issue's reason
+// from `blocked` to `ready`, as a computation of the issue answers it, and rewrite no other row:
+// every other open row's reason is the same under both blocks.
 func TestAMoveOfTheAdmissionBlockAloneRewritesTheWaitingReasonItMoves(t *testing.T) {
 	run := newConsumer(t, 3)
 	issue, other, blocker := run.fixture.Open[0], run.fixture.Open[1], run.fixture.Keys[1]
@@ -58,12 +58,12 @@ func TestAMoveOfTheAdmissionBlockAloneRewritesTheWaitingReasonItMoves(t *testing
 
 // TestAMoveOfTheAdmissionBlockThatMovesNoReasonRecomputesNoRow: a row's waiting reason reads three
 // things of the daemon's admission block (legion.NewWaitingLine): whether a block is recorded, its
-// Waiting and its Blocked. The sampler records the block whenever any part of it moves, its cap,
-// its active slots and its live trees among them, and a move of those alone moves no reason, so
-// the pass that reads it recomputes no row; nor does a move of the daemon's settings, observed
-// under the same key, which no row reads. An open row left stale by hand shows it, since a pass
-// that recomputed the project's open rows (openRows) would write that row back as its
-// computation answers it; a move of the Waiting after it does recompute them, which shows the
+// Waiting and its Blocked. The Legion state intake records the block whenever any part of it
+// moves, its cap, its active slots and its live trees among them, and a move of those alone moves
+// no reason, so the pass that reads it recomputes no row; nor does a move of the daemon's
+// settings, observed under the same key, which no row reads. An open row left stale by hand shows
+// it, since a pass that recomputed the project's open rows (openRows) would write that row back as
+// its computation answers it; a move of the Waiting after it does recompute them, which shows the
 // stale row is one a recompute rewrites.
 func TestAMoveOfTheAdmissionBlockThatMovesNoReasonRecomputesNoRow(t *testing.T) {
 	run := newConsumer(t, 3)
@@ -107,8 +107,8 @@ func TestAMoveOfTheAdmissionBlockThatMovesNoReasonRecomputesNoRow(t *testing.T) 
 		changed, other, left, recomputed)
 }
 
-// observe records one observation of the project's daemon, of key's field, as the sampler writes
-// one: value as JSON, observed at the moment given.
+// observe records one observation of the project's daemon, of key's field, as the Legion state
+// intake writes one: value as JSON, observed at the moment given.
 func (c *consumer) observe(t *testing.T, key, field string, value any, at time.Time) {
 	t.Helper()
 	encoded, err := json.Marshal(value)

@@ -23,6 +23,7 @@
 export type DispatchWritingBox =
   | "conversation-composer"
   | "phone-thread-composer"
+  | "issue-page-composer"
   | "inbox-thread-reply"
   | "margin-composer"
   | "margin-comment-edit"
@@ -68,6 +69,8 @@ export type DispatchWritingBox =
  * - `document-text`: the document's own text, which every reader of that document reads and
  *   which is sent to nobody.
  * - `issue-spec`: the spec document a new issue is created with.
+ * - `issue-title`: an issue's title, which every reader of the issue reads and which is sent to
+ *   nobody.
  * - `approval-reason`: why a reviewer asked for changes on a document.
  * - `architecture-reason`: why an issue touches no component.
  * - `priority-description`: a priority's description, which every reader of the priority reads
@@ -284,6 +287,53 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reason:
       "No reader reaches it: a message's Reply on a phone is answered by the docked conversation composer, and this box opens over a comment thread alone.",
     write: "message-reply",
+  },
+  // The new issue page's one box, at the foot of its outline: with no target it writes a comment
+  // or a question on the issue; aimed at a row of the outline it writes a reply under it, which
+  // under a message goes to that thread's target; and on the reader's own comment it writes a new
+  // text of it. It answers no ask, and nothing sends the answer the page's writer holds yet
+  // (`OutlineWriter.answer` in `outline-writer.tsx`). The line's name changes with what it
+  // writes, so it is reached by the attribute its form carries for the purpose.
+  {
+    box: "issue-page-composer",
+    covered: true,
+    delivers: true,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    write: "comment",
+  },
+  {
+    box: "issue-page-composer",
+    covered: true,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    write: "ask",
+  },
+  {
+    box: "issue-page-composer",
+    covered: true,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    write: "message-reply",
+  },
+  // Only an Edit of the reader's own comment opens the box's edit line, and the page draws no
+  // such control yet, so no reader reaches this write until one is under the box; the row is
+  // covered then, with a driver step through that Edit.
+  {
+    box: "issue-page-composer",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
+    issueRows: true,
+    reach: "[data-issue-composer]",
+    reason:
+      "No reader reaches it yet: only an Edit opens the box's edit line - part M's in the facts, or part T's on the row of the reader's own comment - and the row is covered, with a driver step through that Edit, once the first of them is under the box.",
+    write: "comment-edit",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.
   {

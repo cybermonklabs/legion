@@ -260,7 +260,7 @@ func commitOf(project, what string) string {
 //     commit no deploy holds and an issue labelled bug linking a deployed pull request, which make
 //     none;
 //   - with controller not "", a Legion read of each project whose controller observation names it
-//     (legion.RecordRead), written where the project's newest read names another session or none.
+//     (observeController), written where the project's newest read names another session or none.
 //
 // Where a server runs, its loop (signals.Run) reads each input as soon as it commits, so the mode
 // writes them in the order a real record meets them: the issues the pull requests name, then the
@@ -591,8 +591,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			if held && named == controller {
 				continue
 			}
-			observations := legion.State{ControllerLocator: &legion.ControllerLocator{SessionID: controller}}.Observations()
-			if _, err := legion.RecordRead(ctx, pool, p, now, 0, observations); err != nil {
+			if err := observeController(ctx, pool, p, controller, now); err != nil {
 				return FailuresResult{}, err
 			}
 		}
@@ -641,6 +640,36 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 	}
 	result.Expects = expectsOf(result, oracle, project)
 	return result, nil
+}
+
+// observeController writes what a whole read of project's daemon naming session as its controller
+// records of it: the controller observation (legion.FieldController under legion.AdmissionKey), as
+// every insert into legion_observations goes in, under the observations' lock
+// (legion.QueueLockObservations) held to its own transaction's commit, and the read's legion_reads
+// row, a good whole read at now of no bytes and no reason. The observation is observed at now, or
+// 1 µs after the project's newest row where that is later, so it is the field's newest row and
+// legion_current holds it.
+func observeController(ctx context.Context, pool *store.Pool, project, session string, now time.Time) error {
+	value, err := json.Marshal(session)
+	if err != nil {
+		return fmt.Errorf("encode the controller session %s: %w", session, err)
+	}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		batch := &pgx.Batch{}
+		legion.QueueLockObservations(batch)
+		store.QueueExec(batch, "write the controller observation of "+project, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			select $1, $2, $3, $4::jsonb, greatest($5::timestamptz, max(observed_at) + interval '1 microsecond')
+			from legion_current
+			where project = $1`,
+			project, legion.AdmissionKey, legion.FieldController, string(value), now)
+		store.QueueExec(batch, "write the Legion read of "+project, `
+			insert into legion_reads (project, read_at, ok, bytes) values ($1, $2, true, 0)`, project, now)
+		return tx.SendBatch(ctx, batch).Close()
+	}); err != nil {
+		return fmt.Errorf("write the Legion read of %s naming its controller: %w", project, err)
+	}
+	return nil
 }
 
 // deployOf is row as the result names it, counting for reached.
