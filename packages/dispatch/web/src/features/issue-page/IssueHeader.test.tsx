@@ -645,6 +645,83 @@ test("the header leaves a decision whose Change may stand on an older comment pa
   }
 });
 
+// Decision 574 (B): the tree read pages its walk as well as its comments, and a comment may stand
+// on any page of the walk. So while its answer names a next page (`cursor`), with no older comment
+// page (`comments_before: null`), a decision with no Change held is left out of the count until
+// that page is read, which the header reads once the page has drawn. Then the count counts what
+// the Change it finds, or finds none of, makes each: the one the next page holds a Change of
+// waits on its agent, and the other on the reader.
+test("the header leaves a decision whose Change may stand on the tree read's next page out of its count until it reads that page", async () => {
+  const asked = decision("asked", { links: [shaped(specRef("r1"))] });
+  const unasked = decision("unasked", { links: [shaped(specRef("r1"))] });
+  const change: Comment = {
+    ...readComment("c-asked", 0),
+    body: "Say which pages this covers.",
+    created_at: "2026-11-12T09:00:00Z",
+  };
+  const restore = stubHeader({
+    ...issue,
+    open_asks: [{ ...openIssueAsk, last_reply: null, waiting_on: "human" as const }],
+  });
+  const reads = [
+    spyOn(api, "getIssueDecisions").mockResolvedValue(
+      decisionsRead([asked, unasked], issue.artifacts[0])
+    ),
+    spyOn(api, "getIssueCoverage").mockResolvedValue({
+      gaps: [],
+      has_plan: false,
+      issue: "CORE-1",
+      requirements: [
+        {
+          block_id: "r1",
+          checks: 1,
+          gaps: [],
+          plan_tasks: 0,
+          ref: specRef("r1"),
+          text: "The first.",
+        },
+      ],
+      spec_artifact_id: issue.primary_artifact_id,
+    }),
+  ];
+  const next = Promise.withResolvers<TreeAnswer>();
+  const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+    query?.cursor === undefined
+      ? {
+          ...treeAnswer([
+            treeNode("CORE-1", "issue", null),
+            treeNode("unasked", "decision", "CORE-1"),
+            treeNode("asked", "decision", "CORE-1"),
+          ]),
+          comments_before: null,
+          cursor: "page-2",
+          remaining: 1,
+        }
+      : next.promise
+  );
+  const pagesSent = () => tree.mock.calls.filter(([, query]) => query?.cursor !== undefined).length;
+  const count = () => screen.getByTestId("issue-whose-turn").textContent;
+  const view = renderHeader("/issues/CORE-1", headerClient());
+  try {
+    await waitFor(() => expect(tree, "the header read no tree").toHaveBeenCalled());
+    // Every read the count is drawn from has answered.
+    await waitInAct(20);
+    expect(count(), "a decision whose Change may stand on the next page was counted").toBe(
+      "Waiting on you (1)"
+    );
+    await waitFor(() => expect(pagesSent(), "the header read no next page").toBe(1));
+    await act(async () =>
+      next.resolve(treeAnswer([markedCommentNode(change, "CORE-1/tree#asked")]))
+    );
+    await waitFor(() => expect(count()).toBe("Waiting on you (2)"));
+    expect(pagesSent(), "the next page was read other than once").toBe(1);
+  } finally {
+    view.unmount();
+    for (const read of [...reads, tree]) read.mockRestore();
+    restore();
+  }
+});
+
 test("the header keeps state actions available while approval awaits", async () => {
   // The request waits on the reader, so its chip carries Approve in the header.
   const restore = stubHeader({

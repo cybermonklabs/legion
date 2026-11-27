@@ -33,6 +33,7 @@ import { needsChip } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import { drawnChip, nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
+import { nextTreeCursor } from "./comment-positions";
 import {
   pagedAnswer,
   type TreeNodeExtra,
@@ -45,7 +46,6 @@ import {
   blocksOfRole,
   holdsPlanTask,
   mergeCommentPage,
-  nextTreeCursor,
   nodesRemaining,
   type TreeDraftMark,
   treeDraftMarks,

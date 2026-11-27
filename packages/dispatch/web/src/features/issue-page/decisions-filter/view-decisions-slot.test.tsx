@@ -810,3 +810,132 @@ test("no older comment page is read before the page's first drawing, and one is 
     expect(pagesSent(), "no older comment page was read once the page had drawn").toBe(1)
   );
 });
+
+/** Answers the decisions read with the two decisions of the older-Change cases, Conversation's
+ *  first page with `first`, its next page (`cursor`) with `next` and its older comment page
+ *  (`comments_before`) with `older`, and each view never. Hands back the pages past the first
+ *  asked for so far, in the order they were asked for, each by the place it reads from. */
+function answerPages(
+  first: TreeAnswer,
+  next: Promise<TreeAnswer>,
+  older: Promise<TreeAnswer>
+): () => readonly string[] {
+  spyOn(api, "getIssueDecisions").mockResolvedValue(
+    decisionsRead([OLDER_DECISION, NEWER_DECISION])
+  );
+  const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    if (query.view !== undefined) return Promise.withResolvers<never>().promise;
+    if (query.cursor !== undefined) return next;
+    return query.comments_before === undefined ? first : older;
+  });
+  return () =>
+    tree.mock.calls.flatMap(([, query]) => {
+      if (query?.cursor !== undefined) return [`cursor ${query.cursor}`];
+      return query?.comments_before === undefined ? [] : [`before ${query.comments_before}`];
+    });
+}
+
+/** The page after Conversation's first page in the next-page cases: the Change of the first
+ *  decision, under its node as the read hangs it, and no page after it. */
+const NEXT_PAGE: TreeAnswer = treeAnswer([
+  commentNode(OLDER_CHANGE, `${KEY}/${SPEC_DOCUMENT.slug}#older`),
+]);
+
+// Decision 574 (B): the tree read pages its walk as well as its comments, and a comment may stand
+// on any page of the walk. So while Conversation's read names a next page (`cursor`), with no
+// older comment page (`comments_before: null`), each decision with no Change held stays in the
+// review list drawn with the outline's mark, out of its count, until that page is read. The view
+// reads it once the page has drawn: the decision whose Change it holds then carries that Change
+// and leaves the list, and the other, whose Change no page holds, waits on the reader again.
+test("a decision whose Change stands on the next page of Conversation's read stays in the review list with the outline's mark, out of its count, until that page is read, then carries its Change", async () => {
+  const next = Promise.withResolvers<TreeAnswer>();
+  const first: TreeAnswer = { ...OLDER_FIRST, comments_before: null, cursor: "page-2" };
+  const pagesSent = answerPages(first, next.promise, Promise.withResolvers<never>().promise);
+  const view = drawStage("");
+  const rowOf = (block: string) =>
+    view.container.querySelector<HTMLElement>(
+      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
+    );
+  const marked = () =>
+    ["newer", "older"].filter(
+      (block) => rowOf(block)?.querySelector("[data-change-unread]")?.textContent === "+"
+    );
+  const review = () => view.container.querySelector<HTMLElement>('[data-decisions-part="review"]');
+  const reviewRows = () =>
+    [...(review()?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])].map(
+      (row) => row.dataset.nodeId
+    );
+  const reviewCount = () => review()?.querySelector("[data-decisions-count]")?.textContent;
+  await waitFor(() =>
+    expect(
+      marked(),
+      `the decisions are not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
+    ).toEqual(["newer", "older"])
+  );
+  expect(
+    reviewRows(),
+    "a marked decision left the review list before the next page answered"
+  ).toEqual([decisionNode("newer").id, decisionNode("older").id]);
+  expect(
+    reviewCount(),
+    "the review list's count counts a marked decision before the next page answers"
+  ).toBe("0");
+  await waitFor(() => expect(pagesSent(), "the next page was not read").toEqual(["cursor page-2"]));
+  await act(async () => next.resolve(NEXT_PAGE));
+  await waitFor(() =>
+    expect(rowOf("older")?.dataset.nodeState, "the decision does not carry its Change").toBe(
+      "change_requested"
+    )
+  );
+  expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(OLDER_CHANGE.body);
+  expect(marked(), "the mark stayed").toEqual([]);
+  expect(reviewRows(), "the review list once the next page is read").toEqual([
+    decisionNode("newer").id,
+  ]);
+  expect(reviewCount()).toBe("1");
+  expect(pagesSent(), "the next page was read other than once").toEqual(["cursor page-2"]);
+});
+
+// Decision 574 (B) under decision 538: the page reads the next pages first, by the path an
+// address's reading takes (`readNextTreePage`), then the older comment pages, one at a time, and
+// none before the page's first drawing. With Conversation's read naming both a next page and an
+// older comment page, and the reads that mark the decision held as the page mounts, no page is
+// asked for as it mounts; the next page is, in a frame after; and only once it has answered,
+// holding no Change, the older page, which holds it.
+test("the next page is read before an older comment page, one at a time, and neither before the page's first drawing", async () => {
+  const next = Promise.withResolvers<TreeAnswer>();
+  const first: TreeAnswer = { ...OLDER_FIRST, cursor: "page-2" };
+  const pagesSent = answerPages(first, next.promise, Promise.resolve(OLDER_PAGE));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, first);
+  client.setQueryData(
+    issueDecisionsQuery(KEY, true).queryKey,
+    decisionsRead([OLDER_DECISION, NEWER_DECISION])
+  );
+  const view = drawStage("", { client });
+  expect(pagesSent(), "a page was read before the page's first drawing").toEqual([]);
+  await waitFor(() =>
+    expect(pagesSent(), "the next page was not read first once the page had drawn").toEqual([
+      "cursor page-2",
+    ])
+  );
+  await waitInAct(20);
+  expect(pagesSent(), "an older comment page was read while the next page was out").toEqual([
+    "cursor page-2",
+  ]);
+  await act(async () => next.resolve(treeAnswer([])));
+  await waitFor(() =>
+    expect(pagesSent(), "the older comment page was not read after the next page").toEqual([
+      "cursor page-2",
+      `before ${first.comments_before}`,
+    ])
+  );
+  await waitFor(() =>
+    expect(
+      view.container.querySelector<HTMLElement>(
+        `[data-decisions-body] [data-node-row][data-node-id="${decisionNode("older").id}"]`
+      )?.dataset.nodeState,
+      "the decision does not carry the Change the older page holds"
+    ).toBe("change_requested")
+  );
+});

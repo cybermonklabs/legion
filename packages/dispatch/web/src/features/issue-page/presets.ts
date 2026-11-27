@@ -23,7 +23,8 @@ import {
   type Preset,
 } from "./page-words";
 import { storedReading } from "./stored-reading";
-import { isForeign, nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
+import { nextTreeCursor } from "./tree-read/comment-positions";
+import { isForeign, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**

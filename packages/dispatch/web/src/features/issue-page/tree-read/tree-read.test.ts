@@ -7,12 +7,21 @@ import {
   installFakeLiveSockets,
 } from "../../../__tests__/live-socket-harness";
 import { answerRequests } from "../../../__tests__/network";
+import { eventRefreshTargets } from "../../../api/event-refresh";
 import { liveFeedUp, liveSocketFor, onLiveFeedBack } from "../../../api/live-socket";
 import { issueTreeKey } from "../../../api/queries";
-import { refreshQueries } from "../../../api/query-refresh";
+import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../../api/query-refresh";
+import type { DispatchEvent } from "../../../api/types";
 import { plainWrite, writesOf } from "../../writes/write-store";
+import { INDEX_REFRESH_QUIET_MS, INDEX_REFRESH_SPACING_MS } from "./indexed-refresh";
 import { treeAnswer, treeNode } from "./tree-fixtures";
-import { readNextTreePage, subscribeTreeFreshness, viewKey, viewQuery } from "./tree-read";
+import {
+  outlineQuery,
+  readNextTreePage,
+  subscribeTreeFreshness,
+  viewKey,
+  viewQuery,
+} from "./tree-read";
 
 /**
  * How the tree read asks whether the live feed is up (`liveFeedUp`), which it does on a window
@@ -358,5 +367,115 @@ test("a view read at a version that a write of the issue held is read once as th
   } finally {
     unobserve();
     unsubscribe();
+  }
+});
+
+/** An event of issue CORE-1 of `type`, with the payload its reader reads, as the feed hands it to
+ *  the page; the feed's union is wider than these cases need. */
+function issueEvent(type: string, payload: Record<string, unknown>): DispatchEvent {
+  return {
+    actor: { id: "block-index", kind: "system" },
+    artifact_id: null,
+    created_at: "2026-11-27T12:56:00Z",
+    id: 1,
+    issue_key: "CORE-1",
+    notify: false,
+    payload,
+    project: "CORE",
+    seq: 1,
+    type,
+  } as unknown as DispatchEvent;
+}
+
+// While an issue's block index catches up it sends one `artifact.indexed` for each pass, and each
+// read the issue's outline again with every page it had loaded. An index read of the issue comes
+// 2.5 s after its last pass (`INDEX_REFRESH_QUIET_MS`), but at most 10 s after the first pass of
+// the burst, and no sooner than 10 s after the issue's previous index read
+// (`INDEX_REFRESH_SPACING_MS`). So a pass after 10 s with no pass and no index read reads the
+// outline at 2.5 s; a catch-up of a pass each second for 30 s and then one each 3 s for 30 s, which
+// a quiet time alone would read once for each later pass, reads it no two times within 10 s; and
+// no pass waits longer than 10 s for its read. An event of another type reads the outline at once,
+// as it did. Each event is refreshed as the feed refreshes it (`eventRefreshTargets`,
+// `refreshQueries`), and the case notes when each read of the outline begins.
+test("the block index's events of one issue read its outline 2.5 s after a lone pass, never twice within 10 s, and no more than 10 s after any pass; another event reads it at once", async () => {
+  const key = "CORE-1";
+  answerRequests(
+    http.get("/api/v1/issues/:key/tree", () =>
+      Response.json(treeAnswer([treeNode("c1", "comment", key)], [], { cursor: null }))
+    )
+  );
+  const read = outlineQuery(key, "conversation");
+  await client.fetchQuery(read);
+  const outline = client.getQueryCache().find({ exact: true, queryKey: read.queryKey });
+  // When each read of the outline began, from here on.
+  const begun: number[] = [];
+  const unwatch = client.getQueryCache().subscribe((change) => {
+    if (change.query === outline && change.type === "updated" && change.action.type === "fetch") {
+      begun.push(Date.now());
+    }
+  });
+  const unobserve = new QueryObserver(client, read).subscribe(() => undefined);
+  const send = (type: string, payload: Record<string, unknown>) =>
+    refreshQueries(client, eventRefreshTargets(issueEvent(type, payload), "alice"));
+  // Each pass sent: when, and how many reads had begun by then, so its read is the next to begin.
+  const passes: { readonly at: number; readonly after: number }[] = [];
+  const indexed = () => {
+    passes.push({ at: Date.now(), after: begun.length });
+    send("artifact.indexed", { artifact_ids: [`artifact-${passes.length}`] });
+  };
+  // Moves the clock `ms` on and lets a read the outline began then land.
+  const step = async (ms: number) => {
+    jest.advanceTimersByTime(ms);
+    if (outline?.state.fetchStatus === "fetching") await outline.fetch();
+  };
+  try {
+    // Past the scheduler's interval since the load's read.
+    await step(MIN_REFETCH_INTERVAL_MS);
+    const lone = Date.now();
+    indexed();
+    await step(INDEX_REFRESH_QUIET_MS - 1);
+    expect(begun, "a lone pass read the outline before its quiet time ended").toEqual([]);
+    await step(1);
+    expect(
+      begun.map((at) => at - lone),
+      "a lone pass did not read the outline at the end of its quiet time"
+    ).toEqual([INDEX_REFRESH_QUIET_MS]);
+
+    await step(INDEX_REFRESH_SPACING_MS);
+    for (let second = 0; second <= 30; second += 1) {
+      indexed();
+      await step(1_000);
+    }
+    for (let pass = 0; pass < 10; pass += 1) {
+      indexed();
+      await step(3_000);
+    }
+    await step(INDEX_REFRESH_SPACING_MS);
+    const gaps = begun.slice(1).map((at, index) => at - (begun[index] ?? at));
+    expect(
+      gaps.filter((gap) => gap < INDEX_REFRESH_SPACING_MS),
+      `two index reads came within 10 s; the reads began after ${gaps.join(", ")} ms`
+    ).toEqual([]);
+    const waits = passes.map(({ at, after }) => (begun[after] ?? Number.POSITIVE_INFINITY) - at);
+    expect(Math.max(...waits), "a pass waited longer than 10 s for its read").toBeLessThanOrEqual(
+      INDEX_REFRESH_SPACING_MS
+    );
+
+    const again = Date.now();
+    const reads = begun.length;
+    indexed();
+    await step(INDEX_REFRESH_QUIET_MS);
+    expect(
+      begun.slice(reads).map((at) => at - again),
+      "a pass after 10 s with no pass and no index read did not read the outline at 2.5 s"
+    ).toEqual([INDEX_REFRESH_QUIET_MS]);
+
+    await step(MIN_REFETCH_INTERVAL_MS);
+    send("artifact.version", { artifact_id: "artifact-1", number: 2 });
+    expect(begun.length, "a document's version did not read the outline at once").toBe(reads + 2);
+    await step(0);
+  } finally {
+    unobserve();
+    unwatch();
   }
 });

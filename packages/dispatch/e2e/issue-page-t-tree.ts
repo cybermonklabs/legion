@@ -4,9 +4,9 @@ import { expect, type Locator, type Page, type Route, test } from "@playwright/t
 import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
 import { PRESET_ORDER } from "../web/src/features/issue-page/page-words";
 import type { Filter } from "../web/src/features/issue-page/presets";
+import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/comment-positions";
 import {
   mergeTreePages,
-  nextTreeCursor,
   type TreeIdReads,
   treeIdOf,
 } from "../web/src/features/issue-page/tree-read/tree-nodes";

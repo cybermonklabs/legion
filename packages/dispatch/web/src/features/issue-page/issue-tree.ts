@@ -21,7 +21,8 @@ import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { storedReading } from "./stored-reading";
 import { addDecisions, type Draft, treeContext } from "./tree-drafts";
-import { askNodeIds, nextTreeCursor, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
+import { nextTreeCursor } from "./tree-read/comment-positions";
+import { askNodeIds, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -241,10 +242,10 @@ export interface TreeNode {
    *  document's line, which the server writes in place of every missing check, so the requirement
    *  is drawn lacking none and says why. Absent where the read holds none. */
   readonly coverageNotes?: readonly string[];
-  /** Whether a Change of this decision may stand on an older comment page than the read holds,
-   *  where it is drawn waiting for review or kept, with no Change (`tree-drafts.ts`'
-   *  `markChangeUnread`): its state word carries "+", as a count with more to read does (R15),
-   *  so it does not read as unchanged. Absent on every other node. */
+  /** Whether a Change of this decision may stand on a page the read has not loaded, a next page
+   *  or an older comment page, where it is drawn waiting for review or kept, with no Change
+   *  (`tree-drafts.ts`' `markChangeUnread`): its state word carries "+", as a count with more to
+   *  read does (R15), so it does not read as unchanged. Absent on every other node. */
   readonly changeUnread?: true;
   /** When its author deleted this comment or message, as its read stores the time
    *  (`deleted_at`); absent on every other node. A deleted post keeps its place in the tree and

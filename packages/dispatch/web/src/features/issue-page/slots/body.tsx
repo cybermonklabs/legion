@@ -49,7 +49,7 @@ import {
   type TreeAnswer,
   useNextTreePage,
   useOlderComments,
-  useReadOlderComments,
+  useReadUnloadedPages,
   useReadUntilHeld,
 } from "../tree-read/tree-read";
 import { TreeReadFailed } from "../tree-read/view-read";
@@ -109,7 +109,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // page refused does. An id written short is no node's id, so it reads none.
   const item = outlineItemRoute(route, search, address);
   const comment = item?.kind === "comment" && !isIdPrefix(item.id) ? item.id : undefined;
-  const olderComment = useReadOlderComments(
+  const olderComment = useReadUnloadedPages(
     issue,
     (answer) =>
       comment !== undefined && pagesHeld && !(answer.nodes ?? []).some(({ id }) => id === comment)
@@ -186,7 +186,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
       !graphHolds &&
       !graphPages.reading &&
       !graphPages.refused);
-  const olderNode = useReadOlderComments(
+  const olderNode = useReadUnloadedPages(
     issue,
     (answer) =>
       nodeId !== undefined &&

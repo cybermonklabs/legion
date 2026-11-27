@@ -17,7 +17,7 @@ import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
 import { storedReading } from "./stored-reading";
-import { olderCommentsBefore, splitPosition } from "./tree-read/comment-positions";
+import { nextTreeCursor, olderCommentsBefore, splitPosition } from "./tree-read/comment-positions";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -25,7 +25,7 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * change.
  *
  * This module is pure and imports no code of the tree, only the types of a document's blocks and
- * of the tree read and the read's own comment positions (`tree-read/comment-positions.ts`), so the
+ * of the tree read and the read's own page positions (`tree-read/comment-positions.ts`), so the
  * tree (`issue-tree.ts`, `tree-read/tree-nodes.ts`), the Decisions filter
  * (`decisions-filter/decisions-parts.ts`) and the header's count of what waits on the reader
  * (`waiting.ts`) read one rule each and cannot disagree.
@@ -783,19 +783,25 @@ function after(at: string, row: Partial<Pick<DecisionEntry, "changed_at" | "kept
 }
 
 /**
- * Whether a Change of `decision` may stand among the comments the tree read's `answer` does not
- * hold: the read pages the issue's comments, the newest first, and an answer with an older page
- * names where it starts (`comments_before`, `<made_at>,<id>` of the oldest comment it holds,
- * `tree-read/comment-positions.ts`' `olderCommentsBefore`). A Change is newer than the decision's
- * words and its last Keep (`after`), so a comment older than the oldest held can be one only where
- * that oldest comment is newer than both. A decision drawn with no Change it may have then carries
- * the page's mark of a count with more to read (`tree-drafts.ts`' `markChangeUnread`), rather than
- * reading as unchanged.
+ * Whether a Change of `decision` may stand on a page of the tree read that its `answer` does not
+ * hold. The read pages its walk (`cursor`, `tree-read/comment-positions.ts`' `nextTreeCursor`),
+ * and a comment may stand anywhere in it, so while the answer names a next page any Change may
+ * stand there: a decision node's, which the read hangs under the node, after it in the walk, and
+ * the Change of a decision the read holds no node for, found by its quote. The read pages the
+ * issue's comments too, the newest first, and an answer with an older page names where it starts
+ * (`comments_before`, `<made_at>,<id>` of the oldest comment it holds, `olderCommentsBefore`). A
+ * Change is newer than the decision's words and its last Keep (`after`), so a comment older than
+ * the oldest held can be one only where that oldest comment is newer than both. A decision drawn
+ * with no Change it may have then carries the page's mark of a count with more to read
+ * (`tree-drafts.ts`' `markChangeUnread`), rather than reading as unchanged; one whose Change the
+ * answer holds draws that Change, and no mark (`changeUnread`).
  */
-export function changeMayBeOlder(
+export function changeMayBeUnloaded(
   decision: Partial<Pick<DecisionEntry, "changed_at" | "kept">>,
   answer: TreeAnswer | undefined
 ): boolean {
-  const before = answer === undefined ? undefined : olderCommentsBefore(answer);
+  if (answer === undefined) return false;
+  if (nextTreeCursor(answer) !== undefined) return true;
+  const before = olderCommentsBefore(answer);
   return before !== undefined && after(splitPosition(before)[0], decision);
 }

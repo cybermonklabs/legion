@@ -36,11 +36,11 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * answered ask, or a `decision` block whose `decided_by` names a person - waits for no review
  * (the server's `waiting_review` is false for it) and is never counted here.
  *
- * A decision the outline marks as one whose Change may stand on a comment page the tree read has
- * not loaded (`changeUnread`, its state's "+") is not counted either, until that page is read
- * (decision 563 (4)): the header reads the older pages for it once the page has drawn
- * (`tree-read/tree-read.ts`' `useReadOlderComments`), as `unread` says, and counts what the
- * Change it finds, or finds none of, makes it.
+ * A decision the outline marks as one whose Change may stand on a page the tree read has not
+ * loaded (`changeUnread`, its state's "+") is not counted either, until that page is read
+ * (decisions 563 (4) and 574 (B)): the header reads the next pages and then the older comment
+ * pages for it once the page has drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`), as
+ * `unread` says, and counts what the Change it finds, or finds none of, makes it.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -53,9 +53,9 @@ export interface WaitingOnReader {
   readonly approvals: readonly string[];
   /** All three, which is the number the count draws. */
   readonly total: number;
-  /** How many decisions carry the mark of a Change on a comment page not read yet
-   *  (`changeUnread`), waiting for review or kept, none of them counted: while any does, the
-   *  header reads the older comment pages (`useReadOlderComments`). */
+  /** How many decisions carry the mark of a Change on a page not read yet (`changeUnread`),
+   *  waiting for review or kept, none of them counted: while any does, the header reads those
+   *  pages (`useReadUnloadedPages`). */
   readonly unread: number;
 }
 
@@ -91,7 +91,7 @@ export function waitingOnReader(
       .filter(([comment]) => !deleted.has(comment))
       .map(([, decision]) => decision)
   );
-  // Each decision whose Change may stand on a comment page not read yet, which waits on no reader
+  // Each decision whose Change may stand on a page not read yet, which waits on no reader
   // until that page is read, as in the outline (`changeUnread`).
   const unread = new Set(
     (decisions?.entries ?? []).flatMap((decision) =>

@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
-import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/comment-positions";
 import { createComment, createIssue, createIssueArtifact, createProject, getIssue } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { PROJECT } from "./issue-layout-seed-support";

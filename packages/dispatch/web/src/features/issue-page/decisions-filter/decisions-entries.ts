@@ -16,7 +16,7 @@ import {
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { changeUnread, treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { useReadOlderComments, useTreeRead } from "../tree-read/tree-read";
+import { useReadUnloadedPages, useTreeRead } from "../tree-read/tree-read";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -48,13 +48,13 @@ import {
  * decision of its document whose words hold its quote. A read that holds no decisions, or that
  * has not answered yet, gives no decision and no error: the view draws the questions alone.
  *
- * A decision the outline marks as one whose Change may stand on a comment page the tree read has
- * not loaded (`tree-drafts.ts`' `changeUnread`, its state's "+") stands in the review list drawn
+ * A decision the outline marks as one whose Change may stand on a page the tree read has not
+ * loaded (`tree-drafts.ts`' `changeUnread`, its state's "+") stands in the review list drawn
  * with that mark, and the list's count leaves it out until that page is read
- * (`decisions-parts.ts`' `reviewWaiting`): the seam reads the older comment pages once the page
- * has drawn, one at a time, until each such Change is held or no older page is left
- * (`useReadOlderComments`, decision 563 (4)), as the header's count does, and the view draws the
- * decision by what it finds.
+ * (`decisions-parts.ts`' `reviewWaiting`): the seam reads the next pages and then the older
+ * comment pages once the page has drawn, one at a time, until each such Change is held or no such
+ * page is left (`useReadUnloadedPages`, decisions 563 (4) and 574 (B)), as the header's count
+ * does, and the view draws the decision by what it finds.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
@@ -230,13 +230,13 @@ export function useDecisionsEntries({
     const placed = decisionChangeComments(decisions, comments, issue, documents, tree);
     return decisionChanges(decisions, comments, issue, documents, placed);
   }, [decisions, documents, issue, tree]);
-  // Whether a decision carries the outline's mark of a Change on a comment page not read yet
-  // (`changeUnread`): while one does, the older comment pages are read for it.
+  // Whether a decision carries the outline's mark of a Change on a page not read yet
+  // (`changeUnread`): while one does, those pages are read for it.
   const unread = useMemo(
     () => (decisions?.entries ?? []).some((row) => changeUnread(row, changes.has(row.ref), tree)),
     [changes, decisions, tree]
   );
-  useReadOlderComments(issue, () => unread);
+  useReadUnloadedPages(issue, () => unread);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);

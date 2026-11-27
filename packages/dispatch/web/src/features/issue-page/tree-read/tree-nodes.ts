@@ -62,7 +62,7 @@ import {
   stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
-import { splitPosition } from "./comment-positions";
+import { nextTreeCursor, splitPosition } from "./comment-positions";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
@@ -670,7 +670,7 @@ function draftResult(
  * nobody. A person's Change the read hangs under it says it waits on its agent
  * (`decisionNodeChanges`), and it waits on the reader by the outline's review list rule
  * (`inReviewList`), where a link ties it to a statement the coverage read holds. Where the
- * answer names an older comment page that may hold its Change, its state says so
+ * answer names a next page or an older comment page that may hold its Change, its state says so
  * (`markChangeUnread`), and it waits on no reader until that page is read (`changeUnread`).
  *
  * An agent's decision of the decisions read that is no node of the answer - a section of
@@ -704,7 +704,7 @@ function draftDecision(
   draft.state = decisionState(decision, changed);
   markKeptAndUnsure(draft, decision);
   draft.replaced = decision.replaced === true;
-  // A decision the read hangs no Change under may have one on a comment page not read yet, and
+  // A decision the read hangs no Change under may have one on a page the read has not loaded, and
   // waits on no reader until it is read.
   markChangeUnread(draft, decision, changed, answer);
   draft.waiting =
@@ -1526,18 +1526,6 @@ export function nodesRemaining(answer: TreeAnswer): number | undefined {
   return nextTreeCursor(answer) !== undefined && typeof remaining === "number"
     ? remaining
     : undefined;
-}
-
-/**
- * The cursor of the page after `page` in its read, or undefined where `page` is the last: one
- * whose cursor is null, left out of the body, or empty, as a server that drops an empty field
- * writes it. The one rule every walk of the read ends by: the page's own (`tree-read.ts`'
- * `readTree`) and the e2e helpers', which load this module and not that one, as they do for
- * `mergeTreePages`.
- */
-export function nextTreeCursor(page: TreeAnswer): string | undefined {
-  const { cursor } = page;
-  return typeof cursor === "string" && cursor !== "" ? cursor : undefined;
 }
 
 /**

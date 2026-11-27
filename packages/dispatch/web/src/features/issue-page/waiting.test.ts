@@ -996,6 +996,57 @@ test("a decision whose Change may stand on an older comment page waits on no rea
   ).toEqual({ counted: 1, marked: [], unread: 0, waiting: ["older"] });
 });
 
+// Decision 574 (B): the tree read pages its walk as well as its comments, and a comment may stand
+// on any page of the walk, so while the answer names a next page (`cursor`) a decision with no
+// Change held carries the outline's mark and waits on no reader, in the count as in the tree,
+// though no older comment page remains (`comments_before: null`). A decision whose Change the
+// loaded page holds under its node draws that Change and carries no mark. Once the next page is
+// read, a Change it holds makes the marked decision wait on its agent, and a last page that holds
+// none of its Changes puts it back on the review list.
+test("a decision whose Change may stand on the tree read's next page waits on no reader until that page is read, in the count as in the tree", () => {
+  const row = waitingDecision("next", ["r1"]);
+  const held = waitingDecision("held", ["r1"]);
+  const read = decisionsRead([held, row]);
+  const heldChange: Comment = { ...change, anchor: null, id: "c-held" };
+  const nextChange: Comment = { ...change, anchor: null, id: "c-next" };
+  const waits = (tree: TreeAnswer) => {
+    const root = buildIssueTree({ coverage, decisions: read, issue, tree, viewer: "alice" });
+    const counted = waitingOnReader(issue, "alice", read, isCoverageStatement, tree);
+    return {
+      counted: counted.decisions,
+      marked: nodesInOrder(root).flatMap((node) => (node.changeUnread === true ? [node.id] : [])),
+      unread: counted.unread,
+      waiting: waitingIn(root),
+    };
+  };
+  const firstPage = [
+    statement,
+    decisionTreeNode(held),
+    commentNode(heldChange, "held"),
+    decisionTreeNode(row),
+  ];
+  const first: TreeAnswer = {
+    ...answerOf(firstPage),
+    comments_before: null,
+    cursor: "page-2",
+    remaining: 1,
+  };
+  expect(waits(first), "while the next page is out").toEqual({
+    counted: 0,
+    marked: ["next"],
+    unread: 1,
+    waiting: [],
+  });
+  expect(
+    waits(answerOf([...firstPage, commentNode(nextChange, "next")])),
+    "once the next page that holds its Change is read"
+  ).toEqual({ counted: 0, marked: [], unread: 0, waiting: [] });
+  expect(
+    waits(answerOf(firstPage)),
+    "once the next page that holds none of its Changes is read"
+  ).toEqual({ counted: 1, marked: [], unread: 0, waiting: ["next"] });
+});
+
 // Two documents of an issue may share a block id. A person's comment on the statement r1 is no
 // Change of a decision whose own block id is r1 too: the read's walk puts a parent before its
 // children, and it puts this comment after the statement and before the decision, so the comment
