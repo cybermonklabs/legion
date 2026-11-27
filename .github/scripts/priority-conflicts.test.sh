@@ -5,15 +5,17 @@
 #
 # Each case runs the script with a stand-in `gh` first on PATH, which answers its GraphQL read of
 # the priority pull requests with a fixture page in GraphQL's own shape (the page its `after`
-# cursor asks for), refuses it when a case asks, and records each read. The repository it fetches
-# is a fixture origin served over file://, which the script reaches as
-# GITHUB_SERVER_URL/GITHUB_REPOSITORY.git, told to serve the filter and any commit by its sha as
-# GitHub serves them, so the script's partial fetch and git merge-tree's fetch of the file contents
-# it merges both run as they do in CI. The fixture's commits have the real shapes: a pull request's
-# run commit is a merge of its head into main's tip with main first, a merge group is squash
-# commits whose subjects end with (#<number>) on the group's base, and priority pull requests fork
-# from main before later commits of main that conflict with them. The path where #15 adds a
-# directory and a change adds a file holds a percent sign, which an ::error:: line must escape.
+# cursor asks for), refuses it when a case asks, and records each read; and a stand-in `git` beside
+# it, the real git but for the one call a case names, which fails with the words git writes where
+# its fetch of file contents finds origin gone. The repository it fetches is a fixture origin
+# served over file://, which the script reaches as GITHUB_SERVER_URL/GITHUB_REPOSITORY.git, told
+# to serve the filter and any commit by its sha as GitHub serves them, so the script's partial
+# fetch and git merge-tree's fetch of the file contents it merges both run as they do in CI. The
+# fixture's commits have the real shapes: a pull request's run commit is a merge of its head into
+# main's tip with main first, a merge group is squash commits whose subjects end with (#<number>)
+# on the group's base, and priority pull requests fork from main before later commits of main that
+# conflict with them. The path where #15 adds a directory and a change adds a file holds a percent
+# sign, which an ::error:: line must escape.
 #
 # Every case writes the event it runs on (run_pr, run_group), and run_check sets the label read's
 # answer back to the standard one after every run, so a case reads no other case's fixture.
@@ -241,6 +243,29 @@ chmod +x "$work/bin/gh"
 # (prints_no_marker).
 marker=not-a-secret-token
 
+# The words git writes where its fetch of file contents it does not hold (the script's fetch takes
+# none) finds origin gone, read from a clone with no file contents whose origin's URL, which those
+# words quote, holds the marker. Whatever answers such a fetch in origin's place writes them, and
+# the credential a checkout presents to origin can be among them.
+git_fixture -c protocol.file.allow=always clone -q --bare --filter=blob:none "file://$origin" "$work/lazy.git"
+git_fixture -C "$work/lazy.git" remote set-url origin "file://$work/gone-$marker/o/r.git"
+lazy_status=0
+git_fixture -c protocol.file.allow=always -C "$work/lazy.git" cat-file blob "$root:s.txt" > /dev/null \
+  2> "$work/lazy-words" || lazy_status=$?
+
+# The stand-in git: the real git, but the call $work/git-fails names (a pattern the call's
+# arguments match) writes those words on stderr and exits as git did.
+real_git=$(command -v git)
+cat > "$work/bin/git" <<GIT
+#!/usr/bin/env bash
+if [ -e "$work/git-fails" ] && [[ " \$* " == \$(< "$work/git-fails") ]]; then
+  cat "$work/lazy-words" >&2
+  exit $lazy_status
+fi
+exec "$real_git" "\$@"
+GIT
+chmod +x "$work/bin/git"
+
 # pull <number> <head> <reviewDecision as JSON> <isInMergeQueue>: one node of the label read, with
 # a title, which the read does not ask for and the check prints nowhere: what answers in GitHub's
 # place can send one all the same.
@@ -290,7 +315,7 @@ run_check() {
   set -e
   err=$(cat "$work/err")
   answer "${standard[@]}"
-  rm -f "$work"/answer-c*.json "$work/gh-refuses"
+  rm -f "$work"/answer-c*.json "$work/gh-refuses" "$work/git-fails"
 }
 
 # run_pr <sha>: a pull_request run of pull request #20 at the run commit <sha>.
@@ -331,6 +356,13 @@ prints_no_marker() {
     [[ "$1" == *"${marker:at:8}"* ]] && { echo false; return; }
   done
   echo true
+}
+# kept_holds_marker <call>: whether the file the line `<call> exited <n>; its own words are in
+# <file>` on stderr names holds the marker.
+kept_holds_marker() {
+  local kept
+  kept=$(sed -n "s/^$1 exited [0-9]*; its own words are in //p" <<<"$err" | tail -n 1)
+  [ -n "$kept" ] && grep -qF -- "$marker" "$kept" && echo true || echo false
 }
 
 echo "case: a dispatched run lands nothing, so it reads nothing"
@@ -549,6 +581,49 @@ run_pr "$m_conflict"
 check "it fails" "$(is "$status" 1)"
 check "it names #11 by its number, and the file" "$(has_line "$err" "$(conflict_line 11 s.txt)")"
 check "it prints no run of the marker" "$(prints_no_marker "$out$err")"
+
+echo "case: a merge git cannot make, its words holding the marker, names the file that keeps them"
+# git merge-tree fetches the contents of the files it merges from origin, and here that fetch finds
+# origin gone. The control is the first case: the same run names #11's conflict in s.txt.
+check "control: git's words for a fetch from a gone origin quote its URL, the marker in it" \
+  "$(is "$([ "$lazy_status" -ne 0 ] && echo failed)|$(contains "$(< "$work/lazy-words")" "gone-$marker")" 'failed|true')"
+echo '* merge-tree *' > "$work/git-fails"
+run_pr "$m_conflict"
+check "it fails" "$(is "$status" 1)"
+check "it says it could not merge" \
+  "$(contains "$err" "^::error::git could not merge pull request #20 with #11, so this check cannot tell ")"
+check "it names git's exit and the file that keeps git's words" \
+  "$(contains "$err" "^git merge-tree exited $lazy_status; its own words are in $work/temp/")"
+check "it prints no run of the marker" "$(prints_no_marker "$out$err")"
+check "twin: that file holds the marker" "$(kept_holds_marker 'git merge-tree')"
+
+echo "case: a file git cannot read to compare two merges, its words holding the marker, names the file that keeps them"
+# The pull request edits w5, which main and the stale #16 set alike, so the check reads w.txt of
+# two merges to compare them, and here git's read finds origin gone. The control is the case that
+# names #16's conflict in w.txt.
+echo '* cat-file blob *' > "$work/git-fails"
+run_pr "$m_shared"
+check "it fails" "$(is "$status" 1)"
+check "it says it could not read the file" \
+  "$(contains "$err" "^::error::git could not read w.txt of the merges of pull request #20 with #16, so this check cannot tell ")"
+check "it names git's exit and the file that keeps git's words" \
+  "$(contains "$err" "^git cat-file exited $lazy_status; its own words are in $work/temp/")"
+check "it prints no run of the marker" "$(prints_no_marker "$out$err")"
+check "twin: that file holds the marker" "$(kept_holds_marker 'git cat-file')"
+
+echo "case: renames git cannot list, its words holding the marker, name the file that keeps them"
+# The pull request edits t8, apart from the stale #12's conflict with main at t2, so the check
+# lists the pull request's renames to compare two merges, and here git's read of the files' contents
+# finds origin gone. The control is the case where the same run passes.
+echo '* diff --find-renames *' > "$work/git-fails"
+run_pr "$m_apart"
+check "it fails" "$(is "$status" 1)"
+check "it says it could not list the renames" \
+  "$(contains "$err" "^::error::git could not list the renames of pull request #20, so this check cannot tell ")"
+check "it names git's exit and the file that keeps git's words" \
+  "$(contains "$err" "^git diff --find-renames exited $lazy_status; its own words are in $work/temp/")"
+check "it prints no run of the marker" "$(prints_no_marker "$out$err")"
+check "twin: that file holds the marker" "$(kept_holds_marker 'git diff --find-renames')"
 
 echo "case: a merge group that edits an approved priority pull request's lines fails"
 run_group 20 "$main" "$g20"
