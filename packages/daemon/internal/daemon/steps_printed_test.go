@@ -171,6 +171,7 @@ func lineName(w stepWant) string {
 // and any other word are no end either, so each fails the walk's read, naming the line. The control
 // is the same ten lines with every end a moment, which the check passes.
 func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
+	t.Parallel()
 	const key = "SR-1"
 	printed := func(end, result string) string {
 		lines := []string{key + ": 10 steps in 1 tasks"}

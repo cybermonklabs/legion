@@ -1957,28 +1957,47 @@ func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 // takes 25 minutes to check, gives the delta its whole bound, and the fresh feed is filled. So
 // does a cache ready on the wait's last ask, 129 min 50 s in, whose history takes that whole
 // bound: before the delta had a bound of its own, the fetch died there and its replacement
-// streamed the cache again (sjawhar/legion#2235). The fetch still ends inside FetchBudget.
+// streamed the cache again (sjawhar/legion#2235). The fetch still ends inside FetchBudget. The
+// cache's bucket has a bound of its own too: a cache ready on that last ask whose bucket's history
+// takes past the bucket attempt's whole BucketFetchTimeout to check, which ends it there, leaves
+// /tar's verification its whole FetchTimeout, which it takes, and the delta its whole own bound;
+// the feed comes from /tar, saying the bucket's check failed. (Each other row's cache serves no
+// /packs, and costs no clock time.)
 func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) {
 	polls := func(d time.Duration) int { return int(d / CachePoll) }
 	for _, tc := range []struct {
 		name     string
 		notReady int
+		// bucket has the cache serve its packs from a bucket (packsCache), whose attempt's history
+		// check is the step "bucket fsck" (bucketFirst).
+		bucket   bool
 		took     map[string]time.Duration
 		timeouts map[string][]time.Duration
 		fails    string
 		elapsed  time.Duration
+		// reason is how the report's TarReason of a fetch that succeeds begins.
+		reason string
 	}{
 		{
 			name: "a cache ready 35 minutes in", notReady: polls(35 * time.Minute),
 			took:     map[string]time.Duration{"fsck": 25 * time.Minute},
 			timeouts: map[string][]time.Duration{"fsck": {FetchTimeout}, "fetch": {FetchTimeout}},
 			elapsed:  35*time.Minute + 25*time.Minute,
+			reason:   reasonNotServed,
 		},
 		{
 			name: "a history that takes the whole first bound to check", notReady: polls(CacheWaitTimeout) - 1,
 			took:     map[string]time.Duration{"fsck": FetchTimeout},
 			timeouts: map[string][]time.Duration{"fsck": {FetchTimeout}, "fetch": {FetchTimeout}},
 			elapsed:  CacheWaitTimeout - CachePoll + FetchTimeout,
+			reason:   reasonNotServed,
+		},
+		{
+			name: "a bucket attempt that runs its whole bound, then a tar history that takes its whole own", notReady: polls(CacheWaitTimeout) - 1, bucket: true,
+			took:     map[string]time.Duration{"bucket fsck": BucketFetchTimeout + time.Second, "fsck": FetchTimeout},
+			timeouts: map[string][]time.Duration{"bucket fsck": {BucketFetchTimeout}, "fsck": {FetchTimeout}, "fetch": {FetchTimeout}},
+			elapsed:  CacheWaitTimeout - CachePoll + BucketFetchTimeout + FetchTimeout,
+			reason:   reasonGit,
 		},
 		{
 			name: "a pack whose indexing takes the whole first bound", notReady: 0,
@@ -1999,16 +2018,22 @@ func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) 
 			run := newLocalRunner(t)
 			clock := newTestClock()
 			start := clock.Now()
-			slow := &slowSteps{recordingRunner: run, clock: clock, step: cacheFetchStep, took: tc.took, timeouts: map[string][]time.Duration{}}
 			cache := cacheOf(t, run.remote)
 			if _, indexes := tc.took["index-pack"]; indexes {
 				if err := os.Remove(strings.TrimSuffix(packOf(t, cache), ".pack") + ".idx"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			served := &fakeCache{body: cacheTar(t, cache), notReady: tc.notReady}
 			req := fetchRequest(t)
-			req.CacheURL, req.CacheToken, req.Clock, req.Log = served.serve(t), testCacheToken, clock, func(string) {}
+			req.Clock, req.Log = clock, func(string) {}
+			step := cacheFetchStep
+			if tc.bucket {
+				newPacksCache(t, cache, tc.notReady).serve(t, &req)
+				step = bucketFirst(cacheFetchStep)
+			} else {
+				req.CacheURL, req.CacheToken = (&fakeCache{body: cacheTar(t, cache), notReady: tc.notReady}).serve(t), testCacheToken
+			}
+			slow := &slowSteps{recordingRunner: run, clock: clock, step: step, took: tc.took, timeouts: map[string][]time.Duration{}}
 
 			report, err := Fetch(context.Background(), slow, req)
 			if tc.fails == "" && err != nil {
@@ -2016,6 +2041,9 @@ func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) 
 			}
 			if tc.fails != "" && (err == nil || !strings.Contains(err.Error(), tc.fails)) {
 				t.Fatalf("Fetch = %+v, %v; want it failed: %q", report, err, tc.fails)
+			}
+			if tc.fails == "" && (report.Source != SourceTar || !strings.HasPrefix(report.TarReason, tc.reason)) {
+				t.Errorf("Fetch filled the feed from %q because %q, want /tar because %q", report.Source, report.TarReason, tc.reason)
 			}
 			if !maps.EqualFunc(slow.timeouts, tc.timeouts, slices.Equal[[]time.Duration]) {
 				t.Errorf("the fetch's commands were given %v, want %v: each stage's own bound, from when it began", slow.timeouts, tc.timeouts)
@@ -2027,6 +2055,21 @@ func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) 
 				assertNothingFilledTheFeed(t, run, req)
 			}
 		})
+	}
+}
+
+// bucketFirst is step with the first `git fsck` it names called "bucket fsck": a fetch from a cache
+// whose packs are in a bucket checks the bucket's history first, and /tar's only after that
+// attempt failed.
+func bucketFirst(step func(argv []string) string) func(argv []string) string {
+	checked := false
+	return func(argv []string) string {
+		named := step(argv)
+		if named == "fsck" && !checked {
+			checked = true
+			return "bucket fsck"
+		}
+		return named
 	}
 }
 

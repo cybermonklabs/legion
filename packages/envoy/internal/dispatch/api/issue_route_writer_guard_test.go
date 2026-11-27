@@ -495,6 +495,7 @@ func isLegionStatusGuard(statement ast.Stmt) bool {
 // it, so it makes no call for R26 to judge. A new writer belongs behind the guard: make it call
 // refuseIssueWritePlan before its first write, then name it here.
 func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -561,6 +562,7 @@ func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
 // call of refuseIssueWritePlan from a mention of it, and a refuseIssueWritePlan that opens with
 // R26's guard from one that does not. It checks that only the named writers' paths are allowed.
 func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
+	t.Parallel()
 	parse := func(t *testing.T, declarations string) moduleSource {
 		t.Helper()
 		positions := token.NewFileSet()

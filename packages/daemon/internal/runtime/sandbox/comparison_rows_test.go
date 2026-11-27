@@ -24,7 +24,7 @@ func TestANumberBelowOneIsNoContract(t *testing.T) {
 		t.Run(strconv.Itoa(tc.contract), func(t *testing.T) {
 			g := newProbeRig(t, nil)
 			g.succeeds(okLine(tc.contract) + "\n")
-			p := probeOptions(t)
+			p := probeOptionsToDeadline(t)
 			p.Contract = tc.contract
 
 			err := g.probe(p)

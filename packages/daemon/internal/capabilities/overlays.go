@@ -40,7 +40,7 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 		r := img.withOverlays(list).launch(ctx, args)
 		switch {
 		case r.err != nil:
-			return "", fmt.Errorf("%s %s under PI_CONFIG_FILES %s: %w", img.Launch, args, strings.Join(list, ":"), r.err)
+			return "", fmt.Errorf("%s %s under PI_CONFIG_FILES %s: %w", img.shown(), args, strings.Join(list, ":"), r.err)
 		case r.exit != 0:
 			return errorLine(r), nil
 		}
