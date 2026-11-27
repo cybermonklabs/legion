@@ -907,14 +907,14 @@ type DurableLag struct {
 type SessionCache struct {
 	SessionCacheReady bool `json:"session_cache_ready"`
 	SessionCacheSize  int  `json:"session_cache_size"`
-	// SessionMaxAge is the maximum age the session bucket carries, which the registry reads back
-	// after it writes the deployment's own: with the setting unset it is the age the bucket
-	// already had, or session.BucketMaxAge for a bucket this listener created.
-	SessionMaxAge string `json:"session_max_age"`
 	// SessionGoneHorizon is the gone horizon the registry judges a record by, beside the maximum
 	// age, so an operator can see whether a record stands long enough for the horizon to be
 	// reached. The listener warns at its start when the age is at or below the horizon.
 	SessionGoneHorizon string `json:"session_gone_horizon"`
+	// SessionMaxAge is the maximum age the session bucket carries, which the registry reads back
+	// after it writes the deployment's own: with the setting unset it is the age the bucket
+	// already had, or session.BucketMaxAge for a bucket this listener created.
+	SessionMaxAge string `json:"session_max_age"`
 	// SessionWatchError is the session watcher's error, empty while it watches.
 	SessionWatchError string `json:"session_watch_error"`
 }
