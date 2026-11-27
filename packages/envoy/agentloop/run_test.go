@@ -583,11 +583,11 @@ func TestACutPastCallAgainIsALengthFault(t *testing.T) {
 
 // outOfFormSays is the sentence of prose a reply out of form writes before the Final object, as
 // the one reply of 121 measured without the schema did (doc.go, "The structured reply"), and
-// outOfForm that reply. No other reply or request says outOfFormSays, so a request that carries
-// it carries that reply.
+// outOfFormAnswer that reply. No other reply or request says outOfFormSays, so a request that
+// carries it carries that reply.
 const outOfFormSays = "Here is my reply to the question:"
 
-var outOfForm = outOfFormSays + " " + finalAnswer
+var outOfFormAnswer = outOfFormSays + " " + finalAnswer
 
 // On the Messages API a reply out of form on a call that offers a tool, which carries no Final
 // schema, is no answer and no fault while the run has a model call and time left: its step is
@@ -603,7 +603,7 @@ func TestAReplyOutOfFormOnACallWithToolsIsDroppedAndTheNextCallIsTheLast(t *test
 		t.Run(string(kind), func(t *testing.T) {
 			t.Parallel()
 			s := newStandIn(t,
-				anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicThinking("Answer at once.", "sig-out-of-form+/=="), anthropicText(outOfForm)),
+				anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicThinking("Answer at once.", "sig-out-of-form+/=="), anthropicText(outOfFormAnswer)),
 				anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5}, anthropicText(finalAnswer)),
 			)
 			f := newFixture(t, s, kind, 4)
@@ -658,7 +658,7 @@ func TestAReplyOutOfFormOnACallWithToolsIsDroppedAndTheNextCallIsTheLast(t *test
 func TestAReplyOutOfFormOnACallThatCarriedTheSchemaIsMalformed(t *testing.T) {
 	t.Parallel()
 	anthropicOut := func() reply {
-		return anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicText(outOfForm))
+		return anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicText(outOfFormAnswer))
 	}
 	anthropicAnswer := func() reply {
 		return anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5}, anthropicText(finalAnswer))
@@ -679,7 +679,7 @@ func TestAReplyOutOfFormOnACallThatCarriedTheSchemaIsMalformed(t *testing.T) {
 		{name: "out of form again on the call after it", kind: AnthropicMessages, calls: 4, dropped: []bool{true, false},
 			replies: []reply{anthropicOut(), anthropicOut(), anthropicAnswer()}},
 		{name: "openai-responses", kind: OpenAIResponses, calls: 4, dropped: []bool{false}, replies: []reply{
-			openaiStream(openaiUsage{Input: 100, Output: 20}, "", openaiMessage("msg_1", outOfForm)),
+			openaiStream(openaiUsage{Input: 100, Output: 20}, "", openaiMessage("msg_1", outOfFormAnswer)),
 			openaiStream(openaiUsage{Input: 120, Output: 5}, "", openaiMessage("msg_2", finalAnswer)),
 		}},
 		{name: "anthropic-messages with no tools", kind: AnthropicMessages, calls: 4, noTools: true, dropped: []bool{false},
@@ -747,13 +747,13 @@ func TestADroppedReplyOutOfFormLeavesACutAndARefusalAsTheyWere(t *testing.T) {
 		dropped, asked []bool
 	}{
 		{name: "a cut and a refusal before the reply out of form", calls: 6, check: refuseEmptyAnswer,
-			replies: []reply{cut(), text(refusedAnswer), text(outOfForm), text(finalAnswer)}, value: finalAnswer,
+			replies: []reply{cut(), text(refusedAnswer), text(outOfFormAnswer), text(finalAnswer)}, value: finalAnswer,
 			dropped: []bool{true, false, true, false}, asked: []bool{false, true, false, false}},
 		{name: "a refusal after the reply out of form", calls: 4, check: refuseEveryAnswer,
-			replies: []reply{text(outOfForm), text(refusedAnswer), text(finalAnswer)}, value: refusedAnswer,
+			replies: []reply{text(outOfFormAnswer), text(refusedAnswer), text(finalAnswer)}, value: refusedAnswer,
 			dropped: []bool{true, false}, asked: []bool{false, false}},
 		{name: "a cut after the reply out of form", calls: 4,
-			replies: []reply{text(outOfForm), cut(), text(finalAnswer)}, fault: FaultLength,
+			replies: []reply{text(outOfFormAnswer), cut(), text(finalAnswer)}, fault: FaultLength,
 			dropped: []bool{true, false}, asked: []bool{false, false}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -106,8 +106,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	for {
 		stream := r.ask(runCtx, model, opts, messages)
 		result := r.result()
-		// Every path below returns the steps the run finished, a fault's among them, so each
-		// is given its call's own output items before any path is taken.
+		// Every return below hands back the steps the run finished, a fault's among them, so
+		// each is given its call's own output items before the run decides whether to return.
 		r.native(&result)
 		switch failure := r.failure(); {
 		case failure != nil:
@@ -123,8 +123,8 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		default:
 			r.finish(&result, stream)
 		}
-		again, outOfForm := r.callAgain(runCtx, result), r.outOfForm(runCtx, result)
-		if again || outOfForm {
+		cutAgain, outOfForm := r.callAgain(runCtx, result), r.outOfForm(runCtx, result)
+		if cutAgain || outOfForm {
 			// The run goes on from the messages the dropped call was sent: the ones this ask
 			// was given and every message its calls before the dropped one produced. The
 			// SDK's response messages end with the dropped call's own, which the stream's
@@ -523,8 +523,7 @@ func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResul
 				messages[i].ProviderOptions = options
 			}
 		}
-		newest := len(messages) - 1
-		messages[newest].ProviderOptions = withOption(messages[newest].ProviderOptions, anthropic.CacheControl("ephemeral"))
+		markCache(messages, len(messages)-1)
 		result.Messages = messages
 	}
 	if last && r.req.LastCall != "" {

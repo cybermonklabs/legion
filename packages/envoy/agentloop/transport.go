@@ -206,7 +206,7 @@ func (t *modelTransport) inFinalOrder(body []byte) []byte {
 				return unordered(strings.Join(path[:i], ".") + " is no JSON object")
 			}
 		}
-		j := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == name })
+		j := memberIndex(members, name)
 		if j < 0 {
 			return unordered(fmt.Sprintf("no member %q on the path %s", name, strings.Join(path, ".")))
 		}
@@ -217,8 +217,13 @@ func (t *modelTransport) inFinalOrder(body []byte) []byte {
 	schema := body[start:end]
 	sent, want := jsontext.Value(schema).Kind(), jsontext.Value(t.final).Kind()
 	if sent == want {
-		if ordered, ok := appendInOrder(append(make([]byte, 0, len(body)), body[:start]...), schema, t.final); ok {
-			return append(ordered, body[end:]...)
+		if ordered, ok := appendInOrder(make([]byte, 0, len(schema)), schema, t.final); ok {
+			// A schema the SDK sent in Final's order already leaves the body as it came, and
+			// no copy of it is made.
+			if bytes.Equal(ordered, schema) {
+				return body
+			}
+			return slices.Concat(body[:start], ordered, body[end:])
 		}
 	} else if name, ok := jsonKinds[want]; ok {
 		return unordered(fmt.Sprintf("the schema at %s is a JSON %s where Final is a JSON %s",
@@ -235,13 +240,13 @@ func (t *modelTransport) inFinalOrder(body []byte) []byte {
 // output_config that held the format and nothing else goes too, as the SDK writes none for a
 // request with neither. A body that holds no format is sent as it came.
 func withoutFormat(body []byte, members []jsonPart) []byte {
-	i := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == "output_config" })
+	i := memberIndex(members, "output_config")
 	if i < 0 {
 		return body
 	}
 	config := body[members[i].start:members[i].end]
 	inner, _ := jsonParts(config, jsontext.KindBeginObject)
-	j := slices.IndexFunc(inner, func(m jsonPart) bool { return m.name == "format" })
+	j := memberIndex(inner, "format")
 	switch {
 	case j < 0:
 		return body
@@ -259,12 +264,16 @@ func withoutFormat(body []byte, members []jsonPart) []byte {
 // the others.
 func offersTools(body []byte, members []jsonPart) bool {
 	value := func(name string) []byte {
-		if i := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == name }); i >= 0 {
+		if i := memberIndex(members, name); i >= 0 {
 			return body[members[i].start:members[i].end]
 		}
 		return nil
 	}
-	if tools, _ := jsonParts(value("tools"), jsontext.KindBeginArray); len(tools) == 0 {
+	// The body was read whole as JSON (jsonParts), so a tools array holds a tool where what
+	// follows its opening bracket is not its closing one.
+	tools := jsontext.NewDecoder(bytes.NewBuffer(value("tools")))
+	if open, err := tools.ReadToken(); err != nil || open.Kind() != jsontext.KindBeginArray ||
+		tools.PeekKind() == jsontext.KindEndArray {
 		return false
 	}
 	choice := value("tool_choice")
@@ -338,7 +347,7 @@ func appendInOrder(dst, sent, final []byte) ([]byte, bool) {
 		end = jsontext.KindEndObject
 		placed := make([]bool, len(sentParts))
 		for _, f := range finalParts {
-			if i := slices.IndexFunc(sentParts, func(p jsonPart) bool { return p.name == f.name }); i >= 0 {
+			if i := memberIndex(sentParts, f.name); i >= 0 {
 				pairs = append(pairs, pair{sent: sentParts[i], final: final[f.start:f.end]})
 				placed[i] = true
 			}
@@ -373,6 +382,12 @@ func appendInOrder(dst, sent, final []byte) ([]byte, bool) {
 type jsonPart struct {
 	name       string
 	start, end int
+}
+
+// memberIndex is the index in parts, the members of a JSON object, of the member named name, and
+// -1 where the object holds none.
+func memberIndex(parts []jsonPart, name string) int {
+	return slices.IndexFunc(parts, func(p jsonPart) bool { return p.name == name })
 }
 
 // jsonParts is the members of value, a JSON object, or the elements of value, a JSON array, in

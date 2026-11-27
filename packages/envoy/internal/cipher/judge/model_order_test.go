@@ -27,9 +27,7 @@ func TestTheJudgesReplySchemaReachesTheModelWithReasonBeforeVerdict(t *testing.T
 	if err != nil || verdict.Word != Grant {
 		t.Fatalf("Ask = %+v, %v; want the model's grant", verdict, err)
 	}
-	m.mu.Lock()
-	bodies := append([][]byte(nil), m.bodies...)
-	m.mu.Unlock()
+	bodies := m.callBodies()
 	if len(bodies) != 1 {
 		t.Fatalf("the model got %d calls, want 1", len(bodies))
 	}

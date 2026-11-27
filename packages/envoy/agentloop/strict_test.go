@@ -3,9 +3,11 @@ package agentloop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A Final schema outside the strict structured-output subset is a request the loop will not
@@ -36,6 +38,14 @@ func TestAFinalSchemaOutsideTheStrictSubsetIsRefused(t *testing.T) {
 		final: `{"type":"object","properties":{"needs":{"anyOf":[{"type":"string"},{"type":"null"}]}},` +
 			`"required":["needs"],"additionalProperties":false}`,
 		want: "agentloop: the request's final schema: properties.needs: an anyOf union (a node of a Final schema takes one type)",
+	}, {
+		name:  "a node with no type",
+		final: `{"type":"object","properties":{"x":{}},"required":["x"],"additionalProperties":false}`,
+		want:  "agentloop: the request's final schema: properties.x: no type (a node of a Final schema takes one type)",
+	}, {
+		name:  "an enum with no type",
+		final: `{"type":"object","properties":{"x":{"enum":["a","b"]}},"required":["x"],"additionalProperties":false}`,
+		want:  "agentloop: the request's final schema: properties.x: no type (a node of a Final schema takes one type)",
 	}, {
 		name:  "a root with no additionalProperties false",
 		final: `{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`,
@@ -81,6 +91,13 @@ func TestAFinalSchemaOutsideTheStrictSubsetIsRefused(t *testing.T) {
 			`"additionalProperties":false,"definitions":{"step":{"type":"object",` +
 			`"properties":{"name":{"type":"string"}},"required":["name"]}}}`,
 		want: "agentloop: the request's final schema: definitions.step: no additionalProperties: false",
+	}, {
+		name: "a definition inside a definition of the same name",
+		final: `{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],` +
+			`"additionalProperties":false,"$defs":{"z":{"type":"string","$defs":{"z":{"type":"string","minLength":1}}}}}`,
+		// The inner z is named by its own place below the outer one, so the walk of the
+		// outer z does not take it for itself and pass it over.
+		want: `agentloop: the request's final schema: $defs.z.$defs.z: unsupported keyword "minLength"`,
 	}, {
 		name: "a recursive schema",
 		final: `{"type":"object","properties":{"node":{"$ref":"#/$defs/node"}},"required":["node"],` +
@@ -188,8 +205,9 @@ func TestAStrictFinalSchemaRuns(t *testing.T) {
 }
 
 // Every shape the subset allows is accepted, including the ones no caller in this repository
-// writes yet: a definition reached through a $ref, a definition reached through two, an empty
-// object, and the annotations that constrain nothing.
+// writes yet: a definition reached through a $ref, a definition reached through two, a
+// definition below the root beside one of the same name at the root, an empty object, and the
+// annotations that constrain nothing.
 func TestTheStrictSubsetAcceptsWhatBothProvidersEnforce(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -206,6 +224,13 @@ func TestTheStrictSubsetAcceptsWhatBothProvidersEnforce(t *testing.T) {
 			`"required":["first","second"],"additionalProperties":false,"$defs":{"step":{"type":"object",` +
 			`"properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}}}`,
 	}, {
+		name: "a definition below the root that names the root's definition of the same name",
+		// The $ref names the root's y, a string, and not the y it sits in, so it is no
+		// recursive schema.
+		final: `{"type":"object","properties":{"a":{"type":"object","additionalProperties":false,` +
+			`"$defs":{"y":{"type":"object","properties":{"c":{"$ref":"#/$defs/y"}},"required":["c"],"additionalProperties":false}}}},` +
+			`"required":["a"],"additionalProperties":false,"$defs":{"y":{"type":"string"}}}`,
+	}, {
 		name: "an object that names no property",
 		final: `{"type":"object","properties":{"free":{"type":"object","additionalProperties":false}},` +
 			`"required":["free"],"additionalProperties":false}`,
@@ -213,13 +238,66 @@ func TestTheStrictSubsetAcceptsWhatBothProvidersEnforce(t *testing.T) {
 		name: "an enum of plain values of each kind",
 		final: `{"type":"object","properties":{"level":{"type":"integer","enum":[1,2,3]},` +
 			`"ok":{"type":"boolean"},"nothing":{"type":"null"},` +
+			`"flag":{"type":"boolean","enum":[true,false]},"none":{"type":"null","enum":[null]},` +
 			`"tags":{"type":"array","items":{"type":"string","enum":["red","green"]}}},` +
-			`"required":["level","ok","nothing","tags"],"additionalProperties":false}`,
+			`"required":["level","ok","nothing","flag","none","tags"],"additionalProperties":false}`,
 	}} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			if err := strictFinal(json.RawMessage(c.final)); err != nil {
 				t.Errorf("the schema was refused: %v", err)
+			}
+		})
+	}
+}
+
+// chainSchema is a Final schema whose one property names link0, the first of n definitions each
+// of which names the next twice, the last of them a string, with extra, more definitions, after
+// them: a walk that went on at every $ref each time it met one would read the last link 2^n
+// times.
+func chainSchema(n int, extra string) string {
+	var b strings.Builder
+	b.WriteString(`{"type":"object","properties":{"first":{"$ref":"#/$defs/link0"}},"required":["first"],` +
+		`"additionalProperties":false,"$defs":{`)
+	for i := range n {
+		fmt.Fprintf(&b, `"link%d":{"type":"object","properties":{"a":{"$ref":"#/$defs/link%d"},"b":{"$ref":"#/$defs/link%d"}},`+
+			`"required":["a","b"],"additionalProperties":false},`, i, i+1, i+1)
+	}
+	fmt.Fprintf(&b, `"link%d":{"type":"string"}%s}}`, n, extra)
+	return b.String()
+}
+
+// A chain of definitions each of which names the next twice is walked once for each definition,
+// not once for each way through it: twenty-four links, which a walk that went on at every $ref
+// each time would read 2^24 times over, are checked well inside a second, and get the verdict
+// two links get, accepted, or refused with the same error where a definition after the chain is
+// out of the subset.
+func TestAChainOfDefinitionsIsWalkedOnceForEachDefinition(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		extra string
+		want  string
+	}{
+		{name: "a chain inside the subset"},
+		{name: "a chain with a definition out of the subset after it",
+			extra: `,"unused":{"type":"string","minLength":1}`, want: `$defs.unused: unsupported keyword "minLength"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			for _, n := range []int{2, 24} {
+				start := time.Now()
+				err := strictFinal(json.RawMessage(chainSchema(n, c.extra)))
+				if took := time.Since(start); took > 2*time.Second {
+					t.Errorf("a chain of %d links took %s to check, want well under a second", n, took)
+				}
+				got := ""
+				if err != nil {
+					got = err.Error()
+				}
+				if got != c.want {
+					t.Errorf("a chain of %d links gets the error %q, want %q", n, got, c.want)
+				}
 			}
 		})
 	}

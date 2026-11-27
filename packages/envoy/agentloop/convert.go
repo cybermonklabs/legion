@@ -274,12 +274,12 @@ func markAnthropicHistory(messages []provider.Message, history int) {
 	}
 	markCache(messages, end)
 	question := lastQuestion(messages, end)
-	if question < 0 || prefixChars(messages[:question+1]) < cacheableChars {
+	if question < 0 || !cacheable(messages[:question+1]) {
 		return
 	}
 	markCache(messages, question)
 	before := markable(messages, question)
-	if before < 0 || prefixChars(messages[:before+1]) < cacheableChars {
+	if before < 0 || !cacheable(messages[:before+1]) {
 		return
 	}
 	markCache(messages, before)
@@ -315,17 +315,20 @@ func lastQuestion(messages []provider.Message, limit int) int {
 	return -1
 }
 
-// prefixChars is how much text the messages carry, which is what a prefix's length is measured
-// by: a part's own text, a tool call's arguments and a tool result's output, and the bytes of
-// a file or an image, which run well above the tokens the provider counts them as.
-func prefixChars(messages []provider.Message) int {
+// cacheable is whether the messages carry the text a cache breakpoint after them needs
+// (cacheableChars), which is what a prefix's length is measured by: a part's own text, a tool
+// call's arguments and a tool result's output, and the bytes of a file or an image, which run
+// well above the tokens the provider counts them as. The count stops once it gets there.
+func cacheable(messages []provider.Message) bool {
 	chars := 0
 	for _, m := range messages {
 		for _, p := range m.Content {
-			chars += partChars(p)
+			if chars += partChars(p); chars >= cacheableChars {
+				return true
+			}
 		}
 	}
-	return chars
+	return false
 }
 
 // partChars is how much text one part carries.
