@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -32,6 +34,7 @@ import (
 // since a retry would only mint again on every redelivery. A 401 for its token is retried
 // (tokenRefused), as the permission read's is.
 func (w *workflowRuntime) reviewBody(ctx context.Context, review intake.PullRequestReview) (string, error) {
+	ctx = githubrate.WithCaller(ctx, callerReviewBody)
 	if review.Author != w.reviewAppLogin {
 		return review.Body, nil
 	}

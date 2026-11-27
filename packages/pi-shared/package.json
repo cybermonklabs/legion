@@ -21,6 +21,10 @@
       "types": "./src/role-claim-bridge.ts",
       "bun": "./src/role-claim-bridge.ts"
     },
+    "./role-claim-stopping": {
+      "types": "./src/role-claim-stopping.ts",
+      "bun": "./src/role-claim-stopping.ts"
+    },
     "./startup-turn": {
       "types": "./src/startup-turn.ts",
       "bun": "./src/startup-turn.ts"
