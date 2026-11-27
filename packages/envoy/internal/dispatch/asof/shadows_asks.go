@@ -130,6 +130,14 @@ var (
 	commentCreatedList = sqlList(commentCreatedTypes)
 )
 
+// AskAnchorBlocksNotGivenStatement reads, of the asks whose ids $1 holds (uuid[]), the id of each
+// ask whose anchor's block id at the cut $2 (timestamptz) no record gives (reason E), by the rule
+// of CommentAnchorBlocksNotGivenStatement: the backfill of anchor blocks writes an ask's row as it
+// writes a comment's. It reads each ask's events through events_ask_state, and its row through
+// asks_pkey. The backfill writes no part of an ask, so the statement is apart from
+// AsksChangedAfterStatement: an ask whose block id it reads does not count as changed.
+var AskAnchorBlocksNotGivenStatement = anchorBlocksNotGiven("asks", askStateList)
+
 // asksShadow is decision 2's asks: the newest ask.* payload of each ask at the cut, by event id,
 // the follower events excepted. An ask none of whose events is at the cut did not exist then.
 // Columns no write changes after the insert (id, issue_key, author, created_at, artifact_id, kind,

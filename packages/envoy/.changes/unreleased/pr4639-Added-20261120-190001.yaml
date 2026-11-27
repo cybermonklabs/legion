@@ -22,6 +22,13 @@ body: |-
   included, Dispatch leaves out both and names them in `Dispatch-As-Of-Absent`. It still gives
   the check's changed version.
 
+  The backfill of anchor blocks (`backfill-anchor-blocks`) writes a block id into the anchor of a
+  comment or an ask with no event. Where the anchor of an item's newest event at a cut names no
+  block, the item's next event after the cut, or its row where none follows, decides: where that
+  names a block, an answer at the cut leaves out the anchor's `block_id`, and the read of one
+  comment or one ask its `anchor_block` too, and names them in `Dispatch-As-Of-Absent`; where it
+  names none, the answer keeps the unpinned anchor from the event at the cut.
+
   Dispatch now serves reads at a past time to a read-only token that carries a cut, which #4557's
   entry "Dispatch puts every GET route of its route table in a read class" says it refuses until
   then. Each route that answers `as_of` answers such a token as of its cut, whatever `as_of` the

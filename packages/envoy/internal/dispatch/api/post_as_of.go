@@ -91,15 +91,20 @@ func (s *server) idsReadAtTheCut(ctx context.Context, statement string, ids []st
 //   - the members of each delivery attempt that no event at the cut dates (undatedCommentAttempt);
 //   - whether the mark of the comment's anchor was gone, where the shadow gives the anchor as not
 //     orphaned and a write with no event that dates it may have orphaned the anchor before the cut
-//     (reason E, asof.CommentAnchorsOrphanedNotGivenStatement).
+//     (reason E, asof.CommentAnchorsOrphanedNotGivenStatement);
+//   - the block id of the comment's anchor, where the shadow gives an anchor that names no block
+//     and the backfill of anchor blocks may have written its block id before the cut with no
+//     event (reason E, asof.CommentAnchorBlocksNotGivenStatement).
 //
-// A request at no cut leaves out nothing.
-func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment, at func(index int) string, trees bool) error {
+// It answers the ids of the comments whose anchor's block id it left out: the read of one comment
+// leaves out the place of that comment's block too (getComment, anchorAtTheCut). A request at no
+// cut leaves out nothing.
+func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment, at func(index int) string, trees bool) (map[string]bool, error) {
 	cut, atCut := asof.CutFrom(ctx)
 	if !atCut || len(comments) == 0 {
-		return nil
+		return nil, nil
 	}
-	var emptied, anchored []string
+	var emptied, anchored, unpinned []string
 	blocks := make([]*model.ReplyBlock, len(comments))
 	for index, comment := range comments {
 		place := at(index)
@@ -116,16 +121,19 @@ func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment,
 		if comment.Anchor != nil && !comment.Anchor.Orphaned {
 			anchored = append(anchored, comment.ID)
 		}
+		if anchorNamesNoBlock(comment.Anchor) {
+			unpinned = append(unpinned, comment.ID)
+		}
 		blocks[index] = comment.ReplyBlock
 		leaveOutUndatedAttempts(ctx, place, comment.Deliveries, func(attempt model.CommentDelivery) string { return attempt.State }, undatedCommentAttempt)
 	}
 	if err := s.replyBlocksAtTheCut(ctx, cut, blocks, at, trees); err != nil {
-		return err
+		return nil, err
 	}
 	if len(anchored) > 0 {
 		undated, err := s.idsReadAtTheCut(ctx, asof.CommentAnchorsOrphanedNotGivenStatement, anchored, cut)
 		if err != nil {
-			return fmt.Errorf("read which comments' anchors no record dates at the cut: %w", err)
+			return nil, fmt.Errorf("read which comments' anchors no record dates at the cut: %w", err)
 		}
 		for index, comment := range comments {
 			if undated[comment.ID] {
@@ -133,19 +141,31 @@ func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment,
 			}
 		}
 	}
+	var undatedBlocks map[string]bool
+	if len(unpinned) > 0 {
+		var err error
+		if undatedBlocks, err = s.idsReadAtTheCut(ctx, asof.CommentAnchorBlocksNotGivenStatement, unpinned, cut); err != nil {
+			return nil, fmt.Errorf("read which comments' anchor blocks no record gives at the cut: %w", err)
+		}
+		for index, comment := range comments {
+			if undatedBlocks[comment.ID] {
+				leaveOut(ctx, at(index)+"/anchor/block_id")
+			}
+		}
+	}
 	if len(emptied) == 0 {
-		return nil
+		return undatedBlocks, nil
 	}
 	unknown, err := s.idsReadAtTheCut(ctx, asof.CommentBodiesNotGivenStatement, emptied, cut)
 	if err != nil {
-		return fmt.Errorf("read which comments have no body at the cut: %w", err)
+		return nil, fmt.Errorf("read which comments have no body at the cut: %w", err)
 	}
 	for index, comment := range comments {
 		if unknown[comment.ID] {
 			leaveOut(ctx, at(index)+"/body")
 		}
 	}
-	return nil
+	return undatedBlocks, nil
 }
 
 // messagesAtTheCut names what a past-time answer leaves out of each of reads, the thread at the
@@ -232,13 +252,23 @@ func (s *server) replyBlocksAtTheCut(ctx context.Context, cut asof.Cut, blocks [
 // computed from a document tree (pmdoc.BlockPathOf), and a stored version is markdown, which
 // holds the id of a typed block only: the tree of the version at the cut does not hold the id of
 // an untyped block, nor of the blocks that hold a typed one, so no record gives the path at the
-// cut. At no cut the caller reads the place from the live document.
+// cut. Where the anchor at the cut names no block, the read gives no place, unless the anchor's
+// block id is itself one that no record gives at the cut (commentsAtTheCut, askAtTheCut): then
+// whether the anchor named a block at the cut is unknown, and the read leaves the place out with
+// it. At no cut the caller reads the place from the live document.
 func anchorAtTheCut(ctx context.Context, anchor *model.Anchor, place string) bool {
 	if _, atCut := asof.CutFrom(ctx); !atCut {
 		return false
 	}
-	if anchor != nil && anchor.BlockID != nil && *anchor.BlockID != "" {
+	if anchor != nil && !anchorNamesNoBlock(anchor) {
 		leaveOut(ctx, place+"/anchor_block")
 	}
 	return true
+}
+
+// anchorNamesNoBlock reports whether anchor is an anchor whose block id is missing, null or empty:
+// at a cut, an anchor whose block id the backfill of anchor blocks may have written with no event
+// (asof.CommentAnchorBlocksNotGivenStatement). Only for such an anchor is that statement sent.
+func anchorNamesNoBlock(anchor *model.Anchor) bool {
+	return anchor != nil && (anchor.BlockID == nil || *anchor.BlockID == "")
 }

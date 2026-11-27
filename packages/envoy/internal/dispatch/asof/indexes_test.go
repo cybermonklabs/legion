@@ -147,6 +147,21 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 			arguments: []any{[]string{"00000000-0000-4000-8000-000000000007"}, cut.Time()},
 			index:     "events_comment_state",
 		},
+		{
+			// Which comments' and asks' anchors name at the cut no block that the record after it
+			// names (api's commentsAtTheCut and leaveOutPastAskFields): each item's events through
+			// the index of its own types.
+			name:      "the comment anchor blocks pinned with no event",
+			statement: asof.CommentAnchorBlocksNotGivenStatement,
+			arguments: []any{[]string{"00000000-0000-4000-8000-000000000007"}, cut.Time()},
+			index:     "events_comment_state",
+		},
+		{
+			name:      "the ask anchor blocks pinned with no event",
+			statement: asof.AskAnchorBlocksNotGivenStatement,
+			arguments: []any{[]string{"00000000-0000-4000-8000-000000000007"}, cut.Time()},
+			index:     "events_ask_state",
+		},
 	} {
 		t.Run(read.name, func(t *testing.T) {
 			bound, err := asof.Bind(read.statement, cut)

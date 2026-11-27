@@ -53,6 +53,9 @@ const (
 	// E, for whether the mark of a comment's anchor was gone.
 	reasonAnchorOrphaned = "No record gives the time at which the mark of this anchor went out of the document. " +
 		"Only an anchor refresh event gives that time."
+	// E, for the block id of an anchor.
+	reasonAnchorBlockID = "The backfill of anchor blocks writes this field with no event. " +
+		"No record gives the time of the backfill, so no record gives whether the anchor named a block at the cut."
 	// E, for the wording of an ask.
 	reasonAskWording = "The restore of a decided ask's wording changes this field with no event. " +
 		"No record gives the time of the restore, so no record gives the wording at the cut."
@@ -81,17 +84,18 @@ const (
 // route", and beside it the members that the list does not name for a field the records at the
 // cut do not give (decision 5): the delivery mode and the session of a delivery attempt and the
 // text of the block that a reply names (commentFields, messageFields), whether the mark of a
-// comment's anchor was gone (commentFields), the wording of an ask that a restore changed with no
-// event, in each answer that gives it (an ask's, askWordingFields; the question of the ask of an
-// agent's answer; the snippet of an ask hit, searchFields), the route's status reason of an ask's
-// reach (routeReachFields), each reply of an ask's thread (commentFields), the documents of an
-// approval request in the inbox (askFields), the place of an anchored block, and of the blocks
-// that the text route gives, the anchored counts and the ids of a table's rows and cells, which
-// the block routes leave out too (blockFields), and whether a result of a check that reads the
-// program's current deploy counts (not_counted, reasonCurrentDeploy). The list's snippet tree of a
-// search result is here for an ask hit alone, whose wording at the cut no record may give
-// (searchFields): a past-time search draws every other snippet tree from the headline of the text
-// at the cut. A route that the plan lists with no field has an empty list. A past-time answer
+// comment's anchor was gone (commentFields), the block id of an anchor that the backfill of anchor
+// blocks wrote with no event (commentFields, askFields), the wording of an ask that a restore
+// changed with no event, in each answer that gives it (an ask's, askWordingFields; the question of
+// the ask of an agent's answer; the snippet of an ask hit, searchFields), the route's status
+// reason of an ask's reach (routeReachFields), each reply of an ask's thread (commentFields), the
+// documents of an approval request in the inbox (askFields), the place of an anchored block, and
+// of the blocks that the text route gives, the anchored counts and the ids of a table's rows and
+// cells, which the block routes leave out too (blockFields), and whether a result of a check that
+// reads the program's current deploy counts (not_counted, reasonCurrentDeploy). The list's snippet
+// tree of a search result is here for an ask hit alone, whose wording at the cut no record may
+// give (searchFields): a past-time search draws every other snippet tree from the headline of the
+// text at the cut. A route that the plan lists with no field has an empty list. A past-time answer
 // names a member in the Dispatch-As-Of-Absent header only when it leaves that member out, and it
 // names only members this table holds for its route (WriteHeaders, which tests check with
 // ValidAbsent).
@@ -116,6 +120,7 @@ var AbsentFields = map[string][]AbsentField{
 		{"/open_asks/*/answer/id", reasonParts},
 		{"/open_asks/*/waiting_on_person", reasonProjectDefault},
 		{"/open_asks/*/approval/documents", reasonMigrationFill},
+		{"/open_asks/*/anchor/block_id", reasonAnchorBlockID},
 		{"/artifacts/*/approval/documents", reasonMigrationFill},
 	}, askWordingFields("/open_asks/*")),
 	// An unpaged listing is an array of issues; a paged one holds them under issues. The listing
@@ -241,9 +246,13 @@ var (
 // and the session of an attempt, which a send resolves with no event, so for an attempt that no
 // event at the cut dates they are absent too (decision 5); and whether the mark of the comment's
 // anchor was gone, where a write with no event that dates it orphaned the anchor
-// (CommentAnchorsOrphanedNotGivenStatement).
+// (CommentAnchorsOrphanedNotGivenStatement). The block id of the comment's anchor is absent where
+// the backfill of anchor blocks wrote it with no event that dates it
+// (CommentAnchorBlocksNotGivenStatement).
 func commentFields(prefix string) []AbsentField {
-	return append(postFields(prefix, undatedCommentAttempt), AbsentField{prefix + "/anchor/orphaned", reasonAnchorOrphaned})
+	return append(postFields(prefix, undatedCommentAttempt),
+		AbsentField{prefix + "/anchor/orphaned", reasonAnchorOrphaned},
+		AbsentField{prefix + "/anchor/block_id", reasonAnchorBlockID})
 }
 
 // messageFields are the fields of an issue message at prefix, with the block that the reply names
@@ -267,7 +276,9 @@ func postFields(prefix string, attempt []string) []AbsentField {
 	return fields
 }
 
-// askFields are the fields of an ask at prefix.
+// askFields are the fields of an ask at prefix. The block id of the ask's anchor is absent where
+// the backfill of anchor blocks wrote it with no event that dates it
+// (AskAnchorBlocksNotGivenStatement).
 func askFields(prefix string) []AbsentField {
 	return append([]AbsentField{
 		{prefix + "/referenced_by_count", reasonGraph},
@@ -276,6 +287,7 @@ func askFields(prefix string) []AbsentField {
 		{prefix + "/answer/id", reasonParts},
 		{prefix + "/waiting_on_person", reasonProjectDefault},
 		{prefix + "/approval/documents", reasonMigrationFill},
+		{prefix + "/anchor/block_id", reasonAnchorBlockID},
 	}, askWordingFields(prefix)...)
 }
 

@@ -101,18 +101,7 @@ var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
 // The statement names each table by its schema, so the store's binding at a cut does not read a
 // shadow in its place (Bind). It reads each comment's events through events_comment_state.
 var CommentAnchorsOrphanedNotGivenStatement = `select c.id::text from public.comments c
-	cross join lateral (
-		select e.payload->'anchor' as anchor from public.events e
-		where e.payload->>'id' = c.id::text and e.type in ` + commentStateList + `
-			and e.created_at <= $2::timestamptz
-		order by e.id desc limit 1
-	) s
-	left join lateral (
-		select e.type, e.payload->'anchor' as anchor from public.events e
-		where e.payload->>'id' = c.id::text and e.type in ` + commentStateList + `
-			and e.created_at > $2::timestamptz
-		order by e.id limit 1
-	) n on true
+	` + anchorsAroundTheCut("c", commentStateList) + `
 	where c.id = any($1::uuid[])
 		and jsonb_typeof(s.anchor) = 'object' and not coalesce((s.anchor->>'orphaned')::boolean, false)
 		and case
@@ -121,6 +110,59 @@ var CommentAnchorsOrphanedNotGivenStatement = `select c.id::text from public.com
 				and n.anchor->>'quote' is not distinct from s.anchor->>'quote'
 			else coalesce((n.anchor->>'orphaned')::boolean, false)
 		end`
+
+// CommentAnchorBlocksNotGivenStatement reads, of the comments whose ids $1 holds (uuid[]), the id
+// of each comment whose anchor's block id at the cut $2 (timestamptz) no record gives (reason E).
+// The backfill of anchor blocks (docs' Service.BackfillAnchorBlocks, the command
+// backfill-anchor-blocks) writes a block id into the row of a comment or an ask whose anchor names
+// none, an anchor written before anchors named their block, and appends no event. The shadow
+// gives the anchor of the item's newest state event at the cut (s), so where that anchor names no
+// block (its block_id missing, null or empty), the anchor may have named one at the cut. The
+// backfill writes a block id only where the anchor names none, and no write clears one, so the
+// record decides it by n, the item's first state event after the cut, which carries the item as
+// its write read the row, or, with no n, by the present row:
+//   - where that anchor names a block, the backfill wrote it at a time between s and n that the
+//     records do not give, and the answer leaves the block id out;
+//   - where it names none, the anchor named none at the cut either, so the answer keeps the
+//     unpinned anchor from s, though the backfill may have written the row after n.
+//
+// A block id that s names is given as s holds it, and no id is read from the row as the anchor's
+// at the cut. A delivery receipt and a follow are no state event, and carry no anchor. The
+// statement and AskAnchorBlocksNotGivenStatement read the events of the boundary that
+// CommentAnchorsOrphanedNotGivenStatement reads (anchorsAroundTheCut), each through the partial
+// index of its item's state types, and name each table by its schema (Bind).
+var CommentAnchorBlocksNotGivenStatement = anchorBlocksNotGiven("comments", commentStateList)
+
+// anchorsAroundTheCut is the two lateral reads of an item's anchor that the statements of an
+// anchor at a cut compare, of the item whose row the alias item names (a comment or an ask, whose
+// events name it by its id in their payload), through the partial index of its state types
+// (types, an sqlList):
+//   - s, the anchor of its newest state event at the cut $2 (timestamptz), which the shadow gives;
+//   - n, the type and the anchor of its first state event after the cut, null where none is.
+func anchorsAroundTheCut(item, types string) string {
+	return `cross join lateral (
+		select e.payload->'anchor' as anchor from public.events e
+		where e.payload->>'id' = ` + item + `.id::text and e.type in ` + types + `
+			and e.created_at <= $2::timestamptz
+		order by e.id desc limit 1
+	) s
+	left join lateral (
+		select e.type, e.payload->'anchor' as anchor from public.events e
+		where e.payload->>'id' = ` + item + `.id::text and e.type in ` + types + `
+			and e.created_at > $2::timestamptz
+		order by e.id limit 1
+	) n on true`
+}
+
+// anchorBlocksNotGiven is the statement of CommentAnchorBlocksNotGivenStatement over the items of
+// table (comments or asks), whose state events are the types of the list types.
+func anchorBlocksNotGiven(table, types string) string {
+	return `select x.id::text from public.` + table + ` x
+	` + anchorsAroundTheCut("x", types) + `
+	where x.id = any($1::uuid[])
+		and jsonb_typeof(s.anchor) = 'object' and nullif(s.anchor->>'block_id', '') is null
+		and nullif((case when n.type is null then x.anchor else n.anchor end)->>'block_id', '') is not null`
+}
 
 // ItemsChangedAfterStatement reads, of the items whose ids $1 holds (text[]), the id of each item
 // that changed after the cut $2 (timestamptz): a comment or a message with an edit or a delete

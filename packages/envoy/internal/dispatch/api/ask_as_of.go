@@ -77,7 +77,8 @@ func (s *server) threadsAtTheCut(ctx context.Context, threads []*askThread, plac
 			replies, at = append(replies, thread.Replies[number].Comment), append(at, reply(number))
 		}
 	}
-	return s.commentsAtTheCut(ctx, replies, func(index int) string { return at[index] }, trees)
+	_, err := s.commentsAtTheCut(ctx, replies, func(index int) string { return at[index] }, trees)
+	return err
 }
 
 // issueAsksAtTheCut names what an issue's ask list at a cut leaves out: of each row, the fields of
@@ -120,14 +121,19 @@ func openAsksAtTheCut(ctx context.Context, asks []openAsk) {
 
 // askAtTheCut names what the read of one ask at a cut leaves out: the fields of
 // leaveOutPastAskFields of the ask, and of its thread what threadsAtTheCut names. The place of
-// the ask's anchored block is left out where the read skips it (anchorAtTheCut). trees is whether
-// the read carries display trees.
+// the ask's anchored block is left out where the read skips it (anchorAtTheCut), and with the
+// anchor's block id where no record gives that id at the cut. trees is whether the read carries
+// display trees.
 func (s *server) askAtTheCut(ctx context.Context, read askRead, trees bool) error {
 	if _, atCut := asof.CutFrom(ctx); !atCut {
 		return nil
 	}
-	if err := s.leaveOutPastAskFields(ctx, []model.Ask{read.Ask.Ask}, func(int) string { return "/ask" }, trees); err != nil {
+	undatedBlocks, err := s.askFieldsAtTheCut(ctx, []model.Ask{read.Ask.Ask}, func(int) string { return "/ask" }, trees)
+	if err != nil {
 		return err
+	}
+	if undatedBlocks[read.Ask.ID] {
+		leaveOut(ctx, "/ask/anchor_block")
 	}
 	return s.threadsAtTheCut(ctx, []*askThread{&read.askThread}, []string{""}, trees)
 }

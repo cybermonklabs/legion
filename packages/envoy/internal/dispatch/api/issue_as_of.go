@@ -186,19 +186,40 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 //     its issue held nobody, and its project's default assignee is unknown at the cut, which the
 //     projects shadow gives as null (reason D); the read then gives no person;
 //   - approval.documents of an approval request whose state at the cut names no document, written
-//     before requests held their documents (reason B).
+//     before requests held their documents (reason B);
+//   - the block id of the ask's anchor, where the shadow gives an anchor that names no block and
+//     the backfill of anchor blocks may have written its block id before the cut with no event
+//     (reason E, asof.AskAnchorBlocksNotGivenStatement). The statement is sent only where an ask
+//     holds such an anchor.
 func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at func(index int) string, trees bool) error {
+	_, err := s.askFieldsAtTheCut(ctx, asks, at, trees)
+	return err
+}
+
+// askFieldsAtTheCut is leaveOutPastAskFields, and answers the ids of the asks whose anchor's block
+// id it left out: the read of one ask leaves out the place of that ask's block too (askAtTheCut).
+func (s *server) askFieldsAtTheCut(ctx context.Context, asks []model.Ask, at func(index int) string, trees bool) (map[string]bool, error) {
 	cut, atCut := asof.CutFrom(ctx)
 	if !atCut || len(asks) == 0 {
-		return nil
+		return nil, nil
 	}
 	ids := make([]string, len(asks))
+	var unpinned []string
 	for index := range asks {
 		ids[index] = asks[index].ID
+		if anchorNamesNoBlock(asks[index].Anchor) {
+			unpinned = append(unpinned, asks[index].ID)
+		}
 	}
 	changed, wordingUnknown, err := s.asksChangedAfterTheCut(ctx, ids, cut)
 	if err != nil {
-		return fmt.Errorf("read which asks changed after the cut: %w", err)
+		return nil, fmt.Errorf("read which asks changed after the cut: %w", err)
+	}
+	var undatedBlocks map[string]bool
+	if len(unpinned) > 0 {
+		if undatedBlocks, err = s.idsReadAtTheCut(ctx, asof.AskAnchorBlocksNotGivenStatement, unpinned, cut); err != nil {
+			return nil, fmt.Errorf("read which asks' anchor blocks no record gives at the cut: %w", err)
+		}
 	}
 	for index, ask := range asks {
 		place := at(index)
@@ -215,6 +236,9 @@ func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at
 		if ask.Approval != nil && len(ask.Approval.Documents) == 0 {
 			leaveOut(ctx, place+"/approval/documents")
 		}
+		if undatedBlocks[ask.ID] {
+			leaveOut(ctx, place+"/anchor/block_id")
+		}
 	}
-	return nil
+	return undatedBlocks, nil
 }

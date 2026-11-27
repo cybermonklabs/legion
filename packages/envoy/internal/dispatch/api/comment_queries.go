@@ -118,7 +118,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		var comments []model.Comment
 		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
 		if err == nil {
-			err = s.commentsAtTheCut(r.Context(), comments, elementsOf(""), trees)
+			_, err = s.commentsAtTheCut(r.Context(), comments, elementsOf(""), trees)
 		}
 		if err == nil {
 			reader := s.readDisplayTrees(r.Context(), trees)
@@ -288,19 +288,24 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// At a cut one call reads the comment and its replies: the comment at /comment, each reply
-	// at /replies/<n>.
+	// at /replies/<n>. The place of the comment's anchored block is left out with its block id,
+	// where no record gives that id at the cut (anchorAtTheCut).
 	trees := wantsDisplayTrees(r)
 	if _, atCut := asof.CutFrom(r.Context()); atCut {
 		thread := append([]model.Comment{comments[0]}, replies...)
 		reply := elementsOf("/replies")
-		if err := s.commentsAtTheCut(r.Context(), thread, func(index int) string {
+		undatedBlocks, err := s.commentsAtTheCut(r.Context(), thread, func(index int) string {
 			if index == 0 {
 				return "/comment"
 			}
 			return reply(index - 1)
-		}, trees); err != nil {
+		}, trees)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		if undatedBlocks[comments[0].ID] {
+			leaveOut(r.Context(), "/comment/anchor_block")
 		}
 	}
 	reader := s.readDisplayTrees(r.Context(), trees)

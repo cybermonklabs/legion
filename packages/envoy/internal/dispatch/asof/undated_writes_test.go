@@ -12,11 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// Two writes change a field with no event that dates the change: the restore of a decided ask's
-// wording (docs' decidedWordingRestore), and the orphaning of a comment's anchor that a 409 of an
+// Three writes change a field with no event that dates the change: the restore of a decided ask's
+// wording (docs' decidedWordingRestore), the orphaning of a comment's anchor that a 409 of an
 // accept or a reject wrote with no event, before such a 409 appended one, and that a delete of a
-// suggestion writes. The statements that tell a read at a cut where such a field is unknown read
-// the present log and rows; these tests hold each case of their rules.
+// suggestion writes, and the backfill of anchor blocks (docs' Service.BackfillAnchorBlocks), which
+// writes the block id of a comment's or an ask's anchor that names none. The statements that tell
+// a read at a cut where such a field is unknown read the present log and rows; these tests hold
+// each case of their rules.
 
 // The wording of an ask at a cut is unknown where the wording just after the cut, by the record,
 // is not the wording of the ask's newest state event at the cut: the previous wording of its
@@ -226,5 +228,116 @@ func TestACommentAnchorOrphanedWithNoEventThatDatesItIsUnknownAtTheCut(t *testin
 	if want := []string{"c1", "c2", "c5"}; !slices.Equal(got, want) {
 		t.Errorf("the comments whose anchor's flag no record gives at the cut are %v, want %v "+
 			"(c3 a refresh orphaned, c4 a resolve read the flag false, c6 orphaned at the cut, c7 a quote move, c8 never orphaned)", got, want)
+	}
+}
+
+// The backfill of anchor blocks writes the block id of an anchor that names none into the row of
+// a comment or an ask, and appends no event. So where the anchor of the item's newest state event
+// at the cut names no block (its block id null or empty), the block id at the cut is unknown where
+// the anchor names one just before the item's first state event after the cut: that event's
+// anchor, or the present row's with no later event. Where that anchor names none, the anchor named
+// none at the cut, though the backfill wrote the row after that event; and a block id that the
+// newest event at the cut names is the one it had then. The two statements hold one rule.
+func TestAnAnchorBlockABackfillPinnedIsUnknownAtTheCut(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	made := when(t, "2026-11-10T09:00:00Z")
+	w.project("ASOF", "carol", made.Add(-time.Hour))
+	issue := newIssue("ASOF-1", "ASOF", 1, "Anchor blocks", made)
+	w.insertIssue(issue)
+	w.issueEvent("issue.created", issue, made)
+	key := issue.Key
+	var spec string
+	if err := w.database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+		values ($1, 'ASOF', 'spec', 'spec.md', 'doc', true, $2, $3) returning id::text`, key, w.encode(alice), made).Scan(&spec); err != nil {
+		t.Fatalf("insert the spec: %v", err)
+	}
+
+	pinned, empty := "b-brown", ""
+	// anchor is an anchor on the spec whose block id is blockID, nil for an anchor that names no
+	// block, which its JSON writes as null.
+	anchor := func(blockID *string) *model.Anchor {
+		return &model.Anchor{ArtifactID: spec, BlockID: blockID, MarkID: "m1", Quote: "brown"}
+	}
+	// later is a state event of the item at at, whose anchor's block id is blockID.
+	type later struct {
+		at      string
+		blockID *string
+	}
+	// Each item is written by its number: the anchor of its creating event at 09:00 names created,
+	// its row names row, and its later state events follow.
+	comments, asks := map[string]string{}, map[string]string{}
+	comment := func(number string, created, row *string, events ...later) {
+		id := "00000000-0000-4000-8000-0000000000c" + number
+		comments[id] = number
+		posted := newComment(id, key, alice, "Use red.", made)
+		w.exec(`insert into comments (id, issue_key, author, body, anchor, created_at) values ($1, $2, $3, $4, $5, $6)`,
+			id, key, w.encode(alice), posted.Body, w.encode(anchor(row)), made)
+		posted.Anchor = anchor(created)
+		w.event(issueOwned(key), "comment.created", alice, commentPayload(posted), made)
+		for _, event := range events {
+			resolved := posted
+			resolved.Resolved, resolved.Anchor = true, anchor(event.blockID)
+			w.event(issueOwned(key), "comment.resolved", alice, commentPayload(resolved), when(t, event.at))
+		}
+	}
+	ask := func(number string, created, row *string, events ...later) {
+		id := "00000000-0000-4000-8000-0000000000a" + number
+		asks[id] = number
+		w.exec(`insert into asks (id, issue_key, author, question, options, anchor, created_at) values ($1, $2, $3, 'Ship it?', '[]', $4, $5)`,
+			id, key, w.encode(alice), w.encode(anchor(row)), made)
+		opened := model.Ask{ID: id, IssueKey: &key, Author: alice, Kind: "question", Question: "Ship it?",
+			Options: []model.AskOption{}, Urgency: "med", State: "open", CreatedAt: made, Anchor: anchor(created)}
+		w.event(issueOwned(key), "ask.opened", alice, model.NewAskEventPayload(opened, model.ReferenceChanges{}), made)
+		for _, event := range events {
+			resolved := opened
+			resolved.State, resolved.Anchor = "resolved", anchor(event.blockID)
+			w.event(issueOwned(key), "ask.resolved", alice, model.NewAskEventPayload(resolved, model.ReferenceChanges{}), when(t, event.at))
+		}
+	}
+	const before, after = "2026-11-10T09:30:00Z", "2026-11-10T10:30:00Z"
+	// 1, pinned with no event since; 2, pinned, then an event that read the pin; 3, an event, then
+	// pinned; 4, never pinned; 5, pinned at its create; 6, an empty block id, then pinned; 7,
+	// pinned, then an event before the cut that read the pin.
+	for _, write := range []func(string, *string, *string, ...later){comment, ask} {
+		write("1", nil, &pinned)
+		write("2", nil, &pinned, later{after, &pinned})
+		write("3", nil, &pinned, later{after, nil})
+		write("4", nil, nil)
+		write("5", &pinned, &pinned)
+		write("6", &empty, &pinned)
+		write("7", nil, &pinned, later{before, &pinned})
+	}
+
+	for _, read := range []struct {
+		kind, statement string
+		items           map[string]string
+	}{
+		{"comments", asof.CommentAnchorBlocksNotGivenStatement, comments},
+		{"asks", asof.AskAnchorBlocksNotGivenStatement, asks},
+	} {
+		for _, at := range []struct {
+			cut  string
+			want []string
+		}{
+			// 2: the event after the cut read the pin, which can be before the cut. 3: the event
+			// after the cut read no pin, so the anchor named no block at the cut.
+			{"2026-11-10T10:00:00Z", []string{"1", "2", "6"}},
+			// After the later events: 2's newest event names its block; 3's names none, and its
+			// row, with no later event, does.
+			{"2026-11-10T10:45:00Z", []string{"1", "3", "6"}},
+		} {
+			rows, err := w.database.Pool.Query(ctx, read.statement, slices.Sorted(maps.Keys(read.items)), mustCut(t, at.cut).Time())
+			var got []string
+			for _, row := range scanAll(t, rows, err) {
+				got = append(got, read.items[row["id"].(string)])
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, at.want) {
+				t.Errorf("at %s the %s whose anchor's block id no record gives are %v, want %v "+
+					"(4 never pinned, 5 pinned at its create, 7 pinned before an event at the cut)", at.cut, read.kind, got, at.want)
+			}
+		}
 	}
 }
