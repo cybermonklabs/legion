@@ -92,9 +92,12 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //     it (blockers.Exempt).
 //   - LEGION-212, a P0 root a person answered, holding its slot and waiting in the line's returned
 //     part of its band, its spec sent back with changes, a tester retired in its tree.
-//   - LEGION-214, a root whose Legion label is off, so it holds no slot and stands in no live tree.
-//     Its architect registered its spec on its ancestor LEGION-200's version 6 while a person's
-//     approval of that version was still asked for, so the step waits on that open request.
+//   - LEGION-214, a root whose Legion label is off, so it holds no slot. Its record is still in
+//     Legion's work and no issue above it is, so the state names it among the roots of
+//     `admission.trees` (blockers.AdmissionOf, R22 of dispatch://INFRA-3320) and it carries its
+//     own tree's quiet time. Its architect registered its spec on its ancestor LEGION-200's
+//     version 6 while a person's approval of that version was still asked for, so the step waits
+//     on that open request.
 //   - LEGION-215, a labelled root under LEGION-217, a child of LEGION-208 its architect has not
 //     released and the daemon keeps no record of: its chain reaches LEGION-208's live tree.
 //   - LEGION-216, a root that has never run, queued behind LEGION-211 and blocked by LEGION-210.

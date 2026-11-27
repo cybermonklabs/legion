@@ -25,26 +25,30 @@ func drawnAt(t *testing.T, experiment string) string {
 	return ""
 }
 
-// The state the fixture composes carries one drawn tree (populatedState): the root LEGION-208 and
-// its children LEGION-209 and LEGION-220, each showing the root's draw as internal/projection fills
-// them, beside the issues no draw has reached. Its claim views carry the pod's update round, the
-// record of what each claim's agent last did, the six keys the decided claim record added and, on
-// LEGION-210's failed implementer, the sentence a launch try was refused with because the shared
-// public leak check could not be installed, and its issues the three that record added to an issue;
-// its admission block names the live trees and the issues the record holds in the workflow that
-// neither of its other lists names, its stranded claims hold a retired one, it carries the wakes
-// the pacing holds and the count of claims the refresh lane has left, an implementer of it carries
-// its issue's counts of the moves back, every root of it carries the deployment's gated step, two
-// of them on an ancestor's basis, open and pending, the three issues of its admission line carry
-// their place in it with the line's own fields beside that place, every issue of it that is not
-// working now carries its answer under `why`, each issue whose current phase names a role carries
-// the entry that role stands on and the entry it was given, two of them the times of the task they
-// hold of that entry, two roots carry the architect-stalled arm the daemon reads for them, each
-// reviewing root of it carries what its round waits on from GitHub, every issue of a live tree
-// carries that tree's quiet time, the issues of its drawn tree carry the experiment answers they
-// hold, every root carries whether its tree runs, its capability report holds the repository
-// caches' row with that source's own word, and the body carries the daemon's Dispatch credential
-// under dispatch_token_broker. The same record ten seconds into a pause is the paused state
+// The state the fixture composes carries one drawn tree (populatedState): its root LEGION-208 and
+// its child LEGION-220, which took the root's draw as a row of its own at its first start, each
+// show that draw, as internal/projection fills an issue's from the rows it holds itself, while its
+// child LEGION-209, which has not started, holds no draw and shows none (R17 of
+// dispatch://INFRA-3320), beside the issues no draw has reached. Its claim views carry the pod's
+// update round, the record of what each claim's agent last did, the six keys the decided claim
+// record added and, on LEGION-210's failed implementer, the sentence a launch try was refused with
+// because the shared public leak check could not be installed, and its issues `heldFrom`, the one
+// key of the three that record added to an issue this release still writes (the other two are an
+// older daemon's, stateCarryingTheRestOfTheShape); its admission block names the roots in Legion's
+// work and the issues the record holds in the workflow that neither of its other lists names, its
+// stranded claims hold a retired one, it carries the wakes the pacing holds and the count of
+// claims the refresh lane has left, an implementer of it carries its issue's counts of the moves
+// back, every root of it carries the deployment's gated step, two of them on an ancestor's basis,
+// open and pending, the three issues of its admission line carry their place in it with the
+// line's own fields beside that place, every issue of it that is not working now carries its
+// answer under `why`, each issue whose current phase names a role carries the entry that role
+// stands on and the entry it was given, two of them the times of the task they hold of that entry,
+// two roots carry the architect-stalled arm the daemon reads for them, each reviewing root of it
+// carries what its round waits on from GitHub, every issue of a live tree carries that tree's
+// quiet time, the issues of its drawn tree carry the experiment answers they hold, every root
+// carries whether its tree runs, its capability report holds the repository caches' row with that
+// source's own word, and the body carries the daemon's Dispatch credential under
+// dispatch_token_broker. The same record ten seconds into a pause is the paused state
 // (pausedState), which carries `paused`; narrowing_test.go's narrowingState puts that pause beside
 // this state, so one state proves every band of stateNarrowings, that they compose, and the value
 // strip of a capability row's `source` beside them. It stands no member of the line of the kind 132
@@ -65,15 +69,17 @@ func issueViews(t *testing.T, body []byte) map[string]map[string]any {
 	return state.Issues
 }
 
-// An issue's memory group is its tree's: the root that was drawn and every issue under it carry
-// the group, the mode it was drawn under and the instant of the draw, and an issue of a tree no
-// draw has reached carries none of the three, which `omitempty` leaves off the wire rather than
-// writing as empty strings a strict reader would refuse.
+// An issue's memory group is the draw it holds itself: the root that was drawn and every issue
+// under it that took the root's draw at its start carry the group, the mode it was drawn under and
+// the instant of the draw, and an issue that holds no draw carries none of the three — one of a
+// tree no draw has reached, and a child of the drawn tree that has not started, so took none
+// (R17 of dispatch://INFRA-3320) — which `omitempty` leaves off the wire rather than writing as
+// empty strings a strict reader would refuse.
 func TestTheStateShowsEveryIssueItsTreesMemoryDraw(t *testing.T) {
 	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 	issues := issueViews(t, body)
 
-	for _, key := range []string{"LEGION-208", "LEGION-209"} {
+	for _, key := range []string{"LEGION-208", "LEGION-220"} {
 		view, shown := issues[key]
 		if !shown {
 			t.Fatalf("the state %s carries no issue %s", body, key)
@@ -89,10 +95,17 @@ func TestTheStateShowsEveryIssueItsTreesMemoryDraw(t *testing.T) {
 			}
 		}
 	}
-	// LEGION-210 is a tree of its own that no draw has reached.
-	for _, field := range []string{"memoryGroup", "memoryDrawMode", "memoryDrawnAt"} {
-		if value, carried := issues["LEGION-210"][field]; carried {
-			t.Errorf("LEGION-210, which no draw reached, carries %s = %v", field, value)
+	// LEGION-210 is a tree of its own that no draw has reached, and LEGION-209 a child of the drawn
+	// tree held at admitted, which has not started and so holds no draw of its own.
+	for key, why := range map[string]string{"LEGION-210": "which no draw reached", "LEGION-209": "which holds no draw of its own"} {
+		view, shown := issues[key]
+		if !shown {
+			t.Fatalf("the state %s carries no issue %s", body, key)
+		}
+		for _, field := range []string{"memoryGroup", "memoryDrawMode", "memoryDrawnAt"} {
+			if value, carried := view[field]; carried {
+				t.Errorf("%s, %s, carries %s = %v", key, why, field, value)
+			}
 		}
 	}
 }
@@ -113,12 +126,22 @@ var contract46Issue = []string{
 // what the flag is read over. The halves are named because the table strips each at its own
 // site, and a key written out there instead would be one this test could stop checking without
 // saying so.
+//
+// The nine are read off two bodies. olderRecordFieldKeys, an issue's `lingerUntil` and
+// `ancestry`, are written by no daemon of this release (R20 and R15 of dispatch://INFRA-3320), so
+// the composed golden carries neither, and they are read off the body an older daemon wrote,
+// stateCarryingTheRestOfTheShape, which carries both (that function says why a reader parses a
+// body with or without them). goldenRecordFieldKeys are the other seven, which the golden carries.
 var (
 	recordFieldClaimKeys = []string{
 		"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause",
 	}
-	recordFieldIssueKeys = []string{"heldFrom", "lingerUntil", "ancestry"}
-	recordFieldKeys      = slices.Concat(recordFieldClaimKeys, recordFieldIssueKeys)
+	recordFieldIssueKeys  = []string{"heldFrom", "lingerUntil", "ancestry"}
+	recordFieldKeys       = slices.Concat(recordFieldClaimKeys, recordFieldIssueKeys)
+	olderRecordFieldKeys  = []string{"lingerUntil", "ancestry"}
+	goldenRecordFieldKeys = slices.DeleteFunc(slices.Clone(recordFieldKeys), func(key string) bool {
+		return slices.Contains(olderRecordFieldKeys, key)
+	})
 )
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
@@ -141,10 +164,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	fullWakes, fullCarried := wakesServed(t, full)
 	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField,
 		"assignments", "apps", "treeRuns", "basis", string(GatedStepOpenOnBasis), string(GatedStepPendingOnBasis), "dispatchCredential"}
-	for _, field := range append(fields, recordFieldKeys...) {
+	for _, field := range append(fields, goldenRecordFieldKeys...) {
 		field := `"` + field + `"`
 		if !strings.Contains(string(full), field) {
 			t.Fatalf("the fixture's state %s carries no %s; this test proves nothing", full, field)
+		}
+	}
+	// The two keys of the decided record no daemon of this release writes are read off the body
+	// an older daemon wrote, asked the same way (olderRecordFieldKeys).
+	olderFull := stateFrom(t, stateCarryingTheRestOfTheShape(t), "192.0.2.1:41000", podClaims(memoryContract-1))
+	for _, key := range olderRecordFieldKeys {
+		if !strings.Contains(string(olderFull), `"`+key+`"`) {
+			t.Fatalf("the older daemon's state %s carries no %q; this test proves nothing of it", olderFull, key)
 		}
 	}
 	fullCount, fullCounted := claimsToRefreshServed(t, full)
@@ -188,10 +219,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// failure is whether the caller is served the nine keys recordFieldsContract added
 		// together: a claim view's `servingGeneration`, `updateReasons`, `providerErrorRun`,
 		// `pendingTask`, `failure` and `pendingCause`, and an issue's `heldFrom`, `lingerUntil`
-		// and `ancestry`. What the caller is served is decided by its own recorded claim
-		// contract (podContracts) and never by the declared constant, which is why these rows
-		// name recordFieldsContract rather than DaemonAPIVersion: a pod recording less than it
-		// is served none of the nine, whatever this daemon declares.
+		// and `ancestry`, the last two read off an older daemon's body (olderRecordFieldKeys).
+		// What the caller is served is decided by its own recorded claim contract
+		// (podContracts) and never by the declared constant, which is why these rows name
+		// recordFieldsContract rather than DaemonAPIVersion: a pod recording less than it is
+		// served none of the nine, whatever this daemon declares.
 		failure bool
 		// assigned is whether the caller is served each issue's experiment assignments
 		// (assignmentsContract), the contract that added them, so a pod at it or above is served
@@ -376,11 +408,15 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
 
-			// Only LEGION-208's tree was drawn: its root and its children LEGION-209 and LEGION-220
-			// carry the draw when the caller is served it, and no other issue carries one whoever
-			// asks. Every root of the fixture carries the one step `root-issues` gates, LEGION-214,
-			// LEGION-215 and LEGION-216 among them; the children of LEGION-208's tree carry none
-			// whoever asks. LEGION-207's step stands open on an ancestor's basis and LEGION-214's
+			// Only LEGION-208's tree was drawn, and an issue shows the draw it holds itself: the
+			// root, and its child LEGION-220, whose first start took the root's draw as a row of its
+			// own (state_fixtures_populated_test.go), carry it when the caller is served it, and no
+			// other issue carries one whoever asks, LEGION-209 among them: a child of the drawn tree
+			// held at admitted, which has not started and so holds no draw of its own (R17 of
+			// dispatch://INFRA-3320). Every root of the fixture carries the one step `root-issues`
+			// gates, LEGION-214 and LEGION-216 among them; the issues of LEGION-208's tree below it
+			// carry none whoever asks, LEGION-215 among them, whose chain reaches that tree through
+			// LEGION-217. LEGION-207's step stands open on an ancestor's basis and LEGION-214's
 			// waits on one, so those two carry their steps only where the caller is served the
 			// basis, and every root carries `treeRuns` there and nowhere else. The three issues
 			// `admission.waiting` names carry their place in that line, and no other issue carries
@@ -388,18 +424,21 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// reviewing roots (waits below) are the issues whose round waits on GitHub's merge state
 			// for its head, and no other issue carries that object. The issues standing in a tree
 			// the admission block names (measured below) carry that tree's quiet time where the
-			// caller is served it, the children their root LEGION-208's; LEGION-207's tree closed
-			// and LEGION-214's is no live tree, so neither carries a measure whoever asks.
-			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-220": true}
+			// caller is served it, the issues of LEGION-208's tree their root's, and LEGION-214 its
+			// own: its label is off, but it is a root in Legion's work, which is what
+			// `admission.trees` names. LEGION-207's tree closed, so it carries no measure whoever
+			// asks.
+			drawn := map[string]bool{"LEGION-208": true, "LEGION-220": true}
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
-				"LEGION-214": true, "LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true}
+				"LEGION-214": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true}
 			onBasis := map[string]bool{"LEGION-207": true, "LEGION-214": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true, "LEGION-216": true}
 			measured := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
-				"LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true, "LEGION-220": true}
-			// The issues the fixture holds an experiment answer for: the drawn tree's root and
-			// its children, each under its tree's draw and its own, and LEGION-210, whose
-			// hand-over settled it at no arm, which is an answer and so a row.
+				"LEGION-214": true, "LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true, "LEGION-220": true}
+			// The issues the fixture holds an experiment answer for: the drawn tree's root, under
+			// its tree's draw and its own; its child LEGION-220, under the draw it took and its own;
+			// its child LEGION-209, under its own alone; and LEGION-210, whose hand-over settled it
+			// at no arm, which is an answer and so a row.
 			assigned := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-220": true}
 			// The issues whose current phase names a role carry the entry numbers (entried
 			// below): LEGION-208 and LEGION-220, whose implementers hold the work their rows name,
@@ -470,10 +509,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if leak := strings.Contains(string(body), `"leakCheckCause"`); leak != tc.leak {
 				t.Errorf("the state %s carries a claim view's leakCheckCause = %v, want %v", body, leak, tc.leak)
 			}
-			for _, key := range recordFieldKeys {
+			for _, key := range goldenRecordFieldKeys {
 				if carries := strings.Contains(string(body), `"`+key+`"`); carries != tc.failure {
 					t.Errorf("the state %s carries %q, one of the nine keys of the decided record, = %v, want %v",
 						body, key, carries, tc.failure)
+				}
+			}
+			// The other two, off the body an older daemon wrote, asked by the same caller.
+			older := stateFrom(t, stateCarryingTheRestOfTheShape(t), tc.remote, tc.claims)
+			for _, key := range olderRecordFieldKeys {
+				if carries := strings.Contains(string(older), `"`+key+`"`); carries != tc.failure {
+					t.Errorf("the older daemon's state %s carries %q, one of the nine keys of the decided record, = %v, want %v",
+						older, key, carries, tc.failure)
 				}
 			}
 			wakes, carried := wakesServed(t, body)

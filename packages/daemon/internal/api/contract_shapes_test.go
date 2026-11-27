@@ -259,14 +259,31 @@ const sandboxSettingsBlock = `    sandbox:
 // serving-down of a value is for; a status write the daemon owes Dispatch; a repository cache
 // whose health read failed; the project's last pause, which a state carries only while no pause
 // stands, where pausedState carries the one that stands and populatedState carries neither
-// (contract 178); and the settings of a tmux deployment (shapeSettingsFile). Every key of these
-// is a key the state route writes, so the records describe each of them, the settings keys no
-// reader types apart (withoutUntypedSettings), and a serving-down that forgets one is caught
-// where a thinner sample would pass.
+// (contract 178); an issue's `lingerUntil` and a root's `ancestry`, the two keys of contract 75
+// this release writes no more (below); and the settings of a tmux deployment
+// (shapeSettingsFile). Every key of these is a key the state route writes, so the records
+// describe each of them, the settings keys no reader types apart (withoutUntypedSettings), and a
+// serving-down that forgets one is caught where a thinner sample would pass.
+//
+// The two keys make this body an older daemon's state as well, one from before entry
+// 20261125170900 (chain). No tree lingers and the daemon stores no chain (R20 and R15 of
+// dispatch://INFRA-3320, recordfields.go), so the state the daemon composes over its seeded
+// store (populatedState) carries neither key, while api.Issue keeps both and every record from
+// recordFieldsContract up describes them. Each key is optional to every reader that names it: the
+// plugin's schema took both as optional at 75 and has not changed either since
+// (packages/contracts/src/legion-api.ts), no other reader names them, and a reader below 75 is
+// served neither (withoutRecordFields). So a body without them is one every reader parses, and
+// the body an older daemon wrote with them is one every reader from 75 still parses. SHAPES-3
+// and SHAPES-4 carry them as such a daemon wrote them, as the TypeScript side puts them on a copy
+// of the golden (legion-api.test.ts's "a claim and an issue carry the fields the record decides
+// they serve"). Without them no body would realise either field
+// (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture), and every record from 75 up would
+// describe a key no served body carries, which the gate reads as a key removed with no stand-in.
 func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	t.Helper()
 	since := time.Date(2026, 9, 22, 7, 30, 0, 0, time.UTC)
 	declinedAt := time.Date(2026, 9, 22, 8, 45, 0, 0, time.UTC)
+	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
 	// The pause the controller began and ended from its session, built as the state's read builds
 	// it (PauseStateTx, pauseViewOf): every key of an ended pause, a session at `by` and at
 	// `endedBy`, and `endedAt` (controllerPause).
@@ -325,6 +342,33 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 					AnsweredAt: &declinedAt,
 					AnsweredBy: record.AnsweredByDecline,
 				},
+			},
+			// An issue of a tree whose work finished, as a daemon before the chain entry wrote it
+			// while the tree's linger had not run out: `lingerUntil` is the moment it would.
+			"SHAPES-3": {
+				Key:           "SHAPES-3",
+				Generation:    1,
+				Phase:         phase.Done,
+				Status:        "done",
+				Tree:          "SHAPES-3",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers:       map[claim.Role]PhaseView{},
+				LingerUntil:   &lingerUntil,
+			},
+			// A labelled root under SHAPES-5, a child of SHAPES-1 its architect has not released,
+			// as a daemon before the chain entry held it: `ancestry` is its Dispatch parent chain,
+			// from its parent upward.
+			"SHAPES-4": {
+				Key:           "SHAPES-4",
+				Generation:    1,
+				Phase:         phase.Admitted,
+				Status:        "todo",
+				Tree:          "SHAPES-4",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers:       map[claim.Role]PhaseView{},
+				Ancestry:      []string{"SHAPES-5", "SHAPES-1"},
 			},
 		},
 		// A status write the daemon owes Dispatch, which its lane has tried twice. The payload
@@ -610,7 +654,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerState: {roots: typesOf(State{}), bodies: bodies},
 		// The record route answers one issue of a state body, so its fixture is every issue the
 		// state fixtures hold: each is a body this route writes, and the record is their key
-		// paths read as one set.
+		// paths read as one set. stateCarryingTheRestOfTheShape's SHAPES-3 and SHAPES-4 are the
+		// issues of an older daemon that carry `lingerUntil` and `ancestry`, which no issue the
+		// daemon composes now carries (that function says why).
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
 		// The register golden's own value (TestRegisterResponseGolden), and richer than it: the

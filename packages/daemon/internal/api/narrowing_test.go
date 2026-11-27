@@ -225,10 +225,20 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			t.Errorf("the body served to a pod below %d carries the mark %v; a key in a narrowed body is what the narrowing exists to prevent",
 				recordFieldsContract, mark)
 		}
-		for _, key := range append([]string{"contract"}, recordFieldKeys...) {
+		for _, key := range append([]string{"contract"}, goldenRecordFieldKeys...) {
 			if bytes.Contains(body, []byte(`"`+key+`"`)) {
 				t.Errorf("the body served to a pod below %d carries %q, which its plugin's schema does not name: %s",
 					recordFieldsContract, key, body)
+			}
+		}
+		// The two keys of the record no daemon of this release writes are read off the body an
+		// older daemon wrote (olderRecordFieldKeys), which carries both at the contract (the row
+		// below): served below it, that body carries neither.
+		older := stateFrom(t, stateCarryingTheRestOfTheShape(t), remote, podClaims(recordFieldsContract-1))
+		for _, key := range olderRecordFieldKeys {
+			if bytes.Contains(older, []byte(`"`+key+`"`)) {
+				t.Errorf("the older daemon's body served to a pod below %d carries %q, which its plugin's schema does not name: %s",
+					recordFieldsContract, key, older)
 			}
 		}
 
@@ -270,10 +280,23 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		if len(mark) != len(want) || mark["daemon"] != want["daemon"] || mark["caller"] != want["caller"] {
 			t.Errorf("the mark is %v, want %v: the contract the daemon declares and the one the caller's pod records", mark, want)
 		}
-		for _, key := range recordFieldKeys {
+		for _, key := range goldenRecordFieldKeys {
 			if !bytes.Contains(body, []byte(`"`+key+`"`)) {
 				t.Errorf("the body served to a pod at %d carries no %q; the mark is meant to stand beside the record: %s",
 					recordFieldsContract, key, body)
+			}
+		}
+		// The other two are read off the body an older daemon wrote (olderRecordFieldKeys), served
+		// to the same pod: the mark stands beside them there too.
+		older := stateFrom(t, stateCarryingTheRestOfTheShape(t), statePodAddr+":41000", podClaims(recordFieldsContract))
+		if olderMark, carried := contractServed(t, older); !carried || len(olderMark) != len(want) ||
+			olderMark["daemon"] != want["daemon"] || olderMark["caller"] != want["caller"] {
+			t.Errorf("the older daemon's body served to a pod at %d carries the mark %v (carried %v), want %v", recordFieldsContract, olderMark, carried, want)
+		}
+		for _, key := range olderRecordFieldKeys {
+			if !bytes.Contains(older, []byte(`"`+key+`"`)) {
+				t.Errorf("the older daemon's body served to a pod at %d carries no %q; the mark is meant to stand beside the record: %s",
+					recordFieldsContract, key, older)
 			}
 		}
 		for _, key := range []string{TreeMovedAtField, QuietHoursField} {
