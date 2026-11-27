@@ -164,9 +164,8 @@ export async function seedTallSpec(): Promise<TallSpecSeed> {
 }
 
 /**
- * `seedTallSpec`'s issue with one block more in its spec, after its third statement: the markdown
- * `block` writes once the issue stands, which is a statement and anything it names. A seed for
- * `phase`.
+ * `seedTallSpec`'s issue with one block more in its spec, after its third statement: the
+ * statement `block` writes once the issue stands, one `statementBlock`. A seed for `phase`.
  */
 export function seedStatement(
   block: (seeded: TallSpecSeed) => string

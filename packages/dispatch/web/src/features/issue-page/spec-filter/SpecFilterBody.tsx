@@ -80,6 +80,7 @@ import { specSummary } from "../spec-summary";
 import { treeContext } from "../target-naming";
 import {
   type FocusedRowNote,
+  focusedRowIn,
   focusedRowNote,
   focusIsLoose,
   nearestRowIn,
@@ -359,7 +360,7 @@ export function SpecFilterBody({
   // under its words until the reader moves on (the tester's F16, `NodeRow`'s `report`).
   const [report, setReport] = useState<{ readonly line: string; readonly row: string }>();
   const reportHere = useCallback((line: string) => {
-    const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
+    const row = focusedRowIn(tree.current)?.dataset.nodeId;
     setReport(line === "" || row === undefined ? undefined : { line, row });
   }, []);
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
