@@ -1357,7 +1357,7 @@ export async function runLegionPane(
     );
     for (const prompt of prompts) {
       // Each prompt waits on a run end of its own: one the host ended for the prompt before
-      // would otherwise hold the settle below before this prompt's first turn.
+      // would otherwise end the wait below before this prompt's first turn.
       settled = Promise.withResolvers<void>();
       endedAtTurns = -1;
       lastAnsweredAt = Date.now();

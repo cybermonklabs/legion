@@ -2,8 +2,9 @@ import { expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { turn } from "@legion/test-fixtures/fake-clock";
-// The import above is the whole of this file's merge-base check: on the merge base there is no
-// `./stall-watchdog`, so every test here fails to resolve rather than passing vacuously.
+// The `./stall-watchdog` import below is the whole of this file's merge-base check: on the
+// merge base there is no `./stall-watchdog`, so every test here fails to resolve rather than
+// passing vacuously.
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs, type StallLimits } from "./stall-limits";
 import {
   callOverdue,
@@ -31,6 +32,41 @@ const START = 1_793_000_000_000;
  *  the sweep has done all it does before a timer; Bun's fake clock leaves `setImmediate` real. */
 async function drain(): Promise<void> {
   for (let turns = 0; turns < 25; turns += 1) await turn();
+}
+
+/** What {@link sweepOnFakeClock} hands its row while the sweep runs. */
+interface HeldSweep {
+  /** Whether the sweep has handed back yet. */
+  readonly handedBack: () => boolean;
+  /** Moves Bun's fake clock on by `ms`, then lets the sweep run on. */
+  readonly advance: (ms: number) => Promise<void>;
+}
+
+/** Runs one sweep with Bun's fake clock holding the host timer of the abort's bounded wait
+ *  (`abortEnd`), and runs `look` once the sweep has done all it does before that timer. The real
+ *  clock comes back however `look` ends. */
+async function sweepOnFakeClock(
+  watchdog: StallWatchdog,
+  look: (sweep: HeldSweep) => Promise<void> | void
+): Promise<void> {
+  jest.useFakeTimers();
+  try {
+    let handedBack = false;
+    const sweeping = watchdog.sweep().then(() => {
+      handedBack = true;
+    });
+    await drain();
+    await look({
+      handedBack: () => handedBack,
+      advance: async (ms) => {
+        jest.advanceTimersByTime(ms);
+        await drain();
+      },
+    });
+    await sweeping;
+  } finally {
+    jest.useRealTimers();
+  }
 }
 
 /** The limits a role runs on with nothing set in its environment. */
@@ -520,24 +556,13 @@ test("an abort whose Promise never settles hands back at the step gap, and the l
   // hands the sweep back, rather than holding it for as long as the turn stays hung: a
   // millisecond short of the gap the sweep is still held, and at the gap it has handed back.
   r.tick(2 * MINUTE);
-  jest.useFakeTimers();
-  try {
-    let handedBack = false;
-    const sweeping = r.watchdog.sweep().then(() => {
-      handedBack = true;
-    });
-    await drain();
+  await sweepOnFakeClock(r.watchdog, async (sweep) => {
     expect(r.aborts).toHaveLength(1);
-    jest.advanceTimersByTime(gap - 1);
-    await drain();
-    expect(handedBack).toBe(false);
-    jest.advanceTimersByTime(1);
-    await drain();
-    expect(handedBack).toBe(true);
-    await sweeping;
-  } finally {
-    jest.useRealTimers();
-  }
+    await sweep.advance(gap - 1);
+    expect(sweep.handedBack()).toBe(false);
+    await sweep.advance(1);
+    expect(sweep.handedBack()).toBe(true);
+  });
   expect(r.steps[1]?.outcome).toContain(
     "the host's abort() had not returned within the 1-second step gap"
   );
@@ -586,23 +611,12 @@ test("two calls of one turn overdue together take one abort, one message and one
   // once and not twice: a millisecond short of one gap it is still held, and at the gap it has
   // handed back.
   r.tick(2 * MINUTE);
-  jest.useFakeTimers();
-  try {
-    let handedBack = false;
-    const sweeping = r.watchdog.sweep().then(() => {
-      handedBack = true;
-    });
-    await drain();
-    jest.advanceTimersByTime(gap - 1);
-    await drain();
-    expect(handedBack).toBe(false);
-    jest.advanceTimersByTime(1);
-    await drain();
-    expect(handedBack).toBe(true);
-    await sweeping;
-  } finally {
-    jest.useRealTimers();
-  }
+  await sweepOnFakeClock(r.watchdog, async (sweep) => {
+    await sweep.advance(gap - 1);
+    expect(sweep.handedBack()).toBe(false);
+    await sweep.advance(1);
+    expect(sweep.handedBack()).toBe(true);
+  });
   expect(r.aborts).toHaveLength(1);
   expect(r.messages).toHaveLength(1);
   expect(r.messages[0]).toContain("toolu_1");
@@ -671,22 +685,13 @@ test("two calls of one turn that reach the abort in sweeps of their own take one
   // message for it, and a sweep that waited on no abort — it has handed back with no time passed
   // on the clock its bounded wait runs on, where a second abort would hold it the whole gap
   // ahead of `toolu_2`'s last step below.
-  jest.useFakeTimers();
-  try {
-    let handedBack = false;
-    const sweeping = r.watchdog.sweep().then(() => {
-      handedBack = true;
-    });
-    await drain();
+  await sweepOnFakeClock(r.watchdog, (sweep) => {
     expect({
       aborts: r.aborts.length,
       messages: r.messages.length,
-      waitedOnAnAbort: !handedBack,
+      waitedOnAnAbort: !sweep.handedBack(),
     }).toEqual({ aborts: 1, messages: 1, waitedOnAnAbort: false });
-    await sweeping;
-  } finally {
-    jest.useRealTimers();
-  }
+  });
   expect(r.steps.slice(3).map((step) => [step.call.toolCallId, step.step])).toEqual([
     ["toolu_1", "abort-turn"],
     ["toolu_2", "exit-process"],
