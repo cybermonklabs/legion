@@ -1080,8 +1080,7 @@ test.skipIf(withoutJj)(
         latestHandoff,
       })
     ).resolves.toEqual({ commit: fix });
-  },
-  60_000
+  }
 );
 
 // R4 of dispatch://INFRA-4036, in the pod's layout, which the row above does not build: the
@@ -1174,8 +1173,7 @@ test.skipIf(withoutJj)(
         latestHandoff,
       })
     ).resolves.toEqual({ commit, handoffId: RECORD.id, handoffVersion: RECORD.version });
-  },
-  60_000
+  }
 );
 
 // A git lock an interrupted git or jj left in the workspace fails every jj that snapshots a change
@@ -1205,6 +1203,5 @@ test.skipIf(withoutJj)(
       )
     );
     expect((await lstat(lock)).isFile()).toBe(true);
-  },
-  60_000
+  }
 );
