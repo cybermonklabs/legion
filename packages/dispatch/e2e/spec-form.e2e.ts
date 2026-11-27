@@ -13,7 +13,8 @@ import {
   withOpenedAsk,
 } from "./api";
 import { type CliRun, cliSession, runDispatch } from "./dispatch-cli";
-import { inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
+import { inboxRow } from "./inbox-pane";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { expect, test } from "./test";
 
 /**
