@@ -21,7 +21,9 @@
 # when its line is the guarded pipeline group `{ …; } 2>&1 | ci_log_guard cat`. A command that is
 # not routed is a finding when its command word (or, through a runner of RUNNERS, `sh -c`,
 # `bash -c` and `eval`, the word it runs) is a client of NETWORK running a subcommand that reaches a
-# server.
+# server (`git remote` only in the forms that fetch or ask the remote: GIT_REMOTE_LOCAL). A guard
+# reached through a runner that runs a program (`xargs ci_log_guard …`, `env … ci_log_guard …`) is
+# refused too: the guards are shell functions, so such a step cannot run (guard_behind_runner).
 #
 # A script a step runs is the command word of a command it does not route (through a runner, an
 # interpreter such as `bash x.sh` or `. x.sh`, or eval) that names a file of this repository ending
@@ -122,6 +124,11 @@ NETWORK = {
 # `docker --config d`.
 VALUED = {"go": {"-C"}, "git": {"-C", "-c", "--git-dir", "--work-tree"},
           "docker": {"--config", "-c", "--context", "-H", "--host", "-l", "--log-level"}}
+# `git remote`'s own subcommands that write or read only the repository's config and contact no
+# server. `add -f`/`--fetch` fetches the new remote at once, and `update`, `show`, `prune`,
+# `set-head -a` and a bare listing are left as they were: every form this set does not name, and
+# `add` with a fetch flag, stays a network command.
+GIT_REMOTE_LOCAL = {"add", "remove", "rm", "rename", "set-url", "get-url", "set-branches"}
 
 
 class RawScanner(Scanner):
@@ -476,8 +483,39 @@ def network_client(words: list) -> str:
             if flag in VALUED.get(client, ()) and rest:
                 rest.pop(0)
         if rest and rest[0] in subcommands:
+            if client == "git" and rest[0] == "remote" and git_remote_is_local(rest[1:]):
+                continue
             return client
     return ""
+
+
+def git_remote_is_local(rest: list) -> bool:
+    """Whether `git remote REST` touches only the repository's config: a subcommand of
+    GIT_REMOTE_LOCAL, and for `add` no -f or --fetch (a short-option cluster holding f counts)."""
+    if not rest or rest[0] not in GIT_REMOTE_LOCAL:
+        return False
+    if rest[0] == "add":
+        return not any(word == "--fetch" or (word.startswith("-") and not word.startswith("--") and "f" in word[1:])
+                       for word in rest[1:])
+    return True
+
+
+def guard_behind_runner(words: list) -> str:
+    """The first runner of RUNNERS before a ci_log_guard or ci_log_guard_stderr in the words that
+    runs a program, or '' when the words reach no guard that way. The guards are shell functions
+    ci-log-guard.sh defines, and env, xargs, nohup, timeout, nice, setsid, sudo, exec, command and
+    the rest run a program, so a guard behind one is a step that cannot run (`xargs: ci_log_guard:
+    No such file or directory`), not a guarded one. Only the bare reserved word `time` times the
+    shell's own pipeline, function and all; `command -v` looks a name up and runs nothing."""
+    words = list(words)
+    behind = ""
+    while words and named_program(words[0], RUNNERS):
+        if words[0].rsplit("/", 1)[-1] == "command" and words[1:2] and words[1] in ("-v", "-V"):
+            return ""
+        if words[0] != "time" and not behind:
+            behind = words[0].rsplit("/", 1)[-1]
+        strip_runner(words)
+    return behind if words and words[0] in WRAPPERS else ""
 
 
 def shell_of(document: dict, holder: dict, step: dict):
@@ -585,6 +623,9 @@ def read(text: str, key: tuple, workdir, action, runner: tuple, own) -> None:
     for routed, words in found:
         if routed:
             continue
+        behind = guard_behind_runner(words)
+        if behind:
+            unrunnable.append(key + (behind, " ".join(words)))
         client = network_client(words)
         if client:
             findings.setdefault(key + (client,), []).append(" ".join(words))
@@ -603,6 +644,7 @@ files = sorted(p for p in Path(".github/workflows").iterdir() if p.suffix in (".
 files += sorted(p for p in Path(".github/actions").glob("*/action.y*ml"))
 findings = {}  # (file, job, step, client) -> [command text]; a script's job and step are `-`
 loose = []  # (file, job, step, line): a ci_log_guard_stderr whose stdout reaches the log
+unrunnable = []  # (file, job, step, runner, line): a guard behind a runner that runs a program
 scripts = {}  # each script read -> (file, job, step) of the first step that runs it
 unresolved = {}  # (the file, a word naming a script this check found no file for) -> the step that ran it
 unread = 0
@@ -649,6 +691,11 @@ problems = [f"::error file={file}::{subject(file, job, label)} runs `{line}`: ci
             f"stderr, and this command's stdout is neither captured in $(…) nor redirected, so it reaches the "
             f"log outside the block; run it as `ci_log_guard …`, or capture or redirect its stdout"
             for file, job, label, line in loose]
+problems += [f"::error file={file}::{subject(file, job, label)} runs `{line}`: {runner} runs a program, and "
+             f"ci_log_guard and ci_log_guard_stderr are shell functions ci-log-guard.sh defines, so {runner} "
+             f"cannot run the guard and the step fails; guard the whole command in the shell instead, as "
+             f"`{{ …; }} 2>&1 | ci_log_guard cat` under `set -o pipefail`"
+             for file, job, label, runner, line in unrunnable]
 for number, line in enumerate(ALLOW.read_text().split("\n"), 1):
     if not line.strip() or line.startswith("#"):
         continue

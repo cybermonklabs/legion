@@ -134,9 +134,9 @@ jobs:
       # it is given -race, the step's own build.
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
         run: |
-          set -o pipefail
           . ../../.github/scripts/ci-log-guard.sh
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r ci_log_guard go test -count=1 -race -timeout 30m
+          set -o pipefail
+          { python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m; } 2>&1 | ci_log_guard cat
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()

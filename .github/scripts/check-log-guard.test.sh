@@ -694,6 +694,59 @@ SH
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
+# ci_log_guard and ci_log_guard_stderr are shell functions, so a runner that runs a program cannot
+# run one: the two legs below are envoy-go-race's and envoy-go-race-docs' as a merge first wrote
+# them, and every leg of both failed with `xargs: ci_log_guard: No such file or directory` and
+# `env: 'ci_log_guard': No such file or directory`.
+echo "case: a guard behind a runner that runs a program is a step that cannot run, and is refused"
+root=$(fixture guard-behind-runner "$(cat <<'SH'
+. .github/scripts/ci-log-guard.sh
+python3 go_legs.py x 1 5 -race | xargs -r ci_log_guard go test -count=1 -race
+python3 go_legs.py x 1 3 -race | xargs -r env GODEBUG=checkfinalizers=1 ci_log_guard race_memory.py go test -json
+env FOO=1 ci_log_guard go test ./x
+SH
+)")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the leg that hands ci_log_guard to xargs" \
+  "$(contains "$out" 'step "Fetch" runs .xargs -r ci_log_guard go test -count=1 -race.: xargs runs a program')"
+check "naming the leg that hands it to env behind xargs, by the first runner" \
+  "$(contains "$out" 'step "Fetch" runs .xargs -r env GODEBUG=checkfinalizers=1 ci_log_guard race_memory.py go test -json.: xargs runs a program')"
+check "naming the guard behind env" "$(contains "$out" 'step "Fetch" runs .env FOO=1 ci_log_guard go test ./x.: env runs a program')"
+check "and counts those three problems" "$(contains "$out" '^::error::check-log-guard: 3 problem(s)$')"
+
+echo "case: the same legs guarded in the shell, a guard after time and a lookup of the guard are not refused"
+root=$(fixture guard-in-shell "$(cat <<'SH'
+. .github/scripts/ci-log-guard.sh
+set -o pipefail
+{ python3 go_legs.py x 1 5 -race | xargs -r go test -count=1 -race; } 2>&1 | ci_log_guard cat
+time ci_log_guard go test ./x
+command -v ci_log_guard
+SH
+)")
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and reads no command as unguarded" "$(contains "$out" ' 0 unguarded network commands')"
+
+# `git remote` reaches a server only where it fetches or asks the remote: `update`, `show`,
+# `prune`, `set-head -a`, and `add` with -f or --fetch. `add` alone writes the repository's config.
+echo "case: git remote update reaches a server and is refused"
+root=$(fixture remote-update 'git remote update')
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'step "Fetch" runs .git remote update., a git command')"
+
+echo "case: git remote add writes only the repository's config and is not refused"
+root=$(fixture remote-add 'git remote add origin https://example.com/o/r.git')
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: git remote add -f fetches the new remote at once and is refused"
+root=$(fixture remote-add-fetch 'git remote add -f origin https://example.com/o/r.git')
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'step "Fetch" runs .git remote add -f origin https://example.com/o/r.git., a git command')"
+
 echo "case: a row with its reason allows its command, and only that one"
 root=$(fixture allowed 'docker pull ghcr.io/o/i' \
   "$(printf '.github/workflows/app.yaml\tapp\tFetch\tdocker\tthe image is pulled by digest and its text was probed')")

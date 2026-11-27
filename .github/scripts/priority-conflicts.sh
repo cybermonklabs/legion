@@ -97,8 +97,6 @@ shopt -s inherit_errexit
 export LC_ALL=C
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
-# shellcheck source=.github/scripts/ci-log-guard.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh"
 
 # error <text>: one ::error:: line, escaped as a workflow command's data must be, since a title or
 # a path can hold a percent sign.
@@ -180,7 +178,7 @@ while :; do
     --argjson after "$after" \
     '{operationName: "PriorityPulls", query: $query, variables: {owner: $owner, repo: $repo, after: $after}}' \
     > "$work/request.json"
-  if ! ci_log_guard_stderr gh_read gh api graphql --input "$work/request.json" > "$work/answer.json"; then
+  if ! gh_read gh api graphql --input "$work/request.json" > "$work/answer.json"; then
     fail "GitHub's GraphQL API refused the read of the open pull requests labelled priority at every attempt, $unread"
   fi
   if ! jq -e "$shape" "$work/answer.json" > /dev/null 2>&1; then
@@ -230,13 +228,13 @@ git -C "$repo" config gc.auto 0
 git -C "$repo" config maintenance.auto false
 git -C "$repo" config user.name priority-conflicts
 git -C "$repo" config user.email priority-conflicts@localhost
-ci_log_guard git -C "$repo" remote add origin "$server/$repository.git"
+git -C "$repo" remote add origin "$server/$repository.git"
 heads=("$head")
 for candidate in "${candidates[@]}"; do
   heads+=("${candidate#* }")
 done
 started=$SECONDS
-if ! ci_log_guard gh_read git -C "$repo" fetch --quiet --no-tags --filter=blob:none origin "${heads[@]}"; then
+if ! gh_read git -C "$repo" fetch --quiet --no-tags --filter=blob:none origin "${heads[@]}"; then
   fail "git could not fetch the commit of $change and the heads of the priority pull requests it is checked against from $server/$repository.git, $unread"
 fi
 echo "Fetched the commit of $change and ${#candidates[@]} priority head(s), with their history and no file contents, in $((SECONDS - started)) s."
@@ -490,7 +488,7 @@ judge() {
 # spends none of the API budget.
 ahead=()
 if [ "$event_name" = merge_group ]; then
-  if ! queue=$(ci_log_guard_stderr gh_read git -C "$repo" ls-remote origin 'refs/heads/gh-readonly-queue/*'); then
+  if ! queue=$(gh_read git -C "$repo" ls-remote origin 'refs/heads/gh-readonly-queue/*'); then
     fail "git could not list the merge queue's branches of $server/$repository.git, $unread"
   fi
   while read -r tip ref; do
