@@ -169,6 +169,7 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 // a lookup's bound are both 250 ms, so the pending deadlines alone cannot tell them apart.
 type mentionBackoffClock struct {
 	*clocktest.Fake
+	t        *testing.T
 	sleeping chan time.Time
 }
 
@@ -179,6 +180,22 @@ func (c *mentionBackoffClock) Sleep(ctx context.Context, d time.Duration) error 
 		return ctx.Err()
 	}
 	return c.Fake.Sleep(ctx, d)
+}
+
+// A refused lookup must end with its listener's refusal, never a deadline fired by the driver.
+// Check before the caller's cancel, so a premature clock move fails even if later delivery repairs
+// the missing creation-time resolution and the route assertions still pass.
+func (c *mentionBackoffClock) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	lookup, cancel := c.Fake.WithTimeout(ctx, d)
+	if d != mentionLookupTimeout {
+		return lookup, cancel
+	}
+	return lookup, func() {
+		if err := lookup.Err(); err != nil {
+			c.t.Errorf("mention lookup released with an expired context: %v", err)
+		}
+		cancel()
+	}
 }
 
 // A comment on an issue routed to s1 that mentions s1, written while the listener is replaced
@@ -193,7 +210,7 @@ func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) 
 	t.Parallel()
 	listener := startTakeOverListener(t)
 	start := time.Now()
-	clock := &mentionBackoffClock{Fake: clocktest.New(start), sleeping: make(chan time.Time, 2)}
+	clock := &mentionBackoffClock{Fake: clocktest.New(start), t: t, sleeping: make(chan time.Time, 2)}
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, clock: clock})
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Routed resume", "before")
