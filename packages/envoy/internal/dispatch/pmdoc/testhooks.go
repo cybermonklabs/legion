@@ -41,18 +41,21 @@ func UseManifestForTest(manifest []byte) (restore func(), err error) {
 	return previous.install, nil
 }
 
-// ManifestAsOfForTest is the installed manifest as the build of another release reads it, in
-// blocks.json's format: its version set to version, and every element it reads only from a later
-// one dropped. An element whose since is at most version stays as it is, creatable_since above
-// version included: that is an element that build already read and did not create. A version
-// above this build's keeps every element, as the next release's build declares them. A test
-// installs it with UseManifestForTest to act as that build. It lives here, beside the other test
-// hooks, and not in pmdoctest, because this package's own tests call it too, and they cannot
-// import pmdoctest, which imports this package: Go refuses that import cycle in a test.
+// ManifestAsOfForTest is the manifest SchemaJSON serves, as the build of another release reads it,
+// in blocks.json's format: its version set to version, and every element it reads only from a
+// later one dropped. SchemaJSON serves the embedded file, or what the store's installer
+// (Install) or SetBlockSchemaForTest installed; UseManifestForTest leaves it as it was, so a
+// manifest a test swapped in that way is not what this reads. An element whose since is at most
+// version stays as it is, creatable_since above version included: that is an element that build
+// already read and did not create. A version above this build's keeps every element, as the next
+// release's build declares them. A test installs it with UseManifestForTest to act as that build.
+// It lives here, beside the other test hooks, and not in pmdoctest, because this package's own
+// tests call it too, and they cannot import pmdoctest, which imports this package: Go refuses that
+// import cycle in a test.
 func ManifestAsOfForTest(version int) ([]byte, error) {
 	var value BlockSchema
 	if err := json.Unmarshal(SchemaJSON(), &value); err != nil {
-		return nil, fmt.Errorf("decode the installed manifest: %w", err)
+		return nil, fmt.Errorf("decode the manifest SchemaJSON serves: %w", err)
 	}
 	later := func(since int) bool { return since > version }
 	value.Version = version

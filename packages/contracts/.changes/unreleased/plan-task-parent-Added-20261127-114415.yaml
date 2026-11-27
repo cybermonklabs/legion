@@ -1,8 +1,13 @@
 kind: Added
 body: |-
   `PARENT_ATTRIBUTE` names the attribute that places a typed block under another block, which
-  holds at most one reference. The fixtures in `fixtures/dispatch-version-blocks` hold a version
-  read that lists each task block's `parent`, and the refusal of a build that cannot read it.
+  holds at most one reference, and `parentProblem(name, pointers)` says why the pointers an
+  attribute holds are no value of it beside what `blockPointersProblem` refuses: a parent of
+  more than one reference. The proof editor calls it, and Go's `pmdoc.parentCount` is its twin.
+  Each row of `DISPATCH_BLOCK_POINTER_VALUES` may now name an `attribute`: such a row holds a
+  well-formed value and says whether that attribute takes it, and the table holds rows of
+  `parent` and `needs`. The fixtures in `fixtures/dispatch-version-blocks` hold a version read
+  that lists each task block's `parent`, and the refusal of a build that cannot read it.
 time: 2026-11-27T11:44:15Z
 custom:
     Issue: plan-task-parent

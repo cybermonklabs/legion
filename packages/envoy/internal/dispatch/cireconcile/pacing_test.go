@@ -250,8 +250,8 @@ func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 	}
 }
 
-// The gap never goes below the floor, however much work the pass has: the secondary limit the
-// floor sits inside is the App's, and this pass is not the only reader the App pays for.
+// The gap stays at the floor, or Pace where Pace is shorter, however much work the pass has:
+// the secondary limit the floor sits inside is the App's, shared with its other readers.
 func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
