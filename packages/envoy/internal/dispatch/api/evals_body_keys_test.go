@@ -91,6 +91,52 @@ func TestEveryEvalRegisterKeySetsOneFieldOfTheRegistration(t *testing.T) {
 	t.Logf("%d keys each set their own field alone", checked)
 }
 
+// TestABodyNamingAKeyTwiceInOneObjectIsRefused: the one walk of an eval write's body
+// (refusedBodyKey) refuses a key named twice in any object of the body, as it refuses a key
+// spelled otherwise: 400 INVALID_JSON naming the key and where it stands, at the top level, in an
+// object under a key, in a list's element and in an object of an element, and in the objects
+// whose keys the walk does not spell: a reading's row, which the registry reads key by key, and its
+// attributes and links. encoding/json, the registry's row read and jsonb would each take the last
+// value and pass over the first. It takes one key named in two objects, and the same key at two
+// depths; and it names the first refused key in the order the body holds them.
+func TestABodyNamingAKeyTwiceInOneObjectIsRefused(t *testing.T) {
+	for _, test := range []struct {
+		what  string
+		keys  bodyKeys
+		body  string
+		names string // "" for a body the walk takes
+	}{
+		{"the slug twice", evalRegisterBodyKeys, `{"slug": "a", "name": "A", "slug": "b"}`, `the body holds the key "slug" twice`},
+		{"the target twice, once null", evalRegisterBodyKeys, `{"slug": "a", "target": null, "target": 3}`, `the body holds the key "target" twice`},
+		{"a series' unit twice", evalRegisterBodyKeys, `{"slug": "a", "series": [{"series": "s", "unit": "x", "unit": "y"}]}`, `series[0] holds the key "unit" twice`},
+		{"a second series' link's href twice", evalRegisterBodyKeys, `{"slug": "a", "series": [{"series": "s"}, {"series": "t", "links": [{"rel": "via", "href": "https://a.example", "href": "https://b.example"}]}]}`, `series[1].links[0] holds the key "href" twice`},
+		{"the readings' actor's kind twice", evalReadingsBodyKeys, `{"actor": {"kind": "session", "id": "s-1", "kind": "user"}, "readings": []}`, `actor holds the key "kind" twice`},
+		{"a key twice after a key spelled otherwise", evalRegisterBodyKeys, `{"Slug": "a", "slug": "b", "slug": "c"}`, `the body holds the key "Slug", which is none of the keys it takes`},
+		{"a key twice before a key spelled otherwise", evalRegisterBodyKeys, `{"slug": "b", "slug": "c", "Slug": "a"}`, `the body holds the key "slug" twice`},
+		{"a reading's series twice", evalReadingsBodyKeys, `{"readings": [{"series": "a", "row_kind": "run", "series": "b"}]}`, `readings[0] holds the key "series" twice`},
+		{"a second reading's attribute twice", evalReadingsBodyKeys, `{"readings": [{"series": "a"}, {"series": "a", "attributes": {"repo": "x", "repo": "y"}}]}`, `readings[1].attributes holds the key "repo" twice`},
+		{"an attribute twice deep in a reading", evalReadingsBodyKeys, `{"readings": [{"series": "a", "attributes": {"ci": [{"job": "x", "job": "y"}]}}]}`, `readings[0].attributes.ci[0] holds the key "job" twice`},
+		{"a reading's link's rel twice", evalReadingsBodyKeys, `{"readings": [{"series": "a", "links": [{"rel": "via", "rel": "self", "href": "https://a.example"}]}]}`, `readings[0].links[0] holds the key "rel" twice`},
+		{"one key in two readings and their attributes", evalReadingsBodyKeys, `{"readings": [{"series": "a", "attributes": {"repo": "x"}}, {"series": "a", "attributes": {"repo": "x"}}]}`, ""},
+		{"one key in two objects", evalRegisterBodyKeys, `{"slug": "a", "unit": "x", "series": [{"series": "s", "unit": "x"}, {"series": "t", "unit": "x"}]}`, ""},
+		{"each key once beside lists and nulls", evalRegisterBodyKeys, `{"slug": "a", "links": [], "series": null, "failure_modes": [{"mode": "m", "guard": "g"}], "target_judges": ["s.median"]}`, ""},
+	} {
+		err := refusedBodyKey([]byte(test.body), test.keys)
+		if test.names == "" {
+			if err != nil {
+				t.Errorf("%s: %s is refused %v, want it taken", test.what, test.body, err)
+			}
+			continue
+		}
+		refused, ok := err.(*apiError)
+		if !ok || refused.status != http.StatusBadRequest || refused.code != "INVALID_JSON" || !strings.Contains(refused.message, test.names) {
+			t.Errorf("%s: %s is answered %v, want 400 INVALID_JSON naming %s", test.what, test.body, err, test.names)
+			continue
+		}
+		t.Logf("%s: %s", test.what, refused.message)
+	}
+}
+
 // setFields is the name of every evals.Field the registration or series change value sets, those of
 // a struct it embeds among them.
 func setFields(value reflect.Value) []string {

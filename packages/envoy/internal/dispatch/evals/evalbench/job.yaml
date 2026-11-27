@@ -19,24 +19,29 @@
 #
 # The log of the `driver` container is the evidence: judge it by its RESULT and FAIL lines and its
 # closing SHAPE and VERDICT lines, never by the Job's phase. The SHAPE line (job.sh's header says
-# what it holds) names the node, the machine's CPUs, CPU model and memory, each container's
-# requests and limits as the API server gave them and the limits the kernel holds the server's
-# container to, and reads gating when the pod runs on the class GATING_CLASS names, the server's
-# requests are its limits and the kernel holds it to them, and the machine's CPUs beside the pod's
-# request are fewer than the server's; record otherwise. The machine type is the node's label
-# (node.kubernetes.io/instance-type), which the pod, with no API access, cannot read: read it beside
-# the log. The VERDICT line names the scale, the rate and the shape the run had. A run with no FAIL
-# line reads pass only at SCALE=1, INFRA's size, in the gating shape; at SCALE=1 in any other shape
-# it reads record, and at any other scale smoke, which shows the script and its rules work and
-# judges no budget. At TEN_TIMES=1 a database time over a budget stated at the stated rate, and
-# k8's base control, print RECORD lines, which no verdict counts, while the first paint's server
-# time and body still fail (measure's -ten-times); in mode k14 every bound fails at both rates,
-# R14's, so a k14 run prints no RECORD line. A k14 verdict is k14's evidence only with its RESULT
-# lines' counts: three writes measured whole at least and both projects' first paints
-# (k14-writes, k14-paints), which the run fails without. The container exits 0 once
-# it has printed that verdict, FAIL lines or not, so a failed check never runs the hour-long
-# measurement again; only a pod that ends before its verdict (a lost machine, an eviction, a failed
-# clone) is retried.
+# what it holds) reads gating where each reading the pod itself makes holds the architect's ruling
+# for a timed run: the pod runs on the class GATING_CLASS names and under no runtime class, the
+# server's requests are its limits, 9 CPU and 21Gi, and at every start of the server its own
+# cgroup read cpu.max "900000 100000" and memory.max 22548578304 and its Go runtime chose
+# GOMAXPROCS 9, printing that one scheduler trace in the run (run.sh's SERVER_START lines); record
+# otherwise, with the readings that failed. The ruling's third reading, the node's machine family,
+# the pod cannot make: it has no API access, and GKE refuses a pod that asks for a family or a
+# machine type beside a custom ComputeClass. So the SHAPE line prints family=unread and the node,
+# and its reader reads the node's label beside the log, `kubectl get node <node> -L
+# node.kubernetes.io/instance-type`: only a run on an n4d-* or c3d-* machine gates, and a run on
+# any other is a record whatever its SHAPE and VERDICT lines say. The VERDICT line names the
+# scale, the rate and the shape the run had. A run with no FAIL line reads pass only at SCALE=1,
+# INFRA's size, in the gating shape, and that pass counts only on such a node; at SCALE=1 in any
+# other shape it reads record, and at any other scale smoke, which shows the script and its rules
+# work and judges no budget. At TEN_TIMES=1 a database time over a budget stated at the stated
+# rate, and k8's base control, print RECORD lines, which no verdict counts, while the first
+# paint's server time and body still fail (measure's -ten-times); in mode k14 every bound fails at
+# both rates, R14's, so a k14 run prints no RECORD line. A k14 verdict is k14's evidence only with
+# its RESULT lines' counts: three writes measured whole at least and both projects' first paints
+# (k14-writes, k14-paints), which the run fails without. The container exits 0 once it has
+# printed that verdict, FAIL lines or not, so a failed check never runs the hour-long measurement
+# again; only a pod that ends before its verdict (a lost machine, an eviction, a failed clone) is
+# retried.
 #
 # The deployment that runs this Job chooses where it runs and how large it is: this public file
 # names no compute class, runtime class or machine size. Render it with render-job.py, which fills
@@ -61,7 +66,8 @@
 #                          runs natively, which a runtime class would be refused on
 #   GATING_CLASS           (optional) the compute class a run is judged on; a run on any other class
 #                          is a record, and with it unset no run is judged
-#   SERVER_CPU SERVER_MEMORY           the server container's request and limit, such as 9 and 21Gi
+#   SERVER_CPU SERVER_MEMORY           the server container's request and limit: 9 and 21Gi for a
+#                          run that gates (the SHAPE line), any other size a record
 #   PG_CPU PG_MEMORY       Postgres's request and limit; a database's share is not a served one's,
 #                          and the run prints it
 #   POD_CPU                the whole pod's CPU request: the driver gets what the server and Postgres

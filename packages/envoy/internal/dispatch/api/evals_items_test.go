@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -336,6 +337,187 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 		t.Fatal("the seeded projects hold no computed eval, so the check checked nothing")
 	}
 	t.Logf("%d seeded computed evals, each with rows its numbers count", computed)
+}
+
+// TestEveryItemsSourceNarrowsToTheNamedSeries: `series` narrows every source of the items route to
+// the series it names, as `row_kind` narrows them to a row kind (evalItemKind.series,
+// legionItemSource). The table is the evals the fixture serves over the histories
+// TestEveryCatalogueSourceAnswersItsRows reads, so it holds every source kind: each computed eval
+// (a Legion eval's issues and legion-splitting's filings, a delivery eval's pull requests and
+// deploy runs, a CI eval's runs and pr-ci's jobs, unowned-p0's issues, and each eval's day rows),
+// pr-ci sorted by failures and by median (the failing jobs and the slowest jobs), and a logged eval
+// of two series (its readings and their day rows), with a reading logged under pr-ci's slug. Each
+// read answers rows with no series named, and none (total 0) for a series no row holds, alone and
+// with a cut; and for each series its rows name (a day row's or a reading's, a job's job series),
+// at most four of them, the read answers those rows alone: every day row and reading of that
+// series and no other, and of the computed rows those of a kind that stands behind the series:
+// every one of the kind where the kind names its series (evalComputedItems), a part of them where
+// it narrows to the series itself, and of pr-ci's jobs the job the series names.
+func TestEveryItemsSourceNarrowsToTheNamedSeries(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
+	legion := windows[0].Spec.Project
+	ranges := map[string][2]time.Time{
+		fixture.Project: {fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)},
+		legion:          {windows[0].Window.From, windows[0].Window.To},
+	}
+	const logged = "items-series"
+	at := ranges[fixture.Project][0].Add(time.Hour)
+	for slug, rows := range map[string][]any{
+		logged:         {reading("alpha", 1, at), reading("alpha", 2, at.Add(time.Hour)), reading("beta", 3, at)},
+		evals.SlugPRCI: {reading(measures.SeriesMinutes, 4, at)},
+	} {
+		written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals/"+slug+"/readings",
+			map[string]any{"readings": rows}, "series-readings-"+slug)
+		if written.Code != http.StatusCreated {
+			t.Fatalf("log the readings of %s: status %d, body %s", slug, written.Code, written.Body.String())
+		}
+	}
+
+	type itemsRead struct {
+		project    string
+		definition evals.Definition
+		sort       string
+	}
+	var reads []itemsRead
+	for _, project := range []string{fixture.Project, legion} {
+		for _, item := range evalGet[evalListResponse](t, handler, "/api/v1/projects/"+project+"/evals?limit=200").Items {
+			definition := item.Definition
+			if definition.Computed() {
+				if (definition.Kind == evals.KindLegion) != (project == legion) {
+					continue
+				}
+			} else if definition.Slug != logged {
+				continue
+			}
+			// Each series a kind stands behind is one its eval holds, so no kind stands behind a
+			// series none of its rows is counted under.
+			for _, kind := range evalComputedItems[definition.Source] {
+				for _, name := range kind.series {
+					if !slices.ContainsFunc(item.Series, func(series evals.SeriesValues) bool { return series.Series.Series == name }) {
+						t.Errorf("%s's %s rows stand behind the series %s, which the eval does not list", definition.EvalID, kind.kind, name)
+					}
+				}
+			}
+			reads = append(reads, itemsRead{project: project, definition: definition})
+			if definition.Slug == evals.SlugPRCI {
+				reads = append(reads, itemsRead{project, definition, evalSortFailures}, itemsRead{project, definition, evalSortMedian})
+			}
+		}
+	}
+	if len(reads) < 3 {
+		t.Fatalf("the fixture serves %d evals' reads, so the table holds no source kind of them", len(reads))
+	}
+
+	// seriesOf is the series a row is of where it names one: a day row's and a reading's own, and
+	// a job's job series.
+	seriesOf := func(row evalItemRow) string {
+		switch row.RowKind {
+		case evalRowDay, "sample":
+			series, _ := row.Cols["series"].(string)
+			return series
+		case evalRowJob:
+			return measures.JobSeriesPrefix + row.RowKey
+		}
+		return ""
+	}
+	keyOf := func(row evalItemRow) string { return row.RowKind + " " + row.RowKey + " " + row.Range }
+	narrowed := 0
+	for _, read := range reads {
+		name := read.definition.EvalID
+		query := url.Values{"from": {ranges[read.project][0].Format(time.RFC3339)}, "to": {ranges[read.project][1].Format(time.RFC3339)}}
+		if read.sort != "" {
+			name += " sort=" + read.sort
+			query.Set("sort", read.sort)
+		}
+		path := evalItemsPath(read.project, read.definition.Slug)
+		every := everyItem(t, handler, path, query)
+		if len(every) == 0 {
+			t.Errorf("%s answers no row over %s, so no series filter of it narrows anything", name, query.Encode())
+			continue
+		}
+		for _, series := range []string{"no-such-series", "no-such-series:roots"} {
+			filtered := maps.Clone(query)
+			filtered.Set("series", series)
+			if answer := evalGet[evalItemsResponse](t, handler, path+"?"+filtered.Encode()); answer.Total != 0 || len(answer.Items) != 0 {
+				t.Errorf("%s with series %s, which no row holds, answers %d rows of a total %d (%s); want none",
+					name, series, len(answer.Items), answer.Total, mustJSON(t, answer.Items[:min(len(answer.Items), 1)]))
+			}
+		}
+		// held is each series a row of the read is of: the series a day row, a reading or a job
+		// names, and those a kind of the read's rows stands behind.
+		kinds := evalComputedItems[read.definition.Source]
+		held := map[string]bool{}
+		for _, row := range every {
+			if series := seriesOf(row); series != "" {
+				held[series] = true
+			}
+			if kind := slices.IndexFunc(kinds, func(kind evalItemKind) bool { return kind.kind == row.RowKind }); kind >= 0 {
+				for _, series := range kinds[kind].series {
+					held[series] = true
+				}
+			}
+		}
+		names := slices.Sorted(maps.Keys(held))
+		if len(names) > 4 {
+			names = append(names[:2:2], names[len(names)-2:]...)
+		}
+		if len(names) == 0 {
+			t.Errorf("%s answers %d rows, none of which is of a series, so no series that holds rows is read", name, len(every))
+		}
+		for _, series := range names {
+			// want is each row of the unfiltered read the series answers whole: its day rows and
+			// readings, the job it names, and the rows of each kind that names the series.
+			want := map[string]bool{}
+			unfiltered := map[string]bool{}
+			for _, row := range every {
+				unfiltered[keyOf(row)] = true
+				kind := slices.IndexFunc(kinds, func(kind evalItemKind) bool { return kind.kind == row.RowKind })
+				if seriesOf(row) == series || (kind >= 0 && slices.Contains(kinds[kind].series, series)) {
+					want[keyOf(row)] = true
+				}
+			}
+			filtered := maps.Clone(query)
+			filtered.Set("series", series)
+			got := everyItem(t, handler, path, filtered)
+			for _, row := range got {
+				kind := slices.IndexFunc(kinds, func(kind evalItemKind) bool { return kind.kind == row.RowKind })
+				switch {
+				case !unfiltered[keyOf(row)]:
+					t.Errorf("%s with series %s answers %s, which its read with no series does not", name, series, keyOf(row))
+				case seriesOf(row) != "" && seriesOf(row) != series:
+					t.Errorf("%s with series %s answers %s, a row of %s", name, series, keyOf(row), seriesOf(row))
+				case seriesOf(row) == "" && (kind < 0 || !kinds[kind].standsBehind(series)):
+					t.Errorf("%s with series %s answers %s, a %s row, which stands behind no such series", name, series, keyOf(row), row.RowKind)
+				}
+				delete(want, keyOf(row))
+			}
+			if len(want) > 0 {
+				t.Errorf("%s with series %s leaves out %d rows of that series, among them %v", name, series, len(want), slices.Sorted(maps.Keys(want))[0])
+			}
+			narrowed++
+			t.Logf("%s: %d rows with no series, %d with series %s", name, len(every), len(got), series)
+		}
+	}
+	t.Logf("%d reads, each narrowed to series no row holds, and %d reads narrowed to a series their rows hold", len(reads), narrowed)
+}
+
+// everyItem is every row the items route answers at path for query, read a page of evalPageMax
+// rows at a time.
+func everyItem(t *testing.T, handler http.Handler, path string, query url.Values) []evalItemRow {
+	t.Helper()
+	var rows []evalItemRow
+	for {
+		page := maps.Clone(query)
+		page.Set("limit", strconv.Itoa(evalPageMax))
+		page.Set("offset", strconv.Itoa(len(rows)))
+		answer := evalGet[evalItemsResponse](t, handler, path+"?"+page.Encode())
+		rows = append(rows, answer.Items...)
+		if len(answer.Items) == 0 || len(rows) >= answer.Total {
+			return rows
+		}
+	}
 }
 
 // TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot (point 6 of dispatch://INFRA-2916, one answer,

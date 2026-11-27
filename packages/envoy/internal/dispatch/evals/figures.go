@@ -1601,13 +1601,16 @@ func entriesByID(entries []Entry) map[string]Entry {
 const statementRows = 5000
 
 // statementBytes is the most bytes of parameters one statement of a write sends, as
-// statementChunks bounds them. On the farm (dispatch://INFRA-2916, Job infra2916-k8hso1), 9 of 24
-// passes over TCP stalled about 200 ms on a statement whose Bind and Execute messages held 0.8-1.0
-// MB, in the pod's loopback TCP (gVisor), while Postgres sat in ClientRead reading it; none of 24
-// passes over the unix socket did. A row larger than the bound alone is sent whole, in a statement
-// of its own (statementChunks), so the routes bound what one row may hold: the series of an eval
-// (MaxEvalSeries) and the values of a day row (MaxDaySamples), each the most whose row, at the
-// largest keys the routes take, is written in one statement within the bound.
+// statementChunks bounds them: the values its Bind message carries, which with the message's own
+// framing (the statement's name, each parameter's format and the result formats) is a little
+// larger (a write's Bind message was measured at 262,303 bytes). On the farm
+// (dispatch://INFRA-2916, Job infra2916-k8hso1), 9 of 24 passes over TCP stalled about 200 ms on a
+// statement whose Bind and Execute messages held 0.8-1.0 MB, in the pod's loopback TCP (gVisor),
+// while Postgres sat in ClientRead reading it; none of 24 passes over the unix socket did. A row
+// larger than the bound alone is sent whole, in a statement of its own (statementChunks), so the
+// routes bound what one row may hold: the series of an eval (MaxEvalSeries) and the values of a
+// day row (MaxDaySamples), each the most whose row, at the largest keys the routes take, is
+// written in one statement whose parameters are within the bound.
 const statementBytes = 256 << 10
 
 // MaxEvalSeries is the most series one eval holds, listed or not (CodeSeriesLimit): the most whose
@@ -1616,9 +1619,9 @@ const statementBytes = 256 << 10
 // row a series makes: a day's figures fold the headline series alone, with no via-repository
 // entry. A register write or a readings write that would leave a logged eval holding more is
 // refused (Register, registerMissing), so no statement that writes a stored row of the eval passes
-// the bound. It is the bound less what the statement holds besides its series' entries
-// (figureRowReserve), over the most one series adds (seriesFigureBytes): (262,144 - 2,337) / 1,106
-// = 234; with 235 series the statement would take 262,247 bytes.
+// the bound. It is the bound less what the statement's parameters hold besides its series'
+// entries (figureRowReserve), over the most one series adds (seriesFigureBytes): (262,144 - 2,337)
+// / 1,106 = 234; with 235 series the statement's parameters would take 262,247 bytes.
 //
 // The entries count each series' via-repository entry, which a logged eval's rows never carry
 // (writeDays sets none), and without which the bound would admit 446 series. A figures write reads

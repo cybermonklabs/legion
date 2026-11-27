@@ -1,6 +1,6 @@
 **How it is measured.** The eval counts the project's issues that finished in the window, as legion-work-time counts them. It reads three values of each issue, which `legionfacts` stores by the rules of `legion/metrics`:
 
-- Review rounds: the entries into `reviewing`. Before the daemon's observations of the issue, they are the entries into the status `needs_review`. When the daemon stops reporting an issue, its sampler writes `null` for every field of the issue at one moment, and that is a drop. A drop changes no phase, so `reviewing` that goes on after a drop is no new round.
+- Review rounds: the entries into `reviewing`. Before the daemon's observations of the issue, they are the entries into the status `needs_review`. When the daemon stops reporting an issue, Dispatch's whole read of the daemon's state writes `null` for every field of the issue at one moment, and that is a drop. A drop changes no phase, so `reviewing` that goes on after a drop is no new round.
 - Sent back: whether the issue moved to `implementing` from `testing`, `reviewing`, `accepting`, `retro`, `merging` or `awaiting_merge`, a wait in `awaiting_children` between the two included. Before the daemon's observations, the history of the issue's statuses answers the same question, where a stop for an open child out of `testing`, `reviewing` or `accepting` reads as a send-back, since its status is `in_progress` as implementing's is.
 - Hours after the first review: the implementing and testing hours from the first review on.
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -70,6 +71,135 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 	if v2.Name != "Review rounds" || v2.Unit != "rounds" || v2.Direction != DirectionLowerBetter || len(v2.Links) != 1 ||
 		!v2.Links[0].RecordedAt.Equal(v1.Links[0].RecordedAt) || v2.DocBlock != v1.DocBlock || v2.DocBlock == "" {
 		t.Errorf("version 2 did not carry version 1's name, unit, direction, link and doc block forward: %+v", v2)
+	}
+}
+
+// TestATargetLiesInTheRangeItsEvalsUnitHolds: CheckTarget reads a target's range from its eval's
+// unit (targetRanges), never from the eval's slug. A row for each bound of each unit that states
+// one: deploy-frequency's deploys a day refuse -3 and take 0, deploy-run-success's ratio refuses 7,
+// 90 and a share below 0 and takes 0, 1 and its seeded 0.9, and each count, duration and size
+// refuses a target below 0 and takes 0 and a large one. A unit that states no range, none or a
+// logged eval's own (`lines`, `Ratio` spelled otherwise), takes any finite number; no unit takes NaN
+// or an infinity; an off target is never refused. Every refusal is EVAL_FIELD_INVALID naming
+// target. Every unit of targetRanges has its rows, and every target the catalogue seeds is within
+// its unit's range.
+func TestATargetLiesInTheRangeItsEvalsUnitHolds(t *testing.T) {
+	t.Parallel()
+	frequency, success := entryOf(t, SlugDeployFrequency).definition.Unit, entryOf(t, SlugDeployRunSuccess).definition.Unit
+	if frequency != unitDeploysPerDay || success != unitRatio {
+		t.Fatalf("deploy-frequency is in %q and deploy-run-success in %q, want %q and %q", frequency, success, unitDeploysPerDay, unitRatio)
+	}
+	rows := []struct {
+		unit   string
+		target float64
+		taken  bool
+	}{
+		{frequency, -3, false}, {frequency, -0.001, false}, {frequency, 0, true}, {frequency, 2.5, true},
+		{success, 7, false}, {success, 90, false}, {success, 1.0001, false}, {success, -0.1, false},
+		{success, 0, true}, {success, 1, true}, {success, 0.9, true},
+		{"count", -1, false}, {"count", 0, true}, {"count", 10, true},
+		{unitIssues, -1, false}, {unitIssues, 0, true}, {unitIssues, 1e6, true},
+		{unitDeploys, -1, false}, {unitDeploys, 0, true}, {unitDeploys, 40, true},
+		{unitRounds, -0.5, false}, {unitRounds, 0, true}, {unitRounds, 3, true},
+		{unitMinutes, -1, false}, {unitMinutes, 0, true}, {unitMinutes, 1e5, true},
+		{unitHours, -0.25, false}, {unitHours, 0, true}, {unitHours, 72, true},
+		{"seconds", -1, false}, {"seconds", 0, true}, {"seconds", 5, true},
+		{"milliseconds", -1, false}, {"milliseconds", 0, true}, {"milliseconds", 250, true},
+		{"bytes", -1, false}, {"bytes", 0, true}, {"bytes", 1 << 40, true},
+		{"", -3, true}, {"", 1e300, true}, {"lines", -5, true}, {"Ratio", 7, true}, {"usd", -1e9, true},
+		{"", math.NaN(), false}, {"", math.Inf(1), false}, {success, math.Inf(-1), false}, {"lines", math.NaN(), false},
+	}
+	below := map[string]bool{}
+	for _, row := range rows {
+		target := row.target
+		err := CheckTarget(row.unit, &target)
+		if row.taken {
+			if err != nil {
+				t.Errorf("a target of %v in %q is refused %v, want it taken", row.target, row.unit, err)
+			}
+			continue
+		}
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != fieldTarget {
+			t.Errorf("a target of %v in %q is answered %v, want %s naming %s", row.target, row.unit, err, CodeFieldInvalid, fieldTarget)
+			continue
+		}
+		if bounds, ranged := targetRanges[row.unit]; ranged && row.target < bounds.least {
+			below[row.unit] = true
+		}
+		t.Logf("%v in %q: %s", row.target, row.unit, refused.Message)
+	}
+	if err := CheckTarget(unitRatio, nil); err != nil {
+		t.Errorf("an off target in ratio is refused %v, want it taken", err)
+	}
+	for _, unit := range slices.Sorted(maps.Keys(targetRanges)) {
+		if !below[unit] {
+			t.Errorf("no row refuses a target below the range of %q", unit)
+		}
+	}
+	seeded := 0
+	for _, entry := range catalogue {
+		if entry.definition.Target == nil {
+			continue
+		}
+		seeded++
+		if err := CheckTarget(entry.definition.Unit, entry.definition.Target); err != nil {
+			t.Errorf("the catalogue seeds %s with a target its unit %q cannot hold: %v", entry.definition.Slug, entry.definition.Unit, err)
+		}
+	}
+	t.Logf("%d targets checked, %d seeded targets within their units' ranges", len(rows), seeded)
+}
+
+// TestARegisterWriteOfATargetItsUnitCannotHoldIsRefused: the register write judges the target of
+// the version it leaves by the version's unit (CheckTarget), and a refused write stores nothing. On
+// the seeded evals, -3 deploys a day and a share of 7 are refused EVAL_FIELD_INVALID naming target
+// and a share of 1 is taken. A logged eval in `lines` takes a target of 5; a change of its unit to
+// ratio, which would carry that target forward, is refused naming target; and the same change with
+// a target of 0.5 is taken.
+func TestARegisterWriteOfATargetItsUnitCannotHoldIsRefused(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s: %v", r.project, err)
+	}
+	versions := func() int {
+		return r.count(t, `select count(*) from eval_versions where project_key = $1`, r.project)
+	}
+	refuse := func(what string, change Registration) {
+		t.Helper()
+		change.Project, change.Caller = r.project, alice
+		before := versions()
+		_, err := r.registry.Register(ctx, change)
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != fieldTarget {
+			t.Errorf("%s: answered %v, want %s naming %s", what, err, CodeFieldInvalid, fieldTarget)
+		}
+		if after := versions(); after != before {
+			t.Errorf("%s: the refused write stored %d versions", what, after-before)
+		}
+	}
+	take := func(what string, change Registration) Registered {
+		t.Helper()
+		change.Project, change.Caller = r.project, alice
+		registered, err := r.registry.Register(ctx, change)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		return registered
+	}
+	below, past, whole, lines, half := -3.0, 7.0, 1.0, 5.0, 0.5
+	refuse("-3 deploys a day", Registration{Slug: SlugDeployFrequency, Target: Set(&below)})
+	refuse("a share of 7", Registration{Slug: SlugDeployRunSuccess, Target: Set(&past)})
+	if registered := take("a share of 1", Registration{Slug: SlugDeployRunSuccess, Target: Set(&whole)}); registered.Definition.Target == nil || *registered.Definition.Target != 1 {
+		t.Errorf("a share of 1 left the target %v, want 1", registered.Definition.Target)
+	}
+	take("a logged eval in lines with a target of 5", Registration{Slug: "diff-size", Unit: Set("lines"), Target: Set(&lines),
+		Series: []SeriesChange{{Series: "lines", Agg: Set(AggQuantile)}}})
+	refuse("a unit change that carries 5 into ratio", Registration{Slug: "diff-size", Unit: Set(unitRatio)})
+	if registered := take("ratio with a target of 0.5", Registration{Slug: "diff-size", Unit: Set(unitRatio), Target: Set(&half)}); registered.Definition.Unit != unitRatio ||
+		registered.Definition.Target == nil || *registered.Definition.Target != half {
+		t.Errorf("the unit and target write left %q and %v, want ratio and 0.5", registered.Definition.Unit, registered.Definition.Target)
 	}
 }
 

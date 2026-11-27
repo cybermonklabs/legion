@@ -97,13 +97,13 @@ type Spec struct {
 	// Spacing is how long before the tree after it each tree opens: one hour where zero. A wider
 	// spacing spreads the same trees over more days.
 	Spacing time.Duration
-	// Unobserved is how many of the oldest trees the daemon's sampler never saw: their events
-	// and handoffs are written and no observation of them is, so the project's first
+	// Unobserved is how many of the oldest trees Dispatch's Legion state intake never observed:
+	// their events and handoffs are written and no observation of them is, so the project's first
 	// observation falls partway through the history and the issues before it carry the event
 	// log alone, as a project's issues did before Dispatch read its daemon. Each issue Legion
 	// works in them also carries the status write that handed it to Legion (handOver).
 	Unobserved int
-	// Queued has each observed root wait for a slot: the sampler records it admitted from its
+	// Queued has each observed root wait for a slot: the intake records it admitted from its
 	// creation, an hour before it takes its slot, and the root of each odd tree gives its slot
 	// up for the fourth hour of its history and waits again. Without it no issue of the history
 	// ever waits for a slot.
@@ -115,7 +115,7 @@ type Spec struct {
 	// or `backlog`, each move both a Dispatch status and what the daemon observes. In an even
 	// tree a person puts the implemented child in `icebox` for the two hours between its
 	// implementer's handoff and its tester. In an odd tree the root's architect moves the reviewed
-	// child to `backlog` for three hours of its implementing, then back. The sampler records phase
+	// child to `backlog` for three hours of its implementing, then back. The intake records phase
 	// `held` over each, then the phase the child goes to next: testing for the implemented child,
 	// implementing again for the reviewed one.
 	InBacklogOrIcebox bool
@@ -169,7 +169,7 @@ type Fixture struct {
 	// NoPhaseWork is the keys no Legion role ever worked, which get no facts entry: that is what
 	// makes "has an entry" mean "Legion worked it".
 	NoPhaseWork []string
-	// Phases is the keys the sampler recorded in each phase, by the daemon's own phase name. A
+	// Phases is the keys the intake recorded in each phase, by the daemon's own phase name. A
 	// caller reads it to state which of legion.PhaseColumns the history reaches.
 	Phases map[string][]string
 	// SlotHours is how long each issue that held an admission slot of its own held it, from the
@@ -235,8 +235,8 @@ func Write(ctx context.Context, pool *store.Pool, spec Spec) (Fixture, error) {
 
 // seeding is one run of Write: the spec it was given, what it has written so far, the next event
 // sequence number of each issue, which events.seq is unique on, the title it wrote each issue
-// with, the issues it has already recorded Legion phase work for, and whether the sampler saw the
-// tree it is writing.
+// with, the issues it has already recorded Legion phase work for, and whether the intake observed
+// the tree it is writing.
 type seeding struct {
 	spec      Spec
 	fixture   Fixture
@@ -296,7 +296,7 @@ func SessionActor(role, issue string) string {
 		role, issue, "Legion "+role+" · "+issue)
 }
 
-// phaseMark is one phase the sampler recorded of an issue, and how many hours into its tree's
+// phaseMark is one phase the intake recorded of an issue, and how many hours into its tree's
 // history it recorded it.
 type phaseMark struct {
 	hour  float64
@@ -322,7 +322,7 @@ func (s *seeding) tree(index int) {
 		return start.Add(time.Duration(hours * float64(time.Hour)))
 	}
 	number := s.spec.IssueOffset + index*issuesPerTree + 1
-	// The oldest Spec.Unobserved trees are the ones the sampler never saw.
+	// The oldest Spec.Unobserved trees are the ones the intake never observed.
 	s.observed = index < s.spec.Trees-s.spec.Unobserved
 
 	// The root. Its architect designs it while it holds a slot, its planner plans it, it waits on
@@ -468,8 +468,8 @@ func (s *seeding) tree(index int) {
 	})
 
 	// The child whose work took no measured time: its one handoff is the moment it closed, so
-	// its work time starts and ends together and its facts hold no phase hours. The sampler
-	// never saw it, which is why a handoff alone has to carry it into the facts.
+	// its work time starts and ends together and its facts hold no phase hours. The intake
+	// never observed it, which is why a handoff alone has to carry it into the facts.
 	instant := s.issue(number+4, "A child that closed where it opened", root, 3, at(46), new(at(46)))
 	s.fixture.NoMeasuredWork = append(s.fixture.NoMeasuredWork, instant)
 	s.event(instant, "issue.created", person, `{"status":"triage"}`, at(46))
@@ -620,15 +620,15 @@ func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
 	s.carriesPhaseWork(issue)
 }
 
-// handOver writes the status write that hands an issue of a tree the sampler never saw
+// handOver writes the status write that hands an issue of a tree the intake never observed
 // (Spec.Unobserved) to Legion, as an issue reaches Legion in production
 // (docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"): its move
 // from `triage` to `todo`, by whoever hands it over, a person for an issue a person filed and the
 // tree's architect for a child it filed and releases. A person hands an issue over
 // at the hour its work starts, just before its first worker event, since that is the hour this
-// history admits it: in a tree the sampler saw, the same issue's first phase starts at that hour,
-// with its slot where it holds one of its own, and it never waits in the line for one (only an
-// observed root waits, under Spec.Queued). The architect releases each child an hour after it
+// history admits it: in a tree the intake observed, the same issue's first phase starts at that
+// hour, with its slot where it holds one of its own, and it never waits in the line for one (only
+// an observed root waits, under Spec.Queued). The architect releases each child an hour after it
 // filed it, and the child waits in `todo` until its first worker event. That wait is in no fact:
 // the work time starts at the first worker event, and before observations no hour is queue time
 // (metrics' queuedSpans).
@@ -645,11 +645,11 @@ func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
 // issue was out of the workflow from its statuses alone, from a `triage` status write to the next
 // status write (R6; metrics' outOfWorkflowByStatus, 9f994275a7), and the work time leaves those
 // hours out. Every issue here is filed in `triage`, and its workers' `in_progress` rides on
-// comments, which write no status, so without it an issue the sampler never saw would be out of
-// the workflow from its filing to its close and its work time would read 0.
+// comments, which write no status, so without it an issue the intake never observed would be out
+// of the workflow from its filing to its close and its work time would read 0.
 //
-// A tree the sampler saw gets none: each of its issues is observed by its first worker event, or
-// works no hour at all (the child that closed where it opened), so its `triage` stretch ends
+// A tree the intake observed gets none: each of its issues is observed by its first worker event,
+// or works no hour at all (the child that closed where it opened), so its `triage` stretch ends
 // before its work time starts, and its rows stay the ones the golden files were recorded over
 // (Spec). Nor does an issue no Legion role works (the follow-up a person filed, and
 // Spec.Filings' issues): nobody handed it to Legion.
@@ -700,7 +700,7 @@ func (s *seeding) carriesPhaseWork(issue string) {
 	s.fixture.PhaseWork = append(s.fixture.PhaseWork, issue)
 }
 
-// observe writes one observation of one field of one issue, as the sampler records a value it
+// observe writes one observation of one field of one issue, as the intake records a value it
 // found had moved.
 func (s *seeding) observe(issue, field, value string, at time.Time) {
 	s.rows.observeIssues = append(s.rows.observeIssues, issue)
@@ -712,8 +712,8 @@ func (s *seeding) observe(issue, field, value string, at time.Time) {
 	}
 }
 
-// phases writes the phases the sampler recorded of one issue, in the order it recorded them. It,
-// slot, claim and waiting write nothing of a tree the sampler never saw (Spec.Unobserved).
+// phases writes the phases the intake recorded of one issue, in the order it recorded them. It,
+// slot, claim and waiting write nothing of a tree the intake never observed (Spec.Unobserved).
 func (s *seeding) phases(issue string, at func(float64) time.Time, marks []phaseMark) {
 	if !s.observed {
 		return

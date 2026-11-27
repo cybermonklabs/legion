@@ -13,10 +13,11 @@ import (
 // read.go is everything this reading takes out of the database, and the shape it keeps it in.
 // Four tables hold what R6's words are written over: `issues` is each issue with its parent and
 // its close, `events` is what Dispatch recorded of an issue, `handoffs` is each phase handed on,
-// and `legion_observations` is what the daemon's sampler saw. The reading reads them itself, with
-// statements of its own, so a fault in another reader's statements cannot reach it.
+// and `legion_observations` is what Dispatch's Legion state intake recorded of the daemon, from
+// its state events and its whole reads. The reading reads them itself, with statements of its
+// own, so a fault in another reader's statements cannot reach it.
 
-// mark is one value as of one moment: a status an event carried, or a field the sampler recorded.
+// mark is one value as of one moment: a status an event carried, or a field the intake recorded.
 type mark struct {
 	at    time.Time
 	value string
@@ -45,7 +46,7 @@ type issue struct {
 	// statusMarks is every status the issue's own `issue.*` events carried, oldest first: its
 	// status writes.
 	statusMarks []mark
-	// observed is what the sampler recorded of each field, oldest first within a field.
+	// observed is what the intake recorded of each field, oldest first within a field.
 	observed map[string][]mark
 	// askTurns is the stretches an ask opened on this issue by a Legion session of its tree
 	// stood on a person's turn.
@@ -236,8 +237,8 @@ func (p *population) takeRoleEvents(read []eventRow, titles map[string]string) {
 }
 
 // takeStatusMarks keeps every status write of the issues, oldest first: the status an `issue.*`
-// event carried. They say when an issue sat parked and, for an issue the sampler never saw, which
-// phase it was in.
+// event carried. They say when an issue sat parked and, for an issue the intake never observed,
+// which phase it was in.
 func (p *population) takeStatusMarks(read []eventRow) {
 	for _, one := range read {
 		if !strings.HasPrefix(one.kind, "issue.") || one.status == "" {
@@ -327,7 +328,7 @@ func (p *population) readHandoffs(ctx context.Context, db Querier) error {
 	return nil
 }
 
-// readObservations reads what the daemon's sampler recorded of the project's issues, oldest first
+// readObservations reads what the intake recorded of the project's issues, oldest first
 // within each field: the phase of each issue, the slot it held, each role's claim and the wait the
 // daemon reported, with which issues the daemon reports at all and the tree root it last named
 // for each. It reads too the moments of the project's first claim and first slot observation,
@@ -460,7 +461,7 @@ func (p *population) end(key string) time.Time {
 }
 
 // jsonString is the string a recorded value holds, and "" for a null, a number or a value of any
-// other shape: the sampler writes each field as JSON.
+// other shape: the intake writes each field as JSON.
 func jsonString(value string) string {
 	var held string
 	if err := json.Unmarshal([]byte(value), &held); err != nil {

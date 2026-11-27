@@ -16,17 +16,18 @@ import (
 // changes, so a piece counts whole or not at all. The other rules of this reading draw each fact
 // as stretches and intersect them; these two draw none.
 //
-// The two method texts say what a drop is: "When the daemon stops reporting an issue, its sampler
-// writes `null` for every field of the issue at one moment, and that is a drop, not a release. The
-// phase and the slot that the issue held run on through a drop until the next observation that
-// names a phase, and from that moment the issue holds a slot only if a slot observation at the same
-// moment names one; where no such observation comes, they run to the issue's end." Idle time's
-// adds: "Each claim that a drop writes `null` is no claim, so it counts as not working." So the
-// phase at a moment is the one named by the newest observation that names a phase (phaseAt), and
-// whether the issue holds a slot asks first whether a drop is in force (holdsSlotAt). `design`, on
-// the architect's bar, is the daemon's `admitted` while the issue holds a slot of its own, for a
-// child as for a root: dispatch://INFRA-1077's words give an issue a design phase "whether or not
-// it has a parent", and R6 has idle time and time per phase read one rule of bars (sampledOf).
+// The method texts say what a drop is: "When the daemon stops reporting an issue, Dispatch's whole
+// read of the daemon's state writes `null` for every field of the issue at one moment, and that is
+// a drop, not a release. The phase and the slot that the issue held run on through a drop until
+// the next observation that names a phase, and from that moment the issue holds a slot only if a
+// slot observation at the same moment names one; where no such observation comes, they run to the
+// issue's end." Idle time's adds: "Each claim that a drop writes `null` is no claim, so it counts
+// as not working." So the phase at a moment is the one named by the newest observation that names
+// a phase (phaseAt), and whether the issue holds a slot asks first whether a drop is in force
+// (holdsSlotAt). `design`, on the architect's bar, is the daemon's `admitted` while the issue holds
+// a slot of its own, for a child as for a root: dispatch://INFRA-1077's words give an issue a
+// design phase "whether or not it has a parent", and R6 has idle time and time per phase read one
+// rule of bars (sampledOf).
 
 // sighting is what an issue's observations and its newest status write say as of one moment: the
 // phase the daemon observed ("" for none), whether the issue held a slot of its own, whether it sat
@@ -95,8 +96,8 @@ func holdsSlotAt(phases, slots []mark, at time.Time, through bool) bool {
 	return len(since) > 0 && namesSlot(since[len(since)-1].value)
 }
 
-// namesSlot is whether a slot observation names a slot: the sampler records the slot an issue
-// holds as its number, and none as `null`.
+// namesSlot is whether a slot observation names a slot: Dispatch's Legion state intake records
+// the slot an issue holds as its number, and none as `null`.
 func namesSlot(value string) bool {
 	return value != "" && value != "null"
 }

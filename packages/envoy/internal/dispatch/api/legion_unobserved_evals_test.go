@@ -11,10 +11,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
-// TestALegionProjectTheSamplerNeverReadReadsItsWorkEvals: a project that names its Legion daemon,
-// which the sampler has never read, holds no observation, and its issues still carry the phase
-// work the event log holds. The facts consumer computes it (legionfacts' legionProjects reads the
-// setting), and the four Legion evals that read no observation - work time, phase time, rework and
+// TestALegionProjectTheIntakeNeverReadReadsItsWorkEvals: a project that names its Legion daemon,
+// which Dispatch's Legion state intake has never read (no state event of it applied, no whole read
+// of it recorded), holds no observation, and its issues still carry the phase work the event log
+// holds. The facts consumer computes it (legionfacts' legionProjects reads the setting), and the
+// four Legion evals that read no observation - work time, phase time, rework and
 // splitting - read numbers over the days of its history rather than "no data". Work time, phase
 // time and splitting each read a headline figure above 0 on one of their series at least, as the
 // history's work gives each of them, so a fold that read none of that work and still stated its
@@ -22,14 +23,14 @@ import (
 // the daemon's observations an issue's rounds and send-backs come from its statuses, the rig's
 // trees send no issue back, and most of their finished issues never reach `needs_review`, so each
 // median is 0. It is held to stating its figures alone.
-func TestALegionProjectTheSamplerNeverReadReadsItsWorkEvals(t *testing.T) {
+func TestALegionProjectTheIntakeNeverReadReadsItsWorkEvals(t *testing.T) {
 	// Not parallel: runLegionFactsConsumer waits for the facts consumer under a one-minute bound of
 	// its own, which the load of the parallel tests could make it miss.
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	const trees = 4
 	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "INFRA", Trees: trees, Unobserved: trees})
 	if observed := countRows(t, database, `select count(*) from legion_observations where project = 'INFRA'`); observed != 0 {
-		t.Fatalf("the history holds %d observations of INFRA, want none, or this test examines a sampled project", observed)
+		t.Fatalf("the history holds %d observations of INFRA, want none, or this test examines an observed project", observed)
 	}
 	nameLegionDaemon(t, handler, fixture.Project, "http://legion-infra.internal:13370")
 	runLegionFactsConsumer(t, database, fixture.Project, len(fixture.PhaseWork))

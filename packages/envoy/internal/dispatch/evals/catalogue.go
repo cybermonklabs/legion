@@ -128,14 +128,16 @@ func perRole(roles ...string) []Series {
 	return series
 }
 
-// The units the catalogue's evals and series are in.
+// The units the catalogue's evals and series are in. Each states the range of targets it holds
+// (targetRanges).
 const (
-	unitMinutes = "minutes"
-	unitHours   = "hours"
-	unitRatio   = "ratio"
-	unitIssues  = "issues"
-	unitDeploys = "deploys"
-	unitRounds  = "rounds"
+	unitMinutes       = "minutes"
+	unitHours         = "hours"
+	unitRatio         = "ratio"
+	unitIssues        = "issues"
+	unitDeploys       = "deploys"
+	unitDeploysPerDay = "deploys/day"
+	unitRounds        = "rounds"
 )
 
 // timing is the one series of an eval of minutes: every value of each day timed, folded as a
@@ -156,7 +158,7 @@ var catalogue = []catalogueEntry{
 				{Mode: "A deploy run that is still running has not reached production, so its day reads one deploy short.", Guard: "Dispatch builds the day again when the run concludes."},
 				{Mode: "A deploy that ships pull requests of two projects counts once in each project, so the projects' counts add up to more than the deployment's count.", Guard: "The Delivery page counts each deploy once for the whole deployment."},
 			},
-			Unit: "deploys/day", Direction: DirectionHigherBetter,
+			Unit: unitDeploysPerDay, Direction: DirectionHigherBetter,
 			Target: new(measures.DefaultTargets.DeploysPerDay.Value), TargetInclusive: measures.DefaultTargets.DeploysPerDay.Inclusive, TargetJudges: []string{measures.SeriesDeploys + ".per_day"},
 			Kind: KindDelivery, Source: SourceFoldDeployFrequency,
 		},

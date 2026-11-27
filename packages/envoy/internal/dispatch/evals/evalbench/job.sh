@@ -9,14 +9,22 @@
 # where the pod runs them so (job.yaml, which names their directory in EVALBENCH_CONTROL and holds
 # each container to the size it gives it), else beside this script, which then starts both and
 # holds their driver lock. Before the measurement and again at its end the run prints its shape as
-# a SHAPE line: gating where the pod runs on the compute class EVALBENCH_GATING_CLASS names, the
-# server's requests are its limits, the kernel holds the server's container to those limits, and
-# the machine's CPUs beside the pod's CPU request are fewer than the server's, so no pod of the
-# server's size runs beside it; record otherwise, with the reasons. Beside that word it prints the
-# node, the machine's CPUs, CPU model and memory, each container's requests and limits as the API
-# server gave them (EVALBENCH_PODINFO) and the limits the kernel holds the server's container to
-# (supervise.sh's container file). The machine type is a label of the node, which a pod with no
-# API access cannot read: the CPUs, the CPU model and the memory are what the run itself sees.
+# a SHAPE line. It reads gating where each reading the pod itself makes holds the architect's
+# ruling for a timed run (dispatch://INFRA-2916/comment/59ca49ea-68ec-4b3b-940e-d8a110b91b30): the
+# pod runs on the compute class EVALBENCH_GATING_CLASS names and under no runtime class; the
+# server's requests are its limits, 9 CPU and 21Gi (EVALBENCH_PODINFO); and at every start of the
+# server its own cgroup read cpu.max "900000 100000" and memory.max 22548578304 and its Go runtime
+# chose GOMAXPROCS 9 (run.sh's SERVER_START lines and server-starts.tsv; the trace count per run
+# is recorded beside them). Otherwise it reads record, with each reading that failed in its
+# reasons. The ruling's third reading, the node's machine family, is not the pod's to make: the
+# family is the node's label (node.kubernetes.io/instance-type, n4d-* or c3d-* for a run that
+# gates), the pod has no API access to read it, and GKE refuses a pod that asks for a family or
+# a machine type beside a custom ComputeClass. So the line prints family=unread and the node, and
+# its reader reads the node's label beside the log (kubectl get node <node> -L
+# node.kubernetes.io/instance-type): a run on any other family is a record, whatever its SHAPE
+# word. The line also prints the machine's CPUs, CPU model and memory, each container's requests
+# and limits as the API server gave them, and Postgres's own cgroup, outside the server's limit
+# (supervise.sh's container file).
 #
 #   job.sh head    this head's first paint, EVALBENCH_PAINT_RUNS times (8), each after a fresh
 #                  start of the server, with the median and the maximum of the runs, and k2, k13
@@ -58,7 +66,7 @@
 #   EVALBENCH_PGPORT (55432), EVALBENCH_SHARED_BUFFERS (1GB), PGBIN (the newest
 #                          /usr/lib/postgresql/*/bin)
 #   EVALBENCH_NODE         the node the run is on (job.yaml sets it from the pod's spec.nodeName),
-#                          printed with the machine's CPUs and memory
+#                          printed with the machine's CPUs and memory and in the SHAPE line
 #   EVALBENCH_CONTROL      the supervisors' directory (supervise.sh) where the pod runs them in
 #                          containers of their own and holds their driver lock (job.yaml); unset,
 #                          job.sh runs them beside itself, under EVALBENCH_WORK
@@ -67,7 +75,8 @@
 #                          MiB: job.yaml's downward API), which the SHAPE line prints and judges
 #   EVALBENCH_COMPUTE_CLASS, EVALBENCH_GATING_CLASS, EVALBENCH_RUNTIME_CLASS: the compute class the
 #                          pod runs on, the one a run is judged on (none: no run is), and the pod's
-#                          runtime class (none: the machine's own), which the SHAPE line names
+#                          runtime class (none: the machine's own), which the SHAPE line names and
+#                          judges
 #   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET, EVALBENCH_CATALOG and
 #   EVALBENCH_PAINT_RUNS pass through.
 set -euo pipefail
@@ -120,11 +129,27 @@ if [ -z "$control" ]; then
 fi
 export EVALBENCH_CONTROL=$control
 
-# shape prints the run's SHAPE line (the header says what it holds and when it reads gating).
+# The server a timed run measures (the header's ruling): production's 9 CPU and 21Gi, as its
+# requests and limits read in millicores and MiB, as its own cgroup's cpu.max and memory.max, and
+# as the GOMAXPROCS a Go runtime takes from that CPU limit.
+ruled_cpu_m=9000 ruled_memory_mi=21504 ruled_cpu_max="900000 100000" ruled_memory_max=22548578304 ruled_gomaxprocs=9
+
+# tally prints the associative array named $1, each value it counts with its count, as
+# [value:count,...] in the values' order.
+tally() {
+  local -n counts=$1
+  local value out=""
+  while IFS= read -r value; do
+    [ -z "$value" ] || out+=",$value:${counts[$value]}"
+  done < <(printf '%s\n' "${!counts[@]}" | sort)
+  echo "[${out#,}]"
+}
+
+# shape prints the run's SHAPE line (the header says what it holds and when it reads gating), from
+# the readings each start and stop of the server appended to server-starts.tsv (run.sh).
 shape() {
-  local reasons=() resources="" container field value pod=0 cpus kernel word=gating
-  local -A got=()
-  cpus=$(grep -c '^processor' /proc/cpuinfo)
+  local reasons=() resources="" container field value kind first second third word=gating starts=0 stops=0
+  local -A got=() gomaxprocs=() cpu_max=() memory_max=() traces=()
   for container in server postgres driver; do
     for field in requests.cpu limits.cpu requests.memory limits.memory; do
       value=none
@@ -134,35 +159,66 @@ shape() {
       got[$container.$field]=$value
     done
     resources+=" ${container}=cpu:${got[$container.requests.cpu]}m/${got[$container.limits.cpu]}m,memory:${got[$container.requests.memory]}Mi/${got[$container.limits.memory]}Mi"
-    case "${got[$container.requests.cpu]}" in '' | *[!0-9]*) ;; *) pod=$((pod + got[$container.requests.cpu])) ;; esac
   done
-  kernel=$(cat "$control/server/container" 2>/dev/null || echo unread)
+  if [ -r "$EVALBENCH_WORK/server-starts.tsv" ]; then
+    # start <log> <GOMAXPROCS> <cpu.max> <memory.max>, or stop <log> <scheduler traces>.
+    while IFS=$'\t' read -r kind _ first second third; do
+      case "$kind" in
+        start)
+          starts=$((starts + 1))
+          gomaxprocs[${first:-unread}]=$((${gomaxprocs[${first:-unread}]:-0} + 1))
+          cpu_max[${second:-unread}]=$((${cpu_max[${second:-unread}]:-0} + 1))
+          memory_max[${third:-unread}]=$((${memory_max[${third:-unread}]:-0} + 1))
+          ;;
+        stop)
+          stops=$((stops + 1))
+          traces[${first:-unread}]=$((${traces[${first:-unread}]:-0} + 1))
+          ;;
+      esac
+    done <"$EVALBENCH_WORK/server-starts.tsv"
+  fi
   if [ -z "${EVALBENCH_GATING_CLASS:-}" ]; then
     reasons+=("no gating class is named")
   elif [ "${EVALBENCH_COMPUTE_CLASS:-}" != "$EVALBENCH_GATING_CLASS" ]; then
     reasons+=("the pod's compute class is not the gating class")
   fi
-  case "${got[server.requests.cpu]}" in
-    '' | *[!0-9]*) reasons+=("the server's requests and limits were not read (EVALBENCH_PODINFO)") ;;
+  if [ "${EVALBENCH_RUNTIME_CLASS:-none}" != none ]; then
+    reasons+=("the pod runs under the runtime class $EVALBENCH_RUNTIME_CLASS")
+  fi
+  case " ${got[server.requests.cpu]} ${got[server.limits.cpu]} ${got[server.requests.memory]} ${got[server.limits.memory]} " in
+    *" none "*) reasons+=("the server's requests and limits were not read (EVALBENCH_PODINFO)") ;;
     *)
       if [ "${got[server.requests.cpu]}" != "${got[server.limits.cpu]}" ] || [ "${got[server.requests.memory]}" != "${got[server.limits.memory]}" ]; then
         reasons+=("the server's requests are not its limits")
       fi
-      case " $kernel " in
-        *" cpu_limit_m=${got[server.limits.cpu]} memory_limit_mi=${got[server.limits.memory]} "*) ;;
-        *) reasons+=("the kernel does not hold the server's container to its limits") ;;
-      esac
-      if [ $((cpus * 1000 - pod)) -ge "${got[server.requests.cpu]}" ]; then
-        reasons+=("the machine's CPUs beside the pod's request hold a pod of the server's size")
+      if [ "${got[server.limits.cpu]}" != "$ruled_cpu_m" ] || [ "${got[server.limits.memory]}" != "$ruled_memory_mi" ]; then
+        reasons+=("the server's limits are not ${ruled_cpu_m}m and ${ruled_memory_mi}Mi")
       fi
       ;;
   esac
+  [ "$starts" -gt 0 ] || reasons+=("no start of the server was read (server-starts.tsv)")
+  for value in "${!gomaxprocs[@]}"; do
+    [ "$value" = "$ruled_gomaxprocs" ] || reasons+=("${gomaxprocs[$value]} of $starts server starts read GOMAXPROCS $value, not $ruled_gomaxprocs")
+  done
+  for value in "${!cpu_max[@]}"; do
+    [ "$value" = "$ruled_cpu_max" ] || reasons+=("${cpu_max[$value]} of $starts server starts read cpu.max [$value], not [$ruled_cpu_max]")
+  done
+  for value in "${!memory_max[@]}"; do
+    [ "$value" = "$ruled_memory_max" ] || reasons+=("${memory_max[$value]} of $starts server starts read memory.max $value, not $ruled_memory_max")
+  done
+  for value in "${!traces[@]}"; do
+    [ "$value" -ge 1 ] 2>/dev/null || reasons+=("${traces[$value]} of $stops runs of the server printed $value scheduler traces, want at least 1")
+  done
+  [ "$stops" -eq "$starts" ] || reasons+=("$((starts - stops)) of $starts server starts were read to no stop")
   [ "${#reasons[@]}" -eq 0 ] || word=record
-  echo "SHAPE $word compute_class=${EVALBENCH_COMPUTE_CLASS:-none} gating_class=${EVALBENCH_GATING_CLASS:-none}" \
-    "runtime_class=${EVALBENCH_RUNTIME_CLASS:-none} node=${EVALBENCH_NODE:-unnamed} machine_cpus=$cpus" \
+  echo "SHAPE $word family=unread node=${EVALBENCH_NODE:-unnamed} compute_class=${EVALBENCH_COMPUTE_CLASS:-none}" \
+    "gating_class=${EVALBENCH_GATING_CLASS:-none} runtime_class=${EVALBENCH_RUNTIME_CLASS:-none} server_starts=$starts" \
+    "server_gomaxprocs=$(tally gomaxprocs) server_cpu_max=$(tally cpu_max) server_memory_max=$(tally memory_max)" \
+    "server_schedtraces=$(tally traces) machine_cpus=$(grep -c '^processor' /proc/cpuinfo)" \
     "machine_memory_gib=$(awk '/^MemTotal/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo)" \
-    "cpu_model=\"$(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo)\"$resources server_kernel=[$kernel]" \
-    "pod_cpu_request=${pod}m reasons=\"$(IFS=';'; echo "${reasons[*]:-none}")\""
+    "cpu_model=\"$(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo)\"$resources" \
+    "postgres_cgroup=[$(cat "$control/postgres/container" 2>/dev/null || echo unread)]" \
+    "reasons=\"$(IFS=';'; echo "${reasons[*]:-none}")\""
 }
 
 # Postgres, its data on the run's own volume. pg_stat_statements is the instrument (track_utility
@@ -250,6 +306,8 @@ EVALBENCH_PG_RESTART=$(printf '%q ' "$here/supervise.sh" exec "$control/postgres
   --pgdata "$work/pg" --log "$work/pg-server.log" --wait --timeout 300 --mode fast restart)
 export EVALBENCH_PG_RESTART
 mkdir -p "$EVALBENCH_WORK"
+# Each start and stop of the server appends its readings here (run.sh), which shape judges.
+: >"$EVALBENCH_WORK/server-starts.tsv"
 "$here/run.sh" migrate "$database_url" "$work/bin/envoy-dispatch"
 mark "migrated by the server"
 if [ "${EVALBENCH_TEN_TIMES:-0}" = 1 ]; then

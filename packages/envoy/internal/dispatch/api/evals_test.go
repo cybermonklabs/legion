@@ -195,8 +195,12 @@ func holdsPRSize(t *testing.T, body []byte) bool {
 // refused EVAL_SERIES_LIMIT naming the most series an eval holds (evals.MaxEvalSeries), the readings
 // write at its one row past that bound. Each of the four reads refuses a query key its route shape
 // does not declare, naming it (the old `scope` among them, and a key another eval route takes), and
-// so does the readings write; each of the five carrying the global session parameter alone is
-// accepted.
+// so do both writes, which refuse the session parameter named twice too; each of the six carrying
+// the global session parameter alone is accepted. Both writes refuse a body that names one key twice
+// in one object, at the top level, one level down, in a reading's row and in its attributes,
+// naming the key and where it stands, and the register write takes a body naming one key in two
+// objects. A target its eval's unit cannot hold (evals.CheckTarget) is refused EVAL_FIELD_INVALID
+// naming target.
 func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -225,6 +229,8 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		status       int
 		code         string
 		names        string
+		// field is the field the refusal names in its field member, none where it names none.
+		field string
 		// rows is the index of each row the refusal lists, none for a refusal of no row.
 		rows []int
 	}{
@@ -254,6 +260,17 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "an eval's items with two rows", method: http.MethodGet, path: "/api/v1/projects/EVL/evals/pr-ci/items?row_kind=job&row=a&row=b", status: 400, code: "INVALID_QUERY", names: `"row"`},
 		{name: "a readings write with a window", method: http.MethodPost, path: readings + "?from=2026-11-01T00:00:00Z", body: map[string]any{"readings": []any{good}}, key: "r-query", status: 400, code: "INVALID_QUERY", names: `"from"`},
 		{name: "a readings write naming its session twice", method: http.MethodPost, path: readings + "?session=s-1&session=s-2", body: map[string]any{"readings": []any{good}}, key: "r-sessions", status: 400, code: "INVALID_QUERY", names: `"session"`},
+		{name: "a register write with a window", method: http.MethodPost, path: "/api/v1/projects/EVL/evals?from=x", body: map[string]any{"slug": "query-keys", "name": "Query keys"}, key: "g-query", status: 400, code: "INVALID_QUERY", names: `"from"`},
+		{name: "a register write naming its session twice", method: http.MethodPost, path: "/api/v1/projects/EVL/evals?session=s-1&session=s-2", body: map[string]any{"slug": "query-keys", "name": "Query keys"}, key: "g-sessions", status: 400, code: "INVALID_QUERY", names: `"session"`},
+		{name: "a register write naming its slug twice", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: json.RawMessage(`{"slug": "review-time", "name": "Review time", "slug": "pr-ci"}`), key: "g-twice-slug", status: 400, code: "INVALID_JSON", names: `the body holds the key "slug" twice`},
+		{name: "a register write naming a series' min_n twice", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: json.RawMessage(`{"slug": "pr-ci", "series": [{"series": "job:*", "min_n": 3, "min_n": 4}]}`), key: "g-twice-min-n", status: 400, code: "INVALID_JSON", names: `series[0] holds the key "min_n" twice`},
+		{name: "a register write naming a link's rel twice", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: json.RawMessage(`{"slug": "review-time", "links": [{"rel": "describedby", "href": "https://example.com/method", "rel": "via"}]}`), key: "g-twice-rel", status: 400, code: "INVALID_JSON", names: `links[0] holds the key "rel" twice`},
+		{name: "a readings write naming its readings twice", method: http.MethodPost, path: readings, body: json.RawMessage(`{"readings": [` + mustJSON(t, good) + `], "readings": []}`), key: "r-twice-readings", status: 400, code: "INVALID_JSON", names: `the body holds the key "readings" twice`},
+		{name: "a readings write naming its actor's id twice", method: http.MethodPost, path: readings, body: json.RawMessage(`{"actor": {"kind": "session", "id": "s-1", "id": "s-2"}, "readings": [` + mustJSON(t, good) + `]}`), key: "r-twice-actor", status: 400, code: "INVALID_JSON", names: `actor holds the key "id" twice`},
+		{name: "a reading naming its series twice", method: http.MethodPost, path: readings, body: json.RawMessage(`{"readings": [{"series": "minutes", "row_kind": "sample", "value": 1, "measured_at": "` + at.Format(time.RFC3339Nano) + `", "series": "hours"}]}`), key: "r-twice-series", status: 400, code: "INVALID_JSON", names: `readings[0] holds the key "series" twice`},
+		{name: "a reading naming an attribute twice", method: http.MethodPost, path: readings, body: json.RawMessage(`{"readings": [{"series": "minutes", "row_kind": "sample", "value": 1, "measured_at": "` + at.Format(time.RFC3339Nano) + `", "attributes": {"repo": "acme/widgets", "repo": "acme/gadgets"}}]}`), key: "r-twice-attribute", status: 400, code: "INVALID_JSON", names: `readings[0].attributes holds the key "repo" twice`},
+		{name: "a target past 1 on a ratio eval", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": evals.SlugDeployRunSuccess, "target": 7}, key: "g-target-ratio", status: 400, code: evals.CodeFieldInvalid, names: "target 7", field: "target"},
+		{name: "a target below 0 on an eval of deploys a day", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": evals.SlugDeployFrequency, "target": -3}, key: "g-target-count", status: 400, code: evals.CodeFieldInvalid, names: "target -3", field: "target"},
 		{name: "a readings write with no Idempotency-Key", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{good}}, status: 400, code: codeIdempotencyKeyRequired},
 		{name: "a reading carrying recorded_by", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_by": map[string]any{"kind": "user", "id": "mallory"}})}}, key: "r-by", status: 400, code: evals.CodeFieldServerSet, names: "recorded_by", rows: []int{0}},
 		{name: "a reading carrying recorded_at", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_at": at.Format(time.RFC3339)})}}, key: "r-at", status: 400, code: evals.CodeFieldServerSet, names: "recorded_at", rows: []int{0}},
@@ -297,6 +314,9 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 			if c.names != "" && !strings.Contains(named, c.names) {
 				t.Errorf("the refusal %q, rows %+v, does not name %s", refusal.Error, refusal.Rows, c.names)
 			}
+			if c.field != "" && refusal.Field != c.field {
+				t.Errorf("the refusal names the field %q, want %q", refusal.Field, c.field)
+			}
 			listed := make([]int, len(refusal.Rows))
 			for index, row := range refusal.Rows {
 				listed[index] = row.Index
@@ -317,13 +337,25 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	}
 	t.Logf("%d refusals; readings %d -> %d, versions %d -> %d", len(cases), readingsBefore, readingsAfter, versionsBefore, versionsAfter)
 
-	// The global session parameter is the one query key the write takes.
+	// The global session parameter is the one query key each write takes.
 	accepted := evalRequest(t, handler, http.MethodPost, readings+"?session=s-1", map[string]any{"readings": []any{good}}, "r-session")
 	if accepted.Code != http.StatusCreated {
 		t.Fatalf("a readings write carrying ?session= alone: status %d, body %s, want 201", accepted.Code, accepted.Body.String())
 	}
 	if got := countRows(t, database, countReadings); got != readingsAfter+1 {
 		t.Errorf("the write with ?session= stored %d readings, want 1", got-readingsAfter)
+	}
+	// A register write carrying it, whose body names `series` at the top and in each series, and
+	// `unit` in two series: one key in two objects, which the body takes.
+	versionsBefore = countRows(t, database, countVersions)
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals?session=s-1", json.RawMessage(
+		`{"slug": "query-keys", "name": "Query keys", "unit": "issues", "series": [{"series": "open", "unit": "issues"}, {"series": "closed", "unit": "issues"}]}`,
+	), "g-session")
+	if registered.Code != http.StatusCreated {
+		t.Fatalf("a register write carrying ?session= alone: status %d, body %s, want 201", registered.Code, registered.Body.String())
+	}
+	if got := countRows(t, database, countVersions); got != versionsBefore+1 {
+		t.Errorf("the register write with ?session= stored %d versions, want 1", got-versionsBefore)
 	}
 	// And each read takes it beside the keys its shape declares, and takes project and repo, the
 	// two it reads every value of, more than once.

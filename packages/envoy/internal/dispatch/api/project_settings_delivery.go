@@ -42,10 +42,6 @@ var deliverySettingsTargetSlugs = []string{
 // deliveryTargetOff is the value a target takes that judges nothing: the eval's target is none.
 const deliveryTargetOff = "off"
 
-// deliveryTargetUnitRatio is the unit of an eval whose value is a share from 0 to 1, as the evals'
-// catalogue names it (unitRatio, evals/catalogue.go).
-const deliveryTargetUnitRatio = "ratio"
-
 // projectDeliverySettings is what GET and PUT /api/v1/projects/{key}/settings/delivery answer: the
 // project's stored settings, each source with its id, the repository it reads (resolved_repo,
 // delivery.SourceRepoOf: the one it names, else the project's default repository, null where it
@@ -651,8 +647,10 @@ func appCannotRead(err error) bool {
 // target already, as actor (Registration.Target alone, so every other field is carried forward
 // from the eval's newest version), in deliverySettingsTargetSlugs' order, read before the save's
 // transaction opens; the transaction reads each target again (settingsSave.targetsMoved). A target
-// of an eval the project holds no version of, and a number its eval's unit cannot hold
-// (deliveryTargetRange), are refused, named: its evals are seeded when the project is made.
+// of an eval the project holds no version of, and a number its eval's unit cannot hold, are
+// refused, named: its evals are seeded when the project is made, and the range is the registry's
+// one rule for a target (evals.CheckTarget), read from the eval's own unit, which the catalogue
+// seeds, so it follows the eval rather than a list of slugs.
 func (s *server) deliveryTargetChanges(ctx context.Context, project string, targets map[string]*float64, actor model.Actor) ([]evals.Registration, *delivery.SettingsError, error) {
 	if len(targets) == 0 {
 		return nil, nil, nil
@@ -671,10 +669,12 @@ func (s *server) deliveryTargetChanges(ctx context.Context, project string, targ
 		if !held {
 			return nil, delivery.InputRefusal(nil, "targets."+slug, "project %s holds no %s eval to set the target of", project, slug), nil
 		}
-		if target != nil {
-			if reason := deliveryTargetRange(entry.Definition.Unit, *target); reason != "" {
-				return nil, delivery.InputRefusal(nil, "targets."+slug, "%s", reason), nil
+		if err := evals.CheckTarget(entry.Definition.Unit, target); err != nil {
+			var refusal *evals.Error
+			if !errors.As(err, &refusal) {
+				return nil, nil, err
 			}
+			return nil, delivery.InputRefusal(nil, "targets."+slug, "%s", refusal.Message), nil
 		}
 		if equalPointers(entry.Definition.Target, target) {
 			continue
@@ -682,20 +682,6 @@ func (s *server) deliveryTargetChanges(ctx context.Context, project string, targ
 		changes = append(changes, evals.Registration{Project: project, Slug: slug, Caller: actor, Target: evals.Set(target)})
 	}
 	return changes, nil, nil
-}
-
-// deliveryTargetRange is the reason target lies outside what an eval of unit can hold, "" where it
-// lies within: a share (deliveryTargetUnitRatio) is from 0 to 1, and every other eval the settings
-// set counts deploys or issues or times minutes, so its target is 0 or more. unit is the eval's own,
-// which the catalogue seeds, so the range follows the eval rather than a list of slugs.
-func deliveryTargetRange(unit string, target float64) string {
-	if target < 0 {
-		return fmt.Sprintf("%g is below 0, and an eval of unit %s holds no target below 0", target, unit)
-	}
-	if unit == deliveryTargetUnitRatio && target > 1 {
-		return fmt.Sprintf("%g is above 1, and an eval of unit %s is a share from 0 to 1", target, unit)
-	}
-	return ""
 }
 
 // writeSettingsRefusal answers a refused save with its own body (delivery.SettingsError: its code,

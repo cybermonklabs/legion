@@ -69,8 +69,9 @@ import (
 var actor = model.Actor{Kind: "system", ID: "evalfixture"}
 
 // StateURL is the daemon address a fixture project's legion_settings row names. It is under
-// `.invalid`, which no name server answers (RFC 2606), so the sampler's every read of it fails and
-// records the failure, and no read adds an observation to the history the fixture wrote.
+// `.invalid`, which no name server answers (RFC 2606), so every whole read of it Dispatch's Legion
+// state intake makes fails and records the failure, no daemon there publishes a state event, and
+// nothing adds an observation to the history the fixture wrote.
 const StateURL = "http://legion-daemon.invalid:13370"
 
 // The Legion history's shape (LegionSpec): six hours between two trees, so a history of a few

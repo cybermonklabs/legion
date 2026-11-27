@@ -56,8 +56,16 @@
 # its restart would rebuild every family the measurement waits for. The database URL is a
 # superuser's: the instrument resets pg_stat_statements and turns the statement log on and off.
 #
+# Each start of the server prints the server's own readings on a SERVER_START line: the GOMAXPROCS
+# its Go runtime chose, from its first scheduler trace (GODEBUG=schedtrace, which start_server sets
+# so that a run of the server prints it once), and its own cgroup's cpu.max and memory.max, which its
+# supervisor read as it started it. Each start appends those readings to server-starts.tsv in
+# EVALBENCH_WORK, and each stop the number of scheduler traces that run printed, which job.sh's
+# SHAPE line judges.
+#
 # Environment:
-#   EVALBENCH_WORK        where the server's home, its logs and the measurement's output go (required)
+#   EVALBENCH_WORK        where the server's home, its logs, server-starts.tsv and the measurement's
+#                         output go (required)
 #   EVALBENCH_CONTROL     the supervisors' directory, whose server/ the server runs under (required;
 #                         job.sh sets it)
 #   EVALBENCH_MEASURE     the built measure command (required by measure)
@@ -137,22 +145,39 @@ port=${EVALBENCH_PORT:-58111}
 url="http://127.0.0.1:$port"
 token=evalbench-token
 mkdir -p "$work/home" "$work/web"
-server_pid=""
+server_pid="" server_log="" server_log_from=0
 github_pid=""
 # The server's environment beside the bench's own: the GitHub App's, in mode k14 (start_github).
 server_env=()
 status=0
 
 # start_server boots the server under its supervisor with its stderr in $1 and waits until
-# /healthz answers. server_pid is its stand-in's (the header), which kill and wait treat as the
+# /healthz answers, then prints this start's readings (the header) on a SERVER_START line and
+# appends them to server-starts.tsv: start, the log's name, GOMAXPROCS, cpu.max and memory.max, a
+# tab between each. server_pid is its stand-in's (the header), which kill and wait treat as the
 # server's.
+#
+# GODEBUG=schedtrace=<ms> makes the Go runtime print a scheduler trace to stderr, `SCHED 0ms:
+# gomaxprocs=<n> ...`, once its monotonic clock (CLOCK_MONOTONIC, which counts from the machine's
+# boot) has passed <ms>, and again every <ms> after (runtime/proc.go's sysmon). <ms> is that clock
+# here less a second, so the first trace prints as the server starts and the next no sooner than
+# the machine's uptime at that start, less a second, later; stop_server counts the traces each run
+# printed for the SHAPE line (0 reads record; a freshly provisioned node whose uptime is shorter
+# than a catch-up run prints more than one and is still recorded without failing the shape). While the
+# setting holds, the runtime's monitor thread wakes every 10 ms at most through an idle spell,
+# where it would otherwise sleep until the next timer: that and the trace lines are what the trace
+# costs the run. The server's environment is env -i's, so no GOMAXPROCS reaches it.
 start_server() {
-  local log=$1
+  local log=$1 period line="" procs=unread reading="" cpu_max="" memory_max=""
+  server_log=$log server_log_from=0
+  if [ -f "$log" ]; then server_log_from=$(stat -c %s "$log"); fi
+  period=$(python3 -c 'import time; print(min(int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1000) - 1000, 2**31 - 1))')
+  [ "$period" -ge 1 ] || period=1
   "$here/supervise.sh" exec "$EVALBENCH_CONTROL/server" "$log" env -i -C "$work/home" PATH="$PATH" HOME="$work/home" \
     XDG_CONFIG_HOME="$work/home" XDG_DATA_HOME="$work/home" \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$port" \
-    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "${server_env[@]}" "$server_bin" &
+    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 GODEBUG="schedtrace=$period" "${server_env[@]}" "$server_bin" &
   server_pid=$!
   local started=$SECONDS
   until curl -fsS "$url/healthz" >/dev/null 2>&1; do
@@ -169,24 +194,45 @@ start_server() {
     sleep 1
   done
   echo "MARK $(date -u +%FT%TZ) server $server_pid serving after $((SECONDS - started)) s (pid $(cat "$EVALBENCH_CONTROL/server/pid" 2>/dev/null || echo gone) under its supervisor), logging to $log"
+  # The trace and the supervisor's reading come before the server serves; each is waited for 10 s
+  # at most, and one that does not come reads unread.
+  for _ in $(seq 100); do
+    line=$(tail -c "+$((server_log_from + 1))" "$log" 2>/dev/null | grep -a -m 1 -o 'SCHED [0-9]*ms: gomaxprocs=[0-9]*' || true)
+    reading=$(cat "$EVALBENCH_CONTROL/server/container" 2>/dev/null || true)
+    if [ -n "$line" ] && [ -n "$reading" ]; then break; fi
+    sleep 0.1
+  done
+  [ -z "$line" ] || procs=${line##*=}
+  if [ -n "$reading" ]; then
+    cpu_max=$(sed -n 's/.*cpu\.max="\([^"]*\)".*/\1/p' <<<"$reading")
+    memory_max=$(sed -n 's/.* memory\.max=\([^ ]*\).*/\1/p' <<<"$reading")
+  fi
+  echo "SERVER_START log=$(basename "$log") gomaxprocs=$procs cpu.max=\"${cpu_max:-unread}\" memory.max=${memory_max:-unread}" \
+    "container=[${reading:-unread}] schedtrace=\"${line:-none within 10 s}\""
+  printf 'start\t%s\t%s\t%s\t%s\n' "$(basename "$log")" "$procs" "${cpu_max:-unread}" "${memory_max:-unread}" >>"$work/server-starts.tsv"
 }
 
 # stop_server stops the server with SIGTERM and waits for its exit, which is 0 or 143 when it
 # shut down cleanly. A server that had exited already is a FAIL line too, not an exit of the
-# script under set -e with none.
+# script under set -e with none. It appends to server-starts.tsv stop, the log's name and the
+# number of scheduler traces the run printed (start_server), a tab between each.
 stop_server() {
   [ -n "$server_pid" ] || return 0
   if ! kill -TERM "$server_pid" 2>/dev/null; then
     echo "FAIL run.sh: the server $server_pid had exited before it was stopped"
     status=1
   fi
-  local code=0
+  local code=0 traces=0
   wait "$server_pid" || code=$?
   if [ "$code" -ne 0 ] && [ "$code" -ne 143 ]; then
     echo "FAIL run.sh: the server exited $code when stopped"
     status=1
   fi
-  echo "MARK $(date -u +%FT%TZ) server $server_pid stopped ($code)"
+  if [ -r "$server_log" ]; then
+    traces=$(tail -c "+$((server_log_from + 1))" "$server_log" | { grep -a -o 'SCHED [0-9]*ms: gomaxprocs=' || true; } | wc -l)
+  fi
+  printf 'stop\t%s\t%s\n' "$(basename "$server_log")" "$traces" >>"$work/server-starts.tsv"
+  echo "MARK $(date -u +%FT%TZ) server $server_pid stopped ($code), $traces scheduler traces in this run's log"
   server_pid=""
 }
 # Every exit stops a server still running and waits for it, so the caller's next step (job.sh's

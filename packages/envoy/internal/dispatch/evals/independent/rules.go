@@ -55,7 +55,7 @@ const (
 	statusDone   = "done"
 )
 
-// The fields the sampler records that these rules read.
+// The fields Dispatch's Legion state intake records of the daemon that these rules read.
 const (
 	fieldPhase       = "phase"
 	fieldSlot        = "slot"
@@ -143,13 +143,13 @@ type phaseSpan struct {
 	stretch span
 }
 
-// timeline is an issue's phases over its life: the event log's up to the first phase the daemon's
-// sampler recorded, and the sampler's from there on (timelineOf). The review rounds, the send-back
-// and the first review read which part each stretch is of.
+// timeline is an issue's phases over its life: the event log's up to the first phase Dispatch's
+// Legion state intake recorded of it, and the observed part from there on (timelineOf). The review
+// rounds, the send-back and the first review read which part each stretch is of.
 type timeline struct {
 	spans []phaseSpan
-	// firstObserved is the index of the first span the sampler recorded, and len(spans) for an
-	// issue the sampler never saw: the spans before it are the event log's.
+	// firstObserved is the index of the first span the intake recorded, and len(spans) for an
+	// issue the intake never observed: the spans before it are the event log's.
 	firstObserved int
 }
 
@@ -283,7 +283,7 @@ func (r *reading) parked(key string) []span {
 // "Out of the workflow before the close", 9f994275a7): "With observations, that is every stretch
 // whose observed phase is `done` before the close ... Before observations, it is the stretch from
 // an `issue.closed` that a reopen follows, or from a `triage` status write, to the next status
-// write." The sampler's part of the timeline gives the first, and the statuses its event log's
+// write." The observed part of the timeline gives the first, and the statuses its event log's
 // part covers give the second. The close is the issue's last move to `done`, so the `done` its
 // status history ends with, and any snapshot of it after, is the close and no stretch. It is no
 // park: the parked hours are `backlog` and `icebox` alone (parked).
@@ -433,16 +433,16 @@ func (r *reading) childrenStretches(key string) []span {
 // `reviewing`, `accepting` or the merger's phase to `implementing`)". Before observations the
 // rounds and the send-backs are read off the Dispatch status history by the fallback rule:
 // "entries into `needs_review`, and moves from `testing`, `needs_review` or `retro` to
-// `in_progress`". The statuses read so are those written before the sampler's part of the
-// timeline begins, and the sampler's part is read for reviewing entries and moves to
-// implementing from there on, a reviewing stretch the sampler first saw being no new entry where
-// the event log's part ends in reviewing too: "An issue in flight when its first observation is
-// stored takes its phases from observations only from that observation on" (the base's rule
-// since 8beac41a07). An issue whose observations are only its closing mark has no sampler's part,
-// so all of it is read off its statuses. On the sampler's part a move to implementing is read
+// `in_progress`". The statuses read so are those written before the observed part of the
+// timeline begins, and the observed part is read for reviewing entries and moves to
+// implementing from there on, a reviewing stretch the intake first observed being no new entry
+// where the event log's part ends in reviewing too: "An issue in flight when its first observation
+// is stored takes its phases from observations only from that observation on" (the base's rule
+// since 8beac41a07). An issue whose observations are only its closing mark has no observed part,
+// so all of it is read off its statuses. On the observed part a move to implementing is read
 // across a wait in `awaiting_children` (beforeTheWait).
 //
-// "The first review": the first entry into status `needs_review` before the sampler's part
+// "The first review": the first entry into status `needs_review` before the observed part
 // begins, and else the first `reviewing` stretch of that part. The hours after it are the
 // issue's work time from that moment on in implementing and testing, "an issue that reached no
 // review counts as zero hours".
@@ -527,8 +527,8 @@ func changes(marks []mark) []mark {
 // timelineOf is the issue's phases over its life: "An issue in flight when its first observation
 // is stored takes its phases from observations only from that observation on. Its hours before it
 // come from these status rules" (the spec's "Statuses before observations", the base's rule since
-// 8beac41a07). So the event log draws it up to the first phase the sampler recorded, and the
-// sampler's marks from there on; an issue the sampler never saw is the event log's whole. "The
+// 8beac41a07). So the event log draws it up to the first phase the intake recorded, and the
+// intake's marks from there on; an issue the intake never observed is the event log's whole. "The
 // work hours in between" a first worker event and the first phase mark are put "on the bar of that
 // first phase": the event log's first step where one falls before the first observation, and the
 // first observed phase where none does.
@@ -559,7 +559,7 @@ func (r *reading) timelineOf(key string) timeline {
 	return drawn
 }
 
-// sampledOf is the timeline the sampler's `phase` marks draw and nothing else: each mark that
+// sampledOf is the timeline the intake's `phase` marks draw and nothing else: each mark that
 // names a phase holds until the next mark that names one, and the last until the issue's end
 // (phaseMarks). An `admitted` stretch is split in two: the part the issue held a slot of its own
 // through is design, and the part it held none is the queue.
@@ -598,13 +598,13 @@ func (r *reading) sampledOf(key string) []phaseSpan {
 }
 
 // phaseMarks is the `phase` marks of an issue that name a phase, oldest first. A `null` mark is a
-// read that no longer carried the issue's phase, which the sampler writes when the daemon stops
-// reporting the issue: it names no phase and ends none, so the phase before it runs on through it
-// to the next mark that names one, or to the issue's end, and the issue's bars still add up to its
-// work time (the method texts of legion-phase-time and legion-work-time: "The phase and the slot
-// that the issue held run on through a drop until the next observation that names a phase"). Both
-// readers of the marks take them from here, the timeline (sampledOf) and the recorded wait on a
-// person (personStretches).
+// read that no longer carried the issue's phase, which Dispatch's whole read of the daemon's state
+// writes when the daemon stops reporting the issue (legion's recordObservations): it names no
+// phase and ends none, so the phase before it runs on through it to the next mark that names one,
+// or to the issue's end, and the issue's bars still add up to its work time (the method texts of
+// legion-phase-time and legion-work-time: "The phase and the slot that the issue held run on
+// through a drop until the next observation that names a phase"). Both readers of the marks take
+// them from here, the timeline (sampledOf) and the recorded wait on a person (personStretches).
 func phaseMarks(marks []mark) []mark {
 	var named []mark
 	for _, recorded := range marks {
@@ -834,11 +834,12 @@ func phaseSteps(marks []logMark) []logMark {
 	return steps
 }
 
-// statusPhase is the phase a status write marks for an issue the sampler never saw: "`testing` is
-// testing, `needs_review` is reviewing until that round's `review` handoff and then accepting, ...
-// and an `in_progress` after `testing`, `needs_review` or `retro` (a send-back) is implementing.
-// Every other `in_progress`, such as admission's, and every `todo` mark no phase." `retro` marks
-// retro, on the implementer's bar (bars). A park is no phase either: the work time leaves it out.
+// statusPhase is the phase a status write marks for an issue the intake never observed:
+// "`testing` is testing, `needs_review` is reviewing until that round's `review` handoff and then
+// accepting, ... and an `in_progress` after `testing`, `needs_review` or `retro` (a send-back) is
+// implementing. Every other `in_progress`, such as admission's, and every `todo` mark no phase."
+// `retro` marks retro, on the implementer's bar (bars). A park is no phase either: the work time
+// leaves it out.
 func statusPhase(previous, status string) (string, bool) {
 	switch status {
 	case "testing":

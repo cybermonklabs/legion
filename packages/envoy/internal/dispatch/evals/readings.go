@@ -530,7 +530,7 @@ func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Readin
 		}
 		if sizes[index] = readingBytes(row, attributes[index], links[index]); base+sizes[index] > statementBytes {
 			refused = append(refused, RowError{Index: index, Code: CodeReadingTooLarge, Field: largestText(row, attributes[index], links[index]), Message: fmt.Sprintf(
-				"the reading takes %d bytes as the write sends it, and one statement of this write sends at most %d with the eval and the recorder it names (%d in all), so no statement could store it",
+				"the reading takes %d bytes as the write sends it, and the parameters of one statement of this write take at most %d beside the eval and the recorder it names (%d in all), so no statement could store it",
 				sizes[index], statementBytes-base, statementBytes)})
 		}
 	}

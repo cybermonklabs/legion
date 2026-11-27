@@ -281,7 +281,7 @@ func TestALargeRegistryReadBoundsItsSeriesStatements(t *testing.T) {
 	sent := r.measured(t, trace.take())
 	largest, _ := largestStatement(sent)
 	if len(sent) < 2 || largest > 256<<10 {
-		t.Errorf("series read sent %d statements, largest %d bytes; want several within 256 KiB", len(sent), largest)
+		t.Errorf("series read sent %d statements, the largest's parameters %d bytes; want several, each's parameters within 256 KiB", len(sent), largest)
 	}
 }
 
