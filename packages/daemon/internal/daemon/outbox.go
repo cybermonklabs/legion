@@ -2344,14 +2344,11 @@ func (r *outbox) ciNewsStale(ctx context.Context, key string, role claim.Role, p
 // row, which keeps it on its backoff, and log no deletion; its replay lists each prefix again, so a
 // branch deleted meanwhile is not asked for twice.
 func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow, payload record.BesideBranchesDelete) error {
-	prefixes := make([]string, 0, payload.Through)
-	for fix := 1; fix <= payload.Through; fix++ {
-		prefix, err := claim.BesideFixPrefix(row.Issue, payload.Generation, payload.Task, fix)
-		if err != nil {
-			return fmt.Errorf("outbox row %d: %w", row.ID, err)
-		}
-		prefixes = append(prefixes, prefix)
+	prefix, err := claim.BesideTaskPrefix(row.Issue, payload.Generation, payload.Task)
+	if err != nil {
+		return fmt.Errorf("outbox row %d: %w", row.ID, err)
 	}
+	prefixes := []string{prefix}
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
 		return err
