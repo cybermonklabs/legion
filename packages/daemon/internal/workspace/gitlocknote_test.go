@@ -82,6 +82,7 @@ func wantNoteNaming(t *testing.T, note string, locks ...string) {
 }
 
 func TestStaleGitLockNoteNamesTheLockAndTellsTheRoleToRunTheCommandAgain(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	note, lock := noteForOneLock(t, now)
 	opening := "git lock " + lock + " was last written " + ageWords + " ago and blocks this command."
@@ -145,6 +146,7 @@ func TestStaleGitLockNoteNamesTheLockAndTellsTheRoleToRunTheCommandAgain(t *test
 }
 
 func TestStaleGitLockNoteNamesHowLongTheSweepTakes(t *testing.T) {
+	t.Parallel()
 	note, _ := noteForOneLock(t, time.Now())
 	for _, want := range []string{
 		"The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute.",
@@ -157,6 +159,7 @@ func TestStaleGitLockNoteNamesHowLongTheSweepTakes(t *testing.T) {
 }
 
 func TestStaleGitLockNoteEndsWithTellingTheArchitect(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	// The last sentence is what keeps the note true in a pod whose image predates the launcher's
 	// sweep, where nothing removes the lock and the wait the note names passes with it still
@@ -180,6 +183,7 @@ func TestStaleGitLockNoteEndsWithTellingTheArchitect(t *testing.T) {
 }
 
 func TestStaleGitLockNoteOffersNoPodReplacement(t *testing.T) {
+	t.Parallel()
 	note, _ := noteForOneLock(t, time.Now())
 	// Replacing the issue's pod takes the pod's disk with it, and every role in it: a remedy the
 	// note must never offer now that the launcher sweeps the lock. Nor may it tell the role to
@@ -200,6 +204,7 @@ func TestStaleGitLockNoteOffersNoPodReplacement(t *testing.T) {
 }
 
 func TestStaleGitLockNoteKeepsItsTmuxSentence(t *testing.T) {
+	t.Parallel()
 	note, _ := noteForOneLock(t, time.Now())
 	// Under tmux there is no pod and no launcher, so this sentence is the whole of what a lock
 	// costs a host: it is the one the rewrite kept word for word.

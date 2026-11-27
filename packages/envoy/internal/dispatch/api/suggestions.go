@@ -473,7 +473,7 @@ func (s *server) runRelatedCheck(
 	stagesStarted := time.Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
-	go func() {
+	s.goReadWorker(func() {
 		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
@@ -488,7 +488,7 @@ func (s *server) runRelatedCheck(
 		}
 		stage.took = time.Since(stagesStarted)
 		keyword <- stage
-	}()
+	})
 	// Stage 1's goroutine holds a request-pool connection for its reads, so the check ends its
 	// context and waits for the stage before it returns, whichever return that is, as it does for
 	// stage 2 below: its allowance running out, the request going away, the terms failing. Left
@@ -545,10 +545,10 @@ func (s *server) runRelatedCheck(
 		// It touches no pool, so the check does not wait for it before it returns: the meaning
 		// context, which the return ends, is what ends a call still running.
 		embedded = make(chan relatedEmbedAnswer, 1)
-		go func() {
+		s.goReadWorker(func() {
 			vector, reason := s.relatedEmbedding(meaningCtx, input.text)
 			embedded <- relatedEmbedAnswer{vector: vector, reason: reason, took: time.Since(stagesStarted)}
-		}()
+		})
 	}
 	// embedding is set while the embedding has not answered.
 	embedding := embedded != nil
@@ -595,11 +595,11 @@ func (s *server) runRelatedCheck(
 		// relatedMeaningStage hands the leg's answer over on the stage it answers
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
-		go func() {
+		s.goReadWorker(func() {
 			stage := s.relatedMeaningStage(meaningRead, leg, project, vector, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
-		}()
+		})
 	}
 	// takeEmbedding takes the embedding's answer, on the request's unit: stage 2 starts over its
 	// vector, or the check searches by keywords alone for the reason it gives, meaning_ms then
@@ -847,7 +847,7 @@ func (s *server) relatedMeaningStage(
 		// unread, so the check, not this stage, waits for that connection
 		// (crossProjectLeg.release); ended says when the leg has given it back.
 		cross = make(chan []model.SearchResult, 1)
-		go func() {
+		s.goReadWorker(func() {
 			defer close(leg.ended)
 			reader := s.readDisplayTrees(leg.read, trees)
 			results, err := s.relatedOtherProjects(leg, vector, project, s.deps.Embedder.Identity(), reader)
@@ -858,7 +858,7 @@ func (s *server) relatedMeaningStage(
 			// the answers by the time any other goroutine can read one.
 			reader.resolve()
 			cross <- results
-		}()
+		})
 	}
 	select {
 	case <-pick.ready:
