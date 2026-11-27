@@ -10,7 +10,7 @@ Read a page below when its condition holds.
 - A wake reaches you: `skill://legion-architect/references/wake-routing.md`.
 - The root spec, a check that CI proves, a surface a person opens, or the design gate: `skill://legion-architect/references/design-gate.md`.
 - Children to file, adopt, review or make wait: `skill://legion-architect/references/decomposition.md`.
-- An issue's plan, or a stopped task: `skill://legion-architect/references/plan.md`.
+- An issue's plan, a stopped task, or a decision for an agent of a task: `skill://legion-architect/references/plan.md`.
 - An issue in `accepting`, a merge hold, a parent's last round, the merge or the close: `skill://legion-architect/references/acceptance.md`.
 - A `provider-errors` wake, an agent of your tree that needs an action, a re-run of your tree's CI run, an enqueue of its pull request that no merger merges, or a GitHub write that your `gh` cannot make: `skill://legion-architect/references/operations.md`.
 

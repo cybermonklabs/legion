@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { StatusChangeEntry } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
@@ -197,65 +198,75 @@ const systemComment = {
   updated_at: AT,
 };
 
+// Behind Dispatch's keyed layer: each answer a handler gives a keyed write, a refusal among them,
+// names the write's key back, as Dispatch's do; the router's 404 for no route and this stand-in's
+// 500 for a request it does not expect name none.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
-    const { pathname, search, searchParams } = new URL(request.url);
-    const text = await request.text();
-    const body = text === "" ? undefined : JSON.parse(text);
-    requests.push({ method: request.method, path: pathname, search, body });
-    const answer = (sent: Answer): Response => Response.json(sent.body, { status: sent.status });
-    if (pathname === "/api/v1/issues" && request.method === "GET") {
-      const rows = listing.map(summary);
-      // A request with a page's limit is answered a page, and one without the unpaged array.
-      if (!searchParams.has("limit")) return Response.json(rows);
-      return Response.json({
-        issues: rows,
-        total: rows.length,
-        limit: Number(searchParams.get("limit")),
-        offset: Number(searchParams.get("offset")),
-      });
-    }
-    if (pathname === "/api/v1/issues" && request.method === "POST" && createAnswer !== undefined) {
-      return answer(createAnswer);
-    }
-    const status = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/status-change$/);
-    if (status !== null && request.method === "POST") {
-      return statusChange === "no route"
-        ? Response.json(
-            { code: "NOT_FOUND", error: `no route for POST ${pathname}` },
-            { status: 404 }
-          )
-        : answer(statusChange);
-    }
-    const messages = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/messages$/);
-    if (messages !== null && request.method === "POST") {
-      return Response.json(
-        {
-          id: MESSAGE_ID,
-          issue_key: messages[1],
-          author: body.actor,
-          body: body.body,
-          to: [],
-          created_at: AT,
-          deliveries: [],
-        },
-        { status: 201 }
-      );
-    }
-    const issue = ACME.find((row) => pathname === `/api/v1/issues/${row.key}`);
-    if (issue !== undefined && request.method === "GET") return Response.json(details(issue));
-    if (issue !== undefined && request.method === "PATCH") {
-      return patchAnswer === undefined ? Response.json(details(issue)) : answer(patchAnswer);
-    }
-    if (pathname === `/api/v1/comments/${COMMENT_ID}`) {
-      return Response.json({ comment: systemComment, replies: [] });
-    }
-    if (pathname === "/api/v1/references") {
-      return Response.json({ node: { kind: "comment", id: COMMENT_ID }, edges: [] });
-    }
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  fetch: keyedLayer(
+    async (request: Request) => {
+      const { pathname, search, searchParams } = new URL(request.url);
+      const text = await request.text();
+      const body = text === "" ? undefined : JSON.parse(text);
+      requests.push({ method: request.method, path: pathname, search, body });
+      const answer = (sent: Answer): Response => Response.json(sent.body, { status: sent.status });
+      if (pathname === "/api/v1/issues" && request.method === "GET") {
+        const rows = listing.map(summary);
+        // A request with a page's limit is answered a page, and one without the unpaged array.
+        if (!searchParams.has("limit")) return Response.json(rows);
+        return Response.json({
+          issues: rows,
+          total: rows.length,
+          limit: Number(searchParams.get("limit")),
+          offset: Number(searchParams.get("offset")),
+        });
+      }
+      if (
+        pathname === "/api/v1/issues" &&
+        request.method === "POST" &&
+        createAnswer !== undefined
+      ) {
+        return answer(createAnswer);
+      }
+      const status = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/status-change$/);
+      if (status !== null && request.method === "POST") {
+        return statusChange === "no route"
+          ? Response.json(
+              { code: "NOT_FOUND", error: `no route for POST ${pathname}` },
+              { status: 404 }
+            )
+          : answer(statusChange);
+      }
+      const messages = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/messages$/);
+      if (messages !== null && request.method === "POST") {
+        return Response.json(
+          {
+            id: MESSAGE_ID,
+            issue_key: messages[1],
+            author: body.actor,
+            body: body.body,
+            to: [],
+            created_at: AT,
+            deliveries: [],
+          },
+          { status: 201 }
+        );
+      }
+      const issue = ACME.find((row) => pathname === `/api/v1/issues/${row.key}`);
+      if (issue !== undefined && request.method === "GET") return Response.json(details(issue));
+      if (issue !== undefined && request.method === "PATCH") {
+        return patchAnswer === undefined ? Response.json(details(issue)) : answer(patchAnswer);
+      }
+      if (pathname === `/api/v1/comments/${COMMENT_ID}`) {
+        return Response.json({ comment: systemComment, replies: [] });
+      }
+      if (pathname === "/api/v1/references") {
+        return Response.json({ node: { kind: "comment", id: COMMENT_ID }, edges: [] });
+      }
+      return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+    },
+    { judged: (response) => response.status !== 404 && response.status !== 500 }
+  ),
 });
 
 afterAll(() => server.stop(true));

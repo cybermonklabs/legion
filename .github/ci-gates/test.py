@@ -15,6 +15,9 @@ GATE = gate("test", "test", runs=[
     # verdict on them, so a change to the pool must start this job whatever gate it hits.
     (".github/scripts/harness-pool.sh",
      f"{at('test', HARNESS_POOL_WAIT_STEP)}, and each harness step above it but three queues its harness through it"),
+    (".github/scripts/harness_line_times.py",
+     f"{at('test', HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each harness it runs, on that harness's log"),
+    (".github/actions/harness-times-upload/**", at("test", "Upload the harness case times")),
     ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
     ("packages/dispatch/web/src/fonts/inter/**",
      "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
@@ -37,6 +40,13 @@ GATE = gate("test", "test", runs=[
     # `scripts/e2e/lib/envoy-bridge.ts#natsAuthOptions` and `scripts/dispatch/ask-census.ts#DispatchClient` import
     # @legion/envoy-client/*.
     ("packages/envoy-client/test/fake-dispatch.ts", "`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path"),
+    ("packages/envoy-client/test/route-answers.ts", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#routeAnswer` and "
+                                                    "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#routeAnswer` import it by path"),
+    ("packages/envoy-client/test/keyed-layer.ts", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#keyedLayer` and "
+                                                  "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#keyedLayer` import it by path"),
+    ("packages/contracts/schemas/dispatch-openapi.json", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#routeAnswer` and "
+                                                         "`scripts/e2e/lib/dispatch-keyed-comment.test.ts#routeAnswer` import "
+                                                         "packages/envoy-client/test/route-answers.ts, whose `packages/envoy-client/test/route-answers.ts#document` reads it"),
     ("scripts/dispatch/**", at("test", "Test the Dispatch census script")),
     ("scripts/approval-eval/**", at("test", "Test the approval-eval statistics")),
     ("scripts/search-measure/**", f"{at('test', 'Test the search-measure psql helper')}: pg_test.py imports pg.py"),

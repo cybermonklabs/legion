@@ -468,6 +468,13 @@ Go for it (packages/daemon/go.mod). The `legion` build of the private-name port
 harness, which put that binary's whole closure on this filter, is the
 private-names-port job's now, with the private_names_port filter.
 
+## test: Both keyed-write harnesses read the route answers
+
+Both keyed-write harnesses read the route answers from the generated API
+document: packages/envoy-client/test/keyed-layer.ts and route-answers.ts, whose
+`document` reads packages/contracts/schemas/dispatch-openapi.json, which the
+Bun suites of scripts/dispatch and scripts/e2e/lib this job runs import by path.
+
 ## test: Each harness step's own gate, named here so the job runs
 
 Each harness step's own gate, named here so the job runs for the change that
@@ -580,8 +587,9 @@ The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
 helpers' test/fake-dispatch with them, through the workspace's "bun" export
 condition, so check-ts-filters.sh holds this filter to both. The two suites of
 `e2e/__tests__` that import it, `packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts#startFakeDispatch` and
-`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch`, run in this job's test step and in no other,
-so that read is this gate's (ci_job_reads.py's dispatch_ui).
+`packages/dispatch/e2e/__tests__/local-instance-support.test.ts#startFakeDispatch`, run in the
+step "Test dispatch harness" of .github/workflows/ci-job-dispatch-ui.yaml's dispatch-ui-harness
+job and in no other, so that read is this gate's (ci_job_reads.py's dispatch_ui).
 
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
@@ -818,7 +826,7 @@ to nothing of the browser half, which the dispatch_two_builds filter names.
 
 The two-build job: its Go step's reads, the dispatch_two_builds_go filter's, named again so the job runs for the
 change that starts the step, and the browser half,
-`bun run e2e:multiprocess -- cross-build.multiprocess` in packages/dispatch: the
+`bun run e2e:multiprocess:run -- cross-build.multiprocess` in packages/dispatch: the
 harness and spec under e2e/, the two SPA builds (web/, the editor package and the
 patches it takes, the notices script the build runs), the Dispatch server
 e2e/run-server.sh builds (dispatch_command_tests holds its packages) and the script
@@ -1274,7 +1282,7 @@ architecture-check and spec-check at this paragraph's end). dispatch-two-builds 
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
 ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of eight families with
+included). The jobs that cache Go restore, in steps of their own, one of the families below with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
@@ -1287,7 +1295,9 @@ the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
 whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
-dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-race (every leg of
+dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-smoke
+(envoy-smoke, whose smoke test, envoy-infra live tests and plugin build no other family holds
+together; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
 envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane, whose race objects
 no other family holds; .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family), go-envoy-darwin-vet
 (envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
@@ -1305,7 +1315,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy, go-envoy-test, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
+go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
 restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
@@ -1347,10 +1357,10 @@ ci-caches.yaml's browsers job, the only writer of that entry, is gone with the r
 (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-stand in for the install each of their cases is a reading of. An eighth family,
-`architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, and a ninth,
-`spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-build runs
+stand in for the install each of their cases is a reading of. Two more families are the composite
+actions' own: `architecture-check-<os>-<arch>-go<version>-<hash>` is
+.github/actions/architecture-check's, and
+`spec-check-<os>-<arch>-go<version>-<hash>` is .github/actions/spec-check's; envoy-go-build runs
 both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own
 setup-go installed and on the SHA-256 of packages/envoy/go.sum (a miss restores the newest entry
@@ -2432,6 +2442,38 @@ env). In envoy-go-checks they are queued right after the Go cache restore and th
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
 step that queued it), longest first.
 
+Each job that queues harnesses also keeps a record of when each line of each harness's log was
+written. GitHub stamps a job's log by the line, and a pooled harness's log reaches GitHub only
+when the wait prints it at the end, so the job's log says when the wait printed each line and
+nothing about when the harness wrote it: every shell row of the weekly test inventory had no
+seconds for that reason. The pool starts .github/scripts/harness_line_times.py beside each
+harness, on that harness's log, and it writes `<epoch seconds with microseconds>\t<the line's
+bytes>` per line to the entry's `.lines`. A line's time is after its write and normally within
+one poll of it, 50 ms; the sleep between polls is a least time, not a most, so a loaded runner
+can make it later. The harness starts only once that stamper is reading, and a stamper not
+reading two seconds after its harness's slot is granted is killed, so no line carries the time
+of a late first read. When the harness ends the recorder gives up its slot (`<entry>.ended`)
+before it drains the stamper, so a queued harness never waits on the record. The stamper then
+reads the log out, compares what it stamped with the log itself hash for hash, and writes the
+bytes it read; the recorder writes the log's own size beside it, and the wait drops that size
+where the log has grown since (a process the harness left behind), so a reader can tell a whole
+record from a part. The step "Upload the harness case
+times" (.github/actions/harness-times-upload, `if: always()`) keeps those files, with each
+entry's name, start, exact end (`.ended`), seconds, status and bound and the wait's count of what it judged, as the
+artifact `harness-times-<the job's check
+run id>` for 90 days, and .github/scripts/harness_case_times.py reads one run's cases out of
+them (docs/testing.md#when-each-shell-harness-ran-its-cases). The record decides nothing: the
+stamper reads the log and never the harness, every file the record needs is written so that a
+failure to write it cannot end the recorder, the harness runs in a subshell of its own whose
+`times` is the harness's CPU alone (`?` where that cannot be read, never 0), and a stamper that
+fails leaves an incomplete record, which the reader reports as UNKNOWN, and its error output in
+the entry's recorder log, which the wait prints in the harness's group. The upload step has
+`continue-on-error: true` in both jobs: an upload that fails is a red mark on that step, the job
+and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN for a job with no
+artifact covers the lost record. The one thing the
+pool changes for a harness is PYTHONUNBUFFERED=1, so that a Python program's lines reach the log
+when it prints them rather than when it ends and carry their own times.
+
 ## Why the daemon's Go suite is a job of its own
 
 The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
@@ -2520,12 +2562,15 @@ They were split out of the browser suite (the dispatch-browser job), whose full 
 the merge queue, the nightly and a pull request labelled `full-ci` or `lane:dispatch_browser`
 run - is a slow suite, while these checks must come back on every push.
 No Postgres service and no Go, but contracts is built
-before the suites: one case of the dashboard's test run spawns Playwright, whose own
+before the suites: one case of the dashboard's harness lane spawns Playwright, whose own
 resolution reads contracts' built dist/ (the comment on the step "Build contracts for the
 suites that spawn Playwright" of .github/workflows/ci-job-dispatch-ui.yaml says what failed
 without it). tsc and
 bun read @legion/contracts through the workspace's "bun" export condition and the dashboard's
 Vite build aliases its sources, so that spawn is the whole of what the build is for.
+The checks run in two jobs of that file, at once, each on a runner of its own
+(.github/ci-notes/ci-job-dispatch-ui.md#why-the-checks-run-as-two-jobs says why and what each
+holds).
 
 ## The browser suite jobs: their lanes, their inputs, and why the matrix is in the called file
 
@@ -2743,11 +2788,13 @@ to one area's code can run that area's legs:
   preloads pg_stat_statements, started by the job on port 5433 for them; envoy-go-skips, the skip
   counter's own test, the store-form count and the two vets; and envoy-go-natslive, the
   container-backed matrix, the integration suite and the callout check.
-- envoy-go-race's step in five legs: the listener's tests in two, a group each
+- envoy-go-race's step in six legs: the listener's tests in two, a group each
   (`.github/go-legs/packages/envoy/cmd/listener.yaml`, written by `.github/scripts/go_legs_groups.py`
   as the daemon's are), the bus with the registry store, the session cache, kvwatch and the NATS
-  credentials, Dispatch's store and delivery, and the NATS auth service with the sign-in code flow,
-  which also runs the forced-order steps.
+  credentials, Dispatch's delivery with the NATS auth service and the sign-in code flow, and the
+  Dispatch store's tests in two more, a group each
+  (`.github/go-legs/packages/envoy/internal/dispatch/store.yaml`), the last of which also runs the
+  forced-order steps.
 
 envoy-go-alone runs the rows whose assertion is a bound on how long something takes, on a runner
 nothing else loads, since beside a leg's other packages such a row measures the load as much as the
@@ -2769,6 +2816,17 @@ each; the race legs, with the listener whole in one, 1,057, 577, 671 and 362 s, 
 forced-order steps' minute in the last. cmd/listener ran 902 s alone, 226 serial tests summing
 781 s and 698 parallel ones 824 s at its -parallel 8, so its tests are split in two groups,
 modelled at 442 s each.
+
+The Dispatch store and delivery then shared a leg, and the store set the job's time: in the 12
+green merge groups of 2026-11-27 10:48Z-16:49Z that leg was the longest of the five every time,
+639-715 s as a job, the store's package 583-654 s and delivery's 511-537 s beside it. Both
+packages spend most of that in their serial tests, which wait rather than compute: in throwaway
+run 46045787549 (main 45c293ad, vmstat every 2 s and each test process's CPU time) the store's
+serial tests took 362 s of its 630 s with its process using 0.38 of a core, and delivery's 459 s
+of its 530 s at 0.09 of a core; the listener's legs and the bus's are the same shape, their
+serial tests at 0.03-0.11 of a core. Serial tests of one package cannot run beside each other, so
+the store's are split in two groups, each a leg of its own, and delivery moves beside the NATS
+auth service, whose leg was idle as well.
 
 The rules the legs keep are the daemon's
 ([ci-job-daemon-go.md](ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs)): each package
@@ -2831,10 +2889,23 @@ the tests the tag adds, one call per package: envoy-infra-build's "Unit test env
 runs every untagged test of core, seed and gcp, so each call takes its -run from
 .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time, and
 ci_job_reads.py's TAG_RUNS holds envoy-infra-build's filter to every file the natslive step
-reads, so a change that starts the tagged run starts the untagged one with it. The gcp
-natslive tests pull no image: they install helm, nats-server, the config reloader and the
-exporter with go install, at the versions the clustered hub runs, and render the vendored chart
-in gcp/testdata. The per-target compile runs in the lint job's notices step.
+reads, so a change that starts the tagged run starts the untagged one with it. The step runs
+packages/envoy/infra/scripts/natslive.sh with those three packages as its arguments, and it runs
+them at once: each waits on real servers rather than computing (core 0.44 of one core, gcp 0.66
+of one, of the runner's four), so in series they took 239, 1 and 400 seconds with three cores
+idle (run 45950904157, job 140346269806), and together the step took 291 (run 45994063273, job
+140489290342, whose packages were 256, 2.5 and 268 seconds). Every
+pattern is read before any run starts, so a refused list fails the step with no run to orphan;
+each run's output is printed whole under its own heading as that run ends, and the script fails
+naming each package that failed. Each go test's -timeout is 25m, which fires before the runner
+cancels this job at its 32 minutes, so a hung test prints the dump that names it. A script and
+not a run: block, because what a script runs cannot be read line by line: one reading of it is
+pinned by its SHA-256 in audited_scripts.AUDITED_SCRIPTS, as envoy-infra-build's race-unit.sh is,
+and both go-test-step-expansion.py and check-ci-filters.sh's TAG_RUNS rule read the step through
+that one reading. The gcp natslive tests pull no image: they install helm,
+nats-server, the config reloader and the exporter with go install, at the versions the clustered
+hub runs, and render the vendored chart in gcp/testdata. The per-target compile runs in the lint
+job's notices step.
 
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
@@ -2891,8 +2962,8 @@ say why the document service runs alone.
 api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
 runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
 746.718 s. The packages left in envoy-go-race shared one runner until their sum, about 4,000 s
-of package time over four slots, set that job's 20 minutes; they now run in five legs, a runner
-each, the listener's tests split over two of them
+of package time over four slots, set that job's 20 minutes; they now run in six legs, a runner
+each, the listener's tests split over two of them and the Dispatch store's over two more
 ([why](#why-envoys-go-tests-run-in-legs)). Running a heavy package apart also reads its seconds
 as its own job's, and leaves the others' numbers standing when one is red.
 
@@ -3384,6 +3455,14 @@ The job follows these rules:
 A force-cancel that fails leaves a warning rather than a red job: the run it names may have
 completed between the list and the call, and an act that reclaims nothing is no failure of
 the run it runs in.
+
+The act reads its run list through .github/scripts/gh-read.sh's gh_read, three attempts, so a
+refusal GitHub lifts by itself is read again: merge-group run 45467602844 (pull request #5331's
+second group) went red whole when that list answered HTTP 500 once, in job 138706588845. A list
+still refused after the three attempts fails the job as before. That is the whole of the
+protection, on purpose: from 2026-11-24T22:00Z to 2026-11-27, 1,212 merge-group runs ran, 90
+failed, and cancel-started succeeded in all 90, so the act's refusals are not told apart by
+status, and dequeued.yaml's cancel act keeps its own reads.
 
 ## What the cancel-started job checks out
 
