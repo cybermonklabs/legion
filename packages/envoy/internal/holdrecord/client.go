@@ -237,15 +237,16 @@ func Barrier(ctx context.Context, js jetstream.JetStream, bucket, holdID string)
 // Row reads and verifies the row, through `GET /v1/nats-hold`. A row the broker answers below its
 // floor (an older signed row put back, or another row at the gen it served) is ErrUnknown.
 func (c *Client) Row(ctx context.Context) (Row, error) {
-	var answer rowWire
-	if err := c.call(ctx, http.MethodGet, holdPath, nil, nil, &answer); err != nil {
+	var wire rowWire
+	answer, err := c.call(ctx, http.MethodGet, holdPath, nil, nil, &wire)
+	if err != nil {
 		var refusal *RouteError
 		if errors.As(err, &refusal) && refusal.Code == codeBelowFloor {
 			return Row{}, wrap(ErrUnknown, "the broker answers the hold row below its floor: an older row put back, or another row at the gen it served")
 		}
 		return Row{}, err
 	}
-	return c.verifyRow(answer)
+	return c.verifyRow(answer, wire)
 }
 
 // MoveRow moves the row through `PUT /v1/nats-hold`. It refuses any phase but
@@ -260,11 +261,12 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 	}
 	body := map[string]any{"expected_gen": expectedGen, "phase": phase, "hold_id": holdID, "reason": reason,
 		"signed_at": signedAt.Format(time.RFC3339Nano), "sig": sig}
-	var answer rowWire
-	if err := c.call(ctx, http.MethodPut, holdPath, nil, body, &answer); err != nil {
+	var wire rowWire
+	answer, err := c.call(ctx, http.MethodPut, holdPath, nil, body, &wire)
+	if err != nil {
 		return Row{}, err
 	}
-	return c.writtenRow(answer, Row{Gen: expectedGen + 1, Phase: phase, HoldID: holdID, SignedAt: signedAt})
+	return c.writtenRow(answer, wire, Row{Gen: expectedGen + 1, Phase: phase, HoldID: holdID, SignedAt: signedAt})
 }
 
 // RestoreRow writes a lost row through `POST /v1/nats-hold/restore`, refusing the same phases as
@@ -386,7 +388,7 @@ func (c *Client) restore(ctx context.Context, gen uint64, phase natsgrant.Operat
 		if err := decodeAnswer(http.MethodPost, restorePath, answer, &wire); err != nil {
 			return Row{}, err
 		}
-		return c.writtenRow(wire, Row{Gen: gen, Phase: phase, HoldID: holdID, SignedAt: signedAt})
+		return c.writtenRow(answer, wire, Row{Gen: gen, Phase: phase, HoldID: holdID, SignedAt: signedAt})
 	}
 	refused := c.refusal(http.MethodPost, restorePath, answer)
 	var refusal struct {
@@ -404,25 +406,27 @@ func (c *Client) restore(ctx context.Context, gen uint64, phase natsgrant.Operat
 // read the broker answers below its floor (an older signed record put back, or a record it has seen
 // now missing, deleted outside the routes) is ErrUnknown.
 func (c *Client) Records(ctx context.Context, holdID, kind string) ([]Record, error) {
-	var answer struct {
+	var list struct {
 		Records []recordWire `json:"records"`
 	}
 	query := url.Values{"hold_id": {holdID}, "kind": {kind}}
-	if err := c.call(ctx, http.MethodGet, recordsPath, query, nil, &answer); err != nil {
+	answer, err := c.call(ctx, http.MethodGet, recordsPath, query, nil, &list)
+	if err != nil {
 		var refusal *RouteError
 		if errors.As(err, &refusal) && refusal.Code == codeBelowFloor {
 			return nil, wrap(ErrUnknown, fmt.Sprintf("the broker answers hold %s's %s records below their floor: an older record put back, or a record it has seen deleted outside the routes", holdID, kind))
 		}
 		return nil, err
 	}
-	out := make([]Record, 0, len(answer.Records))
-	for _, wire := range answer.Records {
+	out := make([]Record, 0, len(list.Records))
+	for _, wire := range list.Records {
 		// The list answers each record's key, value, gen and signature; its hold id and kind are
-		// the query's, and a record of another hold or kind does not verify under them.
+		// the query's, and a record of another hold or kind does not verify under them. The key is
+		// the answer's words until it verifies, so a refusal names it as the rule reads it.
 		wire.HoldID, wire.Kind = holdID, kind
 		record, err := c.verifyRecord(wire)
 		if err != nil {
-			return nil, err
+			return nil, wrap(ErrUnknown, fmt.Sprintf("the %s record %s of hold %s at gen %d: %s", kind, answer.Said(wire.Key), holdID, wire.Gen, verifyFailure(answer, err)))
 		}
 		out = append(out, record)
 	}
@@ -440,13 +444,16 @@ func (c *Client) PutRecord(ctx context.Context, holdID, kind, key string, expect
 		return Record{}, fmt.Errorf("holdrecord: sign the %s record %s of hold %s: %w", kind, key, holdID, err)
 	}
 	body := map[string]any{"hold_id": holdID, "kind": kind, "key": key, "value": value, "expected_gen": expectedGen, "sig": sig}
-	var answer recordWire
-	if err := c.call(ctx, http.MethodPut, recordsPath, nil, body, &answer); err != nil {
-		return Record{}, err
-	}
-	record, err := c.verifyRecord(answer)
+	var wire recordWire
+	answer, err := c.call(ctx, http.MethodPut, recordsPath, nil, body, &wire)
 	if err != nil {
 		return Record{}, err
+	}
+	// The record the answer names is its words until it verifies, so a refusal names the record
+	// written instead.
+	record, err := c.verifyRecord(wire)
+	if err != nil {
+		return Record{}, wrap(ErrUnknown, fmt.Sprintf("the answer to the write of the %s record %s of hold %s at gen %d: %s", kind, key, holdID, expectedGen+1, verifyFailure(answer, err)))
 	}
 	if record.HoldID != holdID || record.Kind != kind || record.Key != key || record.Gen != expectedGen+1 {
 		return Record{}, wrap(ErrUnknown, fmt.Sprintf("the answer to the write of the %s record %s of hold %s at gen %d is the %s record %s of hold %s at gen %d",
@@ -477,7 +484,7 @@ func (c *Client) DeleteCohort(ctx context.Context, holdID string) error {
 			return fmt.Errorf("holdrecord: sign the delete of hold %s's cohort record %s: %w", holdID, record.Key, err)
 		}
 		query := url.Values{"hold_id": {holdID}, "kind": {cohortKind}, "key": {record.Key}, "gen": {strconv.FormatUint(record.Gen, 10)}, "sig": {sig}}
-		if err := c.call(ctx, http.MethodDelete, recordsPath, query, nil, nil); err != nil {
+		if _, err := c.call(ctx, http.MethodDelete, recordsPath, query, nil, nil); err != nil {
 			return err
 		}
 	}
@@ -486,17 +493,19 @@ func (c *Client) DeleteCohort(ctx context.Context, holdID string) error {
 
 // Cutovers reads and verifies every family's cutover row, through `/v1/nats-hold/cutover`.
 func (c *Client) Cutovers(ctx context.Context) ([]CutoverRow, error) {
-	var answer struct {
+	var list struct {
 		Families []cutoverWire `json:"families"`
 	}
-	if err := c.call(ctx, http.MethodGet, cutoverPath, nil, nil, &answer); err != nil {
+	answer, err := c.call(ctx, http.MethodGet, cutoverPath, nil, nil, &list)
+	if err != nil {
 		return nil, err
 	}
-	out := make([]CutoverRow, 0, len(answer.Families))
-	for _, wire := range answer.Families {
+	out := make([]CutoverRow, 0, len(list.Families))
+	for _, wire := range list.Families {
+		// The family is the answer's words until the row verifies.
 		row, err := c.verifyCutover(wire)
 		if err != nil {
-			return nil, err
+			return nil, wrap(ErrUnknown, fmt.Sprintf("the %s cutover row: %s", answer.Said(wire.Family), verifyFailure(answer, err)))
 		}
 		out = append(out, row)
 	}
@@ -520,13 +529,14 @@ func (c *Client) PutCutover(ctx context.Context, family, state, holdID string) (
 		return CutoverRow{}, fmt.Errorf("holdrecord: sign the %s cutover row: %w", family, err)
 	}
 	body := map[string]any{"family": family, "state": state, "hold_id": holdID, "sig": sig}
-	var answer cutoverWire
-	if err := c.call(ctx, http.MethodPut, cutoverPath, nil, body, &answer); err != nil {
-		return CutoverRow{}, err
-	}
-	row, err := c.verifyCutover(answer)
+	var wire cutoverWire
+	answer, err := c.call(ctx, http.MethodPut, cutoverPath, nil, body, &wire)
 	if err != nil {
 		return CutoverRow{}, err
+	}
+	row, err := c.verifyCutover(wire)
+	if err != nil {
+		return CutoverRow{}, wrap(ErrUnknown, fmt.Sprintf("the answer to the write of the %s cutover row: %s", family, verifyFailure(answer, err)))
 	}
 	if want := (CutoverRow{Family: family, State: state, HoldID: holdID, HoldGen: current.Gen}); row != want {
 		return CutoverRow{}, wrap(ErrUnknown, fmt.Sprintf("the answer to the write of %+v is %+v", want, row))
@@ -600,13 +610,13 @@ type rowWire struct {
 // verifyRow is the row an answer holds, or ErrUnknown when it does not verify, comes without its
 // signature or holds a phase outside the row's three. A row that verifies moves the client's seen
 // gen (followable).
-func (c *Client) verifyRow(wire rowWire) (Row, error) {
+func (c *Client) verifyRow(answer redact.Answer, wire rowWire) (Row, error) {
 	signedAt, err := time.Parse(time.RFC3339Nano, wire.SignedAt)
 	if err != nil {
 		return Row{}, wrap(ErrUnknown, fmt.Sprintf("the hold row at gen %d has a signed_at that is no RFC 3339 time", wire.Gen))
 	}
 	if err := signedrecord.Verify(c.cfg.VerifyKeys, wire.Sig, signedrecord.HoldRow(wire.Gen, wire.Phase, wire.HoldID, signedAt)); err != nil {
-		return Row{}, wrap(ErrUnknown, fmt.Sprintf("the hold row at gen %d: %v", wire.Gen, err))
+		return Row{}, wrap(ErrUnknown, fmt.Sprintf("the hold row at gen %d: %s", wire.Gen, verifyFailure(answer, err)))
 	}
 	phase := natsgrant.OperatorPhase(wire.Phase)
 	if err := rowPhase(phase); err != nil {
@@ -619,8 +629,8 @@ func (c *Client) verifyRow(wire rowWire) (Row, error) {
 }
 
 // writtenRow is the verified row a write answers, or ErrUnknown when it is not the row written.
-func (c *Client) writtenRow(wire rowWire, want Row) (Row, error) {
-	got, err := c.verifyRow(wire)
+func (c *Client) writtenRow(answer redact.Answer, wire rowWire, want Row) (Row, error) {
+	got, err := c.verifyRow(answer, wire)
 	if err != nil {
 		return Row{}, err
 	}
@@ -628,6 +638,20 @@ func (c *Client) writtenRow(wire rowWire, want Row) (Row, error) {
 		return Row{}, wrap(ErrUnknown, fmt.Sprintf("the answer to the write of %+v is %+v", want, got))
 	}
 	return got, nil
+}
+
+// verifyFailure is err, signedrecord.Verify's refusal of a signature an answer carried, as an
+// error may print it. The one part of it that is the answer's words is an UnlistedKeyError's key
+// id: the id the answer's sig names, which no listed key has. Whatever answers at the broker's
+// address writes it, and can write eleven characters of the operator's token there, so it prints
+// through the rule, with the request's credentials redacted (Said). Verify's other refusals name
+// fixed words, and the id of a key the client lists.
+func verifyFailure(answer redact.Answer, err error) string {
+	var unlisted *signedrecord.UnlistedKeyError
+	if errors.As(err, &unlisted) {
+		return fmt.Sprintf("%v: signed by key id %s, which no listed key has", signedrecord.ErrBadSignature, answer.Said(unlisted.KeyID))
+	}
+	return err.Error()
 }
 
 // recordWire is one hold record as the routes answer it.
@@ -653,9 +677,11 @@ func (v *signedValue) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// verifyRecord is the record wire holds, verified, or signedrecord.Verify's refusal of it, which
+// its caller names the record beside.
 func (c *Client) verifyRecord(wire recordWire) (Record, error) {
 	if err := signedrecord.Verify(c.cfg.VerifyKeys, wire.Sig, signedrecord.Record(wire.HoldID, wire.Kind, wire.Key, wire.Gen, wire.Value.raw)); err != nil {
-		return Record{}, wrap(ErrUnknown, fmt.Sprintf("the %s record %s of hold %s at gen %d: %v", wire.Kind, wire.Key, wire.HoldID, wire.Gen, err))
+		return Record{}, err
 	}
 	return Record{HoldID: wire.HoldID, Kind: wire.Kind, Key: wire.Key, Gen: wire.Gen, Value: wire.Value.raw}, nil
 }
@@ -669,26 +695,29 @@ type cutoverWire struct {
 	Sig     string `json:"sig"`
 }
 
+// verifyCutover is the cutover row wire holds, verified, or signedrecord.Verify's refusal of it,
+// which its caller names the row beside.
 func (c *Client) verifyCutover(wire cutoverWire) (CutoverRow, error) {
 	if err := signedrecord.Verify(c.cfg.VerifyKeys, wire.Sig, signedrecord.Cutover(wire.Family, wire.State, wire.HoldID, wire.HoldGen)); err != nil {
-		return CutoverRow{}, wrap(ErrUnknown, fmt.Sprintf("the %s cutover row: %v", wire.Family, err))
+		return CutoverRow{}, err
 	}
 	return CutoverRow{Family: wire.Family, State: wire.State, HoldID: wire.HoldID, HoldGen: wire.HoldGen}, nil
 }
 
-// call sends one request and decodes a 2xx answer into out, or returns the route's refusal.
-func (c *Client) call(ctx context.Context, method, path string, query url.Values, body, out any) error {
+// call sends one request and decodes a 2xx answer into out, or returns the route's refusal. It
+// answers the answer too, with which a caller names what of its words fails to verify.
+func (c *Client) call(ctx context.Context, method, path string, query url.Values, body, out any) (redact.Answer, error) {
 	answer, err := c.exchange(ctx, method, path, query, body)
 	if err != nil {
-		return err
+		return redact.Answer{}, err
 	}
 	if answer.Status()/100 != 2 {
-		return c.refusal(method, path, answer)
+		return answer, c.refusal(method, path, answer)
 	}
 	if out == nil {
-		return nil
+		return answer, nil
 	}
-	return decodeAnswer(method, path, answer, out)
+	return answer, decodeAnswer(method, path, answer, out)
 }
 
 // decodeAnswer decodes a 2xx answer into out through Answer.Decode, whose error names the member
@@ -807,7 +836,7 @@ func (c *Client) refusal(method, path string, answer redact.Answer) error {
 		refusal.HoldID = coded.HoldID
 	}
 	if coded.Current != nil {
-		row, err := c.verifyRow(*coded.Current)
+		row, err := c.verifyRow(answer, *coded.Current)
 		if err != nil {
 			return errors.Join(refusal, err)
 		}
