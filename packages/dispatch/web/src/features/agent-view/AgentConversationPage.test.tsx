@@ -22,6 +22,7 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { jump, onFakeClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -2266,7 +2267,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   );
   await waitFor(() => expect(held(picker("Model"))).toBe(true));
   expect(held(picker("Thinking level"))).toBe(true);
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
   expect(screen.getByTestId("agent-switch-status").textContent).toBe(
     "Switching model to anthropic/model-b…"
@@ -2293,7 +2294,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
 
   // The frame before the reply.
   await user.selectOptions(picker("Thinking level"), "high");
-  await waitFor(() => expect(sendButton().disabled).toBe(true));
+  await waitFor(() => expect(sendHeld()).toBe(true));
   view.frame(
     settingsFrame(4, {
       model: "anthropic/model-b",
@@ -2304,7 +2305,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   expect(screen.getByTestId("agent-switch-status").textContent).toBe(
     "Switching thinking level to high…"
   );
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(held(picker("Thinking level"))).toBe(true);
   await view.storeThread([
     { message: first, replies: [sessionReply("switch-1", "Model set to anthropic/model-b.")] },
@@ -2430,6 +2431,12 @@ function composerInput(): HTMLTextAreaElement {
 /** The composer's Send, by what it reads: "Send", or "Sending…" while a send is out. */
 function sendButton(name = "Send"): HTMLButtonElement {
   return within(composer()).getByRole("button", { name }) as HTMLButtonElement;
+}
+
+/** Whether Send is held, as a pending switch holds it: `aria-disabled`, never `disabled`, so a
+ *  Send the reader pressed keeps the focus, and a press of it sends nothing. */
+function sendHeld(): boolean {
+  return heldNotDisabled(sendButton(), "Send");
 }
 
 /** Waits for the session list to settle the delivery mode on `expected`, then returns the
@@ -2809,9 +2816,9 @@ test("a draft outlives the view it was written in and comes back when it wakes",
 
 // A model or thinking switch pending on a session holds that session's Send (it keeps reading
 // "Send", and the line under the box says what its placeholder says) and holds no other's; a
-// message out on another session holds nothing there either, and Enter sends nothing while a
-// switch holds. What the switch's own answer then does is the row above's
-// (`while a switch waits the pickers and Send hold`), on the one session.
+// message out on another session holds nothing there either, and neither a press of Send nor
+// Enter sends anything while a switch holds. What the switch's own answer then does is the row
+// above's (`while a switch waits the pickers and Send hold`), on the one session.
 test("a pending switch holds its own session's Send, and a send out on another holds nothing there", async () => {
   const user = userEvent.setup();
   const { createAgentMessage, held: answers } = holdSends();
@@ -2833,7 +2840,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
       keyedAttempt
     )
   );
-  await waitFor(() => expect(sendButton().disabled).toBe(true));
+  await waitFor(() => expect(sendHeld()).toBe(true));
   const wait = "Waiting for the session to answer the switch…";
   const describedBy = (sendButton().getAttribute("aria-describedby") ?? "")
     .split(" ")
@@ -2842,15 +2849,17 @@ test("a pending switch holds its own session's Send, and a send out on another h
   expect(describedBy).toBe(wait);
   expect(within(composer()).queryByText("Type a message first.")).not.toBeInTheDocument();
   await type(user, composerInput(), "and then run the tests");
-  expect(sendButton().disabled).toBe(true);
+  expect(sendHeld()).toBe(true);
   expect(within(composer()).getByText(wait)).toBeTruthy();
   expect(composerHint()).toBe(wait);
-  // The press and the 50 ms it is given run on the fake clock, so the wait costs no real time and
-  // a send the Enter put out at once is counted below. That the Enter sent nothing at all is held
-  // after the switch back, where the box still holds the draft.
+  // The presses and the 50 ms they are given run on the fake clock, so the wait costs no real time
+  // and a send a press put out at once is counted below. That the presses sent nothing at all is
+  // held after the switch back, where the box still holds the draft.
   await onFakeClock(async () => {
+    const clockUser = userOnFakeClock();
     // The paste left the caret in the box: a switch holds this press, and nothing is sent.
-    await userOnFakeClock().keyboard("{Enter}");
+    await clockUser.keyboard("{Enter}");
+    await clockUser.click(sendButton());
     await jump(50);
   });
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
