@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,13 +21,13 @@ import (
 // not, and a block of the approved version that no longer stands refuses the carry (carryVerdict);
 // askNodes, which both versions are read through, refuses a repeat as well, but the read-back
 // leaves it none to refuse. TestAVersionHoldingARepeatedBlockIDCarriesNothing's run without the
-// repeat is the control that carries. The service settles a second after a live write, wide
-// enough that settlement does not run between the steps and repair or version the repeat on its
-// own. Another build serves (serveTwoBuilds), so the answer is written into the block, as the
-// version without the repeat must show.
+// repeat is the control that carries. No settlement runs between the steps to repair or version
+// the repeat on its own: the test decides when settlement runs, and only the seed settles
+// (seededRegionDocument). Another build serves (serveTwoBuilds), so the answer is written into the
+// block, as the version without the repeat must show.
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	t.Parallel()
-	database, service, artifactID := seededRegionDocument(t, time.Second)
+	database, service, artifactID := seededRegionDocument(t)
 	serveTwoBuilds(t, database)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 

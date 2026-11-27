@@ -285,7 +285,8 @@ export const meInboxQuery = () =>
       const fetch = beginInboxFetch(client, "one-read");
       let answer: MeInboxResponse | undefined;
       try {
-        answer = await api.getMeInbox({ state: "inbox" });
+        // kept for one release: inbox-page-fallback
+        answer = await api.getMeInboxPage({ state: "inbox" });
         return answer;
       } finally {
         finishInboxFetch(client, fetch, answer === undefined ? undefined : meInboxAsks(answer));
@@ -301,7 +302,8 @@ export const meInboxQuery = () =>
 export const meInboxCountQuery = () =>
   queryOptions({
     queryKey: [...meInboxKey, "count"],
-    queryFn: async () => (await api.getMeInbox({ limit: 1, state: "unread" })).total,
+    // kept for one release: inbox-page-fallback
+    queryFn: async () => (await api.getMeInboxPage({ limit: 1, state: "unread" })).total,
   });
 
 /** What the reader has dismissed out of their Inbox, from the one read's `dismissed` state, newest
@@ -310,8 +312,9 @@ export const meInboxCountQuery = () =>
 export const meInboxDismissedQuery = () =>
   infiniteQueryOptions({
     queryKey: [...meInboxKey, "dismissed"],
+    // kept for one release: inbox-page-fallback
     queryFn: ({ pageParam }) =>
-      api.getMeInbox({
+      api.getMeInboxPage({
         limit: INBOX_DISMISSED_PAGE,
         state: "dismissed",
         ...(pageParam === undefined ? {} : { cursor: pageParam }),
@@ -328,7 +331,8 @@ export const meInboxOwnerQuery = (
 ) =>
   queryOptions({
     queryKey: [...meInboxKey, owner],
-    queryFn: () => api.getMeInbox({ ...owner, limit: 200, state: "unread" }),
+    // kept for one release: inbox-page-fallback
+    queryFn: () => api.getMeInboxPage({ ...owner, limit: 200, state: "unread" }),
   });
 
 /** One session's conversation for the reader (`GET /api/v1/agents/{session_id}/conversation`):

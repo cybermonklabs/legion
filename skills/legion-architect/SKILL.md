@@ -35,7 +35,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 2. Where you doubt that a design is the right thing to build, state the problem to `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing should exist at all, what the smallest thing that gives the person what they asked for is, and what to delete.
 
-3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate except where its "After approval" says the approval carries.
+3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says: a new version closes the gate, except as its "After approval" says.
    A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
 
 4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says.
@@ -61,7 +61,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+- Release each child once it is filed: `legion({ op: "release_children", issues: ["ACME-41", "ACME-42"] })`.
   Legion holds a child whose blockers are not `done`.
   Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
   Never block a child on its own parent, which merges last.
@@ -80,7 +80,8 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
 
-- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
+- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none.
+  The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 
@@ -98,7 +99,7 @@ Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its 
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
-Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
+Merge holds, finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
@@ -107,10 +108,14 @@ nothing after it is yours (`skill://legion-architect/references/acceptance.md`, 
 
 ## Escalation judgment
 
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and two trees changing the same code.
+- Send the controller a child serving no criterion of the root and a need for admission slots.
+  Two trees changing the same code: mention the other tree's architect on its issue (`skill://legion-worker/references/findings.md`).
 
-- Carry a clear defect the controller gives you in this tree:
-  in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.
-  It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").
+- Carry a clear defect another role writes to you in this tree, in an open pull request or a child.
+
+- An action on an agent is the controller's: ask it in a `dispatch comment` on that agent's issue mentioning its role, never by `envoy_publish`.
+
+- Your tree's failed CI runs and its pull requests that no merger merges are yours, never another session's.
+  Read `skill://legion-architect/references/operations.md` before each of these three.
 
 - A tool a worker cannot get is a pull request to the worker image (`skill://legion-worker/references/tools.md`).

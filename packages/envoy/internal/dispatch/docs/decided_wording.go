@@ -211,9 +211,10 @@ func owedSettlementsOfRestored(ctx context.Context, tx pgx.Tx, restored []restor
 }
 
 // restoreDocumentDecidedWordings is RestoreDecidedWordings for the decided asks of rows, the asks
-// of the document artifactID that settlement loaded and locked (loadAskBlocks), writing each
-// restored wording into rows, so the rest of the settlement weighs the block against the wording
-// the ask was decided on and writes that wording back into it. It returns the asks it restored, as
+// of the document artifactID that settlement loaded and locked (loadAskBlocks and
+// lockAskBlocksForWrite). It writes the restored wording into rows so settlement weighs the
+// block against the wording the ask was decided on.
+// Settlement writes that wording back into the block. This returns the asks it restored, as
 // rows now holds them, whose copies the settlement marks owed with the copies of the asks it
 // retracts (reconcileAskBlocks).
 func (s *Service) restoreDocumentDecidedWordings(ctx context.Context, tx pgx.Tx, rows map[string]model.Ask) ([]model.Ask, error) {

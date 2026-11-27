@@ -165,8 +165,9 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 }
 
 // asksOfBlocks reads the asks of artifactID's ask blocks under blockIDs, by block id, as
-// loadAskBlocks reads a document's asks but without its lock: a write reads them to decide
-// whether to refuse it, and writes none of them.
+// loadAskBlocks reads a document's asks, but with no document owner's lock held for them, which
+// loadAskBlocks's caller holds: a write reads them to decide whether to refuse it, and writes none
+// of them.
 func asksOfBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]model.Ask, error) {
 	rows, err := tx.Query(ctx, `
 		select `+AskColumns+`

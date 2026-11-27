@@ -177,16 +177,21 @@ func HoldProjectDefault(ctx context.Context, tx pgx.Tx, project string) error {
 // AskDefaultProject is SQL text over an asks row aliased a: the project whose default assignee the
 // ask waits on and a move of that default reaches (DefaultMoved) - an open ask handed to nobody, on
 // an issue nobody holds or on a project document, by the owner rule HoldDefault reads - and the
-// empty string for an ask that waits on no default. A write into the ask's thread reads it under
-// the owner lock, under which none of the rows it reads moves, beside a read of the ask it makes
-// already where it has one (api's describeAsk), and hands it to HoldProjectDefault.
+// empty string for an ask that waits on no default. It is the one statement of that rule for a
+// write into an ask's thread: such a write reads it under the owner lock, under which none of the
+// rows it reads moves, beside a read of the ask it makes already where it has one (api's
+// describeAsk for a comment in the thread, api's readAskAndDefaultForTransition for an answer,
+// graphcensus' catch-up of an older build's edit), else through HoldAskDefault, and hands it to
+// HoldProjectDefault.
 const AskDefaultProject = `coalesce(case when a.state = '` + asks.StateOpen + `' and a.asked_of is null then coalesce(
 		(select i.project_key from issues i where i.key = a.issue_key and i.assignee is null),
 		(select ar.project_key from artifacts ar where ar.id = a.artifact_id and ar.issue_key is null)) end, '')`
 
 // HoldAskDefault is HoldDefault for a write into the thread of ask askID with no read of the ask
-// of its own to read the project in (AskDefaultProject): it reads that project and holds it shared
-// (HoldProjectDefault), and holds nothing for an ask a move of a default does not reach.
+// of its own to read the project in (AskDefaultProject) - an edit there (api's
+// editMentionParticipation), the approval carry's answer (docs' answerApprovalAsk): it reads that
+// project and holds it shared (HoldProjectDefault), and holds nothing for an ask a move of a
+// default does not reach, such as one handed to somebody.
 func HoldAskDefault(ctx context.Context, tx pgx.Tx, askID string) error {
 	var project string
 	if err := tx.QueryRow(ctx, `select `+AskDefaultProject+` from asks a where a.id = $1::uuid`, askID).Scan(&project); err != nil {

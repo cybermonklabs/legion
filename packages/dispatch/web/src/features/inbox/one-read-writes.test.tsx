@@ -205,7 +205,7 @@ test("a hand-on to the reader keeps the ask in their list, and a refusal puts th
   await act(async () => answer.refuse());
   await waitFor(() => expect(cached(client)?.entries).toEqual([]));
   expect(document.querySelector('[data-ask="ask-b"]')?.getAttribute("data-waiting")).toBe("carol");
-  await waitFor(() => expect(api.getMeInbox).toHaveBeenCalled());
+  await waitFor(() => expect(api.getMeInboxPage).toHaveBeenCalled());
   await act(async () => reads.resolve());
   await waitFor(() => expect(client.isFetching()).toBe(0));
 });

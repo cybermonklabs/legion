@@ -259,8 +259,8 @@ func (r *byIDRig) wantNoSpawnWhileRecorded() {
 	}
 }
 
-// wantLost is the one forget the workflow was told of, of cause: the issue, its architect and the
-// controller each hear of a forgotten session once.
+// wantLost is the one forget the workflow was told of, of cause: the issue and its architect each
+// hear of a forgotten session once.
 func (r *byIDRig) wantLost(cause SessionLoss) lostReport {
 	r.t.Helper()
 	if len(r.lost) != 1 || r.lost[0].cause != cause {
@@ -339,13 +339,13 @@ func TestEveryLaunchOfAClaimWithASessionAndNoFileNamesItsSession(t *testing.T) {
 		}}},
 		{"the operator's retry of a failed claim", []path{{
 			claim:   byIDClaim(StateFailed, 3),
-			trigger: func(r *byIDRig) { r.must(RequestOperatorRetry{Claim: testToken}) },
+			trigger: func(r *byIDRig) { r.must(RequestAskedRetry{Claim: testToken, By: SuspendedByOperator}) },
 		}}},
 		{"the resume of a suspended claim", []path{
 			{
 				name:    "the operator's resume",
 				claim:   byIDClaim(StateSuspended, 3),
-				trigger: func(r *byIDRig) { r.must(RequestResume{Claim: testToken}) },
+				trigger: func(r *byIDRig) { r.must(RequestResume{Claim: testToken, By: SuspendedByOperator}) },
 			},
 			{
 				name:  "the resume by rule",
@@ -573,13 +573,13 @@ func TestAnOperatorForgetBeforeTheFreshAgentIsReadyClearsTheForgetsCause(t *test
 	r.wantState(StateRegistered)
 
 	r.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
-	r.must(RequestForgetSession{Claim: testToken, Session: newSession})
+	r.must(RequestForgetSession{Claim: testToken, Session: newSession, By: SuspendedByOperator})
 	if c := r.claim(); c.Abandoned.Session != newSession || c.Session != "" || c.SessionFile != "" {
 		t.Fatalf("the claim abandoned %q and records session %q and file %q after the operator's forget; want %s abandoned and no session",
 			c.Abandoned.Session, c.Session, c.SessionFile, newSession)
 	}
 	from := len(r.rt.Calls())
-	r.must(RequestResume{Claim: testToken})
+	r.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 
 	starts := r.starts(from)
 	if len(starts) != 1 || starts[0].Method != "Spawn" {
@@ -704,7 +704,7 @@ func TestAResumeByIDHoldsTheSessionAndItsFileID(t *testing.T) {
 				r := newByIDRig(t, c, nil)
 				r.store.setHold(Hold{Kind: HoldFileID, Name: idSession}, other)
 
-				err := r.handle(RequestResume{Claim: testToken})
+				err := r.handle(RequestResume{Claim: testToken, By: SuspendedByOperator})
 
 				wantRefusedResume(t, r.harness, err)
 				if want := "legion claims forget-session --claim " + string(testToken); !strings.Contains(err.Error(), want) {

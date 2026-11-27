@@ -1282,7 +1282,7 @@ func commentMentionFacts(indexed graphstore.Uncaused, commentID string, mentions
 	for index, mention := range mentions {
 		routes[index] = graphstore.CommentRoute{Target: mention.Target, Session: mention.SessionID}
 	}
-	indexed.Tuples = graphstore.CommentMentionFacts(indexed.Tuples, commentID, routes, mentions[0].Delivery, author, at, graphstore.NoEvent)
+	indexed.Tuples = graphstore.CommentMentionFacts(indexed.Tuples, commentID, routes, mentions[0].Delivery, author, at)
 	return indexed
 }
 

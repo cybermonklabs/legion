@@ -2520,7 +2520,7 @@ test("the reader's own list reads no open asks", async () => {
   try {
     await screen.findByText("Which approach?");
     expect(rowIds()).toEqual(["ask-mine"]);
-    expect(api.getMeInbox).toHaveBeenCalled();
+    expect(api.getMeInboxPage).toHaveBeenCalled();
     expect(listOpenAsks).not.toHaveBeenCalled();
   } finally {
     unmount();
@@ -2846,7 +2846,7 @@ test("the Type list draws no count for the thread kinds while the thread read is
     for (const how of ["held", "refused"] as const) {
       mocks.getMeInbox.mockClear();
       // Held: the read is never answered. Refused: Dispatch answers it 500.
-      mocks.getMeInbox.mockImplementation(async (query = {}) => {
+      mocks.getMeInbox.mockImplementation(async (query) => {
         if (query.state !== "dismissed") return oneReadAnswer(asks);
         if (how === "refused") {
           throw new ApiError(500, { code: "TEST_REFUSED", error: "test refusal" });
@@ -2884,7 +2884,7 @@ test("the Type list draws no count for the thread kinds while the thread read is
       }
     }
     // The control: the same view with its thread read answered counts both threads.
-    mocks.getMeInbox.mockImplementation(async (query = {}) =>
+    mocks.getMeInbox.mockImplementation(async (query) =>
       oneReadAnswer(query.state === "dismissed" ? threads : asks)
     );
     const { unmount } = renderInbox("/?show=dismissed");
@@ -6003,7 +6003,7 @@ test("?item= naming a thread row selects that row, not the first, once the one r
   try {
     // The one read, which lists the ask and the named thread row alike, is still out, so the
     // page draws no row: the column takes no row of its own and the address keeps the reader's.
-    await waitFor(() => expect(api.getMeInbox).toHaveBeenCalledWith({ state: "inbox" }));
+    await waitFor(() => expect(api.getMeInboxPage).toHaveBeenCalledWith({ state: "inbox" }));
     expect(rowIds()).toEqual([]);
     expect(selectedIds()).toEqual([]);
     expect(address()).toBe("/?item=reply:c1");
@@ -9842,7 +9842,7 @@ describe("the approval mark", () => {
     const entries: MeInboxEntry[] = [oneReadEntry(ASK), oneReadEntry(THREAD)].map((entry) =>
       gate === undefined ? entry : { ...entry, approval_gate: gate }
     );
-    mocks.getMeInbox.mockImplementation(async (query = {}) =>
+    mocks.getMeInbox.mockImplementation(async (query) =>
       query.state === "inbox"
         ? { ...oneReadAnswer([]), entries, total: entries.length }
         : oneReadAnswer([])
@@ -10097,7 +10097,7 @@ function drawnBox(box: () => HTMLElement | null): HTMLElement {
  *  read answers nothing, and the reads a row and the reading column make beside it are answered,
  *  which no case here asserts. Answers the function that puts those reads back. */
 function answerDismissedPages(pages: () => readonly (readonly MyReplyRow[])[]): () => void {
-  mocks.getMeInbox.mockImplementation(async (query = {}) => {
+  mocks.getMeInbox.mockImplementation(async (query) => {
     if (query.state !== "dismissed") return oneReadAnswer([]);
     const at = query.cursor === undefined ? 0 : Number(query.cursor.replace("page-", ""));
     const held = pages();
@@ -10261,7 +10261,7 @@ test("the Dismissed view's Type list draws no count for the thread kinds while i
   const counted: Record<string, string[]> = {};
   try {
     for (const how of ["out", "refused", "answered"] as const) {
-      mocks.getMeInbox.mockImplementation(async (query = {}) => {
+      mocks.getMeInbox.mockImplementation(async (query) => {
         if (query.state !== "dismissed") return oneReadAnswer([]);
         if (how === "refused") throw new ApiError(500, { code: "TEST_REFUSED" });
         if (how === "answered") return oneReadAnswer(dismissedThreads(2));

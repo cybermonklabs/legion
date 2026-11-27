@@ -557,7 +557,7 @@ test("a thread's read mark drawn after the app's staleTime asks the unread set n
   // Answers that never come, so no read updates what is drawn after `requestsOf` has counted the
   // requests. Who is reading is the stub `stubReads` set, which `spyOn` hands back.
   spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
-  const unreadSet = spyOn(api, "getMeInbox").mockReturnValue(
+  const unreadSet = spyOn(api, "getMeInboxPage").mockReturnValue(
     Promise.withResolvers<never>().promise
   );
   const mark: ThreadMark = { at: "2026-11-05T01:04:00Z", issueKey: KEY, threadId: "head-b" };

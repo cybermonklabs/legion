@@ -29,7 +29,7 @@ beforeAll(async () => {
 const never = () => Promise.withResolvers<never>().promise;
 
 let whoAmI: Mock<typeof api.whoAmI>;
-let getMeInbox: Mock<typeof api.getMeInbox>;
+let getMeInbox: Mock<typeof api.getMeInboxPage>;
 let getCredentialPending: Mock<typeof api.getCredentialPending>;
 let getCredentialCapabilities: Mock<typeof api.getCredentialCapabilities>;
 /** How many times the page has read its list: the one read's `inbox` state, which is the reader's

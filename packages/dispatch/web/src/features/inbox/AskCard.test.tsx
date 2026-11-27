@@ -970,7 +970,7 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     { login: "bob" },
   ]);
   // The card marks the thread read off its owner's unread set, which holds nothing here.
-  const getMeInbox = spyOn(api, "getMeInbox").mockResolvedValue(unreadSetAnswer([]));
+  const getMeInbox = spyOn(api, "getMeInboxPage").mockResolvedValue(unreadSetAnswer([]));
   const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
   const card = within(view.container);
   try {

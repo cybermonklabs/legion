@@ -35,12 +35,15 @@ import (
 //     (inboxwrite.QueueMoveWaiting); that build writes the issue's, the ask's or the project's
 //     row and nothing of the store, and the ask's marker (asks.tuples_stored_at) is the moment of
 //     the writes the store holds of its create and its answer, which none of these touches;
-//   - an edit of a comment (comment.edited) or of an issue message (message.edited), whose new
-//     text can name a person (R5): this release's edit states the mentions tuple to each person
-//     its text newly names and that person's participates_in in the item's thread (api's
-//     editComment and editMessage), and that build stores no row for such a mention
-//     (refs.TargetOf); a comment's marker (comments.tuples_stored) marks its pointers and a
-//     message's (messages.node_kind) its node and pointers, which no edit moves.
+//   - an edit or a delete of a comment (comment.edited, comment.deleted) or of an issue message
+//     (message.edited, message.deleted), whose text can name an identity it did not name before,
+//     or no longer name one it did (R5): this release's edit states the mentions tuple to each
+//     identity its new text names and each newly named person's participates_in in the item's
+//     thread, and its edit and its delete retract each mention the text no longer names (api's
+//     editComment, editMessage, deleteComment and deleteMessage, refs' unnamedMentions); that
+//     build stores no row for such a mention (refs.TargetOf) and retracts none; a comment's marker
+//     (comments.tuples_stored) marks its pointers and a message's (messages.node_kind) its node
+//     and pointers, which neither moves.
 //
 // The trigger of migration 20261122100123 queues the event of each such write in
 // events_inbox_owed as that build appends it, gated on the store's marker writer setting as the
@@ -80,7 +83,8 @@ func inboxEventsPass() inboxPass {
 // queuedEvent is one event of the queue as a batch reads it: its id, type, owners and actor, its
 // moment, the id its payload names (an ask's, a comment's or a message's), and for an edit of a
 // comment or a message the text the edit wrote and whether the event carried all of it
-// (model.EventBody).
+// (model.EventBody); a delete's text is empty, the body it leaves the item (api's
+// clearDeletedPostBody), which its event carries empty too.
 type queuedEvent struct {
 	id                           int64
 	kind, issue, project, target string
@@ -92,7 +96,7 @@ type queuedEvent struct {
 
 // queuedEventsRead reads the events of the queued ids $1 still queued, in id order. A payload id
 // that is no uuid names no ask, comment or message and is read as empty, which the batch states
-// nothing for.
+// nothing for. Every event but an edit is read with the empty text.
 //
 // kept for one release: events-inbox-owed
 const queuedEventsRead = `
@@ -112,10 +116,18 @@ const queuedEventsRead = `
 //  1. the owner of every ask, comment and message the events name and of every issue whose
 //     assignee they moved (events.LockOwnerRows), each once, in ascending owner key: what this
 //     release's writer of each write takes first;
-//  2. shared, the owner of each project whose default the batch's asks fall through to, and of
-//     each project whose default an event moved, in ascending key (inboxwrite.HoldProjectDefault),
-//     as a write that reads the default to decide a delivery takes it; a move of the default this
-//     release makes takes it exclusive, and so waits for the batch or the batch for it;
+//  2. shared, the owner of each project whose default the batch's asks fall through to, of each
+//     project whose default an event moved, and of each project whose default the ask falls
+//     through to in whose thread a comment.edited of the batch edits a comment (the ask its
+//     comments.ask_id names, inboxwrite.AskDefaultProject), in ascending key
+//     (inboxwrite.HoldProjectDefault), as a write that reads the default to decide a delivery
+//     takes it, and a write into such an ask's thread that reads who takes part in it
+//     (inboxwrite.HoldAskDefault, api's editMentionParticipation); a move of the default this
+//     release makes takes it exclusive, and so waits for the batch or the batch for it: the move
+//     reads the participation an edit of the batch states once the batch has committed, before it
+//     ends anybody's part in the thread. Every project is held here, before any asks row, as the
+//     move takes its project before the asks rows it moves (moveLock): a hold taken by the edit
+//     itself, after step 4's asks rows, would take the two in the other order;
 //  3. the queue rows of the batch still queued, `for no key update` in ascending id, so a second
 //     taker of the queue - the backfill beside the tick - waits and then finds them gone;
 //  4. each move in event order (inboxwrite.QueueMoveWaiting), which locks the open asks it may
@@ -125,7 +137,8 @@ const queuedEventsRead = `
 //     owner the batch holds (step 1): a writer that would lock asks of two of them takes the owner
 //     of one first, or the project's owner exclusive for a default's (step 2), and waits there
 //     holding none of them;
-//  5. each edit's mentions and their participation (graphstore.ToPerson, through writeRelations);
+//  5. each edit's and each delete's mentions, their participation and their retractions
+//     (graphstore.ToPerson and graphstore.Write, through writeRelations);
 //  6. the delete of the queue rows it took.
 //
 // A move is held to the asks whose create the store holds the tuples of (tuples_stored_at set): an
@@ -140,15 +153,16 @@ const queuedEventsRead = `
 // nothing where the arm stands already to the person the ask waits on, so a queued event taken a
 // second time states nothing.
 //
-// An edit is stated only for an item whose node the store holds and whose marker says the store
-// holds its pointers: a comment whose tuples_stored is set, and a message whose row names its node
-// (olderEditedItems). The comment pointer pass and the messages pass state an item that build
-// wrote from the text it holds when that pass runs, the edits before it among it. Its text is the
-// one the edit's event carries, and the item's own where the event carried only the first part of
-// it.
+// An edit or a delete is stated only for an item whose node the store holds and whose marker says
+// the store holds its pointers: a comment whose tuples_stored is set, and a message whose row
+// names its node (olderEditedItems). The comment pointer pass and the messages pass state an item
+// that build wrote from the text it holds when that pass runs, the edits and the delete before it
+// among it. The text it names is the one the edit's event carries, the item's own where the event
+// carried only the first part of it, and the empty text of a delete; the text it retracts the
+// mentions of is the one the item holds when the batch runs (writeOlderEdit).
 //
-// It answers the rows it took off the queue and, of the tuples it handed the store, the edits'
-// alone: a move's tuples go in through a statement whose count nothing reads back
+// It answers the rows it took off the queue and, of the tuples it handed the store, the edits' and
+// the deletes' alone: a move's tuples go in through a statement whose count nothing reads back
 // (inboxwrite.QueueMoveWaiting) and are not counted, so the upper bound the pass reports
 // (inboxWrote) leaves the moves' tuples out.
 func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
@@ -178,7 +192,7 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 	if len(read) == 0 {
 		return inboxWrote{}, nil
 	}
-	var askIDs, commentIDs, messageIDs, issues, projects []string
+	var askIDs, commentIDs, editedComments, messageIDs, issues, projects []string
 	owners := events.OwnerRows{}
 	for _, event := range read {
 		switch event.kind {
@@ -189,8 +203,13 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 		case "comment.edited":
 			if event.target != "" {
 				commentIDs = append(commentIDs, event.target)
+				editedComments = append(editedComments, event.target)
 			}
-		case "message.edited":
+		case "comment.deleted":
+			if event.target != "" {
+				commentIDs = append(commentIDs, event.target)
+			}
+		case "message.edited", "message.deleted":
 			if event.target != "" {
 				messageIDs = append(messageIDs, event.target)
 			}
@@ -217,6 +236,11 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 		return inboxWrote{}, err
 	}
+	// Beside the asks, issues and projects the moves read, the project whose default each ask falls
+	// through to (inboxwrite.AskDefaultProject) in whose thread a comment.edited of the batch edits
+	// a comment: that edit can state who takes part in the thread (writeOlderEdit), which this
+	// release's edit holds the project for (api's editMentionParticipation). A delete states no
+	// participation and holds nothing for its comment.
 	defaults, err := readKeys(ctx, tx, 1, `
 		select distinct fallen.project from (
 			select coalesce(i.project_key, ar.project_key) as project
@@ -228,10 +252,14 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 			select i.project_key from issues i where i.key = any($2::text[]) and i.assignee is null
 			union all
 			select unnest($3::text[])
+			union all
+			select nullif(`+inboxwrite.AskDefaultProject+`, '')
+			from comments c join asks a on a.id = c.ask_id
+			where c.id = any($4::uuid[])
 		) fallen
 		where fallen.project is not null
 		order by 1
-	`, askIDs, issues, projects)
+	`, askIDs, issues, projects, editedComments)
 	if err != nil {
 		return inboxWrote{}, fmt.Errorf("read the projects whose default a batch of queued events reads: %w", err)
 	}
@@ -332,65 +360,98 @@ func laterMoveOf(event int64) string {
 		      else false end)`
 }
 
-// olderEdited is how writeOlderEdit reads the item an older build's edit names: the item kind its
-// text is indexed as, which is also its node's kind, the table that holds its row, and the test
-// that row holds to its marker beside naming its node.
+// olderEdited is how writeOlderEdit reads the item an older build's edit or delete names: the item
+// kind its text is indexed as, which is also its node's kind, the table that holds its row, the
+// test that row holds to its marker beside naming its node, and the select of the identities its
+// delivery routes name over that row, aliased x (refs.CommentRoutesRead), "" for a kind that
+// holds none.
 type olderEdited struct {
-	item          refs.ItemKind
-	table, marked string
+	item                  refs.ItemKind
+	table, marked, routes string
 }
 
-// olderEditedItems is olderEdited by the type of the edit's event: a comment's edit
-// (comment.edited), of a comment whose pointers the store holds (comments.tuples_stored), and an
-// issue message's (message.edited), of a message whose row names its node (messages.node_kind),
-// which the messages pass names once it has stated the message's pointers. The read joins the
-// node the row names, so an item the store holds no node of is read as no row.
+// olderEditedItems is olderEdited by the type of the event: a comment's edit or delete
+// (comment.edited, comment.deleted), of a comment whose pointers the store holds
+// (comments.tuples_stored), and an issue message's (message.edited, message.deleted), of a message
+// whose row names its node (messages.node_kind), which the messages pass names once it has stated
+// the message's pointers. The read joins the node the row names, so an item the store holds no
+// node of is read as no row.
 //
 // kept for one release: events-inbox-owed
-var olderEditedItems = map[string]olderEdited{
-	"comment.edited": {item: refs.ItemComment, table: "comments", marked: "x.tuples_stored"},
-	"message.edited": {item: refs.ItemMessage, table: "messages", marked: "x.node_kind is not null"},
-}
+var olderEditedItems = func() map[string]olderEdited {
+	comment := olderEdited{item: refs.ItemComment, table: "comments", marked: "x.tuples_stored", routes: refs.CommentRoutesRead(`x.id`)}
+	message := olderEdited{item: refs.ItemMessage, table: "messages", marked: "x.node_kind is not null"}
+	return map[string]olderEdited{
+		"comment.edited": comment, "comment.deleted": comment,
+		"message.edited": message, "message.deleted": message,
+	}
+}()
 
-// writeOlderEdit states what an older build's edit of a comment or of an issue message owes the
-// store, as this release's edit states it (api's editComment, editMessage): the mentions tuple out
-// of the item's node to each identity the edit's text names - a person, an agent's session or a
-// role - whom the store holds no mention of out of that node yet (refs.ItemIdentityMentions), made
-// by the node's maker at the edit's moment, and each such person's participates_in in the item's
-// thread (inboxwrite.MentionParticipation), made by the editor at that moment, all under the edit's
-// event, and no delivery: an edit delivers nothing. A person the text names whose mention the store
-// holds already is owed the same where they take no part in the thread: a pass that no event
-// records can state the mention before this one runs - a re-index of the item's text at the
-// sentinel (refs.ReindexScopeSource, refs.ReindexOwed), which states no participation, since a
-// participation stands under the event of a mention that explains it (the census's
-// mentioned_alone) - so the participation R4 owes is decided on the participation itself
-// (takingPart), and its mention is stated again under the edit's event, beside it. An item whose
-// marker does not mark it yet (olderEditedItems) is the comment pointer pass's or the messages
-// pass's, which reads the text the item holds then. It answers how many tuples it handed the store.
+// writeOlderEdit states what an older build's edit or delete of a comment or of an issue message
+// owes the store, as this release's edit and delete state it (api's editComment, editMessage,
+// deleteComment, deleteMessage), all under the write's event and none of it a delivery: an edit
+// and a delete deliver nothing.
+//
+// What the write's text named: the mentions tuple out of the item's node to each identity that
+// text names - a person, an agent's session or a role - whom the store holds no mention of out of
+// that node yet (refs.ItemIdentityMentions), made by the node's maker at the write's moment, and
+// each such person's participates_in in the item's thread (inboxwrite.MentionParticipation), made
+// by the writer at that moment. A delete's text is empty and names nobody. A person the text names
+// whose mention the store holds already is owed the same where they take no part in the thread: a
+// pass that no event records can state the mention before this one runs - a re-index of the
+// item's text at the sentinel (refs.ReindexScopeSource, refs.ReindexOwed), which states no
+// participation, since a participation stands under the event of a mention that explains it (the
+// census's mentioned_alone) - so the participation R4 owes is decided on the participation itself
+// (takingPart), and its mention is stated again under the write's event, beside it.
+//
+// What the item's text names now: once those are appended, the retraction of each mention out of
+// the node that the text the item holds as this runs does not name, but those a comment's
+// delivery routes name (refs.ItemUnnamedMentions), made by the node's maker at the write's moment.
+// Where no later write changed the item's text, that text is the write's own, and the retractions
+// are those of each mention the write took out of it, as this release's edit and delete retract
+// one. Where a later write changed it - one of that build, whose event the queue holds after this
+// one, or one of this release, which held the item's mentions to its own text as it wrote - the
+// mentions follow that later text, so a write caught up after it undoes nothing it wrote: what the
+// later text names stands, and a mention this write's text named and the later text does not is
+// asserted, for the participation it explains, and retracted beside it. What a retracted mention
+// caused stands, the participation among it.
+//
+// An item whose marker does not mark it yet (olderEditedItems) is the comment pointer pass's or
+// the messages pass's, which reads the text the item holds then. It answers how many tuples it
+// handed the store.
 // kept for one release: events-inbox-owed
 func writeOlderEdit(ctx context.Context, tx pgx.Tx, edited olderEdited, event queuedEvent) (int64, error) {
-	var body, visibility string
+	routes, routed := `'{}'::text[], '{}'::text[]`, ``
+	if edited.routes != "" {
+		routes = `coalesce(kept.kinds, '{}'), coalesce(kept.ids, '{}')`
+		routed = `
+		left join lateral (
+			select array_agg(route.to_kind) as kinds, array_agg(route.to_id) as ids from (` + edited.routes + `) route
+		) kept on true`
+	}
+	var current, visibility string
 	var madeBy []byte
-	var standingKinds, standingIDs []string
+	var standingKinds, standingIDs, routeKinds, routeIDs []string
 	err := tx.QueryRow(ctx, `
-		select coalesce(x.body, ''), n.visibility, n.made_by, coalesce(held.kinds, '{}'), coalesce(held.ids, '{}')
+		select coalesce(x.body, ''), n.visibility, n.made_by, coalesce(held.kinds, '{}'), coalesce(held.ids, '{}'), `+routes+`
 		from `+edited.table+` x
 		join graph_nodes n on n.kind = x.node_kind and n.id = x.node_address
 		left join lateral (
 			select array_agg(mentioned.to_kind order by mentioned.to_kind, mentioned.to_id) as kinds,
 			       array_agg(mentioned.to_id order by mentioned.to_kind, mentioned.to_id) as ids
 			from (`+refs.IdentityMentionsRead(`n.kind`, `n.id`, `$2::text[]`)+`) mentioned
-		) held on true
+		) held on true`+routed+`
 		where x.id = $1::uuid and `+edited.marked+`
-	`, event.target, refs.IdentityKinds).Scan(&body, &visibility, &madeBy, &standingKinds, &standingIDs)
+	`, event.target, refs.IdentityKinds).Scan(&current, &visibility, &madeBy, &standingKinds, &standingIDs, &routeKinds, &routeIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read %s %s an older build edited under event %d: %w", edited.item, event.target, event.id, err)
+		return 0, fmt.Errorf("read %s %s an older build wrote under event %d: %w", edited.item, event.target, event.id, err)
 	}
+	written := current
 	if !event.truncated {
-		body = event.body
+		written = event.body
 	}
 	var maker model.Actor
 	if err := json.Unmarshal(madeBy, &maker); err != nil {
@@ -399,45 +460,66 @@ func writeOlderEdit(ctx context.Context, tx pgx.Tx, edited olderEdited, event qu
 	// A person's standing mention is held back from the plan, so the plan answers every person
 	// the text names, and those of them whom a mention names already are kept below only where
 	// they take no part in the thread.
-	standing := make([]refs.Target, 0, len(standingIDs))
+	standing := make([]refs.Target, len(standingIDs))
+	var others []refs.Target
 	var mentionedBefore []string
 	for index := range standingIDs {
-		if standingKinds[index] == graphstore.KindPerson {
+		standing[index] = refs.Target{Kind: standingKinds[index], ID: standingIDs[index]}
+		if standing[index].Kind == graphstore.KindPerson {
 			mentionedBefore = append(mentionedBefore, standingIDs[index])
 			continue
 		}
-		standing = append(standing, refs.Target{Kind: standingKinds[index], ID: standingIDs[index]})
+		others = append(others, standing[index])
 	}
-	identities, people := refs.ItemIdentityMentions(edited.item, event.target, visibility, maker, event.at, event.id, body, standing)
-	if len(identities)+len(people) == 0 {
-		return 0, nil
-	}
-	rootKind, rootID, err := inboxwrite.ThreadRoot(ctx, tx, string(edited.item), event.target)
-	if err != nil {
-		return 0, err
-	}
-	var named []string
-	for _, mention := range people {
-		if slices.Contains(mentionedBefore, mention.ToID) {
-			named = append(named, mention.ToID)
-		}
-	}
-	if len(named) > 0 {
-		taking, err := takingPart(ctx, tx, rootKind, rootID, named)
+	identities, people := refs.ItemIdentityMentions(edited.item, event.target, visibility, maker, event.at, written, others)
+	var participation []graphstore.Tuple
+	if len(people) > 0 {
+		rootKind, rootID, err := inboxwrite.ThreadRoot(ctx, tx, string(edited.item), event.target)
 		if err != nil {
 			return 0, err
 		}
-		people = slices.DeleteFunc(people, func(mention graphstore.Tuple) bool {
-			return slices.Contains(taking, mention.ToID)
-		})
+		var named []string
+		for _, mention := range people {
+			if slices.Contains(mentionedBefore, mention.ToID) {
+				named = append(named, mention.ToID)
+			}
+		}
+		if len(named) > 0 {
+			taking, err := takingPart(ctx, tx, rootKind, rootID, named)
+			if err != nil {
+				return 0, err
+			}
+			people = slices.DeleteFunc(people, func(mention graphstore.Tuple) bool {
+				return slices.Contains(taking, mention.ToID)
+			})
+		}
+		participation = inboxwrite.MentionParticipation(rootKind, rootID, graphstore.Uncaused{People: people}, event.actor, event.at, event.id)
 	}
-	if len(identities)+len(people) == 0 {
+	// What the node mentions once those are appended, held to the text the item holds now.
+	for _, stated := range [][]graphstore.Tuple{identities, people} {
+		for _, mention := range stated {
+			standing = append(standing, refs.Target{Kind: mention.ToKind, ID: mention.ToID})
+		}
+	}
+	kept := make([]refs.Target, len(routeIDs))
+	for index := range routeIDs {
+		kept[index] = refs.Target{Kind: routeKinds[index], ID: routeIDs[index]}
+	}
+	unnamed, unnamedPeople := refs.ItemUnnamedMentions(edited.item, event.target, visibility, maker, event.at, current, standing, kept)
+	// Each mention is stated under the write's event and dated by it, as this release's edit and
+	// delete state their own (graphstore.Cause); the participation carries the event alone.
+	cause := graphstore.CauseOf(event.id)
+	tuples := make([]graphstore.Tuple, 0, len(identities)+len(people)+len(participation)+len(unnamed)+len(unnamedPeople))
+	tuples = cause.Append(tuples, true, identities...)
+	tuples = cause.Append(tuples, true, people...)
+	tuples = append(tuples, participation...)
+	tuples = cause.Append(tuples, true, unnamed...)
+	tuples = cause.Append(tuples, true, unnamedPeople...)
+	if len(tuples) == 0 {
 		return 0, nil
 	}
-	tuples := append(slices.Concat(identities, people),
-		inboxwrite.MentionParticipation(rootKind, rootID, graphstore.Uncaused{People: people}, event.actor, event.at, event.id)...)
 	if err := writeRelations(ctx, tx, tuples); err != nil {
-		return 0, fmt.Errorf("state what an older build's edit of %s %s names: %w", edited.item, event.target, err)
+		return 0, fmt.Errorf("state what an older build's %s of %s %s names: %w", event.kind, edited.item, event.target, err)
 	}
 	return int64(len(tuples)), nil
 }

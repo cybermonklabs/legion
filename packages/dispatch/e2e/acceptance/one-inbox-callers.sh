@@ -442,9 +442,9 @@ readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packa
 #   and which openAsksQuery calls only where the read of every project's open asks is refused 400
 #   AUTHOR_SESSION_OR_PROJECT_REQUIRED, as a Dispatch process of the release before refuses it;
 # - the page's inboxOfTheReleaseBefore (web/src/api/client.ts), which reads GET /api/v1/inbox and
-#   GET /api/v1/me/replies and which getMeInbox, the Inbox page's own read of GET /api/v1/me/inbox,
-#   calls only where the server answers that read with no route, so that a page of this release
-#   that reaches only a server of the release before still shows the Inbox;
+#   GET /api/v1/me/replies and which getMeInboxPage, the Inbox page's own reads of
+#   GET /api/v1/me/inbox, calls only where the server answers that read with no route, so that a
+#   page of this release that reaches only a server of the release before still shows the Inbox;
 # - `dispatch inbox`'s inboxReadOfTheReleaseBefore (envoy-client/src/dispatch-commands/session.ts),
 #   which reads GET /api/v1/inbox and GET /api/v1/me/replies only where the server answers
 #   GET /api/v1/me/inbox with no route.

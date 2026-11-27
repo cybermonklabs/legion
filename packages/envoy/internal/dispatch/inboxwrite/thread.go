@@ -158,7 +158,12 @@ func threadAndMembers(ctx context.Context, tx pgx.Tx, w Write) (thread, []member
 // breaks by failing one of the two. No owner lock orders two writers of a thread on no issue, so
 // its root does: each of them takes the root before it reads who takes part (PlanRecord), and
 // reads them in the statement after this one, whose snapshot holds every write into the thread
-// that committed before the root was granted to it.
+// that committed before the root was granted to it. The walk starts at a stored message - the one
+// a reply planned before its write names (Write.RepliesTo), or the reply itself once its write ran
+// (Record) - and a write that makes its thread's root walks nowhere (Write.StartsThread), so the
+// root it reaches is always a stored message's: a root the statement finds no row of to lock is
+// one a replies_to of the store names and no row holds, and the write is refused there, rather
+// than read who takes part without the lock that orders it against the thread's other writers.
 func threadHeld(ctx context.Context, tx pgx.Tx, w Write, agentDismissal bool) (thread, error) {
 	root := thread{kind: graphstore.KindMessage, id: w.NodeID}
 	start, depth := w.NodeID, 0
@@ -174,14 +179,17 @@ func threadHeld(ctx context.Context, tx pgx.Tx, w Write, agentDismissal bool) (t
 		Scan(&root.id, &locked); err != nil {
 		return thread{}, fmt.Errorf("take the root of the thread message %s is written in: %w", w.NodeID, err)
 	}
+	if !locked {
+		return thread{}, fmt.Errorf("take the root of the thread message %s is written in: its walk reached message %s, which no row holds", w.NodeID, root.id)
+	}
 	return root, nil
 }
 
 // rootWalkLock is the head of the statements threadHeld takes a thread's root with: the walk from
 // $1, at depth $5, over the message kind $2 and the relation $3, at most $4 deep (messageWalk), and
 // the root's row locked in a subquery of its own, so the statement answers the root the walk
-// reached beside whether its row was there to lock. Each statement ends that subquery with its
-// lock's level.
+// reached beside whether its row was there to lock, which threadHeld refuses the write without.
+// Each statement ends that subquery with its lock's level.
 const rootWalkLock = messageWalk + `,
 		root as (select id from walk order by depth desc limit 1)
 		select root.id, exists (select 1 from messages m where m.id = root.id::uuid `

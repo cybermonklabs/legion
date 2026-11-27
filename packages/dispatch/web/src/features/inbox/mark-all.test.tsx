@@ -11,7 +11,14 @@ import { answerInboxReads } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, NetworkError } from "../../api/client";
-import { meInboxCountQuery, meInboxKey, meInboxQuery, whoAmIQuery } from "../../api/queries";
+import {
+  meInboxCountQuery,
+  meInboxDismissedQuery,
+  meInboxKey,
+  meInboxOwnerQuery,
+  meInboxQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { DispatchEvent, MeInboxResponse, MyReplyRow } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
@@ -20,7 +27,13 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import type { InboxFilters } from "./grouping";
-import { answerOneRead, ONE_READ_AS_OF, oneReadAnswer, oneReadReply } from "./inbox-fixture";
+import {
+  answerOneRead,
+  ONE_READ_AS_OF,
+  oneReadAnswer,
+  oneReadDismissedPages,
+  oneReadReply,
+} from "./inbox-fixture";
 import type { InboxListRow } from "./list-row";
 import {
   MARK_ALL_REFUSED_TEXT,
@@ -277,6 +290,95 @@ test("two presses refused in a row each draw their own rows unread again, and th
   await waitFor(() =>
     expect(result.current).toMatchObject({ count: 2, unread: ["c1", "message-1"] })
   );
+});
+
+// A refused press takes back only what it wrote, read by read. It drew read the rows of every
+// cached read of the one read - the Inbox answer and each owner's unread set - so each row goes
+// back as its own read held it, not as the Inbox answer held it. A read that landed since the
+// press holds what Dispatch holds, and stays as it landed: the issue's unread set, after the
+// reader read c1 in another tab, and the Dismissed view, after they dismissed it there.
+test("a refused press puts back each read's own rows, and leaves a read that landed since as it landed", async () => {
+  const c1 = replyRow("c1");
+  const c2 = replyRow("c2");
+  const onDocument = replyRow("c2", { subject: "As the document's unread set drew it" });
+  const issueSet = meInboxOwnerQuery({ issue: "CORE-1" }).queryKey;
+  const documentSet = meInboxOwnerQuery({ artifact: "artifact-1" }).queryKey;
+  const client = new QueryClient(CLIENT_OPTIONS);
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([c1, c2]));
+  client.setQueryData(meInboxCountQuery().queryKey, 2);
+  client.setQueryData(issueSet, oneReadAnswer([c1]));
+  client.setQueryData(documentSet, oneReadAnswer([onDocument]));
+  const refused = Promise.withResolvers<never>();
+  answerInboxReads().mockReturnValue(refused.promise);
+  const rows: readonly InboxListRow[] = [
+    { kind: "thread", thread: c1 },
+    { kind: "thread", thread: c2 },
+  ];
+  const { result } = renderHook(() => useMarkAllRead({ asOf: AS_OF, filters: {}, rows }), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+
+  act(() => result.current.markAll());
+  await waitFor(() => expect(client.getQueryData<number>(meInboxCountQuery().queryKey)).toBe(0));
+  expect(meInboxThreads(client.getQueryData(documentSet))[0]?.unread).toBe(false);
+
+  const readSince = replyRow("c1", {
+    read_through: "2026-10-12T01:30:00Z",
+    unread: false,
+    unread_count: 0,
+  });
+  const dismissedSince = replyRow("c1", {
+    dismissed_at: "2026-10-12T01:40:00Z",
+    unread: false,
+    unread_count: 0,
+  });
+  act(() => {
+    client.setQueryData(issueSet, oneReadAnswer([readSince]));
+    client.setQueryData(meInboxDismissedQuery().queryKey, oneReadDismissedPages([dismissedSince]));
+  });
+
+  await act(async () => refused.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() => expect(client.getQueryData<number>(meInboxCountQuery().queryKey)).toBe(2));
+  expect(meInboxThreads(client.getQueryData(meInboxQuery().queryKey))).toEqual([c1, c2]);
+  expect(meInboxThreads(client.getQueryData(documentSet))).toEqual([onDocument]);
+  expect(meInboxThreads(client.getQueryData(issueSet))).toEqual([readSince]);
+  const dismissed = client.getQueryData(meInboxDismissedQuery().queryKey);
+  expect(dismissed?.pages.map((page) => meInboxThreads(page))).toEqual([[dismissedSince]]);
+});
+
+// The count can be older than the rows: read before c2 reached the Inbox answer, it says 1 over
+// two unread rows. The press lowers it to 0 and no further, so a refusal gives back the 1 it took,
+// not one for each row it draws unread again.
+test("a refused press over a count below its unread rows gives back only what it took off the count", async () => {
+  const client = new QueryClient(CLIENT_OPTIONS);
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([replyRow("c1"), replyRow("c2")]));
+  client.setQueryData(meInboxCountQuery().queryKey, 1);
+  const refused = Promise.withResolvers<never>();
+  answerInboxReads().mockReturnValue(refused.promise);
+  const { result } = renderHook(
+    () => ({
+      count: useQuery(meInboxCountQuery()).data,
+      markAll: useMarkAllRead({ asOf: AS_OF, filters: {}, rows: [] }),
+      unread: meInboxThreads(useQuery(meInboxQuery()).data)
+        .filter((thread) => thread.unread)
+        .map((thread) => thread.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  act(() => result.current.markAll.markAll());
+  await waitFor(() => expect(result.current).toMatchObject({ count: 0, unread: [] }));
+
+  await act(async () => refused.reject(new ApiError(409, { error: "refused" })));
+  await waitFor(() => expect(result.current).toMatchObject({ count: 1, unread: ["c1", "c2"] }));
 });
 
 // A read of the list asked before the press - an event's refresh, say - answers the rows as they

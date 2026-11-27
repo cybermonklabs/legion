@@ -383,13 +383,11 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request still waiting on a decision, which is the viewer's by
- * construction because the list is read as `?approver=me`. Here that is the band's own rows and
- * nothing narrower, since the one read's `inbox` state, as the read of the release before
- * (`inboxReadOfTheReleaseBefore`), holds only the asks that wait on the caller, as the page's
- * default view does; counting the rows it prints is therefore the page's rule, and it is the one
- * count that cannot disagree with the lines under it. An expired credential request waits on
- * nobody (`awaitsDecision`), so it is not counted here, as the page does not count it, though
- * `Credential requests` lists and counts it until somebody dismisses it.
+ * construction because the list is read as `?approver=me`. The one read's `inbox` state and the
+ * fallback (`inboxReadOfTheReleaseBefore`) both hold only the asks that wait on the caller.
+ * The heading counts the caller's unsnoozed asks waiting on a person and pending credential
+ * requests. The requests appear under `Credential requests`, not under `Needs you`. Expired
+ * requests do not count toward `Needs you` and stay under `Credential requests` until dismissed.
  *
  * `Unread threads` is the page's thread list (the one read's `unread` state, or the read of the
  * release before): the threads the person is reading that somebody else has written in since, and

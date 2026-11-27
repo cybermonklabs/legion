@@ -110,25 +110,23 @@ type CommentRoute struct {
 // delivery, the one mode the comment's writer applies to every route (api's
 // validateCommentMentions). A mention tuples holds already - an identity the comment's text names,
 // or one an earlier route named - is stated once, and a target no route reads, or an end past the
-// store's address bound, is none. Each fact is made by author at at and caused by event.
+// store's address bound, is none. Each fact is made by author at at.
 //
-// Each mention is marked LegacyFromCause and carries event as its legacy_source_seq where event is
-// an event, as a mention the comment's text names does (refs' stateMention): graph_edges' identity
-// arm answers that as the edge's source_seq, so a ?since= read of References whose window holds
-// the comment's event lists the route. A writer that appends the comment's event after these facts
-// passes NoEvent, and QueueCaused gives each mention that event; a mention stated at the sentinel
-// carries none and stays out of that read.
+// Each fact is stated under no event: the writer states it under the event that caused the
+// comment (Cause), the request through QueueCaused after the comment's event and the backfill
+// through Cause.Append. Each mention is marked LegacyFromCause, as a mention the comment's text
+// names is (refs' stateMention), so it takes that event as its legacy_source_seq too, where it is
+// an event: graph_edges' identity arm answers that as the edge's source_seq, so a ?since= read of
+// References whose window holds the comment's event lists the route. The delivery value is no
+// mention and takes the event as its source_event alone; a mention stated at the sentinel carries
+// none and stays out of that read.
 //
 // It is the one statement of these facts, which the request that writes a comment (api's
 // commentMentionFacts) and the backfill of the routes an older build's comment names
 // (graphcensus' writeCommentMentions) both write.
-func CommentMentionFacts(tuples []UncausedTuple, id string, routes []CommentRoute, delivery string, author model.Actor, at time.Time, event int64) []UncausedTuple {
+func CommentMentionFacts(tuples []UncausedTuple, id string, routes []CommentRoute, delivery string, author model.Actor, at time.Time) []UncausedTuple {
 	if len(routes) == 0 {
 		return tuples
-	}
-	var legacy *int64
-	if event != NoEvent {
-		legacy = &event
 	}
 	stated := make(map[[2]string]struct{}, 2*len(routes))
 	for _, held := range tuples {
@@ -144,7 +142,7 @@ func CommentMentionFacts(tuples []UncausedTuple, id string, routes []CommentRout
 		stated[end] = struct{}{}
 		tuples = append(tuples, UncausedTuple{Tuple: Tuple{
 			FromKind: KindComment, FromID: id, Kind: TupleMentions, ToKind: kind, ToID: to,
-			At: at, Who: author, SourceEvent: event, LegacySourceSeq: legacy, Asserted: true,
+			At: at, Who: author, Asserted: true,
 		}, LegacyFromCause: true})
 	}
 	for _, route := range routes {
@@ -157,7 +155,7 @@ func CommentMentionFacts(tuples []UncausedTuple, id string, routes []CommentRout
 	}
 	return append(tuples, UncausedTuple{Tuple: Tuple{
 		FromKind: KindComment, FromID: id, Kind: TupleDelivery, ToKind: KindValue, ToID: delivery,
-		At: at, Who: author, SourceEvent: event, Asserted: true,
+		At: at, Who: author, Asserted: true,
 	}})
 }
 

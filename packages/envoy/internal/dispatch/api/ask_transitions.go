@@ -618,28 +618,27 @@ func (s *server) closeAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 // For an answer it also reads, before the answer's queued update moves the ask's marker, what that
 // marker still owes the store (inboxwrite.ReadAsk), which closeAskTx records with the answer; any
 // other transition reads nothing of it, and answers the zero value. An answer reads who takes part
-// in the ask's thread, so where the ask is open, handed to nobody and on an owner that falls
-// through to its project's default assignee, the project the owner check read
-// (requireOpenOwnerStatusAndDefault) is held shared before that read
-// (inboxwrite.HoldProjectDefault): a move of the default either committed first, and the answer
-// reaches the person it moved the ask to, or waits for the answer and then finds the ask closed,
-// which it moves nothing of.
+// in the ask's thread, so the project whose default assignee the ask falls through to, which the
+// read of the ask answers beside it by the one rule every writer into an ask's thread reads
+// (readAskAndDefaultForTransition, inboxwrite.AskDefaultProject), is held shared before that read
+// (inboxwrite.HoldProjectDefault), after the owner's lock and before any asks row: a move of the
+// default either committed first, and the answer reaches the person it moved the ask to, or waits
+// for the answer and then finds the ask closed, which it moves nothing of.
 func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, id string, transition askTransition, held *graphstore.Uncaused) (model.Ask, inboxwrite.Ask, error) {
 	unlockedAsk, err := s.loadAsk(ctx, tx, id)
 	if err != nil {
 		return model.Ask{}, inboxwrite.Ask{}, err
 	}
-	owner := ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)
-	var project string
-	if transition.Inbox == inboxwrite.Replies {
-		_, project, err = s.requireOpenOwnerStatusAndDefault(ctx, tx, owner)
-	} else {
-		err = s.requireOpenOwner(ctx, tx, owner)
-	}
-	if err != nil {
+	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		return model.Ask{}, inboxwrite.Ask{}, err
 	}
-	ask, err := s.readAskForTransition(ctx, tx, id)
+	var ask model.Ask
+	var project string
+	if transition.Inbox == inboxwrite.Replies {
+		ask, project, err = s.readAskAndDefaultForTransition(ctx, tx, id)
+	} else {
+		ask, err = s.readAskForTransition(ctx, tx, id)
+	}
 	if err != nil {
 		return model.Ask{}, inboxwrite.Ask{}, err
 	}
@@ -667,10 +666,8 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	// planned, so the record reads them no second time.
 	var before inboxwrite.Ask
 	if transition.Inbox == inboxwrite.Replies {
-		if ask.State == asks.StateOpen && ask.AskedOf == nil {
-			if err := inboxwrite.HoldProjectDefault(ctx, tx, project); err != nil {
-				return model.Ask{}, inboxwrite.Ask{}, err
-			}
+		if err := inboxwrite.HoldProjectDefault(ctx, tx, project); err != nil {
+			return model.Ask{}, inboxwrite.Ask{}, err
 		}
 		if before, err = inboxwrite.ReadAskAndMembers(ctx, tx, id); err != nil {
 			return model.Ask{}, inboxwrite.Ask{}, err

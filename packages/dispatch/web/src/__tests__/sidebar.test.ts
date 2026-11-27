@@ -235,9 +235,9 @@ function renderSidebar(
   // them, and draws no number at all until every read it adds up has answered, so the one read
   // is answered here for every test.
   railSpies.push(
-    spyOn(api, "getMeInbox").mockImplementation(async (query = {}) => {
-      const answer = oneReadReply(query, { asks, threads });
-      return query.state === "unread" && unreadTotal !== undefined
+    spyOn(api, "getMeInboxPage").mockImplementation(async (read) => {
+      const answer = oneReadReply(read, { asks, threads });
+      return read.state === "unread" && unreadTotal !== undefined
         ? { ...answer, total: await unreadTotal }
         : answer;
     })
@@ -418,7 +418,7 @@ for (const [unread, name] of [
 
     try {
       await waitFor(() =>
-        expect(api.getMeInbox).toHaveBeenCalledWith({ limit: 1, state: "unread" })
+        expect(api.getMeInboxPage).toHaveBeenCalledWith({ limit: 1, state: "unread" })
       );
       await waitFor(() =>
         expect(screen.getByRole("link", { name: /^Inbox/ }).textContent).toBe(name)
@@ -488,7 +488,7 @@ test("the rail draws no Inbox number after the credential list's first read fail
 
 test("sidebar keeps its hide control available while navigation loads", async () => {
   const user = userEvent.setup();
-  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(
+  const getMeInbox = spyOn(api, "getMeInboxPage").mockImplementation(
     () => new Promise<never>(() => {})
   );
   const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(

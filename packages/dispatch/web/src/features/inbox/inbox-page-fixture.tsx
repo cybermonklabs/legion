@@ -237,7 +237,7 @@ export function holdOneRead(): {
 } {
   const landing = Promise.withResolvers<void>();
   let landed: OneReadHeld = {};
-  const read = spyOn(api, "getMeInbox").mockImplementation(async (query = {}) => {
+  const read = spyOn(api, "getMeInboxPage").mockImplementation(async (query) => {
     if (query.state === "inbox") await landing.promise;
     return oneReadReply(query, landed);
   });

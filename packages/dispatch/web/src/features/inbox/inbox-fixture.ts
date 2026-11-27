@@ -19,7 +19,7 @@ export interface InboxApiMocks {
   getArtifactSubscribers: Mock<typeof api.getArtifactSubscribers>;
   getReferences: Mock<typeof api.getReferences>;
   getCredentialPending: Mock<typeof api.getCredentialPending>;
-  getMeInbox: Mock<typeof api.getMeInbox>;
+  getMeInbox: Mock<typeof api.getMeInboxPage>;
 }
 
 /** Installs the shared fixtures `Inbox.test.tsx`, `Inbox.reading-view.test.tsx` and
@@ -236,15 +236,15 @@ export function oneReadReply(
   return oneReadAnswer([...(held.asks ?? []), ...threads], { asOf, person });
 }
 
-/** Answers `api.getMeInbox` as Dispatch answers each of the page's reads of it (`oneReadReply`)
- *  from what `held` holds, read again at each call, so a test that moves what the server holds
- *  moves what the next read answers. */
+/** Answers `api.getMeInboxPage`, the page's reads of the one read, as Dispatch answers each of
+ *  them (`oneReadReply`) from what `held` holds, read again at each call, so a test that moves
+ *  what the server holds moves what the next read answers. */
 export function answerOneRead(
   held: OneReadHeld | (() => OneReadHeld | Promise<OneReadHeld>),
   options: { asOf?: string; person?: string } = {}
-): Mock<typeof api.getMeInbox> {
-  return spyOn(api, "getMeInbox").mockImplementation(async (query = {}) =>
-    oneReadReply(query, typeof held === "function" ? await held() : held, options)
+): Mock<typeof api.getMeInboxPage> {
+  return spyOn(api, "getMeInboxPage").mockImplementation(async (read) =>
+    oneReadReply(read, typeof held === "function" ? await held() : held, options)
   );
 }
 

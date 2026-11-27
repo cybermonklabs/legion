@@ -4,16 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // The tests of the writes a build before this one makes that change no row this release marks
@@ -72,6 +77,24 @@ func requireEnded(t *testing.T, database *store.Store, what, fromKind, fromID, k
 	t.Helper()
 	if asserted, under := newestOf(t, database, fromKind, fromID, kind, toKind, toID); asserted {
 		t.Errorf("%s: %s/%s -%s-> %s/%s still stands, under event %d", what, fromKind, fromID, kind, toKind, toID, under)
+	}
+}
+
+// requireRetracted fails unless the newest tuple of the relation retracts it under event.
+func requireRetracted(t *testing.T, database *store.Store, what string, event int64, fromKind, fromID, kind, toKind, toID string) {
+	t.Helper()
+	if asserted, under := newestOf(t, database, fromKind, fromID, kind, toKind, toID); asserted || under != event {
+		t.Errorf("%s: the newest %s/%s -%s-> %s/%s asserts %t under event %d, want it retracted under %d",
+			what, fromKind, fromID, kind, toKind, toID, asserted, under, event)
+	}
+}
+
+// requireCurrent fails unless the newest tuple of the relation asserts it, under whichever event.
+func requireCurrent(t *testing.T, database *store.Store, what, fromKind, fromID, kind, toKind, toID string) {
+	t.Helper()
+	if asserted, under := newestOf(t, database, fromKind, fromID, kind, toKind, toID); !asserted {
+		t.Errorf("%s: %s/%s -%s-> %s/%s does not stand (its newest tuple is under event %d), want it standing",
+			what, fromKind, fromID, kind, toKind, toID, under)
 	}
 }
 
@@ -489,6 +512,417 @@ func TestTheBackfillStatesThePeopleAnOlderBuildsEditOfAnIssueMessageNames(t *tes
 	requireASecondRunAppendsNothing(t, writes.database)
 }
 
+// R5: a mention follows the text that holds it, and R4: participation outlives the mention that
+// brought it. This release's edit of a comment retracts the mention of each identity its new text
+// no longer names, and its delete, which leaves the comment no text, the mention of each identity
+// its text named, each under the write's own event; neither retracts the mention of a delivery
+// route of the comment (its comment_mentions rows), delivers anything, or ends anybody's part in
+// the thread (api's editComment and deleteComment, refs' unnamedMentions).
+//
+// alice's comment, written as a build of the release before writes it, names dave and the reviewer
+// role and routes its delivery to an agent's session; the backfill states the three mentions, and
+// dave's delivery and part in the comment's thread, under the comment's event. That build then
+// edits the comment to name dave alone, and then deletes it, each event carrying the comment as the
+// write left it - the delete's with an empty body - and the trigger queues each. Once the edit is
+// caught up, the newest mention of the role is a retraction under the edit's event, and dave's and
+// the session's stand; once the delete is, the newest mention of dave is a retraction under the
+// delete's event, the session's route still stands, and dave keeps the comment's delivery and his
+// part in its thread. The queue empties, the census of user_threads reads no difference, and a
+// second run appends nothing. Its control is writeOlderEdit appending no retraction (its
+// refs.ItemUnnamedMentions left out): the role's mention stays current after the edit, and dave's
+// after the delete.
+func TestTheCatchUpRetractsWhatAnOlderBuildsEditAndDeleteOfACommentTakeOut(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	const named = "Over to dispatch://person/" + daveAddress + " and dispatch://role/reviewer for the copy."
+	routes := []model.Mention{{Target: "session:" + routedSession, Delivery: "btw"}}
+	var comment olderWrite
+	created := writes.write(t, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		if err := tx.QueryRow(ctx, `
+			insert into comments (issue_key, author, body) values ('CENS-1', $1, $2)
+			returning id::text, created_at`, actorJSON(t, alice), named).Scan(&comment.id, &comment.at); err != nil {
+			return model.Event{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into comment_mentions (comment_id, target, delivery) values ($1::uuid, $2, $3)
+		`, comment.id, routes[0].Target, routes[0].Delivery); err != nil {
+			return model.Event{}, err
+		}
+		return model.Event{IssueKey: new("CENS-1"), Type: "comment.created", Actor: alice, Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: comment.id, IssueKey: new("CENS-1"), Author: alice, Body: named, CreatedAt: comment.at, Mentions: routes,
+		}}}, nil
+	})
+	comment.event = created.ID
+	backfillInboxOnce(t, writes.database)
+	for _, identity := range []struct{ kind, id string }{{graphstore.KindPerson, daveAddress}, {graphstore.KindRole, "reviewer"}} {
+		requireStands(t, writes.database, "the backfill of the comment", comment.event,
+			graphstore.KindComment, comment.id, graphstore.TupleMentions, identity.kind, identity.id)
+	}
+	requireCurrent(t, writes.database, "the backfill of the comment's route",
+		graphstore.KindComment, comment.id, graphstore.TupleMentions, graphstore.KindSession, routedSession)
+
+	const kept = "Over to dispatch://person/" + daveAddress + " for the copy."
+	edited := writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		var editedAt time.Time
+		if err := tx.QueryRow(ctx, `
+			update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at
+		`, comment.id, kept).Scan(&editedAt); err != nil {
+			return model.Event{}, err
+		}
+		stamp := editedAt.UTC().Format(time.RFC3339Nano)
+		return model.Event{IssueKey: new("CENS-1"), Type: "comment.edited", Actor: alice, Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: comment.id, IssueKey: new("CENS-1"), Author: alice, Body: kept, EditedAt: &stamp, CreatedAt: comment.at, Mentions: routes,
+		}}}, nil
+	})
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != edited.ID {
+		t.Fatalf("the queue holds %v after the older build's edit, want its comment.edited %d alone", queued, edited.ID)
+	}
+	backfillInboxOnce(t, writes.database)
+	requireRetracted(t, writes.database, "the edit's retraction", edited.ID,
+		graphstore.KindComment, comment.id, graphstore.TupleMentions, graphstore.KindRole, "reviewer")
+	requireStands(t, writes.database, "the edit, which names dave still", comment.event,
+		graphstore.KindComment, comment.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+	requireCurrent(t, writes.database, "the comment's route after the edit",
+		graphstore.KindComment, comment.id, graphstore.TupleMentions, graphstore.KindSession, routedSession)
+
+	deleted := writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		var deletedAt time.Time
+		if err := tx.QueryRow(ctx, `
+			update comments set body = '', deleted_at = now(), deleted_by = $2 where id = $1::uuid returning deleted_at
+		`, comment.id, actorJSON(t, alice)).Scan(&deletedAt); err != nil {
+			return model.Event{}, err
+		}
+		deletedBy := alice
+		return model.Event{IssueKey: new("CENS-1"), Type: "comment.deleted", Actor: alice, Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: comment.id, IssueKey: new("CENS-1"), Author: alice, CreatedAt: comment.at, DeletedAt: &deletedAt, DeletedBy: &deletedBy, Mentions: routes,
+		}}}, nil
+	})
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != deleted.ID {
+		t.Fatalf("the queue holds %v after the older build's delete, want its comment.deleted %d alone", queued, deleted.ID)
+	}
+	backfillInboxOnce(t, writes.database)
+	requireRetracted(t, writes.database, "the delete's retraction", deleted.ID,
+		graphstore.KindComment, comment.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+	requireRetracted(t, writes.database, "the edit's retraction, which the delete leaves", edited.ID,
+		graphstore.KindComment, comment.id, graphstore.TupleMentions, graphstore.KindRole, "reviewer")
+	requireCurrent(t, writes.database, "the comment's route after the delete",
+		graphstore.KindComment, comment.id, graphstore.TupleMentions, graphstore.KindSession, routedSession)
+	requireStands(t, writes.database, "dave's delivery after the delete", comment.event,
+		graphstore.KindComment, comment.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, daveAddress)
+	requireStands(t, writes.database, "dave's part in the thread after the delete", comment.event,
+		graphstore.KindPerson, daveAddress, graphstore.TupleParticipatesIn, graphstore.KindComment, comment.id)
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
+		t.Errorf("the queue holds %v after the backfill, want none", queued)
+	}
+	requireTheThreadsAgree(t, writes.database, "after the backfill of the edit and the delete")
+	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// R5 and R4 of an issue message, as of a comment: this release's edit of an issue message retracts
+// the mention of each identity its new text no longer names, and its delete, which leaves the
+// message no text, the mention of each identity its text named, each under the write's own event,
+// with no delivery and no participation ended (api's editMessage and deleteMessage).
+//
+// bob's issue message, written as a build of the release before writes it, names dave and an
+// agent's session; the backfill states both mentions, and dave's delivery and part in the message's
+// thread, under the message's event. That build then edits the message to name dave alone, and then
+// deletes it, each event carrying the message as the write left it - the delete's with an empty body
+// - and the trigger queues each. Once the edit is caught up, the newest mention of the session is a
+// retraction under the edit's event and dave's stands; once the delete is, the newest mention of
+// dave is a retraction under the delete's event, and dave keeps the message's delivery and his part
+// in its thread. The queue empties, the census of user_threads reads no difference, and a second run
+// appends nothing. Its control is writeOlderEdit appending no retraction (its
+// refs.ItemUnnamedMentions left out): the session's mention stays current after the edit, and
+// dave's after the delete.
+func TestTheCatchUpRetractsWhatAnOlderBuildsEditAndDeleteOfAnIssueMessageTakeOut(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	const named = "For dispatch://person/" + daveAddress + " to read, with dispatch://agent/" + mentionedSession + "."
+	message := writeAsAnOlderBuild(t, writes, "message.created", bob, `
+		insert into messages (issue_key, author, body) values ('CENS-1', $1, $2)
+		returning id::text, created_at`, actorJSON(t, bob), named)
+	backfillInboxOnce(t, writes.database)
+	for _, identity := range []struct{ kind, id string }{{graphstore.KindPerson, daveAddress}, {graphstore.KindSession, mentionedSession}} {
+		requireStands(t, writes.database, "the backfill of the message", message.event,
+			graphstore.KindMessage, message.id, graphstore.TupleMentions, identity.kind, identity.id)
+	}
+
+	const kept = "For dispatch://person/" + daveAddress + " to read."
+	edited := writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		var editedAt time.Time
+		if err := tx.QueryRow(ctx, `
+			update messages set body = $2, edited_at = now() where id = $1::uuid returning edited_at
+		`, message.id, kept).Scan(&editedAt); err != nil {
+			return model.Event{}, err
+		}
+		return model.Event{IssueKey: new("CENS-1"), Type: "message.edited", Actor: bob, Payload: model.MessageEventPayload{Message: model.Message{
+			ID: message.id, IssueKey: new("CENS-1"), Author: bob, Body: kept, CreatedAt: message.at, EditedAt: &editedAt,
+		}}}, nil
+	})
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != edited.ID {
+		t.Fatalf("the queue holds %v after the older build's edit, want its message.edited %d alone", queued, edited.ID)
+	}
+	backfillInboxOnce(t, writes.database)
+	requireRetracted(t, writes.database, "the edit's retraction", edited.ID,
+		graphstore.KindMessage, message.id, graphstore.TupleMentions, graphstore.KindSession, mentionedSession)
+	requireStands(t, writes.database, "the edit, which names dave still", message.event,
+		graphstore.KindMessage, message.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+
+	deleted := writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+		var deletedAt time.Time
+		if err := tx.QueryRow(ctx, `
+			update messages set body = '', deleted_at = now(), deleted_by = $2 where id = $1::uuid returning deleted_at
+		`, message.id, actorJSON(t, bob)).Scan(&deletedAt); err != nil {
+			return model.Event{}, err
+		}
+		deletedBy := bob
+		return model.Event{IssueKey: new("CENS-1"), Type: "message.deleted", Actor: bob, Payload: model.MessageEventPayload{Message: model.Message{
+			ID: message.id, IssueKey: new("CENS-1"), Author: bob, CreatedAt: message.at, DeletedAt: &deletedAt, DeletedBy: &deletedBy,
+		}}}, nil
+	})
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != deleted.ID {
+		t.Fatalf("the queue holds %v after the older build's delete, want its message.deleted %d alone", queued, deleted.ID)
+	}
+	backfillInboxOnce(t, writes.database)
+	requireRetracted(t, writes.database, "the delete's retraction", deleted.ID,
+		graphstore.KindMessage, message.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+	requireRetracted(t, writes.database, "the edit's retraction, which the delete leaves", edited.ID,
+		graphstore.KindMessage, message.id, graphstore.TupleMentions, graphstore.KindSession, mentionedSession)
+	requireStands(t, writes.database, "dave's delivery after the delete", message.event,
+		graphstore.KindMessage, message.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, daveAddress)
+	requireStands(t, writes.database, "dave's part in the thread after the delete", message.event,
+		graphstore.KindPerson, daveAddress, graphstore.TupleParticipatesIn, graphstore.KindMessage, message.id)
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
+		t.Errorf("the queue holds %v after the backfill, want none", queued)
+	}
+	requireTheThreadsAgree(t, writes.database, "after the backfill of the message's edit and delete")
+	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// R4: a person a thread's text names takes part in it, and R2: an ask that falls through to its
+// project's default reaches whoever that default is. This release's edit of a comment in the thread
+// of such an ask takes the project's owner lock shared before it reads who takes part in the thread
+// (api's editMentionParticipation, inboxwrite.HoldAskDefault), and a move of the default takes it
+// exclusive before it reads anything (putProjectDefaultAssignee): so the move reads the
+// participation the edit states, or the edit runs once the move has committed. The catch-up of an
+// older build's edit of such a comment takes the same lock, before any asks row
+// (writeQueuedInboxEvents' step 2).
+//
+// carol's question on CENS-1, which nobody holds, falls through to project CENS's default, dave, and
+// bob writes a comment in its thread, both as a build of the release before writes them, and the
+// backfill states them; that build then edits bob's comment to name dave, and the trigger queues the
+// edit. The catch-up of the edit and this release's move of the default to erin race, the
+// interleaving forced rather than hoped for, as api's
+// TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn forces its own: each runs on
+// a connection of its own, so the backend it runs on is known; a transaction holds what the first
+// write needs after it has read what it decides on and before it commits, and the second is then
+// started and has to queue behind the first. Either way round, dave, whom the edit names, takes part
+// in the ask's thread from the edit, and the ask stands delivered to erin and not to dave. A catch-up
+// that took no hold on the project lets the second write answer while the first had not committed,
+// and the test fails there: the move, run in the catch-up's middle, would end dave's part in the
+// thread with a retraction newer than the edit's participation, which it could not read yet.
+func TestAMoveOfTheDefaultTakesTurnsWithTheCatchUpOfAnOlderBuildsEditInItsAsksThread(t *testing.T) {
+	ctx := context.Background()
+	const erinAddress = "erin@example.com"
+	type raced struct {
+		writes       addressingWrites
+		ask, comment olderWrite
+		edited       model.Event
+	}
+	// fallingThrough writes, on a database of its own, carol's question and bob's comment in its
+	// thread, backfills them, and writes that build's edit of the comment naming dave.
+	fallingThrough := func(t *testing.T) raced {
+		t.Helper()
+		race := raced{writes: newAddressingWrites(t)}
+		if _, err := race.writes.database.Pool.Exec(ctx, `update projects set default_assignee = $1 where key = 'CENS'`, daveAddress); err != nil {
+			t.Fatalf("make dave project CENS's default: %v", err)
+		}
+		race.writes.createIssue(t, "CENS-1", 1, "U", alice)
+		race.ask = writeAsAnOlderBuild(t, race.writes, "ask.opened", carol, `
+			insert into asks (issue_key, author, question) values ('CENS-1', $1, 'Is the copy final?')
+			returning id::text, created_at`, actorJSON(t, carol))
+		race.comment = writeAsAnOlderBuild(t, race.writes, "comment.created", bob, `
+			insert into comments (issue_key, author, body, ask_id) values ('CENS-1', $1, 'Checking.', $2::uuid)
+			returning id::text, created_at`, actorJSON(t, bob), race.ask.id)
+		backfillInboxOnce(t, race.writes.database)
+		requireStands(t, race.writes.database, "the backfill of carol's question", race.ask.event,
+			graphstore.KindAsk, race.ask.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, daveAddress)
+		const body = "Checking with dispatch://person/" + daveAddress + "."
+		race.edited = writeAsTheReleaseBefore(t, race.writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+			var editedAt time.Time
+			if err := tx.QueryRow(ctx, `
+				update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at
+			`, race.comment.id, body).Scan(&editedAt); err != nil {
+				return model.Event{}, err
+			}
+			stamp := editedAt.UTC().Format(time.RFC3339Nano)
+			return model.Event{IssueKey: new("CENS-1"), Type: "comment.edited", Actor: bob, Payload: model.CommentEventPayload{Comment: model.Comment{
+				ID: race.comment.id, IssueKey: new("CENS-1"), AskID: new(race.ask.id), Author: bob, Body: body, EditedAt: &stamp,
+				CreatedAt: race.comment.at,
+			}}}, nil
+		})
+		if queued := queuedEvents(t, race.writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != race.edited.ID {
+			t.Fatalf("the queue holds %v after the older build's edit, want its comment.edited %d alone", queued, race.edited.ID)
+		}
+		return race
+	}
+	// catchUp starts the pass over the queue alone on a connection of its own (startRun), and
+	// answers its backend and the error it ends with.
+	catchUp := func(t *testing.T, database *store.Store) func() (uint32, <-chan error) {
+		pass := inboxPassOf(t, inboxEventsKind)
+		return func() (uint32, <-chan error) {
+			pid, answered := startRun(t, database, func(ctx context.Context, database *store.Store) (BackfillReport, error) {
+				done, err := runInboxPass(ctx, database, pass, &storeGrowth{})
+				return BackfillReport{Kinds: []KindBackfill{done}}, err
+			})
+			ended := make(chan error, 1)
+			go func() { ended <- (<-answered).err }()
+			return pid, ended
+		}
+	}
+	// moveToErin starts this release's move of project CENS's default to erin on a connection of its
+	// own (moveTheDefault), and answers its backend and the error it ends with.
+	moveToErin := func(t *testing.T, writes addressingWrites) func() (uint32, <-chan error) {
+		return func() (uint32, <-chan error) {
+			mover := storetest.SingleConnection(t, writes.database)
+			var pid uint32
+			if err := mover.Pool.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+				t.Fatalf("read the move's backend: %v", err)
+			}
+			ended := make(chan error, 1)
+			go func() { ended <- moveTheDefault(context.Background(), mover, writes.broker, erinAddress, alice) }()
+			return pid, ended
+		}
+	}
+	// takeTurns starts first, waits for it to queue behind holder, starts second, waits for that to
+	// queue too - behind holder, or behind first, which holds what second must take turns at - lets
+	// holder go, and waits for both to end. early says what second answering before holder went
+	// means. holder goes however takeTurns ends, so a write still queued behind it when a check fails
+	// finishes before its connection's cleanup closes it.
+	takeTurns := func(t *testing.T, holder pgx.Tx, first, second func() (uint32, <-chan error), early string) {
+		t.Helper()
+		defer func() { _ = holder.Rollback(context.Background()) }()
+		firstPid, firstEnded := first()
+		if answer, answered := storetest.WaitForQueuedBehind(t, holder, firstPid, firstEnded); answered {
+			t.Fatalf("the first write answered (%v) before it reached the hold", answer)
+		}
+		secondPid, secondEnded := second()
+		if answer, answered := storetest.WaitForQueuedBehind(t, holder, secondPid, secondEnded); answered {
+			t.Fatalf("%s answered (%v)", early, answer)
+		}
+		if err := holder.Rollback(ctx); err != nil {
+			t.Fatalf("let the first write go: %v", err)
+		}
+		for index, ended := range []<-chan error{firstEnded, secondEnded} {
+			select {
+			case err := <-ended:
+				if err != nil {
+					t.Fatalf("write %d failed: %v", index+1, err)
+				}
+			case <-time.After(lockstep.Wait):
+				t.Fatalf("write %d did not answer within %s of the hold going", index+1, lockstep.Wait)
+			}
+		}
+	}
+	begin := func(t *testing.T, database *store.Store) pgx.Tx {
+		t.Helper()
+		holder, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the holder: %v", err)
+		}
+		t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+		return holder
+	}
+	// requireTheEditsPartStands fails unless dave takes part in the ask's thread from the edit,
+	// whose mention of him stands, and the ask stands delivered to erin, whom the move made its
+	// default, and not to dave.
+	requireTheEditsPartStands := func(t *testing.T, race raced) {
+		t.Helper()
+		database := race.writes.database
+		requireStands(t, database, "the edit's mention", race.edited.ID,
+			graphstore.KindComment, race.comment.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+		requireStands(t, database, "dave's part in the ask's thread, which the edit states", race.edited.ID,
+			graphstore.KindPerson, daveAddress, graphstore.TupleParticipatesIn, graphstore.KindAsk, race.ask.id)
+		var moved int64
+		if err := database.Pool.QueryRow(ctx, `
+			select coalesce(max(id), 0) from events where type = 'settings.project_default_assignee.updated'
+		`).Scan(&moved); err != nil || moved == 0 {
+			t.Fatalf("read the move's event: %d (%v)", moved, err)
+		}
+		requireStands(t, database, "the move's delivery", moved,
+			graphstore.KindAsk, race.ask.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, erinAddress)
+		requireEnded(t, database, "the move's delivery", graphstore.KindAsk, race.ask.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, daveAddress)
+		if queued := queuedEvents(t, database, "events_inbox_owed"); len(queued) != 0 {
+			t.Errorf("the queue holds %v after the catch-up, want none", queued)
+		}
+	}
+
+	// The catch-up stops at its last statement, the delete of the queue rows it took, after it
+	// stated dave's mention and his part in the ask's thread: the holder takes the queue in a mode
+	// that admits the batch's `for no key update` of its rows and not their delete.
+	t.Run("the catch-up of the edit, then a move of the default", func(t *testing.T) {
+		race := fallingThrough(t)
+		holder := begin(t, race.writes.database)
+		if _, err := holder.Exec(ctx, `lock table events_inbox_owed in share mode`); err != nil {
+			t.Fatalf("hold the deletes of the queue: %v", err)
+		}
+		takeTurns(t, holder, catchUp(t, race.writes.database), moveToErin(t, race.writes),
+			"the move of the default, sent while the catch-up of the edit, which stated dave's part in the ask's thread, had not committed,")
+		requireTheEditsPartStands(t, race)
+	})
+
+	// The move stops at the ask's row, which it locks once it holds the project's lock exclusive and
+	// before it reads who takes part in the ask's thread (inboxwrite.QueueMoveWaiting); the catch-up
+	// then waits for it at that lock, before it reads who takes part, and states dave's part once the
+	// move has ended the part the default gave him.
+	t.Run("a move of the default, then the catch-up of the edit", func(t *testing.T) {
+		race := fallingThrough(t)
+		holder := begin(t, race.writes.database)
+		if _, err := holder.Exec(ctx, `select 1 from asks where id = $1::uuid for no key update`, race.ask.id); err != nil {
+			t.Fatalf("hold the ask's row: %v", err)
+		}
+		takeTurns(t, holder, moveToErin(t, race.writes), catchUp(t, race.writes.database),
+			"the catch-up of the edit, sent while the move of the default its ask falls through to had not committed,")
+		requireTheEditsPartStands(t, race)
+	})
+}
+
+// moveTheDefault moves project CENS's default assignee to login, made by by, as this release's
+// putProjectDefaultAssignee moves it, in one transaction on database: the project's owner lock,
+// exclusive, and the default it moves from with the transaction's moment, read under it
+// (store.LockOwnerAndRead); the row's update; the settings.project_default_assignee.updated that
+// records it; and right after that event the move of who each open ask that falls through to the
+// default waits on (inboxwrite.QueueMoveWaiting, inboxwrite.DefaultMoved). It answers the write's
+// error rather than failing a test, so it runs off the test's goroutine.
+func moveTheDefault(ctx context.Context, database *store.Store, broker *events.Broker, login string, by model.Actor) error {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the move of the default: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var previous string
+	var at time.Time
+	if err := store.LockOwnerAndRead(ctx, tx, store.ProjectOwner("CENS"), `
+		select default_assignee, now() from projects where key = $1
+	`, []any{"CENS"}, &previous, &at); err != nil {
+		return fmt.Errorf("read the default the move moves from: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `update projects set default_assignee = $2 where key = $1`, "CENS", login); err != nil {
+		return fmt.Errorf("move the default: %w", err)
+	}
+	moved, err := broker.Append(ctx, tx, model.Event{ProjectKey: new("CENS"), Type: "settings.project_default_assignee.updated", Actor: by,
+		Payload: map[string]any{"project": "CENS", "assignee": login, "thread_logins": []string{previous, login}}})
+	if err != nil {
+		return fmt.Errorf("append the move of the default: %w", err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return inboxwrite.QueueMoveWaiting(b, inboxwrite.DefaultMoved("CENS", at, by), moved.ID)
+	}); err != nil {
+		return fmt.Errorf("move who the asks that fall through to the default wait on: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
 // R9's tick catch-up is the backfill's for a row it reaches only once a run of this build's
 // backfill has recorded its horizon (backfillRan): cmd/dispatch/README.md says "a build of rule 2
 // reads no cursor or horizon of rule 1". The release before this one is of the marking rule
@@ -663,9 +1097,11 @@ func TestTheBackfillTellsTheMakerOfAnOlderBuildsItemsNodeFromItsAuthor(t *testin
 	}
 }
 
-// mentionedSession is the agent's session the texts of these tests name, and daveAddress the
-// address of the person they name.
+// mentionedSession is the agent's session the texts of these tests name, routedSession the one a
+// comment's delivery route names and its text does not, and daveAddress the address of the person
+// they name.
 const (
 	mentionedSession = "019a1c0b-3333-7000-8000-000000000042"
+	routedSession    = "019a1c0b-4444-7000-8000-000000000043"
 	daveAddress      = "dave@example.com"
 )

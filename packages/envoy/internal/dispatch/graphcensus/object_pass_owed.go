@@ -45,11 +45,10 @@ import (
 // attempt row of that item is owed. Its claims append no event, so only a pass started for another
 // reason reaches an attempt one moved. And whatever the events are, it answers true while the queue
 // of the events that build's outbox recorded (events_published_owed) holds one: that record appends
-// no event. So it does while the queue of that build's moves of who an ask waits on and its edits
-// of a comment or an issue message (events_inbox_owed) holds one: the event it queues names no row
-// the catch-up's other passes owe; and while a document that build stated the blocks of without
-// their identity mentions waits for the block identity pass (blockIdentitiesOwed): its fence write
-// appends no event.
+// no event. It also answers true while events_inbox_owed holds an older build's ask assignment
+// change or a comment or issue message edit or delete. The other passes cannot find these
+// writes through row markers. The result is also true while a document from that build owes
+// an identity pass (blockIdentitiesOwed), because its fence write appends no event.
 //
 // The read collects the ids the events name, kind by kind, and reads only those rows and their
 // nodes, through each row's unique key and the node's, so a tick whose events name only rows that

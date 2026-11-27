@@ -90,7 +90,7 @@ const originalApi = {
   getAsk: api.getAsk,
   getCredentialPending: api.getCredentialPending,
   listOpenAsks: api.listOpenAsks,
-  getMeInbox: api.getMeInbox,
+  getMeInboxPage: api.getMeInboxPage,
   getIssue: api.getIssue,
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
@@ -132,7 +132,7 @@ function renderShellAt(
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
   const threads = Array.from({ length: unreadThreads }, (_, index) => replyRow(`c${index}`));
-  api.getMeInbox = async (query = {}) => oneReadReply(query, { asks: inbox, threads });
+  api.getMeInboxPage = async (read) => oneReadReply(read, { asks: inbox, threads });
   // No secrets broker, which is a credential list that answered: the shell's one Inbox number
   // is drawn only once every read it adds up has answered (`useInboxCount`).
   api.getCredentialPending = async () => null;
