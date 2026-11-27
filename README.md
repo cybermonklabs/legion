@@ -195,6 +195,16 @@ machine's CPU count, so the harness that starts it (`packages/pi-shared/test/omp
 `ompEnv`) sets each pool to four, the size CI's runners give it: one such omp held 269 threads
 on a 64-CPU machine and holds 40 with the pools set.
 
+pi-legion's `test` script also names `--timings=test-timings.json`, each test file's duration on
+CI's runner, so that its four workers start the slowest files first. Without it Bun hands the
+files out in its own order, and the step lasted as long as the worker that drew a long file last:
+in five runs of 2026-11-27 that gave Bun no durations, the 224 s
+`legion-stall-watchdog-omp.test.ts` started 142 s to 298 s into the step and ended it each time
+(probe run 46049571159). A file the timings do not name still
+runs; the order changes how long the step takes, never what runs. Refresh the file when a file's
+duration changes by minutes, from CI's runner: `bun test --parallel=4 --timings=<a copy>
+--update-timings` writes each file's duration into the copy.
+
 Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
 tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_URL` (its client URL)

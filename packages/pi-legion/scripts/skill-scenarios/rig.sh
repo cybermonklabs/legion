@@ -29,9 +29,10 @@
 #                                                  starts the scratch services and runs each
 #                                                  label's cell of the case the scenario's case
 #                                                  variable names until <count> runs of it scored,
-#                                                  at most three times <count> launches, a run
-#                                                  already in <work>/runs counted among them; a
-#                                                  cell short of its count prints UNKNOWN. With
+#                                                  at most three times <count> launches (or
+#                                                  SKILL_SCENARIOS_LAUNCHES), a run already in
+#                                                  <work>/runs counted among them; a cell short of
+#                                                  its count prints UNKNOWN. With
 #                                                  RT_STORE, each run is stored as it ends, its
 #                                                  pack and then its row, which names the pack's
 #                                                  sha256 (store_scored_run)
@@ -280,6 +281,12 @@
 #                                 test infrastructure, and production never sets this: rig.test.ts's
 #                                 notice row sets it for its control, which publishes a notice of
 #                                 its own to another role
+#   SKILL_SCENARIOS_LAUNCHES      `batch-scored`: the most launches a cell makes, a whole number
+#                                 above 0, in place of three times its count (batch_scored_cell). A
+#                                 run that ends at its bound with no turn is a rig error, so a cell
+#                                 whose every run ends so launches until this cap. Production never
+#                                 sets this: rig.test.ts's notice row sets 1 for its control, whose
+#                                 one run ending at its bound is the result the control needs
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -2551,22 +2558,27 @@ scored_attempt() {
 scored_index=0
 
 # batch_scored_cell SCENARIO LABEL CASE COUNT launches runs of CASE under LABEL (scored_attempt)
-# until COUNT of them hold a scored row, and stops the cell at three times COUNT launches, where
-# it prints UNKNOWN: a cell short of its count is never a pass. The runs of the cell already in
+# until COUNT of them hold a scored row, and stops the cell at three times COUNT launches, or at
+# SKILL_SCENARIOS_LAUNCHES when it is set (the header), where it prints UNKNOWN: a cell short of
+# its count is never a pass. The runs of the cell already in
 # $work/runs, each with its row, count as launches too: a restarted Job counts the runs rig.sh
 # restore-stored put back. A run its store does not hold, one lost to an eviction mid-run or whose
 # pack or put failed, is not counted, so a Job that restarts can launch more than three times its
 # count in all. The count runs without RT_STORE too: in a work directory that already holds runs
 # of the cell, those runs are among its launches.
 batch_scored_cell() {
-  local scenario=$1 label=$2 case=$3 count=$4 launches=0 dir
+  local scenario=$1 label=$2 case=$3 count=$4 launches=0 dir most=$((3 * $4)) cap="three times its count"
+  if [ -n "${SKILL_SCENARIOS_LAUNCHES:-}" ]; then
+    most=$SKILL_SCENARIOS_LAUNCHES
+    cap="SKILL_SCENARIOS_LAUNCHES"
+  fi
   for dir in "$work/runs/$scenario-$case-$label-"*; do
     [[ ${dir##*/} =~ ^$scenario-$case-$label-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
     launches=$((launches + 1))
   done
   while [ "$(scored_count "$label" "$case")" -lt "$count" ]; do
-    if [ "$launches" -ge $((3 * count)) ]; then
-      echo "UNKNOWN: $scenario $label $case: $(scored_count "$label" "$case") scored runs of $count after $launches launches, three times its count"
+    if [ "$launches" -ge "$most" ]; then
+      echo "UNKNOWN: $scenario $label $case: $(scored_count "$label" "$case") scored runs of $count after $launches launches, $cap"
       return 0
     fi
     launches=$((launches + 1))
@@ -2842,6 +2854,8 @@ cmd_batch_scored() {
   local scenario=$1 count=$2 label case
   [ "$scenario" = owner-walk ] || fail "batch-scored runs owner-walk, the one scored scenario, not '$scenario'"
   [[ $count =~ ^[1-9][0-9]*$ ]] || fail "the count '$count' is not a whole number above 0"
+  [[ ${SKILL_SCENARIOS_LAUNCHES-1} =~ ^[1-9][0-9]*$ ]] ||
+    fail "SKILL_SCENARIOS_LAUNCHES '${SKILL_SCENARIOS_LAUNCHES}' is not a whole number above 0"
   case=$(owner_walk_case) || exit 1
   shift 2
   for label in "$@"; do
