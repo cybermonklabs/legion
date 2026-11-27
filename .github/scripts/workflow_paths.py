@@ -2,7 +2,8 @@
 them: a walk of the repository's files, a path glob as a regex, an ordered pattern list where `!`
 negates, a dorny/paths-filter filter under its predicate quantifier, and a workflow's events; and
 the YAML those filters are written in, read as strictly as those readers read it: a mapping's
-repeated keys, and a loader that refuses a file holding one.
+repeated keys, a loader that refuses a file holding one, and the readers of a composed node
+(mapping_get, scalar) every rule of check-workflow-files.sh reads a workflow with.
 
 check-image-trigger-paths.sh and check-ci-filters.sh (through ci_filter_coverage.py) import it from
 the repository they check, running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3`
@@ -174,6 +175,21 @@ def written_key(name: yaml.ScalarNode) -> str | None:
     """A key as js-yaml compares it: its text exactly, and a merge key not at all, since js-yaml
     lets a mapping hold any number of `<<` keys (lib/loader.js, storeMappingPair)."""
     return None if name.tag == MERGE_TAG else name.value
+
+
+def mapping_get(node: object, key: str) -> object:
+    """The value of `key` in a composed mapping, or None."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    for name, value in node.value:
+        if isinstance(name, yaml.ScalarNode) and name.value == key:
+            return value
+    return None
+
+
+def scalar(node: object) -> str | None:
+    """A composed scalar's text, its blanks at either end taken off, or None for any other node."""
+    return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
 
 
 class UniqueKeyLoader(yaml.SafeLoader):

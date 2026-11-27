@@ -39,11 +39,17 @@ jobs:
       # refuses on GitHub Actions without one.
       - uses: ./.github/actions/install-jj
       - name: Test contracts
-        run: bun run test
+        run: ../../.github/scripts/bun_test_run.py test bun run test
         working-directory: packages/contracts
       - name: Build contracts
         run: bun run build
         working-directory: packages/contracts
+
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

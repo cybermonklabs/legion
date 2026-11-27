@@ -38,7 +38,13 @@ jobs:
       - name: Typecheck the conflict measurement script
         run: bunx tsc --noEmit -p scripts/conflicts
       - name: Test the conflict measurement script
-        run: bun test scripts/conflicts
+        run: .github/scripts/bun_test_run.py scripts-conflicts bun test scripts/conflicts
+
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

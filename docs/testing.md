@@ -337,6 +337,71 @@ itself, whose tests import its sources by relative path.
   running. A request with a JSON object body, an empty body or no body is recorded and answered as
   the case's own answer decides.
 
+## Which bun tests a CI job ran
+
+- Every bun test step of `ci.yaml`'s run runs its bun test under `.github/scripts/bun_test_run.py`:
+  `../../.github/scripts/bun_test_run.py test bun run test` from a package, or
+  `.github/scripts/bun_test_run.py scripts-dispatch bun test scripts/dispatch` at the root. The
+  wrapper adds bun's JUnit reporter (`--reporter=junit --reporter-outfile`) and writes the record
+  of the run under `$RUNNER_TEMP/bun-test-reports/`, at the path of the working directory then
+  the name it is given (`packages/pi-shared/test.xml`, or `scripts-dispatch.xml` at the root): the
+  report, `<report>.run` before bun starts, `<report>.t` for a `-t` pattern, and `<report>.exit`
+  once bun has ended, with bun's exit status and the count of errors bun's summary printed. bun's
+  exit status decides the step, except that a run bun ended with 0 fails when its record breaks a
+  clause (below); and the console is bun's, but for the `::error::` lines the wrapper adds when it
+  refuses a run or fails one.
+- `.github/scripts/bun_test_record.py` states the one rule that says when a run's record is
+  whole, in five clauses: an exit status is there; a report bun 1.4.4 writes is there; bun counted
+  no error outside a test (a file that does not load is one); no entry with no line is a failure
+  (a hook that threw, a `--parallel` worker that crashed); and a non-zero exit comes with a
+  failure the record shows. The reader prints an `unknown` line for each clause a run breaks, and
+  for clause 4 one for each failed entry, and exits 1; the wrapper fails a step whose bun exited 0
+  when its run breaks one (bun 1.4.4 exits 0 and writes no report when it cannot write its
+  outfile, and when a test calls `process.exit`).
+- The wrapper refuses, before bun starts, a run whose record could not be whole: a `-t` pattern
+  that is not a literal name (a regular expression's special character, or more than 1,000
+  characters; the record matches a pattern as a literal substring, never compiles it), on the
+  command line or in the script `bun run` runs; a reporter of the command's or the script's own;
+  a `bun run` from a directory with no `package.json` (bun runs the script at the package's
+  root); and a `bun run` of a script that is not one `bun test` command (bun gives the reporter
+  flags to its last command alone). So a step that runs a chained script, as dispatch-ui's "Test
+  dispatch dashboard" does, runs each command under the wrapper, and holds the script to the
+  commands it runs.
+- The job uploads that directory, its hidden files included, as the artifact
+  `bun-test-reports-<job id>` in its step "Keep the bun test reports"
+  (`.github/actions/bun-test-reports-upload`), under `if: always()`, after its last bun test step
+  (after the pool's wait, for a run `harness-pool.sh` starts). The job id is the check run id in
+  the job's URL. A re-run attempt gives the jobs it re-runs new ids and artifacts of their own; a
+  job it does not re-run is listed again under a new id with no artifact, and the artifact keeps
+  the id of the attempt that ran the job. The artifact is kept for the repository's retention,
+  90 days, and is public, as the log is.
+- `.github/scripts/check-workflow-files.sh`'s rule 8 (`.github/scripts/bun_test_steps.py`) holds
+  each bun test step of `ci.yaml`'s run to the wrapper, each such job to that upload step, and the
+  upload action's artifact name and path to the record's, and refuses a bare `bun test` or
+  `bun run test…`. Its docstring lists the forms it does not read.
+- bun writes a test that a `-t` pattern does not select as skipped, exactly as it writes a
+  `test.skip`. So the reader calls a skipped test whose name the run's `<report>.t` does not find
+  `unselected`: it did not run in that step, which says nothing about its code.
+- `.github/scripts/bun_test_reports.py <run id>` prints one JSON line per test of the run: its job
+  and the attempt that ran it, its file from the repository's root, its name with its describe
+  blocks (`outer > inner > name`, as the console prints it), its status (pass, fail, skip, todo,
+  unselected), bun's seconds and its line. Where a record is not whole it prints an `unknown` line
+  and exits 1; its docstring lists every such line. `--store DIR` keeps what it downloads.
+- On a cancel or a step's `timeout-minutes` the runner signals the step's shell alone, so the
+  wrapper and bun run on until the job ends. A step's timeout ends that step as failed, not the
+  job as cancelled (`.github/scripts/ci-tools-proof.sh` reads such a step as `outcome=failure`),
+  so the reader's line for a cancelled job does not see it. An upload before bun ends finds the
+  run's marker with no exit status, which the first clause makes unknown; an upload after bun
+  ended on its own reads the run whole, as its tests did run.
+- An artifact is written by the run's own tests too, so the reader holds it as untrusted input: it
+  matches a `.t` only as a literal substring, and refuses by name, before it downloads or unpacks
+  anything, an artifact above 64 MiB as GitHub lists it or as its members unpack.
+- What the record cannot see: a step that never started (an earlier step failed, or its `if:` was
+  false) writes nothing, and nothing of it is printed; the names of the tests a file that did not
+  load, a describe whose hook threw, or a crashed worker did not report are in no record (the run
+  is unknown, and the log holds what bun printed); and a bun test the rule does not read (its
+  docstring lists those forms, and a workflow outside `ci.yaml`'s run) keeps no record.
+
 ## A Bun test waits for its fact, and its command sets its one guard
 
 - Wait for a fact through `@legion/test-fixtures/wait` (`until`, `settled`), and give the wait no

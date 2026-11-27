@@ -3,7 +3,8 @@
 # parses as YAML, repeats no mapping key after upper-casing, calls at most 45 unique reusable
 # workflows, sets JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they
 # stand for, and starts every Postgres service on postgres-service-settings.sh's command line
-# with a step that reads it back.
+# with a step that reads it back. Rule 8, the bun test reports rule, has a harness of its own:
+# .github/scripts/bun_test_steps.test.sh.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
@@ -318,7 +319,7 @@ check "exits 0" "$(is "$status" 0)"
 check "says what it read" \
   "$(contains "$out" '^all 46 workflow files under .github/workflows are within 64,000 bytes')"
 check "and what it held them to" \
-  "$(contains "$out" 'call at most 45 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and start every Postgres service on postgres-service-settings.sh.s command line with a step that reads it back$')"
+  "$(contains "$out" 'call at most 45 unique reusable workflows, set JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service on postgres-service-settings.sh.s command line with a step that reads it back, and run each of 0 bun test command(s) in 0 step(s) of 0 job(s) of ci.yaml.s run under bun_test_run.py, each job keeping its reports$')"
 
 echo "case: job ids and with: keys that differ only in case"
 root=$(fixture folded-elsewhere)
@@ -695,7 +696,7 @@ check "refuses those six and nothing else" "$(contains "$out" '^6 problem(s) acr
 echo "case: a settings script that prints no command line is refused by name, and the read-back is still held"
 broken="$work/broken-scripts"
 mkdir -p "$broken"
-cp "$check_script" "$script_dir/workflow_paths.py" "$broken/"
+cp "$check_script" "$script_dir/workflow_paths.py" "$script_dir/bun_test_steps.py" "$script_dir/bun_test_record.py" "$broken/"
 printf '#!/usr/bin/env bash\necho "no settings here" >&2\nexit 3\n' > "$broken/postgres-service-settings.sh"
 root="$work/broken-settings"
 mkdir -p "$root/.github/scripts" "$root/.github/workflows"

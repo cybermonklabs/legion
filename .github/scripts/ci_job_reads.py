@@ -73,6 +73,7 @@ from typing import NamedTuple
 
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
+from bun_test_record import UPLOAD_ACTION, WRAPPER as BUN_TEST_RUN
 from ci_filter_sources import excluded, load_directives, load_gate_files
 from go_build_tags import compiled, go_skips_dir, tag_sets
 import go_legs
@@ -347,6 +348,29 @@ def bun_job(job, workflow=""):
     )
 
 
+# The wrapper every bun test step of ci.yaml's run runs its bun test under (check-workflow-files.sh's
+# rule 8 holds each such step to it), and the upload step every such job ends with, as
+# bun_test_record.py spells them.
+BUN_TEST_RECORD = ".github/scripts/bun_test_record.py"
+
+
+def bun_test_step(job, step, workflow=""):
+    """What `step`, a bun test step of `job`, reads to run its bun test: the wrapper and the
+    record's module it imports."""
+    return reads(
+        (BUN_TEST_RUN, f"{at(job, step, workflow)} runs its bun test under it, which writes the report"),
+        (BUN_TEST_RECORD, f"{BUN_TEST_RUN} imports the record's names and its rule from it"),
+    )
+
+
+def bun_test_run(job, step, workflow=""):
+    """bun_test_step for one of the job's bun test steps (the rest run the same two files), and
+    the job's upload of what they write."""
+    return bun_test_step(job, step, workflow) + reads(
+        (f"{UPLOAD_ACTION.removeprefix('./')}/**", at(job, UPLOAD_ACTION, workflow)),
+    )
+
+
 def biome(where):
     return reads(
         ("biome.json", f"{where}: Biome reads the root config"),
@@ -434,11 +458,12 @@ BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.
 TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
-# The test job's run of the live proofs' libraries, cited by its whole run: text: the root
-# package.json's test:e2e-lib (bun test --timeout 200000 scripts/e2e/lib), which every runner uses.
-# It leaves out scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint),
-# so the natsfloor build that file starts is no read of this job.
-E2E_LIB_TESTS = "bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
+# The test job's run of the live proofs' libraries, cited by its step id: the root package.json's
+# test:e2e-lib (`bun test --parallel=8 --timeout 200000 scripts/e2e/lib`), which every runner
+# uses, under bun_test_run.py, which keeps its JUnit report. It leaves out
+# scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint), so the
+# natsfloor build that file starts is no read of this job.
+E2E_LIB_TESTS = "e2e-lib-tests"
 
 
 def dispatch_api_types(step):
@@ -2608,6 +2633,7 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 # filter selects the job for the same change.
 GUIDE_LAYOUT_READS = reads(
     ("scripts/semantic-line-breaks.guides.test.ts", at(TOOLING_JOB, GUIDES_STEP)),
+) + bun_test_step(TOOLING_JOB, GUIDES_STEP) + reads(
     ("scripts/semantic-line-breaks.ts", "`scripts/semantic-line-breaks.guides.test.ts#Bun.spawnSync` spawns it as `scripts/semantic-line-breaks.guides.test.ts#SCRIPT`"),
     ("AGENTS.md", "`scripts/semantic-line-breaks.guides.test.ts#the root guide, the contributing guide, the e2e README and the Kubernetes doc keep the layout` and `scripts/semantic-line-breaks.guides.test.ts#GUIDES` runs the checker over GUIDES"),
     ("CONTRIBUTING.md", "`scripts/semantic-line-breaks.guides.test.ts#the root guide, the contributing guide, the e2e README and the Kubernetes doc keep the layout` and `scripts/semantic-line-breaks.guides.test.ts#GUIDES` runs the checker over GUIDES"),

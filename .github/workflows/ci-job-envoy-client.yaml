@@ -61,7 +61,7 @@ jobs:
       - name: Test Envoy client
         run: |
           mkdir -p "$RUNNER_TEMP/envoy-client-tmp"
-          TMPDIR="$RUNNER_TEMP/envoy-client-tmp" bun run test
+          TMPDIR="$RUNNER_TEMP/envoy-client-tmp" ../../.github/scripts/bun_test_run.py test bun run test
         working-directory: packages/envoy-client
         env:
           LEGION_E2E: "1"
@@ -77,6 +77,12 @@ jobs:
       - name: Build Envoy client
         run: bun run build
         working-directory: packages/envoy-client
+
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -44,4 +44,5 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
                   'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "README.md")`'),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
-  + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build"))
+  + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build")
+  + bun_test_run("pi-legion-build", "Check the skills against their guard"))

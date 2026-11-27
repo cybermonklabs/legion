@@ -168,10 +168,10 @@ jobs:
         run: .github/scripts/harness-pool.sh start .github/scripts/release-bump.test.sh .github/scripts/release-bump.test.sh
 
       - name: Test third-party notices
-        run: bun test scripts/third-party-notices.test.ts
+        run: .github/scripts/bun_test_run.py scripts-third-party-notices bun test scripts/third-party-notices.test.ts
 
       - name: Test the semantic line-break checker
-        run: bun test scripts/semantic-line-breaks.test.ts
+        run: .github/scripts/bun_test_run.py scripts-semantic-line-breaks bun test scripts/semantic-line-breaks.test.ts
 
       - name: Test the Bun pin check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_bun_version_test"')
@@ -361,6 +361,14 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"race_memory_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/race_memory.test.sh .github/scripts/race_memory.test.sh
 
+      - name: Test the wrapper and the reader of the bun test reports
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"bun_test_reports_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/bun_test_reports.test.sh .github/scripts/bun_test_reports.test.sh
+
+      - name: Test the workflow file check's bun test reports rule
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"bun_test_steps_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/bun_test_steps.test.sh .github/scripts/bun_test_steps.test.sh
+
       # The machine watch's test runs as the first process of its own unprivileged user, mount and
       # PID namespaces, so no sampler it starts outlives it, and its falling-least case watches a
       # tmpfs it mounts in a further namespace, so that no other writer moves the free space it
@@ -394,10 +402,10 @@ jobs:
         run: .github/scripts/harness-pool.sh start .github/actions/architecture-check/check.test.sh .github/actions/architecture-check/check.test.sh
 
       - name: Test the Dispatch census script
-        run: bun test scripts/dispatch
+        run: .github/scripts/bun_test_run.py scripts-dispatch bun test scripts/dispatch
 
       - name: Test the approval-eval statistics
-        run: bun test scripts/approval-eval
+        run: .github/scripts/bun_test_run.py scripts-approval-eval bun test scripts/approval-eval
 
       # scripts/search-measure's psql helper: the password a DSN carries reaches psql in PGPASSWORD
       # alone, in no argument. A stand-in psql answers, so it needs no Postgres; the runner's own
@@ -505,8 +513,9 @@ jobs:
       # 137338546977), against a median 178 s run alone over 412 pull-request runs of 2026-11-22,
       # before the harnesses above ran beside it. app-logins.test.ts's rows, 32.5 s in that run, are
       # one file in one worker, the floor of the step at any worker count.
-      - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
+      - id: e2e-lib-tests
+        name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
+        run: .github/scripts/bun_test_run.py scripts-e2e-lib bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
 
       # The verdict on the script harnesses the steps above queued: it waits for the last of them,
       # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming
@@ -527,6 +536,12 @@ jobs:
       - name: Name the script harnesses a cancelled job left
         if: cancelled() && steps.harness-wait.outcome == 'skipped'
         run: .github/scripts/harness-pool.sh wait --allow-none --now
+
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -568,7 +583,7 @@ jobs:
       # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
       # missing from it is one no release bumps a version for.
       - name: Check the Claude Code plugin's build input list covers what the build reads
-        run: bun test tests/build-inputs.test.ts
+        run: ../../.github/scripts/bun_test_run.py build-inputs bun test tests/build-inputs.test.ts
         working-directory: packages/claude-envoy
 
       # The step below renders this checkout's own fragments with changie.
@@ -591,7 +606,7 @@ jobs:
       # changed none of them skips this step.
       - name: Check the guides' semantic line breaks
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"guide_layout"')
-        run: bun test scripts/semantic-line-breaks.guides.test.ts
+        run: .github/scripts/bun_test_run.py scripts-semantic-line-breaks-guides bun test scripts/semantic-line-breaks.guides.test.ts
 
       # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the Dispatch census script
@@ -632,6 +647,12 @@ jobs:
       # Bun types. The test itself runs in the test job's bun test of scripts/e2e/lib.
       - name: Typecheck the plan ratings read test
         run: bunx tsc --noEmit -p scripts/e2e/lib
+
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

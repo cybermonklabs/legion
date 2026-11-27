@@ -1,8 +1,13 @@
 # The check_workflow_files_test filter's gate: what job test reads.
 GATE = harness("check_workflow_files_test", "Test the workflow file check", f"{SCRIPTS}/check-workflow-files.test.sh", [
     (f"{SCRIPTS}/check-workflow-files.sh", "the script under test"),
-    (f"{SCRIPTS}/workflow_paths.py", "check-workflow-files.sh imports repeated_keys from it, beside the "
-                                     "script's own file that every fixture links in"),
+    (f"{SCRIPTS}/workflow_paths.py", "check-workflow-files.sh imports repeated_keys and the node readers every rule "
+                                     "reads a workflow with from it, beside the script's own file that every fixture "
+                                     "links in"),
+    (f"{SCRIPTS}/bun_test_steps.py", "check-workflow-files.sh imports its rule 8 from it, beside the script's own "
+                                     "file, and the settings case copies it"),
+    (f"{SCRIPTS}/bun_test_record.py", "bun_test_steps.py imports the names it holds steps to from it, and the "
+                                      "settings case copies it"),
     (f"{SCRIPTS}/postgres-service-settings.sh", "check-workflow-files.sh runs its --command from beside "
                                                 "its own file for rule 7, and the harness runs it for the "
                                                 "command line its fixtures carry"),

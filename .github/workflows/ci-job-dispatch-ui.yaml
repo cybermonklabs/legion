@@ -60,8 +60,8 @@ jobs:
       # compiles no module outside the set the dashboard's tsc programs compile, which is what
       # this job's filter lists. package.json allows no comment, so this is where the list is
       # explained: a new import of a contracts subpath by packages/dispatch adds its entry to that
-      # script, or Playwright's Node resolution fails on the missing dist/ file. The package's own
-      # `bun run test` below runs the same script again (build:contracts).
+      # script, or Playwright's Node resolution fails on the missing dist/ file. The dashboard's
+      # test step below runs build:contracts again, as the package's test script does.
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build:dispatch
         working-directory: packages/contracts
@@ -69,7 +69,7 @@ jobs:
         run: bun run typecheck
         working-directory: packages/proof-editor
       - name: Test proof editor
-        run: bun run test
+        run: ../../.github/scripts/bun_test_run.py test bun run test
         working-directory: packages/proof-editor
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
@@ -103,8 +103,27 @@ jobs:
       # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
       # reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs
       # in random order") says; it also says what a row that failed from the lane's load needs.
+      #
+      # The three commands are the `test` script of packages/dispatch/package.json, run one at a
+      # time so each lane writes its own JUnit report: `bun run test` hands extra arguments to the
+      # last command of a script alone, and the two lanes would overwrite one report file. Each
+      # command is written once, as the array the step runs it from, and the step first holds the
+      # script to the three as those arrays spell them, so a change to the script, or to a lane
+      # here, fails rather than leaving a lane one of the two no longer runs.
       - name: Test dispatch dashboard
-        run: bun run test
+        run: |
+          build=(build:contracts)
+          web=(test:web web/src)
+          harness=(test:harness e2e/__tests__)
+          want="bun run ${build[*]} && bun run ${web[*]} && bun run ${harness[*]}"
+          got=$(jq -r .scripts.test package.json)
+          if [ "$got" != "$want" ]; then
+            echo "::error::packages/dispatch/package.json's test script is '$got', and this step runs '$want': write the step's arrays from the script again" >&2
+            exit 1
+          fi
+          bun run "${build[@]}"
+          ../../.github/scripts/bun_test_run.py web bun run "${web[@]}"
+          ../../.github/scripts/bun_test_run.py harness bun run "${harness[@]}"
         working-directory: packages/dispatch
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
@@ -121,6 +140,12 @@ jobs:
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
         working-directory: packages/dispatch
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

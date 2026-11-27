@@ -8,6 +8,7 @@ GATE = harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/
     (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
     (f"{SCRIPTS}/ci_filter_sources.py", "the loader of the gate files and //ci: lines the fixtures link in beside it"),
     (f"{SCRIPTS}/go_legs.py", "ci_job_reads.py imports it, and its import reads .github/go-legs.yaml"),
+    (f"{SCRIPTS}/bun_test_record.py", "ci_job_reads.py imports the bun test wrapper's path and its upload action from it"),
     (".github/go-legs.yaml", "the import of ci_job_reads.py reads the daemon's legs from it"),
     (f"{SCRIPTS}/ci-filters-generate.sh", "the changes job's wrapper the fixtures link in, which the fail-open and "
                                           "base-tree cases run"),

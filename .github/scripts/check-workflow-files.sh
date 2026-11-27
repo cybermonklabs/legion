@@ -56,6 +56,20 @@
 #      max_prepared_transactions), and the step reads them back from the running server; that
 #      script's header says what each setting costs or buys. A service the check cannot tell is
 #      Postgres by its key or its image is not its business.
+#   8. in ci.yaml and every workflow of this repository it reaches through its calls (the run a
+#      pull request and the merge queue get), a line of a step's `run:` that runs `bun test`, or
+#      `bun run` of a script whose name starts with `test`, other than under
+#      .github/scripts/bun_test_run.py, which keeps bun's JUnit report with a marker of the run's
+#      start and bun's exit status beside it; and a job holding such a step with no step after
+#      its last one (after the pool's next `harness-pool.sh wait`, for a run the pool starts) that
+#      uses ./.github/actions/bun-test-reports-upload, named "Keep the bun test reports", with
+#      `if: always()` and `check-run-id: ${{ job.check_run_id }}`; and, once such a job exists,
+#      that action's own upload-artifact step when it does not upload `bun-test-reports/` as
+#      `bun-test-reports-<check-run-id>` with its hidden files. Each refusal names the file and
+#      its line, and a step's also the job and the step's number and name. The rule is
+#      .github/scripts/bun_test_steps.py, whose head lists the forms it does not read; the names
+#      it holds steps and the action to are bun_test_record.py's, which every reader of the
+#      record imports, so they have one spelling.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -72,9 +86,10 @@ set -euo pipefail
 # The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
 # check reads the changes job's filters and the workflows with runs, imported from beside this script's own file: a
 # test fixture links only this script in, and the link leads back to the module CI runs. Rule 7's
-# command line is read the same way, from the postgres-service-settings.sh beside this file.
-# Resolved before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE
-# keeps the import from leaving a __pycache__ in the tree.
+# command line is read the same way, from the postgres-service-settings.sh beside this file, and
+# rule 8 is bun_test_steps.py, imported from there the same way. Resolved before the cd, which
+# would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the import from leaving a
+# __pycache__ in the tree.
 scripts=$(dirname "$(readlink -f "$0")")
 
 cd "$(dirname "$0")/../.."
@@ -87,7 +102,8 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import repeated_keys
+from bun_test_steps import Census, check_bun_test_steps, check_upload_action
+from workflow_paths import mapping_get, repeated_keys, scalar
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -168,15 +184,6 @@ def composed(path: Path) -> tuple[object, object]:
     return nodes[path]
 
 
-def mapping_get(node: object, key: str) -> object:
-    if not isinstance(node, yaml.MappingNode):
-        return None
-    for name, value in node.value:
-        if isinstance(name, yaml.ScalarNode) and name.value == key:
-            return value
-    return None
-
-
 def check_folded_keys(path: Path, root: object) -> None:
     """Every mapping reachable from the document, sequences included: two keys equal after
     upper-casing are two keys GitHub's parser reads as one, and it refuses the file. Each node is
@@ -248,10 +255,6 @@ def unique_callees(start: Path) -> list[str]:
                 read.add(callee)
                 queue.append(callee)
     return list(called)
-
-
-def scalar(node: object) -> str | None:
-    return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
 
 
 HELPER = "gh-read.sh"
@@ -491,6 +494,12 @@ def check_postgres_services(path: Path, root: object, command: str | None) -> No
 
 REACHERS = helper_reachers()
 COMMAND = service_command()
+# Rule 8 of the header (.github/scripts/bun_test_steps.py) reads ci.yaml and every workflow of
+# this repository it reaches through its calls, or nothing when the directory holds no ci.yaml.
+ROUTER = WORKFLOWS / "ci.yaml"
+SCOPE = ({ROUTER} | {Path(called) for called in unique_callees(ROUTER) if Path(called).is_file()}
+         if ROUTER.is_file() else set())
+census = Census()
 
 
 for path in targets:
@@ -533,6 +542,8 @@ for path in targets:
     check_folded_keys(path, node)
     check_timeout_variables(path, node, REACHERS)
     check_postgres_services(path, node, COMMAND)
+    if path in SCOPE:
+        check_bun_test_steps(path, node, problem, census)
 
     called = unique_callees(path)
     if len(called) > CALL_LIMIT:
@@ -544,6 +555,10 @@ for path in targets:
             f"starts no run." + limits(path),
         )
 
+# Rule 8's last refusal, once: the action every such job keeps its reports with.
+if census.jobs:
+    check_upload_action(problem)
+
 if problems:
     for annotation in problems:
         print(annotation)
@@ -553,11 +568,16 @@ if problems:
     )
     sys.exit(1)
 
+kept = (
+    f"run each of {census.commands} bun test command(s) in {census.steps} step(s) of {census.jobs} "
+    f"job(s) of ci.yaml's run under bun_test_run.py, each job keeping its reports" if SCOPE else
+    f"keep bun test reports UNKNOWN: there is no {ROUTER}, so rule 8 read no step"
+)
 print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
     f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
-    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and start every Postgres service "
-    f"on {SETTINGS}'s command line with a step that reads it back"
+    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service "
+    f"on {SETTINGS}'s command line with a step that reads it back, and {kept}"
 )
 PY
