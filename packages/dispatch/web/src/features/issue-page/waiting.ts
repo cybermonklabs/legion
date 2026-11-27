@@ -39,10 +39,10 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * A decision the outline marks as one whose Change may stand on a page the tree read has not
  * loaded (`changeUnread`, its state's "+") is not counted either, until that page is read
  * (decisions 563 (4) and 574 (B)): the header reads the next pages and then the older comment
- * pages for it once the page has drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`), as
- * `unread` says, and counts what the Change it finds, or finds none of, makes it. While the tree
- * read holds no answer every decision with no Change held is such a decision (decision 578 (2)),
- * and none is read for it until the read answers.
+ * pages for it once the stage's view has drawn (`tree-read/tree-read.ts`' `useTellViewDrawn`,
+ * `useReadUnloadedPages`), as `unread` says, and counts what the Change it finds, or finds none
+ * of, makes it. While the tree read holds no answer every decision with no Change held is such a
+ * decision (decision 578 (2)), and none is read for it until the read answers.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -109,8 +109,8 @@ export function waitingOnReader(
   const listed =
     viewer === undefined
       ? []
-      : (decisions?.entries ?? []).filter(
-          (decision) => !changed.has(decision.ref) && inReviewList(decision, isCoverageStatement)
+      : (decisions?.entries ?? []).filter((decision) =>
+          inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
         );
   const reviewing = listed.filter((decision) => !unread.has(decision.ref)).length;
   return {

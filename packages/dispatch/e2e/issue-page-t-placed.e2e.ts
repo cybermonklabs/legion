@@ -6,21 +6,20 @@ import type { Page, Route } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
-  baseUrl,
   createComment,
   createIssue,
   createProject,
   editArtifact,
+  getIssueCoverage,
   patchIssue,
-  userHeaders,
 } from "./api";
 import { asPlanner, PROJECT, pause } from "./issue-layout-seed-support";
 import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { gotoIssue, phase } from "./issue-page";
 import { DESKTOP, PHONE } from "./issue-page-g";
 import { ROW_MS } from "./issue-page-t-rows";
-import { inBursts } from "./issue-page-t-scale";
-import { owedUnless, treeReadGate } from "./issue-page-t-tree";
+import { conversationFirstPage, inBursts } from "./issue-page-t-scale";
+import { owedUnless, TREE_PATH, treeReadGate } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 
 /**
@@ -47,8 +46,8 @@ const COMMENT_CHARS = 2_500;
 
 /** How many long statements stand between `r1` and `r2`, and how long each is: one paragraph,
  *  inside the 32,000 characters a block holds. With the comments they put more than a page's
- *  bytes before `r2` (each weighs about 61 KB in the read, as task 77 measured one), and the spec
- *  stays under the 1 MiB a document and a request hold. */
+ *  bytes before `r2` (each weighs about 61 KB in the read), and the spec stays under the 1 MiB a
+ *  document and a request hold. */
 const FILLERS = 28;
 const FILLER_CHARS = 30_000;
 
@@ -144,13 +143,10 @@ async function seedPlacedRows(): Promise<{ key: string }> {
         { login: n % 2 === 0 ? "alice" : "bob" }
       )
   );
-  const cookie = await userHeaders("alice");
   const wanted = STATEMENTS.map((n) => requirementBlockId(n));
   const started = Date.now();
   for (;;) {
-    const answer = (await (
-      await fetch(new URL(`/api/v1/issues/${key}/coverage`, baseUrl), { headers: cookie })
-    ).json()) as { requirements?: { block_id?: string }[] };
+    const answer = await getIssueCoverage(key);
     const held = new Set((answer.requirements ?? []).map((one) => one.block_id));
     if (wanted.every((id) => held.has(id))) return { key };
     if (Date.now() - started > 120_000) {
@@ -182,7 +178,7 @@ async function rowBoxes(
  *  that names a cursor. */
 function conversationCursor(url: URL): boolean {
   return (
-    url.pathname.endsWith("/tree") &&
+    TREE_PATH.test(url.pathname) &&
     url.searchParams.has("kind") &&
     !url.searchParams.has("view") &&
     url.searchParams.has("cursor")
@@ -208,34 +204,24 @@ test("a decision placed before its statement's page lands keeps its row's height
         held = route;
       });
       // The page's own first read of Conversation, whose shape the row checks.
-      const first = page.waitForResponse((response) => {
-        const url = new URL(response.url());
-        return (
-          url.pathname.endsWith("/tree") &&
-          url.searchParams.has("kind") &&
-          !url.searchParams.has("view") &&
-          !url.searchParams.has("cursor") &&
-          !url.searchParams.has("comments_before")
-        );
-      });
+      const first = conversationFirstPage(page);
       await gotoIssue(page, presetPath(seeded.key, "decisions"));
-      const shape = (await (await first).json()) as {
-        cursor?: string | null;
-        nodes?: { block_id?: string }[];
-      };
+      const shape = await first;
       expect(
         typeof shape.cursor === "string" && shape.cursor !== "",
         `${where}, Conversation's first page names no next page: the seed's shape does not hold`
       ).toBe(true);
+      const named = [
+        ...DECISIONS.map((one) => one.id),
+        ...STATEMENTS.map((n) => requirementBlockId(n)),
+      ];
       const onFirst = (shape.nodes ?? []).flatMap((node) =>
-        [...DECISIONS.map((one) => one.id), "r1", "r2"].includes(node.block_id ?? "")
-          ? [node.block_id]
-          : []
+        named.includes(node.block_id ?? "") ? [node.block_id] : []
       );
       expect(
         onFirst,
         `${where}, Conversation's first page should hold r1 and neither r2 nor a decision`
-      ).toEqual(["r1"]);
+      ).toEqual([requirementBlockId(STATEMENTS[0])]);
       const review = page.locator(
         '[data-decisions-body] [data-decisions-part="review"] [data-node-row][data-node-type="decision"]'
       );

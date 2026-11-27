@@ -335,7 +335,7 @@ export function decisionsParts({
       // A person's decision is the answered ask itself (`personDecisionAsk`): its `shaped` ties
       // are the statements the person's decision shaped, each once.
       const shaped = (personal.get(askId) ?? []).flatMap((row) => row.shaped ?? []);
-      const shapes = shapesOf({ shaped }, nodeIdOf, placed, isStatement);
+      const shapes = shapesOf({ shaped }, nodeIdOf, placed, isCoverageStatement);
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
@@ -377,7 +377,7 @@ export function decisionsParts({
       agents.push({ ...base, ...timeOf(node.at), kind: "decision", shapes: [] });
       continue;
     }
-    const shapes = shapesOf(row, nodeIdOf, placed, isStatement);
+    const shapes = shapesOf(row, nodeIdOf, placed, isCoverageStatement);
     const asked = row.replaced ? undefined : changes?.get(row.ref);
     const standing = standingOf(row, asked !== undefined);
     const keptBy: Actor | undefined =
@@ -493,7 +493,7 @@ function timeOf(at: string | null | undefined): { readonly at?: string } {
 }
 
 /** The entry's address in the conversation, where its node has one. */
-function pathOf(node: TreeNode): { readonly path?: string } {
+function pathOf(node: Pick<TreeNode, "reference">): { readonly path?: string } {
   const path = conversationPath(node);
   return path === undefined ? {} : { path };
 }
@@ -511,25 +511,29 @@ function standingOf(
   return row.kept === null ? undefined : "kept";
 }
 
-/** The statements of this issue `row`'s ties name, each once, in the ties' own order: each a tie
- *  counts by `isStatement`, with its node where the tree holds one. */
+/** The statements of this issue `row`'s ties name, each once, in the ties' own order, each with
+ *  its node where the tree holds one: a tie counts where its far end is a requirement node of the
+ *  tree or, where the tree holds no node for it, a statement of the coverage read
+ *  (`isCoverageStatement`), as `decisionsParts`' `isStatement` counts a tie. */
 function shapesOf(
   row: Pick<ReadEntry, "shaped">,
   nodeIdOf: (reference: string) => string | undefined,
   placed: ReadonlyMap<string, Placement>,
-  isStatement: (reference: string) => boolean
+  isCoverageStatement: (reference: string) => boolean
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
   for (const link of row.shaped ?? []) {
     const reference = link.to.ref;
-    if (reference === undefined || !isStatement(reference)) continue;
-    const id = nodeIdOf(reference) ?? reference;
-    const node = placed.get(id)?.node;
-    const path = conversationPath(node ?? { reference });
+    if (reference === undefined) continue;
+    const resolved = nodeIdOf(reference);
+    const node = placed.get(resolved ?? "")?.node;
+    if (node === undefined ? !isCoverageStatement(reference) : node.type !== "requirement")
+      continue;
+    const id = resolved ?? reference;
     shapes.set(id, {
       id,
       ...(node === undefined ? {} : { node }),
-      ...(path === undefined ? {} : { path }),
+      ...pathOf(node ?? { reference }),
       reference: node?.reference ?? reference,
       stale: link.stale || shapes.get(id)?.stale === true,
     });

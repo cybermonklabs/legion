@@ -18,6 +18,7 @@ import type {
 import type { TreeNode } from "../issue-tree";
 import { readComment } from "../outline-fixtures";
 import { presetView } from "../presets";
+import { coverageRead } from "../spec-filter/spec-fixtures";
 import { commentNode, markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
@@ -98,11 +99,7 @@ async function mountEntries(
   }
   // The coverage read, which places a decision whose statement the tree holds no node for: one
   // that holds no statement, so each decision here is placed by the statements the tree holds.
-  client.setQueryData(
-    issueCoverageQuery(KEY).queryKey,
-    { gaps: [], has_plan: false, issue: KEY, requirements: [], spec_artifact_id: SPEC_DOCUMENT.id },
-    given
-  );
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), given);
   const root = issueTree(children);
   const view = presetView(root, "decisions", "").root;
   const wrapper = ({ children: inside }: { children: ReactNode }) => (

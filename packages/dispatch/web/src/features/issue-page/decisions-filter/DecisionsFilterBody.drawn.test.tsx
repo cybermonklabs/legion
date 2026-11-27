@@ -57,6 +57,7 @@ import {
 } from "../row-name-fixtures";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
+import { coverageRead } from "../spec-filter/spec-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
 import { outlineQuery, subscribeTreeFreshness } from "../tree-read/tree-read";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
@@ -354,11 +355,7 @@ function renderBody(
   client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], [], answered);
   // The coverage read, which places a decision whose statement the tree holds no node for: one
   // that holds no statement, so each decision here is placed by the statements the tree holds.
-  client.setQueryData(
-    issueCoverageQuery(KEY).queryKey,
-    { gaps: [], has_plan: false, issue: KEY, requirements: [], spec_artifact_id: SPEC_DOCUMENT.id },
-    answered
-  );
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {

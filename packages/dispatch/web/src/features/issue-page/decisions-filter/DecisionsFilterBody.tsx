@@ -52,7 +52,7 @@ import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
-import { DecisionsRow } from "./DecisionsRow";
+import { DecisionsRow, type StatementName } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   conversationPath,
@@ -225,10 +225,8 @@ export function DecisionsFilterBody({
   // once. Beside its name goes its whole line, the title of the link its line draws, which cuts
   // the name to the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
-  const statementNames = useMemo<
-    ReadonlyMap<string, { readonly name: string; readonly title: string }>
-  >(() => {
-    const names = new Map<string, { readonly name: string; readonly title: string }>();
+  const statementNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
+    const names = new Map<string, StatementName>();
     for (const part of DECISIONS_PART_ORDER) {
       for (const { shapes } of parts[part]) {
         for (const { id, reference } of shapes) {

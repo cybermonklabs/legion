@@ -35,6 +35,7 @@ import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
+import { createHeld, type Held } from "../held-value";
 import { presetOf } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
@@ -908,20 +909,25 @@ export function useReadUnloadedPages(
 }
 
 /** The issues whose page's stage has drawn its view's first drawing, by client: how many stages
- *  say so of each issue's key, and who listens (`useTellViewDrawn`, `useViewDrawn`). */
-const viewsDrawn = new WeakMap<
-  QueryClient,
-  { readonly drawn: Map<string, number>; readonly listeners: Set<() => void> }
->();
+ *  say so of each issue's key (`useTellViewDrawn`, `useViewDrawn`). */
+const viewsDrawn = new WeakMap<QueryClient, Held<ReadonlyMap<string, number>>>();
 
 /** `client`'s issues whose view has drawn (`viewsDrawn`), made on the first ask. */
-function drawnViewsOf(client: QueryClient) {
+function drawnViewsOf(client: QueryClient): Held<ReadonlyMap<string, number>> {
   let held = viewsDrawn.get(client);
   if (held === undefined) {
-    held = { drawn: new Map(), listeners: new Set() };
+    held = createHeld<ReadonlyMap<string, number>>(new Map());
     viewsDrawn.set(client, held);
   }
   return held;
+}
+
+/** How the page's stage says that its view has drawn (`useTellViewDrawn`): `tell` says it, and
+ *  `told` answers whether it has said it since the stage mounted, so what would say it again can
+ *  stop. */
+export interface ViewDrawnTeller {
+  readonly tell: () => void;
+  readonly told: () => boolean;
 }
 
 /**
@@ -932,29 +938,33 @@ function drawnViewsOf(client: QueryClient) {
  * a frame another surface draws first, the header's, starts no read. Said once, it holds while
  * the caller stays mounted; asked again it does nothing; once the stage leaves, the issue's page
  * has drawn nothing until a stage says so again. It draws nothing again of the stage itself. The
- * function is one for each issue, so a stage drawn for another issue says it of that one anew.
+ * teller is one for each issue, so a stage drawn for another issue says it of that one anew.
  */
-export function useTellViewDrawn(key: string): () => void {
+export function useTellViewDrawn(key: string): ViewDrawnTeller {
   const client = useQueryClient();
-  const teller = useMemo(() => {
+  const made = useMemo(() => {
     const held = drawnViewsOf(client);
     // Whether the caller is mounted, and whether it has said so of `key` since it mounted.
     let mounted = false;
     let told = false;
     const count = (by: number) => {
-      const now = (held.drawn.get(key) ?? 0) + by;
-      if (now === 0) held.drawn.delete(key);
-      else held.drawn.set(key, now);
-      for (const listener of held.listeners) listener();
+      const drawn = new Map(held.get());
+      const now = (drawn.get(key) ?? 0) + by;
+      if (now === 0) drawn.delete(key);
+      else drawn.set(key, now);
+      held.set(drawn);
     };
     return {
       mount: () => {
         mounted = true;
       },
-      tell: () => {
-        if (!mounted || told) return;
-        told = true;
-        count(1);
+      teller: {
+        tell: () => {
+          if (!mounted || told) return;
+          told = true;
+          count(1);
+        },
+        told: () => told,
       },
       unmount: () => {
         mounted = false;
@@ -965,10 +975,10 @@ export function useTellViewDrawn(key: string): () => void {
     };
   }, [client, key]);
   useEffect(() => {
-    teller.mount();
-    return teller.unmount;
-  }, [teller]);
-  return teller.tell;
+    made.mount();
+    return made.unmount;
+  }, [made]);
+  return made.teller;
 }
 
 /** Whether the page of issue `key` has drawn its view's first drawing (`useTellViewDrawn`), read
@@ -976,16 +986,10 @@ export function useTellViewDrawn(key: string): () => void {
 function useViewDrawn(key: string, wants: boolean): boolean {
   const held = drawnViewsOf(useQueryClient());
   const subscribe = useCallback(
-    (listener: () => void) => {
-      if (!wants) return () => {};
-      held.listeners.add(listener);
-      return () => {
-        held.listeners.delete(listener);
-      };
-    },
+    (listener: () => void) => (wants ? held.subscribe(listener) : () => {}),
     [held, wants]
   );
-  return useSyncExternalStore(subscribe, () => wants && held.drawn.has(key));
+  return useSyncExternalStore(subscribe, () => wants && held.get().has(key));
 }
 
 /** `make`'s value for each role, made on the first ask for that role and the same value on

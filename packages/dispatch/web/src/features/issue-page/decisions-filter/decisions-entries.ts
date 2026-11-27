@@ -56,9 +56,9 @@ import {
  * loaded (`tree-drafts.ts`' `changeUnread`, its state's "+") stands in the review list drawn
  * with that mark, and the list's count leaves it out until that page is read
  * (`decisions-parts.ts`' `reviewWaiting`): the seam reads the next pages and then the older
- * comment pages once the page has drawn, one at a time, until each such Change is held or no such
- * page is left (`useReadUnloadedPages`, decisions 563 (4) and 574 (B)), as the header's count
- * does, and the view draws the decision by what it finds.
+ * comment pages once the stage's view has drawn (`useTellViewDrawn`), one at a time, until each
+ * such Change is held or no such page is left (`useReadUnloadedPages`, decisions 563 (4) and
+ * 574 (B)), as the header's count does, and the view draws the decision by what it finds.
  *
  * The view draws four parts. A decision another person made is no part of its own: it stands
  * under the reader's decisions, with that person's name on its row, so the model's `others` is

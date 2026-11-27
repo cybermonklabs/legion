@@ -714,20 +714,27 @@ const OLDER_CHANGE: Comment = {
   created_at: "2026-11-03T00:00:00Z",
 };
 
+/** The statement `s1` the decisions of these cases are tied to, as Conversation's read answers it:
+ *  a requirement of the spec, first among its blocks. */
+const STATEMENT_NODE: TreeAnswerNode = treeNode("s1", "requirement", KEY, {
+  ...inDocument(SPEC_DOCUMENT),
+  text: "The statement.",
+});
+
+/** The decisions of the older-Change cases as Conversation's read answers them on a page: each
+ *  one's own node, at its place in the spec. */
+const DECISION_NODES: readonly TreeAnswerNode[] = [OLDER_DECISION, NEWER_DECISION].map((made, at) =>
+  treeNode(made.block_id, "decision", KEY, {
+    decision: made,
+    ...inDocument(SPEC_DOCUMENT, at + 1),
+    text: made.text,
+  })
+);
+
 /** Conversation's first page for those cases: the statement, the two decisions and the two
  *  threads, and the position of its oldest comment, as older comments remain. */
 const OLDER_FIRST: TreeAnswer = {
-  ...treeOf([
-    treeNode("s1", "requirement", KEY, { ...inDocument(SPEC_DOCUMENT), text: "The statement." }),
-    ...[OLDER_DECISION, NEWER_DECISION].map((made, at) =>
-      treeNode(made.block_id, "decision", KEY, {
-        decision: made,
-        ...inDocument(SPEC_DOCUMENT, at + 1),
-        text: made.text,
-      })
-    ),
-    ...commentNodes(TWO_THREADS),
-  ]),
+  ...treeOf([STATEMENT_NODE, ...DECISION_NODES, ...commentNodes(TWO_THREADS)]),
   comments_before: `${TWO_THREADS[0]?.created_at},${TWO_THREADS[0]?.id}`,
 };
 
@@ -756,8 +763,9 @@ function answerOlderChange(page: Promise<TreeAnswer>): () => number {
 // Decision 563 (4), as INFRA-1196's architect ruled it at 11:23Z (choice (b)): a decision whose
 // Change may stand on a comment page Conversation's read has not loaded stays in the review list,
 // drawn with the outline's mark ("+" after its state), and the list's count leaves it out until
-// that page is read. The view reads it once the page has drawn, and the decision then carries the
-// Change the page holds, which it waits on its agent for: it leaves the list then, and only then.
+// that page is read. The view reads it once the stage's view has drawn (`useTellViewDrawn`), and
+// the decision then carries the Change the page holds, which it waits on its agent for: it leaves
+// the list then, and only then.
 test("a decision whose Change stands on an older comment page stays in the review list with the outline's mark, out of its count, until that page is read, then carries its Change", async () => {
   const page = Promise.withResolvers<TreeAnswer>();
   const pagesSent = answerOlderChange(page.promise);
@@ -800,9 +808,9 @@ test("a decision whose Change stands on an older comment page stays in the revie
   expect(pagesSent(), "the older page was read other than once").toBe(1);
 });
 
-// Decision 563 (4) under decision 538: the older comment pages are read only once the page has
-// drawn, so a load reads none. With the reads that mark the decision held as the page mounts, no
-// older page is asked for as it mounts, and one is in a frame after.
+// Decision 563 (4) under decision 538: the older comment pages are read only once the stage's view
+// has drawn (`useTellViewDrawn`), so a load reads none. With the reads that mark the decision held
+// as the page mounts, no older page is asked for as it mounts, and one is in a frame after.
 test("no older comment page is read before the page's first drawing, and one is read after it", async () => {
   const pagesSent = answerOlderChange(Promise.withResolvers<TreeAnswer>().promise);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -852,8 +860,9 @@ const NEXT_PAGE: TreeAnswer = treeAnswer([
 // on any page of the walk. So while Conversation's read names a next page (`cursor`), with no
 // older comment page (`comments_before: null`), each decision with no Change held stays in the
 // review list drawn with the outline's mark, out of its count, until that page is read. The view
-// reads it once the page has drawn: the decision whose Change it holds then carries that Change
-// and leaves the list, and the other, whose Change no page holds, waits on the reader again.
+// reads it once the stage's view has drawn (`useTellViewDrawn`): the decision whose Change it
+// holds then carries that Change and leaves the list, and the other, whose Change no page holds,
+// waits on the reader again.
 test("a decision whose Change stands on the next page of Conversation's read stays in the review list with the outline's mark, out of its count, until that page is read, then carries its Change", async () => {
   const next = Promise.withResolvers<TreeAnswer>();
   const first: TreeAnswer = { ...OLDER_FIRST, comments_before: null, cursor: "page-2" };
@@ -947,16 +956,6 @@ test("the next page is read before an older comment page, one at a time, and nei
   );
 });
 
-/** The decisions of the older-Change cases as Conversation's read answers them on a page: each
- *  one's own node, at its place in the spec. */
-const DECISION_NODES: readonly TreeAnswerNode[] = [OLDER_DECISION, NEWER_DECISION].map((made, at) =>
-  treeNode(made.block_id, "decision", KEY, {
-    decision: made,
-    ...inDocument(SPEC_DOCUMENT, at + 1),
-    text: made.text,
-  })
-);
-
 /** The decisions' rows of the Decisions view: where each stands, its part or "none", in the order
  *  `newer`, `older`. */
 function decisionParts(view: RenderResult): string {
@@ -973,12 +972,46 @@ function decisionParts(view: RenderResult): string {
     .join(" ");
 }
 
-// Decision 579, on the seed's shape (task 77): Conversation's first page holds none of the
-// statement the decisions are tied to, nor their nodes, which stand on its next page. The view
-// places each decision by its own ties, read against the coverage read's statements as the
-// header's count reads them, so its first drawing draws both decisions in the review list, with
-// the outline's mark, before the next page is asked for; and neither moves when that page lands
-// with the statement and the decisions' nodes and no Change.
+/** The coverage read of the cases whose statement stands on a page not read yet: the statement
+ *  `s1` alone, which places the decisions tied to it before its page lands (decision 579). */
+const S1_COVERAGE: IssueCoverage = {
+  gaps: [],
+  has_plan: false,
+  issue: KEY,
+  requirements: [
+    {
+      block_id: "s1",
+      checks: 0,
+      gaps: [],
+      plan_tasks: 0,
+      ref: specRef("s1"),
+      text: "The statement.",
+    },
+  ],
+  spec_artifact_id: SPEC_DOCUMENT.id,
+};
+
+/** What `read` reads of `view` at each change the view draws, each once until it changes
+ *  (`drawn`), recorded until `disconnect`. */
+function recordDrawn(
+  view: RenderResult,
+  read: (view: RenderResult) => string
+): { readonly disconnect: () => void; readonly drawn: readonly string[] } {
+  const drawn: string[] = [];
+  const watch = new MutationObserver(() => {
+    const now = read(view);
+    if (drawn.at(-1) !== now) drawn.push(now);
+  });
+  watch.observe(view.container, { attributes: true, childList: true, subtree: true });
+  return { disconnect: () => watch.disconnect(), drawn };
+}
+
+// Decision 579, on the placed row's seed (`e2e/issue-page-t-placed.e2e.ts`): Conversation's first
+// page holds none of the statement the decisions are tied to, nor their nodes, which stand on its
+// next page. The view places each decision by its own ties, read against the coverage read's
+// statements as the header's count reads them, so its first drawing draws both decisions in the
+// review list, with the outline's mark, before the next page is asked for; and neither moves when
+// that page lands with the statement and the decisions' nodes and no Change.
 test("a decision whose statement stands on a page not read yet is drawn in the review list at the first drawing, and stays there when that page lands", async () => {
   const next = Promise.withResolvers<TreeAnswer>();
   const first: TreeAnswer = {
@@ -987,31 +1020,11 @@ test("a decision whose statement stands on a page not read yet is drawn in the r
     cursor: "page-2",
   };
   const pagesSent = answerPages(first, next.promise, Promise.withResolvers<never>().promise);
-  spyOn(api, "getIssueCoverage").mockResolvedValue({
-    gaps: [],
-    has_plan: false,
-    issue: KEY,
-    requirements: [
-      {
-        block_id: "s1",
-        checks: 0,
-        gaps: [],
-        plan_tasks: 0,
-        ref: specRef("s1"),
-        text: "The statement.",
-      },
-    ],
-    spec_artifact_id: SPEC_DOCUMENT.id,
-  });
+  spyOn(api, "getIssueCoverage").mockResolvedValue(S1_COVERAGE);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = drawStage("", { client });
   // Where the decisions stood at each change the view drew.
-  const placed: string[] = [];
-  const watch = new MutationObserver(() => {
-    const now = decisionParts(view);
-    if (placed.at(-1) !== now) placed.push(now);
-  });
-  watch.observe(view.container, { attributes: true, childList: true, subtree: true });
+  const placed = recordDrawn(view, decisionParts);
   try {
     await waitFor(() =>
       expect(pagesSent(), "the next page was not read").toEqual(["cursor page-2"])
@@ -1026,17 +1039,7 @@ test("a decision whose statement stands on a page not read yet is drawn in the r
       view.container.querySelectorAll("[data-decisions-body] [data-decision-informs]").length,
       "a placed row drew no informs line before its statement's page landed"
     ).toBe(2);
-    await act(async () =>
-      next.resolve(
-        treeAnswer([
-          treeNode("s1", "requirement", KEY, {
-            ...inDocument(SPEC_DOCUMENT),
-            text: "The statement.",
-          }),
-          ...DECISION_NODES,
-        ])
-      )
-    );
+    await act(async () => next.resolve(treeAnswer([STATEMENT_NODE, ...DECISION_NODES])));
     await waitFor(() =>
       expect(
         client
@@ -1048,11 +1051,11 @@ test("a decision whose statement stands on a page not read yet is drawn in the r
     await waitInAct(20);
     expect(decisionParts(view), "the decisions once the next page landed").toBe("review review");
     expect(
-      placed.filter((now) => now !== "none none"),
+      placed.drawn.filter((now) => now !== "none none"),
       "a decision stood somewhere other than the review list once drawn"
     ).toEqual(["review review"]);
   } finally {
-    watch.disconnect();
+    placed.disconnect();
   }
 });
 
@@ -1109,12 +1112,7 @@ test("with the coverage read answering after the other reads, a decision whose s
   spyOn(api, "getIssueCoverage").mockReturnValue(coverage.promise);
   const view = drawStage("");
   // Where the decisions stood at each change the view drew.
-  const placed: string[] = [];
-  const watch = new MutationObserver(() => {
-    const now = placement(view);
-    if (placed.at(-1) !== now) placed.push(now);
-  });
-  watch.observe(view.container, { attributes: true, childList: true, subtree: true });
+  const placed = recordDrawn(view, placement);
   try {
     // Every read but the coverage read has answered. The view's reads have not settled, so it
     // has not drawn its first drawing, and no page past the first is read yet either.
@@ -1125,24 +1123,7 @@ test("with the coverage read answering after the other reads, a decision whose s
       "none none"
     );
     expect(pagesSent(), "a page was read before the view's first drawing").toEqual([]);
-    await act(async () =>
-      coverage.resolve({
-        gaps: [],
-        has_plan: false,
-        issue: KEY,
-        requirements: [
-          {
-            block_id: "s1",
-            checks: 0,
-            gaps: [],
-            plan_tasks: 0,
-            ref: specRef("s1"),
-            text: "The statement.",
-          },
-        ],
-        spec_artifact_id: SPEC_DOCUMENT.id,
-      })
-    );
+    await act(async () => coverage.resolve(S1_COVERAGE));
     await waitFor(() =>
       expect(
         placement(view),
@@ -1150,7 +1131,7 @@ test("with the coverage read answering after the other reads, a decision whose s
       ).toBe("review review")
     );
     expect(
-      placed.filter((now) => now !== "none none"),
+      placed.drawn.filter((now) => now !== "none none"),
       "a decision stood in the foot or elsewhere before the review list"
     ).toEqual(["review review"]);
     await waitFor(() =>
@@ -1159,7 +1140,7 @@ test("with the coverage read answering after the other reads, a decision whose s
       ])
     );
   } finally {
-    watch.disconnect();
+    placed.disconnect();
   }
 });
 
@@ -1207,10 +1188,7 @@ function informsLines(view: RenderResult, block: string): number {
 test("a decision's row draws one informs line for each statement it is tied to before any name comes, one of them on a page not read yet", async () => {
   const next = Promise.withResolvers<TreeAnswer>();
   const first: TreeAnswer = {
-    ...treeOf([
-      treeNode("s1", "requirement", KEY, { ...inDocument(SPEC_DOCUMENT), text: "The statement." }),
-      ...commentNodes(TWO_THREADS),
-    ]),
+    ...treeOf([STATEMENT_NODE, ...commentNodes(TWO_THREADS)]),
     comments_before: null,
     cursor: "page-2",
   };
@@ -1282,7 +1260,7 @@ test("the Decisions view draws no entry until the asks and the decisions have an
   const decisionsOut = Promise.withResolvers<IssueDecisions>();
   const decisions = spyOn(api, "getIssueDecisions").mockReturnValue(decisionsOut.promise);
   answerTree([
-    treeNode("s1", "requirement", KEY, { ...inDocument(SPEC_DOCUMENT), text: "The statement." }),
+    STATEMENT_NODE,
     treeNode(later.block_id, "decision", KEY, {
       decision: later,
       ...inDocument(SPEC_DOCUMENT, 1),
@@ -1294,12 +1272,7 @@ test("the Decisions view draws no entry until the asks and the decisions have an
   ]);
   const view = drawStage("");
   // The rows as they stood at each change the view drew.
-  const drawn: string[] = [];
-  const watch = new MutationObserver(() => {
-    const now = drawnRows(view);
-    if (drawn.at(-1) !== now) drawn.push(now);
-  });
-  watch.observe(view.container, { attributes: true, childList: true, subtree: true });
+  const drawn = recordDrawn(view, drawnRows);
   try {
     await waitFor(() => expect(api.listIssueAskThreads).toHaveBeenCalled());
     await waitFor(() => expect(decisions).toHaveBeenCalled());
@@ -1314,10 +1287,10 @@ test("the Decisions view draws no entry until the asks and the decisions have an
     );
     const final = drawnRows(view);
     expect(
-      drawn.filter((now) => now !== ""),
+      drawn.drawn.filter((now) => now !== ""),
       "a row moved, or was drawn in another part, after the rows were first drawn"
     ).toEqual([final]);
   } finally {
-    watch.disconnect();
+    drawn.disconnect();
   }
 });

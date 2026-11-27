@@ -926,10 +926,10 @@ async function landsOnOlderComment(
 
 // R15 and decision 563 (4): an address that names a comment older than the 200 newest - which the
 // outline read's first page does not hold, and whose `comments_before` names the page that does -
-// reads that older page once the page has drawn, and lands on the comment's row with the focus on
-// it, as on a comment the first page holds: `?comment=` beside Conversation's address, and the
-// comment's own address, which the page writes for a comment (`/comments/<id>`). The older page
-// is read once.
+// reads that older page once the stage's view has drawn (`useTellViewDrawn`), and lands on the
+// comment's row with the focus on it, as on a comment the first page holds: `?comment=` beside
+// Conversation's address, and the comment's own address, which the page writes for a comment
+// (`/comments/<id>`). The older page is read once.
 test("an address naming a comment older than the outline read's first page reads the older page and lands on the comment's row, with the focus on it", async () => {
   const answered = answerOlderComment();
   const { oldest } = answered;
