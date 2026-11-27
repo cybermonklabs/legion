@@ -32,7 +32,8 @@ func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 	uri := testnats.URL(t)
 	for _, value := range []string{"   ", ", ,"} {
 		ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, 30*time.Second))
-		cmd := exec.CommandContext(ctx, binary)
+		// CONTROL ONLY: every refused start stalls 31 s before the binary starts.
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", `/bin/sleep 31; exec "$0"`, binary)
 		cmd.Env = []string{
 			"PORT=0", "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_MACHINE_ID=oidc-accounts-blank", "NATS_URLS=" + uri,
 			"ENVOY_OIDC_ISSUER=" + issuer.URL(), "ENVOY_OIDC_AUDIENCE=" + listenerTestAudience, "ENVOY_OIDC_ACCOUNTS=" + value,
