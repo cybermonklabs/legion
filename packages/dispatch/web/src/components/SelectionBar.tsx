@@ -983,7 +983,14 @@ function DrawnBar({
       // the press it answered took the row they came from off the list.
       tabIndex={-1}
     >
-      <div className={`flex items-center gap-2 whitespace-nowrap [&>*]:shrink-0 ${BAR_LINE[size]}`}>
+      <div
+        className={`flex items-center gap-2 whitespace-nowrap [&>*]:shrink-0 ${BAR_LINE[size]}`}
+        // The line scrolls sideways where its actions outrun it (`BAR_LINE`), and Firefox makes a
+        // box that scrolls and holds controls a Tab stop of its own, which Chromium and WebKit do
+        // not. The line always holds the bar's actions, so -1 takes that stop away, and each
+        // action still takes the focus by Tab and is scrolled into view.
+        tabIndex={-1}
+      >
         <span className="mr-1 font-semibold">{state ?? `${count} selected`}</span>
         {children}
       </div>

@@ -256,6 +256,8 @@ export function PipelineView({
         ) : (
           <TableShell
             className="mt-1 max-w-4xl"
+            // Each row links its last failure's run.
+            holdsControls
             label="PR CI: jobs that failed in the last 24 hours"
             size="compact"
           >

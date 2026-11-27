@@ -269,7 +269,12 @@ export function LegionDaemonsSection(): ReactNode {
       ) : null}
       {legion.daemons !== undefined && legion.projects !== undefined ? (
         <>
-          <TableShell className="mt-6" label="Legion daemons">
+          <TableShell
+            className="mt-6"
+            // Each row draws its Remove, for a person alone.
+            holdsControls={human && legion.daemons.length > 0}
+            label="Legion daemons"
+          >
             <TableHead>
               <TableHeadCell>Project</TableHeadCell>
               <TableHeadCell>Daemon state URL</TableHeadCell>

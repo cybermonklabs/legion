@@ -303,4 +303,59 @@ for (const section of sections) {
       stubs.restore();
     }
   });
+
+  // A row's Revoke is the table's one control (`TableShell`'s `holdsControls`), so the table's box
+  // takes no Tab stop of its own while a row draws it; an empty list draws no control, and its box
+  // keeps the browser's default.
+  test(`${section.heading}: the table's box takes tabindex -1 while a row draws Revoke, and none while the list is empty`, async () => {
+    const stubs = section.stub(() => Promise.resolve());
+    try {
+      const revoke = await renderSection(section);
+      expect(revoke.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+      cleanup();
+      stubs.clearList();
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
+      const empty = await screen.findByText(section.empty);
+      expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+    } finally {
+      cleanup();
+      stubs.restore();
+    }
+  });
 }
+
+// A grant nobody may revoke draws the line that says what ends it where its Revoke would be, so a
+// list of only such grants draws no control, and the table's box keeps the browser's default.
+test("Live grants: a list of grants nobody may revoke leaves the table's box with no tabindex", async () => {
+  const list = spyOn(api, "getCredentialGrants").mockResolvedValue({
+    grants: [
+      {
+        approver: null,
+        created_at: "2026-10-03T12:05:00Z",
+        decided_by: null,
+        enrollment: { kind: "session", operator: "", runtime_id: "box-2", slot: null },
+        expires_at: "2026-10-03T13:05:00Z",
+        grant_id: "grant-2",
+        granted: "automatic",
+        names: ["WORKER_TOKEN"],
+        record_id: null,
+      },
+    ],
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GrantsSection />
+      </QueryClientProvider>
+    );
+    const line = await screen.findByText("Ends with its machine login");
+    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
+    expect(line.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+  } finally {
+    cleanup();
+    queryClient.clear();
+    list.mockRestore();
+  }
+});

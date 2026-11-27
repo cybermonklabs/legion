@@ -543,6 +543,33 @@ test("a source removal the reader stopped says Retry sends it again, not that it
   }
 });
 
+// Each source's row draws its Refresh and Delete, so the sources' table box takes no Tab stop of
+// its own (`TableShell`'s `holdsControls`); with no source it draws no control, and its box keeps
+// the browser's default.
+test("the sources' box takes tabindex -1 while a source is listed, and none while there is none", async () => {
+  const listed = sourceServer([architectureSource]);
+  let page = await sourcesOf(listed.list, listed.put, listed.remove);
+  try {
+    await page.section.findByRole("button", {
+      name: "Delete architecture source legion/arch for CORE",
+    });
+    const listedBox = page.section
+      .getByRole("table", { name: "Architecture sources" })
+      .closest('[data-control="table-shell"]');
+    expect(listedBox?.getAttribute("tabindex")).toBe("-1");
+    page.restore();
+    const none = sourceServer([]);
+    page = await sourcesOf(none.list, none.put, none.remove);
+    await page.section.findByText("No architecture sources yet.");
+    const emptyBox = page.section
+      .getByRole("table", { name: "Architecture sources" })
+      .closest('[data-control="table-shell"]');
+    expect(emptyBox?.hasAttribute("tabindex")).toBe(false);
+  } finally {
+    page.restore();
+  }
+});
+
 // A refresh the reader stopped may have been made: the section says so, and that its Retry asks
 // again under the refresh's key - a `POST` sends one - rather than that it failed.
 test("a source refresh the reader stopped says Retry asks again under its key", async () => {

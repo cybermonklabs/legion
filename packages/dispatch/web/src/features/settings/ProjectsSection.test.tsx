@@ -396,6 +396,26 @@ test("the default repository cell reads the project's default, and None for a pr
   }
 });
 
+// Each project's row draws its default assignee's list and its default repository's box, so the
+// projects' table box takes no Tab stop of its own (`TableShell`'s `holdsControls`); with no
+// project it draws no control, and its box keeps the browser's default.
+test("the projects' box takes tabindex -1 while a project is listed, and none while there is none", async () => {
+  const listed = renderOverServer(projectServer(withDefault));
+  try {
+    const coreBox = await repositoryBox("CORE");
+    expect(coreBox.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+  } finally {
+    listed.done();
+  }
+  const none = renderOverServer(projectServer([]));
+  try {
+    const empty = await screen.findByText("No projects yet.");
+    expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+  } finally {
+    none.done();
+  }
+});
+
 test("Save sends the typed owner/name to the project's default repository, and the cell reads what the server stored", async () => {
   const user = userEvent.setup();
   const server = projectServer(withDefault);

@@ -556,6 +556,24 @@ test("a read-only token's row shows its scopes and offers no box to change them"
   }
 });
 
+// A token not revoked draws its Revoke, so the token table's box takes no Tab stop of its own
+// (`TableShell`'s `holdsControls`); a list of revoked tokens draws no control - their scope boxes
+// are disabled and no Revoke is offered - and its box keeps the browser's default.
+test("the token table's box takes tabindex -1 while a token is live, and none while every token is revoked", async () => {
+  let restore = renderMintForm([{ ...token, revoked_at: "2026-09-13T00:00:00Z" }]);
+  try {
+    const revoked = await screen.findByRole("table", { name: "Agent tokens" });
+    expect(within(revoked).getByText("Revoked")).toBeDefined();
+    expect(revoked.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+    restore();
+    restore = renderMintForm([token]);
+    const revoke = await screen.findByRole("button", { name: "Revoke architect" });
+    expect(revoke.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+  } finally {
+    restore();
+  }
+});
+
 // Settings offers Set P0, the scope a priority of 0 needs, only where Dispatch says the person at
 // the browser holds it: the section reads `GET /api/v1/whoami` and draws the box, on the mint form
 // and on the row of each token that writes, once its scopes name p0. While that read has not

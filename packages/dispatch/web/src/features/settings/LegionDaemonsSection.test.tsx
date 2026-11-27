@@ -412,6 +412,27 @@ test("a reader who is not a person is shown the daemons and offered no control",
   expect(section.queryByRole("button", { name: "Remove the Legion daemon of ACME" })).toBeNull();
 });
 
+// A person's row draws its Remove, so the daemons' table box takes no Tab stop of its own
+// (`TableShell`'s `holdsControls`). A reader who is not a person is offered no Remove, and with no
+// daemon there is no row: either way the box holds no control and keeps the browser's default.
+test("the daemons' box takes tabindex -1 while a person's row draws Remove", async () => {
+  const section = await renderSection(legionServer([setting]));
+  const remove = await section.findByRole("button", { name: "Remove the Legion daemon of ACME" });
+  expect(remove.closest('[data-control="table-shell"]')?.getAttribute("tabindex")).toBe("-1");
+});
+
+test("the daemons' box takes no tabindex for a reader who is not a person", async () => {
+  const reader = await renderSection(legionServer([setting]), false);
+  const url = await reader.findByRole("cell", { name: "http://127.0.0.1:9731" });
+  expect(url.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+});
+
+test("the daemons' box takes no tabindex while no project names a daemon", async () => {
+  const section = await renderSection(legionServer([]));
+  const empty = await section.findByText("No project names a Legion daemon yet.");
+  expect(empty.closest('[data-control="table-shell"]')?.hasAttribute("tabindex")).toBe(false);
+});
+
 /** `server` with every read it is asked recorded by project, in order, and every write held
  *  until the row answers it (`answer`): the write reaches the server's rows only then, or, with
  *  `savedFirst`, at once, its answer alone held. Once `holdReads` is called, each read answers

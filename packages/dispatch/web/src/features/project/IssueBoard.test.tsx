@@ -526,6 +526,57 @@ test("without the lanes prop the board renders the flat columns, no lane heading
   }
 });
 
+// Firefox makes a box that scrolls and holds controls a Tab stop of its own, which Chromium and
+// WebKit do not. The board's scroller holds the cards' links, so it takes tabindex -1: no stop of
+// its own, while each card's link stays a Tab stop.
+test("the board's scroller takes tabindex -1, and a card's link keeps its Tab stop", async () => {
+  const { cleanup } = renderBoard();
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const scroller = within(board).getByTestId("board-scroll-container");
+    expect(scroller.getAttribute("tabindex")).toBe("-1");
+    const card = within(scroller).getByRole("article", { name: "CORE-1 Plan the work" });
+    expect(
+      within(card)
+        .getByRole("link", { name: /CORE-1/ })
+        .hasAttribute("tabindex")
+    ).toBe(false);
+  } finally {
+    cleanup();
+  }
+});
+
+// Each swimlane's scroller likewise takes tabindex -1 while the lane draws a card, its link a Tab
+// stop. A lane that draws none - no card at all, or only a collapsed rail's - keeps the browser's
+// default, so a reader can still reach it and scroll it by keys, since the board's keys rove
+// within one lane and never into another.
+test("a lane's scroller takes tabindex -1 while it draws a card, and none while it draws none", async () => {
+  const doneP2 = issue({ key: "CORE-4", priority: 2, rank: "d", status: "done", title: "Done" });
+  const { cleanup } = renderBoard({}, undefined, [...laneIssues, doneP2], "/projects/CORE", true);
+  try {
+    const p0Lane = await screen.findByRole("region", { name: "P0 lane" });
+    const p0 = within(p0Lane).getByTestId("board-lane-scroll-container");
+    expect(p0.getAttribute("tabindex")).toBe("-1");
+    expect(
+      within(p0)
+        .getByRole("link", { name: /CORE-1/ })
+        .hasAttribute("tabindex")
+    ).toBe(false);
+    const p1Lane = screen.getByRole("region", { name: "P1 lane" });
+    expect(within(p1Lane).queryAllByRole("article")).toHaveLength(0);
+    expect(within(p1Lane).getByTestId("board-lane-scroll-container").hasAttribute("tabindex")).toBe(
+      false
+    );
+    const p2Lane = screen.getByRole("region", { name: "P2 lane" });
+    expect(within(p2Lane).getByRole("region", { name: "Done (collapsed)" })).toHaveTextContent("1");
+    expect(within(p2Lane).getByTestId("board-lane-scroll-container").hasAttribute("tabindex")).toBe(
+      false
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("within a lane, Shift+L moves a card to the next status in the same lane without touching priority", async () => {
   const user = userEvent.setup();
   const patchIssue = patchInFlight();

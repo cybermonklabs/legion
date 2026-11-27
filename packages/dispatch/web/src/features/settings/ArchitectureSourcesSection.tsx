@@ -169,7 +169,12 @@ export function ArchitectureSourcesSection(): ReactNode {
       ) : null}
       {sources.isSuccess && projects.isSuccess ? (
         <>
-          <TableShell className="mt-6" label="Architecture sources">
+          <TableShell
+            className="mt-6"
+            // Each row draws its Refresh and Delete.
+            holdsControls={sources.data.length > 0}
+            label="Architecture sources"
+          >
             <TableHead>
               <TableHeadCell>Project</TableHeadCell>
               <TableHeadCell>Repository</TableHeadCell>

@@ -163,6 +163,27 @@ test("the compact bar's line is one line that scrolls sideways below sm, and wra
   }
 });
 
+// Firefox makes a box that scrolls and holds controls a Tab stop of its own, which Chromium and
+// WebKit do not. The bar's line scrolls sideways where its actions outrun it, at every size, so it
+// takes tabindex -1: no stop of its own, while each action in it stays a Tab stop.
+test("the bar's line takes tabindex -1 at every size, and its actions keep their Tab stops", () => {
+  const sizes: readonly ControlSize[] = ["comfortable", "compact", "toolbar"];
+  for (const size of sizes) {
+    const view = render(
+      <SelectionBar count={2} label="Selected rows" size={size}>
+        <button type="button">Clear selection</button>
+      </SelectionBar>
+    );
+    try {
+      const action = screen.getByRole("button", { name: "Clear selection" });
+      expect(action.parentElement?.getAttribute("tabindex")).toBe("-1");
+      expect(action.hasAttribute("tabindex")).toBe(false);
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
 test("the bar hands its own element back and takes focus, for a page whose keymap puts it there", () => {
   const barRef = createRef<HTMLElement>();
   const view = render(

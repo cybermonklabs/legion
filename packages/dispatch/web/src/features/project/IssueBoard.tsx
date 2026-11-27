@@ -291,6 +291,19 @@ const BoardLaneRow = memo(function BoardLaneRow({
       <div
         className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
         data-testid="board-lane-scroll-container"
+        // Firefox makes a box that scrolls and holds controls a Tab stop of its own, which
+        // Chromium and WebKit do not: -1 takes that stop away while the lane draws a card, whose
+        // link still takes the focus by Tab and is scrolled into view. A collapsed rail draws no
+        // card. A lane that draws none keeps the browser's default, so a reader can still reach it
+        // and scroll it by keys: the board's `j`/`k`/`h`/`l` keys rove within one lane and never
+        // into another.
+        tabIndex={
+          boardLane.columns.some(
+            (column) => column.issues.length > 0 && !isCollapsed(column.status)
+          )
+            ? -1
+            : undefined
+        }
       >
         <div className="flex w-max items-stretch gap-4">
           {boardLane.columns.map((column) =>
@@ -910,6 +923,12 @@ export function IssueBoard({
             <div
               className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
               data-testid="board-scroll-container"
+              // Firefox makes a box that scrolls and holds controls a Tab stop of its own, which
+              // Chromium and WebKit do not: -1 takes that stop away, and each card's link still
+              // takes the focus by Tab and is scrolled into view. A search that hides every card
+              // leaves no link here, and the board's `h`/`l` keys still focus each column and
+              // scroll it into view.
+              tabIndex={-1}
             >
               <div className="flex w-max items-stretch gap-4">
                 {columns.map((column) =>
