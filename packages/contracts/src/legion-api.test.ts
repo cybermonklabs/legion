@@ -2466,6 +2466,20 @@ test("an issue in verifying carries what its close waits on, every member option
     unread: { ...CLOSE_WAIT.unread, cause: "a_later_cause" },
   };
   expect(parses()).toBeTrue();
+  // The daemon writes every word of the wait whatever it holds (Go's `when`, `answer` and `status`
+  // carry no `omitempty`), so an empty word, a check Dispatch answered with nothing or a child with
+  // no status, is read rather than refused with the whole state.
+  waiting.closeWait = {
+    ...CLOSE_WAIT,
+    beneath: [{ ...CLOSE_WAIT.beneath[0], status: "" }],
+    openChildren: [{ ...CLOSE_WAIT.openChildren[0], status: "" }],
+    checks: [{ ...CLOSE_WAIT.checks[0], id: "", when: "", answer: "", reason: "" }],
+    production: { ...CLOSE_WAIT.production, state: "", merge: "", outcome: "" },
+    defects: [{ ...CLOSE_WAIT.defects[0], id: "", kind: "", role: "", text: "", head: "", check: "" }],
+    unapproved: { ...CLOSE_WAIT.unapproved, checks: [""] },
+    unread: { ...CLOSE_WAIT.unread, cause: "" },
+  };
+  expect(parses()).toBeTrue();
   for (const wrong of [
     { since: "the evening" },
     { nextChanges: -1 },
