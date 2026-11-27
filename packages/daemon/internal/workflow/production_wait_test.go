@@ -560,6 +560,66 @@ func TestARedeliveredLateResultOpensNoSecondLook(t *testing.T) {
 	}
 }
 
+// A look whose checking agent recorded each check's pass and ended before it reported closes the
+// check not_run with every check passing, so no result recorded after the close is one for a check
+// without a pass (lookAfterNotRun), and the issue would wait in verifying until a person's done
+// while the daily notice names one more look as its way out. A read made after that close in
+// which each check passes opens that look, the last, and its pass closes the check and then the
+// issue. A second such read while the look is open opens nothing more. The control is a read after
+// the close in which a check still has no pass: it opens no look, since only a result opens one
+// for that check.
+func TestAReadInWhichEachCheckPassesOpensOneLookAfterNotRun(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		answer func() record.CheckReadAnswer
+		opens  bool
+	}{
+		{name: "each check passes", answer: func() record.CheckReadAnswer {
+			return answerOf(waitRoot, nil, passing("c-after", waitRootMerge))
+		}, opens: true},
+		{name: "control: a check still has no pass", answer: func() record.CheckReadAnswer {
+			return answerOf(waitRoot, nil, noResult("c-after", waitRootMerge))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newWaitRig(t, claim.RoleTester)
+			mergedRoot(t, rig)
+			rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+			rig.lastLook(waitRoot)
+			rig.report(waitRoot, 2, "pending", "the check is due after the bound", nil)
+			if check := rig.check(waitRoot); check.Open() || check.Outcome != record.CheckNotRun {
+				t.Fatalf("the check after its last look's pending = %+v, want it closed not_run", check)
+			}
+			rig.read(waitRoot, tc.answer())
+			check := rig.check(waitRoot)
+			if !tc.opens {
+				if check.Open() || check.Looks != 2 {
+					t.Fatalf("the check after a read in which a check has no pass = %+v, want it closed not_run at look 2", check)
+				}
+				rig.stands(waitRoot, phase.Verifying, "testing")
+				return
+			}
+			if !check.Open() || !check.Last || check.Looks != 3 || !check.LookOpen {
+				t.Fatalf("the check after a read in which each check passes = %+v, want it open at its last look 3", check)
+			}
+			rig.stands(waitRoot, phase.Verifying, "testing")
+			rig.read(waitRoot, tc.answer())
+			if check := rig.check(waitRoot); check.Looks != 3 {
+				t.Fatalf("the check after a second such read = %+v, want still look 3: the open look fences it", check)
+			}
+			rig.ranOut(waitRoot, "close_read")
+			rig.report(waitRoot, 3, "pass", "the check passed in production", nil)
+			if check := rig.check(waitRoot); check.Open() || check.Outcome != record.CheckRecorded {
+				t.Fatalf("the check after the look's pass = %+v, want it closed recorded", check)
+			}
+			rig.read(waitRoot, tc.answer())
+			closedOnChecks(t, rig, waitRoot)
+		})
+	}
+}
+
 // No timer opens a look after not_run: a day passes and the controller ticks, and no look opens.
 func TestNoTimerOpensALookAfterNotRun(t *testing.T) {
 	t.Parallel()
