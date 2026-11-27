@@ -16,7 +16,7 @@
 # script into it, so the script under test is the file CI runs: it resolves its root from its own
 # path, which the copy puts at the fixture root. It is a copy, not a symbolic link: Biome 2.5.15
 # panics on a file symlink that points outside the project (biomejs/biome#12984,
-# .github/ci-notes/ci.md#why-biome-is-pinned-to-2515). Every case but the stand-in ones also links in
+# .github/ci-notes/ci.md#why-biome-is-pinned). Every case but the stand-in ones also links in
 # this repository's node_modules, so it runs the Biome that bun.lock pins. No case runs the check
 # over this repository's own tree: ci.yaml's lint job does (.github/workflows/ci-job-lint.yaml,
 # "Check the whole tree with Biome"), on every change.

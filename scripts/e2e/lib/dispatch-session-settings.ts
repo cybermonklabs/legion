@@ -620,9 +620,7 @@ async function pickerRefusal(context: Context): Promise<void> {
   const top = Math.max(...replay.map((frame) => frame.seq));
   const models = settings?.models as string[] | undefined;
   if (models === undefined) {
-    throw new Error(
-      `the reported settings frame of ${S} lists no models: ${JSON.stringify(settings)}`
-    );
+    fail(`the reported settings frame of ${S} lists no models: ${JSON.stringify(settings)}`);
   }
   const injected = {
     ...settings,

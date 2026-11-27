@@ -2100,10 +2100,10 @@ nested biome.json that sets none (packages/claude-envoy's), which stays at Biome
 1 MiB. With the mark read as one exact letter, the pinned Biome's `!` made the script blind to
 every skipped file: .github/scripts/check-biome-tree.test.sh's size cases are what failed.
 
-## Why Biome is pinned to 2.5.15
+## Why Biome is pinned
 
-Every package.json names `"@biomejs/biome": "2.5.15"` exactly, so bun.lock holds one Biome and no
-install moves it. These facts set the pin, and a move of it reads each again.
+Every package.json that names `@biomejs/biome` names it as `2.5.15` exactly, so bun.lock holds one
+Biome and no install moves it. These facts set the pin, and a move of it reads each again.
 
 - 2.4.x has a race in the workspace's file sources (biomejs/biome#10268, fixed by #10774 in
   2.5.2). `insert_source` takes a file source's index from `boxcar::Vec::iter().position()`, which

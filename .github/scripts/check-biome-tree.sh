@@ -46,7 +46,7 @@ set -e
 # Each size diagnostic is a header line `<path> check`, which a rule of `━` follows, and then, as
 # its first non-blank line, `  <mark> The size of the file is ..., which exceeds the configured
 # maximum of ...`, where the mark is the severity's: `i` for the info of Biome 2.4.11, `!` for the
-# warning of the pinned 2.5.15 (.github/ci-notes/ci.md#why-biome-is-pinned-to-2515). Biome 2.5.15
+# warning of the pinned 2.5.15 (.github/ci-notes/ci.md#why-biome-is-pinned). Biome 2.5.15
 # prints the summary before the diagnostics, which this loop does not depend on. The rule and the
 # mark are matched as any text, since bash reads `━` byte by byte outside a UTF-8 locale.
 skipped=()
