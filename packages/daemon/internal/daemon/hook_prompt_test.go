@@ -2,12 +2,18 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -62,38 +68,31 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	}
 }
 
-// A role topic with no live holder is the ordinary state for a role an issue has never had: the
-// row ends with one log line rather than waiting for a holder, and the listener's hour is the one
-// bound on how late the hook's words reach a session. It ends against either listener: one with no
-// kept lane, as a listener before sjawhar/legion#2588 has none, keeps nothing for a role nobody
-// claims (notify.ErrNoHolder), and one with that lane keeps the prompt for an hour for the role's
-// next holder.
-func TestAHookPromptNoSessionHoldsEndsTheRow(t *testing.T) {
+// A listener that keeps a publish naming no source session for a role no live session holds —
+// every listener release before the one that refuses such a keep — answers the prompt kept,
+// holding it for an hour for the role's next holder, and the row ends with that listener as the
+// prompt's keeper. A listener that keeps nothing for it answers notify.ErrNoHolder, and the row
+// waits for a session to hold the role instead
+// (TestAHookPromptNoSessionHoldsWaitsForTheRoleInsideTheHour).
+func TestAHookPromptAListenerKeepsEndsTheRow(t *testing.T) {
 	t.Parallel()
-	for _, keeps := range []bool{false, true} {
-		t.Run(fmt.Sprintf("the listener keeps it %t", keeps), func(t *testing.T) {
-			ctx := context.Background()
-			publisher := &holderPublisher{keeps: keeps}
-			runner, _, pool := hookRunner(t, publisher)
-			topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
-			publisher.setAbsent(topic)
-			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
+	ctx := context.Background()
+	publisher := &holderPublisher{keeps: true}
+	runner, _, pool := hookRunner(t, publisher)
+	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+	publisher.setAbsent(topic)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
-			if err := runner.RunOnce(ctx); err != nil {
-				t.Fatalf("drain the hook prompt: %v", err)
-			}
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the hook prompt: %v", err)
+	}
 
-			attempts, delivered := publisher.snapshot()
-			if attempts != 1 || len(delivered) != 0 {
-				t.Fatalf("publish attempts = %d with %#v delivered, want the one attempt and no delivery", attempts, delivered)
-			}
-			if kept, want := len(publisher.keptCopies()), map[bool]int{false: 0, true: 1}[keeps]; kept != want {
-				t.Fatalf("the listener keeps %d copies of the prompt, want %d", kept, want)
-			}
-			if left := outboxRows(t, pool); left != 0 {
-				t.Fatalf("outbox rows left = %d, want the prompt finished rather than held", left)
-			}
-		})
+	attempts, delivered := publisher.snapshot()
+	if attempts != 1 || len(delivered) != 0 || len(publisher.keptCopies()) != 1 {
+		t.Fatalf("publish attempts = %d with %d delivered and %d kept, want the one attempt, kept", attempts, len(delivered), len(publisher.keptCopies()))
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the prompt finished with the listener as its keeper", left)
 	}
 }
 
@@ -106,8 +105,8 @@ func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
-	runner, sup, pool := hookRunner(t, publisher)
-	implementer := releasedClaim(t, sup, claim.RoleImplementer)
+	runner, _, pool := hookRunner(t, publisher)
+	implementer := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
 	if err := runner.RunOnce(ctx); err != nil {
@@ -141,7 +140,7 @@ func TestAHookPromptForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
 
 // A released role's resume can wait for its turn in the wake pacing, which over a wave is more
 // than an hour away, and meanwhile the claim reads launching with no process (supervise's
-// parkWake): it is released no more, and no session of it can hold the role before that turn.
+// waitOnMachine): it is released no more, and no session of it can hold the role before that turn.
 // The row publishes nothing while the wake waits, since a kept publish then would start the
 // listener's hour long before the pod comes back. It waits as a routine wait, to the turn or to
 // parkedWakeBound on, whichever comes first, and reads the claim again then: the attempt that
@@ -169,14 +168,16 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 // a holder that did not confirm the prompt in time can take it on the next attempt, a holder that
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
-// Only a role with no live holder ends the row.
-func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
+// A role with no live holder is a wait while the hour after the row was made runs. Past that hour
+// the row ends before it publishes, a failure no retry repairs, which finishes the row with a
+// message on the issue (keptRoleMessageEnded, permanentRefusal, finishRefused).
+func TestAHookPromptRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
-	row.ID = 61
+	row.ID, row.CreatedAt = 61, time.Now()
 	publisher := &outboxPublisher{}
-	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}
+	runner := &outbox{project: "legion", notices: publisher, log: quietLogger(), now: time.Now}
 	const denial = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_t"`
 	for _, tc := range []struct {
 		name string
@@ -189,20 +190,135 @@ func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			publisher.err = fmt.Errorf("publish to the implementer's topic: %w", tc.err)
 			err := runner.execute(ctx, row)
-			if err == nil || !errors.Is(err, tc.err) {
+			if err == nil || !errors.Is(err, tc.err) || errors.Is(err, wait.ErrWaiting) || permanentRefusal(row, err) {
 				t.Fatalf("the hook prompt answered %v = %v, want the answer as a failure, retried", tc.err, err)
 			}
 			t.Logf("%s: %v", tc.name, err)
 		})
 	}
 	publisher.err = fmt.Errorf("publish to the implementer's topic: %w: no holder", notify.ErrNoHolder)
-	if err := runner.execute(ctx, row); err != nil {
-		t.Fatalf("the hook prompt no session holds = %v, want the row finished", err)
+	if err := runner.execute(ctx, row); !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) || permanentRefusal(row, err) {
+		t.Fatalf("the hook prompt no session holds, inside the hour = %v, want a wait on the no-holder answer", err)
+	}
+	row.CreatedAt = time.Now().Add(-time.Hour - time.Minute)
+	if err := runner.execute(ctx, row); !errors.Is(err, errKeptRoleMessagePastItsHour) || errors.Is(err, wait.ErrWaiting) || !permanentRefusal(row, err) {
+		t.Fatalf("the hook prompt past its hour = %v, want a failure no retry repairs, which ends the row", err)
 	}
 }
 
+// storingListener is the listener's publish route as a stream that stores a message once per
+// dedupe key meets it: the first key it stores is answered 503 maybe_stored with Retry-After, as
+// the route answers a forward whose acknowledgement it did not read, and any later new key is
+// stored and answered 200; a repeat of a stored key is the stream's duplicate, stores nothing and
+// is answered 200. stored is the set of copies the holder would read.
+type storingListener struct {
+	mu       sync.Mutex
+	keys     []string
+	stored   map[string]bool
+	answered []int
+}
+
+func (l *storingListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var request listenerwire.PublishRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.keys = append(l.keys, request.DedupeKey)
+	if l.stored[request.DedupeKey] {
+		l.answered = append(l.answered, http.StatusOK)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"duplicate":true}`))
+		return
+	}
+	l.stored[request.DedupeKey] = true
+	if len(l.stored) == 1 {
+		l.answered = append(l.answered, http.StatusServiceUnavailable)
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(listenerwire.APIError{Code: listenerwire.CodeMaybeStored,
+			Error: "envoy: the message bus did not acknowledge the publish; it may have been stored"})
+		return
+	}
+	l.answered = append(l.answered, http.StatusOK)
+	w.WriteHeader(http.StatusOK)
+}
+
+// rekeyingPublisher is a daemon whose retry carries a message id of its own, the control of
+// TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce: each publish goes out under the row's
+// key with the attempt's number after it.
+type rekeyingPublisher struct {
+	notify.Publisher
+	attempts int
+}
+
+func (p *rekeyingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	p.attempts++
+	return p.Publisher.PublishKept(ctx, topic, message, payload, fmt.Sprintf("%s:attempt-%d", key, p.attempts))
+}
+
+// maybeStoredRow drives one hook-prompt row against a listener that stores its first publish and
+// answers it 503 maybe_stored, through the daemon's own publisher over HTTP (notify.HTTPPublisher)
+// wrapped by wrap, and answers why the holder did not receive the prompt once, or "".
+func maybeStoredRow(t *testing.T, wrap func(notify.Publisher) notify.Publisher) string {
+	t.Helper()
+	listener := &storingListener{stored: map[string]bool{}}
+	server := httptest.NewServer(listener)
+	t.Cleanup(server.Close)
+	runner, _, pool := hookRunner(t, wrap(notify.New(server.URL, "")))
+	hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-time.Minute))
+	id := noticeRowID(t, pool)
+
+	drainAt(t, runner, 0, "the first publish, which the listener stores and answers 503 maybe_stored")
+	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 {
+		t.Fatalf("UNKNOWN: hook-prompt rows left = %d after the 503, want the row waiting for its retry, so the retry tests nothing", left)
+	}
+	drainAt(t, runner, 2*time.Minute, "the retry the 503 invites")
+
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
+		return fmt.Sprintf("hook-prompt rows left = %d after the retry, want the row finished", left)
+	}
+	if len(listener.keys) != 2 || listener.answered[0] != http.StatusServiceUnavailable {
+		return fmt.Sprintf("the listener was sent keys %q and answered %v, want two publishes, the first answered 503", listener.keys, listener.answered)
+	}
+	if len(listener.stored) != 1 {
+		return fmt.Sprintf("the stream stored %d copies under keys %q, want one: the holder receives the work-back %d times", len(listener.stored), listener.keys, len(listener.stored))
+	}
+	if listener.keys[0] != record.OutboxKey(id) {
+		return fmt.Sprintf("the publishes carried %q, want the row's own key %q", listener.keys, record.OutboxKey(id))
+	}
+	return ""
+}
+
+// A hook prompt whose first publish the stream stored and the listener answered 503 maybe_stored
+// is retried, as any failure that is not permanent is, and the retry carries the first publish's
+// message id, the row's own key (record.OutboxKey): the stream drops the second copy as a
+// duplicate, so the holder receives the work-back once. The control is a daemon whose retry
+// carries a new id: the stream stores a second copy, and the row fails.
+func TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce(t *testing.T) {
+	t.Parallel()
+	t.Run("the retry carries the first publish's key", func(t *testing.T) {
+		t.Parallel()
+		if failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return p }); failure != "" {
+			t.Fatal(failure)
+		}
+	})
+	t.Run("control: a retry under a new key", func(t *testing.T) {
+		t.Parallel()
+		failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return &rekeyingPublisher{Publisher: p} })
+		if failure == "" {
+			t.Fatal("the row passed with each retry under a new key, so it does not show the retry's key keeps the holder to one copy")
+		}
+		t.Logf("the control fails, as it must: %s", failure)
+	})
+}
+
 // A relaunch the wake pacing parks over a process the claim still records holds no row: the
-// machine leaves that claim as it stands, idle on its process (supervise's parkWake), and its
+// machine leaves that claim as it stands, idle on its process (supervise's waitOnMachine), and its
 // live session can take a publish now, so the row's first attempt publishes. The claim is one of
 // the wave TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt reads, a process on an
 // earlier plugin contract whose stale-plugin relaunch waits its turn (parkedOverItsProcess). A row
@@ -256,17 +372,17 @@ func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 // parkedOverItsProcess creates role's claim on issue, the root of its own tree, as the stale-plugin
 // wave of TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt leaves one: idle on
 // the process it records, which speaks the contract before the daemon's (liveClaim), under the
-// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing gives
-// the relaunch a turn an hour ahead and the machines' clock fires no timer the test does not fire
-// (heldClock), so the relaunch waits through the whole test. It is posted as the daemon's pass
-// posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Credit).
+// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing lets
+// the relaunch's place out an hour ahead (parkedFor) and the machines' clock fires no timer the
+// test does not fire (heldClock), so the relaunch waits through the whole test. It is posted as
+// the daemon's pass posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Credit).
 func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
 	t.Helper()
 	ctx := context.Background()
 	// A machine takes its deps where it is built, so the clock and the pacing go in before the
 	// claim is created.
 	sup.deps.Clock = &heldClock{}
-	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
+	sup.deps.WakePace = parkedFor(sup.deps.Clock, time.Hour)
 	token := mustClaimToken(t, issue, role)
 	live := liveClaim(1, token, sup.deps.PluginContract-1)
 	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", issue, issue, role, supervise.StateIdle
@@ -331,6 +447,25 @@ func releasedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Ma
 	return machine
 }
 
+// recordedReleasedClaim is releasedClaim with the claim's row in the rig's database too, suspended
+// with the source `released`, as the store's own tests put it (store.Store.PutClaim). A daemon's
+// supervisor writes the row of every claim it holds (supervisor.Create, store.Store.AdmitClaim),
+// and a delivery wake takes nothing for a claim the record holds no row of
+// (store.Store.TakeDeliveryWake). The rig's supervisor writes its claims to a store of its own
+// (outboxClaimStore), so the row is put here, in the store the runner reads.
+func recordedReleasedClaim(t *testing.T, runner *outbox, role claim.Role) *supervise.Machine {
+	t.Helper()
+	machine := releasedClaim(t, runner.supervisor, role)
+	st, ok := runner.trees.(*store.Store)
+	if !ok {
+		t.Fatalf("the runner's trees are a %T, want the store the delivery wake reads the claim's row from", runner.trees)
+	}
+	if err := st.PutClaim(context.Background(), machine.Claim()); err != nil {
+		t.Fatalf("record the released %s's claim: %v", role, err)
+	}
+	return machine
+}
+
 // keptAcrossTheWake drives one role-message row for role's released claim on LEGION-208 through
 // the two attempts a released role meets, against a listener that answers a keep: false publish
 // to the role's topic notify.ErrNoHolder and keeps a kept publish for the role's next holder
@@ -342,10 +477,10 @@ func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Ro
 	t.Helper()
 	ctx := context.Background()
 	publisher := &holderPublisher{keeps: true}
-	runner, sup, pool := hookRunner(t, publisher)
+	runner, _, pool := hookRunner(t, publisher)
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
-	machine := releasedClaim(t, sup, role)
+	machine := recordedReleasedClaim(t, runner, role)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute)))
 	id := noticeRowID(t, pool)
 
@@ -399,8 +534,8 @@ type parkedWake struct {
 }
 
 // parkTheWake queues one role-message row for role's released claim on LEGION-208 and runs it to
-// the park, against the listener keptAcrossTheWake meets. The pacing gives every wake a turn
-// parkedTurn ahead and the machines' clock fires a timer only when the test fires it
+// the park, against the listener keptAcrossTheWake meets. The pacing lets the first wake's place
+// out parkedTurn ahead (parkedFor) and the machines' clock fires a timer only when the test fires it
 // (heldClock), so the resume the row's first attempt makes waits, its claim launching with no
 // process and its view naming the waiting launch. The row's next attempt, parkFound on, finds
 // the park and waits for that launch, publishing nothing.
@@ -412,10 +547,10 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	// claim is created.
 	clock := &heldClock{}
 	sup.deps.Clock = clock
-	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+	sup.deps.WakePace = parkedFor(clock, parkedTurn)
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
-	machine := releasedClaim(t, sup, role)
+	machine := recordedReleasedClaim(t, runner, role)
 	row := mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute))
 	enqueueOutbox(t, pool, runner.records, row)
 	row.ID = noticeRowID(t, pool)
@@ -507,8 +642,8 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 		t.Fatalf("the attempts while the wake waits published %d times, want none: the pod has not started, and a kept copy's hour runs from its publish", attempts)
 	}
 
-	// The wake's turn, the one timer armed for the pacing's wait: the resume launches.
-	if fired := p.clock.fire(parkedTurn); fired != 1 {
+	// The wake's turn, the one timer armed for the moment the pacing gave: the resume launches.
+	if fired := p.clock.fireAt(p.turn); fired != 1 {
 		t.Fatalf("fired %d timers for the wake's turn, want the one the pacing armed", fired)
 	}
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {
@@ -527,7 +662,7 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
 	t.Helper()
 	p := parkTheWake(t, payload, role)
-	if err := p.machine.Handle(context.Background(), supervise.RequestResume{Claim: mustClaimToken(t, "LEGION-208", role)}); err != nil {
+	if err := p.machine.Handle(context.Background(), supervise.RequestResume{Claim: mustClaimToken(t, "LEGION-208", role), By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume of the parked %s: %v", role, err)
 	}
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {

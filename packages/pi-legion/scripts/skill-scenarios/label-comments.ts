@@ -28,7 +28,7 @@
  * again. The key goes in the `x-api-key` header. --key-file is a 0600 file that holds an Anthropic
  * key, read again for each call, and the call goes to https://api.anthropic.com. --key-command is a
  * program that prints the gateway key, run again for each call, and the call goes to
- * <gateway>/v1/messages. A 429 or 5xx answer is tried again after a wait.
+ * <gateway>/v1/messages. An outage (`outage`: a 5xx, a 408 or a 429) is tried again after a wait.
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The
@@ -40,6 +40,7 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
+import { outage } from "@legion/contracts/http-status";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   backoffMs,
@@ -55,7 +56,6 @@ import {
   processIo,
   resolveDispatch,
   type Sleep,
-  transient,
 } from "./production-dispatch";
 
 /** The eleven questions of the labels artifact, word for word, in its order. */
@@ -299,7 +299,7 @@ async function label(
     }
     if (!response.ok) {
       last = modelError(response.status, text);
-      if (transient(response.status)) {
+      if (outage(response.status)) {
         wait = retryAfterMs(response);
         continue;
       }
@@ -502,7 +502,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   if (outside !== undefined) return refuse(outside);
   let dispatch: ProductionDispatch;
   try {
-    dispatch = new ProductionDispatch(resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
+    dispatch = new ProductionDispatch(await resolveDispatch(io.env, io.cwd), io.fetch, io.sleep);
   } catch (error) {
     return refuse(messageFor(error));
   }

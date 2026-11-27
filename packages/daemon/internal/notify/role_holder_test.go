@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // RoleHolder names every session the listener names as a role's holder, whatever state it gives
@@ -18,8 +20,11 @@ import (
 // field. A 200 is read within answerBodyLimit, since its title, dir and capabilities are not
 // bounded: a holder with many capabilities is named as any other. Only a 404 naming no holder
 // under reason `unclaimed`, a role no claim names, is no holder; one naming no holder under any
-// other reason, and every other answer, is an error, which the forget refuses on too. The lookup is
-// one GET of the role with the listener's bearer.
+// other reason, and every other answer, is an error, which the forget refuses on too. A listener
+// outage (listenerwire.Outage: a 408, a 429, a 5xx but the listener's own 500,
+// listenerwire.FaultStatus, which it answers the same way each time it is asked) is a plain error
+// the caller waits on and asks again about. The lookup is one GET of the role with the listener's
+// bearer.
 //
 // The controls (the pull request records each run): RoleHolder answering a lapsed holder with no
 // state as no holder, as round 17 first did, fails the older listener's row; the 200 read within
@@ -58,6 +63,12 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 		{"a wrong bearer", http.StatusUnauthorized, `{"error":"unauthorized"}`, "", "", refused},
 		{"a claim record the listener cannot decode", http.StatusInternalServerError, `{"error":"envoy: the claim record of role legion-x is unreadable: …"}`, "", "", refused},
 		{"a listener whose bus does not answer", http.StatusServiceUnavailable, `{"error":"…"}`, "", "", transient},
+		{"a proxy that timed out the request", http.StatusRequestTimeout, `<html>408 Request Timeout</html>`, "", "", transient},
+		{"a limiter in front of the listener", http.StatusTooManyRequests, `<html>429 Too Many Requests</html>`, "", "", transient},
+		{"a gateway in front of the listener", http.StatusBadGateway, `<html>502 Bad Gateway</html>`, "", "", transient},
+		{"a proxy that does not implement the method", http.StatusNotImplemented, `<html>501 Not Implemented</html>`, "", "", transient},
+		{"a proxy that refuses the HTTP version", http.StatusHTTPVersionNotSupported, `<html>505 HTTP Version Not Supported</html>`, "", "", transient},
+		{"a 599", 599, ``, "", "", transient},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var path, bearer string
@@ -90,12 +101,13 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 	}
 
 	t.Run("a listener it cannot reach", func(t *testing.T) {
-		server := httptest.NewServer(http.NotFoundHandler())
-		server.Close()
-		_, _, err := New(server.URL, "").RoleHolder(context.Background(), "legion-x")
+		// A port the test holds and nothing listens on: a closed server's port is any process's
+		// to take, and one that takes it answers the lookup.
+		refused := "http://" + testport.Refused(t)
+		_, _, err := New(refused, "").RoleHolder(context.Background(), "legion-x")
 		var lookup *RoleLookupRefused
 		if err == nil || errors.As(err, &lookup) {
-			t.Fatalf("RoleHolder of a closed listener = %v, want a plain error that asking again can clear", err)
+			t.Fatalf("RoleHolder of a listener that refuses every dial = %v, want a plain error that asking again can clear", err)
 		}
 	})
 }

@@ -30,6 +30,7 @@ import (
 // that asked nothing: it read the whole chain, the entry was listed, and the sweep deleted it,
 // ending with every entry it listed deleted rather than on its budget.
 func TestABudgetThatRunsOutInsideAnEntrysWalkCutsTheListingThere(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	bun := f.roots[3]
 	if bun.Entry != ImmediateChildren {
@@ -72,6 +73,7 @@ func TestABudgetThatRunsOutInsideAnEntrysWalkCutsTheListingThere(t *testing.T) {
 // are counted at the deleter, which is handed every directory the listing opened. The negative
 // control is the rule that took every directory of the root for a shard, which opened 300 more.
 func TestOnlyADirectoryNamedAsGoNamesAShardIsOpenedAsOne(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	cache := f.roots[1]
 	if cache.Entry != GoCacheEntries {
@@ -128,6 +130,7 @@ func TestOnlyADirectoryNamedAsGoNamesAShardIsOpenedAsOne(t *testing.T) {
 // holds 300 descriptors outside them, more than one batch of names (procNamesBatch), with one of
 // each under a root. The negative control is the read that kept every absolute path.
 func TestTheUsedPathSetKeepsOnlyPathsUnderTheRoots(t *testing.T) {
+	t.Parallel()
 	const (
 		mapped = "/legion/scratch/cache/ms-playwright/chromium-1200/chrome-linux/chrome"
 		held   = "/legion/go/build/ab/abcdefabcdefabcdefabcdefabcdefab-a"
@@ -163,6 +166,7 @@ func TestTheUsedPathSetKeepsOnlyPathsUnderTheRoots(t *testing.T) {
 // read as any other, and a long line outside every root is dropped. The negative control is the
 // read that took the file whole, which kept the whole path, longer than any line the buffer holds.
 func TestAMapsLineLongerThanTheBufferStillMarksItsEntryUsed(t *testing.T) {
+	t.Parallel()
 	const (
 		entry = "/legion/scratch/cache/deep-tool"
 		after = "/legion/go/build/cd/cdefabcdefabcdefabcdefabcdefabcd-d"
@@ -201,6 +205,7 @@ func TestAMapsLineLongerThanTheBufferStillMarksItsEntryUsed(t *testing.T) {
 // (shimwire.VolumeReportRefusedReads), and how many more there were. The negative control is the
 // reason that joined every one.
 func TestASweepsReasonNamesAtMostTwentyFiveRefusals(t *testing.T) {
+	t.Parallel()
 	const refusedProcesses = 40
 	f := newTrimFixture(t, 1)
 	for at := range refusedProcesses {
@@ -229,6 +234,7 @@ func TestASweepsReasonNamesAtMostTwentyFiveRefusals(t *testing.T) {
 // or a refusal past it, is as green. Twenty-five is written out rather than read off
 // shimwire.VolumeReportRefusedReads, which a case staged from would move with.
 func TestASweepsReasonNamesTwentyFiveRefusalsWholeAndSaysOfATwentySixth(t *testing.T) {
+	t.Parallel()
 	const most = 25
 	refusals := make([]string, most+1)
 	for at := range refusals {
@@ -248,6 +254,7 @@ func TestASweepsReasonNamesTwentyFiveRefusalsWholeAndSaysOfATwentySixth(t *testi
 // line per link on every sweep. The negative control is the sweep that wrote a line for every
 // one, fifty here.
 func TestASweepNamesTenEntriesOfARootItPassesOverAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	const links = 50
 	f := newTrimFixture(t, 0)
 	bun := f.roots[3]
@@ -280,6 +287,7 @@ func TestASweepNamesTenEntriesOfARootItPassesOverAndCountsTheRest(t *testing.T) 
 // written at ten, or only from twelve, is as green. Ten is written out rather than read off
 // volumePassedOverLines, which a case staged from would move with.
 func TestASweepNamesTenPassedOverEntriesWithNoCountAndCountsAnEleventh(t *testing.T) {
+	t.Parallel()
 	const named = 10
 	for _, links := range []int{named, named + 1} {
 		t.Run(fmt.Sprintf("%d links", links), func(t *testing.T) {
@@ -324,6 +332,7 @@ func TestASweepNamesTenPassedOverEntriesWithNoCountAndCountsAnEleventh(t *testin
 // Measured on this code at eaf96c43 in an issue pod: a chain 1000 deep of 250-byte names wrote a
 // line of 251307 bytes on every sweep, against 2813 bytes at 10 deep.
 func TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("the test process is root, which reads a mode-000 directory: an age read that fails cannot be staged for it")
 	}
@@ -378,6 +387,7 @@ func TestAnAgeThatCannotBeReadIsLoggedAtASizeItsDepthDoesNotSet(t *testing.T) {
 // depth. The negative control is the walk with no bound on its descent, as it stood at
 // 8a30be78, which opened all sixty-five levels and deleted both.
 func TestTheGuardWalkDescendsNoDeeperThanTheWalkDepthAndTheEntryIsPassedOver(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0)
 	bun := f.roots[3]
 	if bun.Entry != ImmediateChildren {
@@ -423,6 +433,7 @@ func TestTheGuardWalkDescendsNoDeeperThanTheWalkDepthAndTheEntryIsPassedOver(t *
 // checked no list took the report over the caps, which this case refuses to read further, and a
 // bound cutting at a cap of its own past the daemon's sends a report the daemon drops.
 func TestEveryReportTheTrimmerBoundsIsOneTheDaemonTakes(t *testing.T) {
+	t.Parallel()
 	const past = 7
 	tr := newTrimFixture(t, 0).trimmer()
 	over := shimwire.LauncherVolumeReport{
@@ -467,6 +478,7 @@ func TestEveryReportTheTrimmerBoundsIsOneTheDaemonTakes(t *testing.T) {
 // shimwire's constants, which a case staged from would move with: fifty sizes, fifty unmeasured
 // paths, twenty-five refused /proc reads and three faults.
 func TestEveryListOfAReportOneEntryPastItsCapIsCutToItAndOneAtItIsCarriedWhole(t *testing.T) {
+	t.Parallel()
 	const sizes, missing, refused, faults = 50, 50, 25, 3
 	tr := newTrimFixture(t, 0).trimmer()
 	for _, past := range []int{0, 1} {
@@ -509,6 +521,7 @@ func TestEveryListOfAReportOneEntryPastItsCapIsCutToItAndOneAtItIsCarriedWhole(t
 // here by hand between each two. Three is written out rather than read off
 // shimwire.VolumeReportFaults.
 func TestTheTrimmerHoldsTheNewestThreeFaultsAndCountsAFourth(t *testing.T) {
+	t.Parallel()
 	const most = 3
 	tr := newTrimFixture(t, 0).trimmer()
 	for at := range most + 1 {

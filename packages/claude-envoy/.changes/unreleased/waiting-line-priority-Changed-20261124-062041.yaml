@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 250, the number the daemon of the same release declares.
+time: 2026-11-24T06:20:41Z
+custom:
+    Issue: waiting-line-priority

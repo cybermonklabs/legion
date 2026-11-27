@@ -47,6 +47,7 @@ func (kv *staleClaimKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // up while the handover was still resolving would let a handover that reads it pass. Control: with
 // a current copy the message reaches the new holder, and not the previous one.
 func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		behind bool
@@ -91,16 +92,16 @@ func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIs
 
 			event := rig.storeDispatchMessage(t, previous, role)
 			if tc.behind {
-				if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
+				if !testwait.Holds(listenerWaitBound(t), 20*time.Millisecond, func() bool {
 					return rig.copies.Load() > 0 || heardPrevious.count(event) > 0
 				}) {
-					t.Fatalf("the previous holder's relay neither copied the role message %s to the kept lane nor handed it to %s within 15s: no read the copy behind is there for was made", event, previous)
+					t.Fatalf("the previous holder's relay neither copied the role message %s to the kept lane nor handed it to %s in time: no read the copy behind is there for was made", event, previous)
 				}
 			}
 			heard := heardNext.await(30*time.Second, event)
 			copyBehind.catchUp()
 			if !heard {
-				t.Errorf("the new holder %s received %v within 30s, want the role message %s", next, heardNext.all(), event)
+				t.Errorf("the new holder %s received %v in time, want the role message %s", next, heardNext.all(), event)
 			} else if n := heardNext.count(event); n != 1 {
 				t.Errorf("the new holder %s received the role message %s %d times, want once", next, event, n)
 			}

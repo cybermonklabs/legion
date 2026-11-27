@@ -22,6 +22,7 @@ const phaseReviewedHeadVersion = 20261116234034
 // was. A commit written after it reads back as it was written, through a store reopened as a
 // daemon restart reopens it, and the column refuses null, which the phases read cannot scan.
 func TestThePhaseReviewedHeadMigrationLeavesEveryRowWithNoCommitAndTheCommitRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseReviewedHeadVersion-1)

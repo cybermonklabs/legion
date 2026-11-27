@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // xidJudgedWindow is a window of len(gaps)+1 statements with gaps between them and statements
@@ -49,7 +51,7 @@ func TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime(t *testing.T) {
 	RequireXidGapJudgment(t)
 	charged := true
 	xidInterruptTimeCharged = func() bool { return charged }
-	t.Cleanup(func() { xidInterruptTimeCharged = xidReadInterruptTimeCharged })
+	testcleanup.Add(t, func() { xidInterruptTimeCharged = xidReadInterruptTimeCharged })
 	ms := func(n float64) time.Duration { return time.Duration(n * float64(time.Millisecond)) }
 	cpuGap := func(made float64, softirqs map[string]int64) XidGap {
 		return XidGap{Clock: ms(made), Ran: ms(made), Read: true, Counted: softirqs != nil, SoftirqCPU: 3, Softirqs: xidSoftirqsOf(softirqs)}

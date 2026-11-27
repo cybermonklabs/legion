@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // basePush records that a pull request's base branch moved (intake.BasePush): the push Envoy
@@ -37,16 +38,20 @@ import (
 // start, or for a round waiting on the merge state - fills the base, and from then on its base's
 // pushes find it.
 //
-// The one walk both records the move and asks for the read a moved base calls for
-// (askMergeStateFor, under the gate's base-push reason, classify.MergeStateFactBasePush), which
-// is why a base push is the one fact Apply's askMergeState leaves alone: what tells a redelivered
-// push from a first delivery is the commit the record held when the push arrived, and this walk
-// is the last reader of it.
+// The one walk both records the move and decides the read a moved base calls for (mergeStateOwed,
+// under the gate's base-push reason, classify.MergeStateFactBasePush), which is why a base push is
+// the one fact Apply's askMergeState leaves alone: what tells a redelivered push from a first
+// delivery is the commit the record held when the push arrived, and this walk is the last reader
+// of it. The reads it owes are asked for together, once the transaction commits
+// (Config.ReadBaseMergeStates): one batch of reads of the base for every pull request the push
+// owes one, where a read of each was asked for apiece before, so the daemon reads the owed pull
+// requests of a base a few to a GraphQL query rather than one REST read each.
 func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) (intake.Result, error) {
 	open, err := e.store.OpenPullRequestsOnBase(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil {
 		return intake.Result{}, err
 	}
+	var owed []string
 	for _, pr := range open {
 		if pr.BaseMoved == fact.After {
 			// The same push redelivered, or a push that returned the base to the commit the
@@ -70,15 +75,26 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		// issue in reviewing, or to conflicting, which needs a merge forward once the issue's
 		// review is over (dispatch://INFRA-4374 R0) and leaves a record in testing or reviewing
 		// reading a state GitHub no longer answers (R4). So every pull request this push moved is
-		// read for where the push owes a read (askMergeStateFor): an issue in testing through
+		// read for where the push owes a read (mergeStateOwed): an issue in testing through
 		// merging, by the gate (classify.MergeStateReadOwed), or a round that waits on the merge
-		// state. The read is asked for here rather than from Apply's askMergeState because the line
+		// state. The read is decided here rather than from Apply's askMergeState because the line
 		// above has just overwritten what tells a redelivery from a first delivery: a second walk
 		// after the handler would find every pull request on the base recorded at this push's
 		// commit and ask for all of their reads again, however many times the push was delivered.
-		if err := e.askMergeStateFor(ctx, tx, own, classify.MergeStateFactBasePush); err != nil {
+		if e.cfg.ReadBaseMergeStates == nil {
+			continue
+		}
+		read, err := e.mergeStateOwed(ctx, tx, own, classify.MergeStateFactBasePush)
+		if err != nil {
 			return intake.Result{}, err
 		}
+		if read {
+			owed = append(owed, own.Issue)
+		}
+	}
+	if len(owed) > 0 {
+		repo, base := fact.Repo, fact.Branch
+		store.OnCommit(ctx, func() { e.cfg.ReadBaseMergeStates(repo, base, owed) })
 	}
 	return intake.Result{}, nil
 }

@@ -1,19 +1,13 @@
 package daemon
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -37,6 +31,10 @@ const idleRigGateTooOld = "idle release: the Envoy listener's newest report is t
 // taken that pod (outbox.releaseIssue).
 const idleRigUnownedTeardown = "outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake"
 
+// idleRigUnownedFoundNothing is what the daemon logs in its place when the runtime found no
+// Sandbox of the issue to release, and the teardown took nothing (outbox.releaseIssue).
+const idleRigUnownedFoundNothing = "outbox: the release found no Sandbox of the issue to release and released nothing"
+
 // idleRigSessionForgotten is what the daemon logs when a fresh session drops the session its
 // claim recorded, before the start that brings that claim back in a new one (api's
 // forgetRecordedSession). The rig's role process derives its session id from its pod and its
@@ -45,32 +43,6 @@ const idleRigUnownedTeardown = "outbox: released the pod of an issue no role can
 // left it behind.
 const idleRigSessionForgotten = "api: a fresh session left the claim's recorded session behind"
 
-// idleRigEarlierRelease is the release the seeded workspace bundle belongs to: an earlier
-// release of the issue's pod, whose id the bundle row keeps (issue_releases.id, read back out
-// of the launcher's own confirmation). No row of issue_releases stands for it any more — that
-// release finished — and the bundle is what it left.
-const idleRigEarlierRelease = 1
-
-// idleRigEarlierPodUID is the pod that earlier release took the work off (source_pod_uid). It is
-// a pod of an earlier life of the issue that this rig never made, so no pod of the rig is
-// refused by uid and the bundle's one restore attempt is still there for the pod the start
-// makes (store.TakeWorkspaceBundleForRestore).
-const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
-
-// idleRigEarlierBundle is the workspace bundle an earlier release of the issue's pod saved, as
-// both rigs of this rule seed it (idleWakeRig.savedBundle, idleRig.earlierReleasesBundle): the
-// same body, the same head and the same source pod, at the moment its caller gives. That moment
-// is far enough back that a pod a later start builds is newer than the save and so the pod the
-// work is sent to. The body is bytes rather than a real git bundle, since what either rig reads
-// is which pod the daemon offered the work to and not what a launcher could do with it.
-func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
-	return runtime.WorkspaceBundle{
-		Bundle: []byte("PACK the work an earlier release of " + issue + " saved"),
-		Head:   "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		At:     at, PodUID: idleRigEarlierPodUID,
-	}
-}
-
 // A start made after the release of a pod no claim owns makes that pod again, with everything
 // the release took: the Sandbox, the pod and its disk. This is INFRA-1341's second release rule
 // over the whole daemon — the rig of TestIdleReleaseAndWake, the Sandbox runtime on a fake
@@ -78,11 +50,11 @@ func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
 // real Envoy listener (idle_rig_test.go says where each part comes from).
 //
 // Each subtest takes one issue of the rig and runs the same three acts on it: an operator stops
-// its one role, which retires the claim and leaves a pod of 3 CPU and 19 GiB with nobody in it;
-// the daemon's own pass releases that pod, changing no claim; and one of the starts that build
-// such a pod again is made. The three subtests are the three of them the daemon has: the
-// operator's retry, which resumes the claim's recorded session; the same retry with
-// `--fresh-session`, which leaves that session behind; and the start the daemon queues for a
+// its one role, which retires the claim and leaves a pod and its reservation (2 CPU and 8 GiB at
+// the defaults) with nobody in it; the daemon's own pass releases that pod, changing no claim; and
+// one of the starts that build such a pod again is made. The three subtests are the three of them
+// the daemon has: the operator's retry, which resumes the claim's recorded session; the same retry
+// with `--fresh-session`, which leaves that session behind; and the start the daemon queues for a
 // phase worker itself.
 //
 // Every pass here is made with the listener gate shut (idleWakeRig.keepListenerGateShut), which is
@@ -112,25 +84,8 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 			t.Fatalf("%s's claim records no session before its role is stopped; there is nothing for the retry to resume", issue.key)
 		}
 		rig.stopRole(issue)
-		// The work an earlier release of this issue's pod saved, which no pod has restored. The
-		// release this test drives takes no bundle and saves none, so the row is read back after
-		// the teardown exactly as it was: a teardown that deleted it would be deleting work only
-		// the pod made next can put back.
-		saved := rig.savedBundle(issue)
 
 		releasedWithNoLiveClaim(t, rig, issue)
-
-		row, held := rig.bundleRow(issue)
-		switch {
-		case !held:
-			t.Fatalf("the teardown deleted the workspace bundle of %s, which is another release's work and the only copy of it", issue.key)
-		case row.release != idleRigEarlierRelease || row.source != idleRigEarlierPodUID:
-			t.Fatalf("the bundle of %s reads release %d off pod %q, want the %d off %q it was saved as",
-				issue.key, row.release, row.source, idleRigEarlierRelease, idleRigEarlierPodUID)
-		case row.attemptPod != "" || row.outcome != "":
-			t.Fatalf("the bundle of %s records the restore attempt %q (%s) after the teardown, want the attempt unspent for the pod the start makes",
-				issue.key, row.attemptPod, row.outcome)
-		}
 
 		rig.retry(issue, false)
 		idleRigPodMadeAgain(t, rig, issue, registered+1)
@@ -149,20 +104,6 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 		}
 		if forgotten := rig.logged(idleRigSessionForgotten, map[string]string{"claim": string(token)}); forgotten != 0 {
 			t.Errorf("the daemon dropped %s's recorded session %d times, want none: a retry without --fresh-session resumes it", token, forgotten)
-		}
-		// The bundle's one attempt, spent on the pod the start made: the daemon records which
-		// pod it is sending the work to before a byte of it leaves (store's
-		// TakeWorkspaceBundleForRestore), which is the pod being offered the bundle. Whether the
-		// launcher could apply it to the workspace is that launcher's own report and no part of
-		// this: a restore that fails leaves the row where it is.
-		row, held = rig.bundleRow(issue)
-		pod := rig.kube.podUID(issue.pod)
-		switch {
-		case !held:
-			t.Fatalf("the workspace bundle of %s is gone after its pod was made again, want the row the restore attempt is recorded on", issue.key)
-		case row.attemptPod != pod || row.outcome != "sent":
-			t.Errorf("the bundle of %d bytes was offered to pod %q (%s), want it sent to %q, the pod the retry made",
-				len(saved.Bundle), row.attemptPod, row.outcome, pod)
 		}
 	})
 
@@ -254,7 +195,7 @@ func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue)
 	teardowns := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key})
 
 	rig.awaitUnownedReleased(issue)
-	idleRigEventually(t, idleRigRecordWait, "the daemon's line of the teardown of "+issue.key+"'s pod", func() bool {
+	idleRigEventually(t, "the daemon's line of the teardown of "+issue.key+"'s pod", func() bool {
 		return rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}) > teardowns
 	})
 
@@ -295,7 +236,7 @@ func idleRigAwaitIdleCandidates(t *testing.T, rig *idleWakeRig, issues []idleRig
 			t.Logf("the rig's other pods, as the wait last read them: %s", stood)
 		}
 	}()
-	idleRigEventually(t, idleRigRecordWait, "the rig's other pods standing as pods the idle release would take", func() bool {
+	idleRigEventually(t, "the rig's other pods standing as pods the idle release would take", func() bool {
 		claims := rig.api.claims()
 		for _, issue := range issues {
 			state := listedClaim(t, claims, rig.token(issue)).State
@@ -348,7 +289,7 @@ func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reg
 			t.Log(rig.diagnose())
 		}
 	}()
-	idleRigEventually(t, idleRigPodWait, "the pod of "+issue.key+" made again with its role registered", func() bool {
+	idleRigEventually(t, "the pod of "+issue.key+" made again with its role registered", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
 			idleRigWorking(rig.api.claim(token).State)
 	})
@@ -363,8 +304,8 @@ func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reg
 // the claim reads retired holding no process. That leaves the pod this rule is for: its one
 // claim is in one of the three states no role can take a turn from, and nothing of the daemon's
 // starts such a worker again (TestAnOperatorsStopOfASlottedWorkerHolds). The pod, its disk and
-// its Sandbox stand, with 3 CPU and 19 GiB reserved and nobody in them, which is what the
-// release takes.
+// its Sandbox stand, with the pod's reservation (2 CPU and 8 GiB at the defaults) held and nobody
+// in them, which is what the release takes.
 func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 	r.t.Helper()
 	token := r.token(issue)
@@ -372,7 +313,7 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 	if status != http.StatusOK && status != http.StatusAccepted {
 		r.t.Fatalf("the operator's stop of %s = %d %s", token, status, body)
 	}
-	idleRigEventually(r.t, idleRigRecordWait, "the stopped role of "+issue.key+" recording no process", func() bool {
+	idleRigEventually(r.t, "the stopped role of "+issue.key+" recording no process", func() bool {
 		stopped := r.api.claim(token)
 		return stopped.State == string(supervise.StateRetired) && stopped.Locator == nil
 	})
@@ -380,56 +321,4 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 		r.t.Fatalf("the pod of %s reads pod %t and sandbox %t after its role was stopped, want the pod a stop leaves standing with nobody in it",
 			issue.key, r.kube.pod(issue.pod), r.kube.sandbox(issue.pod) != nil)
 	}
-}
-
-// savedBundle seeds the workspace bundle an earlier release of the issue's pod saved and no pod
-// has restored, through the store that release saves it through (store.PutWorkspaceBundle), and
-// answers it. Its one restore attempt is unspent: the pod its work came off is a pod of an
-// earlier life of the issue (idleRigEarlierPodUID), so no pod standing now is the source, and
-// nothing starts a role in the pod being released after this, which is what would otherwise
-// spend the attempt (internal/runtime/sandbox's start).
-//
-// The bundle's own moment is ten minutes back (idleRigEarlierBundle), which is what makes the
-// pod a later start builds newer than the save and so the pod the work is sent to.
-func (r *idleWakeRig) savedBundle(issue idleRigIssue) runtime.WorkspaceBundle {
-	r.t.Helper()
-	ctx := context.Background()
-	saved := idleRigEarlierBundle(issue.key, time.Now().UTC().Add(-10*time.Minute))
-	st, err := store.Open(ctx, r.cfg.PostgresDSN)
-	if err != nil {
-		r.t.Fatalf("open the store to save the bundle of %s: %v", issue.key, err)
-	}
-	defer st.Close()
-	if err := st.PutWorkspaceBundle(ctx, issue.key, idleRigEarlierRelease, saved); err != nil {
-		r.t.Fatalf("save the earlier release's bundle of %s: %v", issue.key, err)
-	}
-	return saved
-}
-
-// idleRigBundleRow is the issue's saved workspace bundle as the database holds it: the release
-// that saved it, the pod its work came off, and its one restore attempt — the pod the work was
-// offered to and what that offer did (`sent`, or `refused_older` for a pod no newer than the
-// save), both empty while nothing has asked.
-type idleRigBundleRow struct {
-	release    int64
-	source     string
-	attemptPod string
-	outcome    string
-}
-
-// bundleRow reads that row, and whether the issue has one at all.
-func (r *idleWakeRig) bundleRow(issue idleRigIssue) (idleRigBundleRow, bool) {
-	r.t.Helper()
-	var row idleRigBundleRow
-	err := r.pool.QueryRow(context.Background(), `select release_id, source_pod_uid,
-		coalesce(attempt_pod_uid, ''), coalesce(attempt_outcome, '')
-		from workspace_bundles where issue = $1`, issue.key).
-		Scan(&row.release, &row.source, &row.attemptPod, &row.outcome)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return idleRigBundleRow{}, false
-	}
-	if err != nil {
-		r.t.Fatalf("read the saved workspace bundle of %s: %v", issue.key, err)
-	}
-	return row, true
 }

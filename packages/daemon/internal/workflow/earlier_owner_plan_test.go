@@ -27,6 +27,7 @@ import (
 // told or logged. The twin: an issue given no plan starts planning on the default steps, with no
 // notice and no log line.
 func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
+	t.Parallel()
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
 	earlier, owner := architectOf(t), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
 	give := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64, version int, by claim.Token, words ...string) {
@@ -176,6 +177,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 // names the version once in its one notice, and it logs each copy it deleted, with its generation.
 // The fault caught is a notice that names the version once for each copy.
 func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T) {
+	t.Parallel()
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
 	earlier := architectOf(t)
 	pool := migratedPool(t)
@@ -211,12 +213,50 @@ func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T)
 	}
 }
 
+// A give of the version in force by another owner adds that owner to the copy of its own
+// generation alone (record.Store's AddPlanGiver), so the copies of one version that a first step
+// passes over can name different givers: a sub-architect gives version 1 at generation 1, a rerun
+// carries it to generation 2, the root's architect gives it again there, and the issue then leaves
+// its tree. Its one notice names the version once, with the givers of both copies together, the
+// giver the store added last first. The fault caught is a notice that tells the copies apart by
+// their givers and names the version once for each.
+func TestAVersionWhoseCopiesNameDifferentGiversIsNamedOnceWithEveryGiver(t *testing.T) {
+	t.Parallel()
+	sub, root := claim.Token(treeRoleToken(t, "LEGION-210", claim.RoleArchitect)), architectOf(t)
+	pool := migratedPool(t)
+	engine := returnEngine()
+	recordedAt(t, pool, "LEGION-209", "LEGION-208")
+	recordedAt(t, pool, "LEGION-210", "LEGION-208")
+	first := ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	first.GivenBy = sub
+	mustTake(t, "version 1 of LEGION-209 at generation 1 by the sub-architect", applyFacts(t, pool, engine)(planID("LEGION-209", 1, 1), first))
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().CarryPlan(t.Context(), tx, "LEGION-209", 1, 2, false)
+	})
+	execSQL(t, pool, `update issues set generation = 2 where key = $1`, "LEGION-209")
+	again := ownersPlan(t, "LEGION-209", 2, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	again.GivenBy = root
+	mustTake(t, "version 1 of LEGION-209 at generation 2 by the root's architect", applyFacts(t, pool, engine)(planID("LEGION-209", 2, 1), again))
+	recordedAt(t, pool, "LEGION-209", "LEGION-209")
+	execSQL(t, pool, `update issues set generation = 3 where key = $1`, "LEGION-209")
+
+	firstStep(t, pool, engine, "LEGION-209")
+
+	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document " +
+		planArtifact + ", given by " + string(root) + " and " + string(sub) +
+		". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."}}
+	if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the plan-not-taken notices = %+v, want %+v, the version named once with the givers of both copies", got, want)
+	}
+}
+
 // Two versions an earlier owner gave are each named, in the order they were given: the owner gives
 // version 1 at generation 1, a rerun carries it to generation 2, the owner gives version 2 there,
 // and the issue then leaves its tree. Its first step passes over the version in force of each
 // generation, version 1 and version 2, and its one notice names both. The fault caught is a notice
 // that keeps the first version alone, which would hide the later one from the new owner.
 func TestTwoVersionsOfAnEarlierOwnerAreBothNamed(t *testing.T) {
+	t.Parallel()
 	earlier := architectOf(t)
 	pool := migratedPool(t)
 	engine := returnEngine()

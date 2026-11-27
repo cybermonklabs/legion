@@ -1,7 +1,6 @@
 name: Install jj
 description: >-
-  Installs the jj the worker image ships, the fork pinned by `ARG JJ_TOOL` in
-  packages/daemon/docker/worker.Dockerfile, with the mise .github/ci-tools.yaml pins, as the image
+  Installs the jj the worker image ships, the fork pinned by `packages/daemon/docker/worker.Dockerfile#ARG JJ_TOOL`, with the mise .github/ci-tools.yaml pins, as the image
   does: the binary itself at ~/.local/bin/jj, never a mise shim. Provisioning's tests give jj a
   fresh XDG_CONFIG_HOME, as a pod's init container has, and a shim looks its version up in the mise
   configuration under it ("No version is set for shim: jj"). mise stays at ~/.local/bin/mise, on

@@ -55,11 +55,17 @@ import (
 // the one the checks advance the clock past; the backstop is longer than any test advances its
 // clock, so the only backstop that comes due is one a test arms itself (k1's F). The tick is how
 // often the daemon's idle and wake passes run on the wall clock, each reading the test clock.
+//
+// The outbox sweep is how often the daemon's outbox sweeps its lanes on the wall clock
+// (overrides.outboxSweep): the checks let a lease they put on a row lapse, or make a held row due,
+// behind the daemon, and the row runs at the next sweep, which at the daemon's own outboxLease is
+// up to 30 s of each such check; a second keeps a check to its own work.
 const (
 	pauseRigIdleMinutes     = 10
 	pauseRigBackstopMinutes = 120
 	pauseRigTick            = 100 * time.Millisecond
 	pauseRigPodUpdateGrace  = 15 * time.Minute
+	pauseRigOutboxSweep     = time.Second
 )
 
 // The three lines of a pause the checks read (decision 23 of the plan): the pause service's line
@@ -77,12 +83,12 @@ const pauseRigReason = "the model provider is refusing every request"
 // pauseRuntime is the fake runtime with the moment of every launch on the test clock, as
 // waveRuntime has it (wake_wave_test.go), and the calls an issue pod's idle release makes of a
 // Kubernetes runtime, as releaseRuntime has them (idle_release_test.go): whether a pod runs the
-// configured image (always), whether the runtime still holds an issue's Sandbox, the bundle of a
-// pod's unpushed work, and the issue-level teardowns, a release's (ReleaseIssue) and a close's
-// (SuspendIssue), whose every deletion it records. The release's executors ask for the release's
-// teardown (runtime.IssueReleaser) and save nothing without it, so a rig without ReleaseIssue
-// would read no release and no save, whatever the pause held. IssuePod and IssueKeepsVolume are
-// the embedded fake's.
+// configured image (always), whether the runtime still holds an issue's Sandbox, the read of a
+// pod's workspace (the embedded fake's WorkspaceWork), and the issue-level teardowns, a release's
+// (ReleaseIssue) and a close's (SuspendIssue), whose every deletion it records. The release's
+// executors ask for the release's teardown (runtime.IssueReleaser) and check nothing without it,
+// so a rig without ReleaseIssue would read no release and no check, whatever the pause held.
+// IssuePod and IssueKeepsVolume are the embedded fake's.
 type pauseRuntime struct {
 	*fake.Runtime
 	clock *waveClock
@@ -90,10 +96,9 @@ type pauseRuntime struct {
 	runs  []waveLaunch
 	// sandboxes is every issue whose Sandbox (and pod) the runtime holds.
 	sandboxes map[string]bool
-	// deleted is every issue whose pod a teardown deleted, in order; bundled every issue a
-	// release asked for a bundle of.
+	// deleted is every issue whose pod a teardown deleted, in order. The workspace reads a release
+	// asked for are the embedded fake's (WorkspaceWork), which answers no work.
 	deleted []string
-	bundled []string
 }
 
 func newPauseRuntime(clock *waveClock) *pauseRuntime {
@@ -105,23 +110,32 @@ func newPauseRuntime(clock *waveClock) *pauseRuntime {
 	return rt
 }
 
+// Spawn and Resume record the launch once the embedded fake has answered, so the fake's own
+// record of the call, which lastLaunch reads for the launch's boot token, is in place before a test
+// that waits on launchesOf sees the launch. Recorded first, a test could read the claim's
+// previous launch from the fake and dial its shim with that launch's boot token, which the daemon
+// refuses as a stale worker generation. The launch's moment is the clock's at the ask.
 func (r *pauseRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	r.record(spec.Claim, false)
-	return r.Runtime.Spawn(ctx, spec)
+	at := r.clock.Now()
+	loc, err := r.Runtime.Spawn(ctx, spec)
+	r.record(spec.Claim, at, false)
+	return loc, err
 }
 
 func (r *pauseRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	r.record(spec.Claim, true)
-	return r.Runtime.Resume(ctx, prev, spec)
+	at := r.clock.Now()
+	loc, err := r.Runtime.Resume(ctx, prev, spec)
+	r.record(spec.Claim, at, true)
+	return loc, err
 }
 
-func (r *pauseRuntime) record(token claim.Token, resumed bool) {
+func (r *pauseRuntime) record(token claim.Token, at time.Time, resumed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.runs = append(r.runs, waveLaunch{claim: token, at: r.clock.Now(), resumed: resumed})
+	r.runs = append(r.runs, waveLaunch{claim: token, at: at, resumed: resumed})
 }
 
-// launches is every launch so far, in the order the runtime was asked for them.
+// launches is every launch so far, in the order the runtime answered them.
 func (r *pauseRuntime) launches() []waveLaunch {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -139,6 +153,48 @@ func (r *pauseRuntime) launchesOf(token claim.Token) []waveLaunch {
 	return of
 }
 
+// The pause rig counts a launch only once the fake runtime holds its call, for a spawn and for a
+// resume alike: a test that waits on launchesOf and then reads the launch's boot token from the
+// fake (lastLaunch) reads that launch, never the claim's previous one.
+// TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch dials the relaunched spawn's
+// shim with that token; with the previous launch's token the daemon refused the hello as a stale
+// worker generation.
+func TestThePauseRigCountsALaunchOnceTheRuntimeHoldsItsCall(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	rt := newPauseRuntime(newWaveClock())
+	const token = claim.Token("legion-OTHERPROJECT-7-architect")
+	for _, method := range []string{"Spawn", "Resume"} {
+		before := len(rt.launchesOf(token))
+		counted := -1
+		inside := func(context.Context) error {
+			counted = len(rt.launchesOf(token))
+			return nil
+		}
+		rt.OnSpawn, rt.OnResume = inside, inside
+		spec := runtime.SpawnSpec{Claim: token, BootToken: "boot-of-the-" + method}
+		var err error
+		if method == "Spawn" {
+			_, err = rt.Spawn(ctx, spec)
+		} else {
+			_, err = rt.Resume(ctx, nil, spec)
+		}
+		if err != nil {
+			t.Fatalf("the %s: %v", method, err)
+		}
+		if counted != before {
+			t.Fatalf("while the runtime still ran the %s, the rig counted %d launches of %s, want the %d before it: a test that waits on the count reads the claim's previous launch from the runtime",
+				method, counted, token, before)
+		}
+		if got := len(rt.launchesOf(token)); got != before+1 {
+			t.Fatalf("after the %s the rig counts %d launches of %s, want %d", method, got, token, before+1)
+		}
+		if got := lastLaunch(t, rt.Runtime, token).BootToken; got != spec.BootToken {
+			t.Fatalf("after the %s the runtime's latest launch of %s carries boot token %q, want %q", method, token, got, spec.BootToken)
+		}
+	}
+}
+
 // holdPod is the issue's pod standing, as a launch of a role of it leaves it.
 func (r *pauseRuntime) holdPod(issue string) {
 	r.mu.Lock()
@@ -154,41 +210,47 @@ func (r *pauseRuntime) IssueSandbox(issue string) (string, bool) {
 	return "sandbox-" + strings.ToLower(issue), r.sandboxes[issue]
 }
 
-func (r *pauseRuntime) BundleWorkspace(_ context.Context, issue string, _ claim.Role) (runtime.WorkspaceBundle, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.bundled = append(r.bundled, issue)
-	return runtime.WorkspaceBundle{}, nil
-}
-
-func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, issue, authorize)
+func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.teardown(ctx, issue, authorize, writing)
 }
 
 func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, issue, authorize)
+	_, err := r.teardown(ctx, issue, authorize, nil)
+	return err
 }
 
 // teardown is both teardowns: once the store authorizes it, the issue's pod is deleted and its
-// Sandbox is gone.
-func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error)) error {
+// Sandbox is gone. It answers that it released a Sandbox whenever the store authorizes it: a
+// launch of this rig stands its pod up again without marking it (holdPod is the seed's), so an
+// authorized teardown always has a pod to take, and calls writing before it takes it.
+func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
 	act, err := authorize(ctx)
 	if err != nil || !act {
-		return err
+		return false, err
+	}
+	if writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.deleted = append(r.deleted, issue)
 	r.sandboxes[issue] = false
-	return nil
+	return true, nil
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown
-// deleted and the issues a release asked for a bundle of.
-func (r *pauseRuntime) podReads() (deleted, bundled []string) {
+// deleted and the issues whose workspace a release read.
+func (r *pauseRuntime) podReads() (deleted, read []string) {
+	for _, call := range r.CallsOf("WorkspaceWork") {
+		read = append(read, call.Issue)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return slices.Clone(r.deleted), slices.Clone(r.bundled)
+	return slices.Clone(r.deleted), read
 }
 
 // suspendedOf is how many times the runtime was asked to stop a process of token.
@@ -353,8 +415,8 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	cfg.WorkerBootTimeout = time.Hour
 	cfg.ProbeInterval = time.Hour
 	cfg.PodUpdateGrace = pauseRigPodUpdateGrace
-	// An admission pass every second, besides the one each fact makes, so a pass the pause did
-	// not stop would admit within the test's reads.
+	// An admission pass every second, besides the passes facts run (the pass rule, admit's
+	// Admission.Apply), so a pass the pause did not stop would admit within the test's reads.
 	cfg.ControllerWakeInterval = time.Second
 	clock := newWaveClock()
 	envoy := newPauseEnvoy(t, clock)
@@ -377,6 +439,7 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	r.o.clock = clock
 	r.o.idleTick = pauseRigTick
 	r.o.orphanSweep = time.Hour
+	r.o.outboxSweep = pauseRigOutboxSweep
 	r.o.controllerFirstWake = time.Second
 	r.o.workflowTokens = idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}
 	// GitHub answers each repository at main and an issue branch's create (startedAgainGitHub): the
@@ -425,9 +488,9 @@ func (r *pauseDaemonRig) root(issue string, ph phase.Phase) record.Issue {
 		HandedOver: true, Rank: "U"}
 }
 
-// podLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
+// pauseRigPodLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
 // of an issue runs in its one pod.
-func podLocator(token claim.Token, issue string) *runtime.Locator {
+func pauseRigPodLocator(token claim.Token, issue string) *runtime.Locator {
 	pod := "pod-" + strings.ToLower(issue)
 	return &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(pod, 1),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "sandbox-" + strings.ToLower(issue), PodUID: pod,
@@ -445,7 +508,7 @@ func (r *pauseDaemonRig) running(issue string, role claim.Role, state supervise.
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: state, Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl",
-		PluginContract: api.DaemonAPIVersion, Locator: podLocator(token, issue),
+		PluginContract: api.DaemonAPIVersion(), Locator: pauseRigPodLocator(token, issue),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
@@ -455,7 +518,7 @@ func (r *pauseDaemonRig) released(issue string, role claim.Role) supervise.Claim
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion()}
 }
 
 // unfinished is role's claim of issue as a daemon stopped mid-launch left it: launching, with no
@@ -464,11 +527,11 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: supervise.StateLaunching, Session: "ses-" + string(token),
-		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion,
+		SessionFile: "/sessions/" + string(token) + ".jsonl", PluginContract: api.DaemonAPIVersion(),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
-// inPodRound is c in an update round over its issue's pod (podLocator's), opened at opened and
+// inPodRound is c in an update round over its issue's pod (pauseRigPodLocator's), opened at opened and
 // asked of c then, for the reason a pod that runs an outdated image gives.
 func inPodRound(c supervise.Claim, opened time.Time) supervise.Claim {
 	c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))
@@ -509,7 +572,7 @@ func (r *pauseDaemonRig) boot() {
 	r.mu.Unlock()
 	r.reportListener()
 	logger := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r.d = startDaemonWithin(r.t, r.cfg, r.o, logger, 90*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, r.o, logger)
 	testwait.Eventually(r.t, "run to hand the rig its supervisor", func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -688,6 +751,19 @@ func (r *pauseDaemonRig) awaitPasses() {
 	time.Sleep(2 * pauseRigTick)
 }
 
+// awaitFullSweep waits until one whole pass of the daemon's sweep has run since the call
+// (supervision.reconcileOrphans, which decides the update rounds): two more passes have begun,
+// each with its runtime's ReconcileOrphans, and passes run one after another, so the first of them
+// read the clock after the call and has ended. A check that the sweep replaced
+// nothing reads what that pass did not do.
+func (r *pauseDaemonRig) awaitFullSweep() {
+	r.t.Helper()
+	before := len(r.rt.CallsOf("ReconcileOrphans"))
+	testwait.Eventually(r.t, "a whole pass of the daemon's sweep after this moment", func() bool {
+		return len(r.rt.CallsOf("ReconcileOrphans")) >= before+2
+	})
+}
+
 // lines is every line of the daemon's log whose message is msg, decoded.
 func (r *pauseDaemonRig) lines(msg string) []map[string]any {
 	var found []map[string]any
@@ -772,7 +848,7 @@ func (r *pauseDaemonRig) controllerUp() *shim {
 	r.awaitState(token, supervise.StateShimConnected, "the controller's shim said hello")
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
-		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion,
+		AgentID: "ses_controller", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		r.t.Fatalf("register the controller = %d; body %s", status, body)

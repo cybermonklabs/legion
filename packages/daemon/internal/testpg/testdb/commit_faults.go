@@ -48,7 +48,7 @@ const (
 // is registered first, so it runs after this one).
 func CommitFaults(t testing.TB, dsn string) (string, *CommitFault) {
 	t.Helper()
-	listener, upstream, through := listenProxy(t, dsn, "the commit fault proxy")
+	listener, upstream, through := listenProxy(t, dsn, "the commit fault proxy", false)
 	fault := &CommitFault{t: t, listener: listener, upstream: upstream, links: map[*link]struct{}{}}
 	fault.wg.Add(1)
 	go fault.serve()

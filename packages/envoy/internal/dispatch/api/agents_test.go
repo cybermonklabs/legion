@@ -15,6 +15,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func agentsHandler(t *testing.T, envoyURL string) http.Handler {
@@ -305,6 +307,23 @@ func TestAgentsReportsListenerUnavailable(t *testing.T) {
 	}
 }
 
+// A listener URL holding a made-up token as its user name, with nothing listening: the agents
+// list answers 503 ENVOY_UNAVAILABLE carrying the fetch's error, and that answer, which any API
+// caller reads, holds no part of the token, though net/http's error quotes the request URL with
+// only a password masked. Boot refuses such an ENVOY_URL; the answer names none of it all the same.
+func TestAgentsListenerUnavailableAnswerHoldsNoTokenOfTheListenersURL(t *testing.T) {
+	const token = "madeUpEnvoyToken0123"
+	envoyURL := "http://" + token + "@" + testport.Refused(t)
+	response := dispatchRequest(t, agentsHandler(t, envoyURL), http.MethodGet, "/api/v1/agents", nil, "alice")
+	body := response.Body.String()
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"ENVOY_UNAVAILABLE"`) {
+		t.Fatalf("status %d: %s, want 503 ENVOY_UNAVAILABLE", response.Code, body)
+	}
+	if strings.Contains(body, token[:10]) {
+		t.Errorf("the 503 answer %s holds part of the token", body)
+	}
+}
+
 // agentIDs reads GET /api/v1/agents and answers the session ids it lists, in its order.
 func agentIDs(t *testing.T, handler http.Handler) []string {
 	t.Helper()
@@ -489,11 +508,8 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 	}()
 	awaitCalls(t, calls, 1)
 	cancel()
-	select {
-	case <-answered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("an agents list did not answer within 5 s of its request ending")
-	}
+	// The fetch is held until the release below, so a list that waited on it would never answer.
+	testwait.Receive(t, "the agents list to answer once its request ended", answered)
 	body := response.Body.String()
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"ENVOY_UNAVAILABLE"`) ||
 		!strings.Contains(body, "context canceled") {

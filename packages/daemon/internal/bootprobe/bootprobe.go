@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
 // Retry is the wait between attempts whose failure is transient: after the i-th such failure the
@@ -88,7 +90,34 @@ type Outcome struct {
 // the attempt budget nor the backoff: transient failures before and after it are counted together
 // as if it had not happened. A ctx that ends — during an attempt, whatever the attempt then
 // returned, or during a wait — ends Run with an error wrapping ctx's, and starts no other attempt.
+// It reads and waits on the wall clock; RunOn takes another.
 func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
+	return RunOn(ctx, WallClock{}, name, retry, log, attempt)
+}
+
+// Clock is the time RunOn reads a rate-limited attempt's wait from, and waits each wait out on.
+type Clock interface {
+	Now() time.Time
+	// Sleep waits d, or returns ctx's error once ctx ends first.
+	Sleep(ctx context.Context, d time.Duration) error
+}
+
+// WallClock is the clock Run waits on: the time of day, and a timer.
+type WallClock struct{}
+
+// Now is the time of day.
+func (WallClock) Now() time.Time { return time.Now() }
+
+// Sleep waits d on a timer, or returns ctx's error once ctx ends first (backoff.Sleep).
+func (WallClock) Sleep(ctx context.Context, d time.Duration) error {
+	return backoff.Sleep(ctx, d)
+}
+
+// RunOn is Run on clock: a rate-limited attempt's wait is its Until less clock's Now, and every
+// wait between two attempts is clock's Sleep. A caller whose Until comes from the same clock
+// (internal/daemon's startWaits) waits on one time throughout, so a test's clock that moves on by
+// each wait at once makes a wait for GitHub's reset cost it nothing.
+func RunOn(ctx context.Context, clock Clock, name string, retry Retry, log *slog.Logger, attempt func(context.Context) Outcome) error {
 	transients := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -101,7 +130,7 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 		var delay time.Duration
 		switch {
 		case outcome.RateLimit != "":
-			delay = time.Until(outcome.Until)
+			delay = outcome.Until.Sub(clock.Now())
 			log.Warn("boot probe waits out GitHub's rate limit; it runs again at the time GitHub names",
 				"probe", name, "until", outcome.Until.UTC().Format(time.RFC3339), "wait", ShownWait(delay),
 				"waited", ShownWait(outcome.Waited), "limit", outcome.RateLimit, "detail", outcome.Detail)
@@ -133,12 +162,8 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 			log.Warn("boot probe failed transiently; waiting to run it again",
 				"probe", name, "attempt", label, "retryIn", delay.String(), "detail", outcome.Detail)
 		}
-		wait := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			wait.Stop()
-			return abandoned(name, ctx.Err())
-		case <-wait.C:
+		if err := clock.Sleep(ctx, delay); err != nil {
+			return abandoned(name, err)
 		}
 	}
 }
@@ -205,20 +230,57 @@ const (
 	ModelFallbackUnread = "unread"
 )
 
-// OKLine is that line: the OMP invocation probed, the session-storage mark, the extensions mark,
-// the agent-models mark (AgentModelsResolved or AgentModelsSkipped), the capabilities mark
-// (CapabilitiesAll or CapabilitiesBrowserSkipped), the model-fallback mark (ModelFallbackOn,
-// ModelFallbackOff, or ModelFallbackUnread), and the daemon API contract the image's plugin
-// declared, last. The daemon's probe Sandbox passes the image only on a line that confirms the
-// daemon's own contract (ConfirmedContract) with the extensions mark (ExtensionsDiscovered), the
-// agents' models resolved (AgentModels) and the whole capability list checked (Capabilities:
-// CapabilitiesAll), and keeps the model-fallback mark (ModelFallback) in its ImageReport.
-func OKLine(omp string, contract int, agentModels, capabilities, modelFallback string) string {
-	return fmt.Sprintf("%s (%s) %s %s %s%s %s%s %s%s daemon-api-version=%d", OKPrefix, omp, sessionStorageMark, extensionsMark, agentModelsMark, agentModels,
-		capabilitiesMark, capabilities, modelFallbackMark, modelFallback, contract)
+// ompVersionMark carries, on the OK line, the first non-blank line the image's `<omp> --version`
+// printed (capabilities.ReadOmpVersion), as one token (OKLine), or OmpVersionUnread when the probe
+// could not read it. It names which Oh My Pi the image carries, and says nothing of what that Oh
+// My Pi takes: every release of the fork's 18.18.6 line prints `omp/18.18.6`, those that take
+// --session-id and those that do not (sessionIDFlagMark).
+const ompVersionMark = "omp-version="
+
+// OmpVersionUnread is the omp-version mark of a probe that could not read Oh My Pi's version.
+const OmpVersionUnread = "unread"
+
+// sessionIDFlagMark carries, on the OK line, whether the image's Oh My Pi takes --session-id
+// (capabilities.ReadSessionIDFlag): SessionIDFlagTaken, SessionIDFlagAbsent, or
+// SessionIDFlagUnread.
+const sessionIDFlagMark = "omp-session-id="
+
+// The omp-session-id mark's states: Oh My Pi's `--help` lists --session-id as a flag; its help was
+// read and lists no such flag; or the probe could not read its help. The probe writes one onto
+// the OK line and the daemon's probe Sandbox switches on the one it reads back, so both ends spell
+// the state here. A daemon that sets runtime.kubernetes.agent_secrets.exchange_audience starts each
+// new Oh My Pi role with `--session-id <id>`, so its probe Sandbox passes only an image whose line
+// says SessionIDFlagTaken; unread is the probe's own failure to tell, and passes no more than
+// absent does. A CLI that predates the check prints no mark.
+const (
+	SessionIDFlagTaken  = "taken"
+	SessionIDFlagAbsent = "absent"
+	SessionIDFlagUnread = "unread"
+)
+
+// OKLine is the line OKPrefix begins: the OMP invocation probed, the session-storage mark, the
+// extensions mark, the agent-models mark (AgentModelsResolved or AgentModelsSkipped), the
+// capabilities mark (CapabilitiesAll or CapabilitiesBrowserSkipped), the model-fallback mark
+// (ModelFallbackOn, ModelFallbackOff, or ModelFallbackUnread), the omp-version mark (Oh My Pi's
+// own version, or OmpVersionUnread), the omp-session-id mark (SessionIDFlagTaken,
+// SessionIDFlagAbsent, or SessionIDFlagUnread), and the daemon API contract the image's plugin
+// declared, last. The version is Oh My Pi's own words, so each whitespace run in it is written as
+// one underscore and the mark stays one token; an empty one is written OmpVersionUnread. The
+// daemon's probe Sandbox passes the image only on a line that confirms the daemon's own contract
+// (ConfirmedContract) with the extensions mark (ExtensionsDiscovered), the agents' models resolved
+// (AgentModels), the whole capability list checked (Capabilities: CapabilitiesAll) and, under an
+// exchange audience, --session-id taken (SessionIDFlag: SessionIDFlagTaken). It keeps the
+// model-fallback mark (ModelFallback) in its ImageReport, and logs the omp-version and
+// omp-session-id marks (OmpVersion, SessionIDFlag) with the pass.
+func OKLine(omp string, contract int, agentModels, capabilities, modelFallback, ompVersion, sessionIDFlag string) string {
+	if ompVersion = strings.Join(strings.Fields(ompVersion), "_"); ompVersion == "" {
+		ompVersion = OmpVersionUnread
+	}
+	return fmt.Sprintf("%s (%s) %s %s %s%s %s%s %s%s %s%s %s%s daemon-api-version=%d", OKPrefix, omp, sessionStorageMark, extensionsMark, agentModelsMark, agentModels,
+		capabilitiesMark, capabilities, modelFallbackMark, modelFallback, ompVersionMark, ompVersion, sessionIDFlagMark, sessionIDFlag, contract)
 }
 
-// ImageReport is what the daemon keeps of a passed probe: what its OK line said of the image, and
+// ImageReport is what the daemon keeps of a passed probe: its OK line's model-fallback mark, and
 // what the run itself saw of the pool on the way to that line.
 type ImageReport struct {
 	// ModelFallback is the line's model-fallback mark, ModelFallbackOn, ModelFallbackOff, or
@@ -290,6 +352,20 @@ var modelFallbackState = markPattern(modelFallbackMark)
 // ModelFallback is the model-fallback mark an OK line in output carries, and "" when the line
 // carries none: no OK line, or one from a CLI that predates the mark.
 func ModelFallback(output string) string { return markValue(modelFallbackState, output) }
+
+// ompVersionState is the omp-version mark on an OK line.
+var ompVersionState = markPattern(ompVersionMark)
+
+// OmpVersion is the omp-version mark an OK line in output carries, and "" when the line carries
+// none: no OK line, or one from a CLI that predates the mark.
+func OmpVersion(output string) string { return markValue(ompVersionState, output) }
+
+// sessionIDFlagState is the omp-session-id mark on an OK line.
+var sessionIDFlagState = markPattern(sessionIDFlagMark)
+
+// SessionIDFlag is the omp-session-id mark an OK line in output carries, and "" when the line
+// carries none: no OK line, or one from a CLI that predates the mark.
+func SessionIDFlag(output string) string { return markValue(sessionIDFlagState, output) }
 
 // confirmation is an OK line ending with the contract token.
 var confirmation = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(OKPrefix) + ` .* daemon-api-version=([0-9]+)$`)

@@ -20,6 +20,7 @@ const claimReleaseVersion = 20261108000545
 // merged after this one, is the last word of both lists and names the kinds the merged daemon
 // writes. A kind that is none is still refused.
 func TestTheOutboxTakesTheClaimReleaseKindWith20261108000545(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, claimReleaseVersion-1)

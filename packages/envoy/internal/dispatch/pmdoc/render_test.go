@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"html"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,7 @@ var setextEquals = regexp.MustCompile(`(?m)^([ >]*)=+[ \t]*$`)
 var emptyAttribute = regexp.MustCompile(`(\s[A-Za-z][\w-]*)=""`)
 
 func TestRenderMatchesMilkdownForFixtures(t *testing.T) {
+	t.Parallel()
 	for _, fx := range loadFixtures(t) {
 		t.Run(fx.Name, func(t *testing.T) {
 			doc, err := FromJSON(fx.PMJSON)
@@ -32,6 +34,7 @@ func TestRenderMatchesMilkdownForFixtures(t *testing.T) {
 }
 
 func TestRenderEmphasisAndEmoji(t *testing.T) {
+	t.Parallel()
 	doc, err := FromJSON([]byte(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Some "},{"type":"text","text":"bold","marks":[{"type":"strong"}]},{"type":"text","text":" 😀 end"}]}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +49,7 @@ func TestRenderEmphasisAndEmoji(t *testing.T) {
 }
 
 func TestRenderEmptyDocumentPreservesProofParagraph(t *testing.T) {
+	t.Parallel()
 	want := &Node{Type: "doc", Children: []*Node{{Type: "paragraph"}}}
 	parsed, err := Parse("")
 	if err != nil {
@@ -71,6 +75,7 @@ func TestRenderEmptyDocumentPreservesProofParagraph(t *testing.T) {
 }
 
 func TestRenderHardBreakUsesBackslash(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "paragraph",
 		Children: []*Node{
@@ -89,6 +94,7 @@ func TestRenderHardBreakUsesBackslash(t *testing.T) {
 }
 
 func TestRenderTableCellEscapesPipes(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "table",
 		Children: []*Node{
@@ -106,6 +112,7 @@ func TestRenderTableCellEscapesPipes(t *testing.T) {
 }
 
 func TestRenderTableCellParagraph(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "table",
 		Children: []*Node{
@@ -143,6 +150,7 @@ func plain(markdown string) string {
 }
 
 func TestRenderTableEscapedPipeMapsToFlattenedText(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("| a\\|b |\n| :--- |\n| body |\n")
 	if err != nil {
 		t.Fatal(err)
@@ -173,6 +181,7 @@ func TestRenderTableEscapedPipeMapsToFlattenedText(t *testing.T) {
 }
 
 func TestRenderEscapesLiteralMarkdownText(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "literal **not bold** and `not code` and [not link](x) < & |",
@@ -195,6 +204,7 @@ func TestRenderEscapesLiteralMarkdownText(t *testing.T) {
 }
 
 func TestRenderEscapesOrderedListLookingParagraphs(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "1. not a list\n2) also not a list",
@@ -222,6 +232,7 @@ func TestRenderEscapesOrderedListLookingParagraphs(t *testing.T) {
 }
 
 func TestRenderLeavesOrdinaryProseUnescaped(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "It's ordinary: prose - with [brackets], | pipes, and < 2.",
@@ -243,6 +254,7 @@ func TestRenderLeavesOrdinaryProseUnescaped(t *testing.T) {
 }
 
 func TestRenderBareURLLinkAsAutolinkLiteral(t *testing.T) {
+	t.Parallel()
 	const url = "https://example.com/docs"
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{
 		{Type: "text", Text: "see "},
@@ -265,6 +277,7 @@ func TestRenderBareURLLinkAsAutolinkLiteral(t *testing.T) {
 }
 
 func TestRenderKeepsNonAutolinkURLAsExplicitLink(t *testing.T) {
+	t.Parallel()
 	const url = "https://example.com/a b"
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text", Text: url, Marks: []Mark{{Type: "link", Attrs: Attrs{"href": url, "title": nil}}},
@@ -286,6 +299,7 @@ func TestRenderKeepsNonAutolinkURLAsExplicitLink(t *testing.T) {
 }
 
 func TestRenderDoesNotEscapeExplicitURLLinkLabel(t *testing.T) {
+	t.Parallel()
 	const url = "https://example.com/x"
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text", Text: url, Marks: []Mark{{Type: "link", Attrs: Attrs{"href": url, "title": "title"}}},
@@ -307,6 +321,7 @@ func TestRenderDoesNotEscapeExplicitURLLinkLabel(t *testing.T) {
 }
 
 func TestRenderFencesInlineCodeContainingBackticks(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		text string
@@ -339,6 +354,7 @@ func TestRenderFencesInlineCodeContainingBackticks(t *testing.T) {
 }
 
 func TestRenderPadsInlineCodeSurroundedBySpaces(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text", Text: " x ", Marks: []Mark{{Type: "inlineCode"}},
 	}}}}}
@@ -359,6 +375,7 @@ func TestRenderPadsInlineCodeSurroundedBySpaces(t *testing.T) {
 }
 
 func TestRenderEscapesLinkDelimiters(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "text",
 		Text: "label",
@@ -387,6 +404,7 @@ func TestRenderEscapesLinkDelimiters(t *testing.T) {
 }
 
 func TestRenderFencesCodeBlockContainingFence(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("````markdown\n```\nexample\n```\n````\n")
 	if err != nil {
 		t.Fatal(err)
@@ -408,6 +426,7 @@ func TestRenderFencesCodeBlockContainingFence(t *testing.T) {
 }
 
 func TestRenderEscapesImageDelimiters(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{
 		Type: "image",
 		Attrs: Attrs{
@@ -436,6 +455,7 @@ func TestRenderEscapesImageDelimiters(t *testing.T) {
 }
 
 func TestRenderPrefixesNestedCodeBlockLines(t *testing.T) {
+	t.Parallel()
 	doc, err := Parse("> - item\n>\n>       code\n")
 	if err != nil {
 		t.Fatal(err)
@@ -456,6 +476,7 @@ func TestRenderPrefixesNestedCodeBlockLines(t *testing.T) {
 }
 
 func TestRenderParseRoundTripPreservesTableCellPipes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		markdown      string
@@ -579,6 +600,7 @@ func footnoteLabelsInDocument(doc *Node) []string {
 }
 
 func TestRenderParseRoundTripPreservesNonTableEntities(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		markdown string
@@ -619,6 +641,7 @@ func TestRenderParseRoundTripPreservesNonTableEntities(t *testing.T) {
 }
 
 func TestRenderTableLinkDestinationPreservesLiteralBackslashBeforePipe(t *testing.T) {
+	t.Parallel()
 	markdown := "| header |\n| :--- |\n| [label](https://example.test/one" + strings.Repeat("\\", 3) + "|two) |\n"
 	doc, err := Parse(markdown)
 	if err != nil {
@@ -644,6 +667,7 @@ func TestRenderTableLinkDestinationPreservesLiteralBackslashBeforePipe(t *testin
 }
 
 func TestRenderTableHTMLPipeCanonicalizesToEntity(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{
 		Type: "table",
 		Children: []*Node{
@@ -676,6 +700,7 @@ func TestRenderTableHTMLPipeCanonicalizesToEntity(t *testing.T) {
 }
 
 func TestRenderTableAutolinkPreservesHref(t *testing.T) {
+	t.Parallel()
 	markdown := "| header |\n| :--- |\n| <https://example.test/one\\|two> |\n"
 	doc, err := Parse(markdown)
 	if err != nil {
@@ -705,6 +730,7 @@ func TestRenderTableAutolinkPreservesHref(t *testing.T) {
 // change the markdown, whichever one a later schema adds: the loop reads active.Load().marks, so a new
 // invisible mark is covered here the day it exists.
 func TestNoUnrenderedSchemaMarkChangesTheMarkdown(t *testing.T) {
+	t.Parallel()
 	const head, marked, tail = "Use snake_", "case here. see [x]", "(y)"
 	whole := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{
 		{Type: "text", Text: head + marked + tail},
@@ -739,6 +765,7 @@ func TestNoUnrenderedSchemaMarkChangesTheMarkdown(t *testing.T) {
 // text into two runs. The rendering is the same as if the mark were not there: an escape is
 // decided over the whole run, so `snake_case` is never written `snake\_case`.
 func TestRenderIsTheSameWhereverAnAnchorMarkSplitsText(t *testing.T) {
+	t.Parallel()
 	comment := []Mark{{Type: "proofComment", Attrs: Attrs{"id": "c1", "by": "user:alice"}}}
 	ask := []Mark{{Type: "dispatchAsk", Attrs: Attrs{"id": "a1", "by": "user:alice"}}}
 	for _, test := range []struct {
@@ -780,6 +807,7 @@ func TestRenderIsTheSameWhereverAnAnchorMarkSplitsText(t *testing.T) {
 // browser editor's writer puts a blank line between two paragraphs, which the item then reads back
 // as spread, and writes a rule `***`; so does this renderer, and every block reads back.
 func TestRenderKeepsTheBlocksOfATightListItem(t *testing.T) {
+	t.Parallel()
 	paragraph := func(value string) *Node {
 		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}
 	}
@@ -818,11 +846,127 @@ func TestRenderKeepsTheBlocksOfATightListItem(t *testing.T) {
 	}
 }
 
+// A loose list is written with one blank line between two of its items, as Markdown writes it,
+// wherever the list stands, and each blank line carries its containers' prefix without the space
+// after it. In a quote the browser editor's parser reads a list an item ends in, or an item ending
+// in a footnote definition, spread only after two blank lines, so two are written where they
+// spread it and none where nothing needs them; none are written after an empty item either, where
+// goldmark would end the item around the list at a blank line. Each rendering reads back in Go and
+// in the browser editor's engine as the tree it was rendered from, every list and item with the
+// spread it had, and a write of it is not refused.
+func TestRenderWritesOneBlankLineBetweenTheItemsOfALooseList(t *testing.T) {
+	const callout = `:::callout{#c1 kind="note" title="T"}`
+	rows := []struct {
+		name, markdown, want string
+		// lists and items are every list's and every list item's spread, in document order, as
+		// the rendering reads back (readCodeAndSpread).
+		lists, items []bool
+	}{
+		{name: "a bullet list", markdown: "- a\n\n- b\n\n- c\n", want: "- a\n\n- b\n\n- c\n",
+			lists: []bool{true}, items: []bool{false, false, false}},
+		{name: "a bullet list spread by one blank line", markdown: "- a\n- b\n\n- c\n", want: "- a\n\n- b\n\n- c\n",
+			lists: []bool{true}, items: []bool{false, false, false}},
+		{name: "an ordered list", markdown: "1. a\n\n2. b\n", want: "1. a\n\n2. b\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		{name: "a list nested in an item", markdown: "- x\n  - a\n\n  - b\n", want: "- x\n  - a\n\n  - b\n",
+			lists: []bool{false, true}, items: []bool{false, false, false}},
+		{name: "a list in a typed block", markdown: callout + "\n- a\n\n- b\n:::\n", want: callout + "\n- a\n\n- b\n:::\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		{name: "a list in a quote", markdown: "> - a\n>\n> - b\n", want: "> - a\n>\n> - b\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		{name: "a list in a typed block in a quote", markdown: "> " + callout + "\n> - a\n>\n> - b\n> :::\n", want: "> " + callout + "\n> - a\n>\n> - b\n> :::\n",
+			lists: []bool{true}, items: []bool{false, false}},
+		// In a footnote definition the blank line spreads the item before it, and the list stays
+		// tight, as the browser editor reads it.
+		{name: "a list in a footnote definition", markdown: "Text[^f].\n\n[^f]: - a\n\n    - b\n", want: "Text[^f].\n\n[^f]: - a\n\n    - b\n",
+			lists: []bool{false}, items: []bool{true, false}},
+		{name: "a list in a footnote definition in a quote", markdown: "> Text[^f].\n>\n> [^f]: - a\n>\n>     - b\n", want: "> Text[^f].\n>\n> [^f]: - a\n>\n>     - b\n",
+			lists: []bool{false}, items: []bool{true, false}},
+		// In a quote the blank lines after an item ending in a list are that list's, and the
+		// browser editor's parser reads it spread only after two.
+		{name: "in a quote, after an item ending in a list two blank lines spread", markdown: "> - a\n>   - n\n>\n>\n> - b\n", want: "> - a\n>   - n\n>\n>\n> - b\n",
+			lists: []bool{false, true}, items: []bool{false, false, false}},
+		{name: "in a quote and a footnote definition, after an item ending in a list two blank lines spread", markdown: "> Text[^f].\n>\n> [^f]: - a\n>       - n\n>\n>\n>     - b\n", want: "> Text[^f].\n>\n> [^f]: - a\n>       - n\n>\n>\n>     - b\n",
+			lists: []bool{false, true}, items: []bool{false, false, false}},
+		// A list its own blank line spreads needs none after the item it ends.
+		{name: "in a quote, after an item ending in a list its own lines spread", markdown: "> - a\n>   - b\n>\n>   - c\n> - z\n", want: "> - a\n>   - b\n>\n>   - c\n> - z\n",
+			lists: []bool{false, true}, items: []bool{false, false, false, false}},
+		// In a quote the blank lines after an item ending in a footnote definition are the
+		// definition's: two spread an item none of its own lines spreads, and one spreads nothing
+		// and is not written.
+		{name: "in a quote, after an item holding only a footnote definition that two blank lines spread", markdown: "> - [^d]: d\n>\n>\n> - b\n", want: "> - [^d]: d\n>\n>\n> - b\n",
+			lists: []bool{false}, items: []bool{true, false}},
+		{name: "in a quote, after an item ending in a footnote definition that one blank line does not spread", markdown: "> - a\n>   [^d]: d\n>\n> - b\n", want: "> - a\n>   [^d]: d\n> - b\n",
+			lists: []bool{false}, items: []bool{false, false}},
+		// Goldmark ends the item around the list at a blank line after an empty item, so none is
+		// written there, and one after another item spreads the list.
+		{name: "after an empty item in a nested list", markdown: "- x\n  - a\n\n  - \n  - b\n\n  - c\n", want: "- x\n  - a\n\n  - \n  - b\n\n  - c\n",
+			lists: []bool{false, true}, items: []bool{false, false, false, false, false}},
+		{name: "after an empty item in a nested list in a quote", markdown: "> - x\n>   - a\n>\n>   - \n>   - b\n>\n>   - c\n", want: "> - x\n>   - a\n>\n>   - \n>   - b\n>\n>   - c\n",
+			lists: []bool{false, true}, items: []bool{false, false, false, false, false}},
+	}
+	// An empty item is written as its marker alone, whose space ends the line.
+	emptyItem := regexp.MustCompile(`^[> ]*(?:[-*+]|[0-9]+[.)]) $`)
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			doc, err := Parse(row.markdown)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", row.markdown, err)
+			}
+			rendered := mustRender(t, doc)
+			if rendered != row.want {
+				t.Errorf("Render(Parse(%q)) = %q, want %q", row.markdown, rendered, row.want)
+			}
+			for number, line := range strings.Split(rendered, "\n") {
+				if strings.HasSuffix(line, " ") && !emptyItem.MatchString(line) {
+					t.Errorf("line %d of the rendering %q ends in a space: %q", number+1, rendered, line)
+				}
+			}
+			back, err := Parse(row.want)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", row.want, err)
+			}
+			if !back.Equal(doc) {
+				got, _ := back.JSON()
+				want, _ := doc.JSON()
+				t.Errorf("%q reads back as %s, want %s", row.want, got, want)
+			}
+			if got := readCodeAndSpread(back); !slices.Equal(got.lists, row.lists) || !slices.Equal(got.items, row.items) {
+				t.Errorf("%q reads back with lists spread %v and items spread %v, want %v and %v", row.want, got.lists, got.items, row.lists, row.items)
+			}
+			if err := RefuseMisreadDocument(back); err != nil {
+				t.Errorf("a write of %q is refused: %v", row.want, err)
+			}
+		})
+	}
+	t.Run("the engine", func(t *testing.T) {
+		wants := make([]string, 0, len(rows))
+		for _, row := range rows {
+			wants = append(wants, row.want)
+		}
+		readings := engineReadings(t, wants)
+		for index, row := range rows {
+			t.Run(row.name, func(t *testing.T) {
+				doc, err := Parse(row.want)
+				if err != nil {
+					t.Fatalf("Parse(%q): %v", row.want, err)
+				}
+				if engine := readings[index]; engine == nil || !engine.Equal(doc) {
+					got, _ := engine.JSON()
+					want, _ := doc.JSON()
+					t.Errorf("the engine reads %q as %s, and Go as %s", row.want, got, want)
+				}
+			})
+		}
+	})
+}
+
 // A footnote reference reads as one only when its label is defined, so text shaped like one - `[^1]`
 // where the document defines `1` - is written with its bracket escaped, and a run beside a
 // reference is read back with its definition, so delimiters that pair around the reference are
 // escaped as they are anywhere else.
 func TestRenderKeepsTextAroundFootnoteReferences(t *testing.T) {
+	t.Parallel()
 	definition := func(label string) *Node {
 		return &Node{Type: "footnote_definition", Attrs: Attrs{"label": label}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: "x"}}}}}
 	}
@@ -859,6 +1003,7 @@ func TestRenderKeepsTextAroundFootnoteReferences(t *testing.T) {
 // indentation a blank line does not take, so a blank code line there is written without the
 // definition's indentation; elsewhere it keeps the prefix it has always been written with.
 func TestRenderKeepsBlankCodeLinesInFootnoteDefinitions(t *testing.T) {
+	t.Parallel()
 	paragraph := func(value string) *Node {
 		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: value}}}
 	}
@@ -893,6 +1038,7 @@ func TestRenderKeepsBlankCodeLinesInFootnoteDefinitions(t *testing.T) {
 // An empty task item is written as an empty item, as the browser editor writes it: no form of
 // its marker alone reads back as a task, and `- [ ]` reads back as an item holding the text `[ ]`.
 func TestRenderWritesAnEmptyTaskItemAsAnEmptyItem(t *testing.T) {
+	t.Parallel()
 	doc := &Node{Type: "doc", Children: []*Node{{Type: "bullet_list", Attrs: Attrs{"spread": false}, Children: []*Node{
 		{Type: "list_item", Attrs: Attrs{"label": "•", "listType": "bullet", "checked": false, "spread": false}, Children: []*Node{{Type: "paragraph"}}},
 		{Type: "list_item", Attrs: Attrs{"label": "•", "listType": "bullet", "checked": true, "spread": false}, Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: "b"}}}}},
@@ -922,6 +1068,7 @@ func TestRenderWritesAnEmptyTaskItemAsAnEmptyItem(t *testing.T) {
 // interrupts nowhere, and the containers take the prefix off the code's text again
 // (codeLineOpensHTML).
 func TestRenderPrefixesACodeSpanLineHoldingOneHTMLTag(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown, want string }{
 		{
 			name:     "a quote",
@@ -966,6 +1113,7 @@ func TestRenderPrefixesACodeSpanLineHoldingOneHTMLTag(t *testing.T) {
 // address with no local part (`@b.test`), whose `@` the matcher never starts at, is not one, nor is
 // one ending in a digit or one whose href or title differs.
 func TestABareEmailLinkIsWhatTheTransformLinksWhole(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		text, href, title string
 		bare              bool

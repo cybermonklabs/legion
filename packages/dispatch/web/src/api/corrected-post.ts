@@ -257,7 +257,10 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "issues advances": "the issues advancing a priority",
   "issues pinned": "the reader's pinned issues",
   "issues project": "a project's issue list",
+  "known-session": "whether Dispatch holds any record of a session, and its title: no post",
   "legion-daemon": "a project's Legion daemon setting",
+  "legion-issue":
+    "an issue's Legion state: its phase, its roles' claims and the daemon's last read",
   "machine-logins": "the reader's machine logins",
   "new-issue-settings": "the label and session a new issue from the bar takes",
   priorities: "the priorities and the work under them",
@@ -275,6 +278,7 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "user-state": "the reader's read, pin and dismiss marks per issue",
   users: "everyone who has signed in",
   whoami: "the signed-in principal",
+  "whoami-scopes": "the scopes the signed-in person's own credential holds (GET /api/v1/whoami)",
 };
 
 /**

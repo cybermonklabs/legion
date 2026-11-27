@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf16"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // What one event carries of an item is bounded in UTF-16 units and sent in bytes, so every
@@ -44,26 +44,21 @@ func capBody(t *testing.T) string {
 }
 
 // eventPayload is the payload of the one event that arrived on topic, decoded out of its
-// envelope. It fails the test when nothing arrives within ten seconds.
+// envelope. It fails the test when nothing arrives before the test binary's deadline.
 func eventPayload(t *testing.T, received <-chan *natsgo.Msg, topic string) (contracts.Envelope, map[string]any) {
 	t.Helper()
-	select {
-	case message := <-received:
-		var envelope contracts.Envelope
-		if err := json.Unmarshal(message.Data, &envelope); err != nil {
-			t.Fatalf("decode the envelope on %s: %v", topic, err)
-		}
-		var delivered struct {
-			Payload map[string]any `json:"payload"`
-		}
-		if err := json.Unmarshal([]byte(envelope.Payload), &delivered); err != nil {
-			t.Fatalf("decode the event the envelope on %s carries: %v", topic, err)
-		}
-		return envelope, delivered.Payload
-	case <-time.After(10 * time.Second):
-		t.Fatalf("nothing arrived on %s", topic)
-		return contracts.Envelope{}, nil
+	message := testwait.Receive(t, "an event on "+topic, received)
+	var envelope contracts.Envelope
+	if err := json.Unmarshal(message.Data, &envelope); err != nil {
+		t.Fatalf("decode the envelope on %s: %v", topic, err)
 	}
+	var delivered struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &delivered); err != nil {
+		t.Fatalf("decode the event the envelope on %s carries: %v", topic, err)
+	}
+	return envelope, delivered.Payload
 }
 
 // A comment body of exactly the share an event carries reaches a subscriber through a real NATS
@@ -73,6 +68,7 @@ func eventPayload(t *testing.T, received <-chan *natsgo.Msg, topic string) (cont
 // session at all, silently. The share is counted in UTF-16 units and the payload in bytes, so
 // this holds the widest body the share allows (capBody) against the server's 1 MiB default.
 func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
@@ -89,7 +85,7 @@ func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -109,6 +105,7 @@ func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 // (asks.go's validateAskWording, ask_transitions.go's text). At their worst case in bytes they
 // still reach a subscriber whole.
 func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.ask.answered"
@@ -131,7 +128,7 @@ func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -156,6 +153,7 @@ func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 // payload_summary, with the payload's short top-level fields kept, its long one gone, and
 // payload_omitted saying so. A reader then knows which comment to read.
 func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
@@ -178,7 +176,7 @@ func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	envelope, payload := eventPayload(t, received, issueTopic)
@@ -214,6 +212,7 @@ func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 // them. Without them each owner's card, the asker's among them, would read the reply as a comment
 // on an issue, with no command that answers the ask and no turn.
 func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	issueTopic := "notifications.dispatch.issue.T-1.comment.created"
@@ -247,7 +246,7 @@ func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -279,6 +278,7 @@ func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
 // of any other field, so the stand-in NATS carries in place of the refused event keeps both whole,
 // beside ask_sessions. Without them the owner's card would carry no command that answers the ask.
 func TestRunStandInKeepsTheDocumentOfADocumentAsksReplyWholeThroughNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
 	broker := events.NewBroker()
@@ -312,7 +312,7 @@ func TestRunStandInKeepsTheDocumentOfADocumentAsksReplyWholeThroughNATS(t *testi
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, documentTopic)

@@ -40,6 +40,7 @@ func (s *sentStatements) statements() []string {
 // what they send. Controller is the control: a read that opened read-only before the others were
 // held to it.
 func TestEachStandaloneReadOfTheStoreOpensReadOnlyAndReadsNoID(t *testing.T) {
+	t.Parallel()
 	seed := migratedStore(t)
 	for _, read := range []struct {
 		name string
@@ -57,8 +58,8 @@ func TestEachStandaloneReadOfTheStoreOpensReadOnlyAndReadsNoID(t *testing.T) {
 			_, err := s.IssueReleaseStop(ctx, "legion", "LEGION-208", 1)
 			return err
 		}},
-		{name: "IssueReleaseSave", run: func(ctx context.Context, s *Store) error {
-			_, err := s.IssueReleaseSave(ctx, "legion", "LEGION-208", 1)
+		{name: "IssueReleaseCheck", run: func(ctx context.Context, s *Store) error {
+			_, err := s.IssueReleaseCheck(ctx, "legion", "LEGION-208", 1)
 			return err
 		}},
 		// The reads that run through ReadOnly, the one form of a standalone read.

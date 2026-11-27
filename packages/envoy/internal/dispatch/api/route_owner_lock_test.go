@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The lock table (item_row_owner_lock_test.go) holds every writer of an item row behind the owner
@@ -83,6 +84,8 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the role holders route", route: "PUT /api/v1/issues/{key}/role-holders (putIssueRoleHolders)", ready: readyRoleHolders},
 	{name: "the project default assignee route", route: "PUT /api/v1/projects/{key}/default-assignee (putProjectDefaultAssignee)", ready: readyProjectDefaultAssignee},
 	{name: "the project gated steps route", route: "PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps)", ready: readyProjectGatedSteps},
+	{name: "the project proven sessions on route", route: "PUT /api/v1/projects/{key}/proven-sessions (putProjectProvenSessions)", ready: readyProjectProvenSessionsOn},
+	{name: "the project proven sessions off route", route: "DELETE /api/v1/projects/{key}/proven-sessions (deleteProjectProvenSessions)", ready: readyProjectProvenSessionsOff},
 	{name: "the project default repository route", route: "PUT /api/v1/projects/{key}/default-repository (putProjectDefaultRepository)", ready: readyProjectDefaultRepository},
 	{name: "the project file upload route", route: "POST /api/v1/projects/{key}/artifacts on a file it has (storeArtifact)", ready: readyProjectFileUpload},
 	{name: "the ask follow route", route: "PUT /api/v1/asks/{id}/followers/{session_id} (changeAskFollower)", ready: readyAskFollow},
@@ -506,11 +509,9 @@ func readyDesignGates(t *testing.T, base routeFixture) lockedItemWrite {
 		})
 }
 
-// readyRoleHolders drives PUT /api/v1/issues/{key}/role-holders, which replaces the issue's
-// issue_role_holders rows under the issue's owner lock (putIssueRoleHolders,
-// store.LockOwnerAndRead). The issue holds the tester ses-a, which the request moves to ses-b, so
-// the request deletes the stored pair and inserts the new one. It appends no event, so that lock
-// is the only one it takes: a publication without it would not wait at all.
+// readyRoleHolders drives PUT /api/v1/issues/{key}/role-holders. The route takes the issue's owner
+// lock with its read of the issue, reads the set it replaces under that lock, then deletes the
+// stored pair, inserts the new one and appends issue.role_holders_changed.
 func readyRoleHolders(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Role holders")
@@ -646,6 +647,56 @@ func readyProjectGatedSteps(t *testing.T, base routeFixture) lockedItemWrite {
 	return write
 }
 
+// readyProjectProvenSessionsOn drives PUT /api/v1/projects/{key}/proven-sessions on the shared
+// token, on a project whose setting is off, which updates the project's row under the project's
+// owner lock it takes before the update (storeProjectProvenSessions).
+func readyProjectProvenSessionsOn(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Proven sessions on")
+	write := fixture.routeWrite(t, "the project's proven-sessions setting",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return agentRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/proven-sessions",
+				map[string]any{"actor": sessionActor()}, "agent-token")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("turn the setting on once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if on := fixture.rowCount(t, `select count(*) from projects where key = $1 and proven_sessions`, "LOCK"); on != 1 {
+				t.Fatal("the project's setting is off after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
+}
+
+// readyProjectProvenSessionsOff drives DELETE /api/v1/projects/{key}/proven-sessions by a person,
+// on a project whose setting is on, which updates the project's row under the project's owner
+// lock it takes before the update (storeProjectProvenSessions).
+func readyProjectProvenSessionsOff(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Proven sessions off")
+	if on := dispatchRequest(t, fixture.handler, http.MethodPut, "/api/v1/projects/LOCK/proven-sessions", nil, "alice"); on.Code != http.StatusOK {
+		t.Fatalf("turn the project's setting on: status=%d body=%s", on.Code, on.Body.String())
+	}
+	write := fixture.routeWrite(t, "the project's proven-sessions setting",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/LOCK/proven-sessions", nil, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("turn the setting off once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if on := fixture.rowCount(t, `select count(*) from projects where key = $1 and proven_sessions`, "LOCK"); on != 0 {
+				t.Fatal("the project's setting is on after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
+}
+
 // readyProjectDefaultRepository drives PUT /api/v1/projects/{key}/default-repository with a
 // repository the project does not default to yet, which updates the project's row under the
 // project's owner lock it takes before the update (putProjectDefaultRepository), as every writer
@@ -721,13 +772,16 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
 			map[string]any{"body": "Did this ship?", "target": "session:s1", "delivery": "btw"}, "alice")
 	}()
-	select {
-	case <-entered:
-	case response := <-answered:
-		t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
-	case <-time.After(30 * time.Second):
-		t.Fatal("the message's send never reached the listener")
-	}
+	testwait.Until(t, "the message's send to reach the listener", func() (bool, bool) {
+		select {
+		case <-entered:
+			return true, true
+		case response := <-answered:
+			t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
+		default:
+		}
+		return false, false
+	})
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the holder: %v", err)

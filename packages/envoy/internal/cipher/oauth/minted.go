@@ -2,7 +2,10 @@ package oauth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"log/slog"
 	"maps"
 	"time"
 
@@ -51,5 +54,10 @@ func (p *Provider) MintGrantToken(ctx context.Context, grant oauthstore.MintedGr
 	if err := p.store.CreateAccessTokenSession(ctx, signature, request); err != nil {
 		return "", err
 	}
+	// The token's SHA-256 and the thumbprint of the key it is bound to, never the token: what an
+	// audit compares a string found anywhere with, to say whether it is a token this broker minted.
+	sum := sha256.Sum256([]byte(token))
+	slog.Info("broker: minted a grant's token", "grant", grant.ID, "session", grant.Session,
+		"token_sha256", hex.EncodeToString(sum[:]), "jkt", jkt, "expires_at", grant.ExpiresAt.UTC().Format(time.RFC3339))
 	return token, nil
 }

@@ -64,6 +64,7 @@ func projectsPodBroker(t *testing.T) (*httptest.Server, func() []map[string]any)
 // the body carries no projects field at all, as before. A list that is no list is refused before
 // the broker is asked, naming the setting and never the value.
 func TestEnrollPodNamesTheProjectsItsSessionNames(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_projects_test.go:81).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
 	for _, c := range []struct {
 		name     string
@@ -136,6 +137,7 @@ func TestEnrollPodNamesTheProjectsItsSessionNames(t *testing.T) {
 // variable, saying to enrol without it. Each row names its own setting and not the other's, and
 // the line never prints the list.
 func TestEnrollPodNamesTheSettingARefusedListCameFrom(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_projects_test.go:166).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

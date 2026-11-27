@@ -29,10 +29,10 @@ bun run docs:build   # generate the reference pages, then build into docs/site/d
 ```
 
 In this directory, `bun run typecheck` is the check CI runs before the build; `bun run lint`
-(Biome) is a person's to run, since the root `lint` job's `bunx biome check .` already covers
-these files and no CI job runs this script.
-That script is `biome check --error-on-warnings .`, while the root job runs plain
-`bunx biome check .`, which passes on a warning: so a Biome warning in this directory fails this
+(Biome) is a person's to run, since the root `lint` job's whole-tree `bunx biome check` already
+covers these files and no CI job runs this script.
+That script is `biome check --error-on-warnings .`, while the root job's check carries no
+`--error-on-warnings` and passes on a warning: so a Biome warning in this directory fails this
 script and no longer fails CI, which is the strictness dispatch://INFRA-1413 gave up when it
 deleted the duplicate lint step (measured first: these files carry no Biome diagnostic at all).
 After the build, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository

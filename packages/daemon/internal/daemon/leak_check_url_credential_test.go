@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -27,11 +28,10 @@ import (
 const leakCheckRedirectToken = "plantedRedirectToken4k"
 
 // GitHub answers the daemon's read of the shared public leak check with a redirect to its download
-// host, whose URL carries a token in its query. Here that host is a port nothing listens on, so
-// the read fails, and Go's client names the URL, query and all, in its error. The port is chosen
-// once both stand-ins hold theirs, so a port given back for it is never the one the stand-in
-// GitHub binds next, which would answer the redirect itself. The daemon's own reader
-// (leakCheckSource) refuses with a cause sentence, the start is refused with it as the
+// host, whose URL carries a token in its query. Here that host is a port the test holds bound and
+// never listening (testport.Refused), so the read's dial is refused, no other program can take the
+// port and answer it, and Go's client names the URL, query and all, in its error. The daemon's own
+// reader (leakCheckSource) refuses with a cause sentence, the start is refused with it as the
 // Sandbox runtime refuses one (runtime.LeakCheckRefusal, launchers.serveLeakCheck), and the
 // claim's launch budget runs out on it. The token is in none of: the stored claim (its
 // leak_check_cause, last_start_failure and failure among its columns), the claim's view as the
@@ -52,7 +52,7 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 		}
 		http.Redirect(w, r, download+"?token="+leakCheckRedirectToken, http.StatusFound)
 	}})
-	dead := fmt.Sprintf("127.0.0.1:%d", idleRigFreePort(t))
+	dead := testport.Refused(t)
 	download = "http://" + dead + "/" + leakCheckSetting.Repository.String() + "/legacy.tar.gz/refs/tags/" + leakCheckTag
 	_, readErr := leakCheckSource(github.tokens, repo, leakCheckSetting).Get(ctx, leakCheckTag)
 	if readErr == nil {

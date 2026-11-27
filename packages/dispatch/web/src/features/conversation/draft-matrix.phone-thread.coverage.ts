@@ -112,10 +112,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("ConversationTab | - | form | (phone.id === undefined) ? …", { reason: REASONS[9] }),
   ...answers("ConversationTab | - | form | if (phone.id === id)", { reason: REASONS[8] }),
   ...answers("ConversationTab | - | form | if (isPhoneViewport)", { reason: REASONS[8] }),
-  ...answers(
-    "ConversationTab | - | form | (visible && phoneThread === undefined && !follow.atTop && shown.length > 0) ? …",
-    { reason: REASONS[9] }
-  ),
+  ...answers("ConversationTab | - | form | (jumpShown) ? …", { reason: REASONS[9] }),
   ...answers("usePhoneThread | - | form | if (isPhoneViewport || outlived) return …", {
     reason: REASONS[9],
   }),

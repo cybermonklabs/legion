@@ -35,7 +35,7 @@ unchanged row. Before that change ships:
   passes a literal: with the tolerance inside the reader, a grace of `0` no longer means "delete
   every dead row". Write test ages as sums of the constants.
 
-The sweep rule for contract numbers in
+The rule for a contract number's prose in
 `docs/solutions/legion/a-contract-numbers-prose-is-declaration-history-or-current-write-current-as-a-pointer-and-sweep-docs-solutions-too-LEGION-578.md`
 is the same discipline, applied there to contract numbers rather than durations.
 

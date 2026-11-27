@@ -30,10 +30,16 @@ Read, against the goal, every check and every requirement:
 
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `.
   Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
-  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`):
+  Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or `Not filed:`):
   a closed issue hides its open questions from the controller.
 
 - No `after_merge` result is asked here; the production check records it after the close.
+
+## A merge hold
+
+Before every `sign_off`, read the project's merge holds, `merge-holds-md`: a line that names the pull request's repository, or `all`, and whose end is not past holds the sign-off.
+While one holds, end the turn with a WAITING line that names it, and send the controller no message about a hold: it lifts a hold by deleting its line.
+Read "A merge hold" in acceptance-steps.md before every `sign_off`: it says how to read the document and a line, and what each wake does.
 
 ## The last round
 
@@ -63,7 +69,7 @@ The steps after your acceptance in the task run, then retro, then the merger mer
 A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
 When the merger reports:
 
-- the issue moved back with `request_backward_move`: its reason says why the fix is a change to the change's own logic that no merge of the base resolves; you start nothing;
+- the issue moved back with `request_backward_move`: you start nothing;
 
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
@@ -98,7 +104,6 @@ When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the th
 ## The close
 
 The merge closes the issue (`done`).
-The production check after the close is not yours.
 A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger

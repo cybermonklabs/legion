@@ -78,15 +78,31 @@ const targetNode = `coalesce(item_block.kind, case when r.to_kind = 'block' then
 
 // oneRowPerNode ends both statements of the read. far holds a row for each link: the node at its
 // far end (node_kind, node_id), its kind, and its via at the near end. It leaves out the issue and
-// its own content, the rows (kind, id) that own selects, read once into an array, and keeps one
-// row for each other node: the distinct kinds of its links in order, and its lowest via, the
-// least pair of via kind and via id as arrays compare, element by element in the database's order.
+// its own content, the rows of own, the relation that holds them as (kind, id), and keeps one row
+// for each other node: the distinct kinds of its links in order, and its lowest via, the least
+// pair of via kind and via id as arrays compare, element by element in the database's order.
+//
+// It leaves them out by an anti-join, `not exists` over own, and not, as the read did before, by a
+// test of each row against an array of own's rows,
+// `not (row(f.node_kind, f.node_id) = any(array(...)))` over `select row(o.kind, o.id) from own o`
+// in the out statement and over `select row(t.kind, t.id) from targets t` in the in statement.
+// Postgres pushed the array's test into each arm of the links, and it does not hash an array an
+// InitPlan reads, so it compared each link with every row of own in turn. On a copy of a
+// dispatch:local database seeded at production's size (block_refs 876,018 rows), for an issue
+// with 2,041 own targets, the in statement read 5,000 links in 3.44-3.48 s, past the route's 2 s
+// budget, and its plan spent 2.58 s of 2.67 s in that test; with an anti-join, hashed or merged,
+// it read them in 0.27-0.36 s. On the seed of api's
+// TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks, 2,042 own targets and 10,000
+// links from 500 documents, the read with the array answered 503 at 2.01 s in a shared pod and 200
+// in 931 ms on a 10-CPU build machine, so the plan, which api's
+// TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin holds, is the proof and not
+// the time.
 func oneRowPerNode(own string) string {
 	return `
 		select f.node_kind, f.node_id, array_agg(distinct f.kind order by f.kind),
 		       (min(array[f.via_kind, f.via_id]))[1], (min(array[f.via_kind, f.via_id]))[2]
 		from far f
-		where not (row(f.node_kind, f.node_id) = any(array(` + own + `)))
+		where not exists (select 1 from ` + own + ` x where x.kind = f.node_kind and x.id = f.node_id)
 		group by f.node_kind, f.node_id`
 }
 
@@ -215,7 +231,7 @@ var linksOutQuery = sync.OnceValue(func() string {
 			where (` + documentTarget + ` or r.to_kind not in ('artifact', 'block'))
 			  and (r.to_kind not in ` + itemBlockKinds + ` or item_block.id is not null)
 			  and ` + VisibleEnd("r.to_kind", "r.to_id", true, "$2") + `
-		)` + oneRowPerNode(`select row(o.kind, o.id) from own o`)
+		)` + oneRowPerNode(`own`)
 })
 
 // linksInQuery is the in statement of the references read of the issue whose key is $1, as the
@@ -313,7 +329,7 @@ var linksInQuery = sync.OnceValue(func() string {
 			` + itemBlockHeld + `
 			where r.node_id is not null
 			  and ` + VisibleEnd("r.node_kind", "r.node_id", true, "$2") + `
-		)` + oneRowPerNode(`select row(t.kind, t.id) from targets t`)
+		)` + oneRowPerNode(`targets`)
 })
 
 // ClosureTag starts every statement Closure sends, so that the query text pg_stat_activity shows
@@ -349,13 +365,14 @@ type linkRow struct {
 // resolveNodes does not name, a node gone since or of a kind this build does not know, is left
 // out, as Edges leaves such an edge out. Each list is in the order of the node's kind, then its
 // id. Members are the documents of Links, each at depth 1 with its row's via, by ref_key. Every
-// statement it sends, through q, starts with ClosureTag.
+// statement it sends, through q, starts with ClosureTag. serverURL is the deployment whose
+// dashboard URLs are references, which a node's name is cut around (resolvedNode.name).
 //
 // It answers for who: a link whose source or target who may not see is no link of the read, so a
 // node is never listed through, or named as the via of, a node reserved for another author, and
 // such a node is never listed itself, since resolveNodes names only the nodes who may see
 // (VisibleKind, VisibleEnd).
-func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (References, error) {
+func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey, serverURL string) (References, error) {
 	tagged := taggedQueryer{q}
 	out, err := readLinkRows(ctx, tagged, linksOutQuery(), who, issueKey)
 	if err != nil {
@@ -382,7 +399,11 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 		}
 	}
 	slices.SortFunc(members, func(left, right Member) int { return strings.Compare(left.RefKey, right.RefKey) })
-	return References{Members: members, Links: related(out, nodes), LinkedFrom: related(in, nodes)}, nil
+	return References{
+		Members:    members,
+		Links:      related(out, nodes, serverURL),
+		LinkedFrom: related(in, nodes, serverURL),
+	}, nil
 }
 
 // readLinkRows runs statement, the out or the in statement, for issueKey as who reads it, and
@@ -399,16 +420,16 @@ func readLinkRows(ctx context.Context, q Queryer, statement string, who model.Ac
 	})
 }
 
-// related is each of rows whose node nodes names, in the order of the node's kind, then its id.
-// It is never nil.
-func related(rows []linkRow, nodes map[[2]string]resolvedNode) []model.ReferenceLink {
+// related is each of rows whose node nodes names, in the order of the node's kind, then its id,
+// each named as resolvedNode.name names it under serverURL. It is never nil.
+func related(rows []linkRow, nodes map[[2]string]resolvedNode, serverURL string) []model.ReferenceLink {
 	list := make([]model.ReferenceLink, 0, len(rows))
 	for _, row := range rows {
 		node, found := nodes[[2]string{row.kind, row.id}]
 		if !found {
 			continue
 		}
-		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(), Kinds: row.kinds, Via: row.via})
+		list = append(list, model.ReferenceLink{Node: node.GraphNode, Name: node.name(serverURL), Kinds: row.kinds, Via: row.via})
 	}
 	slices.SortFunc(list, func(left, right model.ReferenceLink) int {
 		return cmp.Or(strings.Compare(left.Node.Kind, right.Node.Kind), strings.Compare(left.Node.ID, right.Node.ID))

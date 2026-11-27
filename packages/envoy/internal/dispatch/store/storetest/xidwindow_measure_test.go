@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // These tests are of the rig's execution trace, which the race build does not take, so they are
@@ -28,7 +29,7 @@ func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 	RequireXidGapJudgment(t)
 	// A run of this test against a rig that leaks the trace leaves it on; stop it, so the tests
 	// after this one still start their own.
-	t.Cleanup(trace.Stop)
+	testcleanup.Add(t, trace.Stop)
 	database := Open(t)
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
@@ -86,7 +87,7 @@ func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
 	if err := trace.Start(io.Discard); err != nil {
 		t.Fatalf("start a trace as go test -trace does: %v", err)
 	}
-	t.Cleanup(trace.Stop)
+	testcleanup.Add(t, trace.Stop)
 	ran := false
 	stopping := &stoppingTB{TB: t}
 	measured := make(chan struct{})

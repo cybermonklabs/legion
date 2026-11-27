@@ -104,12 +104,13 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 //
 // The delete is fenced on the revision the copy holds for the key (deleteInterestAt), and a
 // write since then makes JetStream refuse it with wrong last sequence (bus.IsCASConflict): the
-// interest is kept, false and no error.
+// interest is kept, false and no error. The chunks of the row the copy holds go with a delete the
+// bucket took.
 //
 // A copy that holds no revision for the key, because a watch moved the epoch since its read
 // began (kvwatch.Copy.FenceFor), names no revision for the delete to be fenced on, and that
 // window is a recreated bucket, whose rows a registration on another listener is writing. So the
-// row and its revision are read from the bucket (getWithRevision) and the delete is fenced on
+// row and its revision are read from the bucket (readRow) and the delete is fenced on
 // that revision, and only the row this pass judged is deleted: a row the bucket answers with
 // another UpdatedAt is a row no pass has judged past its allowance, and deleting it would take a
 // session's live registration away and count it reaped. A key the bucket holds no row for is
@@ -119,9 +120,11 @@ func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged in
 	r.mu.RLock()
 	_, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
+	cached, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
+	layout := cached.layout
 	if revision == 0 {
-		item, read, err := r.getWithRevision(ctx, sessionID, readBucket)
+		item, read, err := r.readRow(ctx, sessionID, readBucket)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrMalformedInterest):
 			return false, nil
@@ -130,9 +133,9 @@ func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged in
 		case item.UpdatedAt != judged:
 			return false, nil
 		}
-		revision = read
+		revision, layout = read, item.layout
 	}
-	return r.deleteInterestAt(ctx, sessionID, revision)
+	return r.deleteInterestAt(ctx, sessionID, revision, layout)
 }
 
 // RoleClaimSweep is what one pass of ReapRoleClaims did: Reaped, the claims it released or
@@ -271,7 +274,7 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 	for _, scanned := range claims {
 		role := scanned.Role
 		if roles := r.roles(); roles.RefusesRead(role) != nil {
-			_, _, err := bus.Bounded(ctx, func() (struct{}, error) { return struct{}{}, roles.Delete(role) })
+			_, _, err := bus.Bounded(ctx, roles.Conn(), func() (struct{}, error) { return struct{}{}, roles.Delete(role) })
 			if ended := ctx.Err(); err != nil && ended != nil {
 				return sweep, ended
 			}
@@ -319,16 +322,24 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 // a channel closed once it has returned: a pass in flight when ctx ends finishes first. A pass
 // lists the bucket through watchers whose consumers nats.go creates and deletes, so the listener's
 // shutdown waits for it before it drains NATS (kvwatch.Watcher.End says what a drain does to such
-// a delete). Each pass logs how many interests it reaped and how long it took (elapsed_ms).
+// a delete). Each pass then collects the chunks no interest record names (collectInterestChunks),
+// within ctx, whether or not the reap failed, since the collection reads only the cache and the
+// reap's failure says nothing about it. Each pass logs how many interests it reaped, how many
+// chunks it collected and how long it took (elapsed_ms).
 func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) (bool, error), interval, graceWindow time.Duration) <-chan struct{} {
 	return everyInterval(ctx, interval, func() {
 		started := time.Now()
-		count, err := r.Reap(live, graceWindow)
+		count, reapErr := r.Reap(live, graceWindow)
+		collected, err := r.collectInterestChunks(ctx)
 		if err != nil {
-			r.logger().Error("reaper cycle failed", slog.String("error", err.Error()))
+			r.logger().Error("reaper could not collect the chunks no interest record names",
+				slog.Int("chunks_collected", collected), slog.String("error", err.Error()))
+		}
+		if reapErr != nil {
+			r.logger().Error("reaper cycle failed", slog.String("error", reapErr.Error()), slog.Int("chunks_collected", collected))
 			return
 		}
-		r.logger().Info("reaper cycle", slog.Int("reaped", count), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
+		r.logger().Info("reaper cycle", slog.Int("reaped", count), slog.Int("chunks_collected", collected), slog.Int64("elapsed_ms", time.Since(started).Milliseconds()))
 	})
 }
 

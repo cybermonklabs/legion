@@ -41,6 +41,7 @@ import (
 // stays below the high mark, so no sweep ever runs. At b1b8e361 the second of them was counted as
 // the second in a row and the third switched the trimmer off.
 func TestAReadingThatPanicsNowAndThenWithReadingsBetweenLeavesTheTrimmerOn(t *testing.T) {
+	t.Parallel()
 	const every, panics = 3, 4
 	f := newTrimFixture(t, 0)
 	f.setOnRead(func(call int) {
@@ -88,6 +89,7 @@ func TestAReadingThatPanicsNowAndThenWithReadingsBetweenLeavesTheTrimmerOn(t *te
 // b1b8e361 the one row held the two report panics across the pauses, and the first reading panic
 // was the third in a row and switched the trimmer off.
 func TestThreeReadingPanicsInARowSwitchTheTrimmerOffApartFromTheSweepRow(t *testing.T) {
+	t.Parallel()
 	const fell = "the connection fell over sending the report"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
@@ -162,6 +164,7 @@ func TestThreeReadingPanicsInARowSwitchTheTrimmerOffApartFromTheSweepRow(t *test
 // panic found it, under which the two reading panics are the second and the third of the sweep
 // row and switch the trimmer off.
 func TestTwoReadingPanicsAfterAReportsPanicAreCountedInTheReadingRow(t *testing.T) {
+	t.Parallel()
 	const fell = "the connection fell over sending the report"
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
@@ -214,6 +217,7 @@ func TestTwoReadingPanicsAfterAReportsPanicAreCountedInTheReadingRow(t *testing.
 // is a copy of run that does not put the readings' work back, under which the reading's panic and
 // its line's are the third and the fourth of the sweep row and switch the trimmer off.
 func TestAReadingPanicAfterAReportsPanicCountsInTheReadingRowThoughEveryFaultLinePanics(t *testing.T) {
+	t.Parallel()
 	const fell = "the connection fell over sending the report"
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
@@ -282,6 +286,7 @@ func TestAReadingPanicAfterAReportsPanicCountsInTheReadingRowThoughEveryFaultLin
 // ends no row, under which that panic is the third in a row and switches the trimmer off. At
 // b1b8e361 the one row of faults ended there too, and its line named no row.
 func TestASweepTheSettingsStoppedEndsTheSweepRow(t *testing.T) {
+	t.Parallel()
 	const fell = "the connection fell over sending the report"
 	f := newTrimFixture(t, 0) // no entry it may delete: every sweep frees nothing and takes no reading of its own
 	for _, root := range f.roots {
@@ -362,6 +367,7 @@ func (r closeFallsOver) close() {
 // refusals lived in the sweep's outcome until the report or the interval took them, and the panic
 // took the outcome with it, so the next report named none.
 func TestARefusedProcReadReachesTheNextReportThoughItsSweepPanicsAfterIt(t *testing.T) {
+	t.Parallel()
 	// whileSweeping has the process refused from the sweep's first refresh of the used-path set,
 	// after its first deletion, and answers the pid it placed once the case has run the sweep.
 	whileSweeping := func(t *testing.T, f *trimFixture) func() string {
@@ -488,6 +494,7 @@ func TestARefusedProcReadReachesTheNextReportThoughItsSweepPanicsAfterIt(t *test
 // b1b8e361 riseAt ran after that line, so the 91% was never read, the 92% paired with the 86%, and
 // the third report carried episode 1.
 func TestAReportedSweepWhoseFirstLineAfterItPanicsHasBeenReadForARise(t *testing.T) {
+	t.Parallel()
 	const fell = "the log fell over writing the line of a sweep"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing and takes no reading of its own
 	f.useVolume(script(86, 91, 92))
@@ -533,6 +540,7 @@ func TestAReportedSweepWhoseFirstLineAfterItPanicsHasBeenReadForARise(t *testing
 // the fourth sweep paired with the 91% and raised nothing, and the rise came one reported sweep
 // late, at the fifth.
 func TestARiseWhoseLinePanicsHasRecordedItsStartForTheNextRise(t *testing.T) {
+	t.Parallel()
 	const fell = "the log fell over writing the line of a rise"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing and takes no reading of its own
 	f.useVolume(script(86, 91, 97, 97, 97))
@@ -579,6 +587,7 @@ func TestARiseWhoseLinePanicsHasRecordedItsStartForTheNextRise(t *testing.T) {
 // pause after both lines, so their panic left it at 0 and the next reading swept (INFRA-2009,
 // review round 39).
 func TestASweepWhoseLinePanicsStillPausesTheNextTenIntervals(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		line   string // what the format of the line that panics holds
@@ -642,6 +651,7 @@ func TestASweepWhoseLinePanicsStillPausesTheNextTenIntervals(t *testing.T) {
 // line of the first episode panics once. At c7700af9 episodeOf marked the volume only after that
 // line, so the fall to 65% raised no recovery and the episode whose notices were spent went on.
 func TestAPanicOfTheFirstEpisodesLineLeavesALaterFallARecovery(t *testing.T) {
+	t.Parallel()
 	const fell = "the log fell over writing the line of the first episode"
 	f := newTrimFixture(t, 0)
 	f.useVolume(script(90, 65))
@@ -686,6 +696,7 @@ func TestAPanicOfTheFirstEpisodesLineLeavesALaterFallARecovery(t *testing.T) {
 // line's panic unwound out of the sweep, so tick set no pause and the next reading swept, and read
 // no last reading, so the fall to 65% raised no recovery (INFRA-2009, round 46).
 func TestASweepWhoseLinePanicsOnceItsOutcomeIsSettledStillPausesOrRecovers(t *testing.T) {
+	t.Parallel()
 	const fell = "the log fell over writing a line of a sweep whose outcome is settled"
 	// passOver leaves eleven links in bun's install cache, one past the ten a sweep names
 	// (volumePassedOverLines), so the sweep counts the eleventh in its last line (said).
@@ -728,18 +739,17 @@ func TestASweepWhoseLinePanicsOnceItsOutcomeIsSettledStillPausesOrRecovers(t *te
 		}, false},
 		{"the deleter that ended in a sweep that pauses", volumeTrimLog + "the sweep's deleter ended", 1, steady(90), dies(0), false},
 		{"the deleter that ended in a sweep that recovers", volumeTrimLog + "the sweep's deleter ended", 1, script(90, 65), dies(1), true},
-		{"the last reading that failed", "the volume could not be read at the end of the sweep", 1, steady(90), func(t *testing.T, _ *trimFixture, _ *trimmer) {
+		{"the last reading that failed", "the volume could not be read at the end of the sweep", 1, steady(90), func(_ *testing.T, _ *trimFixture, tr *trimmer) {
 			// The interval's own reading is the tick's first; the sweep's last, after its four
 			// deletions, is the second. The case calls tick itself, on its own goroutine, so the
 			// count needs no lock.
-			fixture, reads := readVolumeUsage, 0
-			readVolumeUsage = func(path string) (volumeUsage, error) {
+			fixture, reads := tr.readUsage, 0
+			tr.readUsage = func(path string) (volumeUsage, error) {
 				if reads++; reads == 2 {
 					return volumeUsage{}, errors.New("launcher: statfs " + path + ": input/output error")
 				}
 				return fixture(path)
 			}
-			t.Cleanup(func() { readVolumeUsage = fixture })
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -809,6 +819,7 @@ func TestASweepWhoseLinePanicsOnceItsOutcomeIsSettledStillPausesOrRecovers(t *te
 // flush tries the held report first: that resend panics again, run's last contain ends the
 // trimmer, and the switched-off report is never tried (INFRA-2009, tester's round 36).
 func TestAHeldReportWhoseResendPanicsLeavesTheSwitchedOffReportSent(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
@@ -874,6 +885,7 @@ func TestAHeldReportWhoseResendPanicsLeavesTheSwitchedOffReportSent(t *testing.T
 // resend, under which that reading's panic is the first of the sweep row (INFRA-2009, tester's
 // round 38: no case failed without flush's "t.doing = was").
 func TestAReadingPanicAfterAHeldReportsResendCountsInTheReadingRow(t *testing.T) {
+	t.Parallel()
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
@@ -914,6 +926,7 @@ func TestAReadingPanicAfterAHeldReportsResendCountsInTheReadingRow(t *testing.T)
 // stood, and a logger that panicked on every refusal line cost one fault and left the trimmer
 // waiting for ever (INFRA-2009, review round 39).
 func TestARefusalWhoseLinePanicsIsWrittenAgainAndTriesTheHeldReport(t *testing.T) {
+	t.Parallel()
 	refused := *trimSettings()
 	refused.HighPercent, refused.LowPercent = 70, 80
 	const refusal = "refusing the settings: low_percent is 80 and high_percent is 70"
@@ -1020,6 +1033,7 @@ func TestARefusalWhoseLinePanicsIsWrittenAgainAndTriesTheHeldReport(t *testing.T
 // again, which would try the report again, and its third panic would switch the trimmer off over
 // that one refusal (INFRA-2009, review 5954632411).
 func TestAHeldReportWhoseResendPanicsInTheWaitIsTriedOnceOverOneRefusal(t *testing.T) {
+	t.Parallel()
 	refused := *trimSettings()
 	refused.HighPercent, refused.LowPercent = 70, 80
 	const refusal = "refusing the settings: low_percent is 80 and high_percent is 70"
@@ -1091,6 +1105,7 @@ func TestAHeldReportWhoseResendPanicsInTheWaitIsTriedOnceOverOneRefusal(t *testi
 // before it made the report, so its panic ended the trimmer with no report made (INFRA-2009, the
 // architect's round 39).
 func TestASwitchOffWhoseLinePanicsStillSendsTheLastReport(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		refused bool // the connection refuses the first send of the last report
@@ -1172,6 +1187,7 @@ func TestASwitchOffWhoseLinePanicsStillSendsTheLastReport(t *testing.T) {
 // run tried the held report only where switchOff returned, so either panic ended the trimmer with
 // the report held and never sent (INFRA-2009, review 5954632411).
 func TestASwitchedOffReportWhoseLinePanicsOnceItIsHeldIsStillSent(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		line string // what the format of the line that panics holds
@@ -1261,6 +1277,7 @@ func TestASwitchedOffReportWhoseLinePanicsOnceItIsHeldIsStillSent(t *testing.T) 
 // the connection takes it. At 0c49568f the panic of that line ended the trimmer with the report
 // held and never sent (INFRA-2009, round 42).
 func TestASwitchedOffReportWhoseFailedAttemptsLinePanicsIsStillSent(t *testing.T) {
+	t.Parallel()
 	const failed = "the last report of the switched-off trimmer could not be sent"
 	const fell = "the log fell over writing a failed attempt of the last report"
 	f := newTrimFixture(t, 0)
@@ -1334,6 +1351,7 @@ func TestASwitchedOffReportWhoseFailedAttemptsLinePanicsIsStillSent(t *testing.T
 // left, as it did. At c322d6f7 the pause was counted down after that line, so its panic left the
 // count where it stood and the pause ran eleven readings (INFRA-2009, round 39).
 func TestAPauseLineThatPanicsStillSpendsItsReading(t *testing.T) {
+	t.Parallel()
 	const fell = "the log fell over writing a line of the pause"
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and pauses
 	f.useVolume(steady(90))
@@ -1391,6 +1409,7 @@ func TestAPauseLineThatPanicsStillSpendsItsReading(t *testing.T) {
 // statfs had answered, so those three intervals spent none of it and the pause ran thirteen
 // intervals (INFRA-2009, review 5954632411).
 func TestAPauseIsSpentByAnIntervalWhoseReadingFailsOrPanics(t *testing.T) {
+	t.Parallel()
 	const fell = "the volume reader fell over in the pause"
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and pauses
 	f.useVolume(steady(90))
@@ -1403,15 +1422,14 @@ func TestAPauseIsSpentByAnIntervalWhoseReadingFailsOrPanics(t *testing.T) {
 			panic(fell)
 		}
 	})
-	fixture := readVolumeUsage
-	readVolumeUsage = func(path string) (volumeUsage, error) {
+	tr := f.trimmer()
+	fixture := tr.readUsage
+	tr.readUsage = func(path string) (volumeUsage, error) {
 		if failing != nil {
 			return volumeUsage{}, failing
 		}
 		return fixture(path)
 	}
-	t.Cleanup(func() { readVolumeUsage = fixture })
-	tr := f.trimmer()
 	set := *trimSettings()
 	interval := func(what string) {
 		t.Helper()
@@ -1461,6 +1479,7 @@ func TestAPauseIsSpentByAnIntervalWhoseReadingFailsOrPanics(t *testing.T) {
 // interval spent none of it: after ten intervals the pause stood at 1 and the eleventh interval
 // did not sweep (INFRA-2009, review 5962332201).
 func TestAPauseIsSpentByAnIntervalThatPanicsBeforeItsReading(t *testing.T) {
+	t.Parallel()
 	// paused drives the sweep, the ten intervals of its pause, the first of which fallOver readies
 	// to panic before its reading, and the interval after them.
 	paused := func(t *testing.T, f *trimFixture, tr *trimmer, fallOver func(), fell string) {
@@ -1558,15 +1577,14 @@ func TestAPauseIsSpentByAnIntervalThatPanicsBeforeItsReading(t *testing.T) {
 // state is said once. At c322d6f7 the error was remembered before its line, so after one panic of
 // it the line was not written for as long as the error lasted (INFRA-2009, round 39).
 func TestAnUnreadableVolumesLineThatPanicsIsWrittenAtTheNextInterval(t *testing.T) {
+	t.Parallel()
 	const fell = "the log fell over writing that the volume could not be read"
 	f := newTrimFixture(t, 0)
 	f.setSettings(trimSettings())
-	working := readVolumeUsage
-	readVolumeUsage = func(path string) (volumeUsage, error) {
+	tr := f.trimmer()
+	tr.readUsage = func(path string) (volumeUsage, error) {
 		return volumeUsage{}, errors.New("launcher: statfs " + path + ": input/output error")
 	}
-	t.Cleanup(func() { readVolumeUsage = working })
-	tr := f.trimmer()
 	var falling atomic.Bool
 	falling.Store(true)
 	tr.logf = func(format string, args ...any) {
@@ -1608,6 +1626,7 @@ func TestAnUnreadableVolumesLineThatPanicsIsWrittenAtTheNextInterval(t *testing.
 // began on, and a tick that came due while it ran was taken at once (INFRA-2009, review
 // 5954632411).
 func TestATickWhoseLinePanicsKeepsWhatItDecidedBeforeIt(t *testing.T) {
+	t.Parallel()
 	const fell = "the log fell over writing a line of the interval"
 	// falls has the trimmer's logger fall over once on the line whose format holds line.
 	falls := func(f *trimFixture, tr *trimmer, line string) *atomic.Bool {
@@ -1739,20 +1758,20 @@ func TestATickWhoseLinePanicsKeepsWhatItDecidedBeforeIt(t *testing.T) {
 // sent at the next try of the wait as the switched-off trimmer's last report (INFRA-2009, tester's
 // round 42: no case failed with the switched-off test taken out).
 func TestASwitchOffWhoseBoundPanicsSendsNoOlderReportInItsPlace(t *testing.T) {
+	t.Parallel()
 	const fell = "the bound fell over on the last report"
 	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
 	var up atomic.Bool
-	previous := boundReport
-	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	tr := f.trimmer()
+	previous := tr.boundReport
+	tr.boundReport = func(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if report.SwitchedOff {
 			panic(fell)
 		}
-		return previous(trim, report)
+		return previous(report)
 	}
-	t.Cleanup(func() { boundReport = previous })
-	tr := f.trimmer()
 	tr.send = func(report shimwire.LauncherVolumeReport) error {
 		if !up.Load() {
 			return errors.New("no daemon connection is up to carry it")

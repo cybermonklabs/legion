@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  Where a draw put an issue in an experiment's group, by an arm that sets `plan`, each step record
+  of the issue names that experiment and the variant drawn: each start, each end, a reviewer's
+  late report, the retro's rating, and a start the daemon opens again at boot. A draw of the
+  `memory` experiment, or of an experiment whose arms set no `plan`, puts no variant on a record.
+  The daemon reads the pair from the draw it recorded, not from the current settings, and an
+  issue in no such group writes neither. It sends the pair after the
+  record, from the same outbox row, on the record's experiment route in Dispatch
+  (`PUT /api/v1/issues/{key}/steps/{id}/experiment`). A Dispatch without that route takes the
+  record and answers the route `404 NOT_FOUND`; the row then waits, logging `outbox row waits`
+  and no ERROR line, until Dispatch serves the route. Deploy Dispatch first, so that no variant
+  waits.
+
+  An earlier release decodes a queued `step_record` row strictly and refuses the two members. The
+  Kubernetes guide's section "Rolling back the release that names the variant on each step
+  record" gives the SQL that removes them from one project's queued rows and kept starts before
+  the earlier image is pinned, and says what the rollback costs.
+time: 2026-11-22T15:08:55Z
+custom:
+    Issue: pr5014

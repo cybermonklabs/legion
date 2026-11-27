@@ -116,6 +116,9 @@ func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *f
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
 	o.catchUpRetry = time.Millisecond
+	// A start row that waited for a slot, or for its issue's branch row, runs at the outbox's next
+	// sweep once that slot or row frees, which at outboxLease is up to 30 s of the wall clock.
+	o.outboxSweep = time.Second
 	return pool, cfg, o, rt
 }
 
@@ -159,7 +162,7 @@ func stoppableWorker(cfg config.Config, project string, token claim.Token, tree,
 	now := time.Now().UTC()
 	return supervise.Claim{Token: token, Project: project, Tree: tree, Issue: issue, Role: role, Generation: 1,
 		State: supervise.StateWorking, Session: "ses_" + string(role), SessionFile: filepath.Join(cfg.StateDir, string(role)+".jsonl"),
-		PluginContract: api.DaemonAPIVersion, Locator: workingPane(token),
+		PluginContract: api.DaemonAPIVersion(), Locator: workingPane(token),
 		Budgets: supervise.Budgets{LaunchFailures: 2, Deaths: 1, PromptFailures: 2, PromptRetires: 1},
 		Pending: &supervise.Delivery{ID: "outbox:11", Task: "Carry on.", Generation: 1, Phase: stands,
 			QueuedAt: now, DeliveredAt: now, ConfirmedAt: now}}

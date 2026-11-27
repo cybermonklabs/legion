@@ -4,17 +4,12 @@ import type { NavigateFunction } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import type { ArtifactBlock, Comment, IssueDetails } from "../../../api/types";
-import {
-  artifact,
-  issueDetails,
-  KEY,
-  SPEC_SLUG,
-  specRef,
-} from "../decisions-filter/decisions-fixtures";
+import { KEY } from "../../decision-card/decision-fixture";
+import { artifact, issueDetails, SPEC_SLUG, specRef } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { TWO_THREADS } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId } from "../statement-rules";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
   commentGone,

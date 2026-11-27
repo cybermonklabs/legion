@@ -118,6 +118,198 @@ for name, installs in record["plugins"].items():
 PY
 }
 
+# The one python3 this read speaks to, in place of a start of its own for each path. The four
+# readers below (entry_state, utf8, unresolved, plugin_trees) each ask the filesystem one question
+# that bash cannot ask, and a --clients run asks about a dozen of them: a python3 start a question
+# is most of what such a run costs in processes (287 for one --clients run of the gate's test, 17
+# of them python3; a start is about 20 ms where the question itself is a stat).
+#
+# box_reader_start opens it, and every question goes over a pipe: a frame is the verb and its
+# arguments, each ended by a NUL byte, and an empty one ends the frame; the answer comes back the
+# same way, its first token saying what kind of answer it is. No argument is empty, and no path
+# holds a NUL, so the framing carries a name of any bytes. The reader is opened before the first
+# question, by the shell that reads the dotfiles, so every `$(...)` below inherits its pipes; it
+# ends when the gate does and its pipes close. A question it does not answer is UNKNOWN by name,
+# never a pass: the gate reads no silence as an answer.
+#
+# A path in an answer, a plugin tree of plugin_trees, goes back as its own bytes (os.fsencode),
+# the bytes of the name on disk, whatever locale Python reads names in: under LC_ALL=C it reads
+# café as caf\udcc3\udca9, and those characters written back as text would name a path that is not
+# there, so the profile would read as empty. Text an answer explains (an entry_state reason, an
+# unresolved one, why a listing failed) is written as text under PYTHONIOENCODING=:backslashreplace,
+# the way Python writes an error, so a name in it that is no UTF-8 comes back with its bytes escaped
+# rather than failing the write.
+box_reader_started=0
+box_reader_start() {
+  [ "$box_reader_started" = 0 ] || return 0
+  cat >"$work/box-reader.py" <<'PY'
+import os
+import stat
+import sys
+
+incoming = sys.stdin.buffer
+outgoing = sys.stdout.buffer
+encoding = sys.stdout.encoding
+errors = sys.stdout.errors
+
+
+def frame():
+    """The next question's tokens as raw bytes, or None once the gate has closed the pipe."""
+    tokens = []
+    token = bytearray()
+    while True:
+        byte = incoming.read(1)
+        if not byte:
+            return None
+        if byte != b"\0":
+            token += byte
+            continue
+        if not token:
+            return tokens
+        tokens.append(bytes(token))
+        token = bytearray()
+
+
+def answer(*parts):
+    """Each part is bytes, sent as they are, or text, sent in the locale's encoding with each
+    character it cannot write escaped."""
+    for part in parts:
+        if isinstance(part, str):
+            part = part.encode(encoding, errors)
+        outgoing.write(part + b"\0")
+    outgoing.write(b"\0")
+    outgoing.flush()
+
+
+def state(path):
+    """present when something is at path, a link whose target is gone included; absent when nothing
+    is and the directory that would hold it was searched; unknown and why otherwise."""
+    try:
+        os.lstat(path)
+        return "present"
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        return f"unknown {path}: {error.strerror}"
+    # Nothing is at path, and the deepest ancestor that is decides why: a link there whose target is
+    # gone hides what would be beneath it.
+    parent = path
+    while True:
+        parent = os.path.dirname(parent) or "."
+        try:
+            mode = os.lstat(parent).st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            return f"unknown {parent}: {error.strerror}"
+        break
+    # Its target, read from the link's own directory, is gone, or is there and does not resolve (a
+    # link whose target is gone). Resolving the link fails with nothing there, as path's lookup did:
+    # any other error, as at a directory the gate may not search or a loop, failed that lookup above
+    # and is named.
+    if stat.S_ISLNK(mode) and not os.path.exists(parent):
+        target = os.readlink(parent)
+        why = "resolve" if os.path.lexists(os.path.join(os.path.dirname(parent), target)) else "exist"
+        return f"unknown {parent} is a link to {target}, which does not {why}"
+    return "absent"
+
+
+def unresolved(link):
+    """How resolving link fails, as the words after "a link to <its target>, which", or None when
+    it resolves."""
+    try:
+        os.stat(link)
+    except FileNotFoundError:
+        target = os.path.join(os.path.dirname(link), os.readlink(link))
+        return "does not resolve" if os.path.lexists(target) else "does not exist"
+    except OSError as error:
+        return f"does not resolve: {error.strerror}"
+    return None
+
+
+def trees(home):
+    """The Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, and None; or, for a
+    profiles directory it cannot list (a link there whose target is gone among them) and a profile
+    whose name is no UTF-8, which the gate may not get unchanged, the trees it found before it
+    stopped, ~/.omp/plugins, and why it stopped. The caller still reads ~/.omp/plugins after such
+    a failure, so its line names every surface it could not see at once."""
+    omp = os.path.join(home, ".omp")
+    profiles = os.path.join(omp, "profiles")
+    found = [os.path.join(omp, "plugins")]
+    try:
+        entries = sorted(os.listdir(profiles))
+    except FileNotFoundError:
+        # Nothing there is no profile, but a link there whose target is gone hides every profile it
+        # would hold. A link above it whose target is gone is above ~/.omp/plugins too, and the
+        # state of that path reports it there; a link that loops fails the listing, as any other
+        # error does. The caller prints the last line of the failure, so a newline in the target is
+        # written as printable does.
+        if os.path.islink(profiles):
+            target = os.readlink(profiles)
+            why = "resolve" if os.path.lexists(os.path.join(omp, target)) else "exist"
+            shown = target.replace("\n", "\\x0a")
+            return found, f"{profiles} is a link to {shown}, which does not {why}"
+        entries = []
+    except OSError as error:
+        return found, f"{profiles} cannot be listed: {error.strerror}"
+    # The name's own bytes decide, whatever encoding this locale reads names with.
+    for entry in entries:
+        path = os.fsencode(os.path.join(profiles, entry))
+        try:
+            os.fsencode(entry).decode("utf-8")
+        except UnicodeDecodeError:
+            shown = path.decode("utf-8", "backslashreplace")
+            return found, shown.replace("\n", "\\x0a") + ": the profile's name is no UTF-8"
+    for entry in entries:
+        found.append(os.path.join(profiles, entry, "plugins"))
+    return found, None
+
+
+while True:
+    question = frame()
+    if question is None:
+        break
+    verb = question[0].decode("utf-8", "replace")
+    if verb == "state" and len(question) == 2:
+        answer("ok", state(os.fsdecode(question[1])))
+    elif verb == "utf8" and len(question) == 2:
+        try:
+            question[1].decode("utf-8")
+        except UnicodeDecodeError:
+            answer("no")
+        else:
+            answer("yes")
+    elif verb == "unresolved" and len(question) == 2:
+        why = unresolved(os.fsdecode(question[1]))
+        answer("no") if why is None else answer("yes", why)
+    elif verb == "trees" and len(question) == 2:
+        found, problem = trees(os.fsdecode(question[1]))
+        paths = [os.fsencode(tree) for tree in found]
+        answer("ok", *paths) if problem is None else answer("fail", problem, *paths)
+    else:
+        answer("fail", f"the gate asked its path reader {verb}, which it does not answer")
+PY
+  # shellcheck disable=SC2034 # bash sets BOX_READER's two pipes and BOX_READER_PID
+  coproc BOX_READER { PYTHONIOENCODING=:backslashreplace python3 "$work/box-reader.py"; }
+  box_reader_started=1
+}
+
+# box_reader_call <verb> <argument>...: asks the reader, and sets box_answer to the tokens of its
+# answer. It returns 1 when the reader did not answer, or is no longer there to ask (bash unsets
+# BOX_READER once it reaps the reader), which each reader below turns into UNKNOWN.
+box_answer=()
+box_reader_call() {
+  local token to=${BOX_READER[1]-} from=${BOX_READER[0]-}
+  box_answer=()
+  [ -n "$to" ] && [ -n "$from" ] || return 1
+  printf '%s\0' "$@" '' >&"$to" || return 1
+  while IFS= read -r -d '' token <&"$from"; do
+    [ -n "$token" ] || return 0
+    box_answer+=("$token")
+  done
+  return 1
+}
+
 # entry_state <path>: prints present when something is at <path>, a link whose target is gone
 # included; absent when nothing is and the directory that would hold it was searched; and unknown
 # and why otherwise, as for an ancestor the gate may not search or a link along the way whose target
@@ -125,51 +317,17 @@ PY
 # no UTF-8, a link's target among them, is written with its bytes escaped, as Python writes an
 # error, never a write that fails and stops the gate with no verdict.
 entry_state() {
-  PYTHONIOENCODING=:backslashreplace python3 - "$1" <<'PY'
-import os
-import stat
-import sys
-
-path = sys.argv[1]
-try:
-    os.lstat(path)
-    print("present")
-    sys.exit(0)
-except FileNotFoundError:
-    pass
-except OSError as error:
-    print(f"unknown {path}: {error.strerror}")
-    sys.exit(0)
-# Nothing is at path, and the deepest ancestor that is decides why: a link there whose target is
-# gone hides what would be beneath it.
-parent = path
-while True:
-    parent = os.path.dirname(parent) or "."
-    try:
-        mode = os.lstat(parent).st_mode
-    except FileNotFoundError:
-        continue
-    except OSError as error:
-        print(f"unknown {parent}: {error.strerror}")
-        sys.exit(0)
-    break
-# Its target, read from the link's own directory, is gone, or is there and does not resolve (a link
-# whose target is gone). Resolving the link fails with nothing there, as path's lookup did: any
-# other error, as at a directory the gate may not search or a loop, failed that lookup above and is
-# named.
-if stat.S_ISLNK(mode) and not os.path.exists(parent):
-    target = os.readlink(parent)
-    why = "resolve" if os.path.lexists(os.path.join(os.path.dirname(parent), target)) else "exist"
-    print(f"unknown {parent} is a link to {target}, which does not {why}")
-else:
-    print("absent")
-PY
+  if ! box_reader_call state "$1" || [ "${box_answer[0]}" != ok ]; then
+    printf 'unknown %s: the gate'"'"'s path reader did not answer\n' "$1"
+    return 0
+  fi
+  printf '%s\n' "${box_answer[1]}"
 }
 
-# utf8 <text>: true when <text> is UTF-8. The text goes on stdin, which a launcher that reads its
-# arguments as text does not change.
+# utf8 <text>: true when <text> is UTF-8. A reader that does not answer is no proof that it is, so
+# the caller names that path UNKNOWN, as it does for a name that is no UTF-8.
 utf8() {
-  printf '%s' "$1" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' 2>/dev/null
+  box_reader_call utf8 "$1" && [ "${box_answer[0]}" = yes ]
 }
 
 # unresolved <link>: how resolving <link>, a link something is at, fails, as the words after "a link
@@ -179,61 +337,39 @@ utf8() {
 # gate may not search or a loop, is named: does not resolve: <error>. A test of what is at the
 # target reads each such error as nothing there. It fails when <link> resolves.
 unresolved() {
-  python3 - "$1" <<'PY'
-import os
-import sys
-
-link = sys.argv[1]
-try:
-    os.stat(link)
-except FileNotFoundError:
-    target = os.path.join(os.path.dirname(link), os.readlink(link))
-    print("does not resolve" if os.path.lexists(target) else "does not exist")
-except OSError as error:
-    print(f"does not resolve: {error.strerror}")
-else:
-    sys.exit(1)
-PY
+  if ! box_reader_call unresolved "$1" || [ "${box_answer[0]}" = fail ]; then
+    printf 'does not resolve: the gate'"'"'s path reader did not answer\n'
+    return 0
+  fi
+  [ "${box_answer[0]}" = yes ] || return 1
+  printf '%s\n' "${box_answer[1]}"
 }
 
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
 # per NUL-terminated entry, into <out>; a profiles directory it cannot list, a link there whose
 # target is gone among them, fails, naming why, and so does a profile whose name is no UTF-8, which
-# entry_state may not get unchanged (dotfiles_clients says why).
+# entry_state may not get unchanged (dotfiles_clients says why). A failure still writes the trees
+# found before it, ~/.omp/plugins, so the caller reads that tree too and names every surface it
+# could not see in one line.
 plugin_trees() {
-  python3 - "$HOME" >"$1" <<'PY'
-import os
-import sys
-
-omp = os.path.join(sys.argv[1], ".omp")
-profiles = os.path.join(omp, "profiles")
-print(os.path.join(omp, "plugins"), end="\0")
-try:
-    entries = sorted(os.listdir(profiles))
-except FileNotFoundError:
-    # Nothing there is no profile, but a link there whose target is gone hides every profile it
-    # would hold. A link above it whose target is gone is above ~/.omp/plugins too, and entry_state
-    # reports it there; a link that loops fails the listing, as any other error does. The caller
-    # prints the last line of the failure, so a newline in the target is written as printable does.
-    if os.path.islink(profiles):
-        target = os.readlink(profiles)
-        why = "resolve" if os.path.lexists(os.path.join(omp, target)) else "exist"
-        shown = target.replace("\n", "\\x0a")
-        sys.exit(f"{profiles} is a link to {shown}, which does not {why}")
-    entries = []
-except OSError as error:
-    sys.exit(f"{profiles} cannot be listed: {error.strerror}")
-# The name's own bytes decide, whatever encoding this locale reads names with.
-for entry in entries:
-    path = os.fsencode(os.path.join(profiles, entry))
-    try:
-        os.fsencode(entry).decode("utf-8")
-    except UnicodeDecodeError:
-        shown = path.decode("utf-8", "backslashreplace")
-        sys.exit(shown.replace("\n", "\\x0a") + ": the profile's name is no UTF-8")
-for entry in entries:
-    print(os.path.join(profiles, entry, "plugins"), end="\0")
-PY
+  local tree failed=0 trees=()
+  : >"$1"
+  if ! box_reader_call trees "$HOME"; then
+    echo "the gate's path reader did not answer" >&2
+    return 1
+  fi
+  if [ "${box_answer[0]}" = ok ]; then
+    trees=("${box_answer[@]:1}")
+  else
+    failed=1
+    trees=("${box_answer[@]:2}")
+  fi
+  for tree in "${trees[@]}"; do
+    printf '%s\0' "$tree" >>"$1"
+  done
+  [ "$failed" = 1 ] || return 0
+  printf '%s\n' "${box_answer[1]}" >&2
+  return 1
 }
 
 # dotfiles_clients: the pi-envoy and claude-envoy of this developer box's dotfiles: the pins, and
@@ -246,10 +382,14 @@ dotfiles_clients() {
     return
   fi
   local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path why
-  # python3 and jq get each path read here as an argument, and a launcher that reads its arguments
-  # as text (a mise shim) hands on each byte that is no UTF-8 as U+FFFD: the changed path is one
-  # where nothing is, which reads as absent. So a directory these paths start from whose name is no
-  # UTF-8 is UNKNOWN by name, and plugin_trees refuses such a profile.
+  # The path reader opens here, in this shell, so every question below, each of them inside a
+  # `$(...)`, writes to the pipes this shell holds.
+  box_reader_start
+  # The path reader and jq get each path read here as an argument or as a name on a pipe, and a
+  # launcher that reads its arguments as text (a mise shim) hands on each byte that is no UTF-8 as
+  # U+FFFD: the changed path is one where nothing is, which reads as absent. So a directory these
+  # paths start from whose name is no UTF-8 is UNKNOWN by name, and plugin_trees refuses such a
+  # profile.
   for name in HOME "the dotfiles directory" CLAUDE_CONFIG_DIR; do
     case "$name" in
       HOME) path=$HOME ;;

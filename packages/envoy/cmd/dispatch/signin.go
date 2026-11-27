@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // plainRefreshTokenRetireTimeout bounds the boot's retirement of the refresh tokens people holds
@@ -71,6 +72,9 @@ func signInSettingNames() string {
 // issuer, whose tokens carry no `cognito:groups`. A deployment with the issuer, client ID, client
 // secret and group of a Cognito pool reaches none of them.
 func checkSignInSettings(boot bootConfig, identityMode string) error {
+	if err := oidc.IssuerRefusal("DISPATCH_SIGNIN_ISSUER", boot.SignInIssuer); err != nil {
+		return err
+	}
 	var set []string
 	for _, setting := range signInSettings(boot) {
 		if setting.value != "" {
@@ -105,7 +109,7 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	}
 	if boot.SignInDomain != "" {
 		if boot.SignInIssuer != googleIssuer {
-			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, boot.SignInIssuer)
+			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, redact.URL(boot.SignInIssuer))
 		}
 		if err := checkDomainShape(boot.SignInDomain); err != nil {
 			return err

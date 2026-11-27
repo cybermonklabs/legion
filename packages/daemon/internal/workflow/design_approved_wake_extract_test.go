@@ -11,6 +11,7 @@ import (
 // The text half is internal/textcheck's
 // TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake; neither alone is the guarantee.
 func TestTheDesignApprovedWakeExtractIsTheConstant(t *testing.T) {
+	t.Parallel()
 	const extract = "design_approved_wake_extract.txt"
 	body, err := os.ReadFile(extract)
 	if err != nil {

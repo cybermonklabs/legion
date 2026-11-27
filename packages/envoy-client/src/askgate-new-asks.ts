@@ -2,7 +2,8 @@
 // --dry-run prints them: a `dispatch ask`; each ask block in the markdown a `dispatch doc-edit`
 // inserts or writes over a match, a `dispatch issue` spec holds, or a `dispatch artifact` upload
 // holds; and each block a `dispatch doc-edit` retypes into an ask. `dispatch edit-ask`, `comment`,
-// `message` and `request-approval` open no new ask.
+// `message`, `request-approval` and the four corrections, `edit-comment`, `delete-comment`,
+// `edit-message` and `delete-message`, open no new ask.
 //
 // A `replace`'s `with` is read with no front matter read in it: `newAsks` cannot know whether the
 // match sits at the document's start, which is what the server's front-matter reading needs, and

@@ -54,6 +54,7 @@ func wantBound(t *testing.T, g *rig, name, pod string, roles ...claim.Role) {
 // starting the role on the launcher the binding accepted, rather than replacing a pod whose
 // launchers were refused until that launch came.
 func TestAPodTheControllerRecreatedIsBoundAtItsLaunchersHello(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	first := g.spawn(spec)
@@ -92,6 +93,7 @@ func TestAPodTheControllerRecreatedIsBoundAtItsLaunchersHello(t *testing.T) {
 // hello whose token is not current are each refused, and no role Secret is written or read for
 // them. Each pod stands where the controller stand-in, held, does not replace it.
 func TestAHelloBindsNoPodButTheSandboxsCurrentLiveOne(t *testing.T) {
+	t.Parallel()
 	for label, tc := range map[string]struct {
 		owned bool
 		edit  func(*corev1.Pod, *string)
@@ -108,7 +110,7 @@ func TestAHelloBindsNoPodButTheSandboxsCurrentLiveOne(t *testing.T) {
 			g := newRig(t, nil)
 			first := g.spawn(workerSpec(t))
 			name := first.Sandbox.Name
-			g.hold.Store(true)
+			g.setHold(true)
 			if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
 				t.Fatal(err)
 			}
@@ -150,6 +152,7 @@ func TestAHelloBindsNoPodButTheSandboxsCurrentLiveOne(t *testing.T) {
 // writes no Secret; the read it made replaces the held credential, so its next hello is refused
 // from memory, and the hello with the token the Secret holds binds the pod.
 func TestABindingAtAHelloChecksTheTokenItsSecretHoldsNow(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	first := g.spawn(workerSpec(t))
 	name := first.Sandbox.Name
@@ -189,6 +192,7 @@ func TestABindingAtAHelloChecksTheTokenItsSecretHoldsNow(t *testing.T) {
 // nothing; once the turn is given back, the launcher's next hello binds the pod. A hello that
 // waited for the turn would wait out its apiTimeout, three times the bound this test gives it.
 func TestAHelloBindsNoPodWhoseLaunchTurnIsHeld(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	first := g.spawn(workerSpec(t))
 	name := first.Sandbox.Name
@@ -222,6 +226,7 @@ func TestAHelloBindsNoPodWhoseLaunchTurnIsHeld(t *testing.T) {
 // refuses, fails as a failed request does: it is logged, as docs/kubernetes.md says every binding
 // that fails is, and it is not declined, so it holds the pod off (heldOffCalls).
 func TestABindingAtAHelloThatCannotReadItsPodIsLogged(t *testing.T) {
+	t.Parallel()
 	logs := &lockedLog{}
 	g := newRig(t, nil, withBreakableFeeds(), withOptions(func(o *Options) { o.Log = slogTo(logs) }))
 	first := g.spawn(workerSpec(t))
@@ -329,6 +334,7 @@ func helloAsync(g *rig, hello shimwire.LauncherHello) <-chan string {
 // the stores hold, as a hello that passed the resolver's own checks begins it. Once the first
 // binding goes on, its hello is accepted and every role's Secret binds the pod.
 func TestAHelloNeverJoinsABindingAnotherTokenBegan(t *testing.T) {
+	t.Parallel()
 	for label, second := range map[string]func(g *rig, name string) (claim.Role, [sha256.Size]byte){
 		"a hello of another role": func(g *rig, name string) (claim.Role, [sha256.Size]byte) {
 			return claim.RoleArchitect, sha256.Sum256(g.secret(roleSecretName(name, claim.RoleArchitect)).Data[LauncherTokenFile])
@@ -380,6 +386,7 @@ func TestAHelloNeverJoinsABindingAnotherTokenBegan(t *testing.T) {
 // whatever the deadline, and then lets it go on to its deadline. The rig's bound is a fraction of
 // the hang guard here; the deployment's is apiTimeout.
 func TestABindingAtAHelloGivesItsPodsTurnBackAtItsDeadline(t *testing.T) {
+	t.Parallel()
 	const bound, guard = 200 * time.Millisecond, 10 * time.Second
 	limiter := newBlockingLimiter(t)
 	g := newRig(t, nil, withClientLimiter(limiter))
@@ -420,6 +427,7 @@ func TestABindingAtAHelloGivesItsPodsTurnBackAtItsDeadline(t *testing.T) {
 // without a request, so the launchers of a pod whose binding fails cannot turn into a stream of
 // Kubernetes requests. Once the retry interval has passed, the next hello binds the pod.
 func TestABindingAtAHelloThatFailedWaitsOutTheRetryInterval(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	first := g.spawn(workerSpec(t))
 	name := first.Sandbox.Name

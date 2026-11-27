@@ -240,7 +240,7 @@ func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnce
 	w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
 	w.defaultBranches.onHold = w.heldThroughLimit
 
-	_, _, err := w.launchRepository(ctx, "LEGION-5")
+	_, _, err := launchedRepository(ctx, w, "LEGION-5")
 	if err == nil || !strings.Contains(err.Error(), "the name and default branch of zeta/tools could not be read") || !strings.Contains(err.Error(), "rate limit") {
 		t.Fatalf("the launch inside the limit = %v, want it refused for now, naming the limit", err)
 	}
@@ -250,7 +250,7 @@ func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnce
 	if _, kept := w.defaultBranches.Kept("zeta/tools"); kept {
 		t.Fatal("a default branch is held for zeta/tools, want none: no record names it")
 	}
-	repo, branch, err := w.launchRepository(ctx, "LEGION-5")
+	repo, branch, err := launchedRepository(ctx, w, "LEGION-5")
 	if err != nil || repo.String() != "zeta/tools" || branch != "trunk" {
 		t.Fatalf("the next launch = %s@%s, %v; want GitHub's zeta/tools@trunk", repo, branch, err)
 	}
@@ -512,7 +512,7 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 					published = append(published, repos)
 					return nil
 				}}
-			left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, w.log)
+			left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, productionRepositoryReads(), w.log)
 			if err != nil || !left {
 				t.Fatalf("backfill = left %v, %v; want LEGION-7 left and the boot going on", left, err)
 			}

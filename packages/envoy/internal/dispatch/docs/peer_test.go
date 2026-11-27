@@ -8,6 +8,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // heldRoomIdleTimeout is how long a room stays resident once idle on a service whose rooms a test
@@ -68,7 +69,7 @@ func newRoomPeer(t *testing.T, service *Service, artifactID string, conn uint64,
 		t.Fatalf("warm the room for %s: %v", actor.ID, err)
 	}
 	service.addConnection(artifactID, conn, actor)
-	t.Cleanup(func() { service.removeConnection(artifactID, conn) })
+	testcleanup.Add(t, func() { service.removeConnection(artifactID, conn) })
 	if sent == nil {
 		sent = map[string]bool{}
 	}

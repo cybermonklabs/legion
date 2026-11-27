@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ func authorizeClose(st *store.Store, close store.IssueClose) func(context.Contex
 }
 
 func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	g := newRig(t, nil)
 	if _, err := st.OpenTreeLifecycle(g.ctx, testProject, testTree, treelifecycle.AuthorityWorkflow); err != nil {
@@ -128,6 +130,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 // Sandbox owns; the restricted runtime sends no PVC request itself. A retried close finds the
 // Sandbox gone and finishes.
 func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		session bool
@@ -229,6 +232,109 @@ func issueSecrets(sandbox string) []string {
 	return secrets
 }
 
+// A Sandbox under the issue's name whose labels name another project, issue or tree is not the
+// issue's to end. The close (SuspendIssue) and the release (ReleaseIssue) refuse it, and they do so
+// before they ask authorize. The daemon's authorize of a release commits the release where it acts
+// (store.Store.CommitIssueRelease), and a committed release is never cancelled. A refusal after
+// that commit would come on every attempt, and the release would never end. The refusal leaves the
+// Sandbox, its pod and its Secrets as the launch made them. The control is each end of the issue's
+// own Sandbox, whose labels name the issue and its tree: it asks authorize once, and where
+// authorize answers false it acts on nothing.
+func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.T) {
+	t.Parallel()
+	for _, end := range []struct {
+		name string
+		call func(*Runtime, context.Context, string, string, func(context.Context) (bool, error)) error
+	}{
+		{name: "the close", call: (*Runtime).SuspendIssue},
+		{name: "the release", call: func(r *Runtime, ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
+			_, err := r.ReleaseIssue(ctx, issue, tree, authorize, nil)
+			return err
+		}},
+	} {
+		for _, other := range []struct {
+			name string
+			// tree is the tree the end names. labels are the labels the test sets on the
+			// launch's Sandbox.
+			tree   string
+			labels map[string]string
+		}{
+			{name: "another project", tree: testTree, labels: map[string]string{labelProject: "other"}},
+			{name: "another issue", tree: testTree, labels: map[string]string{labelIssue: labelValue("LEGION-210")}},
+			{name: "another tree", tree: "LEGION-210"},
+		} {
+			t.Run(end.name+" of a Sandbox of "+other.name, func(t *testing.T) {
+				g := newRig(t, nil)
+				loc := g.spawn(childSpec(t))
+				name := SandboxName(childToken)
+				if len(other.labels) > 0 {
+					object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+					if err != nil {
+						t.Fatal(err)
+					}
+					relabelled := object.(*unstructured.Unstructured).DeepCopy()
+					labels := relabelled.GetLabels()
+					maps.Copy(labels, other.labels)
+					relabelled.SetLabels(labels)
+					if err := g.dyn.Tracker().Update(sandboxGVR, relabelled, testNamespace); err != nil {
+						t.Fatal(err)
+					}
+				}
+				g.clearActions()
+				var asked atomic.Int32
+				authorize := func(context.Context) (bool, error) {
+					asked.Add(1)
+					return true, nil
+				}
+
+				err := end.call(g.r, g.ctx, childIssue, other.tree, authorize)
+				if err == nil || !strings.Contains(err.Error(), "does not belong to this issue and tree") {
+					t.Fatalf("%s = %v, want the refusal of a Sandbox of %s", end.name, err, other.name)
+				}
+				if n := asked.Load(); n != 0 {
+					t.Fatalf("%s asked authorize %d times before its refusal, want none: a release commits where authorize answers that it acts", end.name, n)
+				}
+				if s := g.sandbox(name); s == nil || s.mode() != modeRunning {
+					t.Fatalf("after the refused %s the Sandbox is %+v, want it Running as the launch left it", end.name, s)
+				}
+				if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+					t.Fatalf("after the refused %s the pod is %+v, want the launch's %s", end.name, pod, loc.Sandbox.PodUID)
+				}
+				secrets := issueSecrets(name)
+				for _, w := range g.writes() {
+					if w.name == name || slices.Contains(secrets, w.name) {
+						t.Fatalf("the refused %s sent %s, want nothing written to the Sandbox or its Secrets", end.name, w)
+					}
+				}
+			})
+		}
+		t.Run("control: "+end.name+" of the issue's own Sandbox asks authorize once", func(t *testing.T) {
+			g := newRig(t, nil)
+			loc := g.spawn(childSpec(t))
+			name := SandboxName(childToken)
+			g.clearActions()
+			var asked atomic.Int32
+			refuse := func(context.Context) (bool, error) {
+				asked.Add(1)
+				return false, nil
+			}
+
+			if err := end.call(g.r, g.ctx, childIssue, testTree, refuse); err != nil {
+				t.Fatalf("%s of the issue's own Sandbox = %v, want no error: authorize answered that it does not act", end.name, err)
+			}
+			if n := asked.Load(); n != 1 {
+				t.Fatalf("%s asked authorize %d times, want once: the Sandbox is the issue's own", end.name, n)
+			}
+			if s := g.sandbox(name); s == nil || s.mode() != modeRunning {
+				t.Fatalf("after %s that authorize refused the Sandbox is %+v, want it Running as the launch left it", end.name, s)
+			}
+			if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+				t.Fatalf("after %s that authorize refused the pod is %+v, want the launch's %s", end.name, pod, loc.Sandbox.PodUID)
+			}
+		})
+	}
+}
+
 // An issue whose microVM pod keeps its volume (keptVolume) keeps one claim through every end of a
 // pod that leaves the issue in the workflow. The claim is the Sandbox's own, made by Agent Sandbox
 // from the one `issue` template, and each of those ends keeps the Sandbox and so the claim: an
@@ -242,6 +348,7 @@ func issueSecrets(sandbox string) []string {
 // that record before it writes the first Secret. The daemon makes no request on a
 // PersistentVolumeClaim at any step: it has no PVC verb, and the claim's life is the Sandbox's.
 func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
+	t.Parallel()
 	name, claimName := SandboxName(childToken), IssueClaimName(childToken)
 	labels := map[string]string{labelProject: testProject, labelIssue: childIssue, labelVolume: volumeKept}
 	// keeps fails the test unless, after step, the issue's Sandbox is still uid and owns the one
@@ -337,7 +444,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: childToken, Locator: &loc}, stillDue); err != nil {
 				t.Fatalf("ReplacePod: %v", err)
 			}
-			g.hold.Store(true)
+			g.setHold(true)
 			var timedOut atomic.Bool
 			apply := k8stesting.ObjectReaction(g.dyn.Tracker())
 			g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -360,7 +467,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if s := g.sandbox(name); s == nil || s.UID != uid || s.mode() != modeSuspended {
 				t.Fatalf("after the failed launch the issue's Sandbox is %+v, want %s kept, Suspended", s, uid)
 			}
-			g.hold.Store(false)
+			g.setHold(false)
 			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "a launch that failed after its Running patch", loc, uid, template)
 
@@ -377,8 +484,8 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if sandbox, present := g.r.IssueSandbox(childIssue); !present || sandbox != name {
 				t.Fatalf("IssueSandbox of the running kept Sandbox = %q, %t; want %s present", sandbox, present, name)
 			}
-			if err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
-				t.Fatalf("ReleaseIssue: %v", err)
+			if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+				t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 			}
 			if s := g.sandbox(name); s == nil || s.UID != uid || s.mode() != modeSuspended || !ownsKeptVolume(s) {
 				t.Fatalf("after the release the issue's Sandbox is %+v, want %s kept, Suspended, with its kept volume", s, uid)
@@ -466,6 +573,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 // deletes each kept Sandbox of the tree; and the orphan sweep (ReconcileOrphans) deletes a kept
 // Sandbox of a tree that is not live. The API then holds no Sandbox of the name.
 func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
+	t.Parallel()
 	t.Run("the issue's suspension", func(t *testing.T) {
 		name := SandboxName(childToken)
 		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
@@ -582,4 +690,201 @@ func keptCleanupRig(t *testing.T) *cleanupRig {
 	})
 	c.clearActions()
 	return c
+}
+
+// IssueSandbox answers a Sandbox that is going absent, though the informer's store still holds
+// it. The API answers a delete (awaitSandboxDeleted) before the watch carries it to the store, so
+// a Sandbox this runtime's own delete took answers absent from the moment the API accepted the
+// delete, by what the runtime keeps of that delete (its uid), until the store lets it go, and a
+// Sandbox made again under the name answers present. A stored Sandbox that carries a
+// deletionTimestamp, whoever deleted it, answers absent too. A release that finds no Sandbox says
+// it released none (ReleaseIssue's false). A kept Sandbox is the same case with the release's
+// record in place of the delete: it answers absent from the moment the API answered the patch
+// that wrote the record, and a release of it after that takes nothing and answers false.
+func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
+	t.Parallel()
+	name := SandboxName(workerToken)
+	t.Run("one this runtime's release deleted, before the store lets it go", func(t *testing.T) {
+		release := make(chan struct{})
+		let := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(let)
+		g := newRig(t, nil, withHeldSandboxEvents(release, heldDeletion))
+		g.issueLaunchers(workerToken)
+		g.spawn(workerSpec(t))
+		if got, present := g.r.IssueSandbox(testTree); !present || got != name {
+			t.Fatalf("IssueSandbox of the running pod's Sandbox = %q, %t; want %s present", got, present, name)
+		}
+		stored, err := g.r.storedObject(name)
+		if err != nil || stored == nil {
+			t.Fatalf("the store holds no Sandbox %s before the release (%v), or this case proves nothing", name, err)
+		}
+		took := stored.GetUID()
+
+		// The release calls its writing callback once, before its first write: it took the pod. The
+		// callback reads the runtime's writes since the clear below, which must be none yet.
+		var wrote int
+		var before []action
+		writing := func(context.Context) error {
+			wrote++
+			before = g.writes()
+			return nil
+		}
+		g.clearActions()
+		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, writing); err != nil || !released || wrote != 1 {
+			t.Fatalf("ReleaseIssue = %t, %v with its writing callback called %d times; want the running pod's Sandbox released and the callback called once",
+				released, err, wrote)
+		}
+		if len(before) != 0 {
+			t.Fatalf("the release had written %v when it called its writing callback, want nothing: the callback comes before the first write", before)
+		}
+		if len(g.writes()) == 0 {
+			t.Fatal("the release wrote nothing after its writing callback, or this case proves nothing")
+		}
+		if s := g.sandbox(name); s != nil {
+			t.Fatalf("after the release the API holds the Sandbox %+v, want it deleted", s)
+		}
+		if u, err := g.r.storedObject(name); err != nil || u == nil || u.GetUID() != took {
+			t.Fatalf("the store holds %v (%v) after the delete, want the deleted Sandbox %s still there, or this case proves nothing", u, err, took)
+		}
+		if got, present := g.r.IssueSandbox(testTree); present {
+			t.Fatalf("IssueSandbox of the Sandbox the release deleted = %q, present; want it absent while the store still holds it", got)
+		}
+		// The teardown of a second release, as the daemon's would run, finds no Sandbox and
+		// answers that it released none.
+		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, writing); err != nil || released || wrote != 1 {
+			t.Fatalf("a second ReleaseIssue = %t, %v with the callback called %d times in all; want false and no call: there is no Sandbox left to release",
+				released, err, wrote)
+		}
+
+		// A Sandbox made again under the name is another object, and answers present once the
+		// store holds it, behind the deletion it was made after.
+		again := stored.DeepCopy()
+		again.SetUID("uid-sandbox-made-again")
+		again.SetResourceVersion("")
+		if err := g.dyn.Tracker().Create(sandboxGVR, again, testNamespace); err != nil {
+			t.Fatal(err)
+		}
+		if got, present := g.r.IssueSandbox(testTree); present {
+			t.Fatalf("IssueSandbox = %q, present, while the store still holds the deleted Sandbox; want it absent", got)
+		}
+		let()
+		// The informer writes its store before it hands the delete on to the runtime, which drops
+		// what it keeps of the release only then (notify), so the store may answer first: both are
+		// waited for.
+		g.eventually("the store to hold the Sandbox made again, IssueSandbox to answer it present, and the runtime to drop the release's delete", func() bool {
+			u, err := g.r.storedObject(name)
+			got, present := g.r.IssueSandbox(testTree)
+			g.r.mu.Lock()
+			_, held := g.r.taken[name]
+			g.r.mu.Unlock()
+			return err == nil && u != nil && u.GetUID() == "uid-sandbox-made-again" && present && got == name && !held
+		})
+	})
+
+	t.Run("one whose stored object carries a deletionTimestamp", func(t *testing.T) {
+		g := newRig(t, nil)
+		g.issueLaunchers(workerToken)
+		g.spawn(workerSpec(t))
+		if _, present := g.r.IssueSandbox(testTree); !present {
+			t.Fatal("IssueSandbox of the running pod's Sandbox = absent, want present, or this case proves nothing")
+		}
+		// A delete by another hand, held by a finalizer: the API server keeps the object, with
+		// its deletionTimestamp, until the finalizer is removed.
+		object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deleting := object.(*unstructured.Unstructured).DeepCopy()
+		now := metav1.Now()
+		deleting.SetDeletionTimestamp(&now)
+		deleting.SetFinalizers([]string{metav1.FinalizerDeleteDependents})
+		if err := g.dyn.Tracker().Update(sandboxGVR, deleting, testNamespace); err != nil {
+			t.Fatal(err)
+		}
+		g.eventually("IssueSandbox to answer the Sandbox being deleted absent", func() bool {
+			_, present := g.r.IssueSandbox(testTree)
+			return !present
+		})
+	})
+
+	t.Run("one this runtime's release kept, before the store shows the release's record", func(t *testing.T) {
+		kept := SandboxName(childToken)
+		release := make(chan struct{})
+		let := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(let)
+		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withHeldSandboxEvents(release, heldReleaseRecord))
+		g.spawn(childSpec(t))
+		if got, present := g.r.IssueSandbox(childIssue); !present || got != kept {
+			t.Fatalf("IssueSandbox of the running kept Sandbox = %q, %t; want %s present", got, present, kept)
+		}
+
+		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+			t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
+		}
+		s := g.sandbox(kept)
+		if s == nil || s.mode() != modeSuspended || s.Annotations[secretsReleasedAnnotation] != string(s.UID) {
+			t.Fatalf("after the release the API holds the Sandbox %+v, want it kept, Suspended, with the release's record", s)
+		}
+		if u, err := g.r.storedObject(kept); err != nil || u == nil || recordsRelease(u, s.UID) {
+			t.Fatalf("the store holds %v (%v) after the release, want the kept Sandbox without the release's record yet, or this case proves nothing", u, err)
+		}
+		if got, present := g.r.IssueSandbox(childIssue); present {
+			t.Fatalf("IssueSandbox of the Sandbox the release kept = %q, present; want it absent while the store has not shown the release's record", got)
+		}
+		// The teardown of a second release, as the daemon's would run, finds the Sandbox the first
+		// one kept, takes nothing and answers that it released nothing.
+		g.clearActions()
+		var wrote int
+		writing := func(context.Context) error { wrote++; return nil }
+		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, writing); err != nil || released || wrote != 0 {
+			t.Fatalf("a second ReleaseIssue = %t, %v with its writing callback called %d times; want false and no call: the kept Sandbox holds nothing left to release",
+				released, err, wrote)
+		}
+		if writes := g.writes(); len(writes) != 0 {
+			t.Fatalf("the second release wrote %v, want nothing: an earlier release already kept the Sandbox", writes)
+		}
+
+		let()
+		g.eventually("the store to show the release's record, and the runtime to drop what it kept of it", func() bool {
+			u, err := g.r.storedObject(kept)
+			g.r.mu.Lock()
+			_, held := g.r.taken[kept]
+			g.r.mu.Unlock()
+			return err == nil && recordsRelease(u, s.UID) && !held
+		})
+		if got, present := g.r.IssueSandbox(childIssue); present {
+			t.Fatalf("IssueSandbox of the released kept Sandbox = %q, present; want it absent on its record", got)
+		}
+	})
+}
+
+// A release whose writing callback fails ends there, before its first write
+// (runtime.IssueReleaser): it answers the callback's error and false, writes nothing, and leaves
+// the Sandbox and its pod as they were. So the daemon's teardown, which notes its mark from the
+// callback, takes no pod it could not note, and its retry finds the Sandbox to release.
+func TestAReleaseWhoseWritingCallbackFailsWritesNothing(t *testing.T) {
+	t.Parallel()
+	g := newRig(t, nil)
+	g.issueLaunchers(workerToken)
+	g.spawn(workerSpec(t))
+	name := SandboxName(workerToken)
+	before := g.sandbox(name)
+	if before == nil {
+		t.Fatalf("the API holds no Sandbox %s before the release, or this case proves nothing", name)
+	}
+	refused := errors.New("the release's mark cannot be noted")
+	g.clearActions()
+	released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, func(context.Context) error { return refused })
+	if !errors.Is(err, refused) || released {
+		t.Fatalf("ReleaseIssue = %t, %v; want false and the callback's error", released, err)
+	}
+	if writes := g.writes(); len(writes) != 0 {
+		t.Fatalf("the release wrote %v after its callback failed, want nothing", writes)
+	}
+	if after := g.sandbox(name); !reflect.DeepEqual(after, before) {
+		t.Fatalf("after the failed release the API holds the Sandbox %+v, want it unchanged, %+v", after, before)
+	}
+	if got, present := g.r.IssueSandbox(testTree); !present || got != name {
+		t.Fatalf("IssueSandbox after the failed release = %q, %t; want %s present: nothing took it", got, present, name)
+	}
 }
