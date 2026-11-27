@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { LEGION_CLAIM_STATES, LEGION_PHASES } from "@legion/contracts/legion-api";
 
-import { claimStateWord, ordinalEnding, phaseWord } from "./legion-block";
+import { roleStateWord } from "../dashboard/role-words";
+import { ordinalEnding, phaseWord } from "./legion-block";
 import {
   CONTROL_LABELS,
   DECLARED_WORDS,
@@ -92,10 +93,10 @@ test("every claim state the contract lists has one word, and retired has none", 
   const stateWords = phrasesOf(ROLE_STATE_WORDS);
   for (const state of LEGION_CLAIM_STATES) {
     if (state === "retired") {
-      expect(claimStateWord(state), state).toBeUndefined();
+      expect(roleStateWord(state), state).toBeUndefined();
       continue;
     }
-    const word = claimStateWord(state) ?? `no word for ${state}`;
+    const word = roleStateWord(state) ?? `no word for ${state}`;
     expect(word, state).toBe(CLAIM_STATE_READINGS[state]);
     expect(stateWords, state).toContain(word);
     expect(word, `${state} reads as a state the page does not know`).not.toBe(
@@ -104,7 +105,7 @@ test("every claim state the contract lists has one word, and retired has none", 
     expect(undeclared(word), state).toEqual([]);
   }
   for (const state of ["hibernating", "constructor", ""]) {
-    expect(claimStateWord(state), state).toBe("in another state");
+    expect(roleStateWord(state), state).toBe("in another state");
   }
 });
 

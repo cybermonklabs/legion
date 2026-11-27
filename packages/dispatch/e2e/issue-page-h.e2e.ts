@@ -2067,7 +2067,10 @@ const KIND_MARKUP = '<b data-wait-markup="kind">ask</b>';
 // it may draw and the members it draws as text, "Past review", "Not started", "Held" with no place
 // word with and without a slot, an answered wait's place in line, a phase with none of these, no
 // role in a turn, a failed read, "since before", the page's own read failing with its Retry, and
-// no block for a `done` issue and for a project that names no daemon.
+// no block for a `done` issue and for a project that names no daemon. The row reads Details on
+// Conversation: Dashboard, the issue's first tab, holds a subscription of the issue's Legion state
+// of its own (`DashboardTab.tsx`), so there Details shut still holds one, and the page's own read
+// failing would never reach the block that opens again.
 test("the Legion block names the place, the wait and a failed read in each state", async ({
   browser,
 }) => {
@@ -2076,7 +2079,7 @@ test("the Legion block names the place, the wait and a failed read in each state
     const { one, quiet, two } = seeded.keys;
     const { askId, document } = seeded;
     const live = await routeLiveLegion(page);
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     const block = legionBlock(page);
     const place = legionLine(page, "place");
@@ -2233,7 +2236,7 @@ test("the Legion block names the place, the wait and a failed read in each state
         await expect(page, `${what}'s link`).toHaveURL(
           (url) => `${url.pathname}${url.search}` === link
         );
-        await gotoIssue(page, `/issues/${one}`);
+        await gotoIssue(page, `/issues/${one}/conversation`);
         await openDetails(page);
       }
     }
@@ -2281,14 +2284,14 @@ test("the Legion block names the place, the wait and a failed read in each state
 
     // Dispatch did not see TWO's first phase start: "since before".
     await seedLegionState(two, { phase: "planning" });
-    await gotoIssue(page, `/issues/${two}`);
+    await gotoIssue(page, `/issues/${two}/conversation`);
     await openDetails(page);
     await expect(legionLine(page, "phase")).toHaveText(
       thenATime(`${PHASE_WORDS.steps.planning} ${LEGION.since_before}`)
     );
 
     // A project that names no daemon: its read answers, and no block is drawn.
-    await gotoIssue(page, `/issues/${quiet}`);
+    await gotoIssue(page, `/issues/${quiet}/conversation`);
     await openDetails(page);
     await expect
       .poll(() => live.answered.includes(quiet), {
