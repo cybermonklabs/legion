@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, type RefCallback, useContext } from "react";
 
 /**
  * The shell's navigation, for a page that draws the control opening it: on the issue page below
@@ -9,6 +9,8 @@ import { createContext, useContext } from "react";
 export interface ShellNavigation {
   readonly open: boolean;
   readonly onOpen: () => void;
+  /** The row that holds Menu. The shell measures its bottom edge for the widened command bar. */
+  readonly topBarRef?: RefCallback<HTMLDivElement>;
 }
 
 export const ShellNavigationContext = createContext<ShellNavigation | undefined>(undefined);

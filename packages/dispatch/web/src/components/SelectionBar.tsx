@@ -10,7 +10,7 @@ import {
 } from "react";
 
 import { focusOnDocument } from "../features/shell/roving";
-import { useMediaQuery } from "../features/shell/useDialog";
+import { SM_VIEWPORT_QUERY, useMediaQuery } from "../features/shell/useDialog";
 import { afterFootPass, footPassNow, useFootInset } from "../hooks/useFootInset";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
@@ -863,12 +863,6 @@ const BAR_BOX: Record<ControlSize, string> = {
   compact: "px-2 py-1",
   toolbar: "px-2 py-1",
 };
-
-/** Tailwind's `sm` itself: true exactly when the bar's `sm:` classes put it at the foot of the
- *  screen rather than under the header. In `rem`, for `MD_VIEWPORT_QUERY`'s reason
- *  (`features/shell/useDialog.ts`): Tailwind declares `sm` as `40rem`, so only a `rem` query
- *  switches with those classes at any default font size. */
-const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 
 /** The bar's own arming of its hand-off at its root, for a key: what every component's root arms
  *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off

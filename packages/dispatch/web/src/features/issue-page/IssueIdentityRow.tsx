@@ -37,7 +37,10 @@ export function IssueIdentityRow({
   return (
     // The row wraps rather than cutting a key: at 320 px the Details control takes a second
     // line, and nothing on the row is ever drawn short.
-    <div className="flex min-h-[22px] min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+    <div
+      className="flex min-h-[22px] min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1"
+      ref={navigation?.topBarRef}
+    >
       {navigation === undefined ? null : (
         <button
           aria-expanded={navigation.open}

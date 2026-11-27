@@ -19,6 +19,7 @@ import {
   startRun,
 } from "./going-store";
 import { SidePanel } from "./SidePanel";
+import type { WideInset } from "./wide-inset";
 
 // The conversation kept at the side of the page (spec R1, R11; design v3, state 10): a panel
 // 420 px wide whose header moves it back over the page and whose × closes it; Esc in it puts the
@@ -53,9 +54,9 @@ const started: GoingRun = {
 };
 
 /** The panel at the side of `PAGE`, beside `page`, alice signed in, on a client that keeps a read
- *  fresh for 30 s as the app's does (`main.tsx`). `wideInset` is where the shell says the app's
- *  content area starts, which is what lets the panel offer to widen. */
-function renderPanel(page: ReactNode = null, wideInset?: string): void {
+ *  fresh for 30 s as the app's does (`main.tsx`). `wideInset` is where the shell says the room for
+ *  a widened panel starts, which is what lets the panel offer to widen. */
+function renderPanel(page: ReactNode = null, wideInset?: WideInset): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
@@ -523,15 +524,16 @@ test("a link in the panel's answer keeps the conversation, and the next request 
   }
 });
 
-// The panel widens to the app's content area and docks back (A6), where the shell says there is a
-// navigation beside the page to leave reachable. It is one panel throughout: the run, its
+// The panel widens to the room the shell leaves it (A6) and docks back, where the shell says there
+// is some: beside a navigation that stands next to the page (from `xl`), or across the whole width
+// under the shell's top bar (below `xl`, from `sm`). It is one panel throughout: the run, its
 // conversation and the words the person has typed and not sent are the ones they were, and the
 // button that did it keeps the focus, now named for the other press.
-test("Widen stands the panel at the navigation's edge and Dock puts it back, with the run and the unsent words kept", async () => {
+async function widenAndDock(inset: WideInset): Promise<void> {
   const user = userEvent.setup();
   const starts = answerStarts();
   try {
-    renderPanel(null, "20rem");
+    renderPanel(null, inset);
     const panel = screen.getByTestId("going-side-panel");
     const box = screen.getByRole("textbox", { name: "Ask the command bar" });
     await user.type(box, `${started.words}{Enter}`);
@@ -541,6 +543,7 @@ test("Widen stands the panel at the navigation's edge and Dock puts it back, wit
     expect(panel).toHaveAttribute("data-wide", "false");
     expect(panel.className).toContain("sm:w-[420px]");
     expect(panel.style.left).toBe("");
+    expect(panel.style.top).toBe("");
     const widen = within(panel).getByRole("button", { name: "Widen the panel" });
     expect(widen).toHaveAttribute("title", "Widen the panel");
     await user.click(widen);
@@ -549,7 +552,8 @@ test("Widen stands the panel at the navigation's edge and Dock puts it back, wit
     expect(panel).toHaveAttribute("data-wide", "true");
     expect(goingState().wide).toBe(true);
     expect(panel.className).not.toContain("sm:w-[420px]");
-    expect(panel.style.left).toBe("20rem");
+    expect(panel.style.left).toBe(inset.left);
+    expect(panel.style.top).toBe(inset.top);
     // The same button, named for the other press, still holding the focus.
     const dock = within(panel).getByRole("button", { name: "Dock at the side" });
     expect(dock).toBe(widen);
@@ -563,6 +567,7 @@ test("Widen stands the panel at the navigation's edge and Dock puts it back, wit
     expect(panel).toHaveAttribute("data-wide", "false");
     expect(panel.className).toContain("sm:w-[420px]");
     expect(panel.style.left).toBe("");
+    expect(panel.style.top).toBe("");
     expect(goingState().wide).toBe(false);
     expect(screen.getByTestId("going-run")).toBe(run);
     expect(box).toHaveValue("half a thought");
@@ -570,9 +575,17 @@ test("Widen stands the panel at the navigation's edge and Dock puts it back, wit
   } finally {
     starts.restore();
   }
+}
+
+test("Widen stands the panel at the navigation's edge and Dock puts it back, with the run and the unsent words kept", async () => {
+  await widenAndDock({ left: "20rem", top: "0px" });
 });
 
-test("a shell with no navigation beside the page gives the panel no width button, and a stored wide state leaves it docked", () => {
+test("Widen stands the panel across the whole width under the shell's top bar and Dock puts it back, with the run and the unsent words kept", async () => {
+  await widenAndDock({ left: "0px", top: "56px" });
+});
+
+test("a shell that leaves the panel no room to widen gives it no width button, and a stored wide state leaves it docked", () => {
   renderPanel();
   act(() => setWide(true));
   const panel = screen.getByTestId("going-side-panel");

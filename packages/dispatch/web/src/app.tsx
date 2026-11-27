@@ -29,6 +29,7 @@ import { movePanel, resetGoingStore, setPlace, useGoingValue } from "./features/
 import { Notice } from "./features/going/Notice";
 import { RunChip } from "./features/going/RunChip";
 import { SidePanel } from "./features/going/SidePanel";
+import { wideInsetOf } from "./features/going/wide-inset";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
@@ -93,12 +94,14 @@ import {
 import {
   COMPACT_VIEWPORT_QUERY,
   MD_VIEWPORT_QUERY,
+  SM_VIEWPORT_QUERY,
   useDialog,
   useMediaQuery,
 } from "./features/shell/useDialog";
 import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
+import { useShellBarBottom } from "./features/shell/useShellBarBottom";
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
@@ -745,16 +748,21 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
-  // Where the panel at the side starts once the person widens it (A6): at the edge of the
-  // navigation that stands beside the page, so the navigation stays reachable. That is the
+  const fromSm = useMediaQuery(SM_VIEWPORT_QUERY);
+  // Where the panel at the side starts once the person widens it (A6), so the navigation stays
+  // reachable (`wide-inset.ts`): at the edge of the navigation that stands beside the page - the
   // sidebar's 20 rem, or the 3.5 rem of the rail the sidebar collapses to and of the new issue
-  // page's icon rail. Below `xl` the navigation is a header and a drawer above the page rather
-  // than a column beside it, so the panel keeps its side width there and offers no widening.
-  const wideInset = isCompactViewport
-    ? undefined
-    : iconRailShown || sidebarHidden
-      ? "3.5rem"
-      : "20rem";
+  // page's icon rail - or, below `xl`, where the navigation is a header and a drawer above the
+  // page, across the whole width under the top bar the shell draws there. Below `sm` the panel is
+  // the whole width already, and offers no widening.
+  const wideInset = wideInsetOf({
+    compact: isCompactViewport,
+    iconRail: iconRailShown,
+    sidebarHidden,
+    sm: fromSm,
+  });
+  // Publish the bottom edge of the compact navigation, whether the shell or the issue draws it.
+  const shellBarRef = useShellBarBottom();
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
   // open over the page at every width, as the Menu control opens it below `xl` on every page.
   const drawer = useDialog<HTMLElement>({
@@ -767,9 +775,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const shellNavigation = useMemo<ShellNavigation | undefined>(
     () =>
       issueFrame && !railFits
-        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
+        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen, topBarRef: shellBarRef }
         : undefined,
-    [issueFrame, navigationOpen, railFits]
+    [issueFrame, navigationOpen, railFits, shellBarRef]
   );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
@@ -1050,6 +1058,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {isCompactViewport && !issueFrame ? (
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
+            ref={shellBarRef}
           >
             {/* The title never shrinks and no count breaks its own words: the counts that do not
                 fit beside the title wrap onto a second row of the bar, with Menu on the right. */}

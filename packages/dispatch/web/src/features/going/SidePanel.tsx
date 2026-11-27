@@ -37,6 +37,7 @@ import {
   focusConversationBox,
 } from "./RunControls";
 import { useAsk } from "./useAsk";
+import type { WideInset } from "./wide-inset";
 
 /** The side panel's element id. */
 const SIDE_PANEL_ID = "going-side-panel";
@@ -111,15 +112,16 @@ function chipWords(pathname: string, search: string, clicked: ClickedItem | unde
  * Esc in its empty box while a run works stops the run (R10); Ctrl-K brings the conversation
  * back over the page.
  *
- * Where the shell says how far the navigation reaches (`wideInset`, the left edge of the app's
- * content area, set from the width at which the navigation stands beside the page), the header
- * also holds a button that widens the panel to that content area (A6) and docks it back to its
- * side width. It is the same panel either way: one element, one conversation, one box, so the run
- * and the words not yet sent stay where they are, and only the conversation scrolls, in a column
- * of its own width while the panel is wide. When the bar hands a run over (`handOffToPanel`), the
- * panel takes the focus in its box once the bar's dialog has given the focus back.
+ * Where the shell says where the room for a widened panel starts (`wideInset`, from `wideInsetOf`:
+ * the edge of the navigation beside the page, or under the shell's top bar across the whole width
+ * below `xl`; none below `sm`, where the panel fills the window already), the header also holds a
+ * button that widens the panel to that room (A6) and docks it back to its side width. It is the
+ * same panel either way: one element, one conversation, one box, so the run and the words not yet
+ * sent stay where they are, and only the conversation scrolls, in a column of its own width while
+ * the panel is wide. When the bar hands a run over (`handOffToPanel`), the panel takes the focus
+ * in its box once the bar's dialog has given the focus back.
  */
-export function SidePanel({ wideInset }: { readonly wideInset?: string }): ReactNode {
+export function SidePanel({ wideInset }: { readonly wideInset?: WideInset }): ReactNode {
   const going = useGoing();
   const location = useLocation();
   const login = useQuery(whoAmIQuery()).data?.login;
@@ -192,8 +194,8 @@ export function SidePanel({ wideInset }: { readonly wideInset?: string }): React
   return (
     // The panel clips what overflows it (`overflow-clip`), so no script, focus or scroll into
     // view can scroll its header and its box out of place: only the conversation scrolls
-    // (review B1). Widened, it stands from the edge of the navigation to the window's right edge
-    // (`left`), so the navigation stays reachable beside it.
+    // (review B1). Widened, it fills the room from `wideInset` (`left` and `top`) to the window's
+    // right and bottom edges, so the shell's navigation beside or above it stays reachable.
     <aside
       aria-label="Command bar at the side"
       className={`fixed top-0 right-0 bottom-0 z-40 flex flex-col overflow-clip border-l shadow-2xl ${wide ? "w-auto" : "w-full sm:w-[420px]"} ${card} ${borderDefault}`}
@@ -209,7 +211,7 @@ export function SidePanel({ wideInset }: { readonly wideInset?: string }): React
         document.getElementById(PAGE_ID)?.focus();
       }}
       ref={panelRef}
-      style={wide ? { left: wideInset } : undefined}
+      style={wide ? wideInset : undefined}
     >
       <ConversationHeader
         history={history}

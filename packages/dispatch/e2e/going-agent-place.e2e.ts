@@ -20,6 +20,7 @@ import {
   expectHandedToThePanel,
   lineOnTop,
   newestRun,
+  openBar,
   openBarOver,
   RUN_STEPS_MS,
   searchBox,
@@ -38,8 +39,9 @@ import { withAlice } from "./users";
 // past has no such button, so an old preview cannot submit an old query; a link in the panel opens
 // its item in the page and the next request names that item; Ctrl-K brings the conversation back
 // over the page and Ctrl-Shift-K keeps it at the side; and the header's button widens the panel
-// to the app's content area, with the navigation beside it, and docks it back, with the same run
-// and the unsent words. Do keeps its conversation in the bar. The models lane runs it
+// to the app's content area, with the navigation beside it (below 1280 px, across the window under
+// the shell's top bar), and docks it back, with the same run and the unsent words. Do keeps its
+// conversation in the bar. The models lane runs it
 // (`bun run e2e:models`), and its Firefox row the `firefox` project
 // (`bun run e2e:models:firefox`). Negative controls: a panel that ignores navigation sends the
 // next request with no issue; a bar that opens its own full Ask conversation fails the handoff
@@ -357,8 +359,8 @@ test("Widen fills the content area beside the navigation and Dock puts the panel
     runs: [{ turns: [say("Two issues about the sky.")], words: asked }],
   });
   await withAlice(browser, async (page) => {
-    // From the width at which the navigation stands beside the page: below it the panel keeps its
-    // side width and offers no widening.
+    // From the width at which the navigation stands beside the page, where the panel widens to
+    // the navigation's edge; below it the panel widens under the shell's top bar (the next row).
     test.skip(
       (page.viewportSize()?.width ?? 0) < COMPACT_VIEWPORT_WIDTH,
       `the navigation is a drawer below ${COMPACT_VIEWPORT_WIDTH} px`
@@ -403,6 +405,84 @@ test("Widen fills the content area beside the navigation and Dock puts the panel
     await panel.getByRole("button", { name: "Dock at the side" }).click();
     await expect(panel).toHaveAttribute("data-wide", "false");
     expect((await panel.boundingBox())?.width).toBeCloseTo(420, 0);
+    await expect(newestRun(page)).toHaveAttribute("data-run", run ?? "");
+    await expect(sidePanel(page).getByTestId("going-run")).toHaveCount(1);
+    await expect(conversationBox(page)).toHaveValue("half a thought");
+    expect(started.bodies).toHaveLength(1);
+  });
+});
+
+// SLOW(>=2s): a run in the panel at 1024 x 768, widened under the top bar and docked, a draft.
+test("at 1024 x 768 Widen fills the window under the shell's top bar and Dock puts the panel back at its side width, with the same run and the unsent words", async ({
+  browser,
+}) => {
+  modelsLane();
+  test.setTimeout(120_000);
+  await seedList();
+  const asked = "what is on this list";
+  await scriptChat({
+    default: prose("A short answer while the person pauses."),
+    runs: [{ turns: [say("Two issues about the sky.")], words: asked }],
+  });
+  await withAlice(browser, async (page) => {
+    // Below 1280 px the navigation is a drawer under a top bar the shell draws, with the Menu that
+    // opens it, and no column beside the page: the panel widens across the window under that bar.
+    const viewport = { height: 768, width: 1024 };
+    await page.setViewportSize(viewport);
+    const started = countStartedRuns(page);
+    // The compact shell has Menu, not the desktop sidebar's Search trigger.
+    const menu = page.getByRole("button", { exact: true, name: "Open navigation" });
+    await page.goto("/projects/CORE/issues");
+    await expect(menu, "the compact shell is ready").toBeVisible();
+    await openBar(page);
+    await askTheAgent(page, asked);
+    await expectHandedToThePanel(page);
+    await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
+    const panel = sidePanel(page);
+    const topBar = page.locator("header").filter({ has: menu });
+    await expect(topBar).toBeVisible();
+    const run = await newestRun(page).getAttribute("data-run");
+    await conversationBox(page).fill("half a thought");
+
+    const docked = await panel.boundingBox();
+    expect(docked?.width).toBeCloseTo(420, 0);
+    expect(docked?.x).toBeCloseTo(viewport.width - 420, 0);
+    const widen = panel.getByRole("button", { name: "Widen the panel" });
+    await expect(widen).toBeVisible();
+    await widen.click();
+    await expect(panel).toHaveAttribute("data-wide", "true");
+    const widened = await panel.boundingBox();
+    const bar = await topBar.boundingBox();
+    // From the window's left edge to its right, and from the bottom edge of the top bar to the
+    // window's foot: the bar stays where it was, drawn and visible above the panel.
+    expect(bar?.y).toBeCloseTo(0, 0);
+    expect(widened?.x).toBeCloseTo(0, 0);
+    expect((widened?.x ?? 0) + (widened?.width ?? 0)).toBeCloseTo(viewport.width, 0);
+    expect(widened?.y).toBeCloseTo((bar?.y ?? 0) + (bar?.height ?? 0), 0);
+    expect((widened?.y ?? 0) + (widened?.height ?? 0)).toBeCloseTo(viewport.height, 0);
+    await expect(topBar).toBeVisible();
+    // The same run, its answer and the unsent words, the focus on the button just pressed, and no
+    // second run.
+    await expect(newestRun(page)).toHaveAttribute("data-run", run ?? "");
+    await expect(sidePanel(page).getByTestId("going-run")).toHaveCount(1);
+    await expect(conversationBox(page)).toHaveValue("half a thought");
+    await expect(panel.getByRole("button", { name: "Dock at the side" })).toBeFocused();
+    expect(started.bodies).toHaveLength(1);
+    // The navigation is reachable under the widened panel: the Menu takes the click, and its
+    // drawer opens over the panel.
+    await menu.click();
+    const navigation = page.getByRole("dialog", { name: "Navigation" });
+    await expect(navigation).toBeVisible();
+    await navigation.getByRole("button", { name: "Close navigation" }).click();
+    await expect(navigation).toHaveCount(0);
+    await expect(panel).toBeVisible();
+
+    await panel.getByRole("button", { name: "Dock at the side" }).click();
+    await expect(panel).toHaveAttribute("data-wide", "false");
+    const back = await panel.boundingBox();
+    expect(back?.width).toBeCloseTo(420, 0);
+    expect(back?.x).toBeCloseTo(viewport.width - 420, 0);
+    expect(back?.y).toBeCloseTo(0, 0);
     await expect(newestRun(page)).toHaveAttribute("data-run", run ?? "");
     await expect(sidePanel(page).getByTestId("going-run")).toHaveCount(1);
     await expect(conversationBox(page)).toHaveValue("half a thought");
