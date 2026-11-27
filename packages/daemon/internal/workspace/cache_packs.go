@@ -4,12 +4,13 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -139,7 +141,10 @@ const (
 
 // bucketFailure is why an attempt to fill the feed from the repository cache's bucket ended and
 // the cache's /tar fills it instead: one of the short reasons above, and what failed. Its text never
-// holds a signed address or its query (downloadCause), nor a ref's contents.
+// holds a signed address or its query (downloadCause), nor a ref's contents, and it holds the
+// cache's words only as the redaction rule reads them: /packs' status by its code and standard
+// phrase (oauth2call.StatusLine), a failed read of its answer in the rule's own words
+// (oauth2call.ReadAnswer), and a member of its manifest as manifestWords prints it.
 type bucketFailure struct {
 	reason string
 	err    error
@@ -224,11 +229,11 @@ func (r *FetchReport) fromBucket(ctx context.Context, run Runner, request FetchR
 	deadline := started.Add(BucketFetchTimeout)
 	bounded, cancel := context.WithTimeout(ctx, BucketFetchTimeout)
 	defer cancel()
-	manifest, err := askPacks(bounded, request)
+	manifest, words, err := askPacks(bounded, request)
 	if err != nil {
 		return err
 	}
-	if err := manifest.check(request); err != nil {
+	if err := manifest.check(request, words); err != nil {
 		return &bucketFailure{reasonInvalid, err}
 	}
 	// The init runs beside the repository it makes rather than in it, as unpackCache's does.
@@ -242,7 +247,7 @@ func (r *FetchReport) fromBucket(ctx context.Context, run Runner, request FetchR
 		}
 		return err
 	}
-	if err := writeRefs(staging, manifest.Refs); err != nil {
+	if err := writeRefs(staging, manifest.Refs, words); err != nil {
 		return err
 	}
 	verifying := request.Clock.Now()
@@ -264,11 +269,15 @@ func (r *FetchReport) fromBucket(ctx context.Context, run Runner, request FetchR
 }
 
 // askPacks is the repository cache's GET /packs, with its token (askCache), within packsAsk, read
-// whole up to packManifestLimit: the manifest of a 200 answer. A 404 naming no repository is a cache
+// up to packManifestLimit (oauth2call.ReadAnswer) and decoded (Answer.Decode): the manifest of a 200
+// answer, and the words its members print as (manifestWords). A 404 naming no repository is a cache
 // that does not serve /packs at all; an answer askCache refuses (a 401, or one naming another
 // repository) is that refusal, outside the issue's volume, as it is for /tar; any other answer, an
-// ask the cache did not answer, and a body that is no manifest are bucket failures.
-func askPacks(ctx context.Context, request FetchRequest) (PackManifest, error) {
+// ask the cache did not answer, and a body that is no manifest are bucket failures. The answer is
+// the cache's words, or those of whatever answers at its address, which can echo the bearer the ask
+// carried: its status prints by its code and standard phrase (oauth2call.StatusLine), and a read or
+// a decode that failed in the rule's own words, never the answer's.
+func askPacks(ctx context.Context, request FetchRequest) (PackManifest, manifestWords, error) {
 	asking, cancel := context.WithTimeout(ctx, packsAsk)
 	defer cancel()
 	response, err := askCache(asking, request, "/packs", true)
@@ -278,26 +287,81 @@ func askPacks(ctx context.Context, request FetchRequest) (PackManifest, error) {
 	cache := strings.TrimSuffix(request.CacheURL, "/")
 	switch {
 	case response == nil:
-		return PackManifest{}, &bucketFailure{reasonUnavailable, err}
+		return PackManifest{}, manifestWords{}, &bucketFailure{reasonUnavailable, err}
 	case response.StatusCode == http.StatusNotFound && len(response.Header.Values(CacheRepositoryHeader)) == 0:
-		return PackManifest{}, &bucketFailure{reason: reasonNotServed}
+		return PackManifest{}, manifestWords{}, &bucketFailure{reason: reasonNotServed}
 	case err != nil:
-		return PackManifest{}, OutsideVolume(err)
+		return PackManifest{}, manifestWords{}, OutsideVolume(err)
 	case response.StatusCode != http.StatusOK:
-		return PackManifest{}, &bucketFailure{reasonUnavailable, fmt.Errorf("GET %s/packs answered %s", cache, response.Status)}
+		return PackManifest{}, manifestWords{}, &bucketFailure{reasonUnavailable, fmt.Errorf("GET %s/packs answered %s", cache, oauth2call.StatusLine(response.StatusCode))}
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, packManifestLimit+1))
-	if err != nil {
-		return PackManifest{}, &bucketFailure{reasonUnavailable, fmt.Errorf("read GET %s/packs: %w", cache, err)}
+	answer, err := oauth2call.ReadAnswer(response, packManifestLimit)
+	switch {
+	case errors.Is(err, oauth2call.ErrAnswerTooLarge):
+		return PackManifest{}, manifestWords{}, &bucketFailure{reasonInvalid, fmt.Errorf("GET %s/packs answered more than %d bytes", cache, packManifestLimit)}
+	case err != nil:
+		return PackManifest{}, manifestWords{}, &bucketFailure{reasonUnavailable, fmt.Errorf("read GET %s/packs: %w", cache, err)}
 	}
-	if len(body) > packManifestLimit {
-		return PackManifest{}, &bucketFailure{reasonInvalid, fmt.Errorf("GET %s/packs answered more than %d bytes", cache, packManifestLimit)}
+	var decoded packsAnswer
+	if err := answer.Decode(&decoded); err != nil {
+		return PackManifest{}, manifestWords{}, &bucketFailure{reasonInvalid, fmt.Errorf("GET %s/packs answered no manifest: %w", cache, err)}
 	}
-	var manifest PackManifest
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		return PackManifest{}, &bucketFailure{reasonInvalid, fmt.Errorf("GET %s/packs answered no manifest: %w", cache, err)}
+	manifest := PackManifest{Bucket: decoded.Bucket, Refs: make([]PackRef, len(decoded.Refs)), Objects: decoded.Objects}
+	for i, ref := range decoded.Refs {
+		contents, err := base64.StdEncoding.DecodeString(ref.Bytes)
+		if err != nil {
+			return PackManifest{}, manifestWords{}, &bucketFailure{reasonInvalid, fmt.Errorf("GET %s/packs answered no manifest: the bytes of its ref %d are not base64", cache, i+1)}
+		}
+		manifest.Refs[i] = PackRef{Path: ref.Path, Bytes: contents}
 	}
-	return manifest, nil
+	return manifest, newManifestWords(answer, manifest.Objects), nil
+}
+
+// packsAnswer is a /packs answer as askPacks decodes it (Answer.Decode): PackManifest's members,
+// of the same names, with each ref's bytes as the base64 text JSON carries them in, which askPacks
+// decodes as encoding/json does a byte slice. Decode refuses a byte slice, whose text would leave
+// the answer as plain text; a ref's bytes are data, which nothing prints.
+type packsAnswer struct {
+	Bucket string `json:"bucket"`
+	Refs   []struct {
+		Path  string `json:"path"`
+		Bytes string `json:"bytes"`
+	} `json:"refs"`
+	Objects []PackObject `json:"objects"`
+}
+
+// manifestWords is how a fetch prints the members of a /packs answer: each is the cache's words,
+// or those of whatever answers at its address, which can echo the bearer the ask carried, or a
+// signed address the answer gives. A member prints as another party's words (said): the rule's
+// reading, with every credential the ask carried (the answer's record: the cache's bearer, and the
+// query values and user information of the cache's URL) and every query value of every object's
+// address in the answer redacted first. A member that leaves the fetch as it came - the bucket's
+// name, an object's name or SHA-256, which a refusal and FetchReport.Objects name as they are - is
+// held first to no run of a credential the ask carried (oauth2call.Echoes, PackManifest.check):
+// their shapes, hex digits and a bucket name's characters, hold the cache's bearer, 64 hex digits,
+// whole.
+type manifestWords struct {
+	answer oauth2call.Answer
+	signed []string
+}
+
+// newManifestWords is the words of answer, whose objects give the addresses objects name.
+func newManifestWords(answer oauth2call.Answer, objects []PackObject) manifestWords {
+	words := manifestWords{answer: answer}
+	for _, object := range objects {
+		if _, query, ok := strings.Cut(object.URL, "?"); ok {
+			values, _ := url.ParseQuery(query)
+			for _, value := range values {
+				words.signed = append(words.signed, value...)
+			}
+		}
+	}
+	return words
+}
+
+// said is member, a member of the answer, as a message prints it.
+func (w manifestWords) said(member string) oauth2call.RemoteText {
+	return w.answer.Said(member).WithoutTokens(w.signed...)
 }
 
 // bucketName is the characters and ends of a Cloud Storage bucket's name, which ValidBucketName
@@ -331,7 +395,7 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // check is why the manifest may not fill request's feed, or nil when every member of it is one the
 // fetch takes. It holds the whole answer before the fetch asks for any object:
-//   - the bucket is a bucket's name;
+//   - the bucket is a bucket's name, holding no run of a credential the ask carried;
 //   - it lists at least one ref and at least one object: a whole set of the cache's clone lists at
 //     least one ref and one pack with its index, so an answer that lists no ref or no object is no
 //     whole set, and taken, it would leave the whole of the feed's history to the fetch from GitHub
@@ -341,16 +405,25 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //   - each object is a pack or an index of request's repository, its PackPrefix,
 //     <owner>/<repo>/objects/pack/ (the two lower-cased), then one file name a feed takes there
 //     (PackFileName), named once, of a size of 0 or more and a SHA-256 of 64 lower-case hex digits,
-//     each pack listed with its index and each index with its pack;
+//     its name and its SHA-256 holding no run of a credential the ask carried, each pack listed
+//     with its index and each index with its pack;
 //   - each object's address is a GET of that object in that bucket with a query, at Cloud Storage
 //     over HTTPS, or, only where the cache itself is on a loopback address (a test, or the burst
 //     Job, which run the cache and a double of Cloud Storage beside each other), over HTTP at a
 //     loopback address.
 //
-// The refusal names the member, and never the address: that is a credential for its object.
-func (m PackManifest) check(request FetchRequest) error {
+// The refusal names the member, and never the address: that is a credential for its object. A
+// member it refuses for its shape is the cache's words as they came, and prints as words prints it
+// (manifestWords.said); one it refuses for a run of a credential the ask carried is named by its
+// place. A member it takes prints as it is from here on: the bucket's name, each object's name and
+// SHA-256 (manifestWords).
+func (m PackManifest) check(request FetchRequest, words manifestWords) error {
+	const carried = "a run of a credential the ask of /packs carried"
 	if !ValidBucketName(m.Bucket) {
-		return fmt.Errorf("it names the bucket %q, which is no Cloud Storage bucket's name", m.Bucket)
+		return fmt.Errorf("it names the bucket %q, which is no Cloud Storage bucket's name", words.said(m.Bucket))
+	}
+	if oauth2call.Echoes(words.answer, m.Bucket) {
+		return errors.New("it names a bucket holding " + carried)
 	}
 	if len(m.Refs) == 0 {
 		return errors.New("it lists no ref, so it is no whole set of the cache's clone, which lists at least one")
@@ -361,27 +434,30 @@ func (m PackManifest) check(request FetchRequest) error {
 	refs := map[string]bool{}
 	for _, ref := range m.Refs {
 		if why := refPathRefusal(ref.Path); why != "" {
-			return fmt.Errorf("it lists the ref %q, which %s", ref.Path, why)
+			return fmt.Errorf("it lists the ref %q, which %s", words.said(ref.Path), why)
 		}
 		if refs[ref.Path] {
-			return fmt.Errorf("it lists the ref %q twice", ref.Path)
+			return fmt.Errorf("it lists the ref %q twice", words.said(ref.Path))
 		}
 		refs[ref.Path] = true
 	}
 	for ref := range refs {
 		for dir := path.Dir(ref); dir != "."; dir = path.Dir(dir) {
 			if refs[dir] {
-				return fmt.Errorf("it lists the ref %q, which is the directory of the ref %q", dir, ref)
+				return fmt.Errorf("it lists the ref %q, which is the directory of the ref %q", words.said(dir), words.said(ref))
 			}
 		}
 	}
 	prefix := PackPrefix(request.Repo)
 	loopback := onLoopback(request.CacheURL)
 	objects := map[string]bool{}
-	for _, object := range m.Objects {
+	for i, object := range m.Objects {
 		file, ours := strings.CutPrefix(object.Name, prefix)
 		if !ours || !PackFileName(file) {
-			return fmt.Errorf("it lists the object %q, which is no pack or index of %s (%spack-<id>.pack or .idx)", object.Name, request.Repo, prefix)
+			return fmt.Errorf("it lists the object %q, which is no pack or index of %s (%spack-<id>.pack or .idx)", words.said(object.Name), request.Repo, prefix)
+		}
+		if oauth2call.Echoes(words.answer, object.Name) {
+			return fmt.Errorf("it lists object %d with a name holding %s", i+1, carried)
 		}
 		if objects[object.Name] {
 			return fmt.Errorf("it lists the object %s twice", object.Name)
@@ -391,7 +467,10 @@ func (m PackManifest) check(request FetchRequest) error {
 			return fmt.Errorf("it lists %s with a size of %d bytes", object.Name, object.Size)
 		}
 		if !sha256Hex.MatchString(object.SHA256) {
-			return fmt.Errorf("it lists %s with the SHA-256 %q, which is not 64 lower-case hex digits", object.Name, object.SHA256)
+			return fmt.Errorf("it lists %s with the SHA-256 %q, which is not 64 lower-case hex digits", object.Name, words.said(object.SHA256))
+		}
+		if oauth2call.Echoes(words.answer, object.SHA256) {
+			return fmt.Errorf("it lists %s with a SHA-256 holding %s", object.Name, carried)
 		}
 		if why := addressRefusal(object.URL, m.Bucket, object.Name, loopback); why != "" {
 			return fmt.Errorf("it gives %s an address that %s", object.Name, why)
@@ -697,16 +776,23 @@ var errorCode = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
 
 // writeRefs writes each ref of a manifest at its path in staging, its exact bytes, making its
 // directory; a ref git init wrote already (HEAD) is written over. Each path is one check took
-// (refPathRefusal).
-func writeRefs(staging string, refs []PackRef) error {
+// (refPathRefusal), and the cache's words: a write that failed names the ref as words prints it
+// (manifestWords.said), and of a failure on a path the operation and the system's reason alone,
+// since the path holds the ref's name as it came, as entryFailure does of a tar's entry.
+func writeRefs(staging string, refs []PackRef, words manifestWords) error {
 	for _, ref := range refs {
 		target := filepath.Join(staging, filepath.FromSlash(ref.Path))
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return &bucketFailure{reasonWrite, fmt.Errorf("the ref %s: %w", ref.Path, err)}
+		err := os.MkdirAll(filepath.Dir(target), 0o755)
+		if err == nil {
+			err = os.WriteFile(target, ref.Bytes, 0o644)
 		}
-		if err := os.WriteFile(target, ref.Bytes, 0o644); err != nil {
-			return &bucketFailure{reasonWrite, fmt.Errorf("the ref %s: %w", ref.Path, err)}
+		if err == nil {
+			continue
 		}
+		if onPath := (*fs.PathError)(nil); errors.As(err, &onPath) {
+			err = fmt.Errorf("%s: %w", onPath.Op, onPath.Err)
+		}
+		return &bucketFailure{reasonWrite, fmt.Errorf("the ref %s: %w", words.said(ref.Path), err)}
 	}
 	return nil
 }
