@@ -1394,9 +1394,11 @@ func (r *personHandoverRig) paragraphID(document, text string) string {
 }
 
 // refusedUpload asks Dispatch to take content as key's document name, as writeDocument does, and
-// requires a refusal, a 4xx whose error names says, with the document left at the version it stood
-// at: the token its text read names after the call is the one it named before. It logs the
-// refusal's status and code as Dispatch answered them, so a run shows what each refusal was.
+// requires the refusal Dispatch answers a block pointer it refuses with, 400 INVALID_MARKDOWN,
+// whose error names says, with the document left at the version it stood at: the token its text
+// read names after the call is the one it named before. Any other status or code fails the proof,
+// another 4xx among them. It logs the refusal's status and code as Dispatch answered them, so a
+// run shows what each refusal was.
 func (r *personHandoverRig) refusedUpload(key, name, content, says string) {
 	t := r.t
 	t.Helper()
@@ -1410,8 +1412,10 @@ func (r *personHandoverRig) refusedUpload(key, name, content, says string) {
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(answer, &refusal); err != nil || status < 400 || status > 499 || !strings.Contains(refusal.Error, says) {
-		t.Fatalf("Dispatch answered the upload of %s to %s with %d %s, want a refusal naming %q", name, key, status, answer, says)
+	if err := json.Unmarshal(answer, &refusal); err != nil || status != http.StatusBadRequest || refusal.Code != "INVALID_MARKDOWN" ||
+		!strings.Contains(refusal.Error, says) {
+		t.Fatalf("Dispatch answered the upload of %s to %s with %d %s, want %d INVALID_MARKDOWN whose error names %q",
+			name, key, status, answer, http.StatusBadRequest, says)
 	}
 	if after := r.documentToken(key, name); after != token {
 		t.Fatalf("the refused upload of %s moved %s's document from token %q to %q", name, key, token, after)
