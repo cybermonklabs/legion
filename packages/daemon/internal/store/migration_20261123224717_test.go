@@ -49,7 +49,7 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 	migrateThrough(t, store, membersOwedVersion-1)
 	// The seed goes through this release's PutIssue, which writes issues.priority (the waiting line's
 	// issue priority, 20261124060500), the close wait's columns (the done-by-checks migration,
-	// 20261125004932) and the resolved priority's three columns (the P0 start, 20261125181828), each
+	// 20261126223725) and the resolved priority's three columns (the P0 start, 20261125181828), each
 	// adding its columns above this migration. Those are applied with the seed's schema, and Migrate,
 	// which decides each migration on its own row, then applies this one; none reads or writes
 	// another's column.

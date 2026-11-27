@@ -236,7 +236,8 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // the table holds, so a list that left any of the eight kinds out would fail Migrate (SQLSTATE
 // 23514) and leave the daemon unable to boot. After the upgrade the outbox takes a
 // merge_holds_changed row, the kind 20261126110259 adds: its list stands above 20261122154643's,
-// which does not name the kind, and is the last word of the check. The negative controls are each
+// which does not name the kind, and the done-by-checks migration's list, which stands above both,
+// names the kind as well. The negative controls are each
 // of the eight kinds taken out of 20261126110259's list, where the Migrate below then fails on
 // that pending row, and merge_holds_changed taken out of it, where the row queued after the
 // upgrade is refused.

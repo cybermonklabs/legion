@@ -17,13 +17,14 @@ const mergeHoldsChangedVersion = 20261126110259
 // constraint does not name, so the row could not be queued before this migration, and the
 // transaction that applied the document's event would fail with it: the negative control is that
 // refusal, read before the migration, on the database main migrated before it, which carries the
-// basis seeds' list (20261122154643), which this version stands above. That database lacks the
-// done-by-checks migration (20261125004932), whose list names the kind too, and the upgrade applies
-// it before this one. After them the row is queued, and so is every kind the constraint already
-// named, thirty-five in all, conflict_confirm, merge_forward, design_changes, phase_ended,
-// pending_basis_seed, reparent_seed, close_read and close_wait_publish among them, since the
-// migration rewrites the list whole and a kind left out would stop its own effect. A kind that is
-// none is still refused, and so is a kind of the merge the daemon no longer submits.
+// basis seeds' list (20261122154643), which this version stands above. After the migration the row
+// is queued, and so is every kind the constraint already named, thirty-three in all,
+// conflict_confirm, merge_forward, design_changes, phase_ended, pending_basis_seed and
+// reparent_seed among them, since the migration rewrites the list whole and a kind left out would
+// stop its own effect. Migrate applies the done-by-checks migration after it, which stands above
+// it and names those thirty-three with close_read and close_wait_publish, so thirty-five kinds
+// stand at the end. A kind that is none is still refused, and so is a kind of the merge the daemon
+// no longer submits.
 func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -32,7 +33,7 @@ func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	for _, migration := range all {
-		if migration.Version >= mergeHoldsChangedVersion || migration.Version == doneByChecksVersion {
+		if migration.Version >= mergeHoldsChangedVersion {
 			continue
 		}
 		if _, err := store.apply(ctx, migration); err != nil {
@@ -62,14 +63,14 @@ func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 		"merge_holds_changed", "close_read", "close_wait_publish",
 	}
 	if len(kinds) != 35 {
-		t.Fatalf("the list names %d kinds, want the 35 the migration writes", len(kinds))
+		t.Fatalf("the list names %d kinds, want the 33 this migration writes and the two the done-by-checks migration adds above it", len(kinds))
 	}
 	for _, kind := range kinds {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}
 	}
-	t.Logf("after the migration the outbox takes all %d kinds, merge_holds_changed among them", len(kinds))
+	t.Logf("after the two migrations the outbox takes all %d kinds, merge_holds_changed among them", len(kinds))
 	if err := queue("quiesce"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
 	}

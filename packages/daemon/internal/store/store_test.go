@@ -1141,9 +1141,9 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047,
-// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the done-by-checks migration's
-// 20261125004932 (close_read and close_wait_publish) and the merge holds' 20261126110259
-// (merge_holds_changed) do: the case of a database main migrated applies a version left out of the
+// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the merge holds' 20261126110259
+// (merge_holds_changed) and the done-by-checks migration's 20261126223725 (close_read and
+// close_wait_publish) do: the case of a database main migrated applies a version left out of the
 // list before the list's own rewrites of that check, which do not name the later kind, so the row
 // seeded of that kind fails the upgrade. So does one that reads a column a version of the list
 // adds, as t-e-54's 20261116144907 reads
@@ -1151,11 +1151,12 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) add a column to 20261117034837's issue_plans: applied as main's, before
-// that table exists, it fails on the missing table. 20261126110259 is the last migration that
-// writes outbox_kind_check: it stands above the done-by-checks migration's 20261125004932, main's
-// 20261122154643, the design news's 20261119203047 and main's 20261119003157, which write it too,
-// and main's 20261111090000, 20261111091500 and 20261116144907 write none. 20261125004932 also
-// replaces the design news's design_news_current, which it could not drop before 20261119203047
+// that table exists, it fails on the missing table. The done-by-checks migration's 20261126223725
+// is the last migration that writes outbox_kind_check: it stands above the merge holds'
+// 20261126110259, main's 20261122154643, the design news's 20261119203047 and main's
+// 20261119003157, which write it too, and main's 20261111090000, 20261111091500 and 20261116144907
+// write none. 20261126223725 also replaces the design news's design_news_current, which it could
+// not drop before 20261119203047
 // made it. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of
 // the list adds either, so neither is in the list. The project pause's 20261115194357 is in it as
 // well, though it rewrites no kind list: a database migrated before the pause takes it in the
@@ -1173,7 +1174,7 @@ var thisRelease = map[int]bool{
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124033010: true,
-	20261125004932: true, 20261126110259: true,
+	20261126110259: true, 20261126223725: true,
 }
 
 const idleRelease = 20261101222956
@@ -1241,8 +1242,8 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 		}},
 		// A database main migrated once it took the merge holds' 20261126110259, which is every
 		// deployment running main since then. It lacks only the done-by-checks migration, which
-		// stands below 20261126110259, so the upgrade applies it after that list. Its list is then
-		// the last word, and it must name merge_holds_changed too.
+		// stands above 20261126110259, so the upgrade applies it after that list, as a fresh
+		// database does. Its list is the last word, and it must name merge_holds_changed too.
 		{"a database main migrated with the merge holds", func(m migrations.Migration) bool { return m.Version != doneByChecksVersion }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
