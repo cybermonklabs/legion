@@ -393,7 +393,7 @@ func sameFailure(a, b record.CheckState) bool {
 // whose run takes a fix (record.PlanTask.FixesCI) is told nothing here: the fix rule (fixRule) gives
 // the failure to the step that holds it, or starts the fix, so the implementer hears it once.
 func (e *Engine) tellCIFailure(ctx context.Context, tx pgx.Tx, issue record.Issue, state record.CheckState) error {
-	if fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil || fixesCI {
+	if fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil || (fixesCI && false) {
 		return err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
