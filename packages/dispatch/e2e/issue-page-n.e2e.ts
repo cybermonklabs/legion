@@ -19,7 +19,8 @@ import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { shortDay } from "../web/src/features/issue-page/node-time";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
-  ANSWER_PHRASES,
+  ADDRESS_FALLBACK_WORDS,
+  ANSWER_SOURCES,
   CONTROL_LABELS,
   DASHBOARD_WORDS,
   DECLARED_WORDS,
@@ -59,7 +60,9 @@ import {
   getAsk,
   getIssue,
   getIssueEvents,
+  getMessage,
   getMyState,
+  listComments,
   listIssueArtifacts,
   patchIssue,
   putIssueState,
@@ -123,6 +126,7 @@ import {
   nodeRow,
   nodeRows,
   PHONE,
+  READER,
   rowBody,
   rowWords,
   tree,
@@ -149,7 +153,13 @@ import {
   treeActiveDescendant,
 } from "./issue-page-i";
 import { drawnContentsEntries, wordAtCaret } from "./issue-page-j";
-import { composer, composerField, composerTarget } from "./issue-page-l";
+import {
+  composer,
+  composerField,
+  composerTarget,
+  seedHistoryTurns,
+  sendFromComposer,
+} from "./issue-page-l";
 import {
   daemonOf,
   focusedNodeFacts,
@@ -757,6 +767,21 @@ function phrasesOf(value: unknown): string[] {
   return [];
 }
 
+/** Every string `value` holds, however deeply, but that each line of it cut where the issue's
+ *  own key goes (`{ before, after }`) is one string, with `key` in its place. */
+function linesWithKey(value: unknown, key: string): string[] {
+  if (typeof value !== "object" || value === null) return phrasesOf(value);
+  if (
+    "before" in value &&
+    "after" in value &&
+    typeof value.before === "string" &&
+    typeof value.after === "string"
+  ) {
+    return [`${value.before}${key}${value.after}`];
+  }
+  return Object.values(value).flatMap((child) => linesWithKey(child, key));
+}
+
 // c-plain-words, and part N's R9 over INV-2's word states (`WORD_STATES`): each control of the
 // view row on, Documents' list among them, and a document open, at 1440 px and at 390 px.
 test("the page draws no internal word and no helper text @phone", async ({ browser }) => {
@@ -782,9 +807,17 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
     });
     expect(helperText, "the page declares helper text among what it draws unasked").toEqual([]);
     // What the page says only in answer to the reader's own act, read on each fresh load below.
-    const answers = ANSWER_PHRASES.map((phrase) => phrase.trim()).filter(
-      (phrase) => phrase.length > 3
-    );
+    // `ADDRESS_FALLBACK_WORDS` cuts its lines where the issue's own key goes, and the page draws
+    // each whole, `Back to <key>`, so its lines are read whole, with the seeded issue's key in
+    // its place: a piece of one read alone is a piece of the page's own words too - `back` alone
+    // is "Back to ", which part N's "Back to Documents" holds. Every other cut line is cut where
+    // another name goes - a key the reader typed (`BLOCKED_BY_REFUSALS`), an author, a time, a
+    // count of hours - which no load knows, so its pieces are read alone, as before.
+    const answers = ANSWER_SOURCES.flatMap((source) =>
+      source === ADDRESS_FALLBACK_WORDS ? linesWithKey(source, seeded.key) : phrasesOf(source)
+    )
+      .map((phrase) => phrase.trim())
+      .filter((phrase) => phrase.length > 3);
 
     // An identifier, a fragment, a slug, and the schema and enumeration tokens the check names.
     const banned = [
@@ -3472,6 +3505,119 @@ test("t f filters inside the preset, $mod+Alt+m comments on a selection, and / s
   } finally {
     await context.close();
   }
+});
+
+/**
+ * Part L's `seedHistoryTurns` issue, which holds a comment of the reader's own, with a message the
+ * Legion daemon of the issue's project writes with no target: it begins a thread the history holds
+ * whole, whoever writes in it (`agents-only.ts`). The seed's own `daemon` writes as the session
+ * `legion-daemon`, which is no project's daemon (`legion-daemon:<PROJECT>`), so the history holds
+ * no turn of it.
+ */
+async function seedDaemonTurnAndOwnComment() {
+  const seeded = await seedHistoryTurns();
+  const words = "The daemon moved the review to its next round.";
+  const message = await createMessage(
+    seeded.key,
+    { body: words },
+    daemonOf(seeded.key.slice(0, seeded.key.indexOf("-")))
+  );
+  return { ...seeded, legion: { id: message.id, words } };
+}
+
+// R10 of dispatch://INFRA-3940 (c-carried; new, for part M): a reply from the history and an edit
+// from a node's facts go through part L's box. The Reply of a turn of the thread the Legion daemon
+// began, in Details' history (`history-entries.tsx`), aims the box at that turn, and what the box
+// sends is Dispatch's reply to the turn, drawn in the history under it. The Edit of Details' facts
+// of the row of a comment the reader wrote (`FocusedNodeFacts.tsx`) opens the comment's words in
+// the box, and the words the box saves are the comment's new body in Dispatch and in its row.
+// SLOW(>=2s): a project, an issue and four posts written, two loads of the issue with Details open,
+// and a reply and an edit sent from the box, each read back from Dispatch and from the page.
+test("a reply from the history and an edit from a node's facts go through the box", async ({
+  browser,
+}) => {
+  // Not measured in a browser yet: two loads, at the 1.7 s a load that "the filter row is one
+  // line at every width" measured (27 loads in 47.0 s), Details opened after each, and two writes
+  // from the box each read back from Dispatch; the bound is several times that, for a slow leg.
+  test.setTimeout(90_000);
+  await phase(browser, seedDaemonTurnAndOwnComment, async (page, seeded) => {
+    // A reply from the history: the Reply of the daemon's turn aims the box at the turn.
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+    await expectIssuePageDrawn(page);
+    await openDetails(page);
+    const turn = historyItem(page, seeded.legion.id);
+    await expect(
+      turn,
+      "the history draws no turn of the thread the Legion daemon began"
+    ).toContainText(seeded.legion.words);
+    await turn.getByRole("button", { exact: true, name: CONTROL_LABELS.reply }).click();
+    await expect(
+      composerTarget(page),
+      "the Reply of the daemon's turn in the history draws no target line in the box"
+    ).toContainText(CONTROL_LABELS.replying_to);
+    const replyWords = "A reply to the daemon's turn, sent from the box.";
+    await sendFromComposer(page, replyWords);
+    await expect
+      .poll(
+        async () =>
+          ((await getMessage(seeded.key, seeded.legion.id)).replies ?? [])
+            .filter((one) => one.body === replyWords)
+            .map((one) => [one.in_reply_to, one.author.kind, one.author.id]),
+        {
+          message:
+            "Dispatch holds the box's words as no reply of the reader's to the daemon's turn",
+        }
+      )
+      .toEqual([[seeded.legion.id, "user", READER]]);
+    const sent = ((await getMessage(seeded.key, seeded.legion.id)).replies ?? []).find(
+      (one) => one.body === replyWords
+    );
+    if (sent === undefined) throw new Error("Dispatch holds no reply of the box's words");
+    // The thread's replies stand in its list under its first turn (`history-entries.tsx`'s
+    // `Entry`).
+    const drawn = historyPanel(page)
+      .locator(`[data-history-entry="thread:${seeded.legion.id}"]`)
+      .locator(`ol [data-history-item="${sent.id}"]`);
+    await expect(
+      drawn,
+      "the history does not draw the reply under the daemon's turn"
+    ).toBeVisible();
+    await expect(
+      drawn,
+      "the reply the history draws under the daemon's turn is not the box's words"
+    ).toContainText(replyWords);
+
+    // An edit from a node's facts: the Edit of the row of the reader's own comment opens its words
+    // in the box, and the box saves the words it is given in their place.
+    const facts = await rowFacts(page, seeded.key, seeded.own.id);
+    await facts
+      .locator("[data-focused-controls]")
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.edit })
+      .click();
+    await expect(
+      composerTarget(page),
+      "the Edit of the facts of the reader's comment draws no editing line in the box"
+    ).toContainText(CONTROL_LABELS.editing);
+    await expect(
+      composerField(page),
+      "the box does not hold the words of the comment whose Edit was pressed"
+    ).toHaveValue(seeded.own.words);
+    const edited = "The reader's comment, as its writer rewrote it in the box.";
+    await sendFromComposer(page, edited);
+    await expect
+      .poll(
+        async () =>
+          (await listComments(seeded.key))
+            .filter((one) => one.body === edited)
+            .map((one) => one.id),
+        { message: "Dispatch does not hold the saved words as the reader's comment's body alone" }
+      )
+      .toEqual([seeded.own.id]);
+    await expect(
+      rowWords(nodeRow(page, seeded.own.id).first()),
+      "the row of the reader's comment does not draw its new words"
+    ).toHaveText(edited);
+  });
 });
 
 // ---- from 750e2716:packages/dispatch/e2e/live-socket.e2e.ts
