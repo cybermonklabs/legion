@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -78,10 +78,9 @@ func newInstallRig(t *testing.T) *installRig {
 	if err := os.WriteFile(r.pid, []byte("4100\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The first line is the call's start record (systemctlStart): /proc/uptime as that line runs,
-	// and the fields of its own /proc/<pid>/stat line after the command's name, which hold when
-	// the kernel started the process, then the call's arguments.
-	script := "#!/bin/sh\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; echo \"$up ${stat##*[)]} -- $*\" >> " + r.calls + ".starts\n" +
+	// The first line is the call's start record (systemctlStart): /proc/uptime as it runs, its own
+	// /proc/<pid>/stat line whole, which says when the kernel started it, and its arguments, by tabs.
+	script := "#!/bin/sh\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; printf '%s\\t%s\\t%s\\n' \"$up\" \"$stat\" \"$*\" >> " + r.calls + ".starts\n" +
 		"if [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
@@ -688,15 +687,13 @@ func TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess(t *testing.T) {
 // Install returns within installReturnsWithin of its start, less the time the machine held some
 // of its systemctl calls between install's exec of each and the call's first line
 // (systemctlStart.held): the kernel and the stand-in spend that time, and a loaded machine can
-// stretch it past any bound. Only the calls of a fixed set are taken off, each at most as many
-// times as the set names it (outlivedRestartCalls): the calls a correct install makes here but the
-// restart. Install chooses how many calls it makes, so a call past the set, held time and all, is
-// install's own, and so is every other part of the span: an install that spends past the bound,
-// on more calls or anywhere else, fails as it failed main's, with only the set's held time taken
-// off. Each call's held time is also read only to the tick, and half a tick high on average under
-// gVisor, whose /proc/uptime rounds to the tick where Linux's truncates while starttime truncates
-// on both: summed over calls install chooses, that half tick grows with their number, and over the
-// set it stays within a few ticks. The restart's own call is not in the set: its timeout runs from
+// stretch it past any bound. Only outlivedRestartCalls of the calls but the restart are taken off,
+// the number a correct install makes here, and where install makes more, the ones the machine
+// held least. Install chooses how many calls it makes, so a call past that number, held time and
+// all, is install's own, and so is every other part of the span: an install that spends past the
+// bound, on more calls or anywhere else, fails as it failed main's. A number the row fixes also
+// keeps the half tick each held time reads high under gVisor (testexec.ClockTick) from growing
+// with the calls install adds. The restart's own call is not counted: its timeout runs from
 // before install execs it, so a late start of it holds install up no longer.
 func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	r := newInstallRig(t)
@@ -714,18 +711,22 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	if released() {
 		t.Fatalf("install returned %v only once the test released its restart: it waited for a restart its timeout is 200ms", err)
 	}
-	taken := maps.Clone(outlivedRestartCalls)
-	var held time.Duration
+	var helds []time.Duration
 	for _, call := range r.starts() {
-		if taken[call.args] > 0 {
-			taken[call.args]--
-			held += call.held()
+		if !call.restart() {
+			helds = append(helds, call.held())
 		}
 	}
+	slices.Sort(helds)
+	taken := helds[:min(len(helds), outlivedRestartCalls)]
+	var held time.Duration
+	for _, h := range taken {
+		held += h
+	}
 	if own := took - held; own > installReturnsWithin {
-		t.Fatalf("install took %s of its own, past %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held the calls of outlivedRestartCalls %s between install's exec of each and its first line", own, installReturnsWithin, took, held)
+		t.Fatalf("install took %s of its own, past %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line", own, installReturnsWithin, took, len(taken), held)
 	} else if took > installReturnsWithin {
-		t.Logf("install returned %s after its start, past %s, of which the machine held the calls of outlivedRestartCalls %s between install's exec of each and its first line: %s of its own", took, installReturnsWithin, held, own)
+		t.Logf("install returned %s after its start, past %s, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line: %s of its own", took, installReturnsWithin, len(taken), held, own)
 	}
 	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") {
 		t.Fatalf("install whose restart outlived its timeout: %v; want an error naming the 200ms timeout", err)
@@ -742,18 +743,11 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 // past it.
 const installReturnsWithin = 10 * time.Second
 
-// outlivedRestartCalls are the systemctl calls, by the arguments the rig's systemctl records, that
-// a correct install makes in TestInstallUndrainsWhenTheRestartOutlivesItsTimeout, with how many
-// times it makes each, the restart left out: it checks the unit is active, reloads and enables the
-// unit it wrote, reads the main process before the restart and after it, and reads the unit's job.
-// Their number is the row's, not install's, so the held time the row takes off is at most theirs.
-var outlivedRestartCalls = map[string]int{
-	"--user is-active " + helper.UnitName:                       1,
-	"--user daemon-reload":                                      1,
-	"--user enable --now " + helper.UnitName:                    1,
-	"--user show --property=MainPID --value " + helper.UnitName: 2,
-	"--user show --property=Job --value " + helper.UnitName:     1,
-}
+// outlivedRestartCalls is how many systemctl calls but the restart a correct install makes in
+// TestInstallUndrainsWhenTheRestartOutlivesItsTimeout: it checks the unit is active, reloads and
+// enables the unit it wrote, reads the main process before the restart and after it, and reads the
+// unit's job.
+const outlivedRestartCalls = 6
 
 // TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued: killing systemctl at the timeout
 // leaves systemd's restart job queued for the unit. An undrain then would let a session register
@@ -786,7 +780,7 @@ func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
 			t.Fatalf("run %d: install returned %v only once the test released its restart: it waited for a restart its timeout is 200ms", runs, err)
 		}
 		starts := r.starts()
-		if span, ok := restartSpan(starts); ok && span+2*clockTick < restartTimeout {
+		if span, ok := restartSpan(starts); ok && span+2*testexec.ClockTick < restartTimeout {
 			t.Fatalf("run %d: install began the unit read after its restart %s after the read before it ran its first line: it ended the restart before the restart's 200ms timeout", runs, span)
 		}
 		_, statErr := os.Stat(r.calls + ".queued")
@@ -814,22 +808,17 @@ func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
 }
 
 // systemctlStart is one call of the rig's systemctl as its own first line recorded it in the
-// calls log's .starts file: the call's arguments, when the kernel started its process, which is
-// when install ran it, and when that first line ran. Both times are on the kernel's boot clock
-// (/proc/<pid>/stat's starttime and /proc/uptime), each in clockTick steps.
+// calls log's .starts file: the call's arguments, and its start mark (testexec.StartMark): when
+// the kernel started its process, which is when install ran it, and when that first line ran.
 type systemctlStart struct {
-	args       string
-	exec, mark time.Duration
+	args string
+	mark testexec.StartMark
 }
-
-// clockTick is the step of the kernel's clock in /proc/<pid>/stat and /proc/uptime: USER_HZ,
-// 100 a second on every Linux this package builds for.
-const clockTick = 10 * time.Millisecond
 
 // held is how long the machine held the call between install's exec of it and its first line.
 // Install cannot cause that span: the process is the stand-in's from its exec on.
 func (s systemctlStart) held() time.Duration {
-	return max(s.mark-s.exec, 0)
+	return max(s.mark.Late(), 0)
 }
 
 // restart reports whether the call was a restart, by its second argument, as the stand-in reads it.
@@ -848,19 +837,13 @@ func (r *installRig) starts() []systemctlStart {
 	}
 	var starts []systemctlStart
 	for line := range strings.Lines(string(text)) {
-		clock, args, cut := strings.Cut(strings.TrimSuffix(line, "\n"), " -- ")
-		// /proc/uptime's reading, then /proc/<pid>/stat's fields from its third, the state, on: its
-		// field 22, starttime, is the 21st here.
-		fields := strings.Fields(clock)
-		if !cut || len(fields) < 21 {
-			r.t.Fatalf("the rig's systemctl recorded a start line of another shape: %q", line)
+		up, rest, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
+		stat, args, cut := strings.Cut(rest, "\t")
+		mark, err := testexec.ParseStartMark(up, stat)
+		if !cut || err != nil {
+			r.t.Fatalf("the rig's systemctl recorded a start line of another shape: %q: %v", line, err)
 		}
-		mark, markErr := time.ParseDuration(fields[0] + "s")
-		ticks, ticksErr := strconv.ParseInt(fields[20], 10, 64)
-		if markErr != nil || ticksErr != nil {
-			r.t.Fatalf("the rig's systemctl recorded a start line whose clock does not read: %q: %v %v", line, markErr, ticksErr)
-		}
-		starts = append(starts, systemctlStart{args: args, exec: time.Duration(ticks) * clockTick, mark: mark})
+		starts = append(starts, systemctlStart{args: args, mark: mark})
 	}
 	return starts
 }
@@ -876,7 +859,7 @@ func restartSpan(starts []systemctlStart) (span time.Duration, ok bool) {
 		}
 		for _, next := range starts[i+1:] {
 			if !next.restart() {
-				return next.exec - read.mark, true
+				return next.mark.Started - read.mark.Reached, true
 			}
 		}
 		return 0, false
