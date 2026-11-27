@@ -392,16 +392,16 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 		opened, r.awaitProcessed("github", opened).UTC().Format(time.RFC3339Nano), doneByChecksSecondPull, doneByChecksSecondHead)
 	r.awaitAnswerOf(doneByChecksBeforeCheck, fmt.Sprintf("#%d opened", doneByChecksSecondPull), subjectNamed(doneByChecksSecondHead))
 
-	// Item 4: with the change's pull request open, each other input of the close passes.
+	// Item 4: with the change's pull request open, each check passes, and the change holds the
+	// close. The production check of the first merge is no input of it any more: StartNextChange
+	// closed it as not run (D6), so the tester's report of its look 1 is refused, and the
+	// production term reads awaiting_change until the change's own check opens (plan corrections).
 	tester := r.worker(claim.RoleTester)
-	tester.send(shimwire.AgentStart{})
-	tester.waitState(supervise.StateWorking)
-	r.reportLook(tester, look.opened, 1, "pass", nil)
-	tester.send(shimwire.AgentEnd{})
-	tester.waitState(supervise.StateIdle)
-	if check := readProductionCheck(t, r.st.Pool(), r.records, first); check.Open() || check.Outcome != record.CheckRecorded || check.MergeSHA != doneByChecksMergeCommit {
-		t.Fatalf("%s's production check after the pass of look 1 is %+v, want it closed recorded for %s", first, check, doneByChecksMergeCommit)
+	refusal := r.reportRefused(tester, look.opened, 1, "pass")
+	if check := readProductionCheck(t, r.st.Pool(), r.records, first); check.Open() || check.Outcome != record.CheckNotRun || check.Generation != 1 {
+		t.Fatalf("%s's production check while its change is open is %+v, want generation 1's closed not_run", first, check)
 	}
+	t.Logf("the report of look 1 after the change started: %s; the check of generation 1 is closed not_run", refusal)
 	passBefore := r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksSecondHead)
 	passAfter := r.record("pass", r.standIn.commitOnMain(doneByChecksPassCommit))
 	both := r.awaitResultFact(passBefore)
@@ -422,6 +422,10 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 		}
 		return nil
 	})
+	if wait := r.storedWait(first); len(wait.Checks) != 0 || len(wait.Beneath) != 0 || len(wait.Defects) != 0 || wait.NextChange == nil ||
+		wait.Production == nil || wait.Production.State != record.ProductionAwaitingChange {
+		t.Fatalf("%s's stored wait while its change is open is %+v, want no check, nothing beneath, no reported defect, the open change and the production term awaiting it", first, wait)
+	}
 
 	// Item 5: the change runs to its merge, and the production check of that merge opens.
 	r.walkImplementing(doneByChecksSecondHead)

@@ -1143,6 +1143,20 @@ func (r *doneByChecksRig) reportLook(c *stepClaimant, opened time.Time, look int
 	return at
 }
 
+// reportRefused is c's report of verdict on look of the check that opened at opened, which the
+// daemon refuses 409 CHECK_NOT_OPEN: the check closed since, as a next change's start closes an
+// open check (D6). It answers the refusal's body, and fails the test for any other answer. The
+// route refuses before it reads the claim's look, so c need hold no turn.
+func (r *doneByChecksRig) reportRefused(c *stepClaimant, opened time.Time, look int, verdict string) string {
+	t := r.t
+	t.Helper()
+	status, body := r.complete(c, api.HandoffCompleteRequest{Summary: "production reads " + verdict, Verdict: verdict, CheckOpenedAt: &opened})
+	if status != http.StatusConflict || !strings.Contains(body, `"CHECK_NOT_OPEN"`) {
+		t.Fatalf("the report of %s on look %d of %s's production check = %d %s, want 409 CHECK_NOT_OPEN", verdict, look, r.key, status, body)
+	}
+	return fmt.Sprintf("%d %s", status, body)
+}
+
 // closeWaitVersions is each version of issue's close-wait.md in Dispatch, oldest first, as its
 // markdown: nil where the issue holds no such document.
 func (r *doneByChecksRig) closeWaitVersions(issue string) ([]string, error) {
