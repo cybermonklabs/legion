@@ -35,6 +35,23 @@ func storeBaseRevision(t *testing.T, rig *checkStatesRig, number int, sha, baseS
 	}
 }
 
+// forgetBaseRevision leaves #number of the rig's repository storing no base revision, as a writer
+// of the release before migration 20261126005346 left every row, and as a row an envelope that
+// names none leaves. It writes that column alone, on which no trigger of pull_request_heads fires
+// (20261126005340, 20261126005348), so the row is left as such a writer leaves it and nothing is
+// owed by the write itself.
+func forgetBaseRevision(t *testing.T, rig *checkStatesRig, number int) {
+	t.Helper()
+	tag, err := rig.database.Pool.Exec(context.Background(),
+		`update pull_request_heads set base_sha = null where repo = $1 and number = $2`, ciJobRepository, number)
+	if err != nil {
+		t.Fatalf("leave #%d storing no base revision: %v", number, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("leaving #%d storing no base revision wrote %d rows, want 1", number, tag.RowsAffected())
+	}
+}
+
 // The base revisions of the tests below.
 const (
 	baseRevisionA = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"

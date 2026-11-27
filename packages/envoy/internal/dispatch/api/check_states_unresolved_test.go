@@ -80,13 +80,26 @@ func TestAnUnresolvedMembershipHoldsTheTestHandoffOverAnOldPass(t *testing.T) {
 // wait, and H1 stays a candidate, no former head, until a later settle of the issue reads it once
 // access returns. The control is the 404 of the test above, which a retry can change, and which
 // holds the handoff.
+//
+// Each cause is read twice: with #70's row storing a base revision, where the read of its commits
+// meets the cause, and with a row that stores none, as a writer of the release before migration
+// 20261126005346 left it. The second is the same fact: the base revision such a row waits for is
+// stored by a read of the pull request, and under either cause no read of this deployment's can
+// ever make it, so no retry changes that either and no mark may wait for it.
 func TestACauseNoRetryFixesHoldsNoTestHandoff(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cut  func(rig *checkStatesRig)
+		// unstored writes #70's row with no base revision, which is what the settle would read
+		// the pull request for.
+		unstored bool
 	}{
-		{"a deployment with no App key", func(rig *checkStatesRig) { rig.served.deps.GitHub = nil }},
-		{"a repository GitHub refuses the installation", func(rig *checkStatesRig) { rig.github.refusePulls(true) }},
+		{name: "a deployment with no App key", cut: func(rig *checkStatesRig) { rig.served.deps.GitHub = nil }},
+		{name: "a repository GitHub refuses the installation", cut: func(rig *checkStatesRig) { rig.github.refusePulls(true) }},
+		{name: "a deployment with no App key, and a row that stores no base revision",
+			cut: func(rig *checkStatesRig) { rig.served.deps.GitHub = nil }, unstored: true},
+		{name: "a repository GitHub refuses the installation, and a row that stores no base revision",
+			cut: func(rig *checkStatesRig) { rig.github.refusePulls(true) }, unstored: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newCheckStatesRig(t, checkStatesTwoChecks)
@@ -98,6 +111,9 @@ func TestACauseNoRetryFixesHoldsNoTestHandoff(t *testing.T) {
 			eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "fail", eachHeadH1)
 			forgetCandidates(t, rig)
 			settleOwed(t, rig)
+			if tc.unstored {
+				forgetBaseRevision(t, rig, 70)
+			}
 			tc.cut(rig)
 			seedInstallCandidates(t, rig, eachHeadH1)
 			settleOwed(t, rig)
