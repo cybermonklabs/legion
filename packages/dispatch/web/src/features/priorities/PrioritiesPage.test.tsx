@@ -1620,12 +1620,16 @@ test("an older link sorted by the backlog column under its former id sorts by it
 // An older link's filter of the backlog column under its former id names no column of the table,
 // so it is not read, and one under its id now is of a count, which has no filter (`hasFilter`):
 // each filters nothing.
-test.each([
-  "parked",
-  "backlog",
-])("an older link filtered by the backlog column as p.f.%s filters nothing", async (id) => {
-  page(FIFTEEN, [], true, { at: `/priorities?p.f.${id}=3` });
-  const table = await screen.findByRole("table", { name: "Priorities table" });
-  for (const name of ["#1 Legion works reliably first", "#2 Linkage closure eval", "#3 OSS Verify"])
-    expect(await within(table).findByRole("row", { name })).toBeDefined();
-});
+test.each(["parked", "backlog"])(
+  "an older link filtered by the backlog column as p.f.%s filters nothing",
+  async (id) => {
+    page(FIFTEEN, [], true, { at: `/priorities?p.f.${id}=3` });
+    const table = await screen.findByRole("table", { name: "Priorities table" });
+    for (const name of [
+      "#1 Legion works reliably first",
+      "#2 Linkage closure eval",
+      "#3 OSS Verify",
+    ])
+      expect(await within(table).findByRole("row", { name })).toBeDefined();
+  }
+);
