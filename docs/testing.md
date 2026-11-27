@@ -870,10 +870,31 @@ for its redelivery, up to `ReadRetryAfter`, a minute. So each of its seeds is a 
 A seed holds a rig of its own: its own database (`storetest.Open`), its own NATS account
 (`testnats.URL`), its own fake daemons and its own intake, whose clock, logger and client window
 are the rig's. The intake writes its lines to `Intake.log` and calls its daemons with
-`Intake.stateOptions`, both the rig's, so no test of this package replaces the process's default
-logger or `http.DefaultTransport`, which every test of the process shares. The package's other
-tests run one at a time, before the seeds, as a test that calls no `t.Parallel` does; a new test
-that holds a wall-clock bound or writes something the process shares keeps it that way.
+`Intake.stateOptions`, both of them the rig's, so **a seed** replaces neither the process's default
+logger nor `http.DefaultTransport`, which every test of the process shares. That is what lets the
+seeds run beside each other.
+
+The package's other tests run one at a time, before the seeds, as a test that calls no
+`t.Parallel` does, and five of them still write something the whole process shares, which is what
+stands in the way of making them parallel next:
+
+- `TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes`,
+  `TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes`,
+  `TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes` and
+  `TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead` each clone
+  `http.DefaultTransport`, give the clone a `ResponseHeaderTimeout` and put it back at the end, so
+  their daemons' answers have a window. A test beside one of them would take that window too.
+  Each is the rig's `windowed` written out before the rig existed; `rig.windowed(d)`, which names
+  the window on that rig's intake alone (`Intake.stateOptions`), replaces it where someone makes
+  them parallel.
+- `TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler` replaces the process's default
+  logger (`logtest.SetDefault`) on purpose: it reads the whole-read line as `cmd/dispatch`'s own
+  text handler writes it, through `ReadWhole`, which builds an intake with no logger of its own.
+  It stays serial.
+
+A test here holds wall-clock bounds of its own besides (`ReadRetryAfter`, the client window, a
+NATS redelivery), so one made parallel needs its bound read again under the load of the tests
+beside it.
 
 CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
 and a command that runs the whole package passes the same:

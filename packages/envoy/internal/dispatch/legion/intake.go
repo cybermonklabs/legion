@@ -224,9 +224,9 @@ type Intake struct {
 	// intake's lines alone and runs beside other tests.
 	log *slog.Logger
 	// stateOptions are the options of the Client a whole read calls its daemon with (fetchWhole):
-	// none in a program, so every read shares the default transport. A test names a transport of
-	// its own (withTransport) to give its daemon's answers a window, rather than replace
-	// http.DefaultTransport for every test of the process.
+	// none in a program, so every read shares the default transport and its production
+	// RequestTimeout. A test gives its own intake's reads a shorter window with WithTimeout (the
+	// rig's windowed), rather than replace http.DefaultTransport for every test of the process.
 	stateOptions []Option
 
 	mu sync.Mutex
