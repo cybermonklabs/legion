@@ -122,12 +122,6 @@ func lockRows(second, step string) []lockRow {
 		{"PUT /api/v1/projects/{key}/default-repository", callerAlice, http.MethodPut,
 			with(path("/api/v1/projects/{project}/default-repository"), issueBody(`{"repo":"acme/walked"}`)),
 			holdProjectOwner, http.StatusOK, `404 {"code":"PROJECT_NOT_FOUND","error":"project not found"}`},
-		// Main's route took the project's owner lock before it read the project as its writer; this
-		// build reads it first (the live reviewer's F15; control: loadProject after LockOwner, and
-		// alice's write waits on PRIV's writer).
-		{"PUT /api/v1/projects/{key}/proven-sessions", callerAlice, http.MethodPut,
-			path("/api/v1/projects/{project}/proven-sessions"),
-			holdProjectOwner, http.StatusOK, `404 {"code":"PROJECT_NOT_FOUND","error":"project not found"}`},
 		{"PUT /api/v1/issues/{key}/design-gates", callerAlice, http.MethodPut,
 			with(path("/api/v1/issues/{key}/design-gates"), issueBody(`{`+probeActor+`,"gates":[]}`)),
 			holdIssueOwner, http.StatusOK, `404 {"code":"ISSUE_NOT_FOUND","error":"no issue NOPE-1"}`},
@@ -157,6 +151,15 @@ func lockRows(second, step string) []lockRow {
 				return `{"actor":{"kind":"session","id":` + quoted("legion-daemon:"+keys.project) + `},"holders":[]}`
 			}),
 			holdIssueOwner, http.StatusOK, `404 {"code":"ISSUE_NOT_FOUND","error":"no issue NOPE-1"}`},
+		// Main's route took the project's owner lock before it read the project as its writer; this
+		// build reads it first (the live reviewer's F15; control: loadProject after LockOwner, and
+		// alice's write waits on PRIV's writer). It runs after the role-holders row, since turning
+		// PUB's proven-sessions setting on makes PUB take a role-holder publication only on a
+		// credential that proves its daemon's session (putIssueRoleHolders), which the shared token
+		// does not.
+		{"PUT /api/v1/projects/{key}/proven-sessions", callerAlice, http.MethodPut,
+			path("/api/v1/projects/{project}/proven-sessions"),
+			holdProjectOwner, http.StatusOK, `404 {"code":"PROJECT_NOT_FOUND","error":"project not found"}`},
 		// The status change locked the owners of its plan, the issue its path names among them,
 		// before it read that issue as its caller (the live reviewer's F12); this build reads the
 		// issue as its caller first (readStatusChange; control: the read of the named issue with
