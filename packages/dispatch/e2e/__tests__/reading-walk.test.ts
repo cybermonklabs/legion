@@ -151,13 +151,16 @@ test.each(
   DISPATCH_READING_SURFACES.filter((row) => row.rendered && !row.record).map(
     (row) => [row.surface, row] as const
   )
-)("the rendered surface %s, whose text is no record, says it carries no question id", (surface, row) => {
-  expect(
-    row.cannotCarry?.forms.includes("question-id") === true
-      ? surface
-      : `${surface} draws no record and does not say it cannot carry a question id (cannotCarry)`
-  ).toBe(surface);
-});
+)(
+  "the rendered surface %s, whose text is no record, says it carries no question id",
+  (surface, row) => {
+    expect(
+      row.cannotCarry?.forms.includes("question-id") === true
+        ? surface
+        : `${surface} draws no record and does not say it cannot carry a question id (cannotCarry)`
+    ).toBe(surface);
+  }
+);
 
 test("every row that names a form it cannot carry says why", () => {
   const silent = DISPATCH_READING_SURFACES.flatMap((row) =>

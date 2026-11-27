@@ -13,6 +13,7 @@ import (
 // another kind is none of this release's, and stays as it is. It clears every claim's mark, which
 // that release would leave standing for the roll forward to read as a message still waiting.
 func TestMessageWakePacingUpgradeAndWayBack(t *testing.T) {
+	t.Parallel()
 	const version = 20261125163328
 	ctx := t.Context()
 	st := emptyStore(t)
