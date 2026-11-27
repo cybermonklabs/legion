@@ -55,9 +55,10 @@ import (
 //     status repair in the boot fact can queue needs_review over it too (status_repair.go:77 and
 //     :92, resume.go:77, at 1341b5f8). It fails at 1341b5f8 once it waits for the release.
 //
-// Each verdict is read once the held seeds have run, not by a wait on the state: a seed's fact
-// and the wait it ends are one transaction, so once the outbox holds none of R's seeds the outcome
-// is decided, and a wait that did not end is said at once rather than at the test's deadline.
+// The "after" and boot verdicts are read once the held seeds have run, not by a wait on the state:
+// a seed's fact and the wait it ends are one transaction, so once the outbox holds none of R's
+// seeds the outcome is decided, and a wait that did not end is said at once rather than at the
+// test's deadline. The "before" verdict is the wait's end, read while P's status write is held.
 
 // refuseSignOff writes P into accepting by hand and has its architect's sign-off refused while R
 // waits on P's approval request (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), so P stands at accepting with
@@ -110,7 +111,8 @@ func retroWorld(t *testing.T, held *outboxHold, names []string) (*personHandover
 	return r, run
 }
 
-// retroAccepted is what the end of R's wait names when the seed reads P in retro.
+// retroAccepted is what the end of R's wait names when it ends on P in retro, by the seed's read or
+// by the person's move itself.
 func retroAccepted(run pendingRun) string {
 	return fmt.Sprintf("Dispatch shows %s retro, so %s is accepted.", run.parent.Key, run.parent.Key)
 }
@@ -125,6 +127,9 @@ func (r *personHandoverRig) seedRanAfterStatusWrite(held *outboxHold, run pendin
 	})
 	shown := r.issue(run.parent.Key).Status
 	t.Logf("with the pending-basis seed of %s held, the status rows of %s are done; Dispatch shows %s %s", run.root.Key, run.parent.Key, run.parent.Key, shown)
+	if shown == "retro" {
+		t.Fatalf("Dispatch still shows %s retro once its status rows are done: no status write landed over the person's retro, so this run proves no order", run.parent.Key)
+	}
 	held.release(run.root.Key)
 	testwait.Eventually(t, "the held pending-basis seed of "+run.root.Key+" to run", func() bool {
 		return r.outboxCount(run.root.Key, record.OutboxKindPendingBasisSeed) == 0

@@ -4685,13 +4685,16 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 // issue, and of the request's close where the document's approval shows it closed (readBasis),
 // and applies the read as a fact of its own (intake.PendingBasisRead), never the gate seed's, so
 // the read reaches the root's step alone and not the ancestor's own gate. It is the one read that
-// opens or ends such a wait: the registration queues it, the boot queues it for every such step,
-// and every event that is a cue for the step queues it (workflow's pendingBasisCue). The workflow
-// judges it by its one verdict (workflow's judgeBasisRead): the person's approval of the version,
-// as the document's latest review of its latest version, opens the step on an ancestor that still
-// meets R1's first condition, and a changes request on that version, a newer version of the
-// document, the request no longer open, which the end names with whoever closed it, or the
-// ancestor's leave ends the wait. The workflow applies the fact only while the step still waits on
+// opens such a wait, and it ends one on what Dispatch shows; the one other end of that kind is an
+// event of the ancestor's issue while the copy of Dispatch shows it accepted (workflow's
+// endPendingOnLeave), which queues no seed. The registration queues it, the boot queues it for
+// every such step, and every other event that is a cue for the step queues it (workflow's
+// pendingBasisCue). The workflow judges it by its one verdict (workflow's judgeBasisRead): the
+// person's approval of the version, as the document's latest review of its latest version, opens
+// the step on an ancestor that still meets R1's first condition, and a changes request on that
+// version, a newer version of the document, the request no longer open, which the end names with
+// whoever closed it, or the ancestor's leave ends the wait. The workflow applies the fact only
+// while the step still waits on
 // that request and registration in that generation, so a read of a wait that has opened or ended
 // since changes nothing. The fact's id names the step, the request, the registration it reads for
 // (the seed's RegisteredAt, which record.PendingBasisSeedOf normalized once as it queued the seed)
