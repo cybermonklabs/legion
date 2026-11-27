@@ -1,13 +1,5 @@
 import { dispatchWritingBox } from "@legion/contracts";
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type {

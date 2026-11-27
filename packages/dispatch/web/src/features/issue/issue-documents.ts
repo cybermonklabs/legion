@@ -47,9 +47,7 @@ export function issueDocuments(
   // A page opened at a document's current name, which a reference may write where its slug kept
   // an earlier name, shows that document as the link to it drew it (`artifactAtAddress`).
   const selectedArtifact =
-    route.kind === "artifact"
-      ? artifactAtAddress(issue?.artifacts, route.slug)
-      : primaryArtifact;
+    route.kind === "artifact" ? artifactAtAddress(issue?.artifacts, route.slug) : primaryArtifact;
   const isPrimaryArtifactRoute = isPrimaryDocumentArtifactRoute(route, selectedArtifact);
   return {
     activeTab: issueTabForRoute(route, selectedArtifact),
