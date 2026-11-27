@@ -730,12 +730,6 @@ export interface PagedDecisionsSeed {
   /** The open questions written before the answered one (`PAGE_QUESTIONS`), by ask id, which
    *  fill Conversation's first page, as row 6's `PAGED-ROW` line counts them on it. */
   readonly pageQuestions: readonly string[];
-  /** The decisions the seed wrote that only restate the answer of a question a person answered
-   *  (INFRA-1196's decisions 513 and 521), by block id: none. `underAskBlock` names the answered
-   *  question as its `from_ask`, but it also shapes the sixth statement, which that question (the
-   *  third to the fifth) did not shape, so it is an agent's decision of its own; and `firstBlock`
-   *  names the open question, which no person has answered. */
-  readonly restating: readonly string[];
   /** The agent's decision under the answered question (`from_ask`), tied to the sixth statement,
    *  which the question did not shape, so it waits for review (INFRA-1196's decision 521), past
    *  Conversation's first page. */
@@ -887,7 +881,6 @@ export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
     firstBlock: PAGED_BLOCKS.first,
     key,
     pageQuestions,
-    restating: [],
     underAskBlock: PAGED_BLOCKS.underAsk,
     waitingBlock: PAGED_BLOCKS.waiting,
   };
