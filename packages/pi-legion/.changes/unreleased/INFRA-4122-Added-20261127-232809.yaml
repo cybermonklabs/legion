@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  The controller follows the project's watched workflows that the daemon names in its
+  registration (`watchedWorkflows`, daemon API contract entry 20261127193422), under both launch
+  forms: one Envoy topic for each event of each entry,
+  `notifications.github.<owner>.<repo>.default_branch.workflow.<file>.completed.<event>`, for as
+  long as the session holds the controller role. It subscribes them once the rest of its claim is
+  done (the daemon's controller after `claims/ready`, the operator's controller after its notice
+  topic), one after another, in a task the claim does not wait for: no answer Envoy gives about a
+  watched topic fails the claim, exits the process or costs the role, the notice topic or a Slack
+  topic. A topic Envoy answers 503 (an edge listener that cannot read the project's repositories
+  answers `repositories_unknown`) is subscribed again after a wait of 1 s that doubles to 30 s,
+  with one log line per wait; the session is told once that the topic waits, naming the entry,
+  the topic and Envoy's answer, and once more when Envoy takes it. A topic Envoy refuses for
+  another reason is logged, told to the session and given up, and the other topics go on. The
+  session is told as Envoy tells it its own notices, with no turn of its own. A later claim of the
+  same process whose registration names another list tells the session the new list, since its
+  prompt names the first. Every controller process sets the plugin interface's
+  `watchedWorkflowsRoleOwned`, so a resumed controller drops the watched topics its stored
+  interest row holds before it claims. Plugin interface version 7: install this release with the
+  `@sjawhar/pi-envoy` released beside it.
+time: 2026-11-27T23:28:09Z
+custom:
+    Issue: INFRA-4122

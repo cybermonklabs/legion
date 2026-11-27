@@ -9,6 +9,7 @@ import {
   agentStreamFramesSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  isGithubDefaultBranchWorkflowSubject,
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
@@ -202,6 +203,7 @@ import {
   type LegionRoleClaim,
   type LegionRoleClaimInstance,
   legionRoleClaimBridge,
+  RoleNotHeldError,
 } from "@legion/pi-shared/role-claim-bridge";
 import { RoleClaimStoppingError } from "@legion/pi-shared/role-claim-stopping";
 import { dispatchCommandHead } from "@legion/pi-shared/shell-command";
@@ -4131,31 +4133,38 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // topic is unsubscribed from the listener and never restored: a restored topic would be
     // followed for as long as the session runs, outliving the controller role, and the controller
     // hears its listed channels through the topics its role owns (pi-legion's
-    // controller-session.ts).
+    // controller-session.ts). In a controller of either launch form (the bridge's
+    // `watchedWorkflowsRoleOwned`) the same holds for every default-branch workflow topic
+    // (`isGithubDefaultBranchWorkflowSubject`), its watched workflows' topics, for one more
+    // reason: an edge listener judges the GitHub topics of the session's stored row at each
+    // registration, so a restored one would refuse the role claim and every other topic while the
+    // edge cannot read the project's repositories. Both kinds go in one removal.
     // The topics the newest ledger state names come back too: the listener reaps a dead session's
     // interests after its grace, and the transcript still says what the session followed. A topic
     // it unfollowed is absent from that state. Agent and role subjects are never among them.
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;
+    const watchedRetired = publishedInterface?.roleClaim.watchedWorkflowsRoleOwned === true;
+    const roleOwned = (topic: string): boolean =>
+      (slackRetired && slackTopicChannel(topic) !== undefined) ||
+      (watchedRetired && isGithubDefaultBranchWorkflowSubject(topic));
     const registered = registry?.topics ?? [];
-    const retired = slackRetired
-      ? registered.filter((topic) => slackTopicChannel(topic) !== undefined)
-      : [];
+    const retired = registered.filter(roleOwned);
     // A step of this pass, so a pass the host left behind unregisters nothing: the listener keeps
     // the retired topics until the pass the move queued reads the registry itself. The failure is
     // this branch's to name: the step warns under the sentences it is handed, one for a bus that
     // did not answer and one for any other failure.
     if (retired.length > 0)
       await handle.unregisterTopics(sessionID, retired, {
-        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
-        busUnanswered: busUnansweredRemoval("a resumed controller's retired Slack topics"),
+        failed: "envoy: could not unregister a resumed controller's retired role-owned topics",
+        busUnanswered: busUnansweredRemoval("a resumed controller's retired role-owned topics"),
       });
-    // The newest ledger state's topics (`rememberedTopics`), but a retired Slack topic. They are
-    // followed again, so the registration that ends this pass carries them and the session's
-    // consumer relays what the stream kept for them.
+    // The newest ledger state's topics (`rememberedTopics`), but a retired one. They are followed
+    // again, so the registration that ends this pass carries them and the session's consumer
+    // relays what the stream kept for them.
     const remembered = rememberedSubjects(
       activeSessionContext?.sessionManager.getEntries() ?? []
-    ).filter((topic) => !(slackRetired && slackTopicChannel(topic) !== undefined));
+    ).filter((topic) => !roleOwned(topic));
     for (const topic of new Set([...registered, ...remembered])) {
       if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
       if (retired.includes(topic)) continue;
@@ -4774,10 +4783,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       // role is read once every move started before this call has landed.
       await registrationState.roleMoves.settled();
       refuseWhileStopping();
+      // In words the Legion plugin reads by name (`refusedForRoleNotHeld`): its controller stops
+      // subscribing its role's watched workflows on it.
       if (!registrationState.holdsRoleTopic(ROLE_TOPIC_PREFIX + whileHolding)) {
-        throw new Error(
-          `Envoy session ${targetSessionID} does not hold role ${whileHolding} for a notice subscription`
-        );
+        throw new RoleNotHeldError(targetSessionID, whileHolding);
       }
       // Marked before the subscription opens, so the registration it leads to already carries
       // them as the role's, which the role's end closes and unregisters together, and a move the

@@ -193,13 +193,22 @@ export default function legionExtension(pi: PiApi): void {
     from: import.meta.url,
     envoyInterface: ENVOY_PLUGIN_INTERFACE_VERSION,
   };
-  // Whether this is the daemon-launched controller, whose Slack subscriptions its role owns: the
-  // Envoy entry's recovery of a resumed session's registered interests then drops every Slack
-  // topic before it restores the rest. Set here, at load, because that recovery runs in the Envoy
-  // entry's session_start, before this entry's claim.
+  // Whether this is the daemon-launched controller, whose Slack subscriptions its role owns, and
+  // whether it is a controller of either launch form, whose watched workflows' topics its role
+  // owns: the Envoy entry's recovery of a resumed session's registered interests then drops every
+  // such topic before it restores the rest. Set here, at load, because that recovery runs in the
+  // Envoy entry's session_start, before this entry's claim.
   if (daemonLaunchedController(process.env)) {
     legionRoleClaimBridge().slackRoleOwned = true;
   }
+  let controllerProcess = false;
+  try {
+    controllerProcess = classifySession(process.env).kind === "controller";
+  } catch {
+    // Launch markers classifySession refuses are refused, saying why, at session_start; such a
+    // process is no controller here.
+  }
+  if (controllerProcess) legionRoleClaimBridge().watchedWorkflowsRoleOwned = true;
 
   // Gates session_start and the session-change re-claim below, one call per hook; its settled
   // answer is kept, so it runs once per session.

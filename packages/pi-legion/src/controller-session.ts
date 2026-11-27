@@ -1,21 +1,27 @@
 import {
   controllerToken,
+  githubDefaultBranchWorkflowSubject,
   legionControllerNoticeSubject,
   legionProjectToken,
   slackMentionTopic,
 } from "@legion/contracts";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import { scrub } from "@legion/contracts/held-secrets";
-import type { LegionGrant } from "@legion/contracts/legion-api";
+import type { LegionControllerRegistration, LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   claimRoleAgainOnBusy,
   claimStandsWithoutHandover,
   listenerAskedToClaimAgain,
+  roleClaimWords,
 } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
-import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
+import {
+  claimEnvoyRole,
+  refusedForRoleNotHeld,
+  subscribeLegionNotice,
+} from "@legion/pi-shared/role-claim-bridge";
 import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
 import {
   clearStartupTurn,
@@ -86,6 +92,51 @@ function operatorLaunchedController(env: NodeJS.ProcessEnv): boolean {
   return classifySession(env).kind === "controller" && !daemonLaunchedController(env);
 }
 
+/** The `customType` of what this process tells its session of its watched workflows: shown in
+ * the transcript, and no turn of its own, as Envoy's own notices are (`tellWatched`). */
+const WATCHED_WORKFLOWS_NOTICE = "legion-watched-workflows";
+
+/** One topic of the project's watched workflows: the entry, as `legion.yaml` names it
+ * (`<owner>/<repo>/<file>`), one of its events, and the default-branch topic of that workflow's
+ * completed runs of that event. */
+interface WatchedTopic {
+  readonly entry: string;
+  readonly event: string;
+  readonly topic: string;
+}
+
+/** The watched workflows of one registration (`watchedWorkflowsOf`). */
+interface WatchedWorkflows {
+  /** One topic per event of each entry, in the registration's order. */
+  readonly topics: readonly WatchedTopic[];
+  /** The list as the session reads it: `<owner>/<repo>/<file>@<event>,…` per entry, the
+   * entries and each entry's events sorted, so one list in another order reads the same;
+   * `none` for no entry. */
+  readonly listed: string;
+}
+
+/** The watched workflows `registration` names (`watchedWorkflows`): none from a daemon whose
+ * answer does not carry it, which is one before its contract entry. */
+function watchedWorkflowsOf(registration: LegionControllerRegistration): WatchedWorkflows {
+  const topics: WatchedTopic[] = [];
+  const entries: string[] = [];
+  for (const watchedWorkflow of registration.watchedWorkflows ?? []) {
+    const entry = `${watchedWorkflow.owner}/${watchedWorkflow.repo}/${watchedWorkflow.workflow}`;
+    for (const event of watchedWorkflow.events) {
+      const topic = githubDefaultBranchWorkflowSubject(
+        watchedWorkflow.owner,
+        watchedWorkflow.repo,
+        watchedWorkflow.workflow,
+        "completed",
+        event
+      );
+      topics.push({ entry, event, topic });
+    }
+    entries.push(`${entry}@${[...watchedWorkflow.events].sort().join(",")}`);
+  }
+  return { topics, listed: entries.length === 0 ? "none" : entries.sort().join(", ") };
+}
+
 /**
  * Owns the controller session's identity, transcript, role claim, and grant path. This is
  * deliberately separate from the claim session (`claim-session.ts`) and the extension's
@@ -141,6 +192,123 @@ export function createControllerSession(
   // Aborts as the session's stop begins (`stop`): the role claim's signal, and what tells a claim
   // the stop overtook to end quietly (`claimOnce`).
   const stopped = new AbortController();
+  // The watched workflows' list the session knows of (`WatchedWorkflows.listed`): the first
+  // registration's of this process, which is the list its prompt names, and then each list it
+  // was told since (`subscribeWatchedWorkflows`).
+  let watchedListKnown: string | undefined;
+  // The watched subscriptions of the last claim that finished, which a later registration aborts:
+  // the claim they were made for is replaced, and a claim of the new one makes its own.
+  let watchedSubscriptions: AbortController | undefined;
+
+  /** Tells the session `content` as Envoy tells it its own notices (`handNotice` in
+   * pi-envoy's envoy.ts): shown in the transcript, and no turn starts for it. */
+  const tellWatched = (content: string): void => {
+    pi.sendMessage(
+      { customType: WATCHED_WORKFLOWS_NOTICE, content, display: true },
+      { deliverAs: "steer", triggerTurn: false }
+    );
+  };
+
+  /**
+   * Subscribes `topic` for as long as this session holds `claimToken`'s role, and answers whether
+   * the next watched topic is to be subscribed. Envoy's 503 (an edge listener that cannot read the
+   * project's repositories answers `repositories_unknown`) is waited out as a role claim's is
+   * (`claimRoleAgainOnBusy`: 1 s, doubling to 30 s, a log line per wait), and the session is told
+   * once that the topic waits, naming Envoy's answer, and once that it landed. A refusal because
+   * the session's stop has begun (`claimRefusedForStop`) is that stop, and says nothing; one
+   * because the session holds the role no more (`refusedForRoleNotHeld`) ends the watched
+   * subscriptions with one log line. Any other failure is logged and told, and gives this topic
+   * up alone. Once `signal` aborts - the stop, or a later registration - nothing more is asked or
+   * said.
+   */
+  const subscribeWatchedTopic = async (
+    sessionID: string,
+    claimToken: string,
+    envoyContext: SessionContext | undefined,
+    { entry, event, topic }: WatchedTopic,
+    signal: AbortSignal
+  ): Promise<boolean> => {
+    const watched = `watched workflow ${entry}'s ${event} runs (topic ${topic})`;
+    let waited = false;
+    try {
+      await claimRoleAgainOnBusy(
+        () => subscribeLegionNotice(sessionID, topic, envoyContext, claimToken),
+        { what: `subscription of ${watched}`, again: "subscribing it again" },
+        {
+          log: (line, error) => {
+            logger.warn(`[legion] ${line}`);
+            if (waited) return;
+            waited = true;
+            tellWatched(
+              `legion: Envoy answered the subscription of ${watched} 503, so this session does not hear those runs yet; the controller subscribes it again after a growing wait, and says so once Envoy takes it. Envoy's answer: ${messageFor(error)}`
+            );
+          },
+          signal,
+        }
+      );
+    } catch (error) {
+      if (signal.aborted) return false;
+      if (claimRefusedForStop(error)) {
+        stopped.abort();
+        return false;
+      }
+      if (refusedForRoleNotHeld(error)) {
+        logger.warn(
+          `[legion] this session holds Envoy role ${claimToken} no more, so it subscribes no more of its watched workflows' topics: ${messageFor(error)}`
+        );
+        return false;
+      }
+      logger.error(
+        `[legion] the subscription of ${watched} failed, and it is not made again: ${messageFor(error)}`
+      );
+      tellWatched(
+        `legion: the subscription of ${watched} failed, so this session does not hear those runs until the controller claims its role again: ${messageFor(error)}`
+      );
+      return true;
+    }
+    if (signal.aborted) return false;
+    if (waited) {
+      tellWatched(
+        `legion: Envoy answered the subscription of ${watched} without a 503 at last; this session hears those runs now, unless Envoy's own "Envoy topics refused" notice names that topic.`
+      );
+    }
+    return true;
+  };
+
+  /**
+   * The watched workflows of a claim that has just finished (`claimWith`), each topic subscribed
+   * after the one before it (`subscribeWatchedTopic`), in a task of its own that the claim does
+   * not wait for: nothing Envoy answers about a watched topic reaches the claim, so none exits the
+   * process, costs the role or another topic, or holds back the daemon's ready, whose registration
+   * deadline would retire a controller that never reported ready while an edge listener withheld
+   * its GitHub topics. A list other than the one the session knows of (`watchedListKnown`) is told
+   * first: the session's prompt names the list of this process's first registration.
+   */
+  const subscribeWatchedWorkflows = (
+    sessionID: string,
+    claimToken: string,
+    envoyContext: SessionContext | undefined,
+    watched: WatchedWorkflows
+  ): void => {
+    if (watched.listed !== watchedListKnown) {
+      tellWatched(
+        `legion: the daemon now names this controller's watched workflows as ${watched.listed}, where this session knew them as ${watchedListKnown ?? "none"} (its prompt names the list of this process's first registration); this session hears the completed default-branch runs of the new list's entries and events.`
+      );
+      watchedListKnown = watched.listed;
+    }
+    const subscriptions = new AbortController();
+    watchedSubscriptions = subscriptions;
+    const signal = AbortSignal.any([stopped.signal, subscriptions.signal]);
+    void (async () => {
+      for (const watchedTopic of watched.topics) {
+        if (signal.aborted) return;
+        if (
+          !(await subscribeWatchedTopic(sessionID, claimToken, envoyContext, watchedTopic, signal))
+        )
+          return;
+      }
+    })();
+  };
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
     claimsQueued += 1;
@@ -229,6 +397,13 @@ export function createControllerSession(
    * stop has ended (`claimOnce`). A root architect's or phase worker's pane carries a boot token
    * too, its own claim's: `/legion-claim-controller` run there is a takeover by hand like any
    * other, which needs the capability and stops before any daemon call without it.
+   *
+   * Either launch form, once its claim is done (the daemon's controller after its ready), follows
+   * the project's watched workflows its registration names (`watchedWorkflows`): one
+   * default-branch topic for each event of each entry, the completed runs of that workflow on its
+   * repository's default branch, for as long as it holds the role. They are subscribed in a task
+   * the claim does not wait for (`subscribeWatchedWorkflows`), so nothing Envoy answers about one
+   * of them fails the claim or exits the process.
    *
    * One claim runs at a time, in the order they were asked for: each registration replaces the
    * controller secret the daemon holds, so two claims racing could leave this session holding the
@@ -365,6 +540,12 @@ export function createControllerSession(
     controllerSessionID = sessionID;
     controllerTranscript = launched ? sessionFile : undefined;
     progress.registered = true;
+    // The registration replaces the one the watched subscriptions running now were made for, and
+    // the list the first registration names is the one the session's prompt names.
+    watchedSubscriptions?.abort();
+    watchedSubscriptions = undefined;
+    const watched = watchedWorkflowsOf(registration);
+    watchedListKnown ??= watched.listed;
     const envoyContext = "setInterval" in context ? context : undefined;
     // Once per process, ever, and before the role claim and the subscription below, so no card on
     // the role's lane and no wake on the controller topic can race the start turn for the one
@@ -455,7 +636,7 @@ export function createControllerSession(
             envoyContext,
             registration.replaces
           ).catch(heardStop),
-        registration.claimToken,
+        roleClaimWords(registration.claimToken),
         supervised && startedBy === "daemon"
           ? {
               log: (line, error) => {
@@ -538,6 +719,10 @@ export function createControllerSession(
     // A re-claim's refusal or hand-over the widget still shows is out of date once a claim succeeds.
     claimWidget?.clear();
     claimWidget = undefined;
+    // The project's watched workflows, once the rest of the claim is done: after the ready, or
+    // for the operator's controller after its notice topic, and in a task the claim does not wait
+    // for (`subscribeWatchedWorkflows`).
+    subscribeWatchedWorkflows(sessionID, registration.claimToken, envoyContext, watched);
   };
 
   /**

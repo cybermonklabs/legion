@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   controllerToken,
+  githubDefaultBranchWorkflowSubject,
   LISTENER_CALL_ATTEMPTS,
   legionControllerNoticeSubject,
   ROLE_TOPIC_PREFIX,
@@ -12,6 +13,7 @@ import {
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import { LegionHealthResponse } from "@legion/contracts/legion-api";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import {
   type Block,
   type Cleanup,
@@ -944,6 +946,12 @@ interface ControllerInbound {
    * controller's registered topic (`slackMentionTopic`) covers.
    */
   storeMention(channel: string): StoredMessage;
+  /**
+   * One completed run of a workflow, stored and not relayed, on `subject`, the default-branch
+   * topic Envoy publishes such a run's copy on (`githubDefaultBranchWorkflowSubject`), which names
+   * the run's event last.
+   */
+  storeWorkflowRun(subject: string): StoredMessage;
 }
 
 async function controllerInbound(nats: string): Promise<ControllerInbound> {
@@ -1032,6 +1040,20 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
         trace_id: randomUUID(),
       }
     );
+  const storeWorkflowRun = (subject: string): StoredMessage =>
+    store(subject, `workflow run RUN-${randomUUID().slice(0, 8)} completed: failure`, {
+      event_id: randomUUID(),
+      source: "github",
+      source_event_id: `github-${randomUUID()}`,
+      dedupe_key: `github:workflow_run:${randomUUID()}`,
+      issued_at: Date.now(),
+      payload: JSON.stringify({
+        conclusion: "failure",
+        event: subject.split(".").at(-1),
+        branch: "main",
+      }),
+      trace_id: randomUUID(),
+    });
   return {
     noticeSubject,
     card(sid, label) {
@@ -1083,6 +1105,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     fault: () => noticeFault,
     storeNotice,
     storeMention,
+    storeWorkflowRun,
   };
 }
 
@@ -2374,6 +2397,165 @@ test.skipIf(skip)(
       expect(conversation(request)).not.toContain(afterNotice.summary);
       expect(conversation(request)).not.toContain(afterMention.summary);
     }
+  },
+  CASE_TIMEOUT_MS
+);
+
+// The real pair's proof of the controller's watched workflows. The daemon names the project's
+// watched workflows in the controller's registration (`watchedWorkflows`), here two entries, the
+// first `@schedule`, and the controller follows one default-branch topic for each event an entry
+// names once the rest of its claim is done, for as long as it holds its role. So a run's copy
+// stored on the first entry's `….completed.schedule` reaches the session through its own
+// consumer, and a copy of a run of that same workflow stored on `….completed.push`, an event the
+// entry does not name, is one the session follows no topic for: it drops that frame itself, as it
+// drops a frame of any topic it does not follow, and the frame relayed behind it is read. The
+// edge's answers about the second entry's topics leave the claim as it is: the topic of one event
+// it refuses for the session's projects (403 `repository_not_in_project`), which the session drops
+// and is told of, and the topic of the other it withholds once (503 `repositories_unknown`), which
+// the controller registers again after a wait and the edge then takes. The role, the notice lane
+// and the first entry's topic stay through both.
+test.skipIf(skip)(
+  "the controller's watched topics reach the session through its consumer, a run of an event its entry does not name does not, and a refused or withheld topic leaves its claim",
+  async () => {
+    const lane = legionControllerNoticeSubject(PROJECT);
+    const scheduled = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "schedule"
+    );
+    const unnamedEvent = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "push"
+    );
+    const refusedTopic = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "deploy.yml",
+      "completed",
+      "push"
+    );
+    const withheldTopic = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "deploy.yml",
+      "completed",
+      "workflow_dispatch"
+    );
+    const fixture: unknown = JSON.parse(
+      await readFile(
+        path.resolve(
+          import.meta.dir,
+          "../../contracts/fixtures/daemon-api/register-controller.json"
+        ),
+        "utf8"
+      )
+    );
+    const inbound = await controllerInbound(setup().nats);
+    /** The topics of every registration the stand-in accepted, in order. */
+    const accepted: string[][] = [];
+    /** Every topic a removal from the registry named (`/v1/interests/unsubscribe`). */
+    const unregistered: string[] = [];
+    let refused = 0;
+    let withheld = 0;
+    let sid: string | undefined;
+    const session = await startDaemonController({
+      register: () =>
+        Response.json({
+          ...(fixture as object),
+          watchedWorkflows: [
+            { owner: "acme", repo: "widgets", workflow: "nightly.yaml", events: ["schedule"] },
+            {
+              owner: "acme",
+              repo: "gadgets",
+              workflow: "deploy.yml",
+              events: ["push", "workflow_dispatch"],
+            },
+          ],
+        }),
+      onRoleClaim: (claimed) => {
+        sid = claimed;
+      },
+      onRegistration: (_claimed, topics) => {
+        if (topics.includes(refusedTopic)) {
+          refused += 1;
+          return Response.json(projectRefusal([refusedTopic]), { status: 403 });
+        }
+        // Every attempt of the first registration that carries the topic: the client sends a
+        // registration the listener answers 503 once more before it fails.
+        if (topics.includes(withheldTopic) && withheld < LISTENER_CALL_ATTEMPTS) {
+          withheld += 1;
+          return Response.json(
+            {
+              error: "the project's repositories could not be read",
+              reason: "repositories_unknown",
+            },
+            { status: 503 }
+          );
+        }
+        accepted.push([...topics]);
+        return undefined;
+      },
+      onUnsubscribe: (topics) => unregistered.push(...topics),
+    });
+    const claimed = await session.until("the controller role's claim", () => sid);
+    await session.until("the registration that takes the withheld topic after its wait", () =>
+      accepted.some((topics) => topics.includes(withheldTopic)) ? true : undefined
+    );
+    expect(refused).toBeGreaterThan(0);
+    expect(withheld).toBe(LISTENER_CALL_ATTEMPTS);
+
+    // The daemon's start prompt and the turn it runs: the session's startup phase ends there, so
+    // what arrives after it is an idle session's to read.
+    session.deliver(START_MESSAGE);
+    const start = await session.nextTurn("the start turn's model request");
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
+    start.reply("Start procedure done.");
+    let answered = 1;
+    /** Answers every model request in order until the session has settled with `done` true. */
+    const settled = async (what: string, done: () => boolean = () => true): Promise<void> => {
+      for (;;) {
+        const next = await session.until(`the next model request, or ${what}`, async () => {
+          if (session.turns.length > answered) return "request";
+          return done() && (await session.state()).isSettled ? "settled" : undefined;
+        });
+        if (next === "settled") return;
+        answered += 1;
+        (await session.nextTurn(`model request ${answered}`)).reply(`Reply ${answered}.`);
+      }
+    };
+    await settled("the session settled after the start turn");
+
+    // The copy on the topic of an event the entry does not name goes first, and the scheduled
+    // run's copy behind it: once the second is read, the first had its turn at the session.
+    const unnamed = inbound.storeWorkflowRun(unnamedEvent);
+    await unnamed.deliver(claimed);
+    const run = inbound.storeWorkflowRun(scheduled);
+    await run.deliver(claimed);
+    await settled("the session settled having read the scheduled run", () =>
+      session.turns.some(({ request }) => conversation(request).includes(run.summary))
+    );
+
+    /** Every transcript line that holds `text`: what a reader of the session sees of it. */
+    const written = async (text: string): Promise<string[]> =>
+      (await session.transcriptLines()).filter((line) => line.includes(text));
+    const runWritten = await written(run.summary);
+    expect(runWritten).toHaveLength(1);
+    expect(runWritten[0]).toContain('"custom_message"');
+    expect(await written(unnamed.summary)).toEqual([]);
+    for (const { request } of session.turns) {
+      expect(conversation(request)).not.toContain(unnamed.summary);
+    }
+
+    // The claim stands: nothing of the role was handed back, no accepted registration carries the
+    // refused topic, and the newest carries the lane and both topics the edge took.
+    expect(unregistered).not.toContain(lane);
+    expect(accepted.filter((topics) => topics.includes(refusedTopic))).toEqual([]);
+    expect(accepted.at(-1)).toEqual(expect.arrayContaining([lane, scheduled, withheldTopic]));
   },
   CASE_TIMEOUT_MS
 );

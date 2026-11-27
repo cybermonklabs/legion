@@ -20,7 +20,7 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * `task` subagent, so a per-instance callback stored here would be the last instance's, not the
  * pane's (docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md).
  */
-export const ENVOY_PLUGIN_INTERFACE_VERSION = 6;
+export const ENVOY_PLUGIN_INTERFACE_VERSION = 7;
 export const ENVOY_PLUGIN_INTERFACE_KEY = Symbol.for("legion.pi-shared.envoy-plugin-interface");
 /** Set by the Legion entry's factory to `{ from: import.meta.url, envoyInterface: <version> }`;
  * the daemon's boot gate reads it from `globalThis` to prove the Legion plugin loaded. */
@@ -100,6 +100,7 @@ export function envoyPluginInterface(): EnvoyPluginInterface {
       managedSessions: new Set(),
       regained: undefined,
       slackRoleOwned: false,
+      watchedWorkflowsRoleOwned: false,
     },
     injectedUserTurns: new Map(),
     bootstrappedSession: { file: undefined },

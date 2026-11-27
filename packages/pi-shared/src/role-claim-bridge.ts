@@ -98,7 +98,45 @@ export type LegionRoleClaimBridge = {
    * its listed channels only through the subscriptions its role owns, which it never registers.
    */
   slackRoleOwned: boolean;
+  /**
+   * Whether this process is a Legion controller, of either launch form, whose watched workflows'
+   * default-branch topics (`isGithubDefaultBranchWorkflowSubject` of `@legion/contracts`) belong
+   * to the controller role: the Legion entry's factory sets it from its environment, in that
+   * process alone, so it is the same in every instance; false in any other process. While it is
+   * true, the Envoy entry restores a resumed session's registered interests after unsubscribing
+   * every such topic among them from the listener and dropping it, in the same removal as the
+   * Slack topics `slackRoleOwned` drops: an edge listener judges the GitHub topics of the
+   * session's stored row at each registration, so a restored one would refuse the role claim and
+   * every other topic while the edge cannot read the project's repositories, and the controller
+   * hears its watched workflows only through the subscriptions its role owns, which it never
+   * registers.
+   */
+  watchedWorkflowsRoleOwned: boolean;
 };
+
+/**
+ * Why a subscription that lasts while the session holds a role (`LegionNoticeSubscription`'s
+ * `whileHolding`) is refused when the session does not hold that role: the Envoy entry throws it,
+ * and the Legion controller reads it (`refusedForRoleNotHeld`) to stop subscribing its role's
+ * topics with one log line rather than giving each of them up.
+ */
+export class RoleNotHeldError extends Error {
+  override readonly name = "RoleNotHeldError";
+
+  constructor(sessionID: string, role: string) {
+    super(`Envoy session ${sessionID} does not hold role ${role} for a notice subscription`);
+  }
+}
+
+/**
+ * Whether `error` is a subscription refused because the session does not hold the role it names
+ * (`RoleNotHeldError`). It is read by its name, not by class, because it crosses plugin bundles:
+ * the Envoy entry throws it from its own copy of this module, and the Legion entry reads it from
+ * another (`listenerAskedToClaimAgain` in `./legion-claim-core`).
+ */
+export function refusedForRoleNotHeld(error: unknown): boolean {
+  return error instanceof Error && error.name === "RoleNotHeldError";
+}
 
 /** The bridge, read from the interface at each call: a consumer never keeps the object, so the
  * publish order of the two plugins is irrelevant. */
