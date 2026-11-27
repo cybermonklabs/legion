@@ -428,72 +428,70 @@ test.each([
     opener:
       ':::ask{#b-1 urgency="high" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[&#x22;Hold&#x22;]" answer="Hold for the review."}',
   },
-])("a saved version of an answered ask draws who answered and the answer: $name", async ({
-  answer,
-  attrs,
-  chosen,
-  opener,
-}) => {
-  const answered: Ask = {
-    ...blockAsk,
-    answer: {
-      at: "2026-11-16T09:00:00Z",
-      selected: ["Ship"],
-      text: "Ship on Friday.",
-      user: "bob",
-    },
-    state: "answered",
-  };
-  const queryClient = createQueryClient();
-  queryClient.setQueryData(["asks", "CORE-1"], [answered]);
-  issueAskRows = [{ ...answered, last_reply: null }];
-  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
-    authors: [{ id: "alice", kind: "user" }],
-    created_at: "2026-11-16T09:01:00Z",
-    markdown: `${opener}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n`,
-    markdown_tree: {
-      content: [{ content: [{ text: "The saved version", type: "text" }], type: "paragraph" }],
-      type: "doc",
-    },
-    named: false,
-    number: 1,
-    summary: null,
-  });
-  const { editors, rerender, sync, view } = renderProofDocument({ queryClient });
-
-  try {
-    await sync();
-    await waitFor(() => expect(editors).toHaveLength(1));
-    rerender({ version: 1 });
-    await waitFor(() => expect(editors).toHaveLength(2));
-    const editor = editors[1];
-    if (editor === undefined) throw new Error("the version's editor is missing");
-    const nodeViews = editor.viewProps.nodeViews as Record<
-      string,
-      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
-    >;
-    const construct = nodeViews.ask;
-    if (construct === undefined) throw new Error("the ask node view was not installed");
-    act(() => {
-      editor.root.append(construct(askNode({ ...attrs, urgency: "high" })).dom);
+])(
+  "a saved version of an answered ask draws who answered and the answer: $name",
+  async ({ answer, attrs, chosen, opener }) => {
+    const answered: Ask = {
+      ...blockAsk,
+      answer: {
+        at: "2026-11-16T09:00:00Z",
+        selected: ["Ship"],
+        text: "Ship on Friday.",
+        user: "bob",
+      },
+      state: "answered",
+    };
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(["asks", "CORE-1"], [answered]);
+    issueAskRows = [{ ...answered, last_reply: null }];
+    queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+    queryClient.setQueryData(["artifact", "artifact-1", "version", 1], {
+      authors: [{ id: "alice", kind: "user" }],
+      created_at: "2026-11-16T09:01:00Z",
+      markdown: `${opener}\nShould we ship?\n\n- Ship: Release it\n- Hold\n:::\n`,
+      markdown_tree: {
+        content: [{ content: [{ text: "The saved version", type: "text" }], type: "paragraph" }],
+        type: "doc",
+      },
+      named: false,
+      number: 1,
+      summary: null,
     });
-    const section = editor.root.querySelector("section[data-dispatch-ask-block]");
-    if (section === null) throw new Error("the ask block shell was not mounted");
-    expect(section.closest('[data-testid="version-view"]')).not.toBeNull();
-    const block = within(section as HTMLElement);
-    expect(await block.findByText("Answered by bob")).toBeDefined();
-    expect(section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(answer);
-    // A row's label draws later, through `MarkdownBody`; which row is marked is drawn at once.
-    expect(
-      [...section.querySelectorAll("[data-selected]")].map((row) =>
-        row.getAttribute("data-selected")
-      )
-    ).toEqual([...chosen]);
-  } finally {
-    view.unmount();
+    const { editors, rerender, sync, view } = renderProofDocument({ queryClient });
+
+    try {
+      await sync();
+      await waitFor(() => expect(editors).toHaveLength(1));
+      rerender({ version: 1 });
+      await waitFor(() => expect(editors).toHaveLength(2));
+      const editor = editors[1];
+      if (editor === undefined) throw new Error("the version's editor is missing");
+      const nodeViews = editor.viewProps.nodeViews as Record<
+        string,
+        (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+      >;
+      const construct = nodeViews.ask;
+      if (construct === undefined) throw new Error("the ask node view was not installed");
+      act(() => {
+        editor.root.append(construct(askNode({ ...attrs, urgency: "high" })).dom);
+      });
+      const section = editor.root.querySelector("section[data-dispatch-ask-block]");
+      if (section === null) throw new Error("the ask block shell was not mounted");
+      expect(section.closest('[data-testid="version-view"]')).not.toBeNull();
+      const block = within(section as HTMLElement);
+      expect(await block.findByText("Answered by bob")).toBeDefined();
+      expect(section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(answer);
+      // A row's label draws later, through `MarkdownBody`; which row is marked is drawn at once.
+      expect(
+        [...section.querySelectorAll("[data-selected]")].map((row) =>
+          row.getAttribute("data-selected")
+        )
+      ).toEqual([...chosen]);
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 test("the open-decision link names its block as encodeBlockId writes it, in its href and in the hash it sets", async () => {
   const user = userEvent.setup();
@@ -672,63 +670,64 @@ test.each([
       version: 2,
     },
   },
-])("a project document's copy of an ask on another of its project's documents shows its source's state and answer from $name", async ({
-  text,
-}) => {
-  const notes: Artifact = {
-    ...artifact,
-    id: "artifact-notes",
-    issue_key: null,
-    name: "notes.md",
-    primary: false,
-    ref_key: "CORE/notes",
-    slug: "notes",
-  };
-  const queryClient = createQueryClient();
-  queryClient.setQueryData(["artifact", notes.id], notes);
-  // The document's own asks hold no row for the copy: its source is on the project's plan, and no
-  // route lists a project's asks.
-  queryClient.setQueryData(["artifact", notes.id, "asks"], []);
-  queryClient.setQueryData(["artifact", notes.id, "text"], text);
-  const { editors, sync, view } = renderProofDocument({
-    document: notes,
-    owner: { artifactId: notes.id, kind: "document", project: "CORE", slug: "notes" },
-    queryClient,
-  });
-
-  try {
-    await sync();
-    await waitFor(() => expect(editors).toHaveLength(1));
-    const editor = editors[0];
-    if (editor === undefined) throw new Error("editor missing");
-    const nodeViews = editor.viewProps.nodeViews as Record<
-      string,
-      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
-    >;
-    const construct = nodeViews.ask;
-    if (construct === undefined) throw new Error("the ask node view was not installed");
-    // The copy as the live tree holds it once the fleet is one build: no state, no source.
-    act(() => {
-      editor.root.append(construct(askNode({ urgency: "high" })).dom);
+])(
+  "a project document's copy of an ask on another of its project's documents shows its source's state and answer from $name",
+  async ({ text }) => {
+    const notes: Artifact = {
+      ...artifact,
+      id: "artifact-notes",
+      issue_key: null,
+      name: "notes.md",
+      primary: false,
+      ref_key: "CORE/notes",
+      slug: "notes",
+    };
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(["artifact", notes.id], notes);
+    // The document's own asks hold no row for the copy: its source is on the project's plan, and no
+    // route lists a project's asks.
+    queryClient.setQueryData(["artifact", notes.id, "asks"], []);
+    queryClient.setQueryData(["artifact", notes.id, "text"], text);
+    const { editors, sync, view } = renderProofDocument({
+      document: notes,
+      owner: { artifactId: notes.id, kind: "document", project: "CORE", slug: "notes" },
+      queryClient,
     });
-    const section = editor.root.querySelector("section[data-dispatch-ask-block]");
-    if (section === null) throw new Error("the ask block shell was not mounted");
-    const block = within(section as HTMLElement);
-    expect((await block.findByText(/Copied from/)).textContent).toBe(
-      "Copied from CORE/plan, answered there"
-    );
-    expect(block.getByRole("link", { name: "CORE/plan" })).toHaveAttribute(
-      "href",
-      "/projects/CORE/documents/plan#b-b-1"
-    );
-    expect(block.getByText("Answered by bob")).toBeDefined();
-    expect(section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
-      "After the fix & the review."
-    );
-    expect(section.getAttribute("data-dispatch-ask-state")).toBe("answered");
-    // The copy has no ask of its own to answer.
-    expect(block.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
+
+    try {
+      await sync();
+      await waitFor(() => expect(editors).toHaveLength(1));
+      const editor = editors[0];
+      if (editor === undefined) throw new Error("editor missing");
+      const nodeViews = editor.viewProps.nodeViews as Record<
+        string,
+        (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+      >;
+      const construct = nodeViews.ask;
+      if (construct === undefined) throw new Error("the ask node view was not installed");
+      // The copy as the live tree holds it once the fleet is one build: no state, no source.
+      act(() => {
+        editor.root.append(construct(askNode({ urgency: "high" })).dom);
+      });
+      const section = editor.root.querySelector("section[data-dispatch-ask-block]");
+      if (section === null) throw new Error("the ask block shell was not mounted");
+      const block = within(section as HTMLElement);
+      expect((await block.findByText(/Copied from/)).textContent).toBe(
+        "Copied from CORE/plan, answered there"
+      );
+      expect(block.getByRole("link", { name: "CORE/plan" })).toHaveAttribute(
+        "href",
+        "/projects/CORE/documents/plan#b-b-1"
+      );
+      expect(block.getByText("Answered by bob")).toBeDefined();
+      expect(section.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
+        "After the fix & the review."
+      );
+      expect(section.getAttribute("data-dispatch-ask-state")).toBe("answered");
+      // The copy has no ask of its own to answer.
+      expect(block.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
   }
-});
+);

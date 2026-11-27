@@ -1000,73 +1000,80 @@ test.each([
     markdown: `${answeredVersion}\nAn opener, quoted:\n\n\`\`\`\n:::ask{#b-1 state="open"}\n\`\`\`\n`,
     suffix: ", beside a fenced code block that quotes its opener",
   },
-])("an approval draws the answer of an answered ask in a version this build wrote$suffix", async ({
-  markdown: latest,
-}) => {
-  await warmMarkdownRenderer();
-  const answered: Ask = {
-    anchor: null,
-    answer: {
-      at: "2026-11-16T09:00:00Z",
-      selected: ["Ship"],
-      text: "Ship on Friday.",
-      user: "bob",
-    },
-    author: { id: "01a086ad", kind: "session", origin: { session_title: "Architect for CORE-1" } },
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
-    block_id: "b-1",
-    created_at: "2026-11-16T08:00:00Z",
-    edited_at: null,
-    id: "ask-b-1",
-    issue_key: "CORE-1",
-    kind: "question",
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ description: "Release it", label: "Ship" }, { label: "Hold" }],
-    question: "Should we ship?",
-    state: "answered",
-    urgency: "high",
-  };
-  // The server's read of the ask, cached under the document page's keys and answered by the
-  // network too, whichever of the owner's reads the pane takes it from.
-  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
-    { ...answered, last_reply: null },
-  ]);
-  const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([answered]);
-  const { view } = renderPane({
-    ask: approvalAsk(),
-    createEditor: drawAskBlock(latest, {
-      answered_at: "2026-11-16T09:00:00Z",
-      answered_by: "bob",
+])(
+  "an approval draws the answer of an answered ask in a version this build wrote$suffix",
+  async ({ markdown: latest }) => {
+    await warmMarkdownRenderer();
+    const answered: Ask = {
+      anchor: null,
+      answer: {
+        at: "2026-11-16T09:00:00Z",
+        selected: ["Ship"],
+        text: "Ship on Friday.",
+        user: "bob",
+      },
+      author: {
+        id: "01a086ad",
+        kind: "session",
+        origin: { session_title: "Architect for CORE-1" },
+      },
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+      block_id: "b-1",
+      created_at: "2026-11-16T08:00:00Z",
+      edited_at: null,
+      id: "ask-b-1",
+      issue_key: "CORE-1",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [{ description: "Release it", label: "Ship" }, { label: "Hold" }],
+      question: "Should we ship?",
       state: "answered",
-    }),
-    seed: (client) => {
-      seedDocument(
-        client,
-        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
-        { 4: latest }
-      );
-      client.setQueryData(["asks", "CORE-1"], [answered]);
-      client.setQueryData(["artifact", "artifact-1", "asks"], [answered]);
-    },
-  });
+      urgency: "high",
+    };
+    // The server's read of the ask, cached under the document page's keys and answered by the
+    // network too, whichever of the owner's reads the pane takes it from.
+    const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
+      { ...answered, last_reply: null },
+    ]);
+    const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([answered]);
+    const { view } = renderPane({
+      ask: approvalAsk(),
+      createEditor: drawAskBlock(latest, {
+        answered_at: "2026-11-16T09:00:00Z",
+        answered_by: "bob",
+        state: "answered",
+      }),
+      seed: (client) => {
+        seedDocument(
+          client,
+          document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+          { 4: latest }
+        );
+        client.setQueryData(["asks", "CORE-1"], [answered]);
+        client.setQueryData(["artifact", "artifact-1", "asks"], [answered]);
+      },
+    });
 
-  try {
-    const drawn = await screen.findByLabelText("Document version 4");
-    expect(await within(drawn).findByText("Answered by bob")).toBeDefined();
-    await waitFor(() =>
-      expect(drawn.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe("Ship on Friday.")
-    );
-  } finally {
-    view.unmount();
-    listIssueAsks.mockRestore();
-    listArtifactAsks.mockRestore();
+    try {
+      const drawn = await screen.findByLabelText("Document version 4");
+      expect(await within(drawn).findByText("Answered by bob")).toBeDefined();
+      await waitFor(() =>
+        expect(drawn.querySelector("[data-dispatch-ask-answer]")?.textContent).toBe(
+          "Ship on Friday."
+        )
+      );
+    } finally {
+      view.unmount();
+      listIssueAsks.mockRestore();
+      listArtifactAsks.mockRestore();
+    }
   }
-});
+);
 
 // The same version as the row above, answered the way a pod of the build before this one
 // answers it: its markdown, and no reading. The column draws it by parsing that text

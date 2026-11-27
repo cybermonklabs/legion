@@ -2345,33 +2345,43 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("unset: CreateStaged true")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_CREATE_STAGED")
-			// Its reader: a process started with it takes a plan that puts parent, which its
-			// manifest stages for the next version, into a document that holds none. The same
-			// process started without it refuses that plan. A subprocess runs the shipped manifest
-			// alone, so this case writes the element that manifest stages now, and moves to the next
-			// staged element at each version that makes parent creatable; pmdoc's
-			// TestATestProcessCreatesAStagedElementOnlyWhenTold holds the hook on a made-up element.
+			// Its reader: a process started with it takes a document that puts a decision block,
+			// which its manifest stages for the next version, into a document that holds none. The
+			// same process started without it refuses that document, as a typed block it reads but
+			// cannot write yet. A subprocess runs the shipped manifest alone, so this case writes the
+			// element the shipped manifest stages now: decision, the one of its staged elements that
+			// stands in a document by itself, since a reading sits in a decision or an ask and shaped
+			// is an attribute of an ask. It moves to the next staged element at the version that
+			// makes decision creatable; pmdoc's TestATestProcessCreatesAStagedElementOnlyWhenTold
+			// holds the hook on a made-up element.
 			t.Run("process", func(t *testing.T) {
-				plan, err := json.Marshal(map[string]string{
-					"name":    "plan.md",
-					"content": ":::plan_task{#default}\nShip it.\n:::\n\n:::plan_task{#t1 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nWrite it.\n:::\n",
+				document, err := json.Marshal(map[string]string{
+					"name":    "decision.md",
+					"content": "The day it ships.\n\n:::decision{#decide}\nWe chose Friday.\n:::\n",
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
 				for _, run := range []struct {
-					env    map[string]string
-					status int
+					env     map[string]string
+					status  int
+					refusal string
 				}{
-					{env: nil, status: http.StatusBadRequest},
+					{env: nil, status: http.StatusBadRequest, refusal: `this Dispatch build reads typed block "decision" but cannot write it yet`},
 					{env: map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, status: http.StatusCreated},
 				} {
 					database := storetest.Open(t)
 					process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: run.env})
 					process.waitHealthy(t)
 					process.createProject(t, "ACME", "Acme")
-					key, _ := process.createIssueIn(t, "ACME", "A plan under its task", "Ship it.")
-					process.call(t, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", string(plan), run.status)
+					key, _ := process.createIssueIn(t, "ACME", "A decision in a document of its own", "Ship it.")
+					answer := process.send(t, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", string(document), asUser(dispatchTestLogin))
+					var refused struct {
+						Error string `json:"error"`
+					}
+					if err := json.Unmarshal(answer.body, &refused); err != nil || answer.status != run.status || !strings.Contains(refused.Error, run.refusal) {
+						t.Errorf("%v: the post of a document holding a decision answered %s, want %d %q", run.env, answer, run.status, run.refusal)
+					}
 				}
 			})
 		},
