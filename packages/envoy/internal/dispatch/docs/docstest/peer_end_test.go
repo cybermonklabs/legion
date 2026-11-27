@@ -5,11 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stubRoom is a websocket server that reads the peer's first frame, its sync step 1, and then
@@ -49,13 +50,14 @@ func TestAReaderThatCannotApplyAFrameGivesUpWithItsSocketOpen(t *testing.T) {
 			t.Errorf("send the frame: %v", err)
 			return
 		}
-		connection.SetReadDeadline(time.Now().Add(time.Minute))
+		// No deadline of its own: the read ends on the peer's write, or on the peer's close at
+		// the test's end.
 		if _, message, err := connection.ReadMessage(); err == nil {
 			received <- message
 		}
 	})
 	peer := Dial(t, url, nil, "doc", crdt.New())
-	<-peer.Ended
+	testwait.Receive(t, "the peer's reader to stop on the frame it cannot apply", peer.Ended)
 	gaveUp, err := peer.ReaderGaveUp()
 	if !gaveUp || err == nil || !strings.Contains(err.Error(), "sync frame it could not apply") {
 		t.Fatalf("ReaderGaveUp() = %t, %v; want true and the sync frame it could not apply", gaveUp, err)
@@ -69,11 +71,7 @@ func TestAReaderThatCannotApplyAFrameGivesUpWithItsSocketOpen(t *testing.T) {
 	if err := peer.AskForDocument(); err != nil {
 		t.Fatalf("write on the socket the reader gave up on: %v", err)
 	}
-	select {
-	case <-received:
-	case <-time.After(time.Minute):
-		t.Fatal("the room never received the peer's write: the socket was not open")
-	}
+	testwait.Receive(t, "the room to receive the peer's write on the socket the reader gave up on", received)
 }
 
 // A room that drops the connection ends it: the reader did not give up, and the drop is named.
@@ -83,7 +81,7 @@ func TestAConnectionTheRoomDropsIsNoReaderThatGaveUp(t *testing.T) {
 		connection.UnderlyingConn().Close() // no close frame
 	})
 	peer := Dial(t, url, nil, "doc", crdt.New())
-	<-peer.Ended
+	testwait.Receive(t, "the peer's reader to end on the dropped connection", peer.Ended)
 	if gaveUp, err := peer.ReaderGaveUp(); gaveUp {
 		t.Fatalf("ReaderGaveUp() = true (%v) for a connection the room dropped", err)
 	}

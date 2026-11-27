@@ -537,11 +537,13 @@ func keepUp(service *Service, artifactID string, peer *crdt.Doc, stopped <-chan 
 // has stopped, and fails the test in the second case, naming what stopped it. The wait has no
 // bound but the test binary's own (waitFor), so only a fact may end it: the room applying the
 // updates, or the reader ending, after which nothing the peer does reaches this wait again.
-// Waiting for the first fact alone held a soak whose peer the server had closed until the
-// package's -timeout (TestStoredOrderSoak, job 140239891619: two peers' writes failed with a
-// broken pipe, and the wait for the room never ended). The reader's end is asked first, and an
-// absent room is no answer: the room is gone only once its sockets are, so its absence leaves the
-// wait to the peer's end rather than passing a peer whose update never landed.
+// Waiting for the first fact alone holds a soak whose peer the server has closed until the
+// binary's deadline: a planted close did so at 150.03 s under -timeout 3m, and under CI's 60m it
+// would hold the leg for most of an hour. In job 140239891619, before waitFor lost its span, the
+// same close cost two 30 s waits (TestStoredOrderSoak: two peers' writes failed with a broken
+// pipe). The reader's end is asked first, and an absent room is no answer: the room is gone only
+// once its sockets are, so its absence leaves the wait to the peer's end rather than passing a
+// peer whose update never landed.
 func awaitPeerApplied(t *testing.T, service *Service, artifactID string, peer *docstest.Peer) {
 	t.Helper()
 	client := peer.Doc.ClientID()
