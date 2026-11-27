@@ -67,7 +67,7 @@ Before you act on one, read its five steps in `skill://legion-controller/referen
 A decision only a person may make is a `dispatch ask`. Every other request goes to the session whose work it is, as a Dispatch comment on the owning issue that mentions its role, and to no other session, such as a person's chief of staff. A tree architect's token is `issues.<ROOT>.architect.locator.claim`, else `legion-<project>-<root key, lower case>-architect`.
 
 - Merge or queue a pull request: not yours. Write to the architect of its tree, which enqueues one that no merger merges.
-- Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: file it as a clear defect. An apply window is a `dispatch ask`.
+- Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: file it as a clear defect. An upgrade (a newer Legion release, worker image or other tool) takes no ask, also when it restarts the daemon or replaces pods: you choose its apply window. Any other apply window is a `dispatch ask`.
 - Work, an investigation, a review, a decision or a status: read what you can reach yourself, and write the rest to its owner.
 - What another agent sent you: send no relay; that agent writes to the owner itself.
 - A person's request from outside Dispatch: write it to the architect of the tree it concerns, in their words.
