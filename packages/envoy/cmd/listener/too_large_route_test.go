@@ -86,13 +86,19 @@ func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 // headerBandText is a message for POST /v1/messages/publish on topic, of source dispatch under
 // idempotency key key, whose envelope, as the route builds it, is within the server's max payload
 // by itself and within the room the relay's frame headers take (bus.RelayFrameHeaderBytes), and
-// past the max payload by one byte with the Nats-Msg-Id header its publish carries: the band in
-// which only the route's count of that header refuses it before the publish. The header must then
-// be the larger reserve of the two. A message id of the usual length is not - an agent's minted key
-// is 40 bytes, and the relay's fixed header bytes are 264 - and only an envelope of source dispatch
-// earns one under a key of any length (contracts.DedupeKeyNamesTheUpstreamEvent), so the row sends
-// one under a long key (headerBandKey). The helper fails UNKNOWN when the envelope earns no message
-// id or its header is not the larger reserve, rather than leave the row passing on the frame's.
+// past the max payload by one byte with the Nats-Msg-Id header its publish carries: the band that
+// only a count of that header refuses. The header must then be the larger reserve of the two. A
+// message id of the usual length is not - an agent's minted key is 40 bytes, and the relay's fixed
+// header bytes are 264 - and only an envelope of source dispatch earns one under a key of any
+// length (contracts.DedupeKeyNamesTheUpstreamEvent), so the row sends one under a long key
+// (headerBandKey). The helper fails UNKNOWN when the envelope earns no message id or its header is
+// not the larger reserve, rather than leave the row passing on the frame's.
+//
+// The row holds the route's answer to such a message: 413 with nothing sent. It cannot tell which
+// count refused it, since the publish's own count of the same header (bus.Client.checkSend)
+// refuses the message before anything is sent too; taking the count out of the route's check
+// (bus.Client.TooLargeToPublish) leaves the row passing. That branch is held at the check itself
+// (internal/bus's TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt).
 func headerBandText(t *testing.T, topic, key string, maxPayload int) string {
 	t.Helper()
 	dedupeKey := publishDedupePrefix + key

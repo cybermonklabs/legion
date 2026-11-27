@@ -217,6 +217,32 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 		t.Fatalf("the publish of a message one byte past the bound answered %v, want the check's own refusal %q", published, checked)
 	}
 
+	// The message id header is the larger reserve once the dedupe key outgrows the relay's fixed
+	// header bytes, which a Dispatch envelope's key may: then the header is the bound, exact to the
+	// byte. No route answer can show this branch apart from the publish's own count of the same
+	// header (checkSend), which refuses the same message before anything is sent, so it is held
+	// here, at the check itself.
+	t.Run("a message id that outgrows the relay's headers", func(t *testing.T) {
+		long := func(payload string) contracts.Envelope {
+			item := sizeEnvelope(topic, payload)
+			item.DedupeKey = "dispatch-size-" + strings.Repeat("k", 300)
+			return item
+		}
+		header := messageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(long("")))})
+		if header <= reserved {
+			t.Fatalf("UNKNOWN: the message id header takes %d bytes and the relay's headers %d: the row wants the message id the larger reserve", header, reserved)
+		}
+		fixed := encodedSize(t, long("p")) - 1
+		atBound, pastBound := long(strings.Repeat("p", rig.maxPayload-header-fixed)), long(strings.Repeat("p", rig.maxPayload-header-fixed+1))
+		if err := rig.client.TooLargeToPublish(atBound); err != nil {
+			t.Fatalf("a message of exactly the max payload with its %d-byte message id header was refused: %v", header, err)
+		}
+		err := rig.client.TooLargeToPublish(pastBound)
+		if says := sizeText(encodedSize(t, pastBound)+header, rig.maxPayload); !errors.Is(err, ErrTooLarge) || !strings.Contains(err.Error(), says) {
+			t.Fatalf("a message one byte past the max payload with its message id header: %v, want ErrTooLarge saying %q", err, says)
+		}
+	})
+
 	t.Run("a client that has not connected", func(t *testing.T) {
 		unconnected, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(testnats.SeedOnly("")), WithConnectInBackground())
 		if err != nil {
