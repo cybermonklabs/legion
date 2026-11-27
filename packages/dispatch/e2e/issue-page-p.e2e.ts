@@ -1533,9 +1533,9 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       "a focus given back to the heading opened the title's editor"
     ).toBe("The header's issue");
 
-    // The palette offers Close issue and Set priority P2, and not Reopen issue. An action shows
-    // once the words typed are in its name (design v3, state 1): `e` is in all three, so one
-    // list says which of them is offered.
+    // The palette offers Close issue and Set priority P2, and not Reopen issue. The words typed
+    // narrow the actions to those whose name holds them (design v3, state 1): `e` is in all
+    // three, so one list says which of them is offered.
     await page.keyboard.press("Control+k");
     const search = page.getByRole("combobox", { name: "Search" });
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
@@ -3032,9 +3032,9 @@ test("the key card and the palette offer the approval chip's two keys while the 
     await focusThePage(page);
     await page.keyboard.press("Control+k");
     await expect(palette, "Control+k did not open the palette").toBeVisible();
-    // An action shows once the words typed are in its name (design v3, state 1): `e` is in both
-    // and in Create issue, which the palette offers anywhere on the page, so one list says
-    // whether either is offered.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `e` is in both and in Create issue, which the palette offers anywhere on the page, so one
+    // list says whether either is offered.
     await search.fill("e");
     await expect(actions.getByRole("option", { name: "Create issue" })).toBeVisible();
     for (const [label] of lines) {
@@ -3114,7 +3114,7 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
       await page.keyboard.press("Control+k");
       const palette = page.getByRole("dialog", { name: "Search" });
       await expect(palette, "Control+k did not open the palette").toBeVisible();
-      // An action shows once its name is typed (design v3, state 1).
+      // The words typed narrow the actions to the row this step presses (design v3, state 1).
       await page.getByRole("combobox", { name: "Search" }).fill("close");
       await palette
         .getByRole("group", { name: "Actions" })

@@ -80,6 +80,11 @@ export interface GoingBar {
   /** Whether this Dispatch is known to have no answering model, which the bar says in the line
    *  on top's place (design v3, state 13); false until the capability read answers. */
   readonly answersOff: boolean;
+  /** Whether this Dispatch is known to have no deciding model, so the line on top is always Ask
+   *  and never File as a new issue (R2): the bar then offers words that matched nothing as a new
+   *  issue below the hits, as main does. False until the capability read answers, and false
+   *  for a deciding model that is configured, whether or not it answers in time. */
+  readonly decidesOff: boolean;
   /** The answer to draw beside the hits: undefined until the hits it sits beside are shown, but
    *  for the last answer drawn again as the bar opens, and for an answer to words the person
    *  typed past, which stays until the answer to the words in the box has something of its own
@@ -185,6 +190,7 @@ export function useGoingBar({
   return {
     answers,
     answersOff: capability.data !== undefined && !answers,
+    decidesOff: decision?.configured === false,
     deciding:
       asked && decision?.configured === true && decision.reachable && words !== "" && unsettled,
     enterLine: () => {

@@ -248,6 +248,7 @@ export type {
   MyReplyAgentRow,
   MyReplyRow,
   MyReplyThreadRow,
+  NewIssueSettings,
   OpenAskOwner,
   ParentStatusConflictIssue,
   PatchPriorityInput,

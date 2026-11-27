@@ -312,6 +312,15 @@ export const projectsQuery = () =>
     queryFn: () => api.listProjects(),
   });
 
+/** The two settings the bar reads before it offers a person's typed words as a new issue: the
+ *  label that issue carries and the session it is routed to. One read for the session: the
+ *  deployment changes it only by restarting. */
+export const newIssueSettingsQuery = () =>
+  queryOptions({
+    queryKey: ["new-issue-settings"],
+    queryFn: () => api.getNewIssueSettings(),
+  });
+
 /** What the command bar can do on this Dispatch (`GET /api/v1/going/capability`): whether it
  *  answers, whether it decides, and the session and label a new issue is filed under. It calls no
  *  model, and changes only with the deployment or as the answering model first takes or refuses

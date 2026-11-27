@@ -273,6 +273,7 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "known-session": "whether Dispatch holds any record of a session, and its title: no post",
   "legion-daemon": "a project's Legion daemon setting",
   "machine-logins": "the reader's machine logins",
+  "new-issue-settings": "the label and session a new issue from the bar takes",
   priorities: "the priorities and the work under them",
   "priorities full": "the priorities and the work under them",
   "priorities history": "one priority's history of its own fields",

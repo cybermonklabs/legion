@@ -6,7 +6,8 @@ import { asUser } from "./users";
 // One bar from anywhere, and it says what it will act on. `Control+K` opens it on every page, the
 // document editor included; `/` and `g p` open the same bar; the chip inside the box is seeded
 // from the page and `Tab`/`Backspace` move it; an empty input lists the person's recent items and
-// no actions, and an action shows once the words typed are in its name (design v3, state 1).
+// then the page's actions, as main lists them, and the words typed narrow the actions to those
+// whose name holds them (design v3, state 1).
 
 const documentName = "Design notes";
 const paragraph = "The sextant sights the horizon.";
@@ -108,8 +109,8 @@ test("Control+K opens the bar from the issue list, an issue, a document being wr
   }
 });
 
-// SLOW(>=2s): the seed, then three keys, each opening the bar and reading its chip, its rows and
-// its box.
+// SLOW(>=2s): the seed, then three keys, each opening the bar and reading its chip, its actions
+// group and its box.
 test("slash and g p open the same bar as Control+K @phone", async ({ browser }) => {
   // Every check here carries the suite's own 15 s deadline, and a run where two of the three
   // keys open something else reports each of them, which takes longer than one row's budget.
@@ -127,13 +128,13 @@ test("slash and g p open the same bar as Control+K @phone", async ({ browser }) 
     await expect
       .soft(chip(page), `${opened} opens the bar with its chip's words in full`)
       .toHaveAttribute("title", /^Acting on the project CORE/);
-    // The empty box lists no actions: an action shows once its name is typed.
+    // The empty box lists the page's actions, as main lists them (design v3, state 1).
     await expect
       .soft(
         bar(page).getByRole("group", { name: "Actions" }),
-        `${opened} opens the bar with no list of actions`
+        `${opened} opens the bar with this page's actions`
       )
-      .toHaveCount(0);
+      .toBeVisible();
     await expect
       .soft(
         page.getByRole("combobox", { name: "Search" }),
@@ -291,7 +292,7 @@ test("Tab narrows the chip to the block the cursor is in and Backspace widens it
 });
 
 // SLOW(>=2s): two items are opened before the bar is, so the browser has recent items to list.
-test("an empty input lists the person's recent items and no actions, and an action shows once its name is typed @phone", async ({
+test("an empty input lists the person's recent items and then the page's actions, and the words typed narrow the actions @phone", async ({
   browser,
 }) => {
   // Several reported checks on one open, each against the suite's own 15 s deadline.
@@ -320,10 +321,21 @@ test("an empty input lists the person's recent items and no actions, and an acti
     await expect
       .soft(recent.getByRole("option", { name: new RegExp(fixture.firstKey) }))
       .toHaveCount(1);
+    // The page's actions follow Recent, as main lists them (design v3, state 1).
     const actions = bar(page).getByRole("group", { name: "Actions" });
-    await expect.soft(actions, "the empty box lists no actions").toHaveCount(0);
+    await expect.soft(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
+    await expect.soft(actions.getByRole("option", { name: "Create issue" })).toHaveCount(1);
+    const ids = await bar(page)
+      .getByRole("option")
+      .evaluateAll((options) => options.map((option) => option.id));
+    expect
+      .soft(
+        ids.findIndex((id) => id.startsWith("search-option-recent-")),
+        "the empty box lists Recent before the page's actions"
+      )
+      .toBeLessThan(ids.findIndex((id) => id.startsWith("search-option-action-")));
 
-    // An action shows once the words typed start its name, and Recent leaves the list.
+    // The words typed start an action's name, and Recent leaves the list.
     await box.fill("Open issue");
     await expect.soft(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
     await expect.soft(recent).toHaveCount(0);

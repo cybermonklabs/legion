@@ -59,6 +59,7 @@ import type {
   IDCandidate,
   IssueAskThreadRow,
   IssueReferencesAnswer,
+  NewIssueSettings,
   ParentStatusConflictIssue,
   StatusChangeEntry,
   TargetCandidate,
@@ -2414,6 +2415,13 @@ export class DispatchApiClient {
    *  because a browser reaches no broker. */
   getCredentialCapabilities() {
     return this.read("/api/v1/credentials/capabilities", {});
+  }
+
+  /** `GET /api/v1/settings/new-issue`: the label an issue the bar files from a person's typed
+   *  words carries and the session it is routed to, as the deployment configured them; each
+   *  `""` where it configured none. */
+  getNewIssueSettings(): Promise<NewIssueSettings> {
+    return this.json<NewIssueSettings>("/api/v1/settings/new-issue");
   }
 }
 

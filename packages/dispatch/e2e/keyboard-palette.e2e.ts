@@ -15,7 +15,7 @@ import { asUser } from "./users";
  * `keyboard-palette.stub.e2e.ts`.
  */
 
-test("the palette lists the issue page's actions once their names are typed, guarded like their buttons, and runs one", async ({
+test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -30,14 +30,15 @@ test("the palette lists the issue page's actions once their names are typed, gua
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
-    // The empty box lists the recent items this reader has (the issue they are on) and no
-    // actions (design v3, state 1), and it asks the reader to type nothing.
+    // The empty box lists the recent items this reader has (the issue they are on) and then the
+    // page's actions, as main lists them (design v3, state 1), and it asks the reader to type
+    // nothing.
     await expect(dialog.getByRole("group", { name: "Recent" })).toBeVisible();
-    await expect(actions).toHaveCount(0);
+    await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
     await expect(dialog.getByText("Type at least 2 characters")).toHaveCount(0);
 
-    // An action shows once the words typed are in its name; one whose name they start is listed
-    // under Actions, above the hits.
+    // The words typed narrow the actions to those whose name holds them; one whose name they
+    // start is listed under Actions, above the hits.
     await input.fill("close");
     const close = actions.getByRole("option", { name: "Close issue" });
     await expect(close).toBeVisible();
@@ -195,10 +196,10 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await page.keyboard.press("/");
     await expect(dialog).toBeVisible();
     // The bar `⌘K` opens: `/` is another key to it, not a list of its own, so its chip names the
-    // issue the reader is on, and its empty box lists their recent items and no actions.
+    // issue the reader is on, and its empty box lists their recent items and this page's actions.
     await expect(dialog.getByTestId("going-box-chip")).toHaveText(issue.key);
     await expect(recent).toBeVisible();
-    await expect(actions).toHaveCount(0);
+    await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(1);
     await input.fill("astrolabe");
     // No action's label and no project's name holds `astrolabe`, so the issue's own hit is the
     // whole list.
@@ -207,10 +208,11 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await expect(dialog).toHaveCount(0);
 
     // Every open starts on an empty box, whichever key opened it: a query left in it would
-    // filter the next page's recent items down to nothing.
+    // filter the next page's actions, and its recent items, down to nothing.
     await page.keyboard.press("/");
     await expect(input).toHaveValue("");
     await expect(recent).toBeVisible();
+    await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
 
@@ -364,8 +366,9 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
-    // An action shows once its name is typed (design v3, state 1). Each withdrawn row's name is
-    // typed too, and the search's answer to it says the list was drawn for those words.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1).
+    // Each withdrawn row's name is typed, and the search's answer to it says the list was drawn
+    // for those words.
     await input.fill("go to inbox");
     await expect(actions.getByRole("option", { name: "Go to Inbox" })).toBeVisible();
     for (const [words, row] of [
@@ -409,7 +412,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
 
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
-    // An action shows once its name is typed (design v3, state 1).
+    // The words typed narrow the actions to the row this step presses (design v3, state 1).
     await page.getByRole("combobox", { name: "Search" }).fill("set priority p2");
     await dialog
       .getByRole("group", { name: "Actions" })
@@ -458,8 +461,9 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
-    // An action shows once the words typed are in its name (design v3, state 1): every row named
-    // for an agent holds `agent`, so one list shows which of them the focused row offers.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // every row named for an agent holds `agent`, so one list shows which of them the focused
+    // row offers.
     await input.fill("agent");
     for (const offered of ["Message the focused agent", "Pin or unpin the focused agent"]) {
       await expect(actions.getByRole("option", { name: offered })).toHaveCount(1);
@@ -688,7 +692,7 @@ test("a row whose control has gone since the palette opened does nothing", async
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
-    // An action shows once its name is typed (design v3, state 1).
+    // The words typed narrow the actions to the row this step presses (design v3, state 1).
     await page.getByRole("combobox", { name: "Search" }).fill("reopen");
     const reopen = dialog
       .getByRole("group", { name: "Actions" })

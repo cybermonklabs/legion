@@ -476,9 +476,10 @@ const barRows: readonly BarRow[] = [
     // mount by its key, which the panel draws as the mount's chip, in the text and nowhere else.
     // First the person opens two issues and asks one question, which New leaves behind, so the
     // empty box shows what the design draws there: "Continue: ‹title›" for the conversation from
-    // the last hour, then Recent, the items opened lately. The rows sign in with a login of their
-    // own, so this row makes that login's conversation and its recent items itself, as a person
-    // does, rather than a seed written for another login.
+    // the last hour, then Recent, the items opened lately, then the page's actions, as main lists
+    // them. The rows sign in with a login of their own, so this row makes that login's
+    // conversation and its recent items itself, as a person does, rather than a seed written for
+    // another login.
     reach: async (page, seed) => {
       const words = "telescope mount";
       const earlier = "what waits on the observatory dome";
@@ -522,6 +523,8 @@ const barRows: readonly BarRow[] = [
         "Polish the eyepiece",
       ]);
       await expect(recent.getByTestId("search-hit-status")).toHaveCount(2);
+      // The page's actions follow Recent (design v3, state 1).
+      await expect(bar(page).getByRole("group", { exact: true, name: "Actions" })).toBeVisible();
       // New put the cursor back in the box, so its focus shows and typing lands in it.
       await expect(searchBox(page)).toBeFocused();
       // The box is on top; History and the move are in the foot, and Close is Esc there alone.

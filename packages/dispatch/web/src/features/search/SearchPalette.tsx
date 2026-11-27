@@ -71,6 +71,7 @@ import { referenceTriggerProps } from "../refs/RefPreview";
 import { ReferenceHostIs } from "../refs/reference-host";
 import { issueSummaryQuery } from "../refs/reference-target";
 import {
+  buildIssuePath,
   buildProjectPath,
   type DispatchReferenceRoute,
   nodeRouteFromHref,
@@ -85,6 +86,7 @@ import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
 import { documentRouteOf } from "./bar-scope";
 import { dropFiling, fileNewIssue, filingParent, useBarOpen, useFiling } from "./filing";
+import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
@@ -202,8 +204,8 @@ function enterWord(row: PaletteRow | undefined): string | undefined {
         filing: undefined,
       }[row.line];
     case "offer":
-      // The one offer the bar lists is Continue.
-      return "Continue";
+      // Continue, or the New issue offer's row: each names what Enter does on it.
+      return row.enter;
     case "action":
       return "Run";
     default:
@@ -679,8 +681,9 @@ function ListGroup({
   );
 }
 
-/** One labelled run of command rows: the Recent items the bar opens on, the Actions a query
- *  leads to, the More actions it matches further in, or the Projects it names. */
+/** One labelled run of command rows: the Recent items the bar opens on, the Actions of the page
+ *  it opens on and that a query leads to, the More actions it matches further in, the Projects it
+ *  names, or the New issue it offers for words that matched nothing. */
 interface CommandSection {
   id: string;
   label: string;
@@ -689,7 +692,7 @@ interface CommandSection {
     hint: ReactNode;
     icon?: ReactNode;
     label: string;
-    row: ActionRow | ProjectRow | RecentRow;
+    row: ActionRow | OfferRow | ProjectRow | RecentRow;
   }[];
 }
 
@@ -939,14 +942,15 @@ function PaletteDialog({
   const namesItsHit = ISSUE_KEY.test(searchText) || bestResults.length > 0;
   // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits, and
   // the line on top Jev chooses for them.
-  const { answers, answersOff, deciding, enterLine, line, shownAnswer, stale } = useGoingBar({
-    context: scope.context,
-    enabled: queryEnabled && !namesItsHit,
-    login,
-    project: filters.project ?? "",
-    showHits,
-    words: searchText,
-  });
+  const { answers, answersOff, decidesOff, deciding, enterLine, line, shownAnswer, stale } =
+    useGoingBar({
+      context: scope.context,
+      enabled: queryEnabled && !namesItsHit,
+      login,
+      project: filters.project ?? "",
+      showHits,
+      words: searchText,
+    });
   const project = scope.context.project ?? "";
   // Enter on a line of Ask or Do: a run of the agent on the words, which records the line pressed.
   // Ask - the line, and the card's Open in panel with it - is one action that hands the run to the
@@ -1045,39 +1049,38 @@ function PaletteDialog({
     newestTitle !== "" &&
     Date.now() - Date.parse(newest.newest_at) < CONTINUE_WITHIN_MS
       ? {
+          enter: "Continue",
           id: CONTINUE_OPTION_ID,
           kind: "offer",
           label: `Continue: ${newestTitle}`,
           select: () => openConversation(newest),
         }
       : undefined;
-  // An action shows only once its name holds the words (design v3, state 1): the empty box lists
-  // none. An action whose label the words start is the one the reader is typing, and it is
-  // listed above the hits. One that holds the words further in (`issue` in `Close issue`) is a
-  // coincidence of words: it is listed below the hits and never highlighted for the reader, so a
-  // search and Enter opens a hit, and such an action runs only once the reader has arrowed to it.
-  const actionOptions =
-    needle === ""
-      ? []
-      : actions
-          .filter((action) => action.label.toLowerCase().includes(needle))
-          .map((action) => {
-            const row: ActionRow = {
-              action,
-              id: `search-option-action-${action.scope}-${action.id}`,
-              kind: "action",
-            };
-            return {
-              hint: <KeyHints keys={action.keys} />,
-              label: action.label,
-              leads: action.label.toLowerCase().startsWith(needle),
-              row,
-            };
-          });
+  // An action whose label the words start (every action of the page, while the box is empty) is
+  // the one the reader is typing, and it is listed above the hits; with the box empty the page's
+  // actions follow Continue and Recent (design v3, state 1), as main lists them. One that holds
+  // the words further in (`issue` in `Close issue`) is a coincidence of words: it is listed below
+  // the hits and never highlighted for the reader, so a search and Enter opens a hit, and such an
+  // action runs only once the reader has arrowed to it.
+  const actionOptions = actions
+    .filter((action) => action.label.toLowerCase().includes(needle))
+    .map((action) => {
+      const row: ActionRow = {
+        action,
+        id: `search-option-action-${action.scope}-${action.id}`,
+        kind: "action",
+      };
+      return {
+        hint: <KeyHints keys={action.keys} />,
+        label: action.label,
+        leads: action.label.toLowerCase().startsWith(needle),
+        row,
+      };
+    });
   // Projects are rows of the one bar, found by typing: `g p` opens the bar as every other key
   // does, and the project a reader is after is one or two letters away. With an empty box they
-  // are not listed at all - every project of a Dispatch would bury the recent items a reader
-  // opened the bar for.
+  // are not listed at all - every project of a Dispatch would bury the recent items and the
+  // actions a reader opened the bar for.
   const projectRows: ProjectRow[] =
     needle === ""
       ? []
@@ -1127,9 +1130,31 @@ function PaletteDialog({
           })),
         },
       ];
-  // The section at the foot of the list, which the highlight never starts on and the arrows
-  // reach last: a More action is a coincidence of words, so it never runs on an Enter the reader
-  // meant for the row above.
+  // Words the search answered and matched nothing with, on a Dispatch with no deciding model,
+  // whose line on top is always Ask and never File (R2): the bar offers them as a new issue,
+  // under the hits and the rows this page can do, as main does, so a person can still file from
+  // the bar (design v3, state 13). Where a deciding model is configured, the line's File is the
+  // way to file, so nothing is offered here, however late that model answers.
+  const newIssue = useNewIssueOffer({
+    offered: decidesOff && showHits && results.length === 0,
+    onOpen: (key) => {
+      navigate(buildIssuePath({ key, kind: "issue" }));
+      onClose();
+    },
+    project: scope.targets.project,
+    words: searchText,
+  });
+  // The two sections at the foot of the list, which the highlight never starts on and the arrows
+  // reach last: a More action is a coincidence of words, and the new issue is a write, so neither
+  // runs on an Enter the reader meant for the row above. The new issue comes under the actions,
+  // because it is the row that writes.
+  const newIssueRow = newIssue?.row;
+  const newIssueSection: CommandSection = {
+    id: NEW_ISSUE_GROUP_ID,
+    label: "New issue",
+    options:
+      newIssueRow === undefined ? [] : [{ hint: null, label: newIssueRow.label, row: newIssueRow }],
+  };
   const moreActions: CommandSection = {
     id: MORE_ACTIONS_GROUP_ID,
     label: "More actions",
@@ -1137,7 +1162,7 @@ function PaletteDialog({
   };
   // The order the foot is listed and walked in, written once: the rows, the count the highlight
   // rule keeps off them, and the groups drawn below all read this one array.
-  const footSections: readonly CommandSection[] = talking ? [] : [moreActions];
+  const footSections: readonly CommandSection[] = talking ? [] : [moreActions, newIssueSection];
   const footRows = footSections.reduce((count, section) => count + section.options.length, 0);
   const hitRows = hitGroups.flatMap((group) => group.rows);
   // What the list shows, in the order it shows it: the arrows walk this same list.
@@ -1159,10 +1184,11 @@ function PaletteDialog({
   // keeps its id whatever it reads, so its label changing leaves it there too. The first hits of
   // a query send it to the head, and the head it lands on is then adopted, so a row coming back
   // does not take the highlight back from it. The head is the first row unless that is a foot
-  // row - a More action, which comes last: with only foot rows listed nothing is highlighted,
-  // and Enter runs nothing until the reader arrows. A best match or Continue take the highlight
-  // as they arrive until the reader arrows: the row they are, which a filing of this open that
-  // is still out comes above (it takes no press).
+  // row - a More action or the new issue, which come last: the highlight never moves to a write
+  // by itself, and with only foot rows listed nothing is highlighted, and Enter runs nothing
+  // until the reader arrows. A best match or Continue take the highlight as they arrive until
+  // the reader arrows: the row they are, which a filing of this open that is still out comes
+  // above (it takes no press).
   // A row that leaves a list already answering this query takes the highlight with it and
   // leaves it on no row: that is the pause's fused order dropping a row the keystrokes' hits
   // held. Sending it to the head there would move the selection under the reader's hand, and
@@ -1231,11 +1257,13 @@ function PaletteDialog({
 
   const selectRow = (row: PaletteRow) => {
     if (row.kind === "offer" || row.kind === "line") {
-      // Continue and the line on top, pressed through the row they carry rather than through
-      // what they start, and the bar is not closed here: Continue opens its conversation in the
-      // bar and Do starts one there, which the bar stays open to show; a filing is the line's
-      // first row while it is out or once it failed, and the bar closes once it is filed; and Ask
-      // hands its run to the panel at the side (`useAsk.openInPanel`), which closes the bar.
+      // Continue, the New issue offer and the line on top, pressed through the row they carry
+      // rather than through what they start, and the bar is not closed here: Continue opens its
+      // conversation in the bar and Do starts one there, which the bar stays open to show; the new
+      // issue is made with the bar still open, so the person reads what was made, and that press
+      // closes the bar itself where it opens the issue; a filing is the line's first row while it
+      // is out or once it failed, and the bar closes once it is filed; and Ask hands its run to
+      // the panel at the side (`useAsk.openInPanel`), which closes the bar.
       row.select();
       return;
     }
@@ -1588,6 +1616,9 @@ function PaletteDialog({
                   ))}
                 </div>
               )}
+              {/* What the bar says about the new issue it made from these words, above the
+                  message that says the search found none: each is an answer to that search. */}
+              {newIssue?.said}
               {searchText.length === 1 ? (
                 <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
                   Type at least 2 characters

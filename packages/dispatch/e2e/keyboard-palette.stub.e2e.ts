@@ -212,12 +212,9 @@ test("the rail's Search control shows the same actions as the keyboard palette @
   await page.getByRole("button", { name: /^search/i }).click();
 
   const dialog = page.getByRole("dialog", { name: "Search" });
-  const input = page.getByRole("combobox", { name: "Search" });
   const actions = dialog.getByRole("group", { name: "Actions" });
-  // The empty box lists no actions: one shows once its name is typed (design v3, state 1).
-  await input.fill("close");
+  // The empty box lists the page's actions, as main lists them (design v3, state 1).
   await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
-  await input.fill("go to inbox");
   await expect(actions.getByRole("option", { name: "Go to Inbox" })).toBeVisible();
 });
 
@@ -237,8 +234,9 @@ inboxTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    // An action shows once the words typed are in its name (design v3, state 1): `row` is in
-    // the row's own action and in each movement row, so one list says which of them is offered.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `row` is in the row's own action and in each movement row, so one list says which of them
+    // is offered.
     const input = page.getByRole("combobox", { name: "Search" });
     await input.fill("row");
     await expect(
@@ -277,8 +275,9 @@ boardTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    // An action shows once the words typed are in its name (design v3, state 1). Each list holds
-    // a row the card offers, so the rows it must not hold are read from a list that was drawn.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1).
+    // Each list holds a row the card offers, so the rows it must not hold are read from a list
+    // that was drawn.
     // `Enter` on the card opens it too, and `Open issue` is already that action's row. Soft, so
     // one run names every row that should not be there.
     for (const [words, offered, absent] of [
@@ -329,9 +328,7 @@ test("a fresh open starts on an empty query, so it lists the new page's actions 
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   await expect(input).toHaveValue("");
-  // The empty box lists no actions (design v3, state 1); the words typed reach the new page's.
-  await expect(actions).toHaveCount(0);
-  await input.fill("close");
+  // The empty box lists the new page's actions, as main lists them (design v3, state 1).
   await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
 });
 
@@ -351,8 +348,9 @@ listTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    // An action shows once the words typed are in its name (design v3, state 1): `issue` is in
-    // the row's own action and in each movement row, so one list says which of them is offered.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `issue` is in the row's own action and in each movement row, so one list says which of
+    // them is offered.
     await page.getByRole("combobox", { name: "Search" }).fill("issue");
     await expect(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
     // `Enter` from the row opens it too, and `Open issue` is already that action's row.
@@ -388,8 +386,8 @@ inboxTest(
     const snooze = actions.getByRole("option", {
       name: "Snooze the focused ask, or every selected ask",
     });
-    // An action shows once the words typed are in its name (design v3, state 1): `ask` is in the
-    // snooze and in the mark's row, so one list says which of them is offered.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `ask` is in the snooze and in the mark's row, so one list says which of them is offered.
     await page.keyboard.press("Control+k");
     await input.fill("ask");
     await expect(snooze).toHaveCount(1);
@@ -431,8 +429,8 @@ test("below xl the margin is the route's own sheet, so Shift+M and its row chang
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Search" });
   const actions = dialog.getByRole("group", { name: "Actions" });
-  // An action shows once the words typed are in its name (design v3, state 1): `e` is in
-  // Create issue and in both toggles, so one list says which of them is offered.
+  // The words typed narrow the actions to those whose name holds them (design v3, state 1): `e`
+  // is in Create issue and in both toggles, so one list says which of them is offered.
   await page.getByRole("combobox", { name: "Search" }).fill("e");
   await expect(actions.getByRole("option", { name: "Create issue" })).toBeVisible();
   // Soft, so one run names both rows if either is offered.
@@ -466,8 +464,9 @@ architectureTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    // An action shows once the words typed are in its name (design v3, state 1): `component` is
-    // in the Open row and in each movement row, so one list says which of them is offered.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `component` is in the Open row and in each movement row, so one list says which of them is
+    // offered.
     await page.getByRole("combobox", { name: "Search" }).fill("component");
     const open = actions.getByRole("option", {
       name: "Open the focused component: its children, else its details",
@@ -491,9 +490,9 @@ test("Keyboard shortcuts is a row that opens its own dialog, and a project is a 
   const actions = dialog.getByRole("group", { name: "Actions" });
 
   // `Go to project…` is no row of its own: its key opens this same bar, where the projects
-  // are rows the reader types their way to, and Enter opens the one they chose. An action shows
-  // once the words typed are in its name (design v3, state 1), and `go to` leads to every
-  // other `Go to …` row.
+  // are rows the reader types their way to, and Enter opens the one they chose. The words typed
+  // narrow the actions to those whose name holds them (design v3, state 1), and `go to` leads to
+  // every other `Go to …` row.
   await page.keyboard.press("Control+k");
   await page.getByRole("combobox", { name: "Search" }).fill("go to");
   await expect(actions.getByRole("option", { name: "Go to Inbox" })).toHaveCount(1);
@@ -555,8 +554,9 @@ nestedArchitectureTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    // An action shows once the words typed are in its name (design v3, state 1): `e` is in Up
-    // one level and in the row into children, so one list says which of them is offered.
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `e` is in Up one level and in the row into children, so one list says which of them is
+    // offered.
     await page.getByRole("combobox", { name: "Search" }).fill("e");
     const up = actions.getByRole("option", { name: "Up one level" });
     await expect(up).toHaveCount(1);

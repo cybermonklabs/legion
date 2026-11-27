@@ -22,11 +22,13 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import type {
+  ArtifactUploadResponse,
   DisplayTree,
   GoingConversation,
   GoingPlanAnswer,
   GoingRun,
   IssueReferenceSummary,
+  Message,
   SearchResponse,
   SearchResult,
 } from "../../api/types";
@@ -38,6 +40,8 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
 import { CONFIGURED_CAPABILITY } from "./going-bar-fixture";
+import { NEW_ISSUE_OPTION_ID } from "./NewIssueOffer";
+import { firstCriterion } from "./new-issue";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
@@ -1590,6 +1594,113 @@ test("a query that starts an action's label lists it above the hits, and Enter r
   }
 });
 
+// On a Dispatch with no deciding model the line on top is always Ask and never File (R2), so the
+// bar offers words its search matched nothing with as a new issue, in the New issue group at the
+// foot of the list, under the hits and the More actions, as main draws it (design v3, state 13);
+// pressing it files the issue as main's offer does. With a deciding model configured, the line's
+// File is the way to file, and the bar offers no group, whether or not that model answers.
+const NEW_ISSUE_WORDS = "sextant rota";
+const ROTA_ROW = "search-option-action-global-rota";
+
+test("with no deciding model, words that match nothing offer a New issue group under the More actions, and choosing it files the issue as main's offer does", async () => {
+  const user = userOnFakeClock();
+  const unregister = appKeymap.register("global", [
+    { id: "rota", keys: [], label: "Print the sextant rota", run: () => {} },
+  ]);
+  const made = { ...issueFixture, key: "CORE-7", number: 7, title: NEW_ISSUE_WORDS };
+  const spies = {
+    capability: spyOn(api, "goingCapability").mockResolvedValue(UNCONFIGURED_CAPABILITY),
+    createIssue: spyOn(api, "createIssue").mockResolvedValue(made),
+    createMessage: spyOn(api, "createMessage").mockResolvedValue({} as Message),
+    patchIssue: spyOn(api, "patchIssue").mockResolvedValue({ ...made, previous: {} }),
+    search: spyOn(api, "search").mockResolvedValue(searchAnswer([])),
+    settings: spyOn(api, "getNewIssueSettings").mockResolvedValue({
+      label: "from-the-bar",
+      session: "sess-1",
+    }),
+    uploadArtifact: spyOn(api, "uploadArtifact").mockResolvedValue({} as ArtifactUploadResponse),
+  };
+  const view = renderPalette({ entries: ["/projects/CORE/issues"] });
+
+  try {
+    const input = await searchFor(user, NEW_ISSUE_WORDS);
+    await screen.findByText(`No results for "${NEW_ISSUE_WORDS}"`);
+    const group = await screen.findByRole("group", { name: "New issue" });
+    expect(within(group).getByRole("option")).toHaveTextContent(
+      `Make a new issue from “${NEW_ISSUE_WORDS}”`
+    );
+    // The group is the list's last, under the More action the words hold further in; the
+    // highlight never moves to a write by itself, and nothing is written before the press.
+    expect(optionIds()).toEqual([ROTA_ROW, NEW_ISSUE_OPTION_ID]);
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(spies.createIssue).not.toHaveBeenCalled();
+
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", NEW_ISSUE_OPTION_ID);
+    expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Make · Esc Close");
+    await user.keyboard("{Enter}");
+
+    // Main's filing: the create, labelled; the words as the issue's first criterion; its route
+    // to the session the deployment names, and its first message there; then the issue opens.
+    await waitFor(() => expect(spies.createMessage).toHaveBeenCalled());
+    expect(spies.createIssue.mock.calls[0]?.[0]).toEqual({
+      labels: ["from-the-bar"],
+      project: "CORE",
+      title: NEW_ISSUE_WORDS,
+    });
+    expect(spies.uploadArtifact.mock.calls[0]?.slice(0, 2)).toEqual([
+      { issue: "CORE-7" },
+      { content: firstCriterion(NEW_ISSUE_WORDS), name: "verification.md" },
+    ]);
+    expect(spies.patchIssue.mock.calls[0]?.slice(0, 2)).toEqual([
+      "CORE-7",
+      { route: "session:sess-1" },
+    ]);
+    expect(spies.createMessage.mock.calls[0]?.slice(0, 2)).toEqual([
+      "CORE-7",
+      { body: NEW_ISSUE_WORDS, delivery: "aside", target: "session:sess-1" },
+    ]);
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
+    );
+  } finally {
+    for (const spy of Object.values(spies)) spy.mockRestore();
+    unregister();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("with a deciding model configured, words that match nothing offer no New issue group", async () => {
+  const user = userOnFakeClock();
+  const spies = [
+    spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY),
+    spyOn(api, "createGoingRequest").mockImplementation(
+      () => Promise.withResolvers<never>().promise
+    ),
+    spyOn(api, "search").mockResolvedValue(searchAnswer([])),
+  ];
+  const settings = spyOn(api, "getNewIssueSettings").mockResolvedValue({
+    label: "from-the-bar",
+    session: "sess-1",
+  });
+  const view = renderPalette({ entries: ["/projects/CORE/issues"] });
+
+  try {
+    await searchFor(user, NEW_ISSUE_WORDS);
+    await screen.findByText(`No results for "${NEW_ISSUE_WORDS}"`);
+    // The capability is read: the line on top is drawn, which only a Dispatch that answers draws.
+    expect(document.getElementById("search-option-line")).not.toBeNull();
+    expect(screen.queryByRole("group", { name: "New issue" })).toBeNull();
+    expect(optionIds()).not.toContain(NEW_ISSUE_OPTION_ID);
+    expect(settings).not.toHaveBeenCalled();
+  } finally {
+    for (const spy of [...spies, settings]) spy.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("Escape calls onClose", async () => {
   const user = userOnFakeClock();
   let closed = 0;
@@ -1967,10 +2078,10 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
 });
 
 // The bar before Enter (design v3, state 1): with the box empty it lists Continue on a
-// conversation of the last hour, then Recent, at most 5 items, and no list of actions; the chip
-// sits in the box on its left, and Backspace in the empty box widens it; a key or an exact title
-// ranks above the line on top, so Enter opens it (R2); and the foot holds the keys of the
-// highlighted row alone.
+// conversation of the last hour, then Recent, at most 5 items, then the page's actions, as main
+// lists them; the chip sits in the box on its left, and Backspace in the empty box widens it; a
+// key or an exact title ranks above the line on top, so Enter opens it (R2); and the foot holds
+// the keys of the highlighted row alone.
 
 /** A conversation History lists, its one run asked `minutesAgo`. */
 function conversation(id: string, words: string, minutesAgo: number): GoingConversation {
@@ -1992,7 +2103,7 @@ function keepRecents(count: number): { label: string; path: string }[] {
   return items;
 }
 
-test("the empty box lists Continue on the last hour's conversation, then at most 5 Recent items and no actions, and Enter continues", async () => {
+test("the empty box lists Continue on the last hour's conversation, then at most 5 Recent items, then the page's actions, and Enter continues", async () => {
   const user = userOnFakeClock();
   const unregister = registerClose([]);
   const items = keepRecents(7);
@@ -2035,8 +2146,17 @@ test("the empty box lists Continue on the last hour's conversation, then at most
       screen.getByRole("option", { name: "Continue: Who looks after the comet" })
     ).toBeTruthy();
     expect(document.getElementById("search-option-continue")?.querySelector("svg")).not.toBeNull();
-    expect(screen.queryByRole("group", { name: "Actions" })).toBeNull();
-    expect(optionIds()).not.toContain(CLOSE_ROW);
+    // The page's actions follow Continue and Recent, as main lists them (design v3, state 1).
+    expect(
+      within(screen.getByRole("group", { name: "Actions" }))
+        .getAllByRole("option")
+        .map((option) => option.id)
+    ).toEqual([CLOSE_ROW]);
+    expect(optionIds()).toEqual([
+      "search-option-continue",
+      ...items.slice(0, 5).map((item) => `search-option-recent-${item.path}`),
+      CLOSE_ROW,
+    ]);
     expect(box).toHaveAttribute("aria-activedescendant", "search-option-continue");
     expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Continue · Esc Close");
     // Nothing asks the person to type: the empty box says nothing under its rows.
