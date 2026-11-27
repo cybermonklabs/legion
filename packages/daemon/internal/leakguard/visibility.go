@@ -881,7 +881,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 			"-c", "http.proactiveAuth=none", "-c", "http."+url+"//.proactiveAuth=none",
 			"ls-remote", url, "HEAD"),
 		dir:     "/",
-		inherit: lsRemoteInherits,
+		inherit: func([]string) func(name, value string) bool { return lsRemoteInherits },
 		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
 	})
 	if err != nil {
@@ -904,14 +904,15 @@ func init() {
 	programbound.Register(&lsRemoteBound)
 }
 
-// lsRemoteInherits is which names of the caller's environment the read with no credential keeps
-// (Guard.lsRemote). It keeps every name that is not git's own, and of git's own the three that say
-// which transports git may use and which certificates it trusts, none of which can carry a
-// credential. It drops the names libcurl finds a netrc file by: HOME, which the read sets to an
-// empty directory of its own, NETRC, which names the file outright from curl 8.16, and
-// USERPROFILE, libcurl's second home on Windows. The proxy variables libcurl reads (HTTPS_PROXY
-// and the rest) stay, so a pod that reaches GitHub through a proxy reaches it the same way here.
-func lsRemoteInherits(name string) bool {
+// lsRemoteInherits is which entries of the caller's environment the read with no credential keeps
+// (Guard.lsRemote), by each entry's name. It keeps every name that is not git's own, and of git's
+// own the three that say which transports git may use and which certificates it trusts, none of
+// which can carry a credential. It drops the names libcurl finds a netrc file by: HOME, which the
+// read sets to an empty directory of its own, NETRC, which names the file outright from curl 8.16,
+// and USERPROFILE, libcurl's second home on Windows. The proxy variables libcurl reads (HTTPS_PROXY
+// and the rest) stay, the airlock's among them, so a pod that reaches GitHub through a proxy
+// reaches it the same way here: the read carries no credential for any proxy to read.
+func lsRemoteInherits(name, _ string) bool {
 	switch name {
 	case "GIT_ALLOW_PROTOCOL", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH":
 		return true

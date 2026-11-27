@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/tlsalert/tlsalerttest"
 )
 
@@ -162,10 +163,13 @@ func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
 // that answered, a broker that was never reached, a URL no parser reads, a scheme-less URL, the
 // secret forms' own refusals, and a line naming a source - and for such a URL the transport's
 // cause prints as its class alone. A clean URL's messages read as before. No value forges a line
-// with a control byte, raw or escaped.
+// with a control byte, raw or escaped. Four addresses end their host before the '@', so their
+// calls go to AbCtok9f3, ab, tokuser9f3 or Ab. The test's resolver holds no address for these
+// names, and it refuses each dial to 127.0.0.1:1 (runResolved), so neither the machine's resolver
+// nor whatever listens at that port decides how those calls fail.
 func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 	t.Parallel()
-	binary := buildAgentSecrets(t)
+	hosts := map[string]string{"AbCtok9f3": noSuchHost, "ab": noSuchHost, "tokuser9f3": noSuchHost, "Ab": noSuchHost, "127.0.0.1:1": connectionRefused}
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -213,7 +217,7 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 		{"a raw newline forging a line", "http://127.0.0.1:1\nagent-secrets: GRANT_ME from FORGED", []string{"self"}, names},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			stdout, stderr, _ := runAgentSecrets(t, binary, row.base, keyDir, nil, row.args...)
+			stdout, stderr, _ := runResolved(t, hosts, row.base, keyDir, nil, row.args...)
 			output := stdout + stderr
 			for _, secret := range []string{"tokuser9f3", "hunter2pw", "%zz", "AbCtok9f3", "dEfgh", "1234/", "2pwSECRET", "77SECRET", "9zSECRET", "klSECRET",
 				"qtok", "ada@corp", "2540", "cd==", "lookup Ab", "host ab", "FORGED"} {
@@ -469,6 +473,8 @@ func TestWhatAScriptReadsIsUnchanged(t *testing.T) {
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
+	// unreached is a port this test holds that refuses each dial.
+	unreached := "http://" + testport.Refused(t)
 	for _, row := range []struct {
 		name   string
 		base   string
@@ -484,13 +490,13 @@ func TestWhatAScriptReadsIsUnchanged(t *testing.T) {
 		{"request --json, denied", broker.URL, []string{"request", "--json", "DENY_ME"}, 77,
 			`{"approver":null,"grant_id":null,"record_id":null,"request_id":"req-denied","secrets":[{"decision":"deny","name":"DENY_ME"}],"state":"denied"}` + "\n"},
 		{"request --json, refused", broker.URL, []string{"request", "--json", "NO_SUCH_NAME"}, 1, ""},
-		{"request --json, unreached", "http://127.0.0.1:1", []string{"request", "--json", "GRANT_ME"}, 1, ""},
+		{"request --json, unreached", unreached, []string{"request", "--json", "GRANT_ME"}, 1, ""},
 		{"exec, granted", broker.URL, []string{"GRANT_ME", "--", "sh", "-c", "echo the-child-ran"}, 0, "the-child-ran\n"},
 		{"exec, denied", broker.URL, []string{"DENY_ME", "--", "sh", "-c", "echo the-child-ran"}, 77, ""},
 		{"exec, nothing released", broker.URL, []string{"UNRELEASED_ME", "--", "sh", "-c", "echo the-child-ran"}, 1, ""},
 		{"exec, still pending", broker.URL, []string{"PENDING_ME", "--wait", "200ms", "--", "sh", "-c", "echo the-child-ran"}, 75, ""},
 		{"exec, refused", broker.URL, []string{"NO_SUCH_NAME", "--", "sh", "-c", "echo the-child-ran"}, 1, ""},
-		{"exec, unreached", "http://127.0.0.1:1", []string{"GRANT_ME", "--", "sh", "-c", "echo the-child-ran"}, 1, ""},
+		{"exec, unreached", unreached, []string{"GRANT_ME", "--", "sh", "-c", "echo the-child-ran"}, 1, ""},
 		{"exec, the child's own exit", broker.URL, []string{"GRANT_ME", "--", "sh", "-c", "exit 9"}, 9, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -590,10 +596,11 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 // inherited a stale AGENT_SECRETS_URL reads a stale address rather than a broker that is down.
 func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 	t.Parallel()
-	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
-
-	// broker.invalid is reserved (RFC 2606) and resolves nowhere; 127.0.0.1:1 answers nothing.
+	// broker.invalid has no address in the test's resolver (runResolved), as it has none in DNS
+	// (RFC 2606), so the machine's resolver does not decide the row. The test's resolver refuses
+	// each dial to 127.0.0.1:1, so nothing that listens at that port decides the row either.
+	hosts := map[string]string{"broker.invalid": noSuchHost, "127.0.0.1:1": connectionRefused}
 	for _, row := range []struct {
 		name, base, what string
 		args             []string
@@ -603,7 +610,7 @@ func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 		{"nothing listening", "http://127.0.0.1:1", "the connection was refused", []string{"self"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			stdout, stderr, exit := runAgentSecrets(t, binary, row.base, keyDir, nil, row.args...)
+			stdout, stderr, exit := runResolved(t, hosts, row.base, keyDir, nil, row.args...)
 			if exit == 0 || strings.Contains(stdout, "the-child-ran") {
 				t.Fatalf("exit = %d, stdout %q; want a refusal and no command run", exit, stdout)
 			}

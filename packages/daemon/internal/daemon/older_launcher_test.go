@@ -728,6 +728,10 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	}
 	r.awaitForgetTold()
 
+	// A registered controller session holds the controller's role live, so a controller notice of
+	// the forget would be published to that role's topic (the outbox's controllerNotice): none is.
+	registerProjectControllerAs(t, r.pool.Config().ConnString(), olderLauncherProject, "ses_controller")
+	r.notices.holds(legionController, "ses_controller")
 	r.drain()
 
 	type text struct{ what, says string }
@@ -738,8 +742,8 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	}
 	texts = append(texts, text{"the message posted on the issue", posted[0]})
 	architect := mustClaimToken(t, olderLauncherIssue, claim.RoleArchitect)
-	if published := r.publishedOn(notify.ControllerTopic(olderLauncherProject)); len(published) != 0 {
-		t.Errorf("the outbox published %d times on the controller's topic; want nothing: the forget is the architect's", len(published))
+	if published := r.publishedOn(controllerRoleTopic); len(published) != 0 {
+		t.Errorf("the outbox published %d times on the controller's role topic; want nothing: the forget is the architect's", len(published))
 	}
 	for _, to := range []struct{ who, topic string }{
 		{"its architect", notify.RoleTopicPrefix + string(architect)},

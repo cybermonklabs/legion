@@ -16,6 +16,22 @@ import (
 
 // TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten holds writeProjectScope, the one
 // switch decide writes a token's project scope through, to one word per value of
+// exchange.ProjectScope, and one narrowed word per value a trade may narrow for a trade that asked
+// for the scope read. Each known value writes its word and its list of projects, the one project
+// under the legacy claim only for a named token that is not narrowed, the run only for a results
+// token, the OAuth scope read only for the none scope and for every narrowed trade, person beside
+// read only for a narrowed person token that names its person, and results only for the results
+// scope; each session starts holding projects and a run from an earlier decision, so a scope that
+// names none is seen to drop them. A value the switch does not know, the zero value and one past
+// the last included, is a server error that names the value, whether the trade asked for read or
+// not, and so are a run beside any scope but results and a results decision with no run; a results
+// decision whose trade asked for read is refused invalid_scope, since no results token is
+// narrowed. After each refusal the session is left as it was: no project scope, no projects, no
+// run and no scope granted. No path through decide can hand it an unknown value or a misplaced
+// run today (ExchangeConfig.Policy is a concrete *exchange.Set, every decision of which sets one
+// of the four values, and a run exactly beside results), so this test is the only thing that
+// reaches those refusals, and it is what stops one from falling back to the person scope as the
+// switch did before the none scope existed.
 // exchange.ProjectScope, and one narrowed word per value but the public one for a trade that
 // asked for the scope read. Each known value writes its word and its list of projects, the one
 // project under the legacy claim only for a named token that is not narrowed, the OAuth scope
@@ -36,6 +52,11 @@ import (
 // legion-status and the scope, and it too writes and grants nothing.
 func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T) {
 	const project, stale, person = "ACME", "STALE", "ada@example.com"
+	run := oauthwire.CIRun{
+		Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
+		Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+		RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
+	}
 	for _, c := range []struct {
 		name         string
 		scope        exchange.ProjectScope
@@ -46,6 +67,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 		word         string
 		// stored is ClaimProjects as written, and legacy claimLegacyProject, empty for absent.
 		stored, legacy string
+		run            *oauthwire.CIRun
 		granted        []string
 	}{
 		{name: "named", scope: exchange.ProjectScopeNamed, person: person, projects: []string{project}, word: oauthwire.ProjectScopeNamed, stored: project, legacy: project},
@@ -53,6 +75,8 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 			stored: project, legacy: project, granted: []string{oauthwire.ScopeLegionStatus}},
 		{name: "person", scope: exchange.ProjectScopePerson, person: person, word: oauthwire.ProjectScopePerson},
 		{name: "none", scope: exchange.ProjectScopeNone, word: oauthwire.ProjectScopeNone, granted: []string{oauthwire.ScopeRead}},
+		{name: "results", scope: exchange.ProjectScopeResults, projects: []string{project}, word: oauthwire.ProjectScopeResults, stored: project, run: &run,
+			granted: []string{oauthwire.ScopeResults}},
 		{name: "public", scope: exchange.ProjectScopePublic, projects: []string{"PRIVA", "PRIVB"}, word: oauthwire.ProjectScopePublic, stored: "PRIVA PRIVB"},
 		{name: "read-named", scope: exchange.ProjectScopeNamed, read: true, person: person, projects: []string{project}, word: oauthwire.ProjectScopeReadNamed, stored: project, granted: []string{oauthwire.ScopeRead}},
 		{name: "read-named, with LegionStatus", scope: exchange.ProjectScopeNamed, legionStatus: true, read: true, person: person, projects: []string{project},
@@ -66,8 +90,9 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 			session := oauthstore.NewExchangeSession()
 			session.Extra[ClaimProjects] = stale
 			session.Extra[claimLegacyProject] = stale
+			session.Extra[oauthwire.ClaimCI] = run
 			request := &oauth2.Request{Session: session}
-			claims := exchange.Claims{Scope: c.scope, Person: c.person, Projects: c.projects, LegionStatus: c.legionStatus}
+			claims := exchange.Claims{Scope: c.scope, Person: c.person, Projects: c.projects, LegionStatus: c.legionStatus, CI: c.run}
 			if err := writeProjectScope(request, session, claims, c.read); err != nil {
 				t.Fatalf("writeProjectScope(%v, read %t) = %v, want it written", c.scope, c.read, err)
 			}
@@ -84,8 +109,50 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 			if c.legacy != "" && got != c.legacy {
 				t.Errorf("%s = %v, want %q", claimLegacyProject, got, c.legacy)
 			}
+			written, carried := session.Extra[oauthwire.ClaimCI]
+			if c.run == nil && carried {
+				t.Errorf("%s = %v, want it absent: the %s scope carries no run", oauthwire.ClaimCI, written, c.word)
+			}
+			if c.run != nil && written != *c.run {
+				t.Errorf("%s = %v, want the run %+v", oauthwire.ClaimCI, written, *c.run)
+			}
 			if granted := []string(request.GetGrantedScopes()); !slices.Equal(granted, c.granted) {
-				t.Errorf("granted scopes = %q, want %q: read is granted to the read entry and to a narrowed trade, person beside it only to a narrowed token that acts for its person, and legion-status only to a Legion daemon's token that is not narrowed", granted, c.granted)
+				t.Errorf("granted scopes = %q, want %q: read is granted to the read entry and to a narrowed trade, person beside it only to a narrowed token that acts for its person, and results to the result entry's decision alone", granted, c.granted)
+			}
+		})
+	}
+	for _, c := range []struct {
+		name   string
+		claims exchange.Claims
+		read   bool
+		refuse *oauth2.RFC6749Error
+		says   string
+	}{
+		{name: "a run beside the named scope", claims: exchange.Claims{Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Person: person, CI: &run},
+			refuse: oauth2.ErrServerError, says: fmt.Sprintf("project scope %d (%s) with a run (true)", int(exchange.ProjectScopeNamed), exchange.ProjectScopeNamed)},
+		{name: "the results scope with no run", claims: exchange.Claims{Scope: exchange.ProjectScopeResults, Projects: []string{project}},
+			refuse: oauth2.ErrServerError, says: fmt.Sprintf("project scope %d (%s) with a run (false)", int(exchange.ProjectScopeResults), exchange.ProjectScopeResults)},
+		{name: "the results scope narrowed to reading", claims: exchange.Claims{Scope: exchange.ProjectScopeResults, Projects: []string{project}, CI: &run}, read: true,
+			refuse: oauth2.ErrInvalidScope, says: "may not ask for the scope read"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			session := oauthstore.NewExchangeSession()
+			request := &oauth2.Request{Session: session}
+			err := writeProjectScope(request, session, c.claims, c.read)
+			if !errors.Is(err, c.refuse) {
+				t.Fatalf("writeProjectScope(%s) = %v, want %s", c.name, err, c.refuse.ErrorField)
+			}
+			var refusal *oauth2.RFC6749Error
+			if !errors.As(err, &refusal) || !strings.Contains(refusal.Debug()+" "+refusal.GetDescription(), c.says) {
+				t.Errorf("writeProjectScope(%s) refused with %v, whose text does not say %q", c.name, err, c.says)
+			}
+			for _, claim := range []string{ClaimProjectScope, ClaimProjects, claimLegacyProject, oauthwire.ClaimCI} {
+				if got, written := session.Extra[claim]; written {
+					t.Errorf("%s = %v after the refusal, want nothing written", claim, got)
+				}
+			}
+			if granted := request.GetGrantedScopes(); len(granted) != 0 {
+				t.Errorf("granted scopes = %q after the refusal, want none", granted)
 			}
 		})
 	}
@@ -140,7 +207,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 						t.Errorf("writeProjectScope(%d, LegionStatus) refused with %q, whose debug text does not name %q", int(scope), refusal.Debug(), name)
 					}
 				}
-				for _, claim := range []string{ClaimProjectScope, ClaimProjects, claimLegacyProject} {
+				for _, claim := range []string{ClaimProjectScope, ClaimProjects, claimLegacyProject, oauthwire.ClaimCI} {
 					if got, written := session.Extra[claim]; written {
 						t.Errorf("%s = %v after the refusal, want nothing written", claim, got)
 					}

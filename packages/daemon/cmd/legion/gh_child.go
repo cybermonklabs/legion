@@ -28,8 +28,9 @@ func ghChildEnviron(environ []string, set map[string]string) []string {
 	maps.Copy(forced, set)
 	out := make([]string, 0, len(forced)+len(ghChildTestEnviron)+32)
 	out = append(out, ghChildTestEnviron...)
+	keeps := ghChildKeeps(environ)
 	for _, pair := range environ {
-		if name, _, _ := strings.Cut(pair, "="); forced[name] == "" && ghChildKeeps(name) {
+		if name, value, _ := strings.Cut(pair, "="); forced[name] == "" && keeps(name, value) {
 			out = append(out, pair)
 		}
 	}
@@ -69,11 +70,13 @@ var ghChildForced = map[string]string{
 // legion binary holds no code that sets it, so no caller of it can.
 var ghChildTestEnviron []string
 
-// ghChildKeeps is whether gh keeps the name of its caller's environment: what a program carrying a
-// GitHub token keeps (leakguard.TokenChildKeeps: PATH, HOME, TMPDIR, TERM, TZ, LANG, the LC_ names
-// and the proxy variables), and these, each with what reads it (cli/cli v2.104.0 and v2.98.0,
-// go-gh v2.17.0 and v2.13.0; the measure is every os.Getenv and os.LookupEnv of their non-test
-// code):
+// ghChildKeeps is which entries of environ gh keeps, each read as its name and its value: what a
+// program carrying the GitHub token gh will send keeps (leakguard.TokenChildKeeps for
+// leakguard.TokenOf(environ): PATH, HOME, TMPDIR, TERM, TZ, LANG, the LC_ names and the proxy
+// variables, less the secrets broker's airlock proxy and ALL_PROXY where gh sends its directory's
+// token inside an `agent-secrets` command), and these names, each with what reads it (cli/cli
+// v2.104.0 and v2.98.0, go-gh v2.17.0 and v2.13.0; the measure is every os.Getenv and os.LookupEnv
+// of their non-test code):
 //
 //   - XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME and XDG_CACHE_HOME, where gh keeps its state
 //     and cache (go-gh pkg/config/config.go:276-327);
@@ -106,8 +109,9 @@ var ghChildTestEnviron []string
 // only `gh skills` and `gh attestation verify oci://` read and no Legion caller runs through
 // `legion gh`, and LEGION_GH_STEP_FILE and LEGION_GH_DEADLINE, which a caller hands this command
 // for itself (runGh), among them.
-func ghChildKeeps(name string) bool {
-	return leakguard.TokenChildKeeps(name) || ghChildNames[name]
+func ghChildKeeps(environ []string) func(name, value string) bool {
+	tokenChild := leakguard.TokenChildKeeps(environ, leakguard.TokenOf(environ))
+	return func(name, value string) bool { return tokenChild(name, value) || ghChildNames[name] }
 }
 
 // ghNoEditor is the editor gh is handed (GH_EDITOR, which outranks gh's config `editor`, VISUAL,

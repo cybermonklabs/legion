@@ -3,6 +3,7 @@ package leakguard
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
@@ -47,11 +49,11 @@ func noGraphQL(record string) string {
 }
 
 // curlStandIn is a stand-in curl. It appends a line to record with its arguments and with the
-// GH_TOKEN, GITHUB_TOKEN and SSLKEYLOGFILE it was given (readCalls reads it), writes its standard
-// input to stdin, and then does what then says.
+// GH_TOKEN, GITHUB_TOKEN, SSLKEYLOGFILE, proxies and trust stores it was given (readCalls reads
+// it), writes its standard input to stdin, and then does what then says.
 func curlStandIn(record, stdin, then string) string {
-	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\tsslkeylog=%s\thttpsproxy=%s\tallproxy=%s\tcertfile=%s\tcertdir=%s\tcabundle=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${SSLKEYLOGFILE-unset}" ` +
-		`"${HTTPS_PROXY-unset}" "${ALL_PROXY-unset}" "${SSL_CERT_FILE-unset}" "${SSL_CERT_DIR-unset}" "${CURL_CA_BUNDLE-unset}" >> ` +
+	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\tsslkeylog=%s\thttpsproxy=%s\thttpsproxylower=%s\tallproxy=%s\tallproxylower=%s\tnoproxy=%s\tnoproxylower=%s\tcertfile=%s\tcertdir=%s\tcabundle=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${SSLKEYLOGFILE-unset}" ` +
+		`"${HTTPS_PROXY-unset}" "${https_proxy-unset}" "${ALL_PROXY-unset}" "${all_proxy-unset}" "${NO_PROXY-unset}" "${no_proxy-unset}" "${SSL_CERT_FILE-unset}" "${SSL_CERT_DIR-unset}" "${CURL_CA_BUNDLE-unset}" >> ` +
 		shQuote(record) + "\n" + "cat > " + shQuote(stdin) + "\n" + then
 }
 
@@ -432,6 +434,57 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 			for _, key := range []string{"httpsproxy", "allproxy"} {
 				if got := calls[0][key]; got != "http://127.0.0.1:1" {
 					t.Errorf("curl ran with %s=%q, want the caller's proxy, http://127.0.0.1:1", key, got)
+				}
+			}
+			if stdin, err := os.ReadFile(rig.curlStdin); err != nil || string(stdin) != "Authorization: Bearer "+tc.token+"\n" {
+				t.Errorf("curl's standard input held %q (%v), want the token's one header", stdin, err)
+			}
+		})
+	}
+}
+
+// Under `agent-secrets NAME -- git push`, whose NAME the secrets broker's airlock holds back, both
+// HTTPS_PROXY and https_proxy name the airlock's proxy (TokenChildKeeps). The curl read of a gh
+// directory's token keeps neither of them and no ALL_PROXY or all_proxy, which curl would fall
+// back to, so it connects to GitHub directly. The curl read of the caller's own GH_TOKEN or
+// GITHUB_TOKEN, the airlock's placeholder under `agent-secrets GH_TOKEN`, keeps the airlock's
+// proxy, which alone swaps that placeholder for the real token, and the caller's ALL_PROXY as
+// before. Each keeps the caller's NO_PROXY and no_proxy as they are, and none keeps a trust store.
+// TestCurlCarriesTheTokenOnItsStandardInput is the case with no airlock, where each keeps the
+// caller's HTTPS_PROXY and ALL_PROXY.
+func TestTheCurlReadLeavesTheAirlocksProxyOutForADirectorysTokenAlone(t *testing.T) {
+	airlock := "http://" + cipheraddr.AirlockProxyUser + ":placeholder@broker.internal.example:13381"
+	env := []string{"HTTPS_PROXY=" + airlock, "https_proxy=" + airlock, "ALL_PROXY=http://127.0.0.1:1", "all_proxy=http://127.0.0.1:2",
+		"NO_PROXY=localhost,.internal", "no_proxy=localhost,.svc", "SSL_CERT_FILE=/dev/null"}
+	keptLists := map[string]string{"noproxy": "localhost,.internal", "noproxylower": "localhost,.svc", "certfile": "unset"}
+	callers := map[string]string{"httpsproxy": airlock, "httpsproxylower": airlock, "allproxy": "http://127.0.0.1:1", "allproxylower": "http://127.0.0.1:2"}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+		token string
+		want  map[string]string
+	}{
+		{
+			name: "a gh directory's token", token: theToken,
+			want: map[string]string{"httpsproxy": "unset", "httpsproxylower": "unset", "allproxy": "unset", "allproxylower": "unset"},
+		},
+		{name: "the caller's GH_TOKEN", extra: []string{"GH_TOKEN=callers-placeholder-not-a-secret"}, token: "callers-placeholder-not-a-secret", want: callers},
+		{name: "the caller's GITHUB_TOKEN", extra: []string{"GITHUB_TOKEN=callers-other-not-a-secret"}, token: "callers-other-not-a-secret", want: callers},
+	} {
+		want := maps.Clone(tc.want)
+		maps.Copy(want, keptLists)
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs, append(slices.Clone(env), tc.extra...)...)
+			if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
+				t.Fatalf("read %q, %v; want curl's private", visibility, err)
+			}
+			calls := readCalls(t, rig.curl)
+			if len(calls) != 1 {
+				t.Fatalf("curl ran %d times, want once", len(calls))
+			}
+			for key, want := range want {
+				if got := calls[0][key]; got != want {
+					t.Errorf("curl ran with %s=%q, want %q", key, got, want)
 				}
 			}
 			if stdin, err := os.ReadFile(rig.curlStdin); err != nil || string(stdin) != "Authorization: Bearer "+tc.token+"\n" {
