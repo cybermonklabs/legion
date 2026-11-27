@@ -29,20 +29,23 @@ export function statementWordsAt(target: EventTarget): HTMLElement | null {
  *   issue's key and title, a chip's words - marked with the words it was written as; the editor
  *   holds those words as text, hidden under a title it draws as a widget the caret cannot enter
  *   (`@legion/proof-editor`'s `reference-decorations.ts`).
- * - Inline HTML (`<name>`): the view draws it by the schema's own `toDOM`, Milkdown's
- *   `span[data-type="html"]` holding its value; a footnote's reference the view draws as the text
- *   its author wrote (`[^label]`), since the statement's own words define no note, and as the
- *   schema's `sup` where a note is defined in them. The editor holds each as an atom ProseMirror
- *   draws `contenteditable="false"`, marked with no text.
+ * - Inline HTML (`<name>`) and a footnote's reference: the view draws each by the schema's own
+ *   `toDOM`, Milkdown's `span[data-type="html"]` holding its value and
+ *   `sup[data-type="footnote_reference"]` holding its label, a reference whose note the document
+ *   defines outside the statement included, since the server reads the statement's words with a
+ *   stand-in note for each such call (`api/coverage.go`'s `requirementBlocksIn`). The editor
+ *   holds each as an atom ProseMirror draws `contenteditable="false"`, marked with no text.
  * - A picture of an artifact: the view draws it as a link (`markdown-serializer.ts`'s
  *   `pictureSerializer`) holding the picture, or its caption's link until it loads or where it
  *   fails (`DispatchPicture`); the editor holds it as an atom (`doc/picture-view.ts`), its
  *   picture or its fallback link with no text the caret can enter, marked with no text.
  *
- * Every other text counts as drawn: a hard break is a `br` in both, holding no text, and what
- * the editor draws as a widget - a reference's title, a collaborator's cursor - stands outside
- * its editable text and is not drawn by the view. A mark with no text is an atom: a press inside
- * it counts as at its start, and a press past it goes after it.
+ * Every other text counts as drawn: a hard break is a `br` in both, holding no text; a
+ * `[^label]` the view draws as text - a call the document defines no note for, an escaped one -
+ * is text the editor holds too; and what the editor draws as a widget - a reference's title, a
+ * collaborator's cursor - stands outside its editable text and is not drawn by the view. A mark
+ * with no text is an atom: a press inside it counts as at its start, and a press past it goes
+ * after it.
  */
 const HELD_OTHERWISE = `[${ROW_WRITTEN}]`;
 

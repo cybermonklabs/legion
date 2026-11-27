@@ -124,27 +124,6 @@ test("a press after a footnote's reference counts the reference as nothing", () 
   });
 });
 
-// A footnote's reference whose note the statement's own words do not define is drawn as the text
-// its author wrote, `[^n1]`, which the renderer marks with no text of the editor's, which holds it
-// as an atom (`RowText.tsx`'s `markDrawnAtoms`). So it counts as nothing: a press after it counts
-// the text before it, and a press past it, where it ends the words, goes after it.
-test("a press after a footnote's reference drawn as its written text counts it as nothing", () => {
-  const note = '<span data-row-written="">[^n1]</span>';
-  expect(pressIn(`<p>Read the note${note}${AFTER}</p>`, AFTER, 3)).toEqual({
-    x: 1,
-    y: 2,
-    offset: "Read the note".length + 3,
-    word: ["note ", "first,", " then", 2],
-  });
-  expect(pressAt(`<p>Read the note${note}</p>`, paragraphEnd)).toEqual({
-    x: 1,
-    y: 2,
-    offset: "Read the note".length,
-    word: ["the ", "note", "", 4],
-    next: true,
-  });
-});
-
 test("a press after a picture counts the picture as nothing", () => {
   const html = `<p>See <a data-row-written="" data-dispatch-picture="dispatch://CORE-1/artifact/shot-png" data-picture-caption="shot.png" href="/CORE-1/artifact/shot-png"><span>shot.png</span></a>${AFTER}</p>`;
   expect(pressIn(html, AFTER, 3)).toEqual({

@@ -284,45 +284,13 @@ export const ROW_WRITTEN = "data-row-written";
  *  loaded (`markdown-serializer.ts`'s `pictureSerializer`, `DispatchPicture`). */
 const DRAWN_ATOMS = '[data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture]';
 
-/** A footnote's reference as its author wrote it, `[^label]`, which the reading of a node's own
- *  words leaves as text where the note it names is defined elsewhere in the document, as a
- *  statement's is, and which the editor holds as an atom. A `[^label]:` opens a definition. */
-const FOOTNOTE_CALL = /\[\^[^\]\s]+\](?!:)/gu;
-
-/** Marks with `ROW_WRITTEN` what the words painted into `root` draw in place of an atom of the
- *  editor's, with no text of the editor's: each of `DRAWN_ATOMS`, and a footnote's reference the
- *  words draw as the text its author wrote, wrapped in an element of its own. Run again after every
- *  paint, after the reference pass; it finds nothing to do twice. */
+/** Marks with `ROW_WRITTEN` each of `DRAWN_ATOMS` the words painted into `root` draw, in place of
+ *  an atom of the editor's, with no text of the editor's. A `[^label]` the words draw as text -
+ *  a call the document defines no note for, an escaped one - is text the editor holds too, and
+ *  is left as drawn. Run again after every paint; it finds nothing to do twice. */
 function markDrawnAtoms(root: HTMLElement): void {
   for (const atom of root.querySelectorAll(DRAWN_ATOMS)) {
     if (!atom.hasAttribute(ROW_WRITTEN)) atom.setAttribute(ROW_WRITTEN, "");
-  }
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const texts: Text[] = [];
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (
-      node instanceof Text &&
-      node.data.includes("[^") &&
-      node.parentElement?.closest(`a, code, pre, [${ROW_WRITTEN}]`) == null
-    ) {
-      texts.push(node);
-    }
-  }
-  for (const text of texts) {
-    const value = text.data;
-    const pieces: (Node | string)[] = [];
-    let at = 0;
-    for (const call of value.matchAll(FOOTNOTE_CALL)) {
-      pieces.push(value.slice(at, call.index));
-      const note = document.createElement("span");
-      note.setAttribute(ROW_WRITTEN, "");
-      note.textContent = call[0];
-      pieces.push(note);
-      at = call.index + call[0].length;
-    }
-    if (at === 0) continue;
-    pieces.push(value.slice(at));
-    text.replaceWith(...pieces.filter((piece) => piece !== ""));
   }
 }
 
