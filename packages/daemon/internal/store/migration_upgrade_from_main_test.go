@@ -491,6 +491,16 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			}
 		}
 	}
+	// queueEveryKind writes a row of each kind the merged daemon queues after the upgrade: main's
+	// newest, merge_holds_changed, and the three of this pull request's task copies.
+	queueEveryKind := func(t *testing.T, store *Store) {
+		for _, kind := range []string{"pending_basis_seed", "reparent_seed", "merge_holds_changed",
+			"task_branch", "task_pull_requests_close", "task_copy_remove"} {
+			if err := queueRowOfKind(store, kind); err != nil {
+				t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+			}
+		}
+	}
 	for _, release := range []releaseDatabase{
 		{
 			name:   "main at 4a8d82bfd090",
@@ -512,6 +522,16 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
+		},
+		{
+			// The main of this tree's merge d11896153263, whose newest is the merge holds change.
+			// This pull request's three migrations that add an outbox kind stand below it, and
+			// Migrate applies each over a row of every kind main's check admits, merge_holds_changed
+			// and the two basis seeds among them.
+			name:   "main at a2ac5fd7ace",
+			newest: mergeHoldsChangedVersion,
+			seed:   queueMainsKinds,
+			check:  queueEveryKind,
 		},
 		{
 			name:   "this branch at 10e98a85ef53",

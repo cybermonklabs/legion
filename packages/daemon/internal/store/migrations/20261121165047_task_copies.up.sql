@@ -26,30 +26,42 @@
 -- and so does the workflow where it records a pull request on the issue's own branch
 -- (BranchGiven); it names no task, so a task's branch has one place, plan_tasks.branch.
 --
--- The outbox check is one list, so this migration names every kind, as 20261119203047 did: its
--- thirty kinds and task_branch. Its version stands above 20261119203047 on purpose, and above
--- every other migration that writes the list again: Migrate applies every unrecorded migration in
--- version order, so the list with the higher version is the last word on any database, a database
--- that already took 20261119203047 among them.
+-- The outbox check is one list, and main writes it whole above this version: 20261122154643 (the
+-- basis seeds) and 20261126110259 (the merge holds change). So this migration writes no list of its
+-- own. It adds task_branch to the list the database holds, whichever migration wrote it (the block
+-- that ends this file), and ADD CONSTRAINT checks every row the table holds against the new list,
+-- as it does for every list. On a database main's release migrated, that list is main's newest, so
+-- a pending row of each kind main's daemon queues, pending_basis_seed, reparent_seed and
+-- merge_holds_changed among them, is still admitted (store's
+-- TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades). On a fresh database it is the design
+-- news's list (20261119203047), so each kind main adds above this version is still refused below
+-- the migration that adds it (TestTheOutboxTakesTheBasisSeedKindsWith20261122154643). Main's lists
+-- above this version leave task_branch out, and 20261126194217, which stands above every one of
+-- them, writes the list again with it.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. It deletes each task_branch row
 -- first, since the check written again without the kind refuses a row that holds it, and the
 -- earlier release decodes no such row; and each task-join-failed notice not yet sent, a kind the
--- earlier release decodes no row of either:
+-- earlier release decodes no row of either. It then takes task_branch out of the list the
+-- database holds and keeps every other kind, so a pending row of a kind main added stays admitted:
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   delete from outbox where kind = 'task_branch';
 --   delete from outbox where kind = 'notice' and payload->>'kind' = 'task-join-failed';
---   alter table outbox drop constraint if exists outbox_kind_check;
---   alter table outbox add constraint outbox_kind_check check (kind in (
---     'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
---     'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
---     'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
---     'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
---     'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
---     'conflict_confirm', 'merge_forward', 'design_changes'));
+--   do $$
+--   declare
+--     kinds text[] := array(select k.m[1] from pg_constraint c,
+--       regexp_matches(pg_get_constraintdef(c.oid), '''([^'']+)''::text', 'g') with ordinality k(m, n)
+--       where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check' order by k.n);
+--   begin
+--     alter table outbox drop constraint outbox_kind_check;
+--     execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))',
+--       (select string_agg(quote_literal(u.kind), ', ' order by u.n)
+--         from unnest(array_remove(kinds, 'task_branch')) with ordinality u(kind, n)));
+--   end
+--   $$;
 --   alter table plan_tasks drop column if exists branch, drop column if exists join_conflicts,
 --     drop column if exists join_unmerged, drop column if exists start_reason;
 --   drop table if exists plan_branches;
@@ -83,12 +95,18 @@ create table plan_branches (
   primary key (issue, generation, branch)
 );
 
-alter table outbox drop constraint if exists outbox_kind_check;
-alter table outbox add constraint outbox_kind_check check (kind in (
-  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
-  'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
-  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
-  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'task_branch'));
+do $$
+declare
+  kinds text[] := array(select k.m[1] from pg_constraint c,
+    regexp_matches(pg_get_constraintdef(c.oid), '''([^'']+)''::text', 'g') with ordinality k(m, n)
+    where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check' order by k.n);
+begin
+  if cardinality(kinds) = 0 then
+    raise exception 'outbox_kind_check names no kind, so this migration has no list to add task_branch to';
+  end if;
+  alter table outbox drop constraint outbox_kind_check;
+  execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))',
+    (select string_agg(quote_literal(u.kind), ', ' order by u.n)
+      from unnest(array_remove(kinds, 'task_branch') || 'task_branch'::text) with ordinality u(kind, n)));
+end
+$$;
