@@ -588,8 +588,27 @@ func readIssueDecisionsWithTrees(t *testing.T, handler http.Handler, key string)
 	return decodeBody[issueDecisions](t, treesRequest(t, handler, "/api/v1/issues/"+key+"/decisions", true))
 }
 
+// asTheTreeReadAnswersIt is decision, the old `decisions` member's model.Decision for entry's node,
+// as the tree read answers that decision, with any view or none. The old member answers a
+// `decision` block whose decided_by names a person, which nobody kept, kind `person`
+// (compatDecision), for a page of the release before: that page reads the old member alone, and
+// lists a decision under "Your decisions" only by kind `person` or a Keep, so it would list such a
+// block, which waits for nobody's review, nowhere. That kind is the old member's alone. The tree
+// read answers the block kind `agent`, the node's shape, as the entry does, and says who decided
+// in the decided_by tuple it answers beside the node with the decider as context: this release's
+// page reads the person's decision from that tuple (decisionsFromTree in
+// web/src/api/decisions-tree.ts, then isPersonDecision and deciderOf), and no page of the release
+// before reads the tree read. Every other decision, and every other member, is the old member's.
+func asTheTreeReadAnswersIt(entry decisionEntry, decision model.Decision) model.Decision {
+	if entry.Node.Kind == refs.BlockNodeKind && entry.DecidedBy != nil && entry.DecidedBy.Kind == graphstore.KindPerson && decision.Kept == nil {
+		decision.Kind = entry.Kind
+	}
+	return decision
+}
+
 // requireDecisionAsRead fails unless the tree read's decision node d1 answers every member of
-// model.Decision as the decisions read answers it for the same decision, byte for byte, and its
+// model.Decision as the decisions read answers it for the same decision, byte for byte, but for
+// the old member's kind for a person's decision nobody kept (asTheTreeReadAnswersIt), and its
 // uncertainty and uncertainty_reason as that read's entry for it answers them.
 func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key, node string) model.Decision {
 	t.Helper()
@@ -599,30 +618,27 @@ func requireDecisionAsRead(t *testing.T, what string, handler http.Handler, key,
 		t.Fatalf("%s: the tree read's decision %s answers no decision members", what, node)
 	}
 	decisions := readIssueDecisionsWithTrees(t, handler, key)
-	want := decisionByBlock(t, decisions.Decisions, "d1")
+	entry := requireEntry(t, decisions.Entries, what+": the decision d1", refs.BlockNodeKind+":"+node)
+	want := asTheTreeReadAnswersIt(entry, decisionByBlock(t, decisions.Decisions, "d1"))
 	got, _ := json.Marshal(held.Decision.Decision)
 	expected, _ := json.Marshal(want)
 	if !bytes.Equal(got, expected) {
 		t.Errorf("%s: the tree read's decision answers\n%s\nwant the decisions read's\n%s", what, got, expected)
 	}
-	for _, entry := range decisions.Entries {
-		if entry.Node.Kind != refs.BlockNodeKind || entry.Node.ID != node {
-			continue
-		}
-		if entryJSON(t, held.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, held.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
-			t.Errorf("%s: the tree read's decision %s answers the uncertainty %s and its reason %s, want the decisions read's entry's %s and %s", what, node,
-				entryJSON(t, held.Decision.Uncertainty), entryJSON(t, held.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
-		}
+	if entryJSON(t, held.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, held.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {
+		t.Errorf("%s: the tree read's decision %s answers the uncertainty %s and its reason %s, want the decisions read's entry's %s and %s", what, node,
+			entryJSON(t, held.Decision.Uncertainty), entryJSON(t, held.Decision.UncertaintyReason), entryJSON(t, entry.Uncertainty), entryJSON(t, entry.UncertaintyReason))
 	}
 	return held.Decision.Decision
 }
 
 // TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes: on a converted issue, the
 // decision node answers every member of model.Decision equal to GET /api/v1/issues/{key}/decisions'
-// for the same decision; after the words of the requirement its shaped tuple names change, its
-// link answers changed_since_tie and not stale, and after the decision's own words change, stale,
-// each as the decisions read's does; and the read answers the decision's decided_by person as
-// context with the tuple.
+// for the same decision, its kind the entry's, the node's shape, where the old member answers
+// alice's own decision kind `person` for the release before (asTheTreeReadAnswersIt); after the
+// words of the requirement its shaped tuple names change, its link answers changed_since_tie and
+// not stale, and after the decision's own words change, stale, each as the decisions read's does;
+// and the read answers the decision's decided_by person as context with the tuple.
 func TestTheTreeReadAnswersEveryDecisionMemberAsTheDecisionsReadDoes(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1113,8 +1129,9 @@ func decisionsViewSpec(key string) string {
 // requireDecisionsViewAsRead fails unless view, ?view=decisions of an issue, answers every entry
 // of read, the decisions read of the same issue, as the query's, keyed as read keys it and member
 // by member: an ask by its ask id with its question, options, urgency and multiple; a decision and
-// an answered ask with every member of model.Decision the read's `decisions` answers for it, and
-// the block id, text, sum, kind, replaced, kept and waiting_review of its entry; and each reading
+// an answered ask with every member of model.Decision the read's `decisions` answers for it, but
+// for that member's kind for a person's decision nobody kept (asTheTreeReadAnswersIt), and the
+// block id, text, sum, kind, replaced, kept and waiting_review of its entry; and each reading
 // the read lists under an entry, a decision's or an answered ask's, under that entry's node. It
 // answers each entry's node by the entry's key.
 func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read issueDecisions) map[string]model.IssueTreeNode {
@@ -1162,14 +1179,7 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 			t.Errorf("%s: ?view=decisions answers the entry %s with no decision, want the decisions read's %s", what, entryKey(entry), entryJSON(t, want))
 			continue
 		}
-		// The old `decisions` member answers a person's un-kept decision block kind `person`, for a page
-		// of the release before that lists it under "Your decisions" (compatDecision). The view names
-		// the node's shape, as the entry does (below), and says who decided in decided_by.
-		compat := want
-		if entry.Node.Kind == refs.BlockNodeKind {
-			compat.Kind = entry.Kind
-		}
-		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, compat); got != expected {
+		if got, expected := entryJSON(t, node.Decision.Decision), entryJSON(t, asTheTreeReadAnswersIt(entry, want)); got != expected {
 			t.Errorf("%s: ?view=decisions answers the entry %s with the decision\n%s\nwant the decisions read's\n%s", what, entryKey(entry), got, expected)
 		}
 		if entryJSON(t, node.Decision.Uncertainty) != entryJSON(t, entry.Uncertainty) || entryJSON(t, node.Decision.UncertaintyReason) != entryJSON(t, entry.UncertaintyReason) {

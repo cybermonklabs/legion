@@ -564,7 +564,12 @@ func TestAnAskWhoseNodeHoldsAValueThatDoesNotParseIsLeftOutOfTheDecisionsRead(t 
 // One ask row of the spec whose own stored value does not decode drops that one ask from the open
 // questions and never fails the Decisions read (R4), as a value of its node that does not parse
 // drops it: the read answers 200 with every other open question of the spec. Of two open asks, one
-// row holds an author written by hand that is no actor.
+// row holds an author written by hand that is no actor. Every other read of the decisions drops
+// that one ask the same way and answers 200 with the other: the Decisions read's entries, which
+// walk the issue's tree, and the tree read with no view and with ?view=decisions. Each of them
+// reaches the issue's asks through the walk of its conversation, which loads each ask and its
+// parts as every read of the graph does (refs' loadAskNodes and itemBlockNodes), and that load
+// leaves out an ask, and each part of it, whose maker does not decode rather than fail the read.
 func TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
@@ -583,6 +588,22 @@ func TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions(t *testing.T) 
 	}
 	if !slices.Equal(ids, []string{fine}) {
 		t.Errorf("open_questions = %v, want the one ask whose row decodes, %s", ids, fine)
+	}
+	entries := entriesByNode(view.Entries)
+	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {
+		t.Errorf("the entries hold no entry for the ask %s whose row decodes: %s", fine, entryJSON(t, view.Entries))
+	}
+	if _, held := entries[graphstore.KindAsk+":"+broken]; held {
+		t.Errorf("the entries hold an entry for the ask %s, whose row holds an author that is no actor", broken)
+	}
+	for _, query := range []string{"", "?view=decisions"} {
+		tree := treeRead(t, handler, issue.Key, query, "alice", false)
+		if held := tree.nodesNamed(graphstore.KindAsk, fine); len(held) != 1 {
+			t.Errorf("the tree read%s answers the ask %s, whose row decodes, %d times, want once; it answers %v", query, fine, len(held), tree.addresses())
+		}
+		if held := tree.nodesNamed(graphstore.KindAsk, broken); len(held) != 0 {
+			t.Errorf("the tree read%s answers the ask %s, whose row holds an author that is no actor, as %s", query, broken, entryJSON(t, held))
+		}
 	}
 }
 
