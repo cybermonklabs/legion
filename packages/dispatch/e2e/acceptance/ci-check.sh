@@ -8,8 +8,9 @@
 #   refuses each of the four writes that break a rule, 400 INVALID_CI_CHECK naming the block and
 #   the rule, and stores nothing of them; a `ci_check` on a fresh block id is stored, and the old
 #   id used again by a new block is refused again; a check carrying neither `ci_check` nor `run`
-#   is stored as it is today; a document socket that declares the old schema version (3) is
-#   admitted read-only, and one that declares the new one (4) read-write. The live editor's half
+#   is stored as it is today; a document socket that declares the schema version before
+#   `ci_check` (3) is admitted read-only, and one that declares the version the server serves (4,
+#   the first with `ci_check`, or a later one) read-write. The live editor's half
 #   of k1, a person pasting the four blocks, is the browser row of e2e/verification.e2e.ts.
 # - k2: `dispatch results` derives the result of the check from the named run at the issue's open
 #   pull request head: the run's name, conclusion, output and URL, and the pull-request body line,
@@ -556,7 +557,11 @@ refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
 get "/api/v1/schema/blocks"
 want_status 200 k1 "the block schema answers"
-expect k1 "the block schema is version 4" 4 '.version'
+# The schema the server serves: version 4 added ci_check, so a page of 3 cannot write k1's document
+# and a page of the version the server serves can, whichever version that is (5 since #4611).
+expect k1 "the block schema is version 4 or later, the first with ci_check" true '.version >= 4'
+schema_version="$(jq -r '.version' "$work/body")"
+readonly schema_version
 curl -sS -o /dev/null -D "$work/signin" "$base/auth/_dev/signin?login=$(q "$dev_login")" \
   2>"$work/curl" || fail k1 "sign $dev_login in" "$(<"$work/curl")"
 sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\).*/\1/p' "$work/signin" | paste -sd ';' >"$work/cookie"
@@ -575,9 +580,10 @@ socket_scope() {
 socket_scope 3
 [[ "$scope" == readonly ]] || fail k1 "the socket on schema version 3 is read-only" "its scope is $scope"
 pass k1 "the socket on schema version 3 is admitted with scope readonly"
-socket_scope 4
-[[ "$scope" == read-write ]] || fail k1 "the socket on schema version 4 writes" "its scope is $scope"
-pass k1 "the socket on schema version 4 is admitted with scope read-write"
+socket_scope "$schema_version"
+[[ "$scope" == read-write ]] ||
+  fail k1 "the socket on the server's schema version $schema_version writes" "its scope is $scope"
+pass k1 "the socket on the server's schema version $schema_version is admitted with scope read-write"
 
 # --- k2: the derived result, the merge, one read for three checks, the newest head --------------
 
