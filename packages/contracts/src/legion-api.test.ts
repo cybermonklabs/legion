@@ -3176,6 +3176,8 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
     "LEGION-214": false,
     "LEGION-218": true,
     "LEGION-219": true,
+    "LEGION-240": true,
+    "LEGION-241": true,
   });
   expect("treeRuns" in (state.issues["LEGION-209"] ?? {})).toBeFalse();
 

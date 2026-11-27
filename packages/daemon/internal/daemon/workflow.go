@@ -1811,7 +1811,7 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 // no call to GitHub; false before that App's first lease, and for a token source that answers no
 // such read, a test's fake among them. The App is the one appauth.AppRoleFor gives role over the
 // deployment's roles, as identity reads it, and a role neither Legion nor the deployment defines
-// has no App and so no identity known. A bot identity is the App's own and no owner's, so it
+// maps to no App and so to no identity known. A bot identity is the App's own and no owner's, so it
 // needs no repository. A launch's table of every role's identity reads it for the roles of the
 // other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
 // daemon knows its identity.

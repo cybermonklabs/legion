@@ -102,6 +102,7 @@ const tool = createLegionTool({
   controllerGrant: () => unexpected("controller grant"),
   onPhaseCompleted: () => undefined,
   onUpdateAnswered: () => undefined,
+  env: process.env,
   handoffReport: () => unexpected("handoff report"),
   branchHead: () => unexpected("branch head"),
   dispatch: async () => board,
