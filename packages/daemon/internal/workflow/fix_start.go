@@ -308,11 +308,13 @@ func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	if role == claim.RoleImplementer || pushed == "" {
 		return startFacts{}, false, nil
 	}
-	branch, ok := e.besideBranchOf(issue, w.Task, fix.Fix, role)
+	_, ok := e.besideBranchOf(issue, w.Task, fix.Fix, role)
 	if !ok {
 		return startFacts{}, false, nil
 	}
-	return startFacts{Fix: fix.Fix, Check: fix.Check, Head: fix.EndHead, Branch: branch, Pushed: pushed, Kept: true}, true, nil
+	// CONTROL (fb8-ctl-5b): the start a way 2 runs again is given the fix and its head, and
+	// neither the kept branch nor the head recorded for its push.
+	return startFacts{Fix: fix.Fix, Check: fix.Check, Head: fix.EndHead, Kept: true}, true, nil
 }
 
 // boundFacts is the start facts of a step at place of w's task of issue whose open start is bound
