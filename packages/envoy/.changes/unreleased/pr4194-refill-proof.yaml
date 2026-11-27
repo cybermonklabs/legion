@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The refill live proof, `scripts/e2e-refill.sh`, reads an interest row's variant from its
+  directory: the rig writes each record's directory as `/refill/<set>/v<n>`, which the listener
+  keeps on the row, where it named the variant in a `notifications.team.refill.<set>.v<n>` topic.
+  The
+  `recreate-live` scenario runs a shape again, up to three attempts, when the shape missed the
+  window it observes (INVALID); a PASS or a FAIL ends it, and its line names each earlier
+  attempt. A new CI job, `envoy-refill`, runs every scenario of the script when a change touches
+  what it reads.
+time: 2026-11-17T02:11:57Z
+custom:
+    Issue: pr4194

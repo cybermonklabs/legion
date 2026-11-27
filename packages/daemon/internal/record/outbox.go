@@ -1468,6 +1468,19 @@ type SuperviseRequest struct {
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
+	// WakeDetail is the detail of the wake whose kind WakeKind names: the head and what its
+	// settlement came to, the role token or the session a message was sent to, or the backstop
+	// that came due. The task of the start is WakeTask of that kind and detail (workflow's
+	// wakeRow), so a cancel or a release's record that must tell the same wake in other words
+	// renders the task again from the two rather than cutting words out of it (workflow's
+	// retellWakeTask). Every wake the workflow takes names a detail that is not empty. A start
+	// that an earlier daemon queued carries no detail, and the payload of such a start still
+	// decodes, with WakeDetail empty: the store keeps the task of such a start as it is
+	// (store's retellStarts). A pause's owed launch carries no task and no detail. Every other
+	// request carries none. A release before this key refuses a row that carries it
+	// (DisallowUnknownFields), so a rollback strips it from each queued start first
+	// (docs/kubernetes.md, "Rolling back idle release").
+	WakeDetail string `json:"wakeDetail,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1892,10 +1905,17 @@ type PlanDocument struct {
 	Version    int    `json:"version"`
 }
 
-// PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+// PlanRecordTask is one task of a plan: its id, its steps in order, each a role or `role:key`, and
+// the tasks it needs, each by its id (record.PlanTask.Needs, as register_plan resolved them), [] for
+// a task that needs none. Needs is nil in a row the release before wrote, which carried no needs:
+// the write then carries no member, and Dispatch reads the plan's needs as not recorded. The
+// release before decodes strictly (DisallowUnknownFields), so the way back in docs/kubernetes.md,
+// "Rolling back the release that records each task's needs", takes `needs` off each queued row
+// before that release boots.
 type PlanRecordTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }
@@ -3085,6 +3105,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
+		}
+		if value.WakeDetail != "" && value.WakeKind == "" {
+			return fmt.Errorf("a supervise %s names a wake detail and no wake kind; only a wake's start names one", value.Op)
 		}
 		if value.TurnStart != nil && value.Op != "suspend" {
 			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)

@@ -10,6 +10,8 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 :::
 ```
 
+- Give the block an id (`#a` above) of lowercase letters, digits and hyphens that starts with a letter or a digit and is at most 64 bytes.
+  Legion refuses any other id, since Dispatch records no step of such a task.
 - `serves` names the spec's `requirement` blocks that the task serves, so that the issue's coverage counts it.
 - A task that names no steps runs the project's default steps: `planner implementer tester reviewer acceptance:owner`, where the project names no other.
 

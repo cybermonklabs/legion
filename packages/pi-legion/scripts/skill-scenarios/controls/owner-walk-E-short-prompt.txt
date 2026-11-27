@@ -1,0 +1,5 @@
+# owner-walk, form E (ctl-E) at a label whose go/architect-common.md is the short architect prompt,
+# which holds no paragraph on the choice of an agent: form B with the one text left that asks for
+# the choice taken out, the sentence of the architect's plan reference. scored-job.sh takes this
+# manifest at a commit that holds it, and owner-walk-E.txt at any other (patches/README.md).
+drop skills/legion-architect/references/plan.md controls/drops/owner-walk-E-choice-sentence.txt

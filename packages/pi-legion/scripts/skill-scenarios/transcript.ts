@@ -25,6 +25,8 @@ export const SessionEntry = z.looseObject({
       toolName: z.string().optional(),
       toolCallId: z.string().optional(),
       isError: z.boolean().optional(),
+      stopReason: z.string().optional(),
+      errorMessage: z.string().optional(),
       details: z.unknown().optional(),
       content: z
         .array(
@@ -56,8 +58,9 @@ function sessionFile(runDir: string): string | undefined {
     : undefined;
   return file === undefined ? undefined : path.join(dir, file);
 }
-/** A transcript file, parsed whole. A line that does not parse is the rig's fault. */
-function parsedSession(full: string): SessionEntry[] {
+/** A transcript file, parsed whole. A line that does not parse is the rig's fault. Every reader of
+ * a transcript file parses it through this. */
+export function parsedSession(full: string): SessionEntry[] {
   return readFileSync(full, "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "")

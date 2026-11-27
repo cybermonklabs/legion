@@ -78,20 +78,20 @@
 //                                          the asks and documents on the issue <file> names, as
 //                                          score.ts's askgateReview reads them (asks.json,
 //                                          artifacts.json in <run dir>)
+//   seed.ts owner-walk <file> <kind> <answer>
+//                                          owner-walk's world under LWEVAL, for an owner of <kind>
+//                                          (root or child), from the run's recorded plans answer
+//                                          <answer> (owner-walk-seed.ts ownerWalkIssues)
+//   seed.ts capture-scored <file> <run dir>
+//                                          the world's Dispatch records after a scored run, as
+//                                          captured.json in <run dir> (owner-walk-seed.ts
+//                                          captureScored)
 //   seed.ts case-world                     seed the Dispatch part of $SKILL_SCENARIO_RUN/launch-world.json
 //   seed.ts case-readback <run dir>         capture the issue, documents, handoffs, comments,
 //                                          asks, results and complete event log (with seed cursor)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  Actor,
-  ArtifactBlock,
-  Ask,
-  AskOption,
-  DispatchEvent,
-  Handoff,
-  HandoffSummary,
-} from "@legion/contracts";
+import type { Actor, ArtifactBlock, Ask, AskOption, DispatchEvent } from "@legion/contracts";
 import { z } from "zod";
 import {
   answerAsk,
@@ -110,6 +110,7 @@ import {
   getArtifactVersion,
   getIssue,
   getIssueEvents,
+  getIssueResults,
   getMessage,
   listComments,
   listIssueAsks,
@@ -119,7 +120,9 @@ import {
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { World } from "./heldout-case";
+import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
+import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -147,10 +150,6 @@ const TesterFixture = z.object({
 /** The session the tester's predecessor wrote its implement handoff as: the implementer's, never
  * the run's own. */
 export const IMPLEMENTER = { kind: "session", id: "rig-implementer" } as const;
-/** The person who files the run's issue, posts the source's input and answers every ask. */
-const PERSON = "alice";
-/** Dispatch's approval answer (packages/envoy/internal/dispatch/docs/approval_review.go). */
-const APPROVE = "Approve";
 /** How long spec-rewrite waits for Dispatch's settlement to open the old spec's ask blocks as asks
  * (it settles a seeded document 2 s after the issue is created), and how often it looks. */
 const BLOCK_ASKS_WAIT_MS = 30_000;
@@ -695,16 +694,6 @@ export async function implementHandoff(
   console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
 }
 
-/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
-async function agentGet<T>(route: string): Promise<T> {
-  const response = await fetch(new URL(route, baseUrl), {
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  if (!response.ok)
-    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
-}
-
 /** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
  * Dispatch's answer. */
 async function agentPost(route: string, input: unknown): Promise<void> {
@@ -721,16 +710,10 @@ async function agentPost(route: string, input: unknown): Promise<void> {
 }
 
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
- * implement record among them, newest first as `GET …/handoffs` lists them, each read whole by id
- * (`GET /api/v1/handoffs/{id}`) for its body. */
+ * implement record among them, newest first, each with its body (handoffsOf). */
 export async function captureHandoffs(file: string, runDir: string): Promise<void> {
   const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const summaries = await agentGet<HandoffSummary[]>(
-    `/api/v1/issues/${encodeURIComponent(issue)}/handoffs`
-  );
-  const records: Handoff[] = [];
-  for (const summary of summaries)
-    records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
+  const records = await handoffsOf(issue);
   writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
   console.log(`captured ${issue}: ${records.length} handoff records`);
 }
@@ -1128,7 +1111,6 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
     JSON.parse(readFileSync(path.join(runDir, "dispatch-fixture.json"), "utf8"))
   );
   const reader = { as: "agent" } as const;
-  const route = `/api/v1/issues/${encodeURIComponent(key)}`;
   const issue = await getIssue(key, reader);
   const documents = await Promise.all(
     (issue.artifacts ?? []).map(async (artifact) => ({
@@ -1138,10 +1120,7 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
         : {}),
     }))
   );
-  const summaries = await agentGet<HandoffSummary[]>(`${route}/handoffs`);
-  const handoffs = await Promise.all(
-    summaries.map(({ id }) => agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(id)}`))
-  );
+  const handoffs = await handoffsOf(key);
   const captured = {
     issue,
     seedThrough,
@@ -1149,14 +1128,14 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
     handoffs,
     comments: await listComments(key, undefined, reader),
     asks: await listIssueAsks(key, reader),
-    results: await agentGet<unknown>(`${route}/results`),
+    results: await getIssueResults(key, reader),
     events: await caseEvents(key),
   };
   writeFileSync(path.join(runDir, "dispatch-readback.json"), `${JSON.stringify(captured)}\n`);
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | case-world | case-readback <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir> | case-world | case-readback <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -1199,6 +1178,16 @@ async function main(argv: string[]): Promise<boolean> {
     await implementHandoff(file, second, third);
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
+  else if (
+    command === "owner-walk" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await ownerWalkIssues(file, second, third);
+  else if (command === "capture-scored" && file !== undefined && second !== undefined && n === 3)
+    await captureScored(file, second);
   else if (command === "case-world" && n === 1 && process.env.SKILL_SCENARIO_RUN !== undefined)
     await seedCaseDispatch(process.env.SKILL_SCENARIO_RUN);
   else if (command === "case-readback" && n === 2 && file !== undefined)
