@@ -17,7 +17,7 @@ import (
 // so the request goes through one record layer and one Recorder, and the client the context
 // carries is resolved in one place (cipherclient.clientOf, redact.CallScope.Context).
 func Record(ctx context.Context, client *http.Client, answered *Recorder) context.Context {
-	return context.WithValue(ctx, oauth2.HTTPClient, Client(client, answered))
+	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(recorded(client, answered)))
 }
 
 // Client is a copy of base (nil is http.DefaultClient), timeout and redirect rule and all, with its
@@ -26,13 +26,20 @@ func Record(ctx context.Context, client *http.Client, answered *Recorder) contex
 // takes its client as an option rather than from ctx. A reader whose library error drops an
 // answer's status, or quotes its body, reads the answer from answered instead.
 func Client(base *http.Client, answered *Recorder) *http.Client {
+	return redact.RefusalClient(recorded(base, answered))
+}
+
+// recorded is a copy of base (nil is http.DefaultClient), timeout and redirect rule and all, whose
+// transport is answered over base's own (nil is http.DefaultTransport): the client Record and
+// Client each put under one RefusalClient, at the call that hands it on.
+func recorded(base *http.Client, answered *Recorder) *http.Client {
 	wrapped := *cmp.Or(base, http.DefaultClient)
 	answered.base = wrapped.Transport
 	if answered.base == nil {
 		answered.base = http.DefaultTransport
 	}
 	wrapped.Transport = answered
-	return redact.RefusalClient(&wrapped)
+	return &wrapped
 }
 
 // Recorder is a transport that records what became of the last request it carried: the host it
