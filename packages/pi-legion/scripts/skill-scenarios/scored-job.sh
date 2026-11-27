@@ -338,6 +338,9 @@ forward_job() {
 case $scenario in
 owner-walk)
   [ -z "$one_world$path_check$path_control" ] || refuse "--world, --path-check and --path-control are a forward Job's options; $usage"
+  # An owner-walk run writes no standin-script.json, so the scripted model would play nothing.
+  [ "${SKILL_SCENARIOS_MODEL:-}" != standin-report ] ||
+    refuse "SKILL_SCENARIOS_MODEL=standin-report: standin-report is the path check's model, and owner-walk has none; use standin"
   ;;
 forward-only | forward-owner)
   [ -z "$one_case" ] || refuse "--case is owner-walk's option; a $scenario Job takes --world"

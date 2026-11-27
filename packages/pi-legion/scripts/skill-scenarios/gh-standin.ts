@@ -9,9 +9,10 @@
 // `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an object that
 // has a `body`, or with a list that holds such objects, then answers with the new one in each such
 // object, as GitHub's next read would, and the call's record carries it as `body`.
-// A reply on a review thread, GraphQL's `addPullRequestReviewThreadReply` or REST's
-// `repos/<o>/<r>/pulls/<n>/comments/<id>/replies`, is recorded as `reply: {thread, body}`: the
-// thread's node id, or for REST its first comment's id. A `resolveReviewThread` is recorded as
+// A reply on a review thread, GraphQL's `addPullRequestReviewThreadReply`, REST's
+// `repos/<o>/<r>/pulls/<n>/comments/<id>/replies`, or a new review comment whose `in_reply_to`
+// names the thread's first comment, is recorded as `reply: {thread, body}`: the thread's node id,
+// or for REST its first comment's id. A `resolveReviewThread` is recorded as
 // `resolved: <thread node id>`. A route's answer that holds `{{HEAD}}` gets the head of
 // $SKILL_SCENARIO_RUN/ready.json in its place, the head the label's test built (rig.sh
 // run_forward); with no such head the call fails, naming the file.
@@ -118,6 +119,15 @@ const replies = args
   .find((id) => id !== undefined);
 if (as === "gh" && args[0] === "api" && replies !== undefined)
   reply = { thread: replies, body: given.body ?? "" };
+// GitHub also takes a thread's reply as a new review comment whose `in_reply_to` names the thread's
+// first comment, given as a field or in the --input body.
+const newComment = args.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/comments$/.test(arg));
+if (as === "gh" && args[0] === "api" && newComment) {
+  const parsed: unknown = input === undefined ? given : JSON.parse(files[input] ?? "null");
+  const sent = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  const thread = sent.in_reply_to === undefined ? "" : String(sent.in_reply_to);
+  if (thread !== "") reply = { thread, body: sent.body === undefined ? "" : String(sent.body) };
+}
 /** Records the call with the status it exits with, then exits. */
 function exit(status: number): never {
   const record = {
