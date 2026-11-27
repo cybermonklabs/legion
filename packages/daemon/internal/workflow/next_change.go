@@ -342,7 +342,10 @@ func (e *Engine) endChange(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	now := e.now()
 	ended := issue
 	ended.NextChange = 0
-	ended.Phase, ended.Hold = phase.Verifying, nil
+	// The change's held start goes with it, whichever phase held it: the hold, a wait on a person,
+	// and a start held in awaiting_children (ChildrenWait), which issues_children_wait_shape refuses
+	// outside that phase, as StartNextChange clears them at the change's start.
+	ended.Phase, ended.Hold, ended.Awaiting, ended.ChildrenWait = phase.Verifying, nil, nil, nil
 	w, err := e.walk(ctx, tx, ended)
 	if err != nil {
 		return err
