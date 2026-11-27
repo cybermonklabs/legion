@@ -438,7 +438,17 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
 	}
+	// CONTROL COMMIT, never for merge: the review's two-stall fault, 1.2 s before the guard's own
+	// start stamp and 1.2 s between that stamp and the fork of the child, for the programs the
+	// stopped-read row runs: each span under the row's 2 s, their sum past it.
+	plant := filepath.Base(c.argv[0]) == "gh" || filepath.Base(c.argv[0]) == "git"
+	if plant {
+		time.Sleep(1200 * time.Millisecond)
+	}
 	started := time.Now()
+	if plant {
+		time.Sleep(1200 * time.Millisecond)
+	}
 	err := procgroup.Err(cmd.Run())
 	switch {
 	case killed():
