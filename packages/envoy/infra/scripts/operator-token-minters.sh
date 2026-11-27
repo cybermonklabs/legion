@@ -6,7 +6,7 @@
 # The broker's `operator` entry of BROKER_NATS_SERVICES names one Kubernetes ServiceAccount
 # (envoy-operator/envoy-operator by default). NATS takes that account's token, and the account acts,
 # through Workload Identity, as one Google service account, whose token reaches an agent only as the
-# administrator-tagged broker secret ENVOY_OPERATOR, released when a person approves; the secrets
+# administrator-tagged broker secret ENVOY_OPERATOR, released when one person approves; the secrets
 # broker mints that token, so the broker's own ServiceAccount (--broker-workload) is guarded as the
 # operator's is. So holding the operator's power takes one of: minting a guarded ServiceAccount's
 # token, running or entering a pod that runs as it, becoming a principal that can, minting the Google
@@ -275,11 +275,17 @@
 #                     holder is a finding. Renders given without the bucket or the admin are UNKNOWN;
 #                     with no render given the step does not run.
 #   admin tag         `gcloud secrets describe <--secrets-prefix><slug of --secret> --format=json`, the
-#                     broker's secret as Secret Manager holds it: its annotations, the broker's tags,
-#                     must hold "admin": "true" and "tier": "human" (the operator's credential is an
-#                     administrator's, released only when a person approves and never decided by a
-#                     model judge). No such secret is a finding too. The read needs
-#                     secretmanager.secrets.get alone, and no broker.
+#                     broker's secret as Secret Manager holds it: its annotations, the broker's tags.
+#                     Every such secret is a release route that no second person approves, so each is
+#                     a finding: without "admin": "true" or at a tier other than "human" a model judge
+#                     may decide a release, and with both each release waits on one person's
+#                     approval, the person an agent acts for included, which INFRA-840's
+#                     c-operator-grant-door says has one person in it, not two: an open route until
+#                     R16's grant door exists. No such secret passes, and only where `gcloud secrets
+#                     list` of the prefix's own project lists a secret of that prefix, every page: a
+#                     mistyped prefix answers NOT_FOUND too, so a project that lists none under it
+#                     is UNKNOWN, as a refused list is. The reads need secretmanager.secrets.get on the
+#                     secret and secretmanager.secrets.list on the prefix's project, and no broker.
 #
 # Binding subjects. The identities a cluster's RBAC names are principals of that cluster too: GKE
 # authenticates a Google account as a User of its email, so `grade-ci@<p>.iam.gserviceaccount.com`

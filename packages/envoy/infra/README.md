@@ -5032,10 +5032,17 @@ not run.
 holds it: `gcloud secrets describe <--secrets-prefix><slug> --format=json`, where
 `--secrets-prefix` is the broker's own `secrets_prefix` setting
 (`projects/<number>/secrets/<prefix>-`) and the slug is the name lowercased with each underscore a
-hyphen. The broker keeps a secret's tags as its annotations (`cmd/cipher/secret_gcp.go`, `show`),
-so the step requires the annotations `admin: "true"` and `tier: "human"`. The read needs
-`secretmanager.secrets.get` on the secret alone, and no broker. No such secret is a finding; a
-refused read, and a run with no `--secrets-prefix`, are `UNKNOWN`.
+hyphen. The broker keeps a secret's tags as its annotations (`cmd/cipher/secret_gcp.go`, `show`).
+Every such secret is a release route that no second person approves, so each is a finding: without
+`admin: "true"` or at a tier other than `human` a model judge may decide a release, and with both
+each release waits on one person's approval, the person an agent acts for included, which is one
+person and not two (INFRA-840's `c-operator-grant-door`): the finding names it an open route until
+R16's grant door exists. No such secret passes, and only once `gcloud secrets list
+--project=<the prefix's project number> --format=json` (every page) lists a secret whose id starts
+with the prefix: a mistyped prefix answers `NOT_FOUND` for a secret that exists, so a project that
+lists none under the prefix is `UNKNOWN`, since it cannot be told from a wrong prefix. The reads need
+`secretmanager.secrets.get` on the secret and `secretmanager.secrets.list` on the prefix's project,
+and no broker. A refused describe or list, and a run with no `--secrets-prefix`, are `UNKNOWN`.
 
 The entrypoint does not check at run time that an object's `commit` is on a branch. The writers
 step is the provenance: each accepted writer applies its program from that program's main only.

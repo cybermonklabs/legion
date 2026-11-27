@@ -3,7 +3,11 @@ body: |-
   `infra/scripts/operator-token-minters.sh` reads guarded token-Secret declarations from rendered
   Kubernetes objects instead of listing Kubernetes Secrets, beside the token Secrets each guarded
   ServiceAccount lists, and reads the operator's secret's admin and tier tags from its Secret
-  Manager annotations (`--secrets-prefix`) instead of through the broker. A Secret render that holds
+  Manager annotations (`--secrets-prefix`) instead of through the broker. That secret is a finding
+  whatever its tags, since one person's approval releases it at most: an open route until
+  INFRA-840's grant door exists. No such secret passes only once `gcloud secrets list` of the
+  prefix's project lists a secret of that prefix, so a mistyped prefix reads UNKNOWN; the auditor
+  needs `secretmanager.secrets.list` there besides `secretmanager.secrets.get`. A Secret render that holds
   no document or declares no Secret reads UNKNOWN, and the broker's pod fence is credited only while
   every other pod in `dispatch` takes Secrets the renders declare. A new step lists who can write
   the renders bucket (`--renders-bucket`, `--renders-project`, `--renders-admin`,

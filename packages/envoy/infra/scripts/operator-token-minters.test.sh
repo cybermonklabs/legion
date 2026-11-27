@@ -358,6 +358,15 @@ readonly container_admin=(
   resourcemanager.projects.get
 )
 
+# broker_secret NAME ADMIN: the broker's view of its secret NAME, stored at human tier with the admin
+# tag ADMIN ("true", or "" for none), as the fake's secrets describe and list answer it.
+broker_secret() {
+  jq -n --arg name "$1" --arg admin "$2" --arg slug "agent-secrets-$(printf '%s' "$1" | tr 'A-Z_' 'a-z-')" '{
+    name: $name, store: "GCP Secret Manager project 123456789012", secret_name: "projects/123456789012/secrets/\($slug)",
+    owner: "owner@example.com", tier: "human", type: "google-service-account", github_owners: "",
+    requesters: "owner@example.com", scopes: "", admin: $admin, max_grant: "1h", default_grant: "", has_value: true,
+    created: "2026-11-17T12:00:00Z", last_changed: "2026-11-17T12:00:00Z", versions: {"1": ["ENABLED"]}}' >"$world/secrets/$1.json"
+}
 build_world() {
   mkdir -p "$world/clusters/operator-cluster" "$world/secrets"
   printf '%s\n' "$project" >"$world/project"
@@ -449,7 +458,9 @@ build_world() {
   # (R16 admits no automated job), which row (o) plants. Every analysis must still list a holder, as
   # a real one always does (an answer listing none reads UNKNOWN), so the organization's
   # roles/owner is held by a principal the reading accepts: the project's Compute Engine service
-  # agent, Google's own, which nobody signs in as.
+  # agent, Google's own, which nobody signs in as. That grant exists only so this fixture's analyses
+  # list a holder with no person; no deployment grants an agent the organization's roles/owner, and
+  # this is no pattern to copy.
   echo '[]' >"$world/iam.json"
   jq -n '{"group:cluster-admins@example.com": ["user:admin@example.com"]}' >"$world/groups.json"
   iam "$org_res" roles/owner "$compute_agent"
@@ -465,16 +476,11 @@ build_world() {
     iam_if "$renders_res" roles/example.renderWrite "$(render_condition "${writer#*=}")" "serviceAccount:${writer%%=*}"
   done
 
-  local name admin
-  for name in ENVOY_OPERATOR ENVOY_OPERATOR_CONTROL; do
-    admin=""
-    [ "$name" = ENVOY_OPERATOR_CONTROL ] || admin=true
-    jq -n --arg name "$name" --arg admin "$admin" --arg slug "agent-secrets-$(printf '%s' "$name" | tr 'A-Z_' 'a-z-')" '{
-      name: $name, store: "GCP Secret Manager project 123456789012", secret_name: "projects/123456789012/secrets/\($slug)",
-      owner: "owner@example.com", tier: "human", type: "google-service-account", github_owners: "",
-      requesters: "owner@example.com", scopes: "", admin: $admin, max_grant: "1h", default_grant: "", has_value: true,
-      created: "2026-11-17T12:00:00Z", last_changed: "2026-11-17T12:00:00Z", versions: {"1": ["ENABLED"]}}' >"$world/secrets/$name.json"
-  done
+  # The broker's secrets under the prefix: the scratch secret ENVOY_OPERATOR_CONTROL alone, so the
+  # admin-tag step finds no ENVOY_OPERATOR and sees the prefix holds the broker's secrets. A secret
+  # that releases the operator's credential is a standing route whatever its tags (INFRA-840's
+  # R16), so the clean world holds none; row (l) stores ENVOY_OPERATOR at each set of tags.
+  broker_secret ENVOY_OPERATOR_CONTROL ""
 
   # The code: the RBAC render and the IAM program's preview, each declaring only what (a) allows, so
   # no person and no group; row (sp) declares a person in a preview of its own.

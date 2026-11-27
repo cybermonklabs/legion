@@ -64,6 +64,30 @@ case "${words[*]}" in
     jq -n --arg p "$other" --arg n "$(<"$world/numbers/$other")" \
       '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
     ;;
+  "secrets list")
+    # A project's secrets, as `gcloud secrets list --format=json` prints them, every page: each
+    # `name` the full resource name projects/<number>/secrets/<id> (read with gcloud 594.0.0 on
+    # 2026-11-27: `gcloud secrets list --project=<id> --limit=1 --format=json` of a real project
+    # printed its one secret's name in that form, the project by its number). The world's project,
+    # by its number or its ID, holds agent-secrets-<slug> for each secrets/<NAME>.json and each id
+    # other-secrets lists, one a line; any other project holds none. refuse-secret-list answers as a
+    # caller without secretmanager.secrets.list is answered.
+    [ ! -e "$world/refuse-secret-list" ] ||
+      refuse secrets.list "Permission 'secretmanager.secrets.list' denied for resource 'projects/${flag[project]:-}' (or it may not exist)."
+    case "${flag[project]:-}" in
+      "$number" | "$project")
+        {
+          for file in "$world"/secrets/*.json; do
+            [ -e "$file" ] || continue
+            name="$(basename "$file" .json)"
+            printf 'agent-secrets-%s\n' "$(printf '%s' "$name" | tr 'A-Z_' 'a-z-')"
+          done
+          cat "$world/other-secrets" 2>/dev/null || true
+        } | jq -R -s --arg n "$number" '[split("\n")[] | select(length > 0) | {name: "projects/\($n)/secrets/\(.)", replication: {automatic: {}}}]'
+        ;;
+      *) echo '[]' ;;
+    esac
+    ;;
   "secrets describe "*)
     # A broker secret, as Secret Manager holds it: projects/<number>/secrets/agent-secrets-<slug>,
     # its broker tags as the secret's annotations, an empty tag as none (secrets/<NAME>.json holds

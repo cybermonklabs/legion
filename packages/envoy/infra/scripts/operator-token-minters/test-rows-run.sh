@@ -23,11 +23,17 @@
 #   (k)  with no identity that may run the live steps, each prints UNKNOWN naming the permission it
 #        needs, and the run exits 2; a refused analysis names the three Cloud Asset permissions
 #        Google requires on the scope and keeps Google's own line, and a copy dropping one fails;
-#   (l)  the admin tag, read from the secret's Secret Manager annotations: ENVOY_OPERATOR without
-#        the admin annotation, at agent tier, no such secret, and the scratch secret
+#   (l)  the admin tag, read from the secret's Secret Manager annotations: ENVOY_OPERATOR at human
+#        tier with --admin is a finding, each release waiting on one person's approval and no second
+#        person's; without the admin annotation, at agent tier, and the scratch secret
 #        ENVOY_OPERATOR_CONTROL at human tier without --admin each exit 1 naming the field; admin
-#        held beside the annotations instead of in them is a finding too (the read's control); a
-#        refused describe, and a run with no --secrets-prefix, read UNKNOWN;
+#        held beside the annotations instead of in them is a finding too (the read's control); no
+#        such secret passes, naming the secret and the secrets the prefix's project lists under it,
+#        and reads UNKNOWN where that project lists none under the prefix (a mistyped prefix beside
+#        the real secret, a project holding none, a prefix naming another project) or the list is
+#        refused; controls: a copy without the list check passes the mistyped prefix, and a copy
+#        listing --project instead passes another project's prefix; a refused describe, and a run
+#        with no --secrets-prefix, read UNKNOWN;
 #   (m)  --report writes run_at, findings, credited and residuals ([] each for a run that credits
 #        nothing; row fa holds their entries), unknown, allowances ([] for a run given none) and
 #        steps (the step census, row sc), with a stubbed UNKNOWN step listed under unknown;
@@ -306,16 +312,38 @@ if row k; then
   passed "(k) a refused analysis names analyzeIamPolicy, searchAllResources and searchAllIamPolicies on the scope and keeps Google's line; a copy dropping searchAllResources fails the check"
 fi
 
-# --- (l) The admin tag, from the secret's annotations. ---
+# --- (l) The admin tag, from the secret's annotations. A secret that releases the operator's
+# credential is a standing route whatever its tags: with both, each release waits on one person's
+# approval, the person an agent acts for included, and "An agent's request that is approved by the
+# person the agent acts for has one person in it, not two, so it does not meet this rule either"
+# (INFRA-840's c-operator-grant-door). The base world holds no ENVOY_OPERATOR, so each item that
+# reads one stores it here. ---
 readonly secret_id="projects/$number/secrets/agent-secrets-envoy-operator"
+readonly no_route="PASS admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists 1 secret(s) whose id starts agent-secrets-, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker"
 admin_tag_row() {
-  local args
+  local args script="$check"
   base_world
+  case "$1" in
+    present | no-admin | admin-outside | agent-tier | mistyped | mistyped-control) broker_secret ENVOY_OPERATOR true ;;
+  esac
+  case "$1" in
+    mistyped-control)
+      # The step before the witness: NOT_FOUND read as no route, whatever the list holds.
+      script="$(script_copy "no-witness-$1")"
+      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" '  elif [ "$listed" -eq 0 ]; then' '  elif false; then'
+      ;;
+    other-project-control)
+      script="$(script_copy "list-project-$1")"
+      plant "$(dirname "$script")/operator-token-minters/step-admin-tag.sh" 'gcloud secrets list --project="$prefix_project"' 'gcloud secrets list --project="$PROJECT"'
+      ;;
+  esac
   case "$1" in
     present)
       run
-      want_line "PASS admin tag of ENVOY_OPERATOR: admin is \"true\" and tier is \"human\": each release waits on a person's approval" \
+      want_status 1 "ENVOY_OPERATOR at human tier with --admin"
+      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"true\" and tier is \"human\": each release waits on one person's approval and no second person's, so whoever may ask for it holds the operator identity standing (INFRA-840's R16), an open route until R16's grant door exists" \
         "ENVOY_OPERATOR with both annotations"
+      ! has_prefix "PASS admin tag of ENVOY_OPERATOR: " || fail "ENVOY_OPERATOR with both annotations: the step passed"
       ;;
     no-admin)
       edit "$world/secrets/ENVOY_OPERATOR.json" '.admin = ""'
@@ -337,10 +365,47 @@ admin_tag_row() {
       want_line "FINDING secret:ENVOY_OPERATOR: tier is \"agent\", not \"human\"" "agent tier"
       ;;
     missing)
-      rm "$world/secrets/ENVOY_OPERATOR.json"
       run
-      want_status 1 "no ENVOY_OPERATOR"
-      want_text "FINDING secret:ENVOY_OPERATOR: no such secret" "no such secret"
+      want_status 0 "no ENVOY_OPERATOR, the prefix holding the scratch secret"
+      want_line "$no_route" "no ENVOY_OPERATOR"
+      ;;
+    mistyped | mistyped-control)
+      # The real secret is there; the prefix misses it by one letter, so describe answers NOT_FOUND
+      # for a secret that exists.
+      run_script="$script" run --secrets-prefix "projects/$number/secrets/agent-secret-"
+      if [ "$1" = mistyped ]; then
+        want_status 2 "a mistyped --secrets-prefix beside the real ENVOY_OPERATOR"
+        want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret projects/$number/secrets/agent-secret-envoy-operator, and project $number lists no secret whose id starts agent-secret-: either the broker keeps no secret there or --secrets-prefix names the wrong place" \
+          "a mistyped --secrets-prefix"
+        ! has_prefix "PASS admin tag of ENVOY_OPERATOR: " || fail "a mistyped --secrets-prefix: the step passed"
+      else
+        want_text "PASS admin tag of ENVOY_OPERATOR: no such secret projects/$number/secrets/agent-secret-envoy-operator" "the copy without the list check"
+      fi
+      ;;
+    empty)
+      rm "$world/secrets/ENVOY_OPERATOR_CONTROL.json"
+      echo other-program-key >"$world/other-secrets"
+      run
+      want_status 2 "a prefix whose project lists no secret under it"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists no secret whose id starts agent-secrets-" \
+        "a prefix whose project lists no secret under it"
+      ;;
+    other-project | other-project-control)
+      run_script="$script" run --secrets-prefix "projects/999999999999/secrets/agent-secrets-"
+      if [ "$1" = other-project ]; then
+        want_status 2 "a prefix naming another project"
+        want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret projects/999999999999/secrets/agent-secrets-envoy-operator, and project 999999999999 lists no secret whose id starts agent-secrets-" \
+          "a prefix naming another project"
+      else
+        want_text "PASS admin tag of ENVOY_OPERATOR: no such secret projects/999999999999/secrets/agent-secrets-envoy-operator" "the copy listing --project"
+      fi
+      ;;
+    list-refused)
+      : >"$world/refuse-secret-list"
+      run
+      want_status 2 "a refused list of the prefix's secrets"
+      want_text "UNKNOWN admin tag of ENVOY_OPERATOR: no such secret $secret_id, and gcloud secrets list --project=$number was refused (it needs secretmanager.secrets.list on the project)" \
+        "a refused list of the prefix's secrets"
       ;;
     control-secret)
       run --secret ENVOY_OPERATOR_CONTROL
@@ -364,8 +429,9 @@ admin_tag_row() {
   esac
 }
 if row l; then
-  each admin_tag_row present no-admin admin-outside agent-tier missing control-secret refused no-prefix
-  passed "(l) the admin tag is read from the secret's annotations: a missing admin annotation, admin outside them, agent tier, no secret and the scratch secret each exit 1 naming the field; a refused describe and no --secrets-prefix read UNKNOWN"
+  each admin_tag_row present no-admin admin-outside agent-tier missing mistyped mistyped-control empty other-project other-project-control \
+    list-refused control-secret refused no-prefix
+  passed "(l) the admin tag is read from the secret's annotations: ENVOY_OPERATOR at human tier with --admin, a missing admin annotation, admin outside them, agent tier and the scratch secret each exit 1; no secret passes only where the prefix's project lists the broker's secrets, and a mistyped prefix, an empty project, another project and a refused list read UNKNOWN, which copies without that witness miss; a refused describe and no --secrets-prefix read UNKNOWN"
 fi
 
 # --- (m) The report. ---
