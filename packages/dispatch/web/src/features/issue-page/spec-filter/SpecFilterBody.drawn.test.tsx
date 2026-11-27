@@ -4707,3 +4707,35 @@ test("Enter on a statement and a press on a criterion edit each in its document'
     rooms.mockRestore();
   }
 });
+
+// R17: a statement a child's check serves has no verdict the page can give until it holds the
+// Verification view's answer, the one read that holds that check's results, so its row draws no
+// mark, though its own check passed; a statement served by this issue's checks alone draws its
+// mark beside it.
+test("a statement a child's check serves draws no mark before the page reads that check's results", () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const alsoPassed = check({ block_id: "c2", results: [result({ id: "p2" })] });
+  const { read, view } = drawBody(
+    issueTree([
+      statement("r1", { children: [checkNode(passed)] }),
+      statement("r2", {
+        children: [
+          node({ id: "c9", issue: "CORE-2", readId: "CORE-2/verification-md#c9", type: "check" }),
+          checkNode(alsoPassed),
+        ],
+        counts: { checks: 2, planTasks: 0 },
+      }),
+    ]),
+    [],
+    { checks: [passed, alsoPassed] }
+  );
+  try {
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met");
+    const served = rowOf(view, "spec#b-r2");
+    expect(served.hasAttribute("data-spec-mark")).toBe(false);
+    expect(served.querySelector(":scope > svg[data-glyph]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});

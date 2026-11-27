@@ -981,6 +981,72 @@ test("a statement only a child's check serves is covered with no Verification vi
   expect(marks?.map(([, mark]) => mark)).not.toContain("no_check");
 });
 
+/** The statement r1, which `own`, a check of this issue, and c9, a check of the child CORE-2,
+ *  serve, the child's as the outline's tree draws it: with no state, since Conversation's read
+ *  names no result. With `held`, the issue's node holds the Verification view's answer, which
+ *  holds c9 with one pass over its words as they stand. Each statement comes with the verdict its
+ *  row draws: its mark, or none where the page holds no verdict of it
+ *  (`SpecStatement.noVerdict`). */
+function childServedVerdicts(own: CheckBlock, held: boolean): (string | undefined)[][] {
+  const words = "sum-of-the-words-now";
+  const childCheck = treeNode("c9", "check", "r1", {
+    check: { changed_version: 1, text_sha256: words },
+    document: { artifact_id: "artifact-core-2-verification", position: 0, slug: "verification-md" },
+    issue: "CORE-2",
+    role: "context",
+  });
+  const pass = treeNode(
+    "res-9",
+    "result",
+    { first_line: "", id: childCheck.id, kind: childCheck.kind, supertag: "check" },
+    { issue: "CORE-2", result: { check_sha256: words, check_version: 1, verdict: "pass" } }
+  );
+  const verification: NonNullable<TreeNode["views"]>["verification"] = {
+    converted: true,
+    cursor: null,
+    documents: null,
+    issue: KEY,
+    nodes: [childCheck, pass],
+    tree: null,
+    tuples: [],
+    version: null,
+    view: "verification",
+    view_of: null,
+  };
+  const tree = issueTree([
+    statement("r1", {
+      children: [
+        node({ id: "c9", issue: "CORE-2", readId: childCheck.id, type: "check" }),
+        checkNode(own),
+      ],
+      counts: { checks: 2, planTasks: 0 },
+    }),
+  ]);
+  const groups = bodyOf(held ? { ...tree, views: { verification } } : tree, [], READER, [own]);
+  return (groups[0]?.runs[0]?.statements ?? []).map((one) => [
+    one.node.id,
+    one.noVerdict === true ? undefined : one.mark,
+  ]);
+}
+
+// R17: the page reads how a child's check stands only from the Verification view's answer, which
+// a Spec load does not send while Conversation's answer holds such a check. Until the page holds
+// it, a statement that check serves has no verdict the page can give, though its own check
+// passed, and draws none of the three marks; where its own check failed it is Not met, since one
+// failed check is enough. Once that answer is held it reads as that answer's results give it.
+test("a statement a child's check serves draws no verdict until the page reads that check's results, but Not met where its own check failed", () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const failed = check({
+    block_id: "c2",
+    pass_stands: { answer: "no" },
+    results: [result({ id: "f1", verdict: "fail" })],
+  });
+
+  expect(childServedVerdicts(passed, false)).toEqual([["spec#b-r1", undefined]]);
+  expect(childServedVerdicts(failed, false)).toEqual([["spec#b-r1", "not_met"]]);
+  expect(childServedVerdicts(passed, true)).toEqual([["spec#b-r1", "met"]]);
+});
+
 // R20: a node an address names outranks the filter, whatever its kind. It is no statement: it
 // enters no run and carries no mark, and the body draws it by its kind and its words.
 test("a row the filter kept that is no statement is in no run", () => {

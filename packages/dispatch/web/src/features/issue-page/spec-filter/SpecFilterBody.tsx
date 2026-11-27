@@ -1595,6 +1595,10 @@ function Statement({
   // A criterion draws no mark: no check serves what a person wants to be able to do, so its row
   // says nothing of checks, and no "No check" (R1).
   if (node.type === "criterion") marked = false;
+  // Nor does a statement the page holds no verdict of (`SpecStatement.noVerdict`): until it reads
+  // the results of a check of another issue that serves it, Met, Not met and Unknown would each
+  // say more than the page knows.
+  if (statement.noVerdict === true && statement.mark !== "no_check") marked = false;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
   const stage = useDocumentStage(editing);

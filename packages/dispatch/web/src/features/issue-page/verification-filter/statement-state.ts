@@ -82,6 +82,11 @@ export interface CheckReading {
    *  owed. Absent where the check has no result at all, and where the results read has not
    *  answered for the check. */
   readonly latest?: TreeNode;
+  /** Whether the page has read no result of the check: a check of another issue
+   *  (`isBorrowedCheck`) while the page holds no Verification view answer, the one read that
+   *  answers such a check's results (`checkReader`). Absent on every check the page read, one
+   *  Dispatch could not read among them, which has no state either. */
+  readonly resultsUnread?: true;
   /** The id of the result the check's state stands on (`CheckStanding.stands`), which the body
    *  marks wherever it draws it; absent where none stands. */
   readonly standsOn?: string;
@@ -258,6 +263,11 @@ function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean 
 export interface StatementStanding {
   /** Whether it carries a check (R17's covered). */
   readonly covered: boolean;
+  /** Whether the page holds no verdict of it (`verdictUnread`): a check of another issue serves
+   *  it whose results the page has not read, and no check of it the page read reads Failed. Its
+   *  `state` is then Unknown, which is no more true of it than Met: the Spec filter draws no
+   *  mark for it. */
+  readonly noVerdict?: true;
   readonly state: StatementState;
 }
 
@@ -279,6 +289,7 @@ export function statementStandings(
       standings.set(node.id, {
         covered: carriesCheck(node, readings),
         state: statementState(readings),
+        ...(verdictUnread(readings) ? { noVerdict: true } : {}),
       });
     }
     for (const child of node.children) walk(child);
@@ -311,6 +322,17 @@ export function statementState(checks: readonly CheckReading[]): StatementState 
   if (checks.every((check) => check.state === "passed")) return "met";
   if (checks.some((check) => check.state === "failed")) return "not_met";
   return "unknown";
+}
+
+/** Whether the page holds no verdict of a statement whose checks are `checks`
+ *  (`StatementStanding.noVerdict`): one that counts is a check of another issue whose results
+ *  the page has not read (`CheckReading.resultsUnread`), and none reads Failed, which alone makes
+ *  the statement Not met whatever that check's results say. */
+function verdictUnread(checks: readonly CheckReading[]): boolean {
+  return (
+    inCounts(checks).some((check) => check.resultsUnread === true) &&
+    statementState(checks) !== "not_met"
+  );
 }
 
 /** How many statements stand in each state, which the head draws as its counts and its bar. */
@@ -355,6 +377,11 @@ function checkReader(
     }
   }
   return (node) => {
+    // Until the page holds that answer it has read no result of a check of another issue, which
+    // the results read never answers for: such a check reads with no state and says why.
+    if (answer === undefined && isBorrowedCheck(node)) {
+      return { ...checkReading(node, undefined), resultsUnread: true };
+    }
     const check = node.readId === undefined ? undefined : borrowed.get(node.readId);
     if (answer === undefined || check === undefined) {
       return checkReading(node, blocks.get(node.reference ?? ""));

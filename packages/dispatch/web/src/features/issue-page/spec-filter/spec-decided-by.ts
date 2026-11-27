@@ -176,6 +176,11 @@ export interface SpecStatement {
   /** How its checks stand (R17); the row of a criterion draws none, since no check serves what a
    *  person wants to be able to do (`SpecFilterBody.tsx`'s `Statement`). */
   readonly mark: SpecMark;
+  /** Whether the page holds no verdict of how its checks stand (`StatementStanding.noVerdict`):
+   *  it has read no result of a check of another issue that serves it, and no check of it reads
+   *  Failed. Its `mark` is then Unknown, and its row draws none of the three marks
+   *  (`SpecFilterBody.tsx`'s `Statement`); "No check" stays a mark of its own. */
+  readonly noVerdict?: true;
   /** The node as the filter's view left it, whose words the row draws. */
   readonly node: TreeNode;
 }
@@ -329,6 +334,7 @@ export function specDecidedBy({
           ? "no_check"
           : standing.state,
       node,
+      ...(standing?.noVerdict === true ? { noVerdict: true } : {}),
     };
     const fresh = {
       ...(head?.decision === undefined ? {} : { decision: head.decision }),
