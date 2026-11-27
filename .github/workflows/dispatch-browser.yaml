@@ -330,11 +330,7 @@ jobs:
         if: ${{ !cancelled() && (steps.browser.outcome == 'success' || steps.browser.outcome == 'failure') }}
         timeout-minutes: 4
         run: |
-          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
-          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
-          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
-          bun run e2e:embedder:run --output="$RUNNER_TEMP/embedder-test-results"
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-embedder.sh" "${{ needs.binaries.outputs.connections }}"
         working-directory: packages/dispatch
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure() && steps.embedder.outcome == 'failure'
@@ -482,11 +478,7 @@ jobs:
         if: ${{ !cancelled() && (steps.browser.outcome == 'success' || steps.browser.outcome == 'failure') }}
         timeout-minutes: 4
         run: |
-          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
-          export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
-          export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
-          bun run e2e:embedder:run --output="$RUNNER_TEMP/embedder-test-results"
+          "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-embedder.sh" "${{ needs.binaries.outputs.connections }}"
         working-directory: packages/dispatch
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure() && steps.embedder.outcome == 'failure'

@@ -39,11 +39,20 @@ kept textually identical where they run the same commands, so a reader can diff 
 
 That reason is a composite action's, and not a script's: a step that calls a script keeps its
 own timeout-minutes. So a body more than one of the shard, real, stub and alone jobs really
-share is a script, written once and called from each, and that script's head is where what it does and why is written
-down. There are two: .github/scripts/dispatch-browser-samples.sh for the memory and CPU
-sampler and its two readings, and .github/scripts/dispatch-browser-postgres.sh for the
-reading of the stacks' PostgreSQL, which stood as a copy in each job's own step list until a
-review read the two together. Two more stood beside them, the Playwright install and the key
+share is a script, written once and called from each, and that script's head is where what it
+does and why is written down. `.github/scripts/ci_job_reads.py#browser_gate` lists every script
+of the suite with the steps that run it. Those the four jobs share are
+.github/scripts/dispatch-browser-samples.sh for the memory and CPU sampler and its two
+readings, started in the browser step of all four; .github/scripts/dispatch-browser-postgres.sh
+for the reading of the stacks' PostgreSQL and .github/scripts/dispatch-browser-fetch-binaries.sh
+for the second read of the binaries, in the shard, real and alone jobs;
+.github/scripts/dispatch-browser-wait-for-store.sh for the wait for the file store and
+.github/scripts/dispatch-browser-shard-record.sh for what the run left behind, in the shard and
+real jobs; .github/scripts/dispatch-browser-pr-suite.sh for the browser step of the real and
+stub jobs; and .github/scripts/dispatch-browser-embedder.sh for the counting-embedder step of
+the real and alone jobs. The sampler and the PostgreSQL reading stood as a copy in each job's
+own step list until a review read the two together, and so did the embedder's command in the
+real and alone jobs. Two more stood beside them, the Playwright install and the key
 its apt archive cache was restored under: the shard and alone jobs run in the image this repository
 builds now, which carries the three browsers and every host package they need, so both of
 those scripts are gone with the steps that called them (dispatch://INFRA-1443).
@@ -1663,6 +1672,13 @@ The package script `e2e:embedder:run` selects those rows on Chromium under
 `real` on pull requests and `alone` on full, reusing the binaries, dashboard, contracts and
 Chromium already present. It starts its own single-worker stack using PostgreSQL 18 from
 `/usr/lib/postgresql/18/bin` in the job container, not a Docker image or a service.
+
+The step's body in both jobs is .github/scripts/dispatch-browser-embedder.sh, written once for
+[the reason a body two jobs share is a script](#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows):
+the four variables that name the stack's PostgreSQL, its connection limit and the binaries
+job's server and broker, and the command with its output directory. The connection limit is
+the script's argument rather than a key of the step's `env:`, for the reason its head gives.
+Each job keeps its own condition, timeout, working directory and failure upload around the call.
 
 It runs after the main browser step even when that step fails, unless the job is cancelled.
 The first invocation tears down its stacks when it exits. The embedder starts a fresh harness

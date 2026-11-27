@@ -2705,6 +2705,9 @@ def browser_gate(filter, job):
         (".github/scripts/dispatch-browser-alone-suite.sh",
          f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} runs it for the three unsharded "
          "wall-clock projects, one after another"),
+        (".github/scripts/dispatch-browser-embedder.sh",
+         f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_REAL)} and {at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_ALONE)} "
+         "run it for the command bar's two counting-embedder rows"),
         (".github/scripts/dispatch-browser-alone-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP, BROWSER_ALONE)} runs it to print and collect the "
          "stack's own logs, there being no file store on that machine"),
