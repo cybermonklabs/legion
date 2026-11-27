@@ -5047,8 +5047,10 @@ step does not read who can change the secret's annotations or create it
 (`secretmanager.secrets.update` on it, `secretmanager.secrets.create` on its project), either of
 which changes how it is released, and its `PASS` and its release finding each say so.
 
-The entrypoint does not check at run time that an object's `commit` is on a branch. The writers
-step is the provenance: each accepted writer applies its program from that program's main only.
+The entrypoint does not check at run time that an object's `commit` is on a branch, and no step
+ties a fetched generation to whoever wrote it: the writers step reads who can write the bucket
+today, which is a bound on who could have written it, not a record of who did. Each accepted
+writer applies its program from that program's main only.
 The entrypoint reads each object's description with `gcloud storage objects describe --raw` (the
 API's `metadata` and `generation`; gcloud's default format renames them), fetches the object at
 that generation, and adds `{object, commit, run_id, generation}` for each of the five to the
@@ -5057,8 +5059,23 @@ report's `renders`.
 The image is `ghcr.io/cybermonklabs/legion/minters-auditor`, published as the worker image is:
 `.github/workflows/release-minters-auditor.yaml` builds it on a push to `main`, pushes its
 `sha-<commit>` tag, and attests the pushed digest with GitHub's artifact attestation. Pin the
-digest, and check it with
-`gh attestation verify oci://ghcr.io/cybermonklabs/legion/minters-auditor@sha256:<digest> --repo cybermonklabs/legion --source-ref refs/heads/main --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release-minters-auditor.yaml@refs/heads/main`.
+digest, and check it with the repository's whole acceptance policy, the command of
+`docs/kubernetes.md`, "Pin by digest, never by tag", with this image's identity:
+
+```bash
+gh attestation verify oci://ghcr.io/cybermonklabs/legion/minters-auditor@sha256:<digest> \
+  --repo cybermonklabs/legion \
+  --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release-minters-auditor.yaml@refs/heads/main \
+  --source-ref refs/heads/main --source-digest <the 40 hex digits of the commit built> \
+  --deny-self-hosted-runners
+```
+
+Without `--source-digest` every digest a run on `main` ever built verifies, a superseded one
+included; without `--deny-self-hosted-runners` an attestation from a self-hosted runner does.
+The image's own base is held to the same policy before it is built: it is the worker image of a
+`legion-v*` release, pinned in the Dockerfile beside the commit its tag names, and the build job
+verifies that pair's attestation first. A worker digest a pull request's run pushed carries no
+attestation, and the check's bash, jq, gcloud, kubectl and curl are that image's.
 Pods pull it by digest with no pull secret, as they pull the worker image, so the package must be
 public; if the first push leaves it private, a package administrator sets it public in the
 package's settings on GitHub.

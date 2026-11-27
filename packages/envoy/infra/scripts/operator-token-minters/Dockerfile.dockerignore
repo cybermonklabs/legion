@@ -2,3 +2,7 @@
 !packages/envoy/infra/scripts/operator-token-minters.sh
 !packages/envoy/infra/scripts/operator-token-minters/
 !packages/envoy/infra/scripts/operator-token-minters/**
+# The harness, its fakes and its rows run in CI and on a developer box, never in the image: they
+# are no part of the check (operator-token-minters.sh's own list of the parts a run needs names
+# none of them), and leaving them out keeps a test-only edit from changing the image.
+packages/envoy/infra/scripts/operator-token-minters/test-*.sh

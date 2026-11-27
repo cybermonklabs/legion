@@ -3,12 +3,17 @@ name: Release Minter Auditor
 # The minter auditor's image, published as the worker image is (worker-image.yaml): a main push
 # builds and pushes its sha- tag, and a job of its own attests the pushed digest with GitHub's
 # artifact attestation, whose Sigstore certificate names this workflow on refs/heads/main. A
-# consumer pins the digest and checks it with
+# consumer pins the digest and checks it with the repository's whole acceptance policy, the
+# command of docs/kubernetes.md, "Pin by digest, never by tag", with this image's own identity:
 #   gh attestation verify oci://ghcr.io/cybermonklabs/legion/minters-auditor@sha256:<digest> \
-#     --repo cybermonklabs/legion --source-ref refs/heads/main \
-#     --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release-minters-auditor.yaml@refs/heads/main
-# (docs/kubernetes.md, "Pin by digest, never by tag", says the same for the worker image). Pods
-# pull it by digest with no pull secret, as they pull the worker image, so the package must be
+#     --repo cybermonklabs/legion \
+#     --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release-minters-auditor.yaml@refs/heads/main \
+#     --source-ref refs/heads/main --source-digest <the 40 hex digits of the commit built> \
+#     --deny-self-hosted-runners
+# --source-digest and --deny-self-hosted-runners are part of that policy, not decoration: without
+# the first, any digest a run on main ever built verifies, a superseded one included; without the
+# second, an attestation from a self-hosted runner does.
+# Pods pull it by digest with no pull secret, as they pull the worker image, so the package must be
 # public: a new GHCR package can come out private, and setting it public is a package-settings
 # action on GitHub with no API.
 on:
@@ -19,6 +24,9 @@ on:
       - ".github/workflows/release-minters-auditor.yaml"
       - "packages/envoy/infra/scripts/operator-token-minters.sh"
       - "packages/envoy/infra/scripts/operator-token-minters/**"
+      # The harness, its fakes and its rows are not in the image
+      # (operator-token-minters/Dockerfile.dockerignore), so an edit to them builds nothing.
+      - "!packages/envoy/infra/scripts/operator-token-minters/test-*.sh"
 
 # Every job declares its own permissions; nothing runs under this default.
 permissions: {}
@@ -43,6 +51,28 @@ jobs:
         run: |
           image=$(.github/scripts/repo-paths.sh minters_auditor_image)
           echo "image=$image" >> "$GITHUB_OUTPUT"
+      # The base worker image is accepted only where its attestation says a run of
+      # worker-image.yaml on main built it from the commit the Dockerfile names. Both values are
+      # read from the Dockerfile itself, so the pin and the check cannot drift. docs/kubernetes.md,
+      # "Pin by digest, never by tag", states this acceptance policy and each of these flags; a
+      # pull request's build of the worker image attests nothing, so such a digest fails here
+      # rather than reaching the auditor's own tools. gh is on the runner, and reads only the
+      # public attestation with the job's own token.
+      - name: Verify the base worker image's attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOCKERFILE: packages/envoy/infra/scripts/operator-token-minters/Dockerfile
+        run: |
+          set -euo pipefail
+          digest=$(sed -n 's/^ARG WORKER_IMAGE_DIGEST=\(sha256:[0-9a-f]\{64\}\)$/\1/p' "$DOCKERFILE")
+          commit=$(sed -n 's/^ARG WORKER_IMAGE_SOURCE_COMMIT=\([0-9a-f]\{40\}\)$/\1/p' "$DOCKERFILE")
+          [ -n "$digest" ] && [ -n "$commit" ] ||
+            { echo "::error::$DOCKERFILE names no WORKER_IMAGE_DIGEST and WORKER_IMAGE_SOURCE_COMMIT pair to verify"; exit 1; }
+          echo "base ghcr.io/cybermonklabs/legion-worker@$digest, built on main from $commit"
+          gh attestation verify "oci://ghcr.io/cybermonklabs/legion-worker@$digest" \
+            --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/worker-image.yaml@refs/heads/main" \
+            --source-ref refs/heads/main --source-digest "$commit" --deny-self-hosted-runners
       # As worker-image.yaml's: provenance-add-gha=false keeps the event payload out of any
       # provenance predicate, and image= is the driver's own BuildKit image, the copy of
       # moby/buildkit:buildx-stable-1 (.github/ci-images.yaml).
