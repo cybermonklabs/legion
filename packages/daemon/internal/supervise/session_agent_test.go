@@ -62,7 +62,7 @@ func TestAStartForAnotherAgentLeavesTheClaimsSessionBehind(t *testing.T) {
 		{
 			name: "the retry of a retired claim",
 			stop: func(h *harness) {
-				h.must(RequestStop{Claim: h.token})
+				h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 				h.wantState(StateRetired)
 			},
 			start: func(agent plan.AgentID) Event { return RequestRetry{Claim: testToken, Start: StartWork{Agent: agent}} },
@@ -132,7 +132,7 @@ func TestTheFirstTaskOfANewAgentOnAHeldNameSaysItIsNewOnTheStep(t *testing.T) {
 			h.must(RequestRuleResume{Claim: testToken, Reason: "start row 9", Start: StartWork{Agent: keyAgentB}})
 		}},
 		{name: "control: the operator's fresh session", leave: func(h *harness) {
-			h.must(RequestStop{Claim: h.token})
+			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.must(RequestRetry{Claim: testToken, FreshSession: true})
 		}},
 	} {
@@ -239,12 +239,12 @@ func TestARefusedAdmissionLeavesTheClaimsSessionWhereItWas(t *testing.T) {
 		},
 		{
 			name:  "the retry for another agent",
-			stop:  func(h *harness) { h.must(RequestStop{Claim: h.token}) },
+			stop:  func(h *harness) { h.must(RequestStop{Claim: h.token, By: SuspendedByOperator}) },
 			start: RequestRetry{Claim: testToken, Start: StartWork{Agent: keyAgentB}},
 		},
 		{
 			name:  "the retry that asks for a new session",
-			stop:  func(h *harness) { h.must(RequestStop{Claim: h.token}) },
+			stop:  func(h *harness) { h.must(RequestStop{Claim: h.token, By: SuspendedByOperator}) },
 			start: RequestRetry{Claim: testToken, FreshSession: true},
 		},
 	} {
