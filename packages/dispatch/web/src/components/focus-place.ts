@@ -294,6 +294,11 @@ function walkBackInRegion(element: Element, around: RegionPlace): void {
  * puts `armOnPress` on the same root as this handler, and any other loss leaves the focus on the
  * body with no scroll. Nor does a loss under a press on a row's mark while the selection bar's
  * own landing is owed (`yieldMarkPressTo`): that landing puts the mark at the place in the focus.
+ * Such a loss is held back, not dropped: each later commit of the component reads it again while
+ * the press that armed it is live (`causedByReader`), so where the bar owes nothing by then and
+ * the focus is still on the body, the hand-off answers it as it answers any loss. The press's end
+ * ends that wait: a frame and a task after its arm where nothing holds it (`armHandOff`), and
+ * never later than its bound (`ACTION_BOUND_MS`), so a loss held back never waits longer.
  */
 export function useFocusPlace(
   containerOf: (element: Element) => Element | null,
@@ -324,7 +329,13 @@ export function useFocusPlace(
     if (held.portal !== null && !held.element.isConnected && present(held.portal)) return;
     place.current = null;
     if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
-    if (!causedByReader(held.element) || armed?.yieldsTo?.() === true) return;
+    if (!causedByReader(held.element)) return;
+    // The selection bar's landing is owed: the loss is held back for it, and read again at the
+    // next commit, until the press ends (above).
+    if (armed?.yieldsTo?.() === true) {
+      place.current = held;
+      return;
+    }
     let walked: HTMLElement[] = [];
     if (held.container.isConnected) {
       const controls = focusableIn(held.container);
@@ -1021,8 +1032,8 @@ interface ArmedPress {
    *  write (`actionWriteBegins`); nothing once the bound has passed or the press has ended. */
   readonly wrote: () => void;
   /** For a press on a row's mark, what says whether the selection bar's own landing is owed
-   *  (`yieldMarkPressTo`), else null: a component's hand-off leaves a loss under the press to
-   *  that landing while it says so. */
+   *  (`yieldMarkPressTo`), else null: a component's hand-off holds a loss under the press back
+   *  for that landing while it says so, and reads it again at each commit until the press ends. */
   yieldsTo: (() => boolean) | null;
 }
 
@@ -1632,7 +1643,10 @@ export function pressOnRowMark(): boolean {
  *  nothing then, and the bar lands the mark at the place: the project List's table hands a focus
  *  its row took with it to the control before that row's place (`DataTable`), in the commit that
  *  takes the rows the bar's press was writing away and ahead of the bar's own read of that
- *  commit. With no landing owed, that hand-off answers the loss as it always has. */
+ *  commit. That hand-off holds the loss back and reads it again at each later commit until this
+ *  press ends, so where the bar owes nothing by then, as once it forgets a control whose row went
+ *  while the bar stayed, it answers the loss as it always has. With no landing owed, it answers
+ *  the loss at once. */
 export function yieldMarkPressTo(landingOwed: () => boolean): void {
   if (armed !== null && pressOnRowMark()) armed.yieldsTo = landingOwed;
 }
