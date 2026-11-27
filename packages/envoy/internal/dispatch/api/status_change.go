@@ -210,12 +210,6 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		err = plan.conflict
 	}
 	if err == nil && change.dryRun {
-		// The issue as the PATCH's route answers its own (patchIssue): what it names that who
-		// does not see is left out.
-		if err := leaveOutHiddenIssueReferences(ctx, s.deps.Store.Pool, who, &plan.named, nil); err != nil {
-			s.writeStatusChangeRefusal(w, err, none)
-			return
-		}
 		WriteJSON(w, http.StatusOK, plan.dryRunAnswer())
 		return
 	}
@@ -290,8 +284,7 @@ type statusChangeRead struct {
 // project, leaves nothing out and reads no statement for it (R9).
 func readStatusChange(ctx context.Context, q queryer, who model.Actor, callerProject, key string, change statusChange) (statusChangeRead, error) {
 	read := statusChangeRead{named: ruleIssue{key: key}}
-	if err := q.QueryRow(ctx, `select status, parent_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
-		key, refs.VisibilityArg(who)).Scan(&read.named.status, &read.named.parent); err != nil {
+	if err := q.QueryRow(ctx, `select status, parent_key from issues where key = $1`, key).Scan(&read.named.status, &read.named.parent); err != nil {
 		return statusChangeRead{}, err
 	}
 	var above []string
@@ -370,7 +363,7 @@ func hiddenFromStatusChange(
 	}
 	credential := access.Credential{Listed: []string{callerProject}}
 	return func(key string) bool {
-		if !seen.holds(issueReference, key) {
+		if callerProject != "" && !seen.holds(issueReference, key) {
 			return true
 		}
 		if callerProject == "" {
@@ -807,7 +800,7 @@ func (run *statusChangeRun) becauseOf(named string, options ...string) string {
 // The paragraph holds no text of the call's but the caller's name, which the comment of each step
 // holds too (because).
 func (run *statusChangeRun) namedComment() string {
-	moves := slices.DeleteFunc(run.moves(), func(move statusChangeMove) bool { return run.unnamed[move.Key] })
+	moves := run.moves()
 	if len(moves) == 0 {
 		return ""
 	}
@@ -964,9 +957,6 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 	// The step's comment is stored on its own issue and read by every reader of it: it names the
 	// issue the call names only where each of them sees that issue's project.
 	named, status := run.key, run.change.status
-	if step.namedElsewhere {
-		named = issueOfAnotherProject
-	}
 	because := run.becauseOf(named, step.option)
 	call.step.moved = func(before model.Issue) statusChangeMove {
 		move := statusChangeMove{Key: step.key, Option: step.option}

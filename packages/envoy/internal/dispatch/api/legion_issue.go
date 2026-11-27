@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -185,9 +184,6 @@ func (s *server) readLegionIssue(ctx context.Context, who model.Actor, key strin
 		if err != nil {
 			return legionIssueResponse{}, err
 		}
-		if err := leaveOutHiddenAdmission(ctx, tx, who, &current); err != nil {
-			return legionIssueResponse{}, err
-		}
 		answer.State = legionIssueStateOf(key, current)
 	}
 	if answer.RunsRevision, err = workflowstore.IssueRunsRevision(ctx, tx, who, key); err != nil {
@@ -197,46 +193,6 @@ func (s *server) readLegionIssue(ctx context.Context, who model.Actor, key strin
 		return legionIssueResponse{}, err
 	}
 	return answer, nil
-}
-
-// leaveOutHiddenAdmission takes out of current's admission block every issue who does not see, as
-// the board's cards do (legionBoardPopulation.leaveOutHiddenIssues): a blocker and a waiting root
-// may be of another project (main's #4896 lets a blocked_by link cross one), and the issue's
-// blockers and its place in the waiting line are read from what is left, so neither names nor
-// counts an issue who may not see. One statement whatever the block names (seenReferences); a
-// reader that sees every object keeps the block as the daemon wrote it, with no read (R9).
-func leaveOutHiddenAdmission(ctx context.Context, q queryer, who model.Actor, current *legion.IssueCurrent) error {
-	admission := current.Admission
-	if admission == nil || seesEveryObject(who) {
-		return nil
-	}
-	named := references{}
-	for _, key := range admission.Waiting {
-		named.name(issueReference, key)
-	}
-	for _, blocked := range admission.Blocked {
-		named.name(issueReference, blocked.Issue)
-		for _, blocker := range blocked.BlockedBy {
-			named.name(issueReference, blocker)
-		}
-	}
-	seen, err := seenReferences(ctx, q, who, named)
-	if err != nil {
-		return err
-	}
-	hidden := func(key string) bool { return !seen.holds(issueReference, key) }
-	narrowed := *admission
-	narrowed.Waiting = slices.DeleteFunc(slices.Clone(admission.Waiting), hidden)
-	narrowed.Blocked = make([]legion.BlockedIssue, 0, len(admission.Blocked))
-	for _, blocked := range admission.Blocked {
-		if hidden(blocked.Issue) {
-			continue
-		}
-		blocked.BlockedBy = slices.DeleteFunc(slices.Clone(blocked.BlockedBy), hidden)
-		narrowed.Blocked = append(narrowed.Blocked, blocked)
-	}
-	current.Admission = &narrowed
-	return nil
 }
 
 // legionIssueStateOf is the answer's state of key as legion.ReadIssue read it, nil where the daemon

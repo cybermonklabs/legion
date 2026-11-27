@@ -69,10 +69,7 @@ func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor,
 	var other *nodeOfAnotherIssue
 	switch {
 	case errors.As(err, &other):
-		// The refusal names the plan and the issue the write names, never the issue the plan is a
-		// plan of: a writer of one issue that names another issue's plan id learns nothing of that
-		// issue, which may be one of a project it does not see.
-		return Plan{}, fmt.Errorf("%w: plan %s is no plan of %s, the issue this write names", ErrPlanOtherIssue, id, write.Issue)
+		return Plan{}, fmt.Errorf("%w: plan %s is part of %s, and this write names %s", ErrPlanOtherIssue, id, other.issue, write.Issue)
 	case err != nil:
 		return Plan{}, err
 	}

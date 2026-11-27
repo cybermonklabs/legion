@@ -849,11 +849,6 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// point's entry is written. The events record after whole. shown takes the last_seq and a
 	// close's closed_at that the batch leaves from after.
 	shown := after
-	if step != nil {
-		if err := leaveOutHiddenIssueReferences(ctx, tx, who, &shown, nil); err != nil {
-			return issueWriteResult{}, err
-		}
-	}
 	eventType := "issue.updated"
 	if statusChanged && after.Status == "done" {
 		eventType = "issue.closed"

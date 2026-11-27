@@ -74,20 +74,16 @@ func (s *server) setProjectProvenSessions(w http.ResponseWriter, r *http.Request
 }
 
 // storeProjectProvenSessions writes the setting under the project's owner lock and appends
-// project.updated with the project row and its writer. A project who does not see, and an unknown
-// one, are 404 PROJECT_NOT_FOUND (loadProject), read before the lock is taken, so a caller who may
-// not see the project takes no lock of it and waits on none, before anything is written. A write
-// that finds the setting already as asked changes nothing: the update names `proven_sessions is
-// distinct from $2`, so it touches no row, and no event is appended.
+// project.updated with the project row and its writer. An unknown project is 404
+// PROJECT_NOT_FOUND (loadProject), before anything is written. A write that finds the setting
+// already as asked changes nothing: the update names `proven_sessions is distinct from $2`, so
+// it touches no row, and no event is appended.
 func (s *server) storeProjectProvenSessions(ctx context.Context, key string, actor model.Actor, who model.Actor, on bool) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := s.loadProject(ctx, tx, who, key); err != nil {
-		return err
-	}
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (putProjectGatedSteps says why: the other order deadlocks with an issue create). The lock
 	// assigns no transaction id; the update is the first statement that writes.

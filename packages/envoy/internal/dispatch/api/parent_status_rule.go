@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -368,10 +367,9 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, who model.Actor, plan
 		select i.key, i.title, i.status, i.parent_key, i.project_key, p.visibility = 'private'
 		from issues i
 		join projects p on p.key = i.project_key
-		where (i.key = any($1) or i.parent_key = any($2))
-		  and `+access.ProjectClause("i.project_key", "$3")+`
+		where i.key = any($1) or i.parent_key = any($2)
 		order by i.project_key, i.number
-	`, keys, parentsOfChildren, refs.VisibilityArg(who))
+	`, keys, parentsOfChildren)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of a write's parent-status pairs: %w", err)
 	}
@@ -483,9 +481,8 @@ func openChildrenOfAClose(ctx context.Context, tx pgx.Tx, who model.Actor, key, 
 		from issues i
 		join projects p on p.key = i.project_key
 		where i.parent_key = $1 and i.status <> 'done'
-		  and `+access.ProjectClause("i.project_key", "$2")+`
 		order by i.project_key, i.number
-	`, key, refs.VisibilityArg(who))
+	`, key)
 	if err != nil {
 		return nil, fmt.Errorf("read the open children of a close: %w", err)
 	}

@@ -82,16 +82,12 @@ func statusChangePointReferences(recovery json.RawMessage) (references, error) {
 	named := references{}
 	for _, entry := range point.Changed {
 		named.name(issueReference, entry.Key)
-		if entry.Issue != nil {
-			nameIssueReferences(named, *entry.Issue)
-		}
 	}
 	for _, move := range point.Moved {
 		named.name(issueReference, move.Key)
 	}
 	if point.Issue != nil {
 		named.name(issueReference, point.Issue.Key)
-		nameIssueReferences(named, *point.Issue)
 	}
 	return named, nil
 }

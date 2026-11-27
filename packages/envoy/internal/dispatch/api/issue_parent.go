@@ -564,12 +564,6 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, who model.Actor, key, c
 // deployment-wide one among them orders every such write whatever projects it names, so two
 // writes cannot each pass alone and together pass the cap. Both walks stop one link past the
 // cap, so a chain that loops or is already too deep ends them.
-//
-// The walks read every issue of the chain, whoever writes, since a cap that skipped an issue its
-// writer may not see would let a chain past it (refs.IssueAncestors). So the depth they count can
-// count issues of a project the writer does not see, above the parent or below the child, and the
-// refusal names the cap and never that depth: the words are the same however many such issues the
-// chain holds.
 func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) error {
 	var above, below int
 	if err := tx.QueryRow(ctx, `
@@ -593,12 +587,17 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 	if above+below <= parentDepthCap {
 		return nil
 	}
+	depth := strconv.Itoa(above+below) + " links"
+	if above > parentDepthCap || below > parentDepthCap {
+		// A walk stopped at its bound, so the chain is deeper than it read.
+		depth = "more than " + parentDepthCapSQL + " links"
+	}
 	if child == "" {
 		return errorf(http.StatusConflict, "PARENT_INPUT",
-			"an issue under %s would sit more than %d links below its root; an issue sits at most %d links below its root", parent, parentDepthCap, parentDepthCap)
+			"an issue under %s would sit %s below its root; an issue sits at most %d links below its root", parent, depth, parentDepthCap)
 	}
 	return errorf(http.StatusConflict, "PARENT_INPUT",
-		"moving %s under %s would put the deepest issue under it more than %d links below its root; an issue sits at most %d links below its root", child, parent, parentDepthCap, parentDepthCap)
+		"moving %s under %s would put the deepest issue under it %s below its root; an issue sits at most %d links below its root", child, parent, depth, parentDepthCap)
 }
 
 // foreignChildOpen is one child of another project that holds an acceptance write back: its key,
