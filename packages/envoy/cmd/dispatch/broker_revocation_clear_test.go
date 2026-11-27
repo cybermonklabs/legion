@@ -80,61 +80,6 @@ func TestTheBrokerRevocationMetricsCountTheOwedAndAgeTheOldest(t *testing.T) {
 	}
 }
 
-// The process's metrics registry carries the machine-login revocations owed beside the broker
-// revocations, so an operator sees one the broker never confirms:
-// envoy_dispatch_machine_login_revocations_owed counts them, and
-// envoy_dispatch_machine_login_revocation_oldest_owed_seconds is how long the oldest has been owed
-// since its removal, written only while one is owed. One the broker confirmed counts no more.
-//
-// Control: store.MachineLoginRevocations.Owed counting settled rows too (its done_at filter
-// dropped), and the read after the settlement fails naming both owed.
-func TestTheMachineLoginRevocationMetricsCountTheOwedAndAgeTheOldest(t *testing.T) {
-	ctx := context.Background()
-	database := storetest.Open(t)
-	registry := metrics.New()
-	api.RegisterMachineLoginRevocationMetrics(registry, database.Pool)
-	scrape := scrapeMetrics(t, registry)
-	if owed, ok := metricSample(t, scrape, "envoy_dispatch_machine_login_revocations_owed"); !ok || owed != 0 {
-		t.Fatalf("with nothing owed, the scrape reads owed %v (%t), want 0:\n%s", owed, ok, scrape)
-	}
-	if _, ok := metricSample(t, scrape, "envoy_dispatch_machine_login_revocation_oldest_owed_seconds"); ok {
-		t.Fatalf("with nothing owed, the scrape holds an oldest owed age, want none:\n%s", scrape)
-	}
-
-	const erin, frank = "erin@other.example", "frank@other.example"
-	for _, email := range []string{erin, frank} {
-		storetest.RecordMachineLoginRevocation(t, database, email)
-	}
-	// erin's removal was ten minutes ago.
-	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set recorded_at = recorded_at - interval '10 minutes' where email = $1`, erin); err != nil {
-		t.Fatal(err)
-	}
-	scrape = scrapeMetrics(t, registry)
-	if owed, ok := metricSample(t, scrape, "envoy_dispatch_machine_login_revocations_owed"); !ok || owed != 2 {
-		t.Fatalf("with two owed, the scrape reads owed %v (%t), want 2:\n%s", owed, ok, scrape)
-	}
-	if oldest, ok := metricSample(t, scrape, "envoy_dispatch_machine_login_revocation_oldest_owed_seconds"); !ok || oldest < 600 || oldest > 660 {
-		t.Fatalf("with the oldest owed for ten minutes, the scrape reads its age %v (%t), want about 600 seconds:\n%s", oldest, ok, scrape)
-	}
-
-	revocations := store.NewMachineLoginRevocations(database.Pool)
-	claimed, err := revocations.Claim(ctx, time.Minute, 1)
-	if err != nil || len(claimed) != 1 || claimed[0].Email != erin {
-		t.Fatalf("Claim = %+v, %v; want erin's, the oldest", claimed, err)
-	}
-	// The scrape is what this row reads, so the settlement needs no claim past the broker's bound.
-	if settled, err := revocations.Settle(ctx, claimed[0], 0); err != nil || !settled {
-		t.Fatalf("Settle(erin) = %t, %v; want it settled", settled, err)
-	}
-	scrape = scrapeMetrics(t, registry)
-	if owed, ok := metricSample(t, scrape, "envoy_dispatch_machine_login_revocations_owed"); !ok || owed != 1 {
-		t.Fatalf("with erin's settled, the scrape reads owed %v (%t), want 1, frank's:\n%s", owed, ok, scrape)
-	}
-	if oldest, ok := metricSample(t, scrape, "envoy_dispatch_machine_login_revocation_oldest_owed_seconds"); !ok || oldest >= 600 {
-		t.Fatalf("with erin's settled, the scrape reads the oldest age %v (%t), want frank's, under a minute:\n%s", oldest, ok, scrape)
-	}
-}
-
 // runClearBrokerRevocation runs `envoy-dispatch clear-broker-revocation` with args on database,
 // answering its exit code and what it printed.
 func runClearBrokerRevocation(t *testing.T, database *store.Store, args ...string) (int, string) {

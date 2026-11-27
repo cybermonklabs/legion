@@ -174,6 +174,11 @@ func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed
 	return seed
 }
 
+// acceptingBus is a writer of the private-projects record that takes every write.
+type acceptingBus struct{}
+
+func (acceptingBus) EnsurePrivate(context.Context, access.Querier, string) error { return nil }
+
 // addToAccessList names person on project key's access list as its owner carol, through the write
 // the access route makes (access.AddPrincipal). The route itself,
 // PUT /api/v1/projects/{key}/access/people/{email}, is the access routes' (S2), which answers 404

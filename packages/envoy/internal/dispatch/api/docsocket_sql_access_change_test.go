@@ -23,7 +23,7 @@ import (
 // socket open and the row fails at its wait.
 func TestADocumentSocketClosesOnItsHeartbeatOnceItsPersonLosesTheRoomBySQLAlone(t *testing.T) {
 	const heartbeat = 200 * time.Millisecond
-	rig := newDocumentSocketTokenRig(t, heartbeat)
+	rig := newDocumentSocketTokenRig(t, heartbeat, nil)
 	peer := rig.openDocument(t, nil)
 
 	time.Sleep(4 * heartbeat)

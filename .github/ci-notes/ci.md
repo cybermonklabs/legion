@@ -2678,21 +2678,22 @@ exactly what the lane runs, and the one plain run it keeps of them is the step n
 what the race build cannot run at all or at full size", which runs the handful of
 assertions the detector makes impossible or shrinks and nothing else.
 
-The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
-the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
-code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
-.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
-say why the document service runs alone.
+The lane is three jobs of ci.yaml: envoy-go-race, whose file runs two jobs on two runners -
+envoy-go-race (delivery, the bus, the listener, the registry store, the session cache, kvwatch,
+natscred, the NATS auth service and the sign-in code flow) and envoy-go-race-store (the
+Dispatch store) - envoy-go-race-api and envoy-go-race-docs, whose notes,
+.github/ci-notes/ci.md#why-the-dispatch-store-runs-alone-under-the-race-detector and
+.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector, say why the
+Dispatch store and the document service run alone.
 
-api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
-runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
-746.718 s. The packages
-left in envoy-go-race are cheap enough to share one: the two heaviest of those measured
-there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are a quarter
-and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so
-a runner each would buy nothing and cost about 8,000 replayed runner minutes. Running a heavy
-package apart also reads its seconds as its own job's, and leaves the others' numbers
-standing when one is red.
+api sits apart because isolation is what made it fast: sharing a runner, the race binaries
+contended for the four vCPUs, and alone api fell from 1099.487 s to 746.718 s. The packages
+left in envoy-go-race's race step are cheap enough to share one: the two heaviest, the bus at
+618 s to 641 s and the listener at 1024 s to 1041 s over six merge-group runs of main on
+2026-11-22 (job 137151013393 among them), are within the lane's bar of 1080 s, which is 60 %
+of a 30-minute step's own timeout, so a runner each would buy nothing and cost about 8,000
+replayed runner minutes. Running a heavy package apart also reads its seconds as its own
+job's, and leaves the others' numbers standing when one is red.
 
 envoy-go-race-api's tests drive the Dispatch store, so its job carries the lane's Postgres
 service.

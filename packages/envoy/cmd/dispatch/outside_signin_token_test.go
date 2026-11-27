@@ -25,7 +25,7 @@ func cookieRequest(handler http.Handler, method, path, body string, signIn *http
 	request.Header.Set("Origin", "http://dispatch.test")
 	request.Header.Set("Content-Type", "application/json")
 	for _, cookie := range signIn.Result().Cookies() {
-		if isSessionCookie(cookie) {
+		if cookie.Name == "dsession" && cookie.Value != "" {
 			request.AddCookie(cookie)
 		}
 	}

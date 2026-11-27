@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
@@ -344,7 +343,7 @@ func TestTheMaintenanceSweepNamesARowAPrivateProjectWouldAnswerWrongly(t *testin
 					return nil
 				}, row.list, row.beforeFullSwitch, nil)
 			})
-			waitUntil(t, 30*time.Second, "three passes of the sweep", func() bool { return passes.Load() >= 3 })
+			waitUntil(t, "three passes of the sweep", func() bool { return passes.Load() >= 3 })
 			incomplete := logged.Lines("issue PRIV-1: missing")
 			if got := strings.Count(incomplete, "\n"); got != row.incomplete || (got > 0 && !strings.Contains(incomplete, "level=ERROR")) {
 				t.Errorf("%s: three passes logged %d lines naming PRIV-1:\n%s\nwant %d ERROR lines", row.name, got, incomplete, row.incomplete)

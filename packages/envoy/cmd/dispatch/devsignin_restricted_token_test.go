@@ -103,7 +103,7 @@ func devSignInToken(t *testing.T, handler http.Handler, login string) string {
 	minted := devSignInRequest(handler, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"an agent of mine","projects":["PRIV"]}`, func(r *http.Request) {
 		r.Header.Set("Origin", devSignInOrigin)
 		for _, cookie := range signIn.Result().Cookies() {
-			if isSessionCookie(cookie) {
+			if cookie.Name == "dsession" && cookie.Value != "" {
 				r.AddCookie(cookie)
 			}
 		}

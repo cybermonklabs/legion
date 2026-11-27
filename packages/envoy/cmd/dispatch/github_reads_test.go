@@ -203,15 +203,17 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	}
 }
 
-// healthzAnswer is one /healthz answer as the GitHub read tests read it: its status and its body
-// as written, which every failure prints; ok; github as written, nil when absent and `null` when
-// null; and github's entries by read, where it is an object.
+// healthzAnswer is one /healthz answer as the tests that read a process's probe read it: its
+// status and its body as written, which every failure prints; ok; degraded's reasons; github as
+// written, nil when absent and `null` when null; and github's entries by read, where it is an
+// object.
 type healthzAnswer struct {
-	status int
-	body   string
-	OK     bool            `json:"ok"`
-	GitHub json.RawMessage `json:"github"`
-	reads  map[string]gitHubReadAnswer
+	status   int
+	body     string
+	OK       bool            `json:"ok"`
+	Degraded []string        `json:"degraded"`
+	GitHub   json.RawMessage `json:"github"`
+	reads    map[string]gitHubReadAnswer
 }
 
 // gitHubReadAnswer is one entry of github as written.

@@ -20,11 +20,24 @@ const (
 	foreignHost = "attacker.example"
 )
 
+// recordingMux is the mux apiWalk hands Register: a ServeMux that, as a readclass.Recorder, keeps
+// each pattern readclass.Handle mounts on it, the patterns mounted beside the route table.
+type recordingMux struct {
+	http.ServeMux
+	classed []string
+}
+
+var _ readclass.Recorder = (*recordingMux)(nil)
+
+func (m *recordingMux) Record(pattern string, _ []readclass.Class) {
+	m.classed = append(m.classed, pattern)
+}
+
 // apiWalk is the API mounted as a production deployment mounts it (no test hooks, the document
 // service of its own) on a mux of its own, with no database, and every route it serves: each row
-// of the route table and each pattern mounted beside the table, the two sockets
-// (readclass.Patterns). The router above it is walked by routes' tests of the same names; this one
-// holds the API alone, so a route of its own that answers with no credential fails here first.
+// of the route table and each pattern mounted beside the table, the two sockets, which the mux
+// records (recordingMux). The router above it is walked by routes' tests of the same names; this
+// one holds the API alone, so a route of its own that answers with no credential fails here first.
 func apiWalk(t *testing.T) (http.Handler, []string) {
 	t.Helper()
 	deps, err := NewDeps(withDocumentService(t, DepsInput{
@@ -35,14 +48,14 @@ func apiWalk(t *testing.T) (http.Handler, []string) {
 	if err != nil {
 		t.Fatalf("build the API's dependencies: %v", err)
 	}
-	mux := http.NewServeMux()
+	mux := &recordingMux{}
 	Register(mux, t.Context(), deps)
 	var routes []string
 	for _, route := range (&server{}).routes() {
 		routes = append(routes, route.Method+" "+route.Pattern)
 	}
 	table := len(routes)
-	beside := readclass.Patterns(mux)
+	beside := slices.Sorted(slices.Values(mux.classed))
 	for _, socket := range []string{"GET /ws/live", "GET /ws/doc/{room}"} {
 		if !slices.Contains(beside, socket) {
 			t.Fatalf("%s is not among the patterns mounted beside the table: %q", socket, beside)

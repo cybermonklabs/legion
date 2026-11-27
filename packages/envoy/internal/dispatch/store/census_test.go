@@ -1147,57 +1147,6 @@ func pendingCensus(t *testing.T, base, through, version int, options pgmigrate.C
 	return nil, 0, nil
 }
 
-// TestCensusAdmitsTheCanonicalOwnerIndex holds the census to admitting the index an address's
-// personal tokens are read through (20261119020200 on canonical_login(agent_tokens.owner)), over
-// production before this release (requireCensusAdmitsConcurrentIndexes).
-func TestCensusAdmitsTheCanonicalOwnerIndex(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261119020200)
-}
-
-// productionBeforeThisRelease is the version that stands for production before this release:
-// the DO blocks of earlier releases (20261111210103 among them) are applied there, and every later
-// migration is pending in this release's deploy census.
-const productionBeforeThisRelease = 20261118200651
-
-// requireCensusAdmitsConcurrentIndexes holds the census, over a database at
-// productionBeforeThisRelease with every later migration pending and the limit at one byte, where
-// each table is over it, to admitting each of versions as one concurrent, non-unique index of its
-// own migration, which the limit never applies to at any size, but only while no earlier pending
-// migration runs a DO block: one voids the exemption of every later pending migration
-// (pgmigrate.Census, laterEventTrigger). This release's first DO block is 20261119021826, so each
-// of its concurrent indexes sorts before it, and its deploy census admits them whatever their
-// tables hold. Control: an index renamed to sort after 20261119021826 fails its entry. Only each
-// entry is read, never the verdict of the whole set, for the reason
-// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
-func requireCensusAdmitsConcurrentIndexes(t *testing.T, versions ...int) {
-	t.Helper()
-	before := productionBeforeThisRelease
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, before)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationFiles, pgmigrate.CensusOptions{TableLimit: 1})
-	if err != nil {
-		t.Fatalf("census: %v", err)
-	}
-	found := map[int]bool{}
-	for _, version := range versions {
-		found[version] = false
-	}
-	for _, entry := range report.Pending {
-		if _, wanted := found[entry.Migration.Version]; !wanted {
-			continue
-		}
-		found[entry.Migration.Version] = true
-		if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
-			t.Errorf("the census did not admit migration %d as a concurrent index: %+v", entry.Migration.Version, entry)
-		}
-	}
-	for version, present := range found {
-		if !present {
-			t.Errorf("migration %d was not pending in the census over a database at %d", version, before)
-		}
-	}
-}
-
 // queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
 // connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
 // and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
@@ -1513,29 +1462,6 @@ func TestCensusExemptsTheLaterClockMigrationAtAnyTableSize(t *testing.T) {
 	entry := report.Pending[0]
 	if entry.TableSizeExemption != "create function" || len(entry.Refusals) != 0 {
 		t.Errorf("the census answered 20261118200651 with exemption %q and refusals %v; want exempt as create function, with no refusal", entry.TableSizeExemption, entry.Refusals)
-	}
-}
-
-// 20261119021826 sets the two clock guards' search_path in a DO block, built from current_schema()
-// as it runs. The census cannot read what a DO block runs, so it exempts none: it answers the
-// migration with no exemption, but the DO block names no table, so the census measures and refuses
-// nothing, even at a limit of one byte. The base is 20261119020200, the version before it
-// (agent_tokens_canonical_owner, the concurrent index that sorts before it,
-// TestCensusAdmitsTheCanonicalOwnerIndex); the four erase indexes that sorted between them
-// (20261119020300 to 020600) left with the erase (#3178 at 5a51d205a8).
-func TestCensusAnswersTheClockGuardsSearchPathMigration(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261119020200)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261119021826), pgmigrate.CensusOptions{TableLimit: 1})
-	if err != nil {
-		t.Fatalf("census: %v", err)
-	}
-	if len(report.Pending) != 1 || report.Pending[0].Migration.Version != 20261119021826 {
-		t.Fatalf("pending = %+v, want 20261119021826 alone; report:\n%s", report.Pending, reportText(report))
-	}
-	t.Logf("the census's report of 20261119021826:\n%s", reportText(report))
-	if entry := report.Pending[0]; len(entry.Refusals) != 0 || len(entry.Tables) != 0 {
-		t.Errorf("the census answered 20261119021826 with refusals %v and tables %+v; want neither: it names no table", entry.Refusals, entry.Tables)
 	}
 }
 

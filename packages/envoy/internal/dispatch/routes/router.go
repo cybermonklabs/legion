@@ -439,6 +439,15 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
 }
 
+// Mount mounts on mux every route New's router serves, as New mounts them on its own mux (mount),
+// and answers the API server's background work as New does. A test hands it a readclass.Recorder
+// of its own and reads back each pattern mounted beside the API route table and its read classes,
+// as readclass records them only on a mux a test owns (c4ba8126b7).
+func Mount(ctx *AppContext, mux api.RouteMux) api.Background {
+	_, background := mount(ctx, mux)
+	return background
+}
+
 // mount builds New's router, mounts every route the server serves on mux, the API's table among
 // them (api.Register), and answers the API server's background work. Each pattern beside the API
 // route table is mounted through readclass.Handle with what it reads; api.Register mounts the

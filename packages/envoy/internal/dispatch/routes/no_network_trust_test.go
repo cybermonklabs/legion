@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth/forwardedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
-	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -143,7 +143,8 @@ func newProcessWalk(t *testing.T) processWalk {
 
 // walkProcess is a process of the walk, signing people in through issuer under rule, answering at
 // https://canonicalHost (DISPATCH_SERVER_URL) and at outside too (DISPATCH_OUTSIDE_ORIGIN; empty
-// for none), and the patterns readclass recorded on its router's mux and on Process's.
+// for none), and the patterns readclass recorded on a classedMux the router's mounting code
+// (Mount) filled from its context and on the classedMux Process's mounts (MountProcess) serve on.
 func walkProcess(t *testing.T, issuer *oidctest.Issuer, rule identity.SignInRule, outside string) (http.Handler, []string) {
 	t.Helper()
 	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", rigDomain)
@@ -171,13 +172,16 @@ func walkProcess(t *testing.T, issuer *oidctest.Issuer, rule identity.SignInRule
 		t.Fatalf("build context: %v", err)
 	}
 	standInEventLog(ctx, 0)
-	router, mux, _ := serve(ctx)
+	router, _ := New(ctx)
+	mounted := &classedMux{}
+	Mount(ctx, mounted)
 	health := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	process := Process(router, health)
-	return process, slices.Concat(readclass.Patterns(mux), readclass.Patterns(process))
+	process := &classedMux{}
+	MountProcess(process, router, health)
+	return process, slices.Concat(slices.Sorted(maps.Keys(mounted.classes)), slices.Sorted(maps.Keys(process.classes)))
 }
 
 // wildcard is a path wildcard of a ServeMux pattern.

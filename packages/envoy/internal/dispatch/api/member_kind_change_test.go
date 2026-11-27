@@ -238,7 +238,7 @@ func TestALiveSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
 	}
 
 	rig.restrict(t)
-	if closed := client.closeError(t, 10*time.Second); closed.Code != gws.ClosePolicyViolation {
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once its person was restricted, want 1008", closed.Code, closed.Text)
 	}
 	rig.requireStillSignedInRestricted(t)
@@ -388,11 +388,11 @@ func TestADeliveryViewStopsCarryingAProjectOnceItsReaderIsRestricted(t *testing.
 	}
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve})
-	conn.snapshot(t, 5*time.Second, "t")
+	conn.snapshot(t, "t")
 	rig.waitListening(t)
 	// The connection's own re-check runs before the write below, so only the write's announcement
 	// can read dave again.
-	rig.waitFor(t, 0, 5*time.Second, "the re-check after the listener connected", func(note deliveryHubNote) bool {
+	rig.waitFor(t, 0, "the re-check after the listener connected", func(note deliveryHubNote) bool {
 		return note.what == "readers rechecked"
 	})
 

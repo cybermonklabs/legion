@@ -199,15 +199,6 @@ func (s *memoryPeopleStore) ConfirmSubject(_ context.Context, email, subject, re
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
-	s.people[email] = person
-	return nil
-}
-
-func (s *memoryPeopleStore) ConfirmSubject(_ context.Context, email, subject, refreshToken string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	person := s.people[email]
 	if person.Subject != subject {
 		return nil
 	}
@@ -304,7 +295,7 @@ func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, h
 	rig := &signInRig{issuer: issuer, people: newMemoryPeople(), sessions: &memorySessionStore{generations: map[string]int64{}}, now: time.Now()}
 	rig.people.sessions = rig.sessions
 	rig.people.now = rig.clock
-	rig.membership = &identity.Membership{People: rig.people, Sessions: rig.sessions, SignIn: flow, Rule: rule}
+	rig.membership = &identity.Membership{People: rig.people, SignIn: flow, Rule: rule}
 	rig.options = AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     rig.people,
@@ -920,7 +911,7 @@ func TestDomainSignInGetsNoSessionWhenAnotherAccountTakesTheAddressBeforeItsCook
 	t.Parallel()
 	rig := newDomainSignInRig(t)
 	rig.people.afterSignIn = func() {
-		if err := rig.people.SignInSubject(context.Background(), rigGoogleEmail, "google-subject-2", "refresh-2"); err != nil {
+		if err := rig.people.SignInSubject(context.Background(), rigGoogleEmail, "google-subject-2", "refresh-2", "", model.MemberFull); err != nil {
 			t.Errorf("the other account's sign-in: %v", err)
 		}
 	}

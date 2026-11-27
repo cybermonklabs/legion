@@ -169,7 +169,9 @@ PATCH /api/v1/priorities/{id} any
 GET /api/v1/priorities/{id}/history any
 GET /api/v1/projects any
 POST /api/v1/projects any
+GET /api/v1/projects/{key}/access any
 PATCH /api/v1/projects/{key}/access any
+PUT /api/v1/projects/{key}/access/people/{email} any
 GET /api/v1/projects/{key}/architecture any
 GET /api/v1/projects/{key}/architecture-source any
 POST /api/v1/projects/{key}/architecture-source/sync any

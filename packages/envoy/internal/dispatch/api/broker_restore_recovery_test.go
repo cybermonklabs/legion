@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -61,6 +62,18 @@ func (r *recoveryRig) refused(t *testing.T, email, subject string) bool {
 		t.Fatal(err)
 	}
 	return refused
+}
+
+// revoke tells the broker that subject no longer holds email, which holder holds now, at
+// generation, as Dispatch's loop does.
+func (r *recoveryRig) revoke(t *testing.T, email, subject, holder string, generation int64) {
+	t.Helper()
+	answer, err := r.broker.RevokePersonSubject(context.Background(), wire.RevokePersonSubjectRequest{
+		Person: email, Issuer: recoveryIssuer, Subject: subject, HolderSubject: holder, SessionGeneration: &generation,
+	})
+	if err != nil || answer.State != "revoked" {
+		t.Fatalf("the broker's revoke of %s, holder %s, at %s: %+v, %v", subject, holder, email, answer, err)
+	}
 }
 
 // signInMachine gives account a live sign-in of email on a machine at the broker, the credential a

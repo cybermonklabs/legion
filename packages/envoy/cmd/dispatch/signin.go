@@ -58,20 +58,14 @@ func signInClientSettings(boot bootConfig) []struct{ name, value string } {
 	}
 }
 
-// signInSettings are all seven sign-in settings, each with boot's value: the client's three, then
+// signInSettings are all six sign-in settings, each with boot's value: the client's three, then
 // the group a Cognito sign-in pool admits and the Workspace domain Google admits, of which a
-// sign-in takes exactly one, the Workspace's other domains, as written, and the switch that signs
-// people outside the domain in with a passkey ("1" when on).
+// sign-in takes exactly one, and the Workspace's other domains, as written.
 func signInSettings(boot bootConfig) []struct{ name, value string } {
-	on := func(set bool) string {
-		if set {
-			return "1"
-		}
-		return ""
-	}
 	return append(signInClientSettings(boot),
 		struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup},
 		struct{ name, value string }{"DISPATCH_SIGNIN_DOMAIN", boot.SignInDomain},
+		struct{ name, value string }{"DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(boot.SignInWorkspaceDomains, ",")},
 	)
 }
 

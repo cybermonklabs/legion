@@ -862,8 +862,9 @@ func TestEveryProbeAnsweredWithNoCredentialIsClassedAsReadingNoCallersRow(t *tes
 	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
-	mux := routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil))
-	probes := slices.DeleteFunc(readclass.Patterns(mux), func(pattern string) bool { return pattern == "/" })
+	mux := &classedMux{}
+	routes.MountProcess(mux, router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil))
+	probes := slices.DeleteFunc(mux.patterns(), func(pattern string) bool { return pattern == "/" })
 	if !slices.Equal(probes, []string{"GET /healthz", "GET /livez"}) {
 		t.Fatalf("routes.Process mounts %q above the router, want the two probes", probes)
 	}
@@ -875,7 +876,7 @@ func TestEveryProbeAnsweredWithNoCredentialIsClassedAsReadingNoCallersRow(t *tes
 		t.Fatalf("GET /livez with no credential answered %d, want the probe's 204", response.Code)
 	}
 	for _, pattern := range probes {
-		if classes := readclass.ClassesOf(mux, pattern); !slices.Equal(classes, []readclass.Class{readclass.None}) {
+		if classes := mux.classes[pattern]; !slices.Equal(classes, []readclass.Class{readclass.None}) {
 			t.Errorf("%s is mounted as a read of %q, want %q: it answers every caller, with no credential, and refuses none",
 				pattern, classes, readclass.None)
 		}

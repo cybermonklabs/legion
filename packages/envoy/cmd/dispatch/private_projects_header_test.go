@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -39,6 +40,28 @@ func requestOf(pattern string) (method, path string) {
 		method, path = before, after
 	}
 	return method, wildcard.ReplaceAllString(path, "NOPE")
+}
+
+// classedMux is a ServeMux that, as a readclass.Recorder, keeps the classes readclass.Handle
+// mounted each of its patterns with: the mux a test hands routes.Mount or routes.MountProcess to
+// read back what they mounted (routes' classedMux).
+type classedMux struct {
+	http.ServeMux
+	classes map[string][]readclass.Class
+}
+
+var _ readclass.Recorder = (*classedMux)(nil)
+
+func (m *classedMux) Record(pattern string, classes []readclass.Class) {
+	if m.classes == nil {
+		m.classes = map[string][]readclass.Class{}
+	}
+	m.classes[pattern] = classes
+}
+
+// patterns is every pattern readclass.Handle mounted on m, sorted.
+func (m *classedMux) patterns() []string {
+	return slices.Sorted(maps.Keys(m.classes))
 }
 
 // Every Dispatch HTTP response, errors and /healthz included, carries Dispatch-Private-Projects:
@@ -84,10 +107,23 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 				t.Fatalf("the first read of the private projects: %v", err)
 			}
 			broker := events.NewBroker()
-			router := routerFor(t, resolveWith(t, nil), routes.AppContextOptions{
+			boot := resolveWith(t, nil)
+			options := routes.AppContextOptions{
 				Store: database, Events: broker, Docs: docs.New(docs.Deps{Store: database, Events: broker}),
-			})
-			served := serveHandler(routes.Process(router, healthzHandler(database, nil, nil, nil, "", nil, issuers{}, privateState, nil)), privateState)
+			}
+			router := routerFor(t, boot, options)
+			// The router's patterns, from its own mounting (routes.Mount) on a context built as
+			// routerFor builds the router's, and Process's, from the mux its mounts serve on.
+			options.Lifetime = t.Context()
+			mountedContext, err := appContextFor(t, boot, options)
+			if err != nil {
+				t.Fatalf("build the router's context: %v", err)
+			}
+			mounted := &classedMux{}
+			t.Cleanup(routes.Mount(mountedContext, mounted).Wait)
+			process := &classedMux{}
+			routes.MountProcess(process, router, healthzHandler(database, nil, nil, nil, "", nil, issuers{}, privateState, nil))
+			served := serveHandler(process, privateState)
 			server := httptest.NewServer(served)
 			t.Cleanup(server.Close)
 			client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -127,7 +163,7 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 			for _, row := range body.Routes {
 				requests[row.Method+" "+row.Path] = true
 			}
-			for _, pattern := range readclass.AllPatterns() {
+			for _, pattern := range slices.Concat(mounted.patterns(), process.patterns()) {
 				requests[pattern] = true
 			}
 			for _, required := range []string{"GET /healthz", "GET /livez", "GET /metrics", "GET /ws/live", "GET /ws/doc/{room}"} {
