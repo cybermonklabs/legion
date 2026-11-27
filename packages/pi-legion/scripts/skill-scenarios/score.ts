@@ -4238,6 +4238,8 @@ export function forwardCell(
     dir: path.join(runsDir, run),
     row: json(path.join(runsDir, run, "forward.json"), ForwardRowFile),
   }));
+  if (control && rows.filter(({ row }) => row.pass === true).length * 5 >= count * 4)
+    return decided(4, `CONTROL PASSED: ${label} ${world} ${rows.filter(({ row }) => row.pass === true).length}/${count}`);
   const pending = rows.filter(({ row }) => row.pass === "pending");
   if (pending.length > 0) {
     const owed = pending.reduce((sum, { dir, row }) => {
