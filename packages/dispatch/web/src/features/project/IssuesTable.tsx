@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { useOpenedGroups } from "../../components/CappedGroup";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -49,6 +50,7 @@ import {
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
+import { OpenedLabelsContext } from "./LabelsGroup";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
@@ -62,6 +64,20 @@ const SCOPED_LAYOUT_KEY = "priority-work";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
+/**
+ * A table of issues: a project's, or the work advancing one priority. Its groups, in this order,
+ * each on a line of its own: Notices (a read that failed, the closed issues loading), Statuses
+ * (`IssueTableStatus`: the counts and the status bar), Narrowed (the chip of a table showing only
+ * some rows), Toolbar (`IssueTableToolbar`: search, filters, columns), Feedback (the line that
+ * says how a table action went; an interrupted action's Finish and Dismiss; the warning that an
+ * epic's creation got no answer, with Dismiss; and the warning that an epic of that title exists,
+ * with Create anyway and Cancel new epic), Table (the rows, in their own box that scrolls
+ * sideways with its key columns pinned at the left, the data-table exception of the Layout rule
+ * in `web/src/AGENTS.md`, then the pager) and, while rows are ticked, Selection
+ * (`IssueTableSelection`, over the page rather than in it). The action dialogs open over it.
+ * Each group lays out its own entries; which rows' labels the reader opened is the table's
+ * (`OpenedLabelsContext`), since a row the window stops drawing loses its own state.
+ */
 export function IssuesTable({
   empty,
   label,
@@ -158,6 +174,7 @@ export function IssuesTable({
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
+  const openedLabels = useOpenedGroups();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
   const wantsDone = !whole && (statusPicked.length === 0 || statusPicked.includes("done"));
@@ -457,54 +474,56 @@ export function IssuesTable({
         ) : null}
       </div>
 
-      <DataTable
-        empty={
-          empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
-            ? empty
-            : "No issues match these filters."
-        }
-        filterCounts={openFacets}
-        filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
-        label={`${name} table`}
-        model={model}
-        noun={{ many: "issues", one: "issue" }}
-        onOpenFilterChange={setOpenFilter}
-        openFilter={openFilter}
-        renderGroup={({ entry, index, measure }) => (
-          <GroupRow
-            columns={visibleColumns}
-            viewportWidth={boxWidth}
-            continued={entry.continued}
-            epics={epics}
-            grouping={grouping[0] ?? ""}
-            index={index}
-            measure={measure}
-            onMerge={mergeEpic}
-            shown={entry.shown}
-            onRename={renameEpic}
-            onStartAll={(key) =>
-              startNext(
-                allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-              )
-            }
-            row={entry.row}
-          />
-        )}
-        renderRow={({ row, index, measure }) => (
-          <IssueRow
-            busy={busy}
-            index={index}
-            measure={measure}
-            moved={moved}
-            onStartNext={rowActions ? (key) => startNext([key]) : undefined}
-            row={row}
-          />
-        )}
-        scrollTestId="issues-table-scroll"
-        // A phone draws Title beside the key at its narrowest: its filter stands under its words.
-        stackedHeader="title"
-        trailingWidth={actions}
-      />
+      <OpenedLabelsContext.Provider value={openedLabels}>
+        <DataTable
+          empty={
+            empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
+              ? empty
+              : "No issues match these filters."
+          }
+          filterCounts={openFacets}
+          filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
+          label={`${name} table`}
+          model={model}
+          noun={{ many: "issues", one: "issue" }}
+          onOpenFilterChange={setOpenFilter}
+          openFilter={openFilter}
+          renderGroup={({ entry, index, measure }) => (
+            <GroupRow
+              columns={visibleColumns}
+              viewportWidth={boxWidth}
+              continued={entry.continued}
+              epics={epics}
+              grouping={grouping[0] ?? ""}
+              index={index}
+              measure={measure}
+              onMerge={mergeEpic}
+              shown={entry.shown}
+              onRename={renameEpic}
+              onStartAll={(key) =>
+                startNext(
+                  allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
+                )
+              }
+              row={entry.row}
+            />
+          )}
+          renderRow={({ row, index, measure }) => (
+            <IssueRow
+              busy={busy}
+              index={index}
+              measure={measure}
+              moved={moved}
+              onStartNext={rowActions ? (key) => startNext([key]) : undefined}
+              row={row}
+            />
+          )}
+          scrollTestId="issues-table-scroll"
+          // A phone draws Title beside the key at its narrowest: its filter stands under its words.
+          stackedHeader="title"
+          trailingWidth={actions}
+        />
+      </OpenedLabelsContext.Provider>
 
       <IssueTableSelection
         table={table}

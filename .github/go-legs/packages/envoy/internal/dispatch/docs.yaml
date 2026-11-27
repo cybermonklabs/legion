@@ -1045,7 +1045,7 @@
   - TestRenderReuseANilOriginCommitCreditsNoOne  # 64.3 s
   - TestRenderReuseARecoveredReplicaRendersThePublish  # 24.6 s
   - TestRenderReuseAnAnchoredCommentRendersNothingTwice  # 25.3 s
-  - TestRenderReuseGivesTheLogPackageItsOutputBack  # 51.1 s
+  - TestCaptureWarningsGivesTheLogPackageItsOutputBack  # 51.1 s
   - TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit  # 4.7 s
   - TestReplaceTextTakesAReplacementNamingNoTokenAndChecksANamedOne  # 0.7 s
   - TestReplaceTextUpdatesLiveDocumentAndSettlesVersion  # 0.7 s
