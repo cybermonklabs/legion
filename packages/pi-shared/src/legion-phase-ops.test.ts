@@ -141,7 +141,10 @@ function runtime(
 
 const CHECK_OPENED = "2026-10-19T06:00:00.123456Z";
 
-test("a look's report names its check and is posted as it is, with no record read", async () => {
+/** A look id as the daemon makes one (`rand.Text()`): 26 base32 characters. */
+const LOOK_ID = "AW4FVNJMOMMYLHJQ7XVPHX5RIA";
+
+test("a look's report names its check and its look and is posted as it is, with no record read", async () => {
   for (const phase of ["implementing", "done"] as const) {
     const state = stateAtPhase(phase);
     const { ops, routes, posted, lookups } = runtime({ ...implementer, role: "tester" }, state);
@@ -152,6 +155,7 @@ test("a look's report names its check and is posted as it is, with no record rea
         verdict: "pending",
         wake_at: NEXT_LOOK,
         check_opened_at: CHECK_OPENED,
+        look_id: LOOK_ID,
       })
     ).resolves.toEqual({});
     expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/handoff/complete"]);
@@ -162,6 +166,7 @@ test("a look's report names its check and is posted as it is, with no record rea
       verdict: "pending",
       wakeAt: NEXT_LOOK,
       checkOpenedAt: CHECK_OPENED,
+      lookId: LOOK_ID,
     });
   }
 });
@@ -177,7 +182,11 @@ test("a call without check_opened_at is a step's completion on every phase", asy
     verdict: "pass",
     ...REPORT,
   });
-  for (const input of [{ verdict: "pending" }, { verdict: "pass", wake_at: NEXT_LOOK }]) {
+  for (const input of [
+    { verdict: "pending" },
+    { verdict: "pass", wake_at: NEXT_LOOK },
+    { verdict: "pass", look_id: LOOK_ID },
+  ]) {
     const fresh = runtime({ ...implementer, role: "tester" }, state);
     await expect(
       executePhaseOp(fresh.ops, { op: "handoff_complete", summary: "waiting", ...input })
@@ -249,6 +258,7 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail"] },
       wake_at: { type: "string" },
+      look_id: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },
       return_to: { type: "integer", minimum: 1 },
@@ -341,6 +351,21 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: " " },
       "handoff_complete requires wake_at",
     ],
+    // A look id is the daemon's to compare, so only a blank one, or one that is not a string, is
+    // refused here, as missing.
+    ...[" ", 7].map(
+      (lookId) =>
+        [
+          {
+            op: "handoff_complete",
+            summary: "x",
+            verdict: "pass",
+            check_opened_at: CHECK_OPENED,
+            look_id: lookId,
+          },
+          "handoff_complete requires look_id",
+        ] as const
+    ),
     [
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: "tomorrow" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
@@ -831,7 +856,7 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
     new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to; ${refusal}`
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, check_opened_at, look_id, plan_rating, plan_reason, return_to; ${refusal}`
     )
   );
   expect(root.routes).toEqual([]);
@@ -854,7 +879,7 @@ test("a field an op does not take is refused naming the fields the op takes", as
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, check_opened_at, look_id, plan_rating, plan_reason, return_to',
     ],
   ] as const;
   for (const [input, message] of refusals) {
@@ -1124,7 +1149,7 @@ test("pending without check_opened_at is refused before a record is read", async
     executePhaseOp(ops, { op: "handoff_complete", summary: "Waiting.", verdict: "pending" })
   ).rejects.toThrow(
     new Error(
-      "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail."
+      "handoff_complete's pending verdict reports a production check. Send check_opened_at and look_id from the task of the look. To complete a step, send pass or fail."
     )
   );
   expect(routes).toEqual([]);
@@ -1142,11 +1167,34 @@ test("wake_at is a check report's: a phase completion carrying one is refused, s
     })
   ).rejects.toThrow(
     new Error(
-      "handoff_complete's wake_at reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. A step's completion carries no wake."
+      "handoff_complete's wake_at reports a production check. Send check_opened_at and look_id from the task of the look. A step's completion carries no wake."
     )
   );
   expect(routes).toEqual([]);
   expect(lookups).toEqual([]);
+});
+
+// The daemon refuses a phase completion that gives a look id (CHECK_LOOK_ID_UNEXPECTED), so the
+// tool refuses it first, as it refuses a wake there: the agent that meant a report is told so,
+// and no record is read and no grant minted for a call the daemon would refuse.
+test("look_id is a check report's: a completion giving one without check_opened_at is refused before any request", async () => {
+  for (const verdict of [{ verdict: "pass" }, { verdict: "fail" }, {}]) {
+    const { ops, routes, lookups } = runtime({ ...implementer, role: "tester" });
+    await expect(
+      executePhaseOp(ops, {
+        op: "handoff_complete",
+        summary: "Green.",
+        ...verdict,
+        look_id: LOOK_ID,
+      })
+    ).rejects.toThrow(
+      new Error(
+        "handoff_complete's look_id reports a production check. Send check_opened_at and look_id from the task of the look. A step's completion gives no look id."
+      )
+    );
+    expect(routes).toEqual([]);
+    expect(lookups).toEqual([]);
+  }
 });
 
 test("request_backward_move names the issue an architect returns from accepting, and only a phase worker's own issue", async () => {

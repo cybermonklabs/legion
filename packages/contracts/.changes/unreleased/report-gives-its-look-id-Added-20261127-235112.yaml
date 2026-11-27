@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    A handoff completion that names checkOpenedAt may give lookId, the secret id of the look it
+    reports on, which only that look's task gives. The request refuses a lookId without
+    checkOpenedAt, as the daemon does. This is the daemon API contract entry 20261127185859
+    (report-gives-its-look-id).
+time: 2026-11-27T23:51:12Z
+custom:
+    Issue: report-gives-its-look-id

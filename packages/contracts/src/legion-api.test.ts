@@ -96,6 +96,28 @@ test("a look's report names its check and carries no step's record or commit", (
   }
 });
 
+// Entry 20261127185859 (report-gives-its-look-id): a report gives the secret id of its look beside
+// the check it names, and only a report does. A completion that gives a look id and names no check
+// is refused, as the daemon refuses it (CHECK_LOOK_ID_UNEXPECTED), and so is an empty id.
+test("a look's report gives its look id, and only a report naming its check gives one", () => {
+  const report = {
+    grantId: "grant",
+    summary: "looked",
+    verdict: "pass",
+    checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+    lookId: "AW4FVNJMOMMYLHJQ7XVPHX5RIA",
+  };
+  expect(LegionHandoffCompleteRequest.parse(report)).toEqual(report);
+  const { lookId: _, ...withoutLookId } = report;
+  expect(LegionHandoffCompleteRequest.parse(withoutLookId)).toEqual(withoutLookId);
+  expect(LegionHandoffCompleteRequest.safeParse({ ...report, lookId: "" }).success).toBeFalse();
+  const { checkOpenedAt: __, ...completion } = report;
+  const refused = LegionHandoffCompleteRequest.safeParse(completion);
+  expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
+    "lookId is carried only by a report naming checkOpenedAt",
+  ]);
+});
+
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
 /** `state-events.json`, which `internal/daemon`'s TestStateEventsGolden writes: a daemon's records

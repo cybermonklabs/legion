@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    handoff_complete takes look_id, the look id that a production check look's task gives, and
+    sends it with check_opened_at. The daemon takes the look from that id, not from the turn the
+    session is in. A report with no look_id still goes to the daemon, which answers that the
+    report needs it. The tool refuses look_id on a step's completion before it sends anything.
+    Its refusals no longer tell the agent to read check.openedAt from read_record. The plugin
+    speaks the daemon API contract entry 20261127185859 (report-gives-its-look-id).
+time: 2026-11-27T23:51:12Z
+custom:
+    Issue: report-gives-its-look-id
