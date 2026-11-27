@@ -179,3 +179,108 @@ func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 		t.Fatalf("the merge pull request of LEGION-208 after the roll-forward = %+v, want its row of task x again", merge)
 	}
 }
+
+// settledHeadsKeys is the key and the foreign key of pull_request_settled_heads as the database
+// holds them, each as its name and its definition.
+const settledHeadsKeys = `select k.conname || ' ' || pg_get_constraintdef(k.oid) from pg_constraint k
+	where k.conrelid = 'public.pull_request_settled_heads'::regclass and k.contype in ('p', 'f')
+	order by 1`
+
+// 20261122122826 keys what a pull request remembers of its settled heads by the issue and the
+// branch, as it keys pull_requests. A row the release before wrote takes the branch of its issue's
+// one pull request and keeps every other field. After the migration a second branch of the issue
+// keeps a memory of its own, of the same kind and head as the first branch's, and a memory of a
+// branch with no pull request is refused by the foreign key on pull_requests (issue, branch). The
+// way back deletes the pull request of the second branch, which takes its memory with it (on
+// delete cascade), before it keys the table by (issue, kind, head) again, so that key is written
+// over rows that hold each of its values once; and it writes the foreign key on pull_requests
+// (issue) again, which refuses a memory of an issue with no pull request. The roll-forward gives
+// the row its branch again.
+func TestMigrationPullRequestsByTaskKeysEachSettledHeadByItsBranch(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, pullRequestsByTaskVersion-1)
+	exec := func(sql string, args ...any) error {
+		_, err := store.Pool().Exec(ctx, sql, args...)
+		return err
+	}
+	seed := func(sql string, args ...any) {
+		t.Helper()
+		if err := exec(sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	refusedBy := func(err error, code, constraint string) bool {
+		var pgErr *pgconn.PgError
+		return errors.As(err, &pgErr) && pgErr.Code == code && pgErr.ConstraintName == constraint
+	}
+	// LEGION-208 has no plan rows, so the way back keeps its pull request on legion/LEGION-208.
+	seed(`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ('LEGION-208', 'LEGION-208', 'LEGION', 'the issue', 'reviewing', 1, 'needs_review', 'A', 1)`)
+	pullRequest := `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, fix_attempts,
+		blocked_attempts, check_runs, generation, snapshot, head_counted)
+		values ('LEGION-208', 'acme/widgets', $1, $2, 'h2', now(), '[]', 0, 0, '[]', 0, '', '')`
+	seed(pullRequest, 1208, "legion/LEGION-208")
+	seed(`insert into pull_request_settled_heads (issue, kind, position, head, fence)
+		values ('LEGION-208', 'pull_request', 0, 'h1', '{"checkRuns": []}'::jsonb),
+		('LEGION-208', 'head_run', 0, 'h1', '{"checkRuns": [{"name": "unit", "id": 7}]}'::jsonb)`)
+	const memory = `select issue || ' ' || kind || ' ' || position || ' ' || head || ' ' || fence::text
+		from pull_request_settled_heads order by kind`
+	before := rowsAsText(t, store, memory)
+	if len(before) != 2 {
+		t.Fatalf("the settled heads before the migration = %q, want the two rows the fixture wrote", before)
+	}
+	const branches = `select distinct issue || ' ' || branch from pull_request_settled_heads order by 1`
+
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the pull requests by task: %v", err)
+	}
+	if got := rowsAsText(t, store, memory); strings.Join(got, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("the settled heads after the migration = %q, want each row whole: %q", got, before)
+	}
+	if got, want := rowsAsText(t, store, branches), []string{"LEGION-208 legion/LEGION-208"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the branches of the settled heads after the migration = %q, want %q: the branch of the issue's one pull request", got, want)
+	}
+	if got, want := rowsAsText(t, store, settledHeadsKeys), []string{
+		"pull_request_settled_heads_issue_fkey FOREIGN KEY (issue, branch) REFERENCES pull_requests(issue, branch) ON DELETE CASCADE",
+		"pull_request_settled_heads_pkey PRIMARY KEY (issue, branch, kind, head)",
+	}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the keys of the settled heads after the migration = %q, want %q", got, want)
+	}
+	seed(pullRequest, 2208, "legion/LEGION-208.y")
+	other := `insert into pull_request_settled_heads (issue, branch, kind, position, head, fence)
+		values ('LEGION-208', $1, 'pull_request', 0, 'h1', '{"checkRuns": []}'::jsonb)`
+	if err := exec(other, "legion/LEGION-208.y"); err != nil {
+		t.Fatalf("remember h1 for the pull request of legion/LEGION-208.y, which legion/LEGION-208's remembers too: %v", err)
+	}
+	if err := exec(other, "legion/LEGION-208.z"); !refusedBy(err, "23503", "pull_request_settled_heads_issue_fkey") {
+		t.Fatalf("remember h1 for legion/LEGION-208.z, which has no pull request = %v, want the foreign key to refuse it (23503)", err)
+	}
+
+	if err := exec(wayBackOf(t, pullRequestsByTaskVersion, "the pull requests by task")); err != nil {
+		t.Fatalf("run the way back: %v", err)
+	}
+	if got := rowsAsText(t, store, memory); strings.Join(got, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("the settled heads after the way back = %q, want legion/LEGION-208's whole and legion/LEGION-208.y's deleted: %q", got, before)
+	}
+	if err := exec(`select branch from pull_request_settled_heads`); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("select branch from pull_request_settled_heads after the way back = %v, want the column unknown", err)
+	}
+	if got, want := rowsAsText(t, store, settledHeadsKeys), []string{
+		"pull_request_settled_heads_issue_fkey FOREIGN KEY (issue) REFERENCES pull_requests(issue) ON DELETE CASCADE",
+		"pull_request_settled_heads_pkey PRIMARY KEY (issue, kind, head)",
+	}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the keys of the settled heads after the way back = %q, want %q: the ones 20261120144241 wrote", got, want)
+	}
+	if err := exec(`insert into pull_request_settled_heads (issue, kind, position, head, fence)
+		values ('LEGION-209', 'pull_request', 0, 'h1', '{"checkRuns": []}'::jsonb)`); !refusedBy(err, "23503", "pull_request_settled_heads_issue_fkey") {
+		t.Fatalf("remember h1 for LEGION-209, which has no pull request, after the way back = %v, want the foreign key to refuse it (23503)", err)
+	}
+
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("roll forward after the way back: %v", err)
+	}
+	if got, want := rowsAsText(t, store, branches), []string{"LEGION-208 legion/LEGION-208"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the branches of the settled heads after the roll-forward = %q, want %q", got, want)
+	}
+}
