@@ -12,7 +12,12 @@ import { modSocketPath } from "../hooks/mod-protocol"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
-import { connectedBeforeTheDeadline, connectedToServer, pastTheDeadline } from "./mcp-connect"
+import {
+  connectedBeforeTheDeadline,
+  connectedToServer,
+  pastTheDeadline,
+  toolAnswer,
+} from "./mcp-connect"
 import { natsGate } from "./nats-gate"
 import { ROW_TIMEOUT_MS } from "./reopen-server"
 import { rowStarted, untilTheGuard } from "./row-deadline"
@@ -223,14 +228,10 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     expect(instructions).not.toContain("Dispatch tools")
 
     await expect(
-      settled(
-        "the server's answer to dispatch_ask",
-        client.callTool(
-          { name: "dispatch_ask", arguments: { issue: "DSP-3", question: "Ship?" } },
-          undefined,
-          { timeout: pastTheDeadline() },
-        ),
-      ),
+      toolAnswer(client, "the server's answer to dispatch_ask", {
+        name: "dispatch_ask",
+        arguments: { issue: "DSP-3", question: "Ship?" },
+      }),
     ).rejects.toThrow("Unsupported Envoy tool: dispatch_ask")
     expect(dispatchRequests).toEqual([])
   } finally {
@@ -372,12 +373,10 @@ test("a tool call while the start waits for its broker token says what the start
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
     await untilServed("the start's wait for the token", () => stderr().includes("trading again"))
-    const said = await settled(
-      "the server's answer to envoy_whoami",
-      client.callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
-        timeout: pastTheDeadline(),
-      }),
-    ).then(
+    const said = await toolAnswer(client, "the server's answer to envoy_whoami", {
+      name: "envoy_whoami",
+      arguments: {},
+    }).then(
       () => {
         throw new Error("the session started though its broker answers every trade 503")
       },
@@ -581,12 +580,10 @@ test("a broker token keeper's warning while the start registers leaves the tool 
     await untilServed("the keeper's warning", () =>
       stderr().includes("envoy-channel: the NATS connection's broker token"),
     )
-    const answer = await settled(
-      "the server's answer to envoy_whoami",
-      client.callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
-        timeout: pastTheDeadline(),
-      }),
-    ).then(
+    const answer = await toolAnswer(client, "the server's answer to envoy_whoami", {
+      name: "envoy_whoami",
+      arguments: {},
+    }).then(
       () => "answered",
       (error: unknown) => String(error),
     )

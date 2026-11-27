@@ -6455,20 +6455,6 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     // ceiling and stay at 96, where each is 20 of 20 on that pod.
   });
 
-  // The rows below, before the warn-mode row, run the same real `dispatch` subprocesses as the row
-  // above: the gate's dry run, and the post. Each model call these rows make is answered at once,
-  // by `bind`'s default or by the first row's own REVISE, so the gate's 90 s deadline decides none
-  // of them. A run these rows fail under load is the gate's own ceiling: the dry run does not
-  // finish inside DRY_RUN_TIMEOUT_MS (20 s) nor when run again, and the gate answers an
-  // `outcome="error"` block, charged 46 to 48 s, where the row asserts a pass. That is a
-  // production budget that no guard can cover, and how far down it reaches depends on the pod. At
-  // the 80 rung they were 18 to 20 of 20 (infra-1580-k1-gvhwj, -k2-jwpck, -r26-ea80-8jqwq,
-  // -r26-eb80-dw9zn, -r26-ec80-785db); at the 64 rung 18 to 20 of 20 (-k7-8fc7c, -k8-2kz84); and
-  // at the 48 rung "a file a call earlier in the same message writes…" (which runs two dry runs)
-  // was 19 of 20 on a pod of 77 busy loops for the 48 rung (infra-1580-r37e48-lx6qj, row A
-  // 35.2 s, at 5e20dddc, the red charged 46 596 ms). Each red was that block. So these rows'
-  // acceptance rung is 32 busy loops, 16 per CPU.
-
   // INFRA-4224: the CLI's own `dispatch artifact --dry-run` asks Dispatch how it would store inline
   // text (POST /api/v1/markdown/round-trip). The gate reads the arguments alone, and the call
   // refuses a text Dispatch would store under another spelling itself, so the gate's dry run asks
@@ -6547,6 +6533,20 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       dispatch.stop(true);
     }
   }, 30_000);
+
+  // The seven rows below, before the warn-mode row, run the same real `dispatch` subprocesses as
+  // the row above: the gate's dry run, and the post. Each model call these rows make is answered at
+  // once, by `bind`'s default or by the first row's own REVISE, so the gate's 90 s deadline decides
+  // none of them. A run these rows fail under load is the gate's own ceiling: the dry run does not
+  // finish inside DRY_RUN_TIMEOUT_MS (20 s) nor when run again, and the gate answers an
+  // `outcome="error"` block, charged 46 to 48 s, where the row asserts a pass. That is a
+  // production budget that no guard can cover, and how far down it reaches depends on the pod. At
+  // the 80 rung they were 18 to 20 of 20 (infra-1580-k1-gvhwj, -k2-jwpck, -r26-ea80-8jqwq,
+  // -r26-eb80-dw9zn, -r26-ec80-785db); at the 64 rung 18 to 20 of 20 (-k7-8fc7c, -k8-2kz84); and
+  // at the 48 rung "a file a call earlier in the same message writes…" (which runs two dry runs)
+  // was 19 of 20 on a pod of 77 busy loops for the 48 rung (infra-1580-r37e48-lx6qj, row A
+  // 35.2 s, at 5e20dddc, the red charged 46 596 ms). Each red was that block. So these rows'
+  // acceptance rung is 32 busy loops, 16 per CPU.
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
   // first argument after the subcommand (`dispatch-command.ts`), so a dry run that put `--dry-run`

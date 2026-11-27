@@ -25,7 +25,7 @@ import { type Deadline, deadlineFor } from "./deadline";
 const PACE_MS = 10;
 
 /** The longest delay a timer takes: Bun, as Node does, fires a longer one after 1 ms. */
-const LONGEST_TIMER_MS = 2 ** 31 - 1;
+export const LONGEST_TIMER_MS = 2 ** 31 - 1;
 
 /** A value `if` takes as true. */
 export type Truthy<T> = Exclude<T, false | 0 | 0n | "" | null | undefined>;

@@ -1,4 +1,4 @@
-import { settled, timeLeft } from "@legion/test-fixtures/wait"
+import { LONGEST_TIMER_MS, settled, timeLeft } from "@legion/test-fixtures/wait"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { untilTheGuard } from "./row-deadline"
@@ -31,10 +31,11 @@ const PAST_THE_DEADLINE_MS = 1_000
  * a second past the row's deadline, so the wait gives up first and names its fact. A request whose
  * timeout is the deadline itself (`timeLeft()`) races it, and when the SDK's timer wins the row
  * fails naming only "MCP error -32001: Request timed out". The SDK's own default, 60 s, would end
- * a request that a loaded host still answers inside the row's deadline.
+ * a request that a loaded host still answers inside the row's deadline. It is capped as
+ * `timeLeft()` is, at the longest delay a timer takes, so that it can be handed to a timer.
  */
 export function pastTheDeadline(): number {
-  return timeLeft() + PAST_THE_DEADLINE_MS
+  return Math.min(LONGEST_TIMER_MS, timeLeft() + PAST_THE_DEADLINE_MS)
 }
 
 /**
@@ -55,4 +56,16 @@ export async function connectedBeforeTheDeadline(
       `the channel server did not answer initialize: ${String(error)}; its stderr: ${stderr()}`,
     )
   })
+}
+
+/**
+ * The answer to the tool call `params`, waited on through `settled` until the row's deadline, with
+ * the request's own timeout a second past it (`pastTheDeadline`), so the wait names `what` first.
+ */
+export function toolAnswer(
+  client: Client,
+  what: string,
+  params: Parameters<Client["callTool"]>[0],
+) {
+  return settled(what, client.callTool(params, undefined, { timeout: pastTheDeadline() }))
 }

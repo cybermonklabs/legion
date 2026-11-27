@@ -290,8 +290,9 @@ function rowCheck(): () => boolean {
  * bun 1.4.4 reports it between the rows, beside the guard's failure of the row that already
  * failed. The file's `beforeEach` has put shared state back for the row after it, so a `finally`
  * of the ended row skips its restore.
- * The code under test drops what an ended row's session does instead (`fromEndedRow`): a throw
- * there would land in the session, not in the body.
+ * The code under test drops what an ended row's session publishes or sets (`fromEndedRow`), and
+ * `recordingFetch` refuses its fetches; that refusal lands in the session as a failed request, not
+ * in the body.
  */
 function stillOn(ownRow: () => boolean, what: string): void {
   if (!ownRow()) throw new Error(`stopped ${what}: the row ended`);
@@ -302,8 +303,9 @@ function stillOn(ownRow: () => boolean, what: string): void {
  * boots runs in that row's scope, so what it goes on to do (a delivery, a person's `!command` and
  * its answer) carries the row that booted it. Bun fails a row at its timeout and starts the next
  * while that row's session still runs (bun kills the row's dangling child, and the command it was
- * running then answers), so what such a session writes afterwards, a reply on Dispatch or a frame
- * on NATS, is dropped rather than read as the next row's.
+ * running then answers), so a frame such a session writes afterwards on NATS is dropped, and a
+ * request it sends through `globalThis.fetch` is refused (`recordingFetch`), rather than read as
+ * the next row's.
  */
 function fromEndedRow(): boolean {
   return !rowCheck()();
@@ -1566,9 +1568,10 @@ async function bootDirectSession(
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
       // that read answers it itself, and every other call is recorded and refused, so a
-      // read-back would keep the card. Such a call from a session whose row has ended
-      // (`fromEndedRow`), its reply to a command that ran on past the row, is answered as Dispatch
-      // answers a reply and recorded nowhere: it is that row's, not this one's.
+      // read-back would keep the card. `recordingFetch` refuses a call from a session whose row
+      // has ended (`fromEndedRow`); one that reaches this stub anyway, handed on by a row's
+      // wrapper after an `await` in which its row ended, is answered as Dispatch answers a reply
+      // and recorded nowhere: it is that row's, not this one's.
       if (fromEndedRow()) return new Response(JSON.stringify({}), { status: 201 });
       posts.push(`${init?.method ?? "GET"} ${url.pathname}`);
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/reply")) {
