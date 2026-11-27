@@ -9,6 +9,7 @@ import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type * as headsModule from "./heads-world";
+import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
 import { RIG_WORLD } from "./rig-world";
 import { TestHandoff } from "./score";
 import { fileRowLimit } from "./test-limit";
@@ -225,12 +226,10 @@ test("architect-pass-and-fail: k1 serves R1, its words are R1's, and its run mat
     writeFileSync(path.join(dir, "docs/usage.md"), text);
     return Bun.spawnSync(["bash", "-c", run], { cwd: dir }).stdout.toString().trim();
   };
-  // The fixture's page (rig.sh heads_fixture), and a line that names the CLI but not R1.
-  expect(
-    grep(
-      "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n"
-    )
-  ).toBe("1");
+  // Each page heads-issue gives a head (rig.sh heads_fixture writes the fixture's), and a line that
+  // names the CLI but not R1.
+  for (const page of [heads.USAGE_PAGE, heads.USAGE_PAGE_LISTED, heads.USAGE_PAGE_COMPLETE])
+    expect(grep(page)).toBe("1");
   expect(grep("# Usage\n\nThe widgets CLI has commands.\n")).toBe("0");
 });
 
@@ -335,6 +334,58 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
   }
 });
 
+// Catches: a job's log at one head that describes a page only another head carries. In the
+// ci-check-fail-other-head worlds k2's job fails at #703's head, with the log that says the page
+// names 3 of the 4 commands `widgets --help` lists and leaves out export, and passes at #702's. With
+// no page at #703, that log described #702's page, which the job at #702 had passed: a role that
+// read the log could fairly say #702's page leaves out export. Each head's page carries what the
+// job at that head reports: #703's names the log's three and not export, and #702's names every
+// command the log lists.
+test("ci-check-fail-other-head: each head's page carries what k2's job at that head reports", async () => {
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
+  // The world's one log, the failed job's: the commands `widgets --help` lists, and the one the
+  // page it read leaves out.
+  const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
+  const listed = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "").split(", ");
+  const missing = /The page leaves out (\w+)\./.exec(log)?.[1] ?? "";
+  expect({ listed, missing }).toEqual({ listed: ["add", "export", "list", "remove"], missing: "export" });
+  const jobs = Object.values(RIG_WORLD.ciJobs);
+  for (const scenario of ["reviewer-own-head", "architect-pass-and-fail"]) {
+    const { calls, fixture } = await world("ci-check-fail-other-head", scenario);
+    const seed = calls.filter((call) => call.path === "/__fixture/repos").at(-1)?.body[
+      "example/widgets"
+    ] as { check_runs: Record<string, { id: number; conclusion: string | null }[]> };
+    const pages: Record<string, unknown> = { "702": fixture.page, "703": fixture.page703 };
+    const read: Record<string, unknown> = {};
+    for (const [pr, head] of [
+      ["702", "a".repeat(40)],
+      ["703", "b".repeat(40)],
+    ] as const) {
+      const run = seed.check_runs[head]?.[0];
+      const job = jobs.find((each) => each.checkRun === run?.id);
+      if (run === undefined || job === undefined) throw new Error(`no job of k2 at #${pr}'s head`);
+      const page = String(pages[pr] ?? "");
+      read[pr] = {
+        conclusion: run.conclusion,
+        log: job.log ?? "",
+        named: listed.filter((command) => page.includes(`\`${command}\``)),
+      };
+    }
+    // #702: the job passed, with no log, on a page that names every command `widgets --help`
+    // lists. #703: the job failed, its log the world's one, on a page that names what the log says.
+    expect(read).toEqual({
+      "702": { conclusion: "success", log: "", named: listed },
+      "703": {
+        conclusion: "failure",
+        log,
+        named: listed.filter((command) => command !== missing),
+      },
+    });
+  }
+});
+
 // Catches: an R1 that asks less of the page than the check beside it. In the worlds that hold k2
 // or k3, that check asks the page to list each command the CLI lists, and R1 asked only that the
 // page name `widgets --help`. A reviewer or an architect could then read the failing job as asking
@@ -374,6 +425,62 @@ test("the worlds that hold k2 or k3: R1 asks what that check asks of the page", 
   expect(r1Of(String(calls.find((call) => call.path === "/api/v1/issues")?.body.spec))).toBe(
     "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue."
   );
+});
+
+// Catches: a page that names commands in a world whose R1 asks for none, as the shared page did in
+// every world with neither k2 nor k3, where nothing names a command; and a page that names none
+// where R1 asks for them and the failed job's log names them. One flag chooses R1 and the page, so
+// in every world of heads-scenarios.txt the page lists commands exactly where the document holds
+// k2 or k3 and R1 asks for the list; elsewhere it is the page that names none, and only the two
+// worlds of the other head give #703 a page.
+test("every heads world: the page lists commands exactly where R1 asks for them", async () => {
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
+  const commands = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "").split(", ");
+  expect(commands).toEqual(["add", "export", "list", "remove"]);
+  const listing: string[] = [];
+  const twoPages: string[] = [];
+  const worlds: string[] = [];
+  for (const scenarioName of HEADS_SCENARIOS)
+    for (const which of headsCases(scenarioName)) {
+      const scenario = heads.headsWorld(scenarioName, which === "" ? undefined : which);
+      if (scenario === undefined) throw new Error(`no world of ${scenarioName} ${which}`);
+      const calls = stubFetch();
+      const file = path.join(dirOf(`page-${scenario}`), "fixture.json");
+      await heads.headsIssue(file, scenario);
+      const spec = String(calls.find((call) => call.path === "/api/v1/issues")?.body.spec);
+      const content = String(calls.find((call) => call.path.endsWith("/artifacts"))?.body.content);
+      const ciCheck = /:::check\{#k[23] /.test(content);
+      const r1 = spec.split("\n").find((line) => line.startsWith("**R1.**")) ?? "";
+      const { page = "", page703 } = JSON.parse(readFileSync(file, "utf8")) as {
+        page?: string;
+        page703?: string;
+      };
+      expect({
+        scenario,
+        namesCommands: commands.some((command) => page.includes(`\`${command}\``)),
+        asksForTheList: r1.includes("lists each command it lists"),
+      }).toEqual({ scenario, namesCommands: ciCheck, asksForTheList: ciCheck });
+      if (!ciCheck) expect({ scenario, page }).toEqual({ scenario, page: heads.USAGE_PAGE });
+      worlds.push(scenario);
+      if (ciCheck) listing.push(scenario);
+      if (page703 !== undefined) twoPages.push(scenario);
+    }
+  // The catalog's 19 worlds were read, and the six of k2 or k3 are the ones whose page lists.
+  expect(worlds).toHaveLength(19);
+  expect(listing.toSorted()).toEqual([
+    "architect-pass-and-fail-ci-check-fail",
+    "architect-pass-and-fail-ci-check-fail-other-head",
+    "ci-check-fail",
+    "ci-check-fail-other-head",
+    "tester-reads-no-ci-ci-late",
+    "tester-reads-no-ci-ci-red",
+  ]);
+  expect(twoPages.toSorted()).toEqual([
+    "architect-pass-and-fail-ci-check-fail-other-head",
+    "ci-check-fail-other-head",
+  ]);
 });
 
 // Catches: a tester world whose k3 is not CI's (a tester's result of it would then decide it), whose

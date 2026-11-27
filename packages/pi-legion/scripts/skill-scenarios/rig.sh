@@ -2208,26 +2208,35 @@ run_tester_proof() {
 # (worker_key, which seed.ts heads-issue files first): fixture_repo's, and two pull request
 # branches of the issue, legion/<key>-702 and legion/<key>-703, each one docs-only commit on the base,
 # so the reviewer runs no thermonuclear pair. #702 adds docs/usage.md, which the issue's check k1
-# reads; #703 points the README at that page and adds none. Both are pushed, and the workspace is
-# on legion/<key>-702. It writes $R/heads.json, the base revision and each branch's head by pull
-# request number, which seed.ts heads-events reads, and $R/world.json, the world the scorer reads,
-# in worker_fixture's shape, with pr 702 and #702's head.
+# reads, with the page $R/fixture.json names (seed.ts heads-issue chose it beside R1); #703 points
+# the README at that page and adds none, except in the worlds where k2's job fails at #703's head
+# alone: there it adds the page the fixture names for it (page703). Both are pushed, and the
+# workspace is on legion/<key>-702. It writes $R/heads.json, the base revision and each branch's
+# head by pull request number, which seed.ts heads-events reads, and $R/world.json, the world the
+# scorer reads, in worker_fixture's shape, with pr 702 and #702's head.
 heads_fixture() {
-  local pr head base heads='{}'
+  local pr head base heads='{}' message
   fixture_repo "$1" "$2"
   base=$(g rev-parse "$worker_base")
   heads=$(jq -cn --arg base "$base" '{base:$base}')
   g checkout -qb "legion/$worker_key-702" "$worker_base"
   mkdir -p "$R/src/docs"
-  # The page names three of the four commands `widgets --help` lists, which is what the log of the
-  # failed CI job of the ci-check-fail worlds says it names (rig-world.json): the miss is export,
-  # and it shows in that job's log and in the check's state, never in the three-line diff alone.
-  # shellcheck disable=SC2016 # Markdown, written as it stands
-  printf '# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n' >"$R/src/docs/usage.md"
+  # The page seed.ts heads-issue chose beside R1 (heads-world.ts USAGE_PAGE and the pages beside
+  # it): it names commands only in the worlds whose R1 asks for them and whose CI check's log
+  # names them.
+  jq -ej .page "$R/fixture.json" >"$R/src/docs/usage.md"
   g add -A && g commit -qm "docs: the usage page of the widgets CLI ($worker_key)"
   g checkout -qb "legion/$worker_key-703" "$worker_base"
   printf '\nUsage: see docs/usage.md.\n' >>"$R/src/README.md"
-  g add -A && g commit -qm "docs: point the README at the usage page ($worker_key)"
+  message="docs: point the README at the usage page ($worker_key)"
+  # Where k2's job fails at #703's head alone, #703 adds the page that job's log describes, so the
+  # log names the page of the head it is served at.
+  if jq -e 'has("page703")' "$R/fixture.json" >/dev/null; then
+    mkdir -p "$R/src/docs"
+    jq -ej .page703 "$R/fixture.json" >"$R/src/docs/usage.md"
+    message="docs: the usage page of the widgets CLI, and the README's pointer to it ($worker_key)"
+  fi
+  g add -A && g commit -qm "$message"
   for pr in 702 703; do
     head=$(g rev-parse "legion/$worker_key-$pr")
     g push -q "$R/remote.git" "legion/$worker_key-$pr"

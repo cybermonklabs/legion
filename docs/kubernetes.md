@@ -3279,7 +3279,7 @@ commit;
 SQL
 ```
 
-The earlier release names none of the three tables and not the column, so this second transaction is owed to the roll-forward alone: its first catch-up of each issue reads the event log from the start again and applies each state event in it, whether or not `processed_events`, which the way back leaves standing, records the event, so each state event this release held before the rollback is held again, and each one the earlier release took as no fact is held as well.
+The earlier release names none of the three tables and not the column, so this third transaction is owed to the roll-forward alone: its first catch-up of each issue reads the event log from the start again and applies each state event in it, whether or not `processed_events`, which the way back leaves standing, records the event, so each state event this release held before the rollback is held again, and each one the earlier release took as no fact is held as well.
 
 #### Rolling back the release that holds a parent's start while a child of it is open
 

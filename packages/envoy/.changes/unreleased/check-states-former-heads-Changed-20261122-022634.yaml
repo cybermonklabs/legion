@@ -139,7 +139,7 @@ body: |-
     the time it was recorded, a result first at an equal time; so a close and a reopen that a writer
     of the release before makes between the two migrations end the lifecycle as a close after them
     does; no time GitHub gave (`pull_request_heads.event_at`) orders anything, so a result from
-    before the close never crosses a reopen, and a result recorded while the pull request was
+    before the close never crosses a reopen as a candidate, and a result recorded while the pull request was
     closed counts after it reopens where it was recorded after the install or after a close
     Dispatch recorded, while where the period began undated every result recorded before the
     install stays out, and its head waits for a new result; and
@@ -147,8 +147,11 @@ body: |-
     (`pull_request_former_heads_results`), the install gives each result recorded before it its
     place in that order, and a result's commit becomes a candidate only where a
     result there was recorded after the last close, or, with no place yet, where no close
-    is known, so a reopen never brings back a result or a head of the lifecycle its close ended,
-    however healthy the read of the commits, while a result recorded since the close, and a head the
+    is known, so a reopen never makes a result of the lifecycle its close ended a candidate, nor
+    brings back a head of it, however healthy the read of the commits; the rule covers candidate
+    commits alone, so a head the reopened pull request stands at, never a candidate, keeps every
+    result recorded there, and a pull request reopened with no push keeps the results of the head
+    it closed at, a pass from before the close among them; a result recorded since the close, and a head the
     reopened pull request visits, count in the new lifecycle, in whatever order the close, the
     result and a move commit and are applied: a close applied after a result at a commit the
     history already held, or a move on from a head reached before the close, leaves that commit

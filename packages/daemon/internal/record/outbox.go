@@ -1734,14 +1734,15 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
 //
 // A CI message carries what its body names as fields too, written from the one value the body is
-// written from, so a role reads each as a value and not only inside a sentence: a settlement's
-// message (workflow's settlementMessage) names the pull request, the head the settlement stands
-// for, each check as name=word in name order (Checks) and each commit status as context=state in
-// context order (Statuses); the implementer's message of a failed CI job (workflow's
-// ciFailureMessage) names the pull request, the head, the check and its job's case. No other
-// message carries them. A release before these keys decodes a role message strictly
-// (DisallowUnknownFields), so the way back of 20261126110301_phase_verdict_gone deletes them from
-// each queued role message before that release boots.
+// written from: a settlement's message (workflow's settlementMessage) names the pull request, the
+// head the settlement stands for, each check as name=word in name order (Checks) and each commit
+// status as context=state in context order (Statuses); the implementer's message of a failed CI
+// job (workflow's ciFailureMessage) names the pull request, the head, the check and its job's
+// case. The fields are on the outbox row for tests and operators, who read each as a value; the
+// executor (internal/daemon's outbox.roleMessage) publishes Body alone, so a role reads them only
+// inside its sentence. No other message carries them. A release before these keys decodes a role
+// message strictly (DisallowUnknownFields), so the way back of 20261126110301_phase_verdict_gone
+// deletes them from each queued role message before that release boots.
 type RoleMessage struct {
 	Role        string   `json:"role"`
 	Body        string   `json:"body"`

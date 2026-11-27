@@ -1479,9 +1479,9 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
 });
 
 // The checking role's report carries no commit (the look pushed nothing) and a verdict the
-// daemon holds to pass, pending or fail; a phase completion keeps its commit and, from contract
-// 225, carries the empty verdict. A pending report names when the agent asks to be woken for its
-// next look, an offset timestamp.
+// daemon holds to pass, pending or fail; a phase completion keeps its commit and, from the
+// contract of the entry `20261125203834` check-states, carries the empty verdict. A pending report
+// names when the agent asks to be woken for its next look, an offset timestamp.
 test("a check report is a completion without a commit", () => {
   const report = { grantId: "grant-207", summary: "Driven in production." };
   for (const verdict of ["pass", "pending", "fail"]) {
@@ -1626,10 +1626,10 @@ test("the request schema takes exactly the ratings the daemon takes", () => {
 });
 
 // Contract 219: a tester's completion names the step its task returns to, `returnTo`, by its place
-// in the task, 1 for its first, and carries no verdict (contract 221), since the check states
-// decide whether the testing step failed. A completion naming a verdict names no returnTo
-// (RETURN_TO_NEEDS_FAIL, VERDICT_NOT_TAKEN), and a place below 1 is none (INVALID_RETURN_TO). A
-// completion that names none stays what it was.
+// in the task, 1 for its first, and carries no verdict (the contract of the entry `20261125203834`
+// check-states), since the check states decide whether the testing step failed. A completion
+// naming a verdict names no returnTo (RETURN_TO_NEEDS_FAIL, VERDICT_NOT_TAKEN), and a place below
+// 1 is none (INVALID_RETURN_TO). A completion that names none stays what it was.
 test("a tester's completion names the step its task returns to, with no verdict", () => {
   const tested = { grantId: "g", summary: "s", verdict: "", returnTo: 2 };
   expect(LegionHandoffCompleteRequest.parse(tested)).toEqual(tested);
