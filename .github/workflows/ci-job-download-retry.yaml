@@ -15,8 +15,8 @@ name: CI job download-retry
 # download_retry_images), so each lane runs on exactly the changes its own filter selects, once
 # the caller runs; the two images jobs are one lane and read the one input. A job of a called
 # workflow cannot read `needs.changes.outputs.<name>`, so each is an input here. The two lanes
-# share one ci.yaml job, and so one call, because ci.yaml calls as many reusable workflows as
-# .github/scripts/check-workflow-files.sh allows it already.
+# share one ci.yaml job, and so one call, because ci.yaml already calls close to as many unique
+# reusable workflows as `.github/scripts/check-workflow-files.sh#CALL_LIMIT` allows.
 #
 # The split is for the filters. Each lane's filter names this file beside ci.yaml, so a change to
 # these steps selects these three jobs alone, where a change to ci.yaml selects every job.

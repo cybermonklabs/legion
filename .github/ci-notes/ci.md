@@ -2428,7 +2428,7 @@ call ci-job-envoy-infra-go.yaml, envoy-go-checks and envoy-go-build call
 ci-job-envoy-go-checks.yaml,
 and envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
 ci-job-envoy-e2e-local.yaml: a file of envoy-go-build's own, as main's #5175 first gave it,
-would spend one of the few calls left under that limit. Such a file holds one job per caller
+would spend a call under that limit. Such a file holds one job per caller
 and takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
 caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
 id. A call runs the one job named for its caller, and the other reads `skipped` under it.
@@ -3825,8 +3825,9 @@ The two lanes' filters together, through their anchors, as the test filter names
 steps' filters: ci.yaml's download-retry job runs both lanes, each behind an input its own filter's
 output fills, so the job runs whenever either lane's filter matched and each lane runs only when its
 own did. The two lanes are one ci.yaml job, and so one call of a reusable workflow, because
-ci.yaml calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
-already.
+ci.yaml already calls close to as many unique reusable workflows as
+`.github/scripts/check-workflow-files.sh#CALL_LIMIT` allows
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 
 ## The three jobs that prove the retries, and why none runs in a merge group
 

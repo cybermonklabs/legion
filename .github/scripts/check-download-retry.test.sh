@@ -15745,8 +15745,10 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # that runs each word xargs reads, and a long option whose value is a word of its own before that
 # shell. Until round 74 each such option was stepped past as one taking no value, so `1` read as
 # the command xargs runs: both shells passed, and the program was refused as an argument of `1`.
-# Now the option's refusal stands alone, citing round 74 in its own sentence: until round 75 the
-# program was refused a second time, as an argument of `xargs` (dispatch://INFRA-1545, round 75).
+# Now the program is an argument of `xargs`, the one place this check reads it in after an option
+# it does not read, and it is refused as that argument beside the option's own refusal: inside a
+# probe, where odd_command does not run, that is the one refusal (r76 probe below;
+# dispatch://INFRA-1545, round 76).
 # The same options as words of their own are read: the program, whose first line names python3,
 # passes, and the shell is refused for the run it makes, which the gate read before round 74 too.
 # Each refusal row is checked by its line, the program it names and the option, never by the
@@ -15784,14 +15786,52 @@ for refusal in "8	-rn" "10	-rn" "12	--max-args"; do
     "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" "\`$option\`" \
       'round 74' --not 'round 37' 'round 38')"
 done
-check "refuses the program at line 8 in no refusal of its own: the option's refusal stands alone" \
-  "$(is "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' \
-    '`.github/scripts/zz-r74.py`')" false)"
+check "refuses the program at line 8 as an argument of xargs, not of the option's value" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' \
+    '`.github/scripts/zz-r74.py`' '`xargs`' --not '`-rn`' '`1`')"
 check "passes the program after the options written as words of their own, at line 14" \
   "$(is "$(contains "$out" 'case.yaml,line=14::')" false)"
 check "reads the shell after the options written as words of their own, and refuses its run at line 16" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=16::' '`xargs`' '`bash`')"
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# R76 probe. Inside a probe, a call whose own failure is consumed as its answer, odd_command does
+# not run, so an option of xargs that xargs_command does not read is not refused there by name,
+# and the program after it, refused as an argument of `xargs`, is the one refusal that stands
+# (dispatch://INFRA-1545, round 76): review 6091086637's drive, an executable file with no `#!`
+# line that curls, which xargs runs through /bin/sh, passed at 7f4aa076, where that refusal was
+# dropped for every such xargs. The control writes the same options as words of their own, and
+# the file is refused as the command word xargs runs, with no `#!` line. Each refusal row is
+# checked by its line, the file it names and the place it is in, and the first fails where the
+# words after an unread option of xargs are read no further.
+echo "case: r76 a literal program after an option of xargs this check does not read is refused inside a probe, as an argument of xargs"
+root=$(fixture r76-xargs-probe)
+printf 'curl -fsSL -o a https://example.com/a\n' > "$root/.github/scripts/zz-fetch.py"
+chmod +x "$root/.github/scripts/zz-fetch.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A cluster before a literal program in a probe
+        run: found=$(printf 'a\n' | xargs -rn 1 .github/scripts/zz-fetch.py 2>/dev/null || true)
+      - name: Separate options before a literal program in a probe
+        run: found=$(printf 'a\n' | xargs -r -n 1 .github/scripts/zz-fetch.py 2>/dev/null || true)
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses zz-fetch.py at line 8 as an argument of xargs, not of the option's value, naming the step and the job" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' \
+    'A cluster before a literal program in a probe' build '`.github/scripts/zz-fetch.py`' \
+    'as an argument of `xargs`' --not '`-rn`' '`1`')"
+check "refuses zz-fetch.py at line 10 as the command word xargs runs, with no #! line, naming the step and the job" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=10::' \
+    'Separate options before a literal program in a probe' build '`.github/scripts/zz-fetch.py`' \
+    'as a command word' '#!' --not 'as an argument of `xargs`')"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 
 # R74 class. The other readings that stepped past an option they did not know before the command,
 # the operand or the interpreter they look for fail closed the same way, each refused by name

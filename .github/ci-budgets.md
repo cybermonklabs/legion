@@ -52,7 +52,7 @@ download-retry runs each of those sites — a curl of a release asset, install-o
 — behind .github/scripts/ci-fault-proxy.py, once with the proxy refusing for 60 s and then serving, where every site must recover, and once with it accepting the connection and sending nothing, where every site must end at its own bound instead of hanging;
 download-retry-images and download-retry-images-worker do the same for the inline retries of the four Dockerfiles, the worker image's in the second job, which runs it five times as the five runs of one matrix, and the other three in the first, which builds the browser image twice.
 The lanes are one ci.yaml job, gated on the download_retry filter, which is both lanes' filters together, and each lane is gated in that file on an input its caller fills from its own filter's output, download_retry_sites or download_retry_images, so each lane runs on exactly the changes its own filter selects:
-ci.yaml calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it, and a call of a file of each lane's own would be one more.
+ci.yaml already calls close to as many unique reusable workflows as `.github/scripts/check-workflow-files.sh#CALL_LIMIT` allows, and a separate file for each lane would spend another call under that limit.
 Their filters name the retry loop, the fault, the rig and the composite actions or Dockerfiles whose own downloads run under that fault, and nothing those downloads read:
 a manifest, a lockfile, a pin or a module file moves what comes down the wire, not whether it survives a faulting host, so a change that touches none of those files selects neither lane.
 So the download_retry_sites filter holds no bun_install and no go_workspace anchor, no pin and no worker Dockerfile:

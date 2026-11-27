@@ -149,11 +149,9 @@
 #      top-level files and their bytecode among them, in a form unread_named reads, is refused
 #      by name at its
 #      command wherever it is written but in the places WHAT IT READS lists, which are every
-#      place this tree writes one, and in an `xargs` command writing an option xargs_command
-#      does not read, which is refused for that option alone (odd_command; round 75), so every
-#      route from such a file to a shell through a word of that form, the ones round 38 found and
-#      the ones it did not, is refused by its place rather than by its shape (unread_uses); a
-#      pattern naming one is read as the reach below reads it.
+#      place this tree writes one, so every route from such a file to a shell through a word of
+#      that form, the ones round 38 found and the ones it did not, is refused by its place rather
+#      than by its shape (unread_uses); a pattern naming one is read as the reach below reads it.
 #      Such a file is named by
 #      its path from the repository's root, and where a `cd` or a `pushd` in the text, or a
 #      `working-directory` the step or its job's or workflow's defaults set, may move the shell
@@ -533,14 +531,16 @@
 #   - an option of a wrapper this check drops (PASSTHROUGH) other than those WRAPPER_OPTIONS
 #     reads, `env -S` among them, and `busybox` as a command word with any program after it
 #     (`busybox --help`, `--list` and `--list-full` run no program and pass), whatever the
-#     command holds, at a top-level command of a step, of a composite action's step, of a
-#     script, of the text of a shell's `-c` where that shell is the command once the wrappers
-#     this check drops are gone, and of a Dockerfile RUN, but not in a probe, a call whose own
-#     failure is consumed as its answer (THREE SCOPINGS OF THE SUBJECT below): this check reads
-#     no fetch and no run of a script after either, and until
-#     round 38 it read the option, or `busybox`, as the program that runs and so the fetch behind
-#     it as none (odd_command; dispatch://INFRA-1545, round 38); a wrapper is read by its name
-#     whatever directory names it, so `/usr/bin/env -S` is `env -S` (program_name; round 42);
+#     command holds, at each command sites_of reads in a step, a composite action's step, a
+#     script, the text of a shell's `-c` where that shell is the command once the wrappers this
+#     check drops are gone, and a Dockerfile RUN, a nested one among them, inside a `$( … )`, a
+#     subshell, a function's body, a loop's body or an `if`, in a `trap`'s action and in
+#     `eval`'s text, but not inside a probe, a call whose own failure is consumed as its answer
+#     (probe_spans, THREE SCOPINGS OF THE SUBJECT below; dispatch://INFRA-1545, round 76): this
+#     check reads no fetch and no run of a script after either, and until round 38 it read the
+#     option, or `busybox`, as the program that runs and so the fetch behind it as none
+#     (odd_command; dispatch://INFRA-1545, round 38); a wrapper is read by its name whatever
+#     directory names it, so `/usr/bin/env -S` is `env -S` (program_name; round 42);
 #   - an option of `timeout` other than those TIMEOUT_OPTIONS and TIMEOUT_JOINED read, `--kill 5`
 #     or `-vk 5` among them; an option of `xargs` other than those XARGS_OPTIONS and
 #     XARGS_PLACEHOLDERS read, `-rn 1` or `--max-args 1` among them; and a shell's group of short
@@ -555,25 +555,31 @@
 #   - an option before the subcommand of a tool SUBCOMMAND_TOOLS names, or before the program a
 #     package runner runs, other than those LEADING_OPTIONS reads for that tool, `go -C=dir mod
 #     download`, `docker --config <dir> pull` and `bunx --bun playwright install` among them,
-#     whatever the command holds, at the same commands, at a call that hands its words to a loop
-#     (unread_in), and at a top-level command of the body of a heredoc something may run
-#     (unread_heredocs): this check cannot tell the subcommand from the option's value after
-#     one. Until round 74 each verb took the first word that is no option as its subcommand, so
-#     `docker --config dir pull` read `dir` as the subcommand and its pull as no fetch, go
-#     stepped past `-C <dir>` alone, and a runner's option read as the program it runs
-#     (leading_options, unread_option, odd_command; round 74). The table reads `go -C <dir>` and
-#     the `bun --revision` query. An option of env is read at one more place, the `#!` line of
-#     a file directly in .github/scripts/ of a suffix SCRIPT_DATA names, or of Python's bytecode
-#     for one, where an option of env that interpreter_of does not read is refused by name
-#     (round 74). Every other place one of these options may stand is a stated limit under
+#     whatever the command holds, at the same commands, at a call among them that hands its
+#     words to a loop (unread_in), and at each command of the body of a heredoc something may
+#     run, a nested one and one inside a probe among them, but not one in the text of a shell's
+#     `-c` there (unread_heredocs, body_loops.commands; round 76): this check cannot tell the
+#     subcommand from the option's value after one. Until round 74 each verb took the first word
+#     that is no option as its subcommand, so `docker --config dir pull` read `dir` as the
+#     subcommand and its pull as no fetch, go stepped past `-C <dir>` alone, and a runner's
+#     option read as the program it runs (leading_options, unread_option, odd_command; round
+#     74). The table reads `go -C <dir>` and the `bun --revision` query. An option of env is
+#     read at one more place, the `#!` line of a file directly in .github/scripts/ of a suffix
+#     SCRIPT_DATA names, or of Python's bytecode for one, where an option of env that
+#     interpreter_of does not read is refused by name (round 74). Every other place one of these
+#     options may stand is a stated limit under
 #     dispatch://INFRA-1310/artifact/decisions-md, "The download gate's reach ends at the forms
 #     the tree writes", recorded in dispatch://INFRA-1545/artifact/r37-accepted-refusals-md
-#     (dispatch://INFRA-1545, round 75): an option of a wrapper, of `timeout`, of `xargs` or of
-#     a shell, or one before a tool's subcommand, in the command that `xargs` or `find -exec`
-#     runs; an option of a wrapper, of `timeout`, of `xargs` or of a shell in the body of a
-#     heredoc; an option after a `gh` subcommand, which gh_verb_of steps past as one taking no
-#     value; and env's options read in two lists, WRAPPER_OPTIONS["env"] and interpreter_of's
-#     own, each of which fails closed;
+#     (dispatch://INFRA-1545, rounds 75 and 76): an option of a wrapper, of `timeout`, of
+#     `xargs` or of a shell, or one before a tool's subcommand, in the command that `xargs` or
+#     `find -exec` runs; an option of a wrapper, of `timeout`, of `xargs` or of a shell in the
+#     body of a heredoc; an option of a wrapper, of `timeout`, of `xargs` or of a shell in a call
+#     that hands its words to a loop, where the fetch among those words is still read as the
+#     loop's and held to the floor (W-loop-call-wrapper-option); an option before a tool's
+#     subcommand in the text of a shell's `-c` within the body of a heredoc
+#     (W-heredoc-shell-c-leading-option); an option after a `gh` subcommand, which gh_verb_of
+#     steps past as one taking no value; and env's options read in two lists,
+#     WRAPPER_OPTIONS["env"] and interpreter_of's own, each of which fails closed;
 #   - a setting that changes how bash expands a word, a `shopt`, a `set`, a shell's options, a
 #     variable such as GLOBIGNORE, BASH_ENV or ENV, an `env:` or a `shell:`, written in a step, a
 #     composite action, a script, or the text of a shell's `-c` or a `trap`'s action where that
@@ -730,17 +736,13 @@
 #     `go -C packages/envoy/infra test` whose module `go.work` does not bind;
 #   - commands outside its pattern that fetch, among them `go list -deps`, `go mod tidy`, `go get`
 #     and `go list -m all`. `go -C=dir build` was one until round 74, and is now refused by name,
-#     since LEADING_OPTIONS reads `-C` only as a word of its own, at the places rule 8 refuses an
-#     option before a tool's subcommand (odd_command; dispatch://INFRA-1545, round 74): a
-#     top-level command of a step, of a composite action's step, of a script, of the text of a
-#     shell's `-c` where that shell is the command once the wrappers are gone, and of a Dockerfile
-#     RUN, a call that hands its words to a loop, and a top-level command of the body of a
-#     heredoc something may run. In the command that `xargs` or `find -exec` runs it is still
-#     one, a stated limit under dispatch://INFRA-1310/artifact/decisions-md, recorded in
-#     dispatch://INFRA-1545/artifact/r37-accepted-refusals-md (round 75). `go generate` is not
-#     one: driven at this head in packages/envoy with an empty module cache and GOPROXY=off,
-#     `go generate -n ./...` exits 0, while `go list -deps ./cmd/dispatch` fails `module lookup
-#     disabled by GOPROXY=off`. Only a command a `//go:generate` directive runs can fetch.
+#     since LEADING_OPTIONS reads `-C` only as a word of its own, at the places the header's list
+#     of shapes REFUSED BY NAME gives for an option before a tool's subcommand (odd_command;
+#     dispatch://INFRA-1545, round 74); at each place that list calls a stated limit it is still
+#     one (dispatch://INFRA-1545, rounds 75 and 76). `go generate` is not one: driven at this
+#     head in packages/envoy with an empty module cache and GOPROXY=off, `go generate -n ./...`
+#     exits 0, while `go list -deps ./cmd/dispatch` fails `module lookup disabled by
+#     GOPROXY=off`. Only a command a `//go:generate` directive runs can fetch.
 #   - `go install` and `go run` of a `module@version`, which build from THAT module's own go.mod
 #     and read no go.work at all, so a job's workspace `go mod download` covers none of what
 #     they fetch: each such call is a download site of its own. They are retried where they are
@@ -8463,9 +8465,7 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
     there is, and a word between xargs and it as one in the words before its command. Until the
     forward merge of main's #5583, whose document-service legs write `… | xargs -r env GODEBUG=…
     RACE_MEM_LIMIT_KB=… ../../.github/scripts/race_memory.py go test …`, such a file was read as
-    an argument of `xargs`. The one command not read is an `xargs` that writes an option
-    xargs_command does not read: odd_command refuses that option by name whatever the command
-    holds, and that refusal stands alone (dispatch://INFRA-1545, round 75)."""
+    an argument of `xargs`."""
     scanner = CallScanner(first_line)
     commands = scanner.scan(text)
     elsewhere = elsewhere or any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
@@ -8479,14 +8479,11 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
         start = len(words) - len(reduced)
         if reduced and program_name(reduced[0]) == "xargs":
             # After an option xargs_command does not read, the command xargs runs is not read,
-            # and odd_command refuses the option by name whatever the command holds, so the
-            # command is read no further here: until round 75 each word after `xargs` was read as
-            # one of its arguments, and a file there was refused a second time, as an argument of
-            # `xargs` (dispatch://INFRA-1545, rounds 74 and 75).
+            # and every word after `xargs` is one of its arguments: outside probes odd_command
+            # also refuses the option by name, and inside a probe this refusal stands alone
+            # (dispatch://INFRA-1545, rounds 74 and 76).
             at, _placeholder, unread = xargs_command(reduced)
-            if unread is not None:
-                continue
-            handed = reduce_words(reduced[at:])[0]
+            handed = reduce_words(reduced[at:])[0] if unread is None else []
             if handed:
                 start = len(words) - len(handed)
         for at, word in [*enumerate(words), *((None, word) for word in command.redirected)]:
