@@ -4,17 +4,18 @@ import { useFootInset } from "../hooks/useFootInset";
 
 interface FootFloatProps {
   readonly active?: boolean;
+  readonly boxHeight?: number;
   readonly height?: number;
   readonly style?: CSSProperties;
   readonly testId?: string;
 }
 
-/** A float of the foot's status layer, as Pending changes is (`hooks/useFootInset.ts`), with a box
- *  48 px tall at the window's foot, given to it as it is drawn since happy-dom lays nothing out:
- *  while it has a box, a change of the foot's page elements, the bar's going among them, asks for
- *  the foot's pass at the next frame. */
+/** A float of the foot's status layer, as Pending changes is (`hooks/useFootInset.ts`).
+ *  happy-dom lays nothing out, so the test gives the float a box 48 px tall at the window's
+ *  foot by default. Set `boxHeight` to 0 to remove the box without unmounting the float. */
 export function FootFloat({
   active = true,
+  boxHeight = 48,
   height = window.innerHeight,
   style,
   testId = "foot-float",
@@ -27,7 +28,8 @@ export function FootFloat({
       ref={(node) => {
         ref.current = node;
         if (node !== null) {
-          node.getBoundingClientRect = () => new DOMRect(600, height - 64, 300, 48);
+          node.getBoundingClientRect = () =>
+            new DOMRect(600, height - 16 - boxHeight, 300, boxHeight);
         }
       }}
       style={style}
