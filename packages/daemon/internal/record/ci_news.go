@@ -348,6 +348,7 @@ type BesideBranchesDelete struct {
 	Generation uint64 `json:"generation"`
 	Task       string `json:"task"`
 	Through    int    `json:"through"`
+	Fix        int    `json:"fix,omitempty"`
 }
 
 func (BesideBranchesDelete) OutboxKind() OutboxKind { return OutboxKindBesideBranchesDelete }
