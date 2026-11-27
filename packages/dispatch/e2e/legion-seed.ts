@@ -25,6 +25,13 @@ export async function seedLegionProject(project: RowKey): Promise<void> {
  *  list shows it and its Remove has a row to take away. */
 export async function seedLegionDaemon(project: RowKey, stateUrl: string): Promise<void> {
   await seedLegionProject(project);
+  await nameLegionDaemon(project, stateUrl);
+}
+
+/** Names `project`'s daemon at `stateUrl`: the `legion_settings` row a naming leaves, for a
+ *  project the row made already, by `seedLegionProject` or through the API (`createProject`,
+ *  e2e/api.ts). */
+export async function nameLegionDaemon(project: RowKey, stateUrl: string): Promise<void> {
   await sql(
     `INSERT INTO legion_settings (project, state_url, created_by, updated_at)
        VALUES ('${project}', '${stateUrl}', ${SEED_ACTOR}, now())`

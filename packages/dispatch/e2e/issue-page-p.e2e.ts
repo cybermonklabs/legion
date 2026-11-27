@@ -208,7 +208,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // carries no Approve, and the header holds its limit for that case.
     for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(PHONE_TITLE);
       await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
@@ -255,7 +255,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     let drawnAtDesktop: number | undefined;
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(PHONE_TITLE);
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -559,7 +559,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       await patchIssue(seeded.key, {
         labels: [...TWENTY_LABELS.slice(0, drawnAtDesktop), LONGEST_LABEL],
       });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(
         labelsLeft(page),
@@ -571,7 +571,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       // is drawn: those labels alone, then with one more as wide as the room they leave less 4 px,
       // which the count and its gap would take.
       await patchIssue(seeded.key, { labels: TWENTY_LABELS.slice(0, drawnAtDesktop) });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(headerLabels(page)).toHaveCount(drawnAtDesktop);
       await expect(labelsLeft(page)).toHaveCount(0);
@@ -579,7 +579,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       await patchIssue(seeded.key, {
         labels: [...TWENTY_LABELS.slice(0, drawnAtDesktop), lastThatFits],
       });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(headerLabels(page), "labels that fit draw a count").toHaveText([
         ...TWENTY_LABELS.slice(0, drawnAtDesktop),
@@ -591,14 +591,14 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // An issue whose labels fit draws them all and no count.
     await page.setViewportSize(viewportAt(DESKTOP.width));
     await patchIssue(seeded.key, { labels: ["dispatch"] });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     await expect(headerLabels(page)).toHaveText(["dispatch"]);
     await expect(labelsLeft(page), "a label that fits ends on a count").toHaveCount(0);
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(0);
 
     // A child of the issue, which has no children of its own, draws no children's progress.
-    await gotoIssue(page, `/issues/${seeded.childKeys[0]}`);
+    await gotoIssue(page, `/issues/${seeded.childKeys[0]}/conversation`);
     await expectHeaderDrawn(page);
     await expect(
       issueHeader(page).getByTestId("issue-progress-children"),
@@ -608,7 +608,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // The parent, whose route reaches nobody, draws the header's one marker, after its approval
     // control and before its one label.
     await patchIssue(seeded.parentKey, { labels: ["dispatch"] });
-    await gotoIssue(page, `/issues/${seeded.parentKey}`);
+    await gotoIssue(page, `/issues/${seeded.parentKey}/conversation`);
     await expectHeaderDrawn(page);
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(1);
     await expect(issueHeader(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
@@ -652,7 +652,7 @@ test("the approval entries stay in the header and read the document each step ap
     });
     await reviewArtifact(decisions.artifact.id, { state: "approved" });
     await requestApproval(root.primary_artifact_id ?? "", { summary: "Read it." });
-    await gotoIssue(page, `/issues/${root.key}`);
+    await gotoIssue(page, `/issues/${root.key}/conversation`);
     await expectHeaderDrawn(page);
     const steps = issueHeader(page).getByTestId("issue-approval-steps");
     await expect
@@ -704,7 +704,7 @@ test("the approval entries stay in the header and read the document each step ap
       name: "verification.md",
     });
     await requestApproval(verification.artifact.id, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${root.key}`);
+    await gotoIssue(page, `/issues/${root.key}/conversation`);
     await expectHeaderDrawn(page);
     for (const action of ["Approve", "Request changes"]) {
       await expect(
@@ -754,7 +754,7 @@ test("the approval entries stay in the header and read the document each step ap
     // approved, of a parent whose spec changed since its approval, and of an approved parent.
     const oneChip = async (
       key: string,
-      open = (opened: string) => gotoIssue(page, `/issues/${opened}`)
+      open = (opened: string) => gotoIssue(page, `/issues/${opened}/conversation`)
     ) => {
       await open(key);
       await expectHeaderDrawn(page);
@@ -798,7 +798,7 @@ test("the approval entries stay in the header and read the document each step ap
 
     // A child with an approval request open answers it from its chip in the header.
     await requestApproval(child.primary_artifact_id ?? "", { summary: "Read it." });
-    await gotoIssue(page, `/issues/${child.key}`);
+    await gotoIssue(page, `/issues/${child.key}/conversation`);
     await expectHeaderDrawn(page);
     await issueHeader(page).getByRole("button", { exact: true, name: "Approve" }).click();
     await expect
@@ -814,7 +814,7 @@ test("the approval entries stay in the header and read the document each step ap
       reason: "Name the rollback path.",
       state: "changes_requested",
     });
-    await gotoIssue(page, `/issues/${plainRoot.key}`);
+    await gotoIssue(page, `/issues/${plainRoot.key}/conversation`);
     await expectHeaderDrawn(page);
     await expect(
       issueHeader(page).getByRole("button", { name: "Changes requested" }),
@@ -852,7 +852,7 @@ test("the header holds its limits when the typeface does not load @phone", async
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
 
     // The page is drawn in the typeface.
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     await expect
       .poll(() => typefaceStatuses(page), {
@@ -883,7 +883,7 @@ test("the header holds its limits when the typeface does not load @phone", async
         }
         for (const width of [DESKTOP.width, IPHONE_13.width]) {
           await page.setViewportSize(viewportAt(width));
-          await gotoIssue(page, `/issues/${seeded.key}`);
+          await gotoIssue(page, `/issues/${seeded.key}/conversation`);
           await expectHeaderDrawn(page);
           await expect(issueHeader(page)).toContainText(PHONE_TITLE);
           await expect
@@ -895,7 +895,7 @@ test("the header holds its limits when the typeface does not load @phone", async
         }
         for (const width of [DESKTOP.width, 1024, IPHONE_13.width, 320]) {
           await without.setViewportSize(viewportAt(width));
-          await gotoIssue(without, `/issues/${seeded.key}`);
+          await gotoIssue(without, `/issues/${seeded.key}/conversation`);
           await expectHeaderDrawn(without);
           await expect(issueHeader(without)).toContainText(PHONE_TITLE);
           await expect
@@ -956,7 +956,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
         ]
       : [[IPHONE_13.width, "tap"]]) as readonly (readonly [number, Press])[]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       // Two questions wait on alice, and the count is a button.
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
@@ -987,7 +987,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
 
       // Back leaves the address.
       await page.goBack();
-      await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+      await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/conversation$`));
     }
 
     // An approval request is all that waits: the count puts the focus on the approval control.
@@ -999,7 +999,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     });
     await requestApproval(lone.primary_artifact_id ?? "", { summary: "Read it." });
     await page.setViewportSize(viewportAt(DESKTOP.width));
-    await gotoIssue(page, `/issues/${lone.key}`);
+    await gotoIssue(page, `/issues/${lone.key}/conversation`);
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
     await press(waitingCount(page), pointer);
@@ -1030,7 +1030,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
       name: "verification.md",
     });
     await requestApproval(verification.artifact.id, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${verifying.key}`);
+    await gotoIssue(page, `/issues/${verifying.key}/conversation`);
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
     await expect(
@@ -1071,7 +1071,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     expect((await getIssue(decided.key)).open_asks ?? [], "an ask of the issue is open").toEqual(
       []
     );
-    await gotoIssue(page, `/issues/${decided.key}`);
+    await gotoIssue(page, `/issues/${decided.key}/conversation`);
     await expectHeaderDrawn(page);
     await expect(waitingCount(page), "a decision on the review list is not counted").toHaveText(
       "Waiting on you (1)"
@@ -1105,10 +1105,10 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
 
       // The agent's question waits on alice, who holds the issue: her count, not bob's. Each
       // absence is read once the header draws the assignee.
-      await gotoIssue(alice, `/issues/${issue.key}`);
+      await gotoIssue(alice, `/issues/${issue.key}/conversation`);
       await expectHeaderDrawn(alice);
       await expect(waitingCount(alice)).toHaveText("Waiting on you (1)");
-      await gotoIssue(bob, `/issues/${issue.key}`);
+      await gotoIssue(bob, `/issues/${issue.key}/conversation`);
       await expectHeaderDrawn(bob);
       await expect(badgeValue(bob, `Assignee of ${issue.key}`)).toHaveText("alice");
       await expect(waitingCount(bob), "a question waiting on alice counts for bob").toHaveCount(0);
@@ -1120,19 +1120,19 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
         { as: "user", login: "bob" }
       );
       expect(await waitingOnPersonOf(bobsQuestion.id)).toBe("alice");
-      await gotoIssue(bob, `/issues/${issue.key}`);
+      await gotoIssue(bob, `/issues/${issue.key}/conversation`);
       await expectHeaderDrawn(bob);
       await expect(badgeValue(bob, `Assignee of ${issue.key}`)).toHaveText("alice");
       await expect(waitingCount(bob), "bob's own question raised bob's count").toHaveCount(0);
-      await gotoIssue(alice, `/issues/${issue.key}`);
+      await gotoIssue(alice, `/issues/${issue.key}/conversation`);
       await expect(waitingCount(alice)).toHaveText("Waiting on you (2)");
 
       // The issue handed to bob: both questions wait on him now, and none on alice.
       await patchIssue(issue.key, { assignee: "bob" });
       expect(await waitingOnPersonOf(asked.id)).toBe("bob");
-      await gotoIssue(bob, `/issues/${issue.key}`);
+      await gotoIssue(bob, `/issues/${issue.key}/conversation`);
       await expect(waitingCount(bob)).toHaveText("Waiting on you (2)");
-      await gotoIssue(alice, `/issues/${issue.key}`);
+      await gotoIssue(alice, `/issues/${issue.key}/conversation`);
       await expectHeaderDrawn(alice);
       await expect(badgeValue(alice, `Assignee of ${issue.key}`)).toHaveText("bob");
       await expect(
@@ -1153,7 +1153,7 @@ test("a press on the status straight out of the title's editor lands on the stat
   browser,
 }) => {
   await phase(browser, seedHeader, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     const edit = editTitleButton(page);
     const editor = issueHeader(page).getByRole("textbox", { name: "Issue title" });
@@ -1273,11 +1273,11 @@ test("the press that ends a title edit reaches the control under it @phone", asy
     for (const width of widths) {
       await page.setViewportSize(viewportAt(width));
       for (const lines of [2, 3]) {
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await gotoIssue(page, `/issues/${seeded.key}/conversation`);
         await expectHeaderDrawn(page);
         const title = await titleOfLines(page, lines);
         await patchIssue(seeded.key, { title });
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await gotoIssue(page, `/issues/${seeded.key}/conversation`);
         await expectHeaderDrawn(page);
         const heading = issueHeader(page).getByRole("heading", { level: 1 });
         await expect(heading).toHaveText(title);
@@ -1304,7 +1304,7 @@ test("the press that ends a title edit reaches the control under it @phone", asy
 
         // The same press on the status, straight out of an edit of the same title, lands too,
         // and the status takes the focus.
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await gotoIssue(page, `/issues/${seeded.key}/conversation`);
         await expectHeaderDrawn(page);
         await editTitleButton(page).click();
         await expect(editor).toBeFocused();
@@ -1357,11 +1357,11 @@ test("the title is clamped again after a key ends an edit whose words the reader
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await page.setViewportSize(viewportAt(DESKTOP.width));
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     const title = await titleOfLines(page, 3);
     await patchIssue(seeded.key, { title });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     const heading = issueHeader(page).getByRole("heading", { level: 1 });
     const editor = issueHeader(page).getByRole("textbox", { name: "Issue title" });
@@ -1424,7 +1424,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
   await phase(browser, seedHeader, async (page, seeded) => {
     const key = seeded.key;
     await page.setViewportSize({ height: 900, width: 1280 });
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectHeaderDrawn(page);
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -1481,7 +1481,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
     await expect.poll(() => getIssue(key)).toMatchObject({ priority: 1 });
     await page.unroute(refused);
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectHeaderDrawn(page);
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -1508,7 +1508,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       "true"
     );
     expect((await pinned).ok()).toBe(true);
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectHeaderDrawn(page);
     await expect(badgeValue(page, `Priority of ${key}`)).toHaveText("P2");
     await expect(header.locator('[data-issue-action="pin"]')).toHaveAttribute(
@@ -1642,7 +1642,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
  *  scrolls it to its top. */
 async function openScrollingPage(page: Page, key: string, width: number): Promise<void> {
   await page.setViewportSize({ height: 420, width });
-  await gotoIssue(page, `/issues/${key}`);
+  await gotoIssue(page, `/issues/${key}/conversation`);
   await expectHeaderDrawn(page);
   // The outline opens with the focus on the first question that waits on the reader and holds
   // that row on screen until the reader acts or the focus leaves it, so the page's
@@ -1803,7 +1803,7 @@ test("the header draws the words of its two counts as a reader reads them @phone
       test.info().project.name !== "iphone" ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width];
     for (const width of widths) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText(/^Waiting on you \(\d+\)$/);
       const count = ((await waitingCount(page).textContent()) ?? "").replace(/\s+/g, " ").trim();
@@ -1906,7 +1906,7 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
           }
           for (const width of widths) {
             await page.setViewportSize(viewportAt(width));
-            await gotoIssue(page, `/issues/${root.key}`);
+            await gotoIssue(page, `/issues/${root.key}/conversation`);
             await expectHeaderDrawn(page);
             await expect(issueHeader(page).getByTestId("issue-approval-steps")).toBeVisible();
             await expect(issueHeader(page).getByTestId("issue-progress-subtree")).toBeVisible();
@@ -1996,7 +1996,7 @@ test("the header holds its 1440 px limit on a root whose project gates two or th
                 await requestApproval(document, { summary: "Read it." });
               }
             }
-            await gotoIssue(page, `/issues/${root.key}`);
+            await gotoIssue(page, `/issues/${root.key}/conversation`);
             await expectHeaderDrawn(page);
             for (const step of root.steps) {
               await expect(
@@ -2056,7 +2056,7 @@ test("the labels' count names every label the line leaves out, at every width of
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     for (const width of [DESKTOP.width, 1024]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(labelsLeft(page)).toBeVisible();
       // The whole walk is one page function, so a step costs its four frames and no round trip of
@@ -2115,7 +2115,7 @@ test("the labels' count names every label the line does not draw whole after the
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: MEASURED_TITLE });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     const address = await typefaceAddress(page);
 
@@ -2131,7 +2131,7 @@ test("the labels' count names every label the line does not draw whole after the
       });
       const swapping = await held.newPage();
       await swapping.setViewportSize(DESKTOP);
-      await gotoIssue(swapping, `/issues/${seeded.key}`);
+      await gotoIssue(swapping, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(swapping);
       await expect(labelsLeft(swapping)).toBeVisible();
       await expect
@@ -2189,7 +2189,7 @@ test("the labels' count names every label the line does not draw whole after the
 test("a focus given back to Edit title opens no editor", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -2237,7 +2237,7 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
   await phase(browser, seedHeader, async (page, seeded) => {
     const key = seeded.key;
     await page.setViewportSize(viewportAt(DESKTOP.width));
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectHeaderDrawn(page);
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -2493,7 +2493,7 @@ test("the header's menu gives the focus back to its control on Escape and after 
     };
     for (const width of [DESKTOP.width, IPHONE_13.width]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expectOpeningLanded(page);
       await focusThePage(page);
@@ -2604,7 +2604,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await page.setViewportSize(IPHONE_13);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -2698,7 +2698,7 @@ test("Details closed after a write removed the labels' count leaves the focus in
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const count = labelsLeft(page);
@@ -2734,7 +2734,7 @@ test("Details closed after a write removed the labels' count while the palette w
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const count = labelsLeft(page);
@@ -2772,7 +2772,7 @@ test("Details closed after a write removed the parent link leaves the focus in t
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const parent = issueHeader(page).getByRole("link", { exact: true, name: seeded.parentKey });
@@ -2806,7 +2806,7 @@ test("Details closed after an answer elsewhere removed Approve leaves the focus 
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -2866,7 +2866,7 @@ test("the approval chip's a approves the document whose request waits, and a els
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     const reviewed = reviewsSent(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -2924,7 +2924,7 @@ test("the approval chip's Shift+R opens Request changes, from the chip and from 
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -2985,7 +2985,7 @@ test("an approval entry's a approves that entry's document and no other", async 
       const reviewed = reviewsSent(page);
       // no opening focus: the seed's spec and Verification document hold no block a row draws,
       // and the issue nothing else, so the outline has no row and the page places no focus.
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       for (const step of ["criteria", "spec"]) {
@@ -3054,7 +3054,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     await expect(
@@ -3166,7 +3166,7 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
       ["the assignee", header.getByRole("combobox", { name: `Assignee of ${key}` })],
     ] as const) {
       await patchIssue(key, { status: "in_progress" });
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       await control.focus();
@@ -3229,7 +3229,7 @@ test("a change request sent from the header leaves the focus in the header", asy
       await requestApproval(seeded.specArtifactId, { summary: "Read it." });
       // no opening focus: `open` presses the control or focuses it before any key (a reader's
       // act or a script's focus), and either ends the page's opening.
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(
         header.getByRole("button", { exact: true, name: "Approve" }),
@@ -3283,7 +3283,7 @@ test("a key typed into Request changes in its first frame presses no Approve beh
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     const reviewed = reviewsSent(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -3331,7 +3331,7 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -3385,7 +3385,7 @@ test("a change request sent from the header's Request changes leaves the focus o
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -3436,7 +3436,7 @@ test("a change request sent after the header's actions went leaves the focus on 
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -3507,7 +3507,7 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     const reviewed = reviewsSent(page);
     const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -3579,7 +3579,7 @@ test("Request changes in its dialog pressed again by Enter before the change req
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
     const reviewed = reviewsSent(page);
     const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -3672,7 +3672,7 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     const clipboard = await holdClipboard(page);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectOpeningLanded(page);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -3774,7 +3774,7 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
         },
       ],
     ] as const) {
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       await expectOpeningLanded(page);
       await expectHeaderDrawn(page);
       // Every write is refused until Retry is pressed; the Retry's write is held open, so the
@@ -3838,7 +3838,7 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
 test("Shift+P pins and unpins and leaves the focus where it was", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
     const pin = header.locator('[data-issue-action="pin"]');
@@ -3892,7 +3892,7 @@ test("an approval entry's a approves its own document when an earlier entry also
       const reviewed = reviewsSent(page);
       // no opening focus: the seed's spec and Verification document hold no block a row draws,
       // and the issue nothing else, so the outline has no row and the page places no focus.
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectHeaderDrawn(page);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       const chip = approvalEntry(page, "spec").locator("[data-approval-artifact]");

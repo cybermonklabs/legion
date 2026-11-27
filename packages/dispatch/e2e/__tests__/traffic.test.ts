@@ -6,8 +6,9 @@
  *  `issue-page-i.e2e.ts [iphone] the children are one group of rows of the outline @phone` timed
  *  out in that wait in merge runs 45607339493 and 45852270285: the page it was leaving sent a read
  *  within 1 ms of the navigation's document request, and Playwright reported neither that read's
- *  end nor its failure. The tracker now drops such reads when the main frame commits the new
- *  document, and only then: a move inside the page, or a navigation that failed, commits nothing.
+ *  end nor its failure. The tracker now drops such reads when the frame that sent them commits a
+ *  new document (a `framenavigated` at the URL of that frame's navigation request), and only then:
+ *  a move inside the page, or a navigation that failed, commits nothing.
  *
  *  Each row fires the events as Playwright would and moves the clock with `setSystemTime`, which
  *  holds `Date.now()` where it is set, so no row waits on the real clock.
@@ -21,8 +22,11 @@ import { watchApiRequests } from "../traffic";
 /** The window `expectLoadSettled` waits for. */
 const QUIET_MS = 1_500;
 
-/** The tracker compares a frame only by identity, so a frame is any object. */
-type StandInFrame = object;
+/** The tracker tells a frame by identity, and a commit from a move inside the page by the frame's
+ *  URL against its navigation request's. */
+interface StandInFrame {
+  url(): string;
+}
 
 /** What the tracker reads of a request. */
 interface StandInRequest {
@@ -32,18 +36,18 @@ interface StandInRequest {
   frame(): StandInFrame;
 }
 
-type PageEvent = "request" | "requestfinished" | "requestfailed" | "framenavigated";
+type PageEvent = "request" | "response" | "requestfinished" | "requestfailed" | "framenavigated";
 type Listener = (argument: StandInRequest | StandInFrame) => void;
 
 /** A page whose events the test fires: it records each listener the tracker adds. */
 function standInPage() {
   const listeners = new Map<PageEvent, Listener[]>();
-  const mainFrame: StandInFrame = {};
+  let address = "http://dispatch.test/issues/LAY-3";
+  const mainFrame: StandInFrame = { url: () => address };
   const page = {
     on(event: PageEvent, listener: Listener) {
       listeners.set(event, [...(listeners.get(event) ?? []), listener]);
     },
-    mainFrame: () => mainFrame,
   };
   const request = (path: string, isNavigation: boolean): StandInRequest => ({
     url: () => `http://dispatch.test${path}`,
@@ -51,13 +55,18 @@ function standInPage() {
     isNavigationRequest: () => isNavigation,
     frame: () => mainFrame,
   });
+  const fire = (event: PageEvent, argument: StandInRequest | StandInFrame) => {
+    for (const listener of listeners.get(event) ?? []) listener(argument);
+  };
   return {
-    // The tracker reads no more of a page than `on` and `mainFrame`, and every request and frame
-    // reaches it through a listener, so this is the one cast to Playwright's types.
+    // The tracker reads no more of a page than `on`, and every request and frame reaches it
+    // through a listener, so this is the one cast to Playwright's types.
     traffic: watchApiRequests(page as unknown as Page),
-    mainFrame,
-    fire: (event: PageEvent, argument: StandInRequest | StandInFrame) => {
-      for (const listener of listeners.get(event) ?? []) listener(argument);
+    fire,
+    /** The main frame at `path`, as a commit or a move inside the page leaves it. */
+    moved: (path: string) => {
+      address = `http://dispatch.test${path}`;
+      fire("framenavigated", mainFrame);
     },
     /** A read the page sends from its main frame. */
     read: (path: string) => request(path, false),
@@ -78,7 +87,7 @@ afterEach(() => {
 
 test("a read the left document sent at a navigation, never ended, holds it only to the commit", () => {
   at(0);
-  const { traffic, mainFrame, fire, read, navigation } = standInPage();
+  const { traffic, fire, moved, read, navigation } = standInPage();
   fire("request", read("/api/v1/issues/LAY-3/children"));
   const next = navigation("/issues/LAY-4");
   fire("request", next);
@@ -87,7 +96,7 @@ test("a read the left document sent at a navigation, never ended, holds it only 
   at(50);
   fire("requestfinished", next);
   at(100);
-  fire("framenavigated", mainFrame);
+  moved("/issues/LAY-4");
 
   at(100 + QUIET_MS - 1);
   expect(traffic.quietFor(QUIET_MS)).toBe(false);
@@ -97,12 +106,12 @@ test("a read the left document sent at a navigation, never ended, holds it only 
 
 test("a move inside the page drops nothing: its read holds the page until it finishes", () => {
   at(0);
-  const { traffic, mainFrame, fire, read } = standInPage();
+  const { traffic, fire, moved, read } = standInPage();
   const children = read("/api/v1/issues/LAY-3/children");
   fire("request", children);
   // `history.pushState` moves the main frame without a navigation request.
   at(100);
-  fire("framenavigated", mainFrame);
+  moved("/issues/LAY-3/conversation");
 
   at(100 + QUIET_MS);
   expect(traffic.quietFor(QUIET_MS)).toBe(false);
@@ -117,16 +126,17 @@ test("a move inside the page drops nothing: its read holds the page until it fin
 
 test("a navigation request that fails leaves no commit for a later move inside the page", () => {
   at(0);
-  const { traffic, mainFrame, fire, read, navigation } = standInPage();
+  const { traffic, fire, moved, read, navigation } = standInPage();
   const refused = navigation("/issues/LAY-4");
   fire("request", refused);
   const children = read("/api/v1/issues/LAY-3/children");
   fire("request", children);
   at(50);
   fire("requestfailed", refused);
-  // A move inside the page, with no document request after the failed one.
+  // A move inside the page to the failed request's own address, with no document request after
+  // the failed one.
   at(100);
-  fire("framenavigated", mainFrame);
+  moved("/issues/LAY-4");
 
   at(600_000);
   expect(traffic.quietFor(QUIET_MS)).toBe(false);

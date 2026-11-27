@@ -13,8 +13,8 @@ import {
   type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { withIssuePage } from "./issue-page-option";
-import { nextRowPhase } from "./test";
-import { asUser } from "./users";
+import { nextRowPhase, type OwnPerson, rowPerson } from "./test";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * How a browser row opens the new issue page and reads its frame: the
@@ -59,26 +59,30 @@ export function viewportAt(width: number): { height: number; width: number } {
 const phasedRows = new WeakSet<TestInfo>();
 
 /**
- * One seeded issue, read by alice with the new page turned on: `seed` writes what the row reads
- * under the row's own keys, alice signs in to a new context, `withIssuePage` turns the page on
- * for her, and a page opens at 1440 by 900. A row that reads two seeds runs a `phase` for each,
- * and each `phase` after the row's first seeds under keys of that phase's own, so none needs the
- * database emptied.
+ * One seeded issue, read by `reader` with the new page turned on: `seed` writes what the row reads
+ * under the row's own keys, `reader` signs in to a new context, `withIssuePage` turns the page on
+ * for them, and a page opens at 1440 by 900. `reader` is alice unless the row names a person of
+ * its own, `own(login)`, who is `rowPerson(login)` of the phase the seed runs in, so the seed and
+ * the page read as one person. A row that reads two seeds runs a `phase` for each, and each
+ * `phase` after the row's first seeds under keys of that phase's own, so none needs the database
+ * emptied.
  */
 export async function phase<T>(
   browser: Browser,
   seed: () => Promise<T>,
-  body: (page: Page, seeded: T) => Promise<void>
+  body: (page: Page, seeded: T) => Promise<void>,
+  reader: SignInLogin | OwnPerson = "alice"
 ): Promise<void> {
   const row = test.info();
   if (phasedRows.has(row)) {
     nextRowPhase();
   }
   phasedRows.add(row);
+  const login = typeof reader === "string" ? reader : rowPerson(reader.own);
   const seeded = await seed();
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, login);
   try {
-    await withIssuePage(context, "alice");
+    await withIssuePage(context, login);
     const page = await context.newPage();
     await page.setViewportSize(DESKTOP);
     await body(page, seeded);

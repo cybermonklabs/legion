@@ -4,7 +4,8 @@ import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 
 import { afterOnFakeClock, jump, realClock } from "../../../__tests__/fake-clock";
 import { api } from "../../../api/client";
-import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { KEY } from "../../decision-card/decision-fixture";
+import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { CONTROL_LABELS } from "../page-words";
 import { FailedReadLine } from "./failed-read-line";

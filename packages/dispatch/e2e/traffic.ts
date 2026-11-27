@@ -1,4 +1,4 @@
-import { expect, type Page, type Request } from "@playwright/test";
+import { expect, type Frame, type Page, type Request } from "@playwright/test";
 
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
@@ -9,58 +9,91 @@ export interface Traffic {
   readonly gets: string[];
   /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
   issueReads(key: string): number;
-  /** Whether no request has been in flight for `ms`. */
+  /** Whether no request has been in flight for `ms`, as `watchInFlight` counts one. */
   quietFor(ms: number): boolean;
   reset(): void;
 }
 
+/** A URL as a navigation commits it: the fragment is never sent, so a frame's URL is compared with
+ *  its navigation request's without one. */
+function withoutFragment(url: string): string {
+  const at = url.indexOf("#");
+  return at === -1 ? url : url.slice(0, at);
+}
+
 /**
- * The page's requests in flight, which `quietFor` reads in `watchTraffic` and `watchApiRequests`.
- * A request is in flight from its `request` event until its `requestfinished` or `requestfailed`.
- * The returned `quietFor(ms)` is true once none is and `ms` have passed since the last one ended.
+ * Whether nothing has been in flight on `page` for `ms`. A request counts from its `request`
+ * event until its `requestfinished` or `requestfailed`, or until the frame that sent it commits a
+ * new document. A small `PUT` or `DELETE` outlives the document that sent it: `send` in
+ * `web/src/api/client.ts` lets a write with no body, or a JSON body under
+ * `maxKeepaliveBodyBytes`, finish as the page goes (`keepalive`), and Chromium reports no end to
+ * it once that document is gone, since its answer reaches no page. So when a frame commits a new
+ * document (a `framenavigated` at the URL of the navigation request that frame sent last), what
+ * the old document sent and still waits on stops counting, and the navigation's own request and
+ * what the new document sends count as before. A navigation inside one document
+ * (`history.pushState`, a fragment) sends no navigation request, and a navigation request that
+ * ends without a commit (it fails, or is answered 204 or 205) stops being its frame's, so such a
+ * change of URL ends no count.
  *
- * When the main frame commits a new document, every request still held that is not a navigation
- * request is dropped, and the quiet counts from the commit. Those are reads of the page being
- * left, and Playwright does not always end them. The row
+ * The same commit ends the reads a page being left sends as it goes. The row
  * `issue-page-i.e2e.ts [iphone] the children are one group of rows of the outline @phone` failed
  * its first attempt in merge-queue runs 45607339493 and 45852270285 with "the page never went
  * quiet". In both traces, the page being left sent a read within 1 ms of the navigation's document
  * request. The trace holds no response and no failure for those reads, and then nothing was in
  * flight for 7 s and more. So Playwright sent neither `requestfinished` nor `requestfailed` for
- * them, they stayed in the set, and the wait ran out. The new document's own requests all started
- * after its document request was answered.
+ * them, and they counted until the wait ran out. The new document's own requests all started
+ * after its document request was answered, so the commit that ends the old document's reads ends
+ * none of the new document's.
  *
- * A commit is a `framenavigated` of the main frame after a main-frame navigation request. One with
- * no such request before it is a move inside the page (`history.pushState` or `replaceState`),
- * whose reads still answer, so it drops nothing. A navigation request that fails commits nothing,
- * so the `framenavigated` after it is not taken for its commit. The navigation request itself
- * stays in the set: it ends normally. `isNavigationRequest()` is read before `frame()`, because
- * `frame()` throws for a service worker's request.
+ * `request.frame()` throws for a service worker's request, which no frame sent. Playwright emits a
+ * page's `request` only for a request one of the page's frames sent (its dispatcher names the
+ * page by `request.frame()`), so each request read here has its frame.
  */
-function trackInFlight(page: Page): (ms: number) => boolean {
-  const inFlight = new Set<Request>();
+function watchInFlight(page: Page): (ms: number) => boolean {
+  /** Each request in flight, by the frame whose next commit of a new document ends its count.
+   *  The navigation's own request is under none: it belongs to the document it loads, so that
+   *  document's commit must not end it. */
+  const inFlight = new Map<Request, Frame | null>();
+  /** Each frame's newest navigation request, until the frame commits it or it ends without a
+   *  commit. */
+  const navigating = new Map<Frame, Request>();
   let lastSettledAt = Date.now();
-  /** The main-frame navigation request whose document has not committed yet. */
-  let navigation: Request | undefined;
-  page.on("request", (request) => {
-    inFlight.add(request);
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-      navigation = request;
-    }
-  });
   const settle = (request: Request) => {
     if (inFlight.delete(request)) lastSettledAt = Date.now();
   };
+  /** Stops `request` being its frame's navigation, where it still is. */
+  const noCommit = (request: Request) => {
+    if (navigating.get(request.frame()) === request) navigating.delete(request.frame());
+  };
+  page.on("request", (request) => {
+    const navigation = request.isNavigationRequest();
+    if (navigation) navigating.set(request.frame(), request);
+    inFlight.set(request, navigation ? null : request.frame());
+  });
+  page.on("response", (response) => {
+    const request = response.request();
+    if (!request.isNavigationRequest()) return;
+    // An answer of 204 or 205 leaves the frame on the document it had: no commit follows it.
+    const status = response.status();
+    if (status === 204 || status === 205) noCommit(request);
+  });
   page.on("requestfinished", settle);
   page.on("requestfailed", (request) => {
     settle(request);
-    if (request === navigation) navigation = undefined;
+    if (request.isNavigationRequest()) noCommit(request);
   });
   page.on("framenavigated", (frame) => {
-    if (frame !== page.mainFrame() || navigation === undefined) return;
-    navigation = undefined;
-    for (const request of inFlight) if (!request.isNavigationRequest()) inFlight.delete(request);
-    lastSettledAt = Date.now();
+    const navigation = navigating.get(frame);
+    if (
+      navigation === undefined ||
+      withoutFragment(navigation.url()) !== withoutFragment(frame.url())
+    ) {
+      return;
+    }
+    navigating.delete(frame);
+    for (const [request, sentBy] of inFlight) {
+      if (sentBy === frame) settle(request);
+    }
   });
   return (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms;
 }
@@ -68,7 +101,7 @@ function trackInFlight(page: Page): (ms: number) => boolean {
 export function watchTraffic(page: Page): Traffic {
   const gets: string[] = [];
   const issueReads = new Map<string, number>();
-  const quietFor = trackInFlight(page);
+  const quietFor = watchInFlight(page);
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
@@ -111,7 +144,8 @@ export interface ApiRequests {
   /** The count per route, most sent first and then by route, so two runs print one order. */
   byRoute(): readonly RouteCount[];
   /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
-   *  only the ones counted here. This is how the recorded baseline measures one load
+   *  only the ones counted here, as `watchInFlight` counts one. This is how the recorded baseline
+   *  measures one load
    *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
@@ -151,7 +185,7 @@ export function apiRoute(pathname: string): string {
 
 export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
-  const quietFor = trackInFlight(page);
+  const quietFor = watchInFlight(page);
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (!url.pathname.startsWith("/api/")) return;
@@ -183,7 +217,7 @@ export function watchApiRequests(page: Page): ApiRequests {
 /** How long nothing may be in flight before a load is counted finished. It is the recorded
  *  baseline's own window ("between
  *  navigation and network idle (nothing in flight for 1500 ms)"). */
-const LOAD_QUIET_MS = 1_500;
+export const LOAD_QUIET_MS = 1_500;
 
 /** Fails unless the page has gone quiet, which is the moment a load's cost is read at. Measured
  *  on this pod, the same unchanged page counted 39, 35 and 38 requests when the count was taken

@@ -16,7 +16,6 @@ import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { openIssueDetails } from "./issue-details";
 import { sql } from "./psql";
-import { settledState } from "./settled";
 import { expect, own, rowKey, rowPerson, test } from "./test";
 
 // The Inbox draws a question's card in the view its row opens below 1280 px and in the reading
@@ -294,17 +293,9 @@ test("an answered decision keeps its backlink control and still moves with a lat
   const card = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
   await expect(card.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible(live);
 
-  const note = card.getByRole("button", { name: "Add a note or answer in your own words" });
+  // The compact card's answer box stands in place.
   const answer = card.getByLabel("Your answer");
-  // A compact card folds its answer box behind that disclosure, so the row opens it only where
-  // the card drew it folded. The box is read first, since the disclosure stays once it is open.
-  const answerBox = await settledState("the decision's answer box", [
-    ["shown", answer],
-    ["folded", note],
-  ]);
-  if (answerBox === "folded") {
-    await note.click();
-  }
+  await expect(answer).toBeVisible(live);
   await answer.fill("Ship it.");
   await card.getByRole("button", { exact: true, name: "Answer" }).click();
   await expect(card).toContainText("Ship it.", live);

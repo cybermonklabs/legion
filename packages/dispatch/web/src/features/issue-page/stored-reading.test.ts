@@ -1,16 +1,16 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
-import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
-import { projectedNames } from "./projection-fixture";
 import {
   countParses,
   isPlainText,
   parsedReading,
   plainReading,
   storedReading,
-} from "./stored-reading";
+} from "../decision-card/stored-reading";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import { projectedNames } from "./projection-fixture";
 
 // One row reads a reading through the shared engine, which loads lazily, and the rows run in
 // random order, so the file loads the engine before its first row, whichever row that is.

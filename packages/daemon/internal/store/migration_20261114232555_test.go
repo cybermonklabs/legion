@@ -24,6 +24,7 @@ const awaitingChildrenVersion = 20261114232555
 // empty, 0 and 0 on every row the upgrade finds, since no release before it wrote them, and never
 // null.
 func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, awaitingChildrenVersion-1)

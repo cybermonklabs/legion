@@ -9,6 +9,7 @@ import type { IssueTab } from "../refs/routes";
  *  issue page's own chunk. */
 export function issueTabs(artifactCount: number): readonly TabDefinition<IssueTab>[] {
   return [
+    { id: "dashboard", label: "Dashboard" },
     { id: "spec", label: "Spec" },
     { id: "verification", label: "Verification" },
     { id: "plan", label: "Plan" },
