@@ -251,6 +251,168 @@ describe("parseHeldoutFile", () => {
     noDaemon.cases[0].world.daemon = null;
     expect(() => parseHeldoutFile(JSON.stringify(noDaemon))).toThrow("case P05: world.daemon:");
   });
+
+  /** P05's world given the runs of its task's steps: the planner's, which ended with the plan
+   * handoff the world holds, and the implementer's, still running. */
+  const steppedFile = () => {
+    const file = heldoutJson();
+    file.cases[0].world.dispatch.steps = [
+      {
+        id: "stp-acme-12-plan",
+        task: "t1",
+        step: 1,
+        kind: "step",
+        role: "planner",
+        session: "ses-acme-12-planner",
+        startedAt: "2030-01-07T12:40:00Z",
+        endedAt: "2030-01-07T13:10:30Z",
+        result: "passed",
+        report: "hnd-acme-12-plan-1",
+      },
+      {
+        id: "stp-acme-12-implement",
+        task: "t1",
+        step: 2,
+        kind: "step",
+        role: "implementer",
+        session: null,
+        startedAt: "2030-01-07T13:10:30Z",
+        endedAt: null,
+        result: null,
+        report: null,
+      },
+    ];
+    return file;
+  };
+  /** The parse of `steppedFile()` after `edit` changed its step runs. */
+  const steppedRefusal = (edit: (steps: Record<string, unknown>[]) => void) => () => {
+    const file = steppedFile();
+    edit(file.cases[0].world.dispatch.steps);
+    return parseHeldoutFile(JSON.stringify(file));
+  };
+
+  test("a world's step runs parse, and a run that ended before it started, a running step that names a session or a report, and a report that names no handoff of the world are refused", () => {
+    expect(parseHeldoutFile(JSON.stringify(steppedFile())).cases[0].world.dispatch.steps).toEqual(
+      steppedFile().cases[0].world.dispatch.steps
+    );
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[0] ?? {}, { endedAt: "2030-01-07T12:30:00Z" });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.steps[0].endedAt: 2030-01-07T12:30:00Z is not after startedAt 2030-01-07T12:40:00Z"
+    );
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[1] ?? {}, { session: "ses-acme-12-implementer" });
+      })
+    ).toThrow("case P05: world.dispatch.steps[1].session: a running step names no session");
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[1] ?? {}, { report: "hnd-acme-12-plan-1" });
+      })
+    ).toThrow("case P05: world.dispatch.steps[1].report: a running step names no report");
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[0] ?? {}, { report: "hnd-acme-12-plan-2" });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.steps[0].report: hnd-acme-12-plan-2 is no handoff of the world"
+    );
+  });
+
+  test("a step run's id named twice, and a run that ended with no result, are refused", () => {
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[1] ?? {}, { id: "stp-acme-12-plan" });
+      })
+    ).toThrow("case P05: world.dispatch.steps[1].id: stp-acme-12-plan is named twice");
+    expect(
+      steppedRefusal((steps) => {
+        Object.assign(steps[0] ?? {}, { result: null });
+      })
+    ).toThrow("case P05: world.dispatch.steps[0].result: a run that ended holds its result");
+  });
+
+  test("a comment's anchor names a document of the world and words of its body, and a reply names an earlier comment and holds no anchor", () => {
+    /** P05's world with the implementer's comment on words of its Verification document and the
+     * architect's reply in that thread, after `edit` changed the two comments. */
+    const threaded = (edit: (comments: Record<string, unknown>[]) => void = () => {}) => {
+      const file = heldoutJson();
+      file.cases[0].world.dispatch.comments = [
+        {
+          id: "cmt-acme-12-departure",
+          author: "ses-acme-12-implementer",
+          at: "2030-01-07T13:35:00Z",
+          body: "For the architect: the reader keeps no variant. Please confirm it in this thread.",
+          anchor: { document: "verification.md", quote: "carry `experiment` and `variant`" },
+        },
+        {
+          id: "cmt-acme-12-decision",
+          author: "ses-acme-12-architect",
+          at: "2030-01-07T13:37:00Z",
+          body: "Take it.",
+          replyTo: "cmt-acme-12-departure",
+        },
+      ];
+      edit(file.cases[0].world.dispatch.comments);
+      return file;
+    };
+    const refusal = (edit: (comments: Record<string, unknown>[]) => void) => () =>
+      parseHeldoutFile(JSON.stringify(threaded(edit)));
+    expect(parseHeldoutFile(JSON.stringify(threaded())).cases[0].world.dispatch.comments).toEqual(
+      threaded().cases[0].world.dispatch.comments
+    );
+    expect(
+      refusal((comments) => {
+        Object.assign(comments[0] ?? {}, { anchor: { document: "plan.md", quote: "carry" } });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.comments[0].anchor.document: plan.md is no document of the world"
+    );
+    expect(
+      refusal((comments) => {
+        Object.assign(comments[0] ?? {}, {
+          anchor: { document: "verification.md", quote: "The flag's default is 3." },
+        });
+      })
+    ).toThrow(
+      `case P05: world.dispatch.comments[0].anchor.quote: "The flag's default is 3." is not in the body of verification.md`
+    );
+    expect(
+      refusal((comments) => {
+        Object.assign(comments[0] ?? {}, { at: "2030-01-07T13:40:00Z" });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.comments[1].replyTo: cmt-acme-12-departure is no earlier comment of the world"
+    );
+    expect(
+      refusal((comments) => {
+        Object.assign(comments[1] ?? {}, { replyTo: "cmt-acme-12-decision" });
+      })
+    ).toThrow(
+      "case P05: world.dispatch.comments[1].replyTo: cmt-acme-12-decision is no earlier comment of the world"
+    );
+    expect(
+      refusal((comments) => {
+        Object.assign(comments[1] ?? {}, {
+          anchor: { document: "verification.md", quote: "carry" },
+        });
+      })
+    ).toThrow("case P05: world.dispatch.comments[1].anchor: a reply holds no anchor");
+  });
+
+  test("a world with no steps and no anchors parses as before", () => {
+    const file = parseHeldoutFile(heldoutText);
+    expect(file).toEqual(heldoutJson());
+    for (const each of file.cases) {
+      expect(each.world.dispatch.steps).toBeUndefined();
+      for (const comment of each.world.dispatch.comments) {
+        expect(comment.anchor).toBeUndefined();
+        expect(comment.replyTo).toBeUndefined();
+      }
+    }
+  });
 });
 
 describe("parseSkillUseFile", () => {

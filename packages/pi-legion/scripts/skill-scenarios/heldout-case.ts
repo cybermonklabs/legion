@@ -9,6 +9,12 @@
 // part. A case's known-bad trace and planted omission parse when absent: the inventory
 // (heldoutGaps) reports them, so a draft parses before it is complete.
 //
+// A case's world is the starting state of each part a run reaches. Its Dispatch part holds the
+// issue with its documents, handoffs, comments, asks and results, and the runs of the steps of
+// the issue's workflow (`steps`; a file locked before them holds none), each run that ended naming
+// the world's handoff it ended with. A comment may be on words of one of the world's documents
+// (`anchor`), or be a reply in the thread of an earlier comment of the world (`replyTo`), not both.
+//
 //   heldout-case.ts gaps <heldout or devcase file> [<skilluse file>]
 //       each file's gaps: its number of gaps alone on stdout (`<file>: <n> gaps`), each gap line on
 //       stderr (`<file>: <gap>`); exits 1 when a file has a gap, 0 when none has. The roles are
@@ -167,51 +173,146 @@ const Source = z.strictObject({
 /** The handoff words of the file-backed phases (pi-shared's handoff-record.ts FILE_BACKED). */
 const HandoffWord = z.enum(["plan", "implement", "test", "review"]);
 
-/** The scratch Dispatch issue the role works, with everything recorded on it. */
-const DispatchWorld = z.strictObject({
-  issue: z.strictObject({
-    key: IssueKey,
-    title: Text,
-    status: Name,
-    spec: z.string(),
-    parent: IssueKey.nullable(),
-  }),
-  /** The issue's documents besides its spec, by file name (`verification.md`). */
-  documents: z.array(z.strictObject({ name: Text, body: z.string() })),
-  /** Each handoff record, as `dispatch handoff-write` stores it under its writer's session. */
-  handoffs: z.array(
-    z.strictObject({
-      id: Text,
-      phase: HandoffWord,
-      version: Count,
-      author: Text,
-      at: Instant,
-      body: Fields,
-    })
-  ),
-  comments: z.array(z.strictObject({ id: Text, author: Text, at: Instant, body: Text })),
-  asks: z.array(
-    z.strictObject({
-      id: Text,
-      author: Text,
-      at: Instant,
-      question: Text,
-      options: z.array(Text),
-      state: z.enum(["open", "answered", "dismissed"]),
-      answer: Text.nullable(),
-    })
-  ),
-  /** Each result recorded against a check of the Verification document (`dispatch result`). */
-  results: z.array(
-    z.strictObject({
-      check: Name,
-      role: Name,
-      verdict: z.enum(["pass", "fail"]),
-      commit: Commit,
-      at: Instant,
-    })
-  ),
+/** One run of a step of the issue's workflow, as the Legion daemon records it in Dispatch
+ * (`PUT /api/v1/issues/{key}/steps/{id}`): `id` the case's name for it, `step` its place in the
+ * task (0 for a retro or a merge), and `report` the id of the world's handoff its end named. A run
+ * whose `endedAt` is null still runs, so it names no session, result or report, as a running step
+ * does; a run that ended names its result. */
+const StepRun = z
+  .strictObject({
+    id: Name,
+    task: Name,
+    step: z.number().int().nonnegative(),
+    kind: z.enum(["step", "retro", "merge"]),
+    role: Name,
+    session: Text.nullable(),
+    startedAt: Instant,
+    endedAt: Instant.nullable(),
+    result: z.enum(["passed", "failed", "stopped"]).nullable(),
+    report: Text.nullable(),
+  })
+  .superRefine((run, context) => {
+    if (run.endedAt === null) {
+      for (const part of ["session", "result", "report"] as const)
+        if (run[part] !== null) refuse(context, [part], `a running step names no ${part}`);
+      return;
+    }
+    if (earlier(run.startedAt, run.endedAt) === false)
+      refuse(context, ["endedAt"], `${run.endedAt} is not after startedAt ${run.startedAt}`);
+    if (run.result === null) refuse(context, ["result"], "a run that ended holds its result");
+  });
+
+/** A comment of the world. `anchor` puts it on words of one of the world's documents, by name;
+ * `replyTo` makes it a reply in the thread of an earlier comment of the world, and a reply holds
+ * no anchor. */
+const WorldComment = z.strictObject({
+  id: Text,
+  author: Text,
+  at: Instant,
+  body: Text,
+  anchor: z.strictObject({ document: Text, quote: Text }).optional(),
+  replyTo: Text.optional(),
 });
+
+/** Whether comment `parent`, at `parentIndex` of the world's comments, is seeded before comment
+ * `reply` at `replyIndex`: the seed writes the records in time order, and two records of one time
+ * in the order the world lists them. */
+function seededBefore(
+  parent: { at: string },
+  parentIndex: number,
+  reply: { at: string },
+  replyIndex: number
+): boolean {
+  if (earlier(parent.at, reply.at) === true) return true;
+  return earlier(reply.at, parent.at) !== true && parentIndex < replyIndex;
+}
+
+/** The scratch Dispatch issue the role works, with everything recorded on it. */
+const DispatchWorld = z
+  .strictObject({
+    issue: z.strictObject({
+      key: IssueKey,
+      title: Text,
+      status: Name,
+      spec: z.string(),
+      parent: IssueKey.nullable(),
+    }),
+    /** The issue's documents besides its spec, by file name (`verification.md`). */
+    documents: z.array(z.strictObject({ name: Text, body: z.string() })),
+    /** Each handoff record, as `dispatch handoff-write` stores it under its writer's session. */
+    handoffs: z.array(
+      z.strictObject({
+        id: Text,
+        phase: HandoffWord,
+        version: Count,
+        author: Text,
+        at: Instant,
+        body: Fields,
+      })
+    ),
+    comments: z.array(WorldComment),
+    asks: z.array(
+      z.strictObject({
+        id: Text,
+        author: Text,
+        at: Instant,
+        question: Text,
+        options: z.array(Text),
+        state: z.enum(["open", "answered", "dismissed"]),
+        answer: Text.nullable(),
+      })
+    ),
+    /** Each result recorded against a check of the Verification document (`dispatch result`). */
+    results: z.array(
+      z.strictObject({
+        check: Name,
+        role: Name,
+        verdict: z.enum(["pass", "fail"]),
+        commit: Commit,
+        at: Instant,
+      })
+    ),
+    /** Each run of a step of the issue's workflow; absent where the world holds none. */
+    steps: z.array(StepRun).optional(),
+  })
+  .superRefine((dispatch, context) => {
+    dispatch.comments.forEach((comment, index) => {
+      const at = ["comments", index];
+      const { anchor, replyTo } = comment;
+      if (anchor !== undefined) {
+        const document = dispatch.documents.find(({ name }) => name === anchor.document);
+        if (document === undefined)
+          refuse(
+            context,
+            [...at, "anchor", "document"],
+            `${anchor.document} is no document of the world`
+          );
+        else if (!document.body.includes(anchor.quote))
+          refuse(
+            context,
+            [...at, "anchor", "quote"],
+            `${JSON.stringify(anchor.quote)} is not in the body of ${document.name}`
+          );
+      }
+      if (replyTo === undefined) return;
+      if (anchor !== undefined) refuse(context, [...at, "anchor"], "a reply holds no anchor");
+      const parent = dispatch.comments.findIndex(({ id }) => id === replyTo);
+      const before = dispatch.comments[parent];
+      if (before === undefined || !seededBefore(before, parent, comment, index))
+        refuse(context, [...at, "replyTo"], `${replyTo} is no earlier comment of the world`);
+    });
+    const steps = dispatch.steps ?? [];
+    refuseRepeats(
+      context,
+      steps.map(({ id }) => id),
+      (index) => ["steps", index, "id"]
+    );
+    const handoffs = new Set(dispatch.handoffs.map(({ id }) => id));
+    steps.forEach(({ report }, index) => {
+      if (report !== null && !handoffs.has(report))
+        refuse(context, ["steps", index, "report"], `${report} is no handoff of the world`);
+    });
+  });
 
 /** The git remote and the role's jj workspace. `commits` holds every commit either names;
  * `localOnly` is each commit only the workspace holds, never a remote branch's head. */

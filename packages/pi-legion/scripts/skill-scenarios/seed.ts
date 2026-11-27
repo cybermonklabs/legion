@@ -86,9 +86,13 @@
 //                                          the world's Dispatch records after a scored run, as
 //                                          captured.json in <run dir> (owner-walk-seed.ts
 //                                          captureScored)
-//   seed.ts case-world                     seed the Dispatch part of $SKILL_SCENARIO_RUN/launch-world.json
+//   seed.ts case-world                     seed the Dispatch part of $SKILL_SCENARIO_RUN/launch-world.json:
+//                                          its records in case time order, then its step runs at
+//                                          times among the records' stamps (seedCaseDispatch);
+//                                          writes dispatch-ids.json and dispatch-fixture.json there
 //   seed.ts case-readback <run dir>         capture the issue, documents, handoffs, comments,
-//                                          asks, results and complete event log (with seed cursor)
+//                                          asks, results, step runs and complete event log (with
+//                                          seed cursor)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -123,13 +127,14 @@ import {
   listComments,
   listIssueAsks,
   listIssueMessages,
+  putStep,
   recordCheckResult,
   resolveAsk,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { World } from "./heldout-case";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
-import { parseInstant } from "./production-dispatch";
+import { parseInstant, type Sleep } from "./production-dispatch";
 import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
@@ -717,6 +722,17 @@ async function agentPost(route: string, input: unknown): Promise<void> {
     throw new Error(`POST ${route} failed: ${response.status} ${await response.text()}`);
 }
 
+/** `GET route` as the agent bearer, its JSON answer as Dispatch wrote it; a refusal names the
+ * route and Dispatch's answer. */
+async function agentGet(route: string): Promise<unknown> {
+  const response = await fetch(new URL(route, baseUrl), {
+    headers: { Authorization: `Bearer ${e2eAgentToken}` },
+  });
+  if (!response.ok)
+    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
+  return response.json();
+}
+
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
  * implement record among them, newest first, each with its body (handoffsOf). */
 export async function captureHandoffs(file: string, runDir: string): Promise<void> {
@@ -1059,14 +1075,104 @@ export function caseDispatchRefs(
   );
 }
 
+/** The longest gap the seed keeps between two handoffs it writes one after the other, in
+ * nanoseconds: it waits that gap between them, so two versions a case holds seconds apart are
+ * seconds apart in the run's Dispatch too. A longer gap, and one between any other two records,
+ * is not kept: each record follows the one before it at once. */
+const KEPT_HANDOFF_GAP = 60_000_000_000n;
+/** A second in nanoseconds: how far before the first seeded record a step run's time is placed
+ * where no record comes before it, and after the last where none comes after it. */
+const SECOND = 1_000_000_000n;
+/** The namespace of the daemon's step record ids (StepID in
+ * packages/daemon/internal/workflow/steps.go). A seeded run's id is the version 5 uuid of
+ * `<issue key>/<case id>` in it: Dispatch refuses a step id that is no uuid. */
+const STEP_RECORD_NAMESPACE = Bun.randomUUIDv5("legion-step-record", "oid");
+/** The type of work of a step's role, as the daemon's plan records it (builtinRoles in
+ * packages/daemon/internal/plan/plan.go). A retro and a merge have none. */
+const STEP_TYPES: Readonly<Record<string, string>> = {
+  planner: "planning",
+  implementer: "implementation",
+  tester: "testing",
+  reviewer: "review",
+  acceptance: "review",
+};
+
+/** A seeded record's time on the case's clock and Dispatch's stamp of it, in nanoseconds. */
+interface Stamped {
+  at: bigint;
+  stamp: bigint;
+}
+
+/** `at`, nanoseconds since the epoch, as an RFC 3339 time in UTC with nine digits of fraction,
+ * all of which Dispatch keeps for a step run's times. */
+function instantText(at: bigint): string {
+  const whole = new Date(Number(at / SECOND) * 1000).toISOString().slice(0, 19);
+  return `${whole}.${(at % SECOND).toString().padStart(9, "0")}Z`;
+}
+
+/** The time in the run's Dispatch of each case time of `times`, the starts and ends of the
+ * world's step runs, by case time: strictly after Dispatch's stamp of the last of `records` (in
+ * seeding order) whose case time comes before it, and strictly before the stamp of the record
+ * after that one. A record at the very time a run starts so lies inside the run, and a record at
+ * the time it ends outside it. Where no record comes before a time it is one second before the
+ * first record's stamp, and where none comes after it one second after the last's. Times between
+ * the same two records keep their order: spread evenly between the two stamps, or a second apart
+ * before the first record and after the last. */
+function placeStepTimes(
+  issue: string,
+  records: readonly Stamped[],
+  times: readonly bigint[]
+): Map<bigint, bigint> {
+  const first = records[0];
+  const last = records.at(-1);
+  if (first === undefined || last === undefined)
+    throw new Error(
+      `${issue}: a step run's times are placed among the stamps of the world's records, and the world holds no handoff, comment, ask or result`
+    );
+  const gapped = [...new Set(times)].map((at) => ({
+    at,
+    after: records.filter((record) => record.at < at).length,
+  }));
+  const placed = new Map<bigint, bigint>();
+  for (const { at, after } of gapped) {
+    const peers = gapped
+      .filter((other) => other.after === after)
+      .map((other) => other.at)
+      .sort(byTime);
+    const count = BigInt(peers.length);
+    const rank = BigInt(peers.indexOf(at));
+    const low = records[after - 1];
+    const high = records[after];
+    if (low === undefined) placed.set(at, first.stamp - (count - rank) * SECOND);
+    else if (high === undefined) placed.set(at, last.stamp + (rank + 1n) * SECOND);
+    else {
+      const stamp = low.stamp + ((high.stamp - low.stamp) * (rank + 1n)) / (count + 1n);
+      if (stamp <= low.stamp || stamp >= high.stamp)
+        throw new Error(
+          `${issue}: Dispatch stamped two records seeded one after the other ${instantText(low.stamp)} and ${instantText(high.stamp)}, which leaves no room for a step run's time between them`
+        );
+      placed.set(at, stamp);
+    }
+  }
+  return placed;
+}
+
 /** File in a fresh scratch Dispatch. Dispatch allocates issue numbers; the placeholders reserve
  * preceding keys so the case's own references (including its parent's key) resolve unchanged.
- * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order. */
-export async function seedCaseDispatch(runDir: string): Promise<void> {
+ * Dispatch owns the ids and stamps of records. Seed across record kinds in case time order: a
+ * comment with an anchor on its document's words, a reply in the thread of the comment it names,
+ * and between two handoffs seeded one after the other at most 60 s apart a wait (`sleep`) of that
+ * gap. Then each step run, as the daemon writes it, under the uuid of the issue key and its case
+ * id, at times among the records' stamps (placeStepTimes). Writes dispatch-ids.json (each seeded
+ * handoff's and comment's Dispatch id by its case id) and dispatch-fixture.json. */
+export async function seedCaseDispatch(
+  runDir: string,
+  sleep: Sleep = (ms) => Bun.sleep(ms)
+): Promise<void> {
   const world = World.parse(
     JSON.parse(readFileSync(path.join(runDir, "launch-world.json"), "utf8"))
   );
-  const { issue, documents, handoffs, comments, asks, results } = world.dispatch;
+  const { issue, documents, handoffs, comments, asks, results, steps = [] } = world.dispatch;
   const seed = { as: "agent", actor: { kind: "session", id: "rig-seed" } } as const;
   const writer = (id: string) => ({ as: "agent", actor: { kind: "session", id } }) as const;
   // The case supplies a session id or a human login, not a Dispatch Actor object.
@@ -1113,17 +1219,38 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
   };
   if (parent && parent[0] !== project) await createThrough(...parent, false);
   await createThrough(project, number, true);
-  for (const { name, body } of documents)
-    await createIssueArtifact(
+  // The case names its documents by name and its records by its own ids; Dispatch gives each one
+  // its own id.
+  const ids = new Map<string, string>();
+  for (const { name, body } of documents) {
+    const uploaded = await createIssueArtifact(
       issue.key,
       { name, content: dispatchBlockRefs(body, issue.key, documentSlug(name)) },
       seed
     );
-  // The case names its comments and asks by its own ids; Dispatch gives each one its own id.
-  const ids = new Map<string, string>();
-  const steps: Step[] = [
+    ids.set(`document/${name}`, uploaded.artifact.id);
+  }
+  /** The id Dispatch gave the world's `kind` named `id`, which the seed wrote before it. */
+  const dispatchId = (kind: "document" | "comment" | "handoff", id: string): string => {
+    const given = ids.get(`${kind}/${id}`);
+    if (given === undefined) throw new Error(`${id}: no ${kind} of the world was seeded so named`);
+    return given;
+  };
+  /** What dispatch-ids.json holds: each seeded handoff's and comment's Dispatch id by case id. */
+  const seededIds = new Map<string, string>();
+  const remember = (kind: "comment" | "handoff", id: string, given: string) => {
+    if (seededIds.has(id))
+      throw new Error(`${id}: the world names two of its handoffs and comments by this id`);
+    seededIds.set(id, given);
+    ids.set(`${kind}/${id}`, given);
+  };
+  /** Each record of the world: its case id and time, whether it is a handoff, and its write,
+   * which answers Dispatch's stamp of the record. */
+  const records: { id: string; at: bigint; handoff: boolean; write: () => Promise<string> }[] = [
     ...handoffs.map((record) => ({
+      id: record.id,
       at: time(record.at, record.id),
+      handoff: true,
       write: async () => {
         const saved = await createHandoff(
           issue.key,
@@ -1135,21 +1262,39 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
           throw new Error(
             `${record.id}: got ${record.phase} v${saved.version}, wanted v${record.version}`
           );
+        remember("handoff", record.id, saved.id);
+        return saved.created_at;
       },
     })),
-    ...comments.map((comment) => ({
-      at: time(comment.at, comment.id),
+    ...comments.map(({ id, at, author: by, body, anchor, replyTo }) => ({
+      id,
+      at: time(at, id),
+      handoff: false,
       write: async () => {
         const created = await createComment(
           issue.key,
-          { body: dispatchBlockRefs(comment.body, issue.key) },
-          author(comment.author)
+          {
+            body: dispatchBlockRefs(body, issue.key),
+            ...(anchor === undefined
+              ? {}
+              : {
+                  anchor: {
+                    artifact: dispatchId("document", anchor.document),
+                    quote: anchor.quote,
+                  },
+                }),
+            ...(replyTo === undefined ? {} : { reply_to: dispatchId("comment", replyTo) }),
+          },
+          author(by)
         );
-        ids.set(`comment/${comment.id}`, created.id);
+        remember("comment", id, created.id);
+        return created.created_at;
       },
     })),
     ...asks.map((ask) => ({
+      id: ask.id,
       at: time(ask.at, ask.id),
+      handoff: false,
       write: async () => {
         const opened = await createAsk(
           issue.key,
@@ -1179,21 +1324,76 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
             author(ask.author)
           );
         }
+        return opened.created_at;
       },
     })),
     ...results.map((result) => ({
+      id: `${result.check}/${result.role}`,
       at: time(result.at, result.check),
+      handoff: false,
       write: async () => {
         const { at: _at, ...fields } = result;
-        await recordCheckResult(
+        const recorded = await recordCheckResult(
           issue.key,
           { ...fields, observed: "Recorded in the case's starting state." },
           writer(`rig-seed-${result.role}`)
         );
+        return recorded.result.created_at;
       },
     })),
   ];
-  for (const step of steps.sort((a, b) => byTime(a.at, b.at))) await step.write();
+  // Two versions of a phase's handoff seconds apart are what a reviewer reads as one double write,
+  // so the gap between two handoffs seeded one after the other is kept when it is a minute or less.
+  const stamped: Stamped[] = [];
+  let previous: (typeof records)[number] | undefined;
+  for (const record of records.sort((a, b) => byTime(a.at, b.at))) {
+    const gap = previous?.handoff && record.handoff ? record.at - previous.at : 0n;
+    if (gap > 0n && gap <= KEPT_HANDOFF_GAP) await sleep(Number(gap / 1_000_000n));
+    const stamp = time(await record.write(), `Dispatch's stamp of ${record.id}`);
+    stamped.push({ at: record.at, stamp });
+    previous = record;
+  }
+  writeFileSync(
+    path.join(runDir, "dispatch-ids.json"),
+    `${JSON.stringify(Object.fromEntries(seededIds))}\n`
+  );
+  // Each step run as the daemon writes it, with times among the stamps of the records around it.
+  if (steps.length > 0) {
+    const placed = placeStepTimes(
+      issue.key,
+      stamped,
+      steps.flatMap(({ id, startedAt, endedAt }) =>
+        (endedAt === null ? [startedAt] : [startedAt, endedAt]).map((at) => time(at, id))
+      )
+    );
+    const placedText = (at: string, run: string): string => {
+      const stamp = placed.get(time(at, run));
+      if (stamp === undefined) throw new Error(`${run}: its time ${at} was not placed`);
+      return instantText(stamp);
+    };
+    for (const run of steps) {
+      const type = run.kind === "step" ? STEP_TYPES[run.role] : undefined;
+      if (run.kind === "step" && type === undefined)
+        throw new Error(
+          `${run.id}: the role ${run.role} has no type of work the seed knows (${Object.keys(STEP_TYPES).join(", ")})`
+        );
+      await putStep(issue.key, Bun.randomUUIDv5(`${issue.key}/${run.id}`, STEP_RECORD_NAMESPACE), {
+        task: run.task,
+        step: run.step,
+        kind: run.kind,
+        role: run.role,
+        ...(type === undefined ? {} : { type }),
+        agent: `legion-${project}-${issue.key}-${run.role}`.toLowerCase(),
+        generation: 1,
+        started_at: placedText(run.startedAt, run.id),
+        ...(run.session === null ? {} : { session: run.session }),
+        ...(run.endedAt === null || run.result === null
+          ? {}
+          : { ended_at: placedText(run.endedAt, run.id), result: run.result }),
+        ...(run.report === null ? {} : { report: dispatchId("handoff", run.report) }),
+      });
+    }
+  }
   // The run's task names a comment or an ask as the case does: it now names the id Dispatch gave.
   const prompt = path.join(runDir, "prompt.txt");
   if (existsSync(prompt))
@@ -1232,6 +1432,7 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
     comments: await listComments(key, undefined, reader),
     asks: await listIssueAsks(key, reader),
     results: await getIssueResults(key, reader),
+    steps: await agentGet(`/api/v1/issues/${encodeURIComponent(key)}/steps`),
     events: await caseEvents(key),
   };
   writeFileSync(path.join(runDir, "dispatch-readback.json"), `${JSON.stringify(captured)}\n`);
