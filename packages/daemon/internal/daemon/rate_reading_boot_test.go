@@ -17,11 +17,14 @@ import (
 // A daemon that mints through its own token manager, as every production daemon does, reads that
 // manager's GitHub at the same root as its workflow's reads, and logs a rate reading of each
 // installation of each App once its workflow runs: here the implement App lists acme and globex,
-// and the review App acme. The boot's read of acme/widgets' default branch is made with the
-// implement App's token on acme, so that installation's line counts it as default_branch beside
-// the reading's own calls. Each App's first mint reads its bot user with the token it minted, a
-// call the token manager makes with its own client, which counts as every REST call does: as
-// other, on acme's installation of each App, since the boot's mint names no caller kind.
+// and the review App acme. The reading's own calls go through the process's REST client and count
+// as rate_reading. Each App's first mint reads its bot user with the token it minted, a call the
+// token manager makes with its own client, and that call counts too, under the caller kind of the
+// mint that made it: the reading's own mint, or another loop's when that loop minted first. A
+// fresh daemon reads no repository of its records at boot (prepareAtStart runs once the API
+// serves, from the records, and this daemon holds none), so the count of each acme installation
+// is the bot-user read and the reading's listing and workflows read, and globex's, whose App read
+// its bot user on acme, the reading's two.
 func TestADaemonBootLogsARateReadingOfEachInstallationWithItsOwnCalls(t *testing.T) {
 	// The boot puts the process's REST client on its counter's transport; the next test of the
 	// binary starts from the default.
@@ -59,11 +62,13 @@ func TestADaemonBootLogsARateReadingOfEachInstallationWithItsOwnCalls(t *testing
 			continue
 		}
 		delete(want, line.InstallationID)
-		if line.InstallationID == "77" && (line.CoreOwn["default_branch"] < 1 || line.CoreOwn["rate_reading"] < 1) {
-			t.Errorf("installation 77's core_own = %v, want the boot's default-branch read counted as default_branch beside the reading's own rate_reading calls", line.CoreOwn)
+		own := 0
+		for _, calls := range line.CoreOwn {
+			own += calls
 		}
-		if line.InstallationID != "79" && line.CoreOwn["other"] < 1 {
-			t.Errorf("installation %s's core_own = %v, want its App's bot-user read, made by the token manager's own client, counted as other", line.InstallationID, line.CoreOwn)
+		wantOwn := map[string]int{"77": 3, "79": 2, "87": 3}[line.InstallationID]
+		if line.CoreOwn["rate_reading"] < 2 || own != wantOwn {
+			t.Errorf("installation %s's core_own = %v, want %d calls: the reading's listing and workflows read as rate_reading, and on acme its App's bot-user read, made by the token manager's own client", line.InstallationID, line.CoreOwn, wantOwn)
 		}
 	}
 	if len(want) != 0 {
