@@ -1,22 +1,20 @@
 import { useCallback } from "react";
-import { useSearchParams } from "react-router-dom";
 
 import type { IssueSummary } from "../../api/types";
-import { useCappedSearchParam } from "../../lib/query-param";
-import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
+import type { FilterChip } from "../../components/filter-chips";
+import {
+  cappedTextParam,
+  flagParam,
+  repeatedParam,
+  useAddressFields,
+} from "../../lib/page-address";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { issueIsUnread } from "./UnreadDot";
 
-/** One removable chip in the filter strip. */
-export interface ActiveFilter {
-  readonly label: string;
-  readonly remove: () => void;
-}
-
 export interface IssueFiltersState {
   /** The project's `?label=` values (every one required, case-insensitively). */
-  readonly labels: string[];
+  readonly labels: readonly string[];
   readonly search: string;
   readonly needsYou: boolean;
   readonly unread: boolean;
@@ -29,10 +27,11 @@ export interface IssueFiltersState {
   /** Why the Unclaimed filter cannot tell which claims are takeable while it is on: the agent
    *  list is `refilling`, or its read failed (`unreachable`). Until it can, every session's
    *  claim counts as held - no claim is called free from a list that did not answer - and the
-   *  strip says so. `undefined` while the filter is off or the list is current or loading. */
+   *  control row says so. `undefined` while the filter is off or the list is current or loading. */
   readonly unclaimedUnchecked: "refilling" | "unreachable" | undefined;
   readonly activeFilterCount: number;
-  readonly activeFilters: ActiveFilter[];
+  /** The Board's chips, one per narrowing that is on, as `filterChips` draws them. */
+  readonly activeFilters: FilterChip[];
   readonly setLabels: (next: string[]) => void;
   readonly setSearch: (next: string) => void;
   readonly setNeedsYou: (next: boolean) => void;
@@ -55,52 +54,39 @@ export function projectIssuesQueryKey(
     : ["issues", "project", project, "labels", labels];
 }
 
-/** The repeatable param `useIssueFilters` reads; passed to `useRepeatableSearchParams`, whose
- *  memo depends on this array's own identity, so it is a module-level constant. */
-const ISSUE_ARRAY_PARAM_KEYS = ["label"] as const;
+/** The project page's own parameters, under the names they have always had. A module-level
+ *  constant: `useAddressFields` memoizes what it reads on this object's identity, so a spec
+ *  built in a render would hand every render new arrays. */
+const ISSUE_FILTER_PARAMS = {
+  label: repeatedParam(),
+  "needs-you": flagParam(),
+  q: cappedTextParam(),
+  unclaimed: flagParam(),
+  unread: flagParam(),
+};
 
 /**
  * The project page's issue filters, read from and written to the URL - `?label=` (repeatable),
- * `?q=`, `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the strip and the issues table share
+ * `?q=`, `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the control row and the issues table share
  * one filter state and a filtered view survives a reload. Every write replaces the history
  * entry, as the label filter always has. The table's own `?status=` column filter is its
  * business, not this hook's.
  */
 export function useIssueFilters(): IssueFiltersState {
-  const [searchParams] = useSearchParams();
-  const { label: labels } = useRepeatableSearchParams(ISSUE_ARRAY_PARAM_KEYS);
-  const [search, setSearch] = useCappedSearchParam("q");
-  const needsYou = searchParams.get("needs-you") === "1";
-  const unread = searchParams.get("unread") === "1";
-  const unclaimed = searchParams.get("unclaimed") === "1";
+  const [params, setParams] = useAddressFields(ISSUE_FILTER_PARAMS);
+  const labels = params.label;
+  const search = params.q;
+  const needsYou = params["needs-you"];
+  const unread = params.unread;
+  const unclaimed = params.unclaimed;
   // The one ["agents"] registry read every claim chip on the page already shares, fetched only
   // while the filter that needs it is on.
   const registry = useAgentRegistry(unclaimed);
-  const update = useSearchParamsUpdate();
-  const setLabels = useCallback(
-    (next: string[]) =>
-      update((params) => {
-        params.delete("label");
-        for (const value of next) {
-          params.append("label", value);
-        }
-      }),
-    [update]
-  );
-  const setFlag = useCallback(
-    (name: "needs-you" | "unread" | "unclaimed", next: boolean) =>
-      update((params) => {
-        if (next) {
-          params.set(name, "1");
-        } else {
-          params.delete(name);
-        }
-      }),
-    [update]
-  );
-  const setNeedsYou = useCallback((next: boolean) => setFlag("needs-you", next), [setFlag]);
-  const setUnread = useCallback((next: boolean) => setFlag("unread", next), [setFlag]);
-  const setUnclaimed = useCallback((next: boolean) => setFlag("unclaimed", next), [setFlag]);
+  const setSearch = useCallback((next: string) => setParams({ q: next }), [setParams]);
+  const setLabels = useCallback((next: string[]) => setParams({ label: next }), [setParams]);
+  const setNeedsYou = useCallback((next: boolean) => setParams({ "needs-you": next }), [setParams]);
+  const setUnread = useCallback((next: boolean) => setParams({ unread: next }), [setParams]);
+  const setUnclaimed = useCallback((next: boolean) => setParams({ unclaimed: next }), [setParams]);
   const matches = useCallback(
     (issue: IssueSummary, lastReadSequence: number): boolean => {
       const query = search.trim().toLocaleLowerCase();
@@ -121,7 +107,7 @@ export function useIssueFilters(): IssueFiltersState {
     Number(needsYou) +
     Number(unread) +
     Number(unclaimed);
-  const activeFilters: ActiveFilter[] = [
+  const activeFilters: FilterChip[] = [
     ...labels.map((label) => ({
       label: `Label: ${label}`,
       remove: () => setLabels(labels.filter((current) => current !== label)),

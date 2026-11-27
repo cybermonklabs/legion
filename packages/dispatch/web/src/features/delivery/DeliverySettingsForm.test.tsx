@@ -6,11 +6,15 @@ import userEvent from "@testing-library/user-event";
 import { type HeldNotifications, holdNotifications, recordCommits } from "../../__tests__/commits";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { afterFrameAndTasks } from "../../__tests__/frames";
+import { pressHeld } from "../../__tests__/held-press";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { deliverySettingsQuery } from "../../api/queries";
 import type { DeliverySettings } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
@@ -39,11 +43,25 @@ const record: DeliverySettings = {
   updated_by: { id: "alice@example.com", kind: "user" },
 };
 
-function renderForm() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** The form as the Settings page draws it, reading its record through `queryClient`, a plain
+ *  client unless the case needs the app's own; `inMain` draws it in the shell's main content, as
+ *  the app shell draws it. */
+function renderForm({
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  inMain = false,
+}: {
+  readonly queryClient?: QueryClient;
+  readonly inMain?: boolean;
+} = {}) {
   render(
     <QueryClientProvider client={queryClient}>
-      <DeliverySettingsForm />
+      {inMain ? (
+        <main>
+          <DeliverySettingsForm />
+        </main>
+      ) : (
+        <DeliverySettingsForm />
+      )}
     </QueryClientProvider>
   );
   return queryClient;
@@ -730,6 +748,217 @@ test("a save the reader stopped says it may have been made, not that it failed",
     realClock();
     cleanup();
     queryClient.clear();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Save is held while its save is out: by `aria-disabled`, not `disabled`, which Chromium answers
+// by taking the focus off the button (`emulateChromiumFocusFixup`). So Save keeps the focus
+// through the save. At the save's landing its answer is written into the cache as the record, the
+// form stays the same element and draws the stored values, and the focus stays on the same Save
+// once it is let go: never on the form's first field, out of view at the form's top, where the
+// reader's next key would be typed.
+test("Save keeps the focus once the save lands and draws the stored record, and no field takes it", async () => {
+  const user = userEvent.setup();
+  const stored: DeliverySettings = {
+    ...record,
+    deploy_repo: "acme/gadgets",
+    excluded_repos: ["acme/dojo", "acme/gadgets-smoke"],
+    updated_at: "2026-10-08T09:00:00Z",
+  };
+  const answer = Promise.withResolvers<DeliverySettings>();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockReturnValue(answer.promise);
+  const restoreFocus = emulateChromiumFocusFixup();
+
+  try {
+    const queryClient = renderForm({ inMain: true });
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/gadgets");
+    // The list as typed, one line; the server stores it as its entries.
+    await replace(user, "Excluded repositories", "acme/dojo, acme/gadgets-smoke");
+    await user.tab();
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    expect(save).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    // Save is held while the save is out, and keeps the focus.
+    await afterFrameAndTasks();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+
+    getDeliverySettings.mockResolvedValue(stored);
+    await act(async () => answer.resolve(stored));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
+    await afterFrameAndTasks();
+    expect(document.activeElement).toBe(save);
+    expect(screen.getByRole("button", { name: "Save delivery settings" })).toBe(save);
+    expect(field("Deploy repository")).not.toHaveFocus();
+    expect(field("Deploy repository").value).toBe("acme/gadgets");
+    expect(field("Excluded repositories").value).toBe("acme/dojo\nacme/gadgets-smoke");
+  } finally {
+    answer.resolve(stored);
+    restoreFocus();
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The save has its answer, and Save stays held while the Delivery page, which holds the record,
+// is still to draw it (`useHoldUntilDrawn`). Held, Save keeps the reader's focus: it is
+// `aria-disabled`, not `disabled`, which Chromium answers by taking the focus off the button
+// (`emulateChromiumFocusFixup`). A press of it then - Enter, a click, or the form's submit - sends
+// nothing.
+test("a held Save keeps the keyboard focus, and a press or a submit while it is held sends nothing", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <main>
+          <DeliverySettingsForm initial={record} />
+        </main>
+      </QueryClientProvider>
+    );
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    act(() => save.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await afterFrameAndTasks();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).not.toBeDisabled();
+    expect(save).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    await user.click(save);
+    act(() => save.closest("form")?.requestSubmit());
+    await afterFrameAndTasks();
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Enter in a field submits the form, and the field keeps the focus through the hold: each field is
+// held by `aria-disabled` and read-only, never `disabled`, which Chromium answers by taking the
+// focus off it (`emulateChromiumFocusFixup`, on in `pressHeld`). A second Enter there sends
+// nothing.
+test("Enter in the Deploy workflow box submits, and the box keeps the focus through the hold", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DeliverySettingsForm initial={record} />
+      </QueryClientProvider>
+    );
+    const box = field("Deploy workflow");
+    await pressHeld(user, box, {
+      name: "Deploy workflow",
+      sent: () => putDeliverySettings.mock.calls.length,
+    });
+    expect(box.readOnly).toBe(true);
+  } finally {
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The save has its answer, and Save stays held until the Delivery page, which holds the record,
+// draws what the save changed in the form's place (`useHoldUntilDrawn`): several frames and tasks
+// after the answer, Save is still held, and keeps the focus.
+test("Save stays held, with the focus, after its save is answered and before its caller draws what it changed", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <main>
+          <DeliverySettingsForm initial={record} />
+        </main>
+      </QueryClientProvider>
+    );
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    act(() => save.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    for (const _ of [0, 1, 2]) await afterFrameAndTasks();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Another tab saved, and this tab's read brings the record with its new write time: the fields
+// the reader did not change show the stored record, the one they changed stays as typed (#5224's
+// draft model, as the rows above hold), and a refusal of this tab's draft goes with the record it
+// was refused over.
+test("a save of another tab's that the read brings fills the fields the reader did not change from the stored record, and the refusal shown goes", async () => {
+  const user = userEvent.setup();
+  const message =
+    "the GitHub App is not installed on acme/elsewhere: its token cannot read acme/elsewhere";
+  const elsewhere: DeliverySettings = {
+    ...record,
+    deploy_repo: "acme/gadgets",
+    population_authors: ["hubot"],
+    updated_at: "2026-10-08T09:00:00Z",
+    updated_by: { id: "bob@example.com", kind: "user" },
+  };
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: message })
+  );
+
+  try {
+    const queryClient = renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/elsewhere");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+
+    getDeliverySettings.mockResolvedValue(elsewhere);
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+    });
+
+    expect(field("Deploy repository").value).toBe("acme/elsewhere");
+    expect(field("Population authors").value).toBe("hubot");
+    expect(field("Production jobs").value).toBe(
+      "widgets-release / widgets-release\nrelease / release"
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
     getDeliverySettings.mockRestore();
     putDeliverySettings.mockRestore();
   }

@@ -1,13 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
 import { prioritiesQuery } from "../../api/queries";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { Tabs, tabButtonId } from "../../components/Tabs";
 import { useIsHuman } from "../../hooks/useIsHuman";
-import { useSearchParamsUpdate } from "../../lib/url-array-params";
+import {
+  addressWithParam,
+  useAddressNavigate,
+  useAddressParams,
+  useAddressUpdate,
+  usePageAddress,
+} from "../../lib/page-address";
 import { textPrimaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import type { IssueListing } from "../project/issues-table-data";
@@ -157,8 +162,10 @@ const isTab = (value: string): value is PrioritiesTab => Object.hasOwn(TAB_LABEL
  */
 export function PrioritiesPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
-  const [params] = useSearchParams();
-  const update = useSearchParamsUpdate();
+  const params = useAddressParams();
+  const update = useAddressUpdate();
+  const address = usePageAddress();
+  const navigate = useAddressNavigate();
   const asked = params.get(TAB_PARAM);
   const tab: PrioritiesTab = asked !== null && isTab(asked) ? asked : "order";
   // An address naming a tab the page does not have, such as an older name of one, opens on the
@@ -167,11 +174,15 @@ export function PrioritiesPage(): ReactNode {
   // as it was.
   const unknownTab = asked !== null && asked !== tab;
   useEffect(() => {
-    if (unknownTab) update((changed) => changed.delete(TAB_PARAM));
+    if (unknownTab)
+      update((changed) => {
+        changed.delete(TAB_PARAM);
+        return changed;
+      });
   }, [unknownTab, update]);
   // The keys every table of the application is walked with (`j`, `k`, `x`, `o`, Enter), which
   // each table registers in the `project` scope. The registry holds one table's per page
-  // (`features/project/issues-table-keys.ts`), and each tab draws exactly one table, so the keys
+  // (`components/table-keys.ts`), and each tab draws exactly one table, so the keys
   // are that table's: the priorities, or a fault list. The work under a priority is on its own
   // page, which turns the scope on for that table alone.
   useKeymapScope("project");
@@ -233,7 +244,7 @@ export function PrioritiesPage(): ReactNode {
             // writes nothing, so Back does not stay on it once for each.
             onSelect={(next) => {
               if (next !== tab)
-                update((changed) => changed.set(TAB_PARAM, next), { replace: false });
+                navigate(addressWithParam(address, TAB_PARAM, next), { replace: false });
             }}
             tabs={[
               { id: "order", label: TAB_LABELS.order, count: rows.length },

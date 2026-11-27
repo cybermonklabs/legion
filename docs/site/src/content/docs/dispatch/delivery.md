@@ -21,11 +21,11 @@ the last 7 days always shows the latest 7; a custom range keeps its dates. The p
 84 days, and refuses a longer custom range, saying so. Changing the window clears a dragged
 stretch.
 
-The window, the search box and every filter (Repository, Parent agent, Session, Dispatch issue,
-Priority, Component, Author, rework, and whether a pull request has deployed) are written into the
-address, so a link shows the same figures to whoever opens it. Dragging across the timeline narrows
-the measures to the stretch you dragged over; the timeline itself keeps the whole window. **clear
-brush window** puts the measures back.
+The window, the search box, every filter (Repository, Parent agent, Session, Dispatch issue,
+Priority, Component, Author, rework, and whether a pull request has deployed) and the list's sort
+are written into the address, so a link shows the same figures to whoever opens it. Dragging
+across the timeline narrows the measures to the stretch you dragged over; the timeline itself
+keeps the whole window. **clear brush window** puts the measures back.
 
 ## Live updates
 
@@ -54,14 +54,14 @@ group puts them back together: every pull request a member wrote first counts un
 name, in the Parent agent filter, the colours, the lanes, the list, the details and the measures.
 The Session filter still lists each session on its own.
 
-**Edit groups**, under the Parent agent filter, lists the window's sessions with their titles and
-how many pull requests each wrote first. Select sessions and name them to make a group, and rename
-a group, add the selected sessions to it, remove a member, or delete it. Groups are shared: everyone
-who opens the page sees the same ones. A session can be in one group only, and two groups cannot
-share a name. A group may take a session's title as its name only when it holds every session with
-that title, so one name never means two things. A session that later takes a group's name as its
-title, without joining it, shows with its id beside the title. Deleting a group shows its sessions
-on their own again.
+**Edit groups**, at the foot of the **Filter** panel, lists the window's sessions with their
+titles and how many pull requests each wrote first. Select sessions and name them to make a group,
+and rename a group, add the selected sessions to it, remove a member, or delete it. Groups are
+shared: everyone who opens the page sees the same ones. A session can be in one group only, and
+two groups cannot share a name. A group may take a session's title as its name only when it holds
+every session with that title, so one name never means two things. A session that later takes a
+group's name as its title, without joining it, shows with its id beside the title. Deleting a
+group shows its sessions on their own again.
 
 Colouring the merges by Parent agent adds **Own colour and lane**: the values you choose there each
 get a colour of their own, and a lane of their own when swimlanes are on, and every other value

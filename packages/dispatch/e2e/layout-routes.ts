@@ -221,11 +221,13 @@ const priorityLabelsShown: LayoutState = {
   requiredGroups: ["labels"],
 };
 
-/** The Delivery page's session-groups editor, which the Parent agent facet's "Edit groups"
- *  opens: each group lists its sessions as chips, a list of R3, and the stress layer's group
- *  holds eleven, past the cap. */
+/** The Delivery page's session-groups editor, which "Edit groups" opens from the foot of the
+ *  page's filter panel (the row's one filter trigger, `data-control="panel-trigger"`): each group
+ *  lists its sessions as chips, a list of R3, and the stress layer's group holds eleven, past the
+ *  cap. */
 const sessionGroupsEdited: LayoutState = {
   act: async (page) => {
+    await page.locator('[data-control="control-row"] [data-control="panel-trigger"]').click();
     await page.getByRole("button", { exact: true, name: "Edit groups" }).click();
     await page
       .getByRole("dialog", { name: "Session groups" })
