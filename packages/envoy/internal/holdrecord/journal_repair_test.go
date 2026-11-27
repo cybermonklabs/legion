@@ -1,5 +1,7 @@
 package holdrecord_test
 
+//ci:reads packages/envoy/infra/README.md readmeSays, which TestTheHoldJournal's repairRows calls, reads it through ../../infra/README.md
+
 import (
 	"context"
 	"crypto/ed25519"

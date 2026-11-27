@@ -379,13 +379,15 @@
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
 #  25. a job of ci.yaml gated on a filter that no file of .github/ci-gates declares a gate of for
-#      that job, or a step gated on a filter no gate of which names the step's job, naming the job
-#      and the jobs the filter's gates do name. A filter is computed from the gates that declare
-#      it, each for one job, so a job gated on another job's filter runs on that job's reads while
-#      nothing holds its own: deleting tool-fallback-arm.py, whose filter tool_fallback
-#      tool-fallback.py declares too, passed every other rule (dispatch://INFRA-5794/spec#b-r2). A
-#      step that readies a gated step (a cache restore, a sysctl, a fetch) shares its gate, so a
-#      gate of the filter on the step's job is enough.
+#      that job, naming the job and the jobs the filter's gates do name, or a step gated on a
+#      filter no gate of which names the step's job, naming the step, that job and the workflow
+#      file the step is in. A filter no gate declares, which .github/ci-gates keeps by hand as
+#      EXCLUDED, is not this rule's. A filter is computed from the gates that declare it, each for
+#      one job, so a job gated on another job's filter runs on that job's reads while nothing holds
+#      its own: deleting tool-fallback-arm.py, whose filter tool_fallback tool-fallback.py declares
+#      too, passed every other rule (dispatch://INFRA-5794/spec#b-r2). A step that readies a gated
+#      step (a cache restore, a sysctl, a fetch) shares its gate, so a gate of the filter on the
+#      step's job is enough.
 #  26. a Go test file, or a Go file that holds a //ci: line, that reads a path outside its Go module
 #      through `..` (a filepath.Join or path.Join whose leading arguments are string literals
 #      starting with `..`, taken as far as its literals go, or a `"../..."` literal, comments
@@ -394,11 +396,12 @@
 #      are computed from those lines, so a line taken out drops the read from every filter, and a
 #      change to the file starts no job that runs the test: taking out a //ci:reads line of
 #      packages/daemon/internal/prompts/roles_test.go passed every other rule
-#      (dispatch://INFRA-5794/spec#b-r2). A path no file of the repository holds (an escape a
-#      test refuses, a fixture it writes), the module's own root or a directory around it (a path
-#      the source finishes with a value it computes, which the source cannot name), and a read
-#      inside the file's own module, which the go list closure of the packages the job compiles
-#      covers, are not this rule's.
+#      (dispatch://INFRA-5794/spec#b-r2). A path is in the deepest module whose directory holds
+#      it, so a read into a module nested in the file's (packages/envoy/infra in packages/envoy)
+#      is outside the file's module. A path no file of the repository holds (an escape a test
+#      refuses, a fixture it writes), the module's own root or a directory around it (a path the
+#      source finishes with a value it computes, which the source cannot name), and a read inside
+#      the file's own module are not this rule's.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

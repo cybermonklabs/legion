@@ -6,6 +6,8 @@ GATE = harness("go_test_test", "Test the Go test runner and its retry", f"{SCRIP
     ("packages/envoy/scripts/backend-count.sh", "the store counter two cases run under the runner, copied into the fixture module"),
     (f"{SCRIPTS}/race_memory.py", "the sampler go-test.sh --race-memory runs gotestsum under, copied beside it"),
     (f"{SCRIPTS}/testdata/go-test/**", "the fixture module every case runs the real go and gotestsum over"),
-    (".github/actions/install-gotestsum/action.yml", "the install of the gotestsum the harness runs"),
+    (".github/actions/install-gotestsum/**", "the install of the gotestsum the harness runs"),
     (".github/ci-tools.yaml", "the gotestsum row that install reads"),
+    (f"{SCRIPTS}/ci-tools.sh", "`.github/actions/install-gotestsum/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` "
+                               "sources it: ci_tools_fetch reads the row's sources and checks the digest"),
 ])

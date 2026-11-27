@@ -1843,6 +1843,34 @@ func TestEscapeRefused(t *testing.T) {
 GO
 run_check "$root"
 check "a path no file holds, and one in a comment, are no reads" "$(is "$status" 0)"
+# A read into a module nested in the test's own, as packages/envoy/infra is in packages/envoy, is
+# outside the test's module: go list of the test's packages reaches no file of the nested one.
+root=$(fixture declared-read-nested)
+mkdir -p "$root/mod/nested"
+printf 'module example.com/nested\n\ngo 1.21\n' > "$root/mod/nested/go.mod"
+echo 'nested' > "$root/mod/nested/README.md"
+cat > "$root/mod/lib/nested_test.go" <<'GO'
+package lib
+
+import (
+	"os"
+	"testing"
+)
+
+func TestNestedReadme(t *testing.T) {
+	if _, err := os.ReadFile("../nested/README.md"); err != nil {
+		t.Fatal(err)
+	}
+}
+GO
+run_check "$root"
+check "a read into a nested module that no //ci: line names fails" "$(is "$status" 1)"
+check "naming the test file and the path" \
+  "$(contains "$out" '::error file=mod/lib/nested_test.go::mod/lib/nested_test.go reads mod/nested/README.md through "../nested/README.md", outside its module mod, and no //ci:reads')"
+replace "$root/mod/lib/nested_test.go" $'package lib\n\nimport (' \
+  $'package lib\n\n//ci:reads mod/nested/README.md TestNestedReadme reads ../nested/README.md\n\nimport ('
+run_check "$root"
+check "and passes once a //ci:reads line names it" "$(is "$status" 0)"
 
 # Rule 22: a gate that reads a harness under .github/scripts reads every script that harness links
 # into its fixtures (through every `for linked in ...` loop of the harness, not the last one only),

@@ -3209,8 +3209,8 @@ def check_dead_patterns(data, expander: Expander, problems: list[Annotation]) ->
 # its escapes, or a raw one.
 GO_STRING = r'"(?:[^"\\\n]|\\.)*"|`[^`]*`'
 # A filepath.Join or path.Join whose leading arguments are string literals, the first of them `..`
-# or `../...`: the literal prefix of the path it builds.
-GO_JOIN = re.compile(rf"\b(?:filepath|path)\.Join\(\s*((?:(?:{GO_STRING})\s*,\s*)*(?:{GO_STRING}))")
+# or `../...`: the function's name, and the literal prefix of the path it builds.
+GO_JOIN = re.compile(rf"\b((?:filepath|path)\.Join)\(\s*((?:(?:{GO_STRING})\s*,\s*)*(?:{GO_STRING}))")
 # A string literal that is a path up out of its directory, `"../..."`.
 GO_UP_LITERAL = re.compile(r'"(\.\./(?:[^"\\\n]|\\.)*)"|`(\.\./[^`]*)`')
 
@@ -3246,12 +3246,15 @@ def go_up_reads(path: str, text: str) -> list:
     the source text it was read from): each filepath.Join or path.Join whose leading arguments are
     string literals starting with `..`, taken as far as its literals go, and each `"../..."`
     literal. A path the file then extends with a value it computes is read here as the directory
-    its literals reach, which is all the source says of it."""
+    its literals reach, which is all the source says of it. Each of the two opens a string literal
+    with `..`, so a text holding neither `"..` nor `` `.. `` holds none, and is not scanned."""
+    if '"..' not in text and "`.." not in text:
+        return []
     code, here, found = go_without_comments(text), os.path.dirname(path), []
     for match in GO_JOIN.finditer(code):
-        parts = [part[1:-1] for part in re.findall(GO_STRING, match.group(1))]
+        parts = [part[1:-1] for part in re.findall(GO_STRING, match.group(2))]
         if parts and (parts[0] == ".." or parts[0].startswith("../")):
-            found.append((os.path.normpath(os.path.join(here, *parts)), f"filepath.Join({match.group(1)})"))
+            found.append((os.path.normpath(os.path.join(here, *parts)), f"{match.group(1)}({match.group(2)})"))
     for match in GO_UP_LITERAL.finditer(code):
         literal = match.group(1) or match.group(2)
         found.append((os.path.normpath(os.path.join(here, literal)), f'"{literal}"'))
@@ -3259,17 +3262,23 @@ def go_up_reads(path: str, text: str) -> list:
 
 
 def go_module_roots(files: list) -> list:
-    """The directory of every go.mod of the repository, the deepest first, so a nested module
-    (packages/envoy/infra) is found before the one around it."""
+    """The directory of every go.mod of the repository, the deepest first and a go.mod at the root
+    last, so a nested module (packages/envoy/infra) is found before the one around it."""
     return sorted({os.path.dirname(f) or "." for f in files if os.path.basename(f) == "go.mod"},
-                  key=lambda d: (-d.count("/"), d))
+                  key=lambda d: (-(d.count("/") + (d != ".")), d))
 
 
 def under(path: str, directory: str) -> bool:
     return directory == "." or path == directory or path.startswith(directory + "/")
 
 
-def directive_covers(d, path: str, files: set, expander: Expander) -> bool:
+def module_of(path: str, roots: list):
+    """The Go module a path is in: the first of go_module_roots' roots it is under, which is the
+    deepest, or None."""
+    return next((root for root in roots if under(path, root)), None)
+
+
+def directive_covers(d, path: str, expander: Expander) -> bool:
     """Whether one //ci: line of a file declares a read of `path`, a file or a directory: a reads
     or reads-set line whose files include it or one under it, or a builds line whose go build
     runs in it, builds a package at or above it, or builds a package under it (a directory the
@@ -3281,11 +3290,11 @@ def directive_covers(d, path: str, files: set, expander: Expander) -> bool:
                 if under(path, built) or under(built, path) or path == entry.workdir:
                     return True
         else:
-            declared = set(read_files(entry, expander))
+            declared = read_files(entry, expander)
             if any(c in path for c in "*?["):
                 if declared & set(expander.expand(path)):
                     return True
-            elif any(f == path or f.startswith(path + "/") for f in declared):
+            elif any(under(f, path) for f in declared):
                 return True
     return False
 
@@ -3298,34 +3307,35 @@ def check_declared_reads(data, expander: Expander, files: list, problems: list[A
     rule was written for). It reads each Go test file, and each Go file that holds a //ci: line, for
     the paths go_up_reads finds, and keeps those outside the file's module that name a file or a
     directory of the repository and are not the module's own root or a directory around it (a path
-    the source finishes with a value it computes cannot be named from the source). A read inside
-    the file's module is left to the go list closure of the packages the job compiles. A path none
-    of the file's //ci: lines covers fails, naming the file, the path and the source text it came
-    from."""
+    the source finishes with a value it computes cannot be named from the source). A path is in
+    the deepest module whose directory holds it, so a read into a module nested in the file's
+    (packages/envoy/infra in packages/envoy) is outside the file's module. This rule checks no read
+    inside the file's module. A path none of the file's //ci: lines covers fails, naming the file,
+    the path and the source text it came from."""
     roots = go_module_roots(files)
-    known = set(files)
+    known = expander.known
     lines = defaultdict(list)
     for d in getattr(data, "DIRECTIVES", ()):
         lines[d.path].append(d)
     for path in files:
         if not path.endswith(".go") or not (path.endswith("_test.go") or path in lines):
             continue
+        module = module_of(path, roots)
+        if module is None:
+            continue
         try:
             text = (REPO / path).read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
-        module = next((root for root in roots if under(path, root)), None)
-        if module is None:
-            continue
         seen = set()
         for read, source in go_up_reads(path, text):
-            if read in seen or read.startswith("..") or under(read, module) or under(module, read):
+            if read in seen or read.startswith("..") or module_of(read, roots) == module or under(module, read):
                 continue
             seen.add(read)
             if not (read in known or expander.expand(f"{read}/**") or
                     (any(c in read for c in "*?[") and expander.expand(read))):
                 continue  # a path the test makes up (an escape it refuses, a fixture it writes)
-            if any(directive_covers(d, read, known, expander) for d in lines[path]):
+            if any(directive_covers(d, read, expander) for d in lines[path]):
                 continue
             suggested = read if read in known or any(c in read for c in "*?[") else f"{read}/**"
             problems.append(error(path, f"{path} reads {read} through {source}, outside its module {module}, and no "
