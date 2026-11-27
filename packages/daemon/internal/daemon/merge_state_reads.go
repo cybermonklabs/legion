@@ -347,14 +347,16 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 }
 
 // mergeStateAfter is the clock the ladders' waits run on, the climbs' between their reads and each
-// wait before a read after a ladder (baseFollowWait): a wait of length wait as the ladder set it,
-// of which remaining is left when the ladder begins it, ending after remaining - time.After -
-// unless the runtime's mergeStateTimer names another clock, as a test does that must decide when a
-// wait ends rather than race it. That clock is given the wait as the ladder set it, so what it
-// decides does not turn on how long the ladder took to begin waiting.
-func (w *workflowRuntime) mergeStateAfter(wait, remaining time.Duration) <-chan time.Time {
+// wait before a read after a ladder (baseFollowWait). set is the wait the ladder's place gave that
+// read, and remaining is what is left of it when the wait begins, which is the longer of the two
+// where a rate limit pushed the place's due moment out (nextPlace). The wait ends after remaining,
+// as production's does, unless the runtime's mergeStateTimer names another clock, as a test does
+// that must decide when a wait ends rather than race it. That clock is given both: set, so a test
+// can tell one place's wait from another's whatever the ladder spent reaching it, and remaining,
+// so a clock that only passes the wait through (time.After) keeps production's own schedule.
+func (w *workflowRuntime) mergeStateAfter(set, remaining time.Duration) <-chan time.Time {
 	if w.mergeStateTimer != nil {
-		return w.mergeStateTimer(wait)
+		return w.mergeStateTimer(set, remaining)
 	}
 	return time.After(remaining)
 }

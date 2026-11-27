@@ -414,8 +414,10 @@ func (w *workflowRuntime) baseFollowWait(ctx context.Context, key string) bool {
 }
 
 // firstDue is the soonest moment an owed pull request of read on its ladder falls due, now for
-// one with no due time yet, and the wait its place set before that read (baseOwed.wait). Under
-// mergeStateMu, with nothing in a climb.
+// one with no due time yet, and the wait its place's ladder step set (baseOwed.wait). That wait is
+// what the place's step gives, not the time until it falls due: where a rate limit pushed the due
+// moment out, nextPlace set it at the longer of the two, so the time left is longer than this
+// wait. Under mergeStateMu, with nothing in a climb.
 func firstDue(read *baseRead) (time.Time, time.Duration) {
 	var first time.Time
 	var set time.Duration
