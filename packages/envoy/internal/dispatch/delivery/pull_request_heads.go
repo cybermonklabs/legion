@@ -68,11 +68,14 @@ type PullRequestHead struct {
 	HeadRef string
 	BaseRef string
 	// BaseSHA is the commit the base branch was at when the writer read the pull request
-	// (GitHub's base.sha), "" where the writer read none, which stores null: "not known". The
-	// check states settler's read of a pull request's commits is GitHub's comparison of the head
-	// and this base revision as its claim read them (PullRequestMembership), and applies only where
-	// the row still names them (pull_request_former_heads_snapshot, migration 20261126005348); a
-	// row that names none is not read.
+	// (GitHub's base.sha), "" where the writer read none: a row with no revision stored stores
+	// null, "not known", and a row that stores one keeps it, since a listener of the release before
+	// this field sends none. The check states settler's read of a pull request's commits is
+	// GitHub's comparison of the head and this base revision as its claim read them
+	// (PullRequestMembership), and applies only where the row still names them
+	// (pull_request_former_heads_snapshot, migration 20261126005348); a row that names none is not
+	// read, and a revision the base branch has moved on from reads as Stale there and decides
+	// nothing.
 	BaseSHA           string
 	State             string
 	IssueKey          *string
@@ -443,7 +446,8 @@ const headWriteApplies = `(excluded.event_at is null or stored.event_at is null 
 // upsertHeadQuery is upsertHeadRow's statement: citingRowsRejudged over renames, then the insert.
 // Its parameters are the head's columns in the order of the insert, then $13 the attribution's
 // completeness, $14 AttributionRuleVersion, $15 to $19 the stored inputs (storedInputs), $20 the
-// base revision (PullRequestHead.BaseSHA, "" stored as null) and $21 the merge time. NewAttributor
+// base revision (PullRequestHead.BaseSHA, "" stored as null on a new row and keeping the stored
+// revision on a row that holds one) and $21 the merge time. NewAttributor
 // builds it once from its rename pairs.
 func upsertHeadQuery(renames refs.Renames) string {
 	return citingRowsRejudged(renames) + `
@@ -456,7 +460,7 @@ func upsertHeadQuery(renames refs.Renames) string {
 	values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16, $17, $18, $19, nullif($20, ''), $21)
 	on conflict (repo, number) do update set
 		(` + headLaidColumns + `) = (` + strings.Join(headLaidRules("$13::boolean"), ", ") + `),
-		base_sha = excluded.base_sha,
+		base_sha = coalesce(excluded.base_sha, stored.base_sha),
 		attribution_source = case when $13::boolean
 			then excluded.attribution_source else stored.attribution_source end,
 		attribution_title_keys = case when $13::boolean
@@ -2149,8 +2153,10 @@ func mergeLearnedOnBranch(answers HeadAnswers, repoFull, branch, sha string) boo
 // the branch's name (PullRequestHead.BaseSHA): the base branch can move with no change of its
 // name, and the check states settler's read of which commits are the pull request's own compares
 // the head with one base revision. An envelope that does not name it, one a publisher older than
-// this field made, stores the revision as not known, and the settler reads no such row until a
-// write stores one, which the reconcile's read of the pull request does.
+// this field made, keeps the revision the row stores, or stores it as not known on a row that
+// stores none, and the settler reads no such row until a write stores one, which the reconcile's
+// read of the pull request does. A kept revision the base branch has since moved on from is one
+// that read finds Stale, which decides nothing.
 //
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
 // canonicalised before anything is read or written (refs.Renames.Canonical), and no row is ever
