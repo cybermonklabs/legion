@@ -5044,6 +5044,12 @@ The reasons, which `asof.AbsentFields` gives for each member:
   A `block_id` that the newest event at the cut names is given as that event holds it, and no answer at a cut reads the id from the row.
   An event log's events keep the anchor that each event wrote, which is each event's own record.
 
+- The boot fill of review hashes (`docs.FillReviewContentHashes`) writes `content_sha256`, and `content_sha256_source` as `backfill`, into a review written before reviews held the hash of the bytes they approve, with no event.
+  No record gives the time of the fill, so no record gives whether the review held its hash at a cut.
+  So where the source of a document's latest review is `backfill`, an answer at any cut, before the fill or after it, leaves both out of the document's approval.
+  An approval whose review its insert pinned (`insert`) gives both at a cut, and one whose review holds no hash gives neither.
+  `GET /api/v1/artifacts/{id}/reviews` answers no `as_of`, and an event log's review events keep their own payload, which the fill does not change.
+
 - The restore of a decided ask's wording (`docs.Service.RestoreDecidedWordings`) writes its question, options, `multiple` and urgency with no event.
   So these four are left out, with the ask's part ids and revision, at a cut where the wording of the ask's newest event at the cut is not the wording just after it by the record: the previous wording of its next edit, the wording of its next other event, or the row's (`asof.AsksChangedAfterStatement`).
   So is each member that an answer draws from that wording: the question's tree, which an answer carries for a request that sends `Dispatch-Trees: 1` (the trees of the options go out with the options), the question of the ask that an agent's answer is on, and the snippet of an ask hit of a search, with its tree.

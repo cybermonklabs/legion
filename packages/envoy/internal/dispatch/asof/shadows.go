@@ -54,18 +54,24 @@ func ShadowedTables() []string {
 // createdByTheCut is the shadow of an append-only table: each row whose insert began at or before
 // the cut, as the row stands. created_at is the inserting transaction's now(), the clock events
 // keep. Every column of the table is the row's own, so a column added later is answered with no
-// change here. A writer changes such a row after its insert only where the row as it stands is
+// change here. These writers change such a row after its insert, and the row as it stands is
 // right at the cut too:
 //   - artifact_reviews.event_seq: the transaction of the review's insert writes it (docs.QueueReview).
-//   - artifact_reviews.content_sha256: the boot backfill (docs.FillReviewContentHashes) writes the
-//     hash of the text of the reviewed version, which no write changes, so the hash is the one
-//     that text had at the cut.
 //   - artifact_versions.accepted_from: the transaction that inserts the version writes it, the
 //     accept of a suggestion (api/comment_actions.go).
 //   - artifact_versions.summary and renamed_by_delete: the delete of a comment renames the version
 //     that its accepted suggestion named (renameAcceptedVersion, api/comment_delete.go). A post
 //     deleted after the cut reads at the cut as deleted, with no part of its body (decision 14),
 //     so the version reads renamed at the cut too, as the present read gives it.
+//
+// One writer changes a row with no record of when. The boot fill (docs.FillReviewContentHashes)
+// writes artifact_reviews.content_sha256, and its source backfill, into a review written before
+// reviews held them, appends no event, and no record gives the time it ran. So a review the fill
+// pinned reads here with its pin at every cut, though it may have held none then. The shadow
+// still gives the row as it stands, and a past-time answer leaves out the hash and the source of
+// a review whose source is backfill and names both absent (reason E, the api package's
+// approvalAtTheCut). The insert's own trigger writes every other pin, which the review held from
+// its insert.
 func createdByTheCut(table string) func(cut string) string {
 	return func(cut string) string {
 		return "select * from public." + table + " where created_at <= " + cut

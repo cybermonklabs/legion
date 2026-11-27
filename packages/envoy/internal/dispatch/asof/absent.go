@@ -60,6 +60,9 @@ const (
 	// E, for the wording of an ask.
 	reasonAskWording = "The restore of a decided ask's wording changes this field with no event. " +
 		"No record gives the time of the restore, so no record gives the wording at the cut."
+	// E, for the content hash of a document's latest review and its source.
+	reasonReviewHashFill = "The fill at boot pinned the content hash of this review with no event. " +
+		"No record gives the time of the fill, so no record gives whether the review held the hash at the cut."
 	// P
 	reasonParts = "Dispatch gives an ask's revision and part ids only where the ask did not change after the cut " +
 		"and its newest event at the cut stores the revision and the part ids that the block index holds now."
@@ -91,16 +94,17 @@ const (
 // changed with no event, in each answer that gives it (an ask's, askWordingFields; the question of
 // the ask of an agent's answer; the snippet of an ask hit, searchFields), the route's status
 // reason of an ask's reach (routeReachFields), each reply of an ask's thread (commentFields), the
-// documents of an approval request in the inbox (askFields), the place of an anchored block, and
-// of the blocks that the text route gives, the anchored counts and the ids of a table's rows and
-// cells, which the block routes leave out too (blockFields), and whether a result of a check that
-// reads the program's current deploy counts (not_counted, reasonCurrentDeploy). The list's snippet
-// tree of a search result is here for an ask hit alone, whose wording at the cut no record may
-// give (searchFields): a past-time search draws every other snippet tree from the headline of the
-// text at the cut. A route that the plan lists with no field has an empty list. A past-time answer
-// names a member in the Dispatch-As-Of-Absent header only when it leaves that member out, and it
-// names only members this table holds for its route (WriteHeaders, which tests check with
-// ValidAbsent).
+// documents of an approval request in the inbox (askFields), the content hash of a document's
+// latest review and its source where the fill at boot pinned the review with no event
+// (documentFields), the place of an anchored block, and of the blocks that the text route gives,
+// the anchored counts and the ids of a table's rows and cells, which the block routes leave out
+// too (blockFields), and whether a result of a check that reads the program's current deploy
+// counts (not_counted, reasonCurrentDeploy). The list's snippet tree of a search result is here
+// for an ask hit alone, whose wording at the cut no record may give (searchFields): a past-time
+// search draws every other snippet tree from the headline of the text at the cut. A route that
+// the plan lists with no field has an empty list. A past-time answer names a member in the
+// Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
+// this table holds for its route (WriteHeaders, which tests check with ValidAbsent).
 //
 // The comment beside a route whose entry names no member of an ask's wording says why the route
 // gives none that can be unknown at the cut.
@@ -123,8 +127,7 @@ var AbsentFields = map[string][]AbsentField{
 		{"/open_asks/*/waiting_on_person", reasonProjectDefault},
 		{"/open_asks/*/approval/documents", reasonMigrationFill},
 		{"/open_asks/*/anchor/block_id", reasonAnchorBlockID},
-		{"/artifacts/*/approval/documents", reasonMigrationFill},
-	}, askWordingFields("/open_asks/*")),
+	}, documentFields("/artifacts/*"), askWordingFields("/open_asks/*")),
 	// An unpaged listing is an array of issues; a paged one holds them under issues. The listing
 	// counts an issue's open asks and resolve answers keys: neither gives an ask's wording.
 	"GET /api/v1/issues":         slices.Concat(issueListingFields("/*"), issueListingFields("/issues/*")),
@@ -320,10 +323,14 @@ func routeReachFields(prefix string) []AbsentField {
 	}
 }
 
-// documentFields are the fields of a document at prefix.
+// documentFields are the fields of a document at prefix: the documents of the approval request
+// that its approval awaits, and the content hash of its latest review and that hash's source,
+// which the fill at boot pinned with no event at a time that no record gives.
 func documentFields(prefix string) []AbsentField {
 	return []AbsentField{
 		{prefix + "/approval/documents", reasonMigrationFill},
+		{prefix + "/approval/content_sha256", reasonReviewHashFill},
+		{prefix + "/approval/content_sha256_source", reasonReviewHashFill},
 	}
 }
 

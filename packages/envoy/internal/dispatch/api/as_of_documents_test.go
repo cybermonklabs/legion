@@ -1,21 +1,26 @@
 // as_of_documents_test.go holds the document routes at a cut to
 // the cases the equality harness (as_of_equality_test.go) does not write: a document read after a
 // version and an unsettled edit made after the cut, with a typed block, two blocks of one text and
-// a table; a document removed after the cut; a version made after the cut; and an approval
-// request written before approval requests held their documents.
+// a table; a document removed after the cut; a version made after the cut; an approval request
+// written before approval requests held their documents; and a review whose hash the boot fill
+// pinned with no event.
 package api
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -369,4 +374,201 @@ func TestADocumentAtACutAwaitsAnApprovalRequestWrittenBeforeItsDocuments(t *test
 			}
 		})
 	}
+}
+
+// TestAReviewHashTheBootFillPinnedIsAbsentAtEveryCut: the boot fill of review hashes
+// (docs.FillReviewContentHashes) writes the hash of the reviewed version, and its source backfill,
+// into a review written before reviews held them, with no event and no record of its time. So no
+// record gives whether the review held the hash at a cut, and at every cut, one taken before the
+// fill and one after it, the approval whose latest review the fill pinned leaves out
+// content_sha256 and content_sha256_source and names both absent: on the document's read by id
+// and by slug, on its issue's list of documents and on its issue. In the same answers the approval
+// of a document whose review its insert pinned keeps both, and before the fill the review that
+// holds no pin gives neither and names nothing. Every other member of each approval at the cut,
+// its state and version among them, is the member of the present read, which gives the fill's
+// hash and source.
+func TestAReviewHashTheBootFillPinnedIsAbsentAtEveryCut(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASDH")
+	ctx := context.Background()
+	pool := world.served.deps.Store.Pool
+	issue := asOfIssue(t, world.handler, map[string]any{
+		"project": "ASDH", "title": "A review the boot fill pinned", "spec": "# Spec\n\nApprove this.\n",
+	})
+	spec, owner := issue.PrimaryArtifactID, "/api/v1/issues/"+issue.Key
+	uploadDocument(t, world.handler, owner, "notes.md", "# Notes\n\nThe notes as approved.\n")
+	uploaded := uploadDocument(t, world.handler, owner, "notes.md", "# Notes\n\nThe notes as changed since.\n").Artifact
+	notes := uploaded.ID
+	// The spec's review is pinned by its insert, as every review this build writes is.
+	reviewDocument(t, world.handler, spec, "alice", "approved", "")
+	world.settle(t)
+
+	// The notes' review as a build before reviews held their hash wrote it (docs'
+	// TestFillReviewContentHashesFillsOldRowsOnceAsBackfill): an approval of version 1, which
+	// version 2 made stale, inserted with the trigger that pins each insert turned off, so the row
+	// holds no hash and no source.
+	legacy, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the older build's review: %v", err)
+	}
+	defer legacy.Rollback(ctx)
+	write := func(statement string, args ...any) {
+		t.Helper()
+		if _, err := legacy.Exec(ctx, statement, args...); err != nil {
+			t.Fatalf("write the notes' review as an older build wrote it: %s: %v", statement, err)
+		}
+	}
+	write(`alter table artifact_reviews disable trigger artifact_reviews_content_sha256_insert`)
+	write(`insert into artifact_reviews (artifact_id, version, state, actor) values ($1, 1, 'approved', '{"kind":"user","id":"alice"}')`, notes)
+	// The review-sequence constraint trigger is deferred: drain it before the insert trigger is
+	// turned on again in this transaction.
+	write(`set constraints all immediate`)
+	write(`alter table artifact_reviews enable trigger artifact_reviews_content_sha256_insert`)
+	if err := legacy.Commit(ctx); err != nil {
+		t.Fatalf("commit the older build's review: %v", err)
+	}
+
+	specHash := contentHash(versionMarkdown(t, world.handler, spec, 1))
+	notesHash := contentHash(versionMarkdown(t, world.handler, notes, 1))
+	if notesHash == contentHash(versionMarkdown(t, world.handler, notes, 2)) {
+		t.Fatal("the two versions of the notes have one hash: the fixture cannot tell which version the fill pinned")
+	}
+	type pin struct{ hash, source string }
+	// pins is the pin each review of the two documents holds now, by its document, as the row
+	// holds it: no hash and no source read as "".
+	pins := func(t *testing.T) map[string]pin {
+		t.Helper()
+		rows, err := pool.Query(ctx, `
+			select artifact_id::text, coalesce(content_sha256, ''), coalesce(content_sha256_source, '')
+			from artifact_reviews where artifact_id::text = any($1)`, []string{spec, notes})
+		if err != nil {
+			t.Fatalf("read the reviews' pins: %v", err)
+		}
+		defer rows.Close()
+		held := map[string]pin{}
+		for rows.Next() {
+			var id string
+			var row pin
+			if err := rows.Scan(&id, &row.hash, &row.source); err != nil {
+				t.Fatalf("read the reviews' pins: %v", err)
+			}
+			if _, twice := held[id]; twice {
+				t.Fatalf("document %s holds two reviews, want one", id)
+			}
+			held[id] = row
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the reviews' pins: %v", err)
+		}
+		return held
+	}
+	inserted := pin{hash: specHash, source: "insert"}
+	if held := pins(t); !maps.Equal(held, map[string]pin{spec: inserted, notes: {}}) {
+		t.Fatalf("the reviews hold the pins %+v, want the spec's pinned by its insert and the notes' with none", held)
+	}
+
+	named := map[string]string{spec: "the spec", notes: "notes.md"}
+	// Each document's approval now: the spec approved at its one version, the notes stale at
+	// version 1 of 2.
+	states := map[string]string{spec: "approved", notes: "stale"}
+	latest := map[string]json.Number{spec: "1", notes: "2"}
+	reads := []struct {
+		target, list, prefix string
+		holds                []string
+	}{
+		{target: "/api/v1/artifacts/" + spec, holds: []string{spec}},
+		{target: "/api/v1/artifacts/" + notes, holds: []string{notes}},
+		{target: owner + "/artifacts/" + uploaded.Slug, holds: []string{notes}},
+		{target: owner + "/artifacts", prefix: "/*", holds: []string{spec, notes}},
+		{target: owner, list: "artifacts", prefix: "/artifacts/*", holds: []string{spec, notes}},
+	}
+	// approvalsIn is the approval of each of the two documents that doc, an answer, holds, by the
+	// document's id: under list, else in the array doc is, else doc's own.
+	approvalsIn := func(t *testing.T, doc any, list string) map[string]map[string]any {
+		t.Helper()
+		documents := []any{doc}
+		if list != "" {
+			documents, _ = doc.(map[string]any)[list].([]any)
+		} else if listed, ok := doc.([]any); ok {
+			documents = listed
+		}
+		approvals := map[string]map[string]any{}
+		for _, candidate := range documents {
+			document, _ := candidate.(map[string]any)
+			if id, _ := document["id"].(string); id == spec || id == notes {
+				approval, ok := document["approval"].(map[string]any)
+				if !ok {
+					t.Fatalf("%s in the answer holds no approval: %s", named[id], abbreviateValue(document))
+				}
+				approvals[id] = approval
+			}
+		}
+		return approvals
+	}
+	// readAll reads each target now and at cut. notesPin is the pin of the notes' review now.
+	readAll := func(t *testing.T, cut asof.Cut, notesPin pin) {
+		t.Helper()
+		filled := notesPin.source == "backfill"
+		want := map[string]pin{spec: inserted, notes: notesPin}
+		for _, read := range reads {
+			t.Run(read.target, func(t *testing.T) {
+				now := approvalsIn(t, world.readNow(t, read.target), read.list)
+				doc, absent := world.readAt(t, read.target, cut)
+				atCut := approvalsIn(t, doc, read.list)
+				if len(now) != len(read.holds) || len(atCut) != len(read.holds) {
+					t.Fatalf("the answer holds the approvals of %d documents now and %d at the cut, want %d", len(now), len(atCut), len(read.holds))
+				}
+				for _, id := range read.holds {
+					present, then := now[id], atCut[id]
+					hash, _ := present["content_sha256"].(string)
+					source, _ := present["content_sha256_source"].(string)
+					if got := (pin{hash: hash, source: source}); got != want[id] {
+						t.Errorf("the approval of %s now gives the pin %+v, want %+v", named[id], got, want[id])
+					}
+					if present["state"] != states[id] || present["version"] != json.Number("1") || present["latest_version"] != latest[id] {
+						t.Errorf("the approval of %s now is %s, want %s at version 1 of %s", named[id], abbreviateValue(present), states[id], latest[id])
+					}
+					expected := maps.Clone(present)
+					if id == notes && filled {
+						for _, member := range []string{"content_sha256", "content_sha256_source"} {
+							if value, given := then[member]; given {
+								t.Errorf("approval/%s of %s at the cut is %s, which no record at the cut gives: the answer leaves it out", member, named[id], abbreviateValue(value))
+							}
+							delete(expected, member)
+						}
+					}
+					if !reflect.DeepEqual(then, expected) {
+						t.Errorf("the approval of %s at the cut is %s, want %s", named[id], abbreviateValue(then), abbreviateValue(expected))
+					}
+				}
+				leftOut := filled && slices.Contains(read.holds, notes)
+				for _, member := range []string{"/approval/content_sha256", "/approval/content_sha256_source"} {
+					if pointer := read.prefix + member; slices.Contains(absent, pointer) != leftOut {
+						t.Errorf("the answer at the cut names %v absent; naming %s is %t, want %t", absent, pointer, !leftOut, leftOut)
+					}
+				}
+			})
+		}
+	}
+
+	beforeFill := takeCut()
+	t.Run("before the fill", func(t *testing.T) { readAll(t, beforeFill, pin{}) })
+
+	// The reads' detached work ends before the newest event is taken, so only the fill runs
+	// between the two reads of it.
+	world.settle(t)
+	newest := lastEventID(t, world.served.deps.Store)
+	if filled, err := docs.FillReviewContentHashes(ctx, pool); err != nil || filled != (docs.ReviewHashFill{Filled: 1, Unhashable: 0}) {
+		t.Fatalf("the fill = %+v, %v; want the notes' review alone filled and none left unhashable", filled, err)
+	}
+	if after := lastEventID(t, world.served.deps.Store); after != newest {
+		t.Fatalf("the newest event was %d before the fill and is %d after it, want the fill to append none", newest, after)
+	}
+	backfilled := pin{hash: notesHash, source: "backfill"}
+	if held := pins(t); !maps.Equal(held, map[string]pin{spec: inserted, notes: backfilled}) {
+		t.Fatalf("after the fill the reviews hold the pins %+v, want the spec's as its insert pinned it and the notes' version 1 filled as backfill", held)
+	}
+
+	t.Run("after the fill, at the cut before it", func(t *testing.T) { readAll(t, beforeFill, backfilled) })
+	afterFill := takeCut()
+	t.Run("at a cut after the fill", func(t *testing.T) { readAll(t, afterFill, backfilled) })
 }

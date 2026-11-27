@@ -213,21 +213,44 @@ func tableAtTheCut(ctx context.Context, table *model.BlockTable, place string) {
 	}
 }
 
+// reviewPinBackfill is the content_sha256_source of a review whose hash the boot fill wrote
+// (docs.FillReviewContentHashes): the update trigger of migration 20261105084017 names the pin
+// so. The insert's own trigger names the pin of every other review 'insert'.
+const reviewPinBackfill = "backfill"
+
 // approvalAtTheCut names what a past-time answer leaves out of approval, the approval of the
 // document at place: the documents of the open approval request that it awaits, where no record
 // at the cut gives them (reason B, model.ArtifactApproval.DocumentsUnknown, which only a read at a
-// cut sets).
+// cut sets), and the content hash of its latest review with that hash's source, where the boot
+// fill pinned the review (reason E, backfillPinned). The approval is the one the read at the cut
+// gave: nothing else is read to decide.
 func approvalAtTheCut(ctx context.Context, approval *model.ArtifactApproval, place string) {
-	if approval != nil && approval.DocumentsUnknown {
+	if approval == nil {
+		return
+	}
+	if approval.DocumentsUnknown {
 		leaveOut(ctx, place+"/approval/documents")
+	}
+	if backfillPinned(approval) {
+		leaveOut(ctx, place+"/approval/content_sha256", place+"/approval/content_sha256_source")
 	}
 }
 
-// approvalsAtTheCut is approvalAtTheCut of each of artifacts, an answer that is the list.
+// backfillPinned reports whether the boot fill pinned the hash of approval's latest review. The
+// fill writes the hash and its source into a review written before reviews held them, and
+// appends no event, and no record gives the time it ran. So whether the review held the pin at a
+// cut is unknown at every cut, whatever the review's own time. A review that its insert pinned
+// held its pin from its insert, and one that holds no pin gives none, so neither is left out.
+func backfillPinned(approval *model.ArtifactApproval) bool {
+	return approval.ContentSHA256Source != nil && *approval.ContentSHA256Source == reviewPinBackfill
+}
+
+// approvalsAtTheCut is approvalAtTheCut of each of artifacts, an answer that is the list. It
+// makes the place of a document only where its approval leaves out a member.
 func approvalsAtTheCut(ctx context.Context, artifacts []model.Artifact) {
 	at := elementsOf("")
 	for index := range artifacts {
-		if approval := artifacts[index].Approval; approval != nil && approval.DocumentsUnknown {
+		if approval := artifacts[index].Approval; approval != nil && (approval.DocumentsUnknown || backfillPinned(approval)) {
 			approvalAtTheCut(ctx, approval, at(index))
 		}
 	}

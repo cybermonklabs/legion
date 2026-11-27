@@ -29,6 +29,11 @@ body: |-
   comment or one ask its `anchor_block` too, and names them in `Dispatch-As-Of-Absent`; where it
   names none, the answer keeps the unpinned anchor from the event at the cut.
 
+  The boot fill of review hashes writes a review's `content_sha256`, with `content_sha256_source`
+  `backfill`, with no event, and no record gives when it ran. So where a document's latest review
+  has the source `backfill`, every answer at a cut leaves both out of the document's `approval`
+  and names them in `Dispatch-As-Of-Absent`. A review that its insert pinned keeps both.
+
   At a cut, a reply to a comment or a message leaves out the `text` and `removed` of the block it
   names, and its `text_tree` under `Dispatch-Trees: 1`, and names them in
   `Dispatch-As-Of-Absent`, whether or not the post changed after the cut: the block index keeps
