@@ -353,13 +353,13 @@ func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake,
 // wakeComing is whether a wake of the claim wake read is coming or under way, which holds a kept
 // role message's row past its hour (keptRoleMessageEnded): a released claim of an issue a wake can
 // still reach, which the row's own attempt wakes (deliveryWake); a launch the wake pacing parked
-// over no process; or a launch under a resume of the role that has had no first turn yet
-// (store.Store.OpenPodResume), which a wake opened. The first two are claimWakeOf's, the decision
-// deliveryWake acts on, so the two cannot disagree. A released claim of an issue that has left the
-// workflow, or whose tree lingers, gets no wake, and a launch no wake opened is the role starting
-// as any role starts, so the hour holds for both: without it, a row of an issue moved out of the
-// workflow would be tried about once a minute for as long as the issue stayed out, and its end
-// would never come.
+// over no process; or a launch under a resume of the claim that has had no first turn yet
+// (store.Store.OpenPodResume, read by the claim's token), which a wake opened. The first two are
+// claimWakeOf's, the decision deliveryWake acts on, so the two cannot disagree. A released claim of
+// an issue that has left the workflow, or whose tree lingers, gets no wake, and a launch no wake
+// opened is the role starting as any role starts, so the hour holds for both: without it, a row of
+// an issue moved out of the workflow would be tried about once a minute for as long as the issue
+// stayed out, and its end would never come.
 func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (bool, error) {
 	if wake.resume || wake.parked {
 		return true, nil
@@ -367,7 +367,7 @@ func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (
 	if wake.view.State != supervise.StateLaunching {
 		return false, nil
 	}
-	_, _, open, err := r.trees.OpenPodResume(ctx, r.project, issue, wake.view.Role)
+	_, _, open, err := r.trees.OpenPodResume(ctx, r.project, issue, wake.view.Token)
 	return open, err
 }
 
