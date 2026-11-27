@@ -1966,7 +1966,9 @@ func (p joinPause) Join(ctx context.Context, tx pgx.Tx) (context.Context, *docs.
 // written together, each with its own parts and samples. A correction that moves a reading to
 // another day empties the day it left, which stands as the zero row (n 0, a zero sum, numerator
 // and denominator, the empty sample list, no maximum and no last value) between a day before it
-// and a day after it that the same write adds to, each of which holds its own samples alone.
+// and a day after it that the same write adds to, each of which holds its own samples alone. The
+// series is registered folded by its sum: of one that folds by its last value the emptied day's
+// row is deleted and no zero row stands (dropEmptiedRows, loggedZeros).
 func TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -1975,6 +1977,7 @@ func TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills(t *testing
 		maps.Copy(fields, extra)
 		return row(t, fields)
 	}
+	r.registerFolded(t, "build-minutes", AggSum, "minutes")
 	written := r.write(t, "build-minutes", alice,
 		minutes("a", 4, 1, at(4, 10, 0), nil), minutes("b", 6, 3, at(5, 10, 0), nil), minutes("c", 8, 1, at(6, 10, 0), nil))
 	evalID := written.Definition.EvalID
