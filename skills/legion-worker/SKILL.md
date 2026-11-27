@@ -32,7 +32,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - Wait in these cases, and end the turn with a `WAITING` line that names what you wait on:
 
-  - a planner on a decision the plan itself needs;
+  - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
 
   - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite;
 
@@ -51,7 +51,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
+  Your session, phase and task are kept; your role prompt says what of the disk the next pod has.
 
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
