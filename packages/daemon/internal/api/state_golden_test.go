@@ -885,6 +885,12 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				Workers:       map[claim.Role]PhaseView{},
+				// The spec row its architect registered is served as its design gate too, as every
+				// registered spec row is (record.SpecGate), with no person's approval of it.
+				DesignGate: &GateView{
+					ArtifactID:     "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+					CurrentVersion: 2,
+				},
 				GatedSteps: []GatedStepView{{
 					Step:           record.DesignStepSpec,
 					ArtifactID:     "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
