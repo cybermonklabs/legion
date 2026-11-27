@@ -947,10 +947,8 @@ func holderDiagnosis(ctx context.Context, tx pgx.Tx, pid uint32) string {
 			if xactStart != nil {
 				start = xactStart.UTC().Format(time.RFC3339Nano)
 			}
+			// PLANT (never merged): the diagnosis drops the wait Postgres answered.
 			wait := absent
-			if waitType != nil || waitEvent != nil {
-				wait = orNotVisible(waitType) + "/" + orNotVisible(waitEvent)
-			}
 			text := visibleQuery(query)
 			backendXID := "none"
 			if xid != nil {
