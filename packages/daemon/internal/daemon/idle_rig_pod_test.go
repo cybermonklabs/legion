@@ -294,7 +294,7 @@ func shellQuote(value string) string {
 func idleRigAgentTool(t *testing.T, dir string) []string {
 	t.Helper()
 	path := filepath.Join(dir, "omp")
-	if err := execfile.Write(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // CONTROL ONLY
 		t.Fatalf("write the rig's omp stand-in: %v", err)
 	}
 	return []string{path}
