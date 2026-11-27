@@ -105,6 +105,16 @@ func TestAFinalSchemaOutsideTheStrictSubsetIsRefused(t *testing.T) {
 			`"properties":{"next":{"$ref":"#/$defs/node"}},"required":["next"],"additionalProperties":false}}}`,
 		want: `agentloop: the request's final schema: properties.node.properties.next: a recursive $ref, "#/$defs/node"`,
 	}, {
+		name: "a recursive schema through a definition below a definition",
+		final: `{"type":"object","properties":{"p":{"$ref":"#/$defs/a"}},"required":["p"],` +
+			`"additionalProperties":false,"$defs":{"a":{"type":"object",` +
+			`"properties":{"a1":{"$ref":"#/$defs/n"},"a2":{"$ref":"#/$defs/n/$defs/d"}},"required":["a1","a2"],"additionalProperties":false},` +
+			`"n":{"type":"object","properties":{},"additionalProperties":false,"$defs":{"d":{"type":"object",` +
+			`"properties":{"back":{"$ref":"#/$defs/a"}},"required":["back"],"additionalProperties":false}}}}}`,
+		// Every a holds an a2, which is a d, whose back is an a again. The walk comes to
+		// d through a2, not through the $defs of n, so it finds the cycle at back.
+		want: `agentloop: the request's final schema: properties.p.properties.a2.properties.back: a recursive $ref, "#/$defs/a"`,
+	}, {
 		name: "a $ref that names nothing",
 		final: `{"type":"object","properties":{"step":{"$ref":"#/$defs/step"}},"required":["step"],` +
 			`"additionalProperties":false}`,
@@ -206,8 +216,8 @@ func TestAStrictFinalSchemaRuns(t *testing.T) {
 
 // Every shape the subset allows is accepted, including the ones no caller in this repository
 // writes yet: a definition reached through a $ref, a definition reached through two, a
-// definition below the root beside one of the same name at the root, an empty object, and the
-// annotations that constrain nothing.
+// definition below the root beside one of the same name at the root, a definition that names the
+// node whose $defs holds it, an empty object, and the annotations that constrain nothing.
 func TestTheStrictSubsetAcceptsWhatBothProvidersEnforce(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -231,6 +241,13 @@ func TestTheStrictSubsetAcceptsWhatBothProvidersEnforce(t *testing.T) {
 			`"$defs":{"y":{"type":"object","properties":{"c":{"$ref":"#/$defs/y"}},"required":["c"],"additionalProperties":false}}}},` +
 			`"required":["a"],"additionalProperties":false,"$defs":{"y":{"type":"string"}}}`,
 	}, {
+		name: "a definition that names the node whose $defs holds it",
+		// n names no property, so no instance of it holds anything: a definition is not
+		// inside the node whose $defs holds it, and d naming n is no recursive schema.
+		final: `{"type":"object","properties":{"p":{"$ref":"#/$defs/n/$defs/d"}},"required":["p"],` +
+			`"additionalProperties":false,"$defs":{"n":{"type":"object","properties":{},"additionalProperties":false,` +
+			`"$defs":{"d":{"type":"object","properties":{"q":{"$ref":"#/$defs/n"}},"required":["q"],"additionalProperties":false}}}}}`,
+	}, {
 		name: "an object that names no property",
 		final: `{"type":"object","properties":{"free":{"type":"object","additionalProperties":false}},` +
 			`"required":["free"],"additionalProperties":false}`,
@@ -251,20 +268,24 @@ func TestTheStrictSubsetAcceptsWhatBothProvidersEnforce(t *testing.T) {
 	}
 }
 
-// chainSchema is a Final schema whose one property names link0, the first of n definitions each
-// of which names the next twice, the last of them a string, with extra, more definitions, after
-// them: a walk that went on at every $ref each time it met one would read the last link 2^n
-// times.
-func chainSchema(n int, extra string) string {
+// chainLinks is n definitions, link0 to link(n-1), each of which names the next twice, and link
+// n, the last link, whose schema is last: a walk that went on at every $ref each time it met one
+// would read the last link 2^n times.
+func chainLinks(n int, last string) string {
 	var b strings.Builder
-	b.WriteString(`{"type":"object","properties":{"first":{"$ref":"#/$defs/link0"}},"required":["first"],` +
-		`"additionalProperties":false,"$defs":{`)
 	for i := range n {
 		fmt.Fprintf(&b, `"link%d":{"type":"object","properties":{"a":{"$ref":"#/$defs/link%d"},"b":{"$ref":"#/$defs/link%d"}},`+
 			`"required":["a","b"],"additionalProperties":false},`, i, i+1, i+1)
 	}
-	fmt.Fprintf(&b, `"link%d":{"type":"string"}%s}}`, n, extra)
+	fmt.Fprintf(&b, `"link%d":%s`, n, last)
 	return b.String()
+}
+
+// chainSchema is a Final schema whose one property names link0, the first of a chain of n links
+// (chainLinks) the last of which is a string, with extra, more definitions, after them.
+func chainSchema(n int, extra string) string {
+	return `{"type":"object","properties":{"first":{"$ref":"#/$defs/link0"}},"required":["first"],` +
+		`"additionalProperties":false,"$defs":{` + chainLinks(n, `{"type":"string"}`) + extra + `}}`
 }
 
 // A chain of definitions each of which names the next twice is walked once for each definition,
@@ -300,6 +321,38 @@ func TestAChainOfDefinitionsIsWalkedOnceForEachDefinition(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// heldChainSchema is a Final schema whose property first names link0, the first of a chain of n
+// links (chainLinks) the last of which names d, a definition the root's property z holds, and d
+// names z. z names no property, so no instance of it holds anything, and the schema is not
+// recursive, though a walk that took the definitions of z for nodes inside z would come to d
+// again while it was inside d.
+func heldChainSchema(n int) string {
+	return `{"type":"object","properties":{"first":{"$ref":"#/$defs/link0"},` +
+		`"z":{"type":"object","properties":{},"additionalProperties":false,"$defs":{"d":{"type":"object",` +
+		`"properties":{"to":{"$ref":"#/properties/z"}},"required":["to"],"additionalProperties":false}}}},` +
+		`"required":["first","z"],"additionalProperties":false,"$defs":{` +
+		chainLinks(n, `{"type":"object","properties":{"to":{"$ref":"#/properties/z/$defs/d"}},`+
+			`"required":["to"],"additionalProperties":false}`) + `}}`
+}
+
+// A chain of definitions each of which names the next twice is walked once for each definition
+// also where its last link names a definition that names the node holding it: twenty-four links,
+// which a walk that read the chain again each time it came to it would read 2^24 times over, are
+// accepted well inside a second, as two links are.
+func TestAChainThatEndsAtADefinitionNamingItsHolderIsWalkedOnceForEachDefinition(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{2, 24} {
+		start := time.Now()
+		err := strictFinal(json.RawMessage(heldChainSchema(n)))
+		if took := time.Since(start); took > 2*time.Second {
+			t.Errorf("a chain of %d links took %s to check, want well under a second", n, took)
+		}
+		if err != nil {
+			t.Errorf("a chain of %d links was refused: %v", n, err)
+		}
 	}
 }
 

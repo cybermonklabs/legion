@@ -13,15 +13,15 @@ body: |-
   full: every node but a `$ref` names one type, every object lists each of its properties in
   `required` and carries `additionalProperties: false`, no node takes a union (`anyOf`, `oneOf`,
   `allOf`, `not`, or a type array such as `["string","null"]`), an array says what its items are,
-  a `$ref` names a place in the same schema and never leads back into itself, and the only other
-  keywords a node may carry are `type`, `enum`, `format`, `$defs`, `definitions`, `title` and
-  `description` — anything else, `minLength`, `maximum`, `pattern` and `minItems` among them, is
-  refused by name, because the SDK strips those out of the schema and writes them into the
+  a `$ref` names a place in the same schema, no chain of properties, items and `$ref`s leads from
+  a node back to itself (a definition is not inside the node whose `$defs` holds it), and the only
+  other keywords a node may carry are `type`, `enum`, `format`, `$defs`, `definitions`, `title`
+  and `description` — anything else, `minLength`, `maximum`, `pattern` and `minItems` among them,
+  is refused by name, because the SDK strips those out of the schema and writes them into the
   node's description, where they are prose to the model. The check reaches every property, every
-  array's items and every definition, a definition nested below the root included. It reads a
-  definition that a `$ref` names again only where its first reading passed over a definition it
-  was inside, so a chain of definitions that each name the next twice takes time in proportion
-  to its length and not to two to the power of its length.
+  array's items and every definition, a definition nested below the root included, and reads
+  each node once however many `$ref`s name it, so it takes time in proportion to the schema's
+  size.
 
   Because every Final schema is now inside that subset, an `openai-chat` run sends the schema in
   OpenAI's strict mode — `response_format.json_schema` with `strict: true`, where it sent

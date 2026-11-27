@@ -184,12 +184,15 @@
 //     plain values only, and a format is one of date, date-time, duration, email, hostname,
 //     ipv4, ipv6, time and uuid, which is Anthropic's list without uri, which OpenAI's does not
 //     carry.
-//   - A $ref names a place in this schema, carries nothing but a title or a description beside
-//     itself, and never leads back to a node the walk is already inside: Anthropic serves no
-//     recursive schema and loads no external $ref.
+//   - A $ref names a place in this schema and carries nothing but a title or a description
+//     beside itself, and no chain of properties, items and $refs leads from a node back to the
+//     same node: Anthropic serves no recursive schema and loads no external $ref. A definition
+//     is not inside the node whose $defs or definitions holds it, which only keeps it there for
+//     a $ref to name.
 //
 // The check reaches every node: each property, an array's items, and every member of $defs and
-// definitions, whether or not a $ref names it.
+// definitions, whether or not a $ref names it. It reads each node once, however many $refs name
+// it.
 //
 // # Asking again
 //

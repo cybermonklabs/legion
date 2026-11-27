@@ -44,32 +44,84 @@ var strictFormats = []string{
 // strictFinal is Request.Final held to the structured-output subset both providers enforce,
 // which is how a run finds out that a schema would ride to the model and bind nothing. The
 // error names the JSON path of the node at fault and what is wrong with it, so the caller fixes
-// the schema rather than the symptom; the caller of this function gives it its prefix.
+// the schema rather than the symptom; the caller of this function gives it its prefix. The walk
+// starts at the root, then walks each definition it came to, in the order it came to them, until
+// none is left (defs). No node is in progress when one of those walks starts, so a definition is
+// not inside the node whose $defs holds it, and a definition already done is not walked again.
 func strictFinal(final json.RawMessage) error {
 	var doc any
 	if err := json.Unmarshal(final, &doc); err != nil {
 		return err
 	}
-	s := &strictSchema{doc: doc, checked: map[string]bool{}}
-	return s.node(doc, "", "#")
+	s := &strictSchema{doc: doc, states: map[string]strictState{}}
+	if err := s.node(doc, "", "#"); err != nil {
+		return err
+	}
+	for len(s.queue) > 0 {
+		def := s.queue[0]
+		s.queue = s.queue[1:]
+		if err := s.node(def.value, def.path, def.pointer); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// strictSchema is one walk of a Final schema: the whole document, which a $ref points into; the
-// $ref targets and the definitions the walk is inside, which is how a recursive schema is
-// caught; the pointers whose walk already passed and holds wherever the walk comes to them again
-// (enter); and how many definitions the walk passed over because it was inside them (defs).
+// strictSchema is one walk of a Final schema: the whole document, which a $ref points into; how
+// far the walk has come with each node, keyed by the pointer a $ref names the node by (node);
+// and the definitions the walk came to and has not walked yet, in the order it came to them
+// (defs).
 type strictSchema struct {
-	doc     any
-	refs    []string
-	checked map[string]bool
-	skips   int
+	doc    any
+	states map[string]strictState
+	queue  []strictDef
 }
 
-// node is one subschema checked and walked: its keywords, its type, then what that type brings
-// with it. Every walk of a node that holds other nodes goes through here, so no part of a
-// schema is left unread. pointer is where the node lies in the schema, as a $ref names it, "#"
-// at the root, and the pointers of the nodes inside it are its own with their place after it.
+// strictState is how far the walk has come with one node: not come to it yet, in progress, which
+// is every node on the way from where the walk started to where it is now, or done, which is a
+// node whose checks passed, with those of every node it leads to.
+type strictState int
+
+const (
+	strictUnseen strictState = iota
+	strictInProgress
+	strictDone
+)
+
+// strictDef is a definition the walk came to and walks later: the definition itself, the path an
+// error names it by, and the pointer a $ref names it by.
+type strictDef struct {
+	value         any
+	path, pointer string
+}
+
+// node is one node walked. The walk goes from a node to each of its properties, to its items,
+// and from a $ref to the node it names, depth first; a node's definitions are walked later
+// (defs). pointer is where the node lies in the schema, as a $ref names it, "#" at the root,
+// and the node's key: a node that is done holds wherever the walk comes to it again, so its
+// checks run once however many $refs name it, and a node in progress that the walk comes to
+// again ends a chain of properties, items and $refs that leads from the node back to itself.
+// That is a recursive schema, which Anthropic does not serve, and the error names the path the
+// walk came to the node by the second time.
 func (s *strictSchema) node(value any, path, pointer string) error {
+	switch s.states[pointer] {
+	case strictDone:
+		return nil
+	case strictInProgress:
+		return fmt.Errorf("%s: a recursive $ref, %q", at(path), pointer)
+	}
+	s.states[pointer] = strictInProgress
+	if err := s.check(value, path, pointer); err != nil {
+		return err
+	}
+	s.states[pointer] = strictDone
+	return nil
+}
+
+// check is one node's checks: its keywords, its type, then what that type brings with it, each
+// node inside it walked through node, so no part of a schema is left unread. The pointers of the
+// nodes inside it are its own with their place after it.
+func (s *strictSchema) check(value any, path, pointer string) error {
 	m, ok := value.(map[string]any)
 	if !ok {
 		return fmt.Errorf("%s: not a JSON object", at(path))
@@ -131,9 +183,9 @@ func (s *strictSchema) node(value any, path, pointer string) error {
 	return s.defs(m, path, pointer)
 }
 
-// ref is a $ref node: it names a place in this schema and nothing else, the walk goes on at what
-// it names, and a $ref the walk is already inside is a recursive schema, which Anthropic does
-// not serve.
+// ref is a $ref node: it names a place in this schema and nothing else, and the walk goes on at
+// what it names, at the path of the $ref and under the pointer of the place it names however
+// the $ref writes it (resolve), so one node has one key.
 func (s *strictSchema) ref(m map[string]any, path string) error {
 	pointer, ok := m["$ref"].(string)
 	if !ok {
@@ -144,62 +196,37 @@ func (s *strictSchema) ref(m map[string]any, path string) error {
 			return fmt.Errorf("%s: a $ref that carries %q as well", at(path), key)
 		}
 	}
-	if slices.Contains(s.refs, pointer) {
-		return fmt.Errorf("%s: a recursive $ref, %q", at(path), pointer)
-	}
-	target, err := s.resolve(pointer, path)
+	target, place, err := s.resolve(pointer, path)
 	if err != nil {
 		return err
 	}
-	return s.enter(target, path, pointer)
+	return s.node(target, path, place)
 }
 
-// enter is a node a $ref names or a definition, walked with its pointer on the stack of the
-// walk, and walked once wherever a second walk would give the first's verdict: a pointer whose
-// walk passed and passed over no definition (skips) is not walked again, so a schema whose
-// definitions each name the next twice costs one walk of each, not one for each way through the
-// chain. Such a walk read every node the pointer leads to, and none of those leads back to the
-// pointer, or the walk would have met a $ref or a definition it was inside; whatever the walk is
-// inside when it comes to the pointer again leads to the pointer, so it is none of those nodes,
-// and every check of the stack a second walk would make comes out as the first walk's did. A walk
-// that passed over a definition because it was inside it passed because of where the walk came
-// to it: the same node come to from elsewhere walks that definition, which may be refused or lead
-// back to a $ref the walk is then inside, as a definition below the root that leads back to its
-// parent, or a $ref of "#", can. Such a node is walked each time the walk comes to it.
-func (s *strictSchema) enter(value any, path, pointer string) error {
-	if s.checked[pointer] {
-		return nil
-	}
-	skips := s.skips
-	s.refs = append(s.refs, pointer)
-	err := s.node(value, path, pointer)
-	s.refs = s.refs[:len(s.refs)-1]
-	if err == nil && s.skips == skips {
-		s.checked[pointer] = true
-	}
-	return err
-}
-
-// resolve is the node a pointer names. An external $ref is a document neither provider loads,
-// and a pointer that names nothing is a schema that cannot be compiled at all.
-func (s *strictSchema) resolve(pointer, path string) (any, error) {
+// resolve is the node a pointer names, and the pointer of that place written again from its
+// names as within writes the pointers of the nodes the walk comes to, so two ways of writing
+// one place are one key. An external $ref is a document neither provider loads, and a pointer
+// that names nothing is a schema that cannot be compiled at all.
+func (s *strictSchema) resolve(pointer, path string) (any, string, error) {
 	if pointer == "#" {
-		return s.doc, nil
+		return s.doc, pointer, nil
 	}
 	if !strings.HasPrefix(pointer, "#/") {
-		return nil, fmt.Errorf("%s: $ref %q points outside this schema", at(path), pointer)
+		return nil, "", fmt.Errorf("%s: $ref %q points outside this schema", at(path), pointer)
 	}
 	node := s.doc
+	var names []string
 	for segment := range jsontext.Pointer(strings.TrimPrefix(pointer, "#")).Tokens() {
 		m, ok := node.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%s: $ref %q names nothing in this schema", at(path), pointer)
+			return nil, "", fmt.Errorf("%s: $ref %q names nothing in this schema", at(path), pointer)
 		}
 		if node, ok = m[segment]; !ok {
-			return nil, fmt.Errorf("%s: $ref %q names nothing in this schema", at(path), pointer)
+			return nil, "", fmt.Errorf("%s: $ref %q names nothing in this schema", at(path), pointer)
 		}
+		names = append(names, segment)
 	}
-	return node, nil
+	return node, within("#", names...), nil
 }
 
 // object is an object node: every object a provider generates holds the properties the schema
@@ -289,10 +316,11 @@ func (s *strictSchema) scalar(m map[string]any, path string) error {
 	return nil
 }
 
-// defs is the node's own definitions walked, each under the pointer a $ref names it by, the
-// node's own with the keyword and the definition's name after it, so a definition the schema
-// never uses is held to the same subset, and one the walk is already inside, through a $ref or
-// as a definition, is passed over rather than walked again.
+// defs is the node's own definitions put in the walk's queue, each with the path an error names
+// it by and the pointer a $ref names it by, the node's own with the keyword and the definition's
+// name after it. strictFinal walks them once the walk that came to them is over, so a definition
+// the schema never uses is held to the same subset, and a definition that names the node holding
+// it is no recursive schema unless that node leads back to the definition.
 func (s *strictSchema) defs(m map[string]any, path, pointer string) error {
 	for _, keyword := range []string{"$defs", "definitions"} {
 		raw, ok := m[keyword]
@@ -304,14 +332,11 @@ func (s *strictSchema) defs(m map[string]any, path, pointer string) error {
 			return fmt.Errorf("%s: %s is not an object", at(path), keyword)
 		}
 		for _, name := range slices.Sorted(maps.Keys(defs)) {
-			def := within(pointer, keyword, name)
-			if slices.Contains(s.refs, def) {
-				s.skips++
-				continue
-			}
-			if err := s.enter(defs[name], under(path, keyword, name), def); err != nil {
-				return err
-			}
+			s.queue = append(s.queue, strictDef{
+				value:   defs[name],
+				path:    under(path, keyword, name),
+				pointer: within(pointer, keyword, name),
+			})
 		}
 	}
 	return nil
