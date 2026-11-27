@@ -497,7 +497,6 @@ func TestProvisionAdoptsAnIssueBranchOnlyTheRemoteHas(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // An issue branch GitHub holds on a commit that shares no history with the repository's default
@@ -548,7 +547,6 @@ func TestProvisionStartsAtAnIssueBranchOffTheDefaultBranchsHistory(t *testing.T)
 			}
 		})
 	}
-
 }
 
 // A merged pull request's branch, deleted on GitHub, leaves no remote row: an issue workspace

@@ -34,6 +34,7 @@ import (
 // runs once per way the state directory is reached, because the path the operator names and the
 // path the child stands in need not be the same one.
 func TestProvisionLeavesTheEnclosingRepositoryUntouched(t *testing.T) {
+	// Not parallel: the rows change the process working directory with t.Chdir.
 	for _, source := range []string{"github"} {
 		t.Run("a state directory outside it, from "+source, func(t *testing.T) {
 			run := newLocalRunner(t)

@@ -354,7 +354,6 @@ func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // A default branch whose name jj's own parser would read as syntax (`#`, `%`, `|`, `"`) names that
@@ -453,6 +452,7 @@ func TestProvisionRefusesARequestWithNoOneWayToTheRepository(t *testing.T) {
 // the process working directory alone: specifically, no legacy disarm may turn config.toml into a
 // relative path and remove the caller's file while the clone still succeeds.
 func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
+	// Not parallel: changes the process working directory with t.Chdir.
 	run := newLocalRunner(t)
 	cwd := t.TempDir()
 	t.Chdir(cwd)
@@ -989,6 +989,7 @@ func TestCreatedRefusesARecordThatIsNotOneInstant(t *testing.T) {
 // (`*` then `!.gitignore`) would otherwise get tracked, since git worktrees share one
 // `info/exclude` through their common git directory.
 func TestProvisionExcludesTheCodegraphDirectoryFromEveryWorkspaceOfTheClone(t *testing.T) {
+	// Not parallel: gives the process an empty HOME with t.Setenv.
 	run := newLocalRunner(t)
 	// No global git or jj configuration anywhere a real `jj status` below could read one: the
 	// bug this guards against only shows on a host with no global ignore for `.codegraph/`.

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
@@ -105,7 +106,7 @@ func newProvisioningCredential(parent, token string) (remote, error) {
 		return cleanup(fmt.Errorf("write provisioning token: %w", err))
 	}
 	helper := filepath.Join(directory, "helper")
-	if err := os.WriteFile(helper, []byte(provisioningHelper), 0o700); err != nil {
+	if err := execfile.Write(helper, []byte(provisioningHelper), 0o700); err != nil {
 		return cleanup(fmt.Errorf("write provisioning credential helper: %w", err))
 	}
 	if err := os.Chmod(helper, 0o700); err != nil {

@@ -79,6 +79,7 @@ func (r *shortTimeoutRunner) Run(ctx context.Context, command Command) (Result, 
 // fetch's timeout cut to 3 s, Fetch must still return within a few seconds of that deadline, with
 // an error naming the timeout, and no git process of this test still running.
 func TestFetchKillsGitsWholeProcessTreeWhenItsTimeoutFires(t *testing.T) {
+	// Not parallel: trustHangingServerCA sets the process GIT_SSL_CAINFO environment variable.
 	run := newLocalRunner(t)
 	server := hangingServer(t)
 	trustHangingServerCA(t, server)

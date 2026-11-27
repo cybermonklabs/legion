@@ -308,7 +308,6 @@ func TestFetchFailsAPermanentFetchFailureAtOnce(t *testing.T) {
 	if len(run.attempts) != 1 || len(clock.waits) != 0 || len(logged) != 0 {
 		t.Fatalf("Fetch fetched %d times, waited %v and logged %q; want one fetch, no wait, nothing logged", len(run.attempts), clock.waits, logged)
 	}
-
 }
 
 // A fetch whose context ends during a backoff wait — its process stopped — ends with it, running
@@ -366,7 +365,6 @@ func TestAFirstFillsRetryStartsWithoutWhatTheFailedAttemptLeft(t *testing.T) {
 	if !slices.Equal(clock.waits, fetchBackoff[:1]) {
 		t.Errorf("Fetch waited %v, want one backoff", clock.waits)
 	}
-
 }
 
 // leavesPartial fails the first fetch from GitHub as a transfer cut mid-pack does, a 502 after
@@ -457,7 +455,7 @@ type gitHubStandIn struct {
 // runner is the production runner, with testTools' git and jj, whose git reaches the stand-in.
 func (s *gitHubStandIn) runner(t *testing.T) Runner {
 	t.Helper()
-	return NewRunnerIn(merge(os.Environ(), s.env), testTimeout, testTools(t))
+	return NewRunnerIn(merge(merge(os.Environ(), testIdentity), s.env), testTimeout, testTools(t))
 }
 
 func newGitHubStandIn(t *testing.T, http2 bool, token string, failures ...packFailure) *gitHubStandIn {
@@ -785,7 +783,6 @@ func TestFetchRetriesWhatARealGitPrintsForATransientFailure(t *testing.T) {
 			})
 		}
 	}
-
 }
 
 // Against the same real git, a 403 on the pack request and a token GitHub refuses each fail the
@@ -832,7 +829,6 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 			})
 		}
 	}
-
 }
 
 // The provisioning token is read as its file stands before every transfer from GitHub, never kept
@@ -912,7 +908,6 @@ func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *tes
 			t.Fatalf("Fetch ran %d transfers, want the first alone", len(run.attempts))
 		}
 	})
-
 }
 
 // tokenFile is a provisioning token file holding token, as a pod mounts one.
@@ -978,6 +973,7 @@ func (c *removingClock) Sleep(ctx context.Context, d time.Duration) error {
 // the tests' GitHub, to one that names nothing, so a transfer that read them fails. Its credential
 // is gone once it returns.
 func TestFetchFillsTheCacheBareReadingNoConfigurationButItsOwn(t *testing.T) {
+	// Not parallel: plants git configuration in the process environment with t.Setenv.
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "release/v7.1", "other.txt")
 	template := t.TempDir()
@@ -1058,7 +1054,6 @@ func TestFetchBringsNoTagObjectIntoTheCache(t *testing.T) {
 	if objects := types(); slices.Contains(objects, "tag") {
 		t.Errorf("after a refresh the cache holds objects of the types %q, want no tag", objects)
 	}
-
 }
 
 // A repository cache that holds the repository — the cache's clone at each refresh, or after a
@@ -1102,7 +1097,6 @@ func TestFetchIntoACacheThatHoldsTheRepositoryFetchesItsDefaultBranch(t *testing
 	if entries, err := os.ReadDir(req.CredentialDir); err != nil || len(entries) != 0 {
 		t.Errorf("the one-shot credential outlived Fetch: %v (%v)", entries, err)
 	}
-
 }
 
 // A fetch into a cache that holds the repository points its HEAD at the branch GitHub's HEAD names
@@ -1150,7 +1144,6 @@ func TestFetchPointsTheCachesHeadAtGitHubsDefaultBranch(t *testing.T) {
 	if want := "the default branch of acme/widgets is now trunk (HEAD named refs/heads/main)"; !slices.Contains(logged, want) {
 		t.Errorf("the move was not logged as %q: %q", want, logged)
 	}
-
 }
 
 // GitHub renaming its default branch between a fetch and that fetch's read of GitHub's HEAD names a
@@ -1328,7 +1321,6 @@ func TestFetchReplacesACacheItDidNotWriteRunningNothingInIt(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // git's update-server-info, which every `git repack` runs (the cache's due repack among them),
@@ -1367,7 +1359,6 @@ func TestFetchKeepsACacheHoldingAKilledRepacksServerInfoFiles(t *testing.T) {
 			t.Errorf("Fetch filled the cache afresh: %q", call.Argv)
 		}
 	}
-
 }
 
 // A cache can be garbage-collected between fetches. A completed gc and one killed while its repack
@@ -1427,7 +1418,6 @@ func TestFetchKeepsACacheAfterGitGC(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // killGitGC runs a large, real repack and kills its process group once the repack is writing its
@@ -1601,7 +1591,6 @@ func TestFetchRemovesTheLocksAnInterruptedFetchLeftInTheCache(t *testing.T) {
 			t.Errorf("the cache lost %s, an object it held", object)
 		}
 	}
-
 }
 
 // A first fill that dies mid-transfer leaves nothing at the cache's repository: the fill runs in a
@@ -1648,7 +1637,6 @@ func TestFetchLeavesNoHalfFilledRepositoryAtTheCache(t *testing.T) {
 	if main := strings.TrimSpace(runSetup(t, cache, "git", "--git-dir="+cache, "rev-parse", "refs/heads/main")); main != strings.TrimSpace(runSetup(t, cache, "git", "--git-dir="+run.remote, "rev-parse", "main")) {
 		t.Errorf("the cache's main is %s, not the remote's", main)
 	}
-
 }
 
 // killedFetch runs every command through Runner but a fetch from GitHub, which it fails as a fetch
@@ -1739,7 +1727,6 @@ func TestFetchTurnsTheCachesGarbageCollectionOffAndKeepsPacks(t *testing.T) {
 	if loose := strings.TrimSpace(runSetup(t, cache, "git", "--git-dir="+cache, "count-objects")); !strings.HasPrefix(loose, "0 objects") {
 		t.Errorf("the fetch into the cache left %s", loose)
 	}
-
 }
 
 // What of a bare repository the cache streams and an issue pod's clone takes: its refs, its packs
@@ -1793,7 +1780,6 @@ func TestCacheEntryIsTheRepositorysRefsAndPacksAlone(t *testing.T) {
 			t.Errorf("CacheEntry(%q, dir %t) = %t, want %t", tc.name, tc.dir, got, tc.want)
 		}
 	}
-
 }
 
 // cacheOf is the repository cache's clone of remote as the cache keeps it: bare, holding the
@@ -2109,7 +2095,6 @@ func TestStreamCacheWaitsForTheRepositoryCacheToBeReady(t *testing.T) {
 			t.Errorf("StreamCache indexed again a pack the cache streamed its index with: %q", call.Argv)
 		}
 	}
-
 }
 
 // A cache that never becomes ready within CacheWaitTimeout — answering not ready, answering ready
@@ -2148,7 +2133,6 @@ func TestStreamCacheFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // A cache whose tar holds an entry a clone does not take — one whose name leaves the clone's git
@@ -2210,7 +2194,6 @@ func TestStreamCacheRefusesARepositoryCacheItCannotUse(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // A stream asks only its own repository's cache, which it proves twice: it takes nothing from a
@@ -2277,7 +2260,6 @@ func TestStreamCacheTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 	if served.healthAsked+served.tarAsked != 0 {
 		t.Errorf("StreamCache with no token asked the cache %d times, want none", served.healthAsked+served.tarAsked)
 	}
-
 }
 
 // A pack the cache streamed without its index — a cache on a release that never streamed one — is
@@ -2426,7 +2408,6 @@ func TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T
 			}
 		})
 	}
-
 }
 
 // slowSteps is the local runner with the clock time each step a test names takes: step names the
@@ -2600,7 +2581,6 @@ func TestTheCachesAndTheFillsGitMapPacksInSmallWindows(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // gitSubcommand is the subcommand of the git arguments args: the first that is neither a `-c`

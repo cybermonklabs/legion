@@ -265,7 +265,6 @@ func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
 			t.Errorf("followHead with its symbolic-ref timed out = %v, want the timeout refused", err)
 		}
 	})
-
 }
 
 // killsOne answers a command argv starts with as one a signal ended after it printed said, a

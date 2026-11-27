@@ -13,6 +13,7 @@ import (
 // git and jj, which run in a managed repository's checkout, start without either raw NATS seed the
 // daemon holds.
 func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
+	// Not parallel: plants NATS seeds in the process environment with t.Setenv.
 	// Unique values, so that only a variable a seed reached can hold one (envlisting).
 	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")
 	t.Setenv("NATS_NKEY_SEED", paneSeed)

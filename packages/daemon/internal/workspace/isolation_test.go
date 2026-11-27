@@ -110,6 +110,7 @@ func requireAbsent(t *testing.T, sink, what string) {
 // (post-index-change), not in any other step. Nor does one that provisioning's own environment
 // names through GIT_CONFIG_PARAMETERS (git's `-c`), which git reads after the pins.
 func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
+	// Not parallel: one row plants GIT_CONFIG_PARAMETERS with t.Setenv.
 	for _, tc := range []struct {
 		name  string
 		plant func(t *testing.T, clone, sink string)
@@ -148,6 +149,7 @@ func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
 // starts and every child each of them starts; it is set after advanceRemote, so it holds that
 // provision's fetch and nothing the fixture ran.
 func TestProvisionStartsNoGitMaintenance(t *testing.T) {
+	// Not parallel: records git's trace through the process GIT_TRACE2_EVENT environment variable.
 	trace := filepath.Join(t.TempDir(), "trace2.json")
 	err := provisionTwiceThen(t, func(t *testing.T, _ *recordingRunner, clone string) {
 		for _, pair := range [][2]string{{"gc.auto", "1"}, {"gc.autoPackLimit", "1"}, {"maintenance.auto", "true"}} {
@@ -197,7 +199,7 @@ func recordingScript(t *testing.T, what, sink, tail string) string {
 }
 
 // plantWorkspaceConfig writes toml as the configuration jj keeps for the working copy at dir, in
-// the config home this test's runner and fixtures share (newLocalRunner's): the file `jj config
+// the config home this test's runner and fixtures share (TestMain's): the file `jj config
 // path --workspace` names. On the tmux runtime that is a channel a pane has, since panes share
 // the daemon's config home; a pod's config home starts empty every launch, and the one way a file
 // on the tree volume becomes jj configuration there, a legacy .jj/workspace-config.toml, is the

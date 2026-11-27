@@ -145,7 +145,6 @@ func TestProvisionMarksOriginAndTurnsOffTheAmbiguousRefWarning(t *testing.T) {
 			t.Errorf("%s %s reads its gh-resolved lines as %q (exit %d), want origin's base alone", place.name, place.dir, output, code)
 		}
 	}
-
 }
 
 // packWindows are the four pack settings every git of an issue pod is to read, written out here
