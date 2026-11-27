@@ -270,7 +270,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	if !filepath.IsAbs(command.Dir) {
 		return Result{}, fmt.Errorf("workspace command names no absolute working directory of its own (%q): %s", command.Dir, strings.Join(command.Argv, " "))
 	}
-	bounded, cancel := context.WithTimeout(ctx, command.Timeout)
+	bounded, cancel := context.WithTimeout(ctx, plantBound(command.Timeout)) // PLANT (never merged)
 	defer cancel()
 
 	executable, ok := r.tools[command.Argv[0]]
@@ -305,7 +305,8 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 		}
 		args = append([]string{"--config=git.executable-path=" + TOMLString(git)}, args...)
 	}
-	child := exec.CommandContext(bounded, executable, args...)
+	planted := plantPrefix(append([]string{executable}, args...)) // PLANT (never merged)
+	child := exec.CommandContext(bounded, planted[0], planted[1:]...)
 	child.Dir = command.Dir
 	// Provisioning's children take their git configuration from the caller's intent, never from
 	// the process that happens to start them: the GIT_CONFIG_* block the environment carries goes

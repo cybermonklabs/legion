@@ -49,7 +49,8 @@ func OutputLines(out string) []string {
 // the caller stopped by cancelling its context, rather than the budget ending it, reports the
 // signal its stop sent (procgroup.Err), not a timeout.
 func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	planted := plantPrefix(args) // PLANT (never merged)
+	cmd := exec.CommandContext(ctx, planted[0], planted[1:]...)
 	cmd.Env = env
 	cmd.Dir = dir
 	if len(stdin) > 0 {
