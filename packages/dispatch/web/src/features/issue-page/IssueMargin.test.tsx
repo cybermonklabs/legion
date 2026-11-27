@@ -7520,18 +7520,22 @@ function commentCreated(
 // R2 of dispatch://INFRA-1523: a pinned line of the history whose post its author edited since
 // says ` · edited` after the line, as the margin's Pinned tab says it (`EventEditedMark`). The
 // mark is the page's own word, marked as its chrome. A line whose post nobody edited says nothing
-// of an edit.
+// of an edit. The history's read of the log leaves out every event that writes a post, so the
+// two lines here are events its pages never hold: Pinned reads them by their ids, once the
+// history's own log has answered holding neither.
 test("a pinned history line of an edited post's event says edited after the line", async () => {
   const edited = commentCreated(21, "Hold the deploy.", PIN_EDITED_AT);
   const standing = commentCreated(22, "Ship on Friday.", null);
   const { getMyState, restore } = stubIssueApi();
   getMyState.mockResolvedValue(pinnedState(eventItemId(edited), eventItemId(standing)));
   const client = detailsQueryClient();
-  // The history's log, which Pinned draws a pinned line from and never reads (`IssuePins.tsx`).
-  client.setQueryData<InfiniteData<DispatchEvent[]>>(["events", "CORE-1"], {
-    pageParams: [undefined],
-    pages: [[edited, standing]],
+  client.setQueryData<InfiniteData<DispatchEvent[]>>(["events", "CORE-1", "history"], {
+    pageParams: [null],
+    pages: [[]],
   });
+  const readByIds = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.ids === undefined ? [] : [edited, standing]
+  );
   const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
@@ -7552,8 +7556,13 @@ test("a pinned history line of an edited post's event says edited after the line
     const line = pinRow(eventItemId(standing)).textContent;
     expect(line).toContain("Ship on Friday.");
     expect(line, "the pinned line of a post nobody edited says edited").not.toContain(mark);
+    expect(
+      readByIds,
+      "Pinned did not read its two pinned events by their ids"
+    ).toHaveBeenCalledWith("CORE-1", { ids: "21,22" });
   } finally {
     unmount();
+    readByIds.mockRestore();
     restore();
   }
 });

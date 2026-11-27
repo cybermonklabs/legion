@@ -75,7 +75,7 @@ import {
   scrollHistoryBy,
   scrollHistoryTo,
 } from "./history-scroll";
-import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
+import { backToList, inboxList, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { focusAfterStaleness } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
 import { seedConversationState } from "./issue-layout-seed";
@@ -138,10 +138,11 @@ import {
   watchStepsReads,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
-import { viewportAt } from "./issue-page-p";
+import { approvalChip, viewportAt } from "./issue-page-p";
 import { tabWalk } from "./issue-page-v";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import {
@@ -199,26 +200,30 @@ async function allEvents(key: string): Promise<DispatchEvent[]> {
 }
 
 /**
- * Presses the history's Show more by `press` until it reaches `end`: `uncounted`, where every
- * entry the history has read is drawn and the control says no number, or `gone`, where no
- * control is left under the last entry, so the history draws the whole log of `key`, which holds
- * `events` events. A press of a control that says how many entries are left draws the next ones,
- * waited for until more are drawn; a press of one that says no number reads the log's next page,
- * waited for until its answer has landed and two frames drew it. Each press draws an entry or
- * reads a page, so a control still offered after as many presses as the log has entries and
- * pages fails as offered past the log's end.
+ * Presses the history's Show more by `press` until it reaches `end`: `reads`, where the control
+ * says "<n>+" with `n` at most `PAGE_SIZE` and its press reads the log's next page before it
+ * draws (`historyNextPage`), or `gone`, where no control is left under the last entry, so the
+ * history draws the whole log of `key`, which holds `events` events. Each press draws the next
+ * entries, waited for until more are drawn; a press that reads the next page first draws them
+ * once that page's answer has landed. A control that says no number fails: the history says how
+ * many entries are left while any may be. Each press draws an entry, so a control still offered
+ * after as many presses as the log has entries and pages fails as offered past the log's end.
  */
 async function readHistoryDown(
   page: Page,
   key: string,
   events: number,
   press: (control: Locator) => Promise<void>,
-  end: "gone" | "uncounted"
+  end: "gone" | "reads"
 ): Promise<void> {
   const most = Math.ceil(events / PAGE_SIZE) + Math.ceil(events / 200) + 1;
   for (let presses = 0; ; presses += 1) {
     const state = await historyShowMoreState(page);
     if (state === end || state === "gone") return;
+    expect(
+      state,
+      `${CONTROL_LABELS.show_more} says no number while entries of the log may be left`
+    ).not.toBe("uncounted");
     if (state === "reading") {
       await expect(
         historyPanel(page).locator('button[aria-busy="true"]'),
@@ -229,21 +234,16 @@ async function readHistoryDown(
     expect(presses, `${CONTROL_LABELS.show_more} is still offered past the log's end`).toBeLessThan(
       most
     );
-    if (state === "counted") {
-      // The entries drawn as the press is made: the press draws at least one more.
-      const drawn = await historyEntries(page).count();
-      await press(historyShowMore(page));
-      await expect
-        .poll(() => historyEntries(page).count(), {
-          message: `${CONTROL_LABELS.show_more} drew no entry`,
-        })
-        .toBeGreaterThan(drawn);
-    } else {
-      const answered = olderPageAnswered(page, key);
-      await press(historyShowMore(page));
-      await answered;
-      await nextFrames(page);
-    }
+    // The entries drawn as the press is made: the press draws at least one more.
+    const drawn = await historyEntries(page).count();
+    const answered = state === "reads" ? olderPageAnswered(page, key) : undefined;
+    await press(historyShowMore(page));
+    await answered;
+    await expect
+      .poll(() => historyEntries(page).count(), {
+        message: `${CONTROL_LABELS.show_more} drew no entry`,
+      })
+      .toBeGreaterThan(drawn);
   }
 }
 
@@ -1210,6 +1210,25 @@ async function seedMessages(title: string, count: number, words = "Existing mess
   return { issue, newest };
 }
 
+/** Moves the status of `key` `count` times, back and forth between two statuses, so each write
+ *  is an `issue.updated` of its own and a line of the history. The history's read of the log
+ *  leaves out every message and comment, so a row that needs a log of many events writes these. */
+async function writeStatusMoves(key: string, count: number): Promise<void> {
+  let status = (await getIssue(key)).status;
+  for (let index = 0; index < count; index += 1) {
+    status = status === "in_progress" ? "testing" : "in_progress";
+    await patchIssue(key, { status });
+  }
+}
+
+/** An issue with `count` status moves (`writeStatusMoves`). */
+async function seedStatusMoves(title: string, count: number) {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title });
+  await writeStatusMoves(issue.key, count);
+  return issue;
+}
+
 test("a reader scrolled down the history keeps their place when a new entry arrives", async ({
   browser,
 }) => {
@@ -1383,25 +1402,29 @@ test("entries made before the reader's midnight are found in the day the history
 
 // Paging is the history's: the outline reads each of its three lists whole and offers no Show
 // more at all. The history draws 20 entries at a time, and its Show more says how many of the
-// entries read are left, with "+" while an older page of the log is unread; once every entry
-// read is drawn it says no number, and its press reads that page and draws the next entries from
-// it. Those land beneath the entries already on screen, so the entry the reader is on does not
-// move; and the reader who presses on reaches the log's start, where the control goes.
+// entries read are left, with "+" while an older page of the log is unread; a press that would
+// leave none of them reads that page first, and then draws the next entries. Those land beneath
+// the entries already on screen, so the entry the reader is on does not move; and the reader who
+// presses on reaches the log's start, where the control goes.
 test("loading older history entries keeps the reader anchor", async ({ browser }) => {
-  // The seed's 205 messages and the presses that draw 200 of them, 20 at a time.
+  // The seed's 205 status moves and the presses that draw 200 of them, 20 at a time.
   test.setTimeout(120_000);
-  // Five more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists.
-  const { issue, newest } = await seedMessages("Older events", 205, "Older message");
+  // Five more than the history's 200-event page (`IssueHistory.tsx`), so a second page exists:
+  // each is a line of the history, which a message of the daemon's is not, since the history's
+  // read of the log leaves every message and comment out.
+  const issue = await seedStatusMoves("Older events", 205);
   const events = await allEvents(issue.key);
   const created = events.find((event) => event.type === "issue.created");
   if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
+  const newest = events[0];
+  if (newest === undefined) throw new Error(`${issue.key} recorded no event`);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
     await gotoIssue(page, `/issues/${issue.key}/conversation`);
-    // Every write of this issue is a message of the Legion daemon, which the outline draws no
-    // row for, so the tree is drawn with no row in it.
+    // Every write of this issue is a status move, which the outline draws no row for, so the
+    // tree is drawn with no row in it.
     await expectIssuePageDrawn(page);
     await expect(page.getByRole("button", { name: CONTROL_LABELS.show_more })).toHaveCount(0);
 
@@ -1411,19 +1434,18 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     // move the entry the reader is on is a history that draws something else in place of its
     // list while that page is read, or that hands the focus to a control off screen once it lands.
     await withoutScrollAnchoring(page);
-    await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${newest.seq}"]`),
+      newest.created_at
+    );
     await expect(
       historyShowMore(page),
       "Show more does not say that an older page of the log is unread"
     ).toHaveText(new RegExp(`\\(\\d+\\+ ${CONTROL_LABELS.show_more_left}\\)$`, "u"));
-    // The reader draws every entry the first page holds, until the control says no number.
-    await readHistoryDown(
-      page,
-      issue.key,
-      events.length,
-      (control) => control.click(),
-      "uncounted"
-    );
+    // The reader draws the entries the first page holds, until the press of the control reads
+    // the older page before it draws.
+    await readHistoryDown(page, issue.key, events.length, (control) => control.click(), "reads");
     const showMore = historyNextPage(page);
     await expect(showMore).toBeVisible();
     await showMore.scrollIntoViewIfNeeded();
@@ -1438,16 +1460,22 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
     const anchor = historyPanel(page).locator(`[data-history-entry="${entry}"]`);
     const before = (await anchor.boundingBox())?.y;
     expect(before, `the entry the reader is on, ${entry}, has no box`).toBeDefined();
+    const drawn = await historyEntries(page).count();
+    const answered = olderPageAnswered(page, issue.key);
     await showMore.click();
 
-    // The proof the older page landed is the oldest entry of all: the issue's own creation,
-    // which only the page beneath the first 200 holds.
-    await seededHistoryEntry(
-      page,
-      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
-      created.created_at
-    );
-    await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
+    // The older page was the log's last: once it has landed and the press has drawn the next
+    // entries, the count says no "+".
+    await answered;
+    await expect
+      .poll(() => historyEntries(page).count(), {
+        message: `${CONTROL_LABELS.show_more} drew no entry once the older page landed`,
+      })
+      .toBeGreaterThan(drawn);
+    await expect(
+      historyShowMore(page),
+      "Show more says an older page is unread once the log's last page has landed"
+    ).toHaveText(new RegExp(`\\(\\d+ ${CONTROL_LABELS.show_more_left}\\)$`, "u"));
     await expect
       .poll(
         async () => (await anchor.boundingBox())?.y,
@@ -1455,7 +1483,15 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
       )
       .toBe(before);
 
-    // The older page was the log's last, and every entry it holds is drawn: the control goes.
+    // The reader presses on to the log's start: the oldest entry of all, the issue's own
+    // creation, which only the page beneath the first 200 holds, is drawn, and the control goes.
+    await readHistoryDown(page, issue.key, events.length, (control) => control.click(), "gone");
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
+      created.created_at
+    );
+    await expect(historyEntries(page).filter({ hasText: "created the issue" })).toHaveCount(1);
     await expect(
       historyShowMore(page),
       `${CONTROL_LABELS.show_more} is still offered once the whole log is read`
@@ -1465,15 +1501,133 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
   }
 });
 
-/** The event of the upload of `name` on `key`, among the newest 200 of its log, the page the
- *  history reads first. */
-async function uploadEvent(key: string, name: string): Promise<DispatchEvent> {
-  const event = (await getIssueEvents(key, { limit: 200, order: "desc" })).find(
-    (one) => one.type === "artifact.created" && one.payload.artifact.name === name
+/** How many messages of the daemon's the row below writes under a person's comments, each an
+ *  entry of the history: more than it draws at once. */
+const UNDER_COMMENTS = 30;
+
+/** How many comments a person writes over those messages in the row below, each left out of the
+ *  history: more than the log's first page of 200 events holds, so that page holds no entry. */
+const OVER_ENTRIES = 205;
+
+// The log's first page is its newest 200 events, and on a real issue most of them are comments
+// of people, which the outline draws and the history leaves out. Found by a row on copies of real
+// issues: the first page held 0, 12 or 17 entries of the history, which drew them under a Show
+// more that said no number, the older pages unread. The history now reads the log without the
+// events that write a post (`exclude_types`), so a log of thousands of comments is read in one
+// request. Here the log read whole holds the person's comments in its first page of 200 and the
+// history's entries in its second: the first view is one read of the log that answers every entry,
+// draws 20, says how many are left, and the reader presses down to the log's start with no read
+// of another page.
+// SLOW(>=2s): 30 messages and 205 comments written, a sign-in, one load of the history and its
+// read down.
+test("the history leaves the comments of people out of its read of the log, so its first view is one read that draws 20 entries and Show more says how many are left", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const { issue, newest } = await seedMessages(
+    "A history under comments",
+    UNDER_COMMENTS,
+    "Older message"
   );
-  if (event === undefined)
-    throw new Error(`${key} recorded no upload of ${name} on its first page`);
-  return event;
+  for (let index = 0; index < OVER_ENTRIES; index += 1) {
+    await createComment(issue.key, { body: `A person's comment ${index}` });
+  }
+  const events = await allEvents(issue.key);
+  const created = events.find((event) => event.type === "issue.created");
+  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
+  expect(
+    events.length,
+    "the seed wrote events the row does not count, so its count of entries proves nothing"
+  ).toBe(1 + UNDER_COMMENTS + OVER_ENTRIES);
+  expect(
+    events.slice(0, 200).filter((event) => event.type !== "comment.created"),
+    "the log's first page holds events other than the person's comments, so the row proves nothing"
+  ).toEqual([]);
+  // Every entry of the history: the daemon's messages and the issue's creation.
+  const total = UNDER_COMMENTS + 1;
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    // Each read of a page of the log that the page sends: 200 events long, as the history reads
+    // them, so the read of the first event past the read mark (`after`) is none of them.
+    const logReads: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === `/api/v1/issues/${issue.key}/events` && !url.searchParams.has("after")) {
+        logReads.push(url.search);
+      }
+    });
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    expect(
+      await historyShowMoreState(page),
+      "the history's first view drew a Show more that says no number, the older page unread"
+    ).not.toBe("uncounted");
+    await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
+    await expect(
+      historyEntries(page),
+      "the history's first view did not draw 20 entries"
+    ).toHaveCount(PAGE_SIZE);
+    await expect(historyShowMore(page)).toHaveText(showMoreName(total - PAGE_SIZE));
+    expect(logReads, "the first view sent more than one read of the log").toHaveLength(1);
+
+    await readHistoryDown(page, issue.key, events.length, (control) => control.click(), "gone");
+    await seededHistoryEntry(
+      page,
+      historyPanel(page).locator(`[data-event-seq="${created.seq}"]`),
+      created.created_at
+    );
+    await expect(historyEntries(page)).toHaveCount(total);
+    expect(logReads, "reading down read the log again").toHaveLength(1);
+  } finally {
+    await context.close();
+  }
+});
+
+/**
+ * An issue of `title` whose log's first page of 200 events ends in a run of ten uploads by one
+ * author that straddles it (`history-model.ts`): eight uploads, `between` status moves, which
+ * split no run, the run's two newest uploads within the minute, and as many status moves after
+ * them as fill that page, so the first page holds the run's two newest uploads and the older page
+ * its other eight. A status move is an event the history's read of the log keeps; a message of
+ * the daemon's is not. That page holds 199 entries with 19 or 20 status moves between the
+ * uploads: the history draws them 20 at a time down to the 180th, and Show more then says "19+",
+ * fewer entries left than a press draws (`historyNextPage`), so that press reads the older page,
+ * which extends the run, before it draws. With 19 status moves between the uploads the run is the
+ * 180th entry, the last drawn above Show more; with 20, the newest of them stands between the run
+ * and Show more. Answers the issue's key, the newest status move between the uploads, the newest
+ * upload's event and the log's events.
+ */
+async function seedRunAcrossPage(
+  title: string,
+  between: 19 | 20
+): Promise<{
+  between: DispatchEvent;
+  events: DispatchEvent[];
+  key: string;
+  newestUpload: DispatchEvent;
+}> {
+  await createProject({ key: "CORE", name: "Core" });
+  const { key } = await createIssue({ project: "CORE", title });
+  const upload = (index: number) =>
+    uploadIssueFile(key, {
+      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+      contentType: "image/png",
+      name: `shot-${index}.png`,
+    });
+  for (let index = 0; index < 8; index += 1) await upload(index);
+  await writeStatusMoves(key, between);
+  const [newestBetween] = await getIssueEvents(key, { limit: 1, order: "desc" });
+  if (newestBetween === undefined)
+    throw new Error(`${key} holds no status move between the uploads`);
+  for (let index = 8; index < 10; index += 1) await upload(index);
+  await writeStatusMoves(key, 200 - 2 - between);
+  const events = await allEvents(key);
+  const newestUpload = events.find(
+    (one) => one.type === "artifact.created" && one.payload.artifact.name === "shot-9.png"
+  );
+  if (newestUpload === undefined) throw new Error(`${key} recorded no upload of shot-9.png`);
+  return { between: newestBetween, events, key, newestUpload };
 }
 
 // Show more, where it reads the log's next page, adds entries under the reader, and the line
@@ -1487,31 +1641,23 @@ async function uploadEvent(key: string, name: string): Promise<DispatchEvent> {
 // page landed (the entry's key went from uploads:4736 to uploads:4709), where an event line in
 // the same place stayed put; and the press by keyboard put the focus on that run's author link
 // 752 px above Details' view (6,624 px on the next press). A run now lists its files newest first
-// and keeps its key as the older page extends it. The run is the last entry of the log's first
-// page, so the reader first draws every entry that page holds, pressing Show more while it says
-// how many are left; those presses are dispatched to the control, so they move neither the focus
-// nor Details, and the reader comes to the run by a scroll of their own.
+// and keeps its key as the older page extends it. The run stands at the foot of the log's first
+// page (`seedRunAcrossPage`), so the reader first draws that page's entries down to it, pressing
+// Show more while it draws the next ones at once; those presses are dispatched to the control, so
+// they move neither the focus nor Details, and the reader comes to the run by a scroll of their
+// own. The press that reads the older page is the one made once fewer entries are left than it
+// draws, with the run the last entry drawn above it.
 test("loading older keeps the reader's place on an upload run the older page extends, and the focus in view", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Uploads across a page" });
-  // Ten uploads by one author, one after another: one run. The 199 messages after them push all
-  // but the newest upload onto the log's second page.
-  for (let index = 0; index < 10; index += 1) {
-    await uploadIssueFile(issue.key, {
-      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
-      contentType: "image/png",
-      name: `shot-${index}.png`,
-    });
-  }
-  for (let index = 0; index < 199; index += 1) {
-    await createMessage(issue.key, { body: `Later message ${index}` }, asDaemon);
-  }
+  const {
+    events: log,
+    key,
+    newestUpload: upload,
+  } = await seedRunAcrossPage("Uploads across a page", 19);
   const newest = "shot-9.png";
-  const upload = await uploadEvent(issue.key, newest);
-  const events = (await allEvents(issue.key)).length;
+  const events = log.length;
 
   const context = await reader(browser, "alice");
   try {
@@ -1540,10 +1686,10 @@ test("loading older keeps the reader's place on an upload run the older page ext
     const dispatched = (control: Locator) => control.dispatchEvent("click");
 
     // By pointer: the reader is on the newest file of the run, and the older page lands.
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await gotoIssue(page, `/issues/${key}/activity`);
     await withoutScrollAnchoring(page);
     await newestHistoryEntry(page);
-    await readHistoryDown(page, issue.key, events, dispatched, "uncounted");
+    await readHistoryDown(page, key, events, dispatched, "reads");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await expect(showMore).toBeVisible();
@@ -1553,6 +1699,10 @@ test("loading older keeps the reader's place on an upload run the older page ext
       firstPage > 0 && firstPage < 10,
       `the log's first page holds ${firstPage} of the run's 10 uploads, so the run does not straddle the page and the row proves nothing`
     ).toBe(true);
+    await expect(
+      historyEntries(page).last(),
+      "the run is not the last entry drawn above Show more, so the row proves nothing"
+    ).toHaveAttribute("data-history-uploads", String(firstPage));
     await putFileAtCentre();
     const before = (await file.boundingBox())?.y;
     expect(before, `${newest} has no box`).toBeDefined();
@@ -1570,9 +1720,9 @@ test("loading older keeps the reader's place on an upload run the older page ext
       .toBe(before);
 
     // By keyboard: Show more pressed with the focus on it hands the focus to a control in view.
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await gotoIssue(page, `/issues/${key}/activity`);
     await newestHistoryEntry(page);
-    await readHistoryDown(page, issue.key, events, dispatched, "uncounted");
+    await readHistoryDown(page, key, events, dispatched, "reads");
     await seededHistoryEntry(page, file, upload.created_at);
     await expect(file).toHaveCount(1);
     await putFileAtCentre();
@@ -1600,53 +1750,39 @@ test("loading older keeps the reader's place on an upload run the older page ext
 
 // The focus rule of `IssueHistory.tsx`: Show more pressed by keyboard where it reads the log's
 // next page hands the focus to a control the page it read added, never one out of the reader's
-// view, where a press of Enter would follow a link the reader cannot see. Here a message of the
-// daemon's stands between the run and Show more, so the older page's files of the run land above
-// that message and push every control below it down by their height: the first new control
-// below the message is the issue's creation line, out of view under Details' foot. Found by the
+// view, where a press of Enter would follow a link the reader cannot see. Here a status move
+// stands between the run and Show more, so the older page's files of the run land above that
+// line and push every control below it down by their height: the first entry the press
+// draws, the next status move between the uploads, is pushed down under Details' foot. Found by the
 // tester on a running build of 864163bf with a copy of a large real issue: after the press by
 // keyboard the focus was on a turn's time link at 1,425 px, the view ending at 900, with 13 files
 // of a run (572 px) added above the entry between that run and the control; the next page's Retry
-// did the same. The run and the message are the last entries of the log's first page, so the
-// reader first draws every entry that page holds, by presses dispatched to Show more while it
-// says how many are left, which move neither the focus nor Details.
+// did the same. The run and the status move stand at the foot of the log's first page
+// (`seedRunAcrossPage`), so the reader first draws that page's entries down to them, by presses
+// dispatched to Show more while it draws the next ones at once, which move neither the focus nor
+// Details.
 test("Show more by keyboard keeps the focus in view when the older page it reads extends a run above the entries under it", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A run above a message" });
-  const upload = (index: number) =>
-    uploadIssueFile(issue.key, {
-      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
-      contentType: "image/png",
-      name: `shot-${index}.png`,
-    });
-  // Eight uploads, a message of the daemon's, two more uploads within the minute: one run of ten
-  // whose newest upload sorts it above the message. The 197 messages after them leave the run's
-  // two newest uploads and the message at the foot of the log's first page.
-  for (let index = 0; index < 8; index += 1) await upload(index);
-  const between = await createMessage(issue.key, { body: "Between the uploads" }, asDaemon);
-  for (let index = 8; index < 10; index += 1) await upload(index);
-  for (let index = 0; index < 197; index += 1) {
-    await createMessage(issue.key, { body: `Later message ${index}` }, asDaemon);
-  }
-  const newestUpload = await uploadEvent(issue.key, "shot-9.png");
-  const events = await allEvents(issue.key);
+  const { between, events, key, newestUpload } = await seedRunAcrossPage(
+    "A run above a message",
+    20
+  );
   const created = events.find((event) => event.type === "issue.created");
-  if (created === undefined) throw new Error(`${issue.key} recorded no issue.created`);
+  if (created === undefined) throw new Error(`${key} recorded no issue.created`);
 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await gotoIssue(page, `/issues/${key}/activity`);
     await newestHistoryEntry(page);
     await readHistoryDown(
       page,
-      issue.key,
+      key,
       events.length,
       (control) => control.dispatchEvent("click"),
-      "uncounted"
+      "reads"
     );
     const run = historyPanel(page).locator("[data-history-uploads]");
     await seededHistoryEntry(page, run, newestUpload.created_at);
@@ -1656,10 +1792,11 @@ test("Show more by keyboard keeps the focus in view when the older page it reads
       firstPage > 0 && firstPage < 10,
       `the log's first page holds ${firstPage} of the run's 10 uploads, so the run does not straddle the page and the row proves nothing`
     ).toBe(true);
-    await seededHistoryEntry(page, historyItem(page, between.id), between.created_at);
+    const betweenLine = historyPanel(page).locator(`[data-event-seq="${between.seq}"]`);
+    await seededHistoryEntry(page, betweenLine, between.created_at);
     await expect(
-      historyPanel(page).getByText("Between the uploads"),
-      "the message between the uploads is not drawn on the first page"
+      betweenLine,
+      "the status move between the uploads is not drawn on the first page"
     ).toHaveCount(1);
     const showMore = historyNextPage(page);
     await showMore.focus();
@@ -2039,8 +2176,8 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
 const CITED_TITLE = "Cited:";
 
 /**
- * Asks, as `actor`, for the approval of `issue`'s spec, the request's summary citing the issue
- * `cited` by its address. Answers the `ask.opened` event the request recorded.
+ * Asks, as `actor`, for the approval of `issue`'s spec, with the Dispatch address `cited`
+ * in the summary (without its scheme). Answers the `ask.opened` event the request recorded.
  */
 async function approvalCiting(
   issue: { readonly key: string; readonly primary_artifact_id: string },
@@ -2058,6 +2195,18 @@ async function approvalCiting(
     (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
   );
   if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+  return opened;
+}
+
+/** Puts an approval request just below the first page of history, behind the daemon's notes. */
+async function approvalBeneathNotes(
+  issue: { readonly key: string; readonly primary_artifact_id: string },
+  cited: string
+): Promise<DispatchEvent> {
+  const opened = await approvalCiting(issue, cited, { login: "bob" });
+  for (let index = 0; index < PAGE_SIZE; index += 1) {
+    await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon);
+  }
   return opened;
 }
 
@@ -2080,10 +2229,7 @@ async function seedApprovalUnderFirstPage(): Promise<{ cited: string; key: strin
     spec: "The plan.",
     title: "An approval request under Show more",
   });
-  const opened = await approvalCiting(issue, cited.key, { login: "bob" });
-  for (let index = 0; index < PAGE_SIZE; index += 1) {
-    await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon);
-  }
+  const opened = await approvalBeneathNotes(issue, cited.key);
   return { cited: cited.key, key: issue.key, seq: opened.seq };
 }
 
@@ -2173,6 +2319,56 @@ test("a keyboard press of the history's Show more keeps the reference link it fo
       names.resolve();
       await context.close();
     }
+  }
+});
+
+// The press gives a reference link the focus before its target answers. If the target is missing,
+// the renderer takes the link away. The first new entry still has controls, and the reader has
+// done nothing since pressing Show more. The focus must stay in that entry, not fall to the body.
+// SLOW(>=2s): one issue, an approval request and 20 notes written, then a sign-in and history load.
+test("the first new history entry keeps focus when its focused reference turns out to be missing", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "The plan.",
+    title: "An approval request citing a missing question",
+  });
+  const missing = crypto.randomUUID();
+  const opened = await approvalBeneathNotes(issue, `${issue.key}/ask/${missing}`);
+  const context = await reader(browser, "alice");
+  const target = Promise.withResolvers<void>();
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(DESKTOP);
+    for (const read of ["**/api/v1/reference-targets?**", `**/api/v1/asks/${missing}`]) {
+      await page.route(read, async (route) => {
+        await target.promise;
+        await route.continue();
+      });
+    }
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await newestHistoryEntry(page);
+    await historyShowMore(page).press("Enter");
+
+    const first = historyEntries(page).nth(PAGE_SIZE);
+    await expect(first, "the request is not the first new entry").toHaveAttribute(
+      "data-event-seq",
+      String(opened.seq)
+    );
+    const link = first.locator(`.dispatch-markdown a[href="/issues/${issue.key}/asks/${missing}"]`);
+    await expect(link, "Show more did not focus the unresolved reference").toBeFocused();
+    target.resolve();
+    await expect(link, "the missing reference is still a link").toHaveCount(0);
+    await expect
+      .poll(() => first.evaluate((entry) => entry.contains(document.activeElement)), {
+        message: "the first new history entry lost focus when the reference disappeared",
+      })
+      .toBe(true);
+  } finally {
+    target.resolve();
+    await context.close();
   }
 });
 
@@ -2777,7 +2973,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
   const hers = await createIssue({ project: "CORE", title: "Alice's rollout" }, { login: "alice" });
   expect(hers.assignee).toBe("alice");
   const moved = await createAsk(hers.key, { question: "Which rollout flag?" }, asker);
-  await createAsk(hers.key, { question: "Which region goes first?" }, asker);
+  const stays = await createAsk(hers.key, { question: "Which region goes first?" }, asker);
   const his = await createIssue({ project: "CORE", title: "Bob's migration" }, { login: "bob" });
   expect(his.assignee).toBe("bob");
   await createAsk(his.key, { question: "Drop the legacy column?" }, asker);
@@ -2814,8 +3010,8 @@ test("a person hands an ask to another person and it moves between the two Inbox
     bob = await asUser(browser, "bob");
     aliceNew = await reader(browser, "alice");
     bobNew = await reader(browser, "bob");
-    // Alice reads below the reading column's width, where every row draws its own card. Bob
-    // reads above it, where the card is the reading column's.
+    // Alice reads below the reading column's width, where the row she opens is read in place of
+    // the list. Bob reads above it, where the card is the reading column's.
     const alicePage = await alice.newPage();
     await alicePage.setViewportSize({ height: 900, width: 1100 });
     const bobPage = await bob.newPage();
@@ -2848,12 +3044,17 @@ test("a person hands an ask to another person and it moves between the two Inbox
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
 
-    // 2. Alice hands it to bob with the control on her Inbox row.
-    const rowControl = handOnControl(inboxRow(alicePage, moved.id), moved.id);
+    // 2. Alice hands it to bob with the control on the question's card, in the view her row
+    // opens. The hand-on is her own write, so the view then reads her next question, as the
+    // column does, and she goes back to the list from there.
+    await selectRow(alicePage, moved.id);
+    const rowControl = handOnControl(inboxPane(alicePage), moved.id);
     await expect(rowControl).toHaveCount(1);
     await expect(rowControl).toHaveValue("alice");
-    await expect(inboxRow(alicePage, moved.id)).toContainText("Asked of alice");
+    await expect(inboxPane(alicePage)).toContainText("Asked of alice");
     await handTo(rowControl, "bob");
+    await expect(alicePage.locator(`[data-inbox-reading-row="${stays.id}"]`)).toBeVisible();
+    await backToList(alicePage);
     await handsOff(alicePage);
 
     // 3. Without a reload, the row leaves her list and enters his, and every count follows.
@@ -2904,9 +3105,9 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(handOnControl(bobIssueCard, moved.id)).toHaveCount(1);
     await bobIssue.close();
 
-    // 5. The control is on the card wherever the card renders an open ask: on the Inbox row
-    // (pressed above), on the reading column's card, in the facts of the focused ask, on a
-    // document's margin and in a document's ask block.
+    // 5. The control is on the card wherever the card renders an open ask: in the Inbox's view
+    // below the column's width (pressed above), on the reading column's card, in the facts of the
+    // focused ask, on a document's margin and in a document's ask block.
     await selectRow(bobPage, moved.id);
     const paneControl = handOnControl(inboxPane(bobPage), moved.id);
     await expect(paneControl).toHaveCount(1);
@@ -3020,7 +3221,9 @@ function rowFor(stdout: string, askId: string): string {
   return row ?? "";
 }
 
-/** The three numbers the listing carries: its total, and the size of each of its two groups. */
+/** The three numbers the listing carries: its total, and the size of each of its two groups. The
+ *  total opens the header in both forms: `<n> unanswered asks you authored …` for the session's
+ *  own listing, and `<n> unanswered asks on the <PROJECT> project's …` for `--project`. */
 function printedCounts(stdout: string): { agent: number; human: number; total: number } {
   const number = (pattern: RegExp): number => {
     const found = pattern.exec(stdout);
@@ -3030,7 +3233,7 @@ function printedCounts(stdout: string): { agent: number; human: number; total: n
   return {
     agent: number(/^Waiting on agent \((\d+)\):$/m),
     human: number(/^Waiting on human \((\d+)\):$/m),
-    total: number(/^(\d+) unanswered asks? you authored/m),
+    total: number(/^(\d+) unanswered asks? (?:you authored|on the [A-Z][A-Z0-9]* project's)/m),
   };
 }
 
@@ -4320,13 +4523,14 @@ async function readDownByShowMore(page: Page, key: string, events: number): Prom
  *  its list open, is taller than Details' view at 1440 px and at 390. */
 const MANY_AGENTS = 16;
 
-/** How many notes the history of each of the two rows below holds: more than the first page of
- *  200 the history reads, so Show more reads on. */
-const LONG_HISTORY_NOTES = 205;
+/** How many notes the history of each of the two rows below holds: more than it draws at once,
+ *  so reading down takes three presses of Show more. */
+const LONG_HISTORY_NOTES = 61;
 
-/** An issue whose history holds `LONG_HISTORY_NOTES` notes of the daemon's, so Show more reads
- *  on, and which `MANY_AGENTS` Legion agents worked, so the collaborators' row with its list open
- *  is taller than Details' view: its key, and how many events its log holds. */
+/** An issue whose history holds `LONG_HISTORY_NOTES` notes of the daemon's, which the history
+ *  reads from the issue's messages, and which `MANY_AGENTS` Legion agents worked, so the
+ *  collaborators' row with its list open is taller than Details' view: its key, and how many
+ *  events its log holds. */
 async function seedCollaboratorsOverLongHistory(): Promise<{ events: number; key: string }> {
   const { issue } = await seedMessages(
     "Collaborators over a long history",
@@ -4612,6 +4816,61 @@ test("t v after the history is read down by Show more brings the history's headi
     }
   }
   expect(outOfPlace, outOfPlace.join("; ")).toEqual([]);
+});
+
+// `t v` brings the history's heading to the top of Details' view as the key's focus lands: the
+// history's own landing puts it there as soon as its log is drawn, which, with the log already
+// read, is the first frame after the key, and the focus follows two frames later. A row above the
+// history that changes height between the two moved the heading from the top, and the hold of the
+// landed place kept it there: 18 px above Details' view on a copy of a real issue at 390 px, by
+// pointer and by keyboard. Here the row above the history shrinks by 18 px in the very turn the
+// heading says it has landed (`history-heading-landed`, which the history's heading raises), and
+// the heading must stand at the top of Details' view once the key has focused the history. The
+// browser's own scroll anchoring is turned off, so the row reads the page's own hold alone.
+// SLOW(>=2s): 30 messages written, a sign-in, the history read, Details closed and opened again.
+test("t v at 390 px with the history's log read leaves its heading at the top of Details' view when a row above it shrinks as the key lands", async ({
+  browser,
+}) => {
+  const { issue, newest } = await seedMessages("A heading after a key", 30);
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(PHONE);
+    await openHistory(page, issue.key, newest);
+    await withoutScrollAnchoring(page);
+    await readyForPageKey(page, PHONE);
+    await page.evaluate(() => {
+      document.addEventListener(
+        "history-heading-landed",
+        () => {
+          const row = document.querySelector(
+            '[data-testid="issue-history"]'
+          )?.previousElementSibling;
+          if (!(row instanceof HTMLElement)) return;
+          row.style.marginBottom = "-18px";
+          document.documentElement.dataset.rowAboveShrank = "";
+        },
+        { once: true }
+      );
+    });
+
+    await page.keyboard.press("t");
+    await page.keyboard.press("v");
+    await expect(historyPanel(page), "t v did not focus the history").toBeFocused();
+    await expect(
+      page.locator("html"),
+      "the row above the history did not shrink, so the row proves nothing"
+    ).toHaveAttribute("data-row-above-shrank", "");
+    await detailsStandStill(page, "t v");
+    const view = await historyViewport(page);
+    const heading = await boxOf(historyHeading(page), "the history's heading");
+    expect(
+      Math.abs(heading.y - view.top) <= 1,
+      `t v left the History heading ${Math.round(heading.y - view.top)} px from the top of Details' view`
+    ).toBe(true);
+  } finally {
+    await context.close();
+  }
 });
 
 // The address of an agents' turn opens Details with that turn marked
@@ -6369,46 +6628,73 @@ function excerptLinkTo(panel: Locator, key: string): Locator {
   return panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${key}"]`);
 }
 
-// At 767 px and below Details covers the page, and a link pressed inside it closes Details in the
-// capture phase (`Margin.tsx`'s `closeOnLink`), before the press reaches the document. A reference
-// to a known issue is drawn as its key in a span, then its title, so a press on the key lands on
-// that span; Details' unmount takes the span out of the link before the document's listener reads
-// the press, and that listener (`new-page-parameter.tsx`) then finds no link around it and leaves
-// the press to the browser, which loads the bare address and today's page. Found by the tester on
-// a running build of the redesign issue at 390 px. SLOW(>=2s): two issues and a citing comment
-// written, a sign-in, and one load of the issue with Referenced by opened.
-test("at 390 px a press on the key of a link in Details' Referenced by to the issue itself keeps ?issue_page=new and loads no document", async ({
-  browser,
-}) => {
+// What the rows below keep on the page's window.
+declare global {
+  interface Window {
+    /** Set by a row before its press; a load of a document drops it, a move of the router
+     *  keeps it. */
+    __stayed?: true;
+  }
+}
+
+/**
+ * Opens the issue `seedCitedIssue` writes at `?issue_page=new` as alice, who has never turned the
+ * new page on, at `width` px; opens Details' Referenced by; presses `part` of the excerpt's link
+ * to the issue itself (the key the link draws in a span of its own, or the link); and holds that
+ * the press kept the parameter and the new page, and loaded no document.
+ */
+async function pressLinkToItself(
+  browser: Browser,
+  width: number,
+  part: "key" | "link"
+): Promise<void> {
   const key = await seedCitedIssue();
   const opened = `/issues/${key}?issue_page=new`;
+  const pressed = part === "key" ? "the press on the key" : "the press";
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.setViewportSize(viewportAt(390));
+    await page.setViewportSize(viewportAt(width));
     await gotoIssue(page, opened);
     await openDetails(page);
     const { panel } = await openReferencedBy(page);
     const link = excerptLinkTo(panel, key);
     await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
-    const keyPart = link.locator("span").filter({ hasText: key });
-    await expect(keyPart, "the link draws no key of its own").toHaveCount(1);
+    let target = link;
+    if (part === "key") {
+      target = link.locator("span").filter({ hasText: key });
+      await expect(target, "the link draws no key of its own").toHaveCount(1);
+    }
     await page.evaluate(() => {
       window.__stayed = true;
     });
-    await keyPart.click();
-    await expect(
-      page,
-      "the press on the key loaded the issue's address without the parameter"
-    ).toHaveURL(opened);
+    await target.click();
+    await expect(page, `${pressed} loaded the issue's address without the parameter`).toHaveURL(
+      opened
+    );
     await expectIssuePageDrawn(page);
+    // A press that starts a load returns once that load has committed (Playwright's click waits
+    // for the navigation it began), so this read is of the document the press left the reader in.
     expect(
       await page.evaluate(() => window.__stayed === true),
-      "the press on the key loaded the document again"
+      `${pressed} loaded the document again`
     ).toBe(true);
   } finally {
     await alice.close();
   }
+}
+
+// At 767 px and below Details covers the page, and a link pressed inside it closes Details in the
+// capture phase (`Margin.tsx`'s `closeOnLink`), before the press reaches the document. A reference
+// to a known issue is drawn as its key in a span, then its title, so a press on the key lands on
+// that span, and Details' unmount takes the span out of the link before the document hears the
+// press. The page must still follow the link in place, with `?issue_page=new` kept, and load no
+// document. SLOW(>=2s): two issues and a citing comment written, a sign-in, and one load of the
+// issue with Referenced by opened.
+test("at 390 px a press on the key of a link in Details' Referenced by to the issue itself keeps ?issue_page=new and loads no document", async ({
+  browser,
+}) => {
+  await pressLinkToItself(browser, 390, "key");
 });
 
 // A comment of another issue cites the issue, so Details' Referenced by draws its whole excerpt
@@ -6621,15 +6907,6 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
   }
 });
 
-// What the row below keeps on the page's window.
-declare global {
-  interface Window {
-    /** Set by the row before its press; a load of a document drops it, a move of the router
-     *  keeps it. */
-    __stayed?: true;
-  }
-}
-
 // alice has never turned the new page on, and opens the issue's address with `?issue_page=new`.
 // Details' Referenced by draws a comment's excerpt through the renderer, whose link to the issue
 // itself is a plain `<a href>` the router never drew, to the address without the parameter. A
@@ -6640,35 +6917,57 @@ declare global {
 test("a link in Details' Referenced by to the issue itself, pressed at ?issue_page=new with the setting off, keeps the new page and loads no document", async ({
   browser,
 }) => {
-  const key = await seedCitedIssue();
-  const opened = `/issues/${key}?issue_page=new`;
+  await pressLinkToItself(browser, 1440, "link");
+});
+
+// alice has never turned the new page on, and opens the address with `?issue_page=new` of an issue
+// whose spec bob sent back, for a reason that cites the issue itself. The Reviews dialog, opened
+// from the header's approval chip, draws that reason through the renderer, whose link to the issue
+// is a plain `<a href>` to the address without the parameter. The dialog does not close on a move
+// of the router, so a move in place would leave it, its scroll lock and its keys over the page:
+// the press loads the address with the parameter instead, and the dialog goes with the document.
+// SLOW(>=2s): an issue, the project's gated steps and a review written, a sign-in, one load of the
+// issue, and a press that loads it again.
+test("a link in the Reviews dialog, pressed at ?issue_page=new with the setting off, loads the issue's address with the parameter and leaves no dialog over the new page", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await setGatedSteps("CORE", ["spec"]);
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "The plan.",
+    title: "A spec sent back",
+  });
+  await reviewArtifact(
+    issue.primary_artifact_id,
+    { reason: `Name the rollback path: see dispatch://${issue.key}`, state: "changes_requested" },
+    { login: "bob" }
+  );
+  const opened = `/issues/${issue.key}?issue_page=new`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, opened);
-    await openDetails(page);
-    const { panel } = await openReferencedBy(page);
-    const link = excerptLinkTo(panel, key);
-    await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
+    await approvalChip(page, issue.primary_artifact_id).click();
+    const reviews = page.getByRole("dialog", { name: "Reviews" });
+    const link = reviews.locator(`.dispatch-markdown a[href="/issues/${issue.key}"]`);
+    await expect(link, "the Reviews dialog draws no link to the issue in its reason").toHaveCount(
+      1
+    );
     await page.evaluate(() => {
       window.__stayed = true;
     });
     await link.click();
-    await expect(page, "the press loaded the issue's address without the parameter").toHaveURL(
-      opened
-    );
+    await expect(page, "the press lost the parameter").toHaveURL(opened);
     await expectIssuePageDrawn(page);
-    // A press that starts a load returns once that load has committed (Playwright's click waits
-    // for the navigation it began), so this read is of the document the press left the reader in.
+    await expect(reviews, "the Reviews dialog stayed over the page").toHaveCount(0);
+    // A press that starts a load returns once that load has committed, so this read is of the
+    // document the press left the reader in.
     expect(
       await page.evaluate(() => window.__stayed === true),
-      "the press loaded the document again"
-    ).toBe(true);
-    await expect(
-      page.getByRole("tab", { exact: true, name: "Spec" }),
-      "the press drew today's page"
-    ).toHaveCount(0);
+      "the press loaded no document"
+    ).toBe(false);
   } finally {
     await alice.close();
   }

@@ -11,6 +11,7 @@ import {
 
 import { isPlainClick } from "../refs/picture-lightbox";
 import { parseIssuePath } from "../refs/routes";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** The query parameter that opens the new issue page on one issue's addresses. */
 const PARAMETER = "issue_page";
@@ -18,9 +19,11 @@ const PARAMETER = "issue_page";
 /** The one value of `PARAMETER` that opens the new page; any other is as no parameter. */
 const NEW_PAGE = "new";
 
-/** An editable text and what stands in it: a plain click on a link there puts the caret in the
- *  link, as the document editor does, and is no press of the link. */
-const EDITABLE = '[contenteditable]:not([contenteditable="false"])';
+/** A modal dialog the page draws over itself, which a move in place would leave standing over the
+ *  page it moved to, with its scroll lock and its keys. Details' own sheet, a modal dialog at phone
+ *  width, is none: it closes as a link in it is pressed (`Margin.tsx`'s `closeOnLink`). A dialog
+ *  drawn inside Details is one. */
+const MODAL_DIALOG = `[aria-modal="true"]:not([${DETAILS_ATTRIBUTE}]), [role="dialog"]:not([${DETAILS_ATTRIBUTE}])`;
 
 /**
  * The key of the issue whose address `pathname` + `search` is, where that address carries
@@ -65,11 +68,15 @@ function keepNewPage(key: string, to: To): Partial<Path> {
  * document, after every handler of the page: a plain click on one to an address of the issue
  * that names no `issue_page`, which no handler has taken (a `Link`, a row's words that follow
  * their own in place), is followed through the same push, so the document is not loaded again at
- * the address without the parameter. A click with a key held or with another button, and a link
- * to a download, to another window or to another origin, are the browser's. A load of an address
- * is not seen here. With no parameter in the address the router's own navigator is handed on
- * unchanged, and no click is heard. No `<Router>` may stand inside another, so this provides the
- * router's own navigation context again, its navigator alone replaced.
+ * the address without the parameter. Inside a modal dialog the page draws over itself, the click
+ * loads the kept address instead, the parameter on it, so the dialog goes with the document
+ * rather than stand over the page a move in place would draw under it. A click with a key held or
+ * with another button, and a link to a download, to another window, to another origin or inside
+ * an SVG, are the browser's; a link inside an editable text, by the nearest element that names
+ * `contenteditable`, is the editor's. A load of an address is not seen here. With no parameter in
+ * the address the router's own navigator is handed on unchanged, and no click is heard. No
+ * `<Router>` may stand inside another, so this provides the router's own navigation context
+ * again, its navigator alone replaced.
  */
 export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNode {
   const outer = useContext(UNSAFE_NavigationContext);
@@ -109,8 +116,11 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
       const anchor = event
         .composedPath()
         .find((node) => node instanceof Element && node.matches("a[href]"));
-      // A link inside an editable text is the editor's: a plain click puts the caret in it.
-      if (!(anchor instanceof HTMLAnchorElement) || anchor.closest(EDITABLE) !== null) return;
+      // A link inside an editable text is the editor's: a plain click puts the caret in it, as
+      // the document editor does. `isContentEditable` is the nearest element that names
+      // `contenteditable` deciding, so a part drawn as `contenteditable="false"` (a block's header
+      // and footer in the row editor) is no editable text, and its links are followed.
+      if (!(anchor instanceof HTMLAnchorElement) || anchor.isContentEditable) return;
       if (anchor.hasAttribute("download") || anchor.hasAttribute("target")) return;
       const url = new URL(anchor.href, window.location.href);
       if (url.origin !== window.location.origin) return;
@@ -118,7 +128,20 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
       // against the address, which carries it), is the browser's.
       if (!keeps(key, url.pathname, url.search)) return;
       event.preventDefault();
-      handedOn.push({ hash: url.hash, pathname: url.pathname, search: url.search });
+      const to = { hash: url.hash, pathname: url.pathname, search: url.search };
+      if (anchor.closest(MODAL_DIALOG) === null) {
+        handedOn.push(to);
+        return;
+      }
+      const kept = handedOn.createHref(to);
+      // A move that changes only the hash is no load of a document, and the dialog would stay.
+      const target = new URL(kept, window.location.href);
+      const hashOnly =
+        target.hash !== "" &&
+        target.pathname === window.location.pathname &&
+        target.search === window.location.search;
+      window.location.assign(kept);
+      if (hashOnly) window.location.reload();
     };
     document.addEventListener("click", follow);
     return () => document.removeEventListener("click", follow);

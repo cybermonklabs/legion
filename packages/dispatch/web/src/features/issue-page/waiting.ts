@@ -29,10 +29,9 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * caller selects: the decisions view read (`?view=decisions`) wherever the page holds it, which
  * holds every decision and every question of the issue, however many pages of Conversation's
  * read the page holds - that read is paged (R15), and a decision past its pages held so far
- * would otherwise go uncounted - and Conversation's read until then. The page reads the
- * decisions view the first time the Decisions filter is on in a load (`ViewReadProvider`), so
- * until it holds an answer, and where its read fails or a Keep or a Change dropped it,
- * Conversation's read stands in (`IssuePropertiesRow.tsx`).
+ * would otherwise go uncounted - and Conversation's read until then. The header takes that
+ * answer through `useDecisionsView` (`IssuePropertiesRow.tsx`), so its count and the Decisions
+ * control count the same answer, and Conversation's read stands in wherever it holds none.
  * The decisions are read once per answer (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks:
  * the read answers a person's decision on every ask a person answered, which says, with no asks,
  * which question is a person's decision, which never waits for review, and which agent's

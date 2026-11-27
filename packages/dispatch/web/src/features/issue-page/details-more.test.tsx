@@ -10,7 +10,7 @@ import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
-import { prependEventToLog } from "../../api/event-feed";
+import type { EventPages } from "../../api/event-feed";
 import {
   issueAskThreadsQuery,
   issueCoverageQuery,
@@ -43,7 +43,9 @@ import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
+import { arriveInHistoryLog } from "./history-log-fixture";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { framesByHand, type HeldFrames } from "./outline-fixtures";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { PROPERTY_LABELS } from "./page-structure";
 import {
@@ -2499,9 +2501,19 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
       legion_registry: "ok",
       people: [],
     }),
-    spyOn(api, "getIssueEvents").mockImplementation((_key, query) =>
-      query?.before !== undefined && drawn.older !== undefined ? drawn.older() : log
-    ),
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, query) => {
+      if (query?.before !== undefined && drawn.older !== undefined) return drawn.older();
+      const events = await log;
+      const after = query?.after;
+      // The read of the first event past the reader's read mark (`IssueHistory.tsx`): the oldest
+      // event the log holds after it.
+      return after === undefined
+        ? events
+        : events
+            .filter((event) => event.seq > after)
+            .sort((one, other) => one.seq - other.seq)
+            .slice(0, query?.limit);
+    }),
   ];
   const hold: PeopleHold = {};
   const view = render(
@@ -2867,6 +2879,63 @@ test("t v pressed again at /activity with Details read far down lands the histor
   }
 });
 
+// `t v` with the history's log already read lands the history's heading at the top of Details'
+// view as soon as the key opens it, and the key's own focus follows two frames later. A row above
+// the history that changes height in between moves the heading from the top, and the history,
+// taller than the view, is not brought into it by the least scroll, so the hold kept the heading
+// where that change left it: 18 px above Details' view on a copy of a real issue at 390 px, by
+// pointer and by keyboard. The heading is brought back to the top as the focus lands, and the
+// hold keeps it there.
+test("t v with the history's log read leaves the history's heading at the top of Details' view when a row above it shrinks before the focus lands", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`, {
+    log: Promise.resolve(claimsNewestFirst(30)),
+  });
+  let frames: HeldFrames | undefined;
+  try {
+    act(() => page.hold.open?.(true));
+    await page.historyDrawn(PAGE_SIZE);
+    await nextFrames(2);
+    const history = screen.getByTestId("issue-history");
+    const heading = history.querySelector<HTMLElement>("h2");
+    if (heading === null) throw new Error("the history drew no heading");
+    expect(
+      history.getBoundingClientRect().height,
+      "the history is no taller than Details' view, so the case proves nothing"
+    ).toBeGreaterThan(BOX_HEIGHT);
+    frames = framesByHand();
+
+    await userEvent.keyboard("tv");
+    expect(
+      heading.getBoundingClientRect().top,
+      "t v did not land the history's heading at the top of Details' view, so the case proves nothing"
+    ).toBe(BOX_TOP);
+
+    page.grow("row-above", -18);
+    page.resized();
+    expect(
+      heading.getBoundingClientRect().top,
+      "the row above shrank and did not move the heading, so the case proves nothing"
+    ).toBe(BOX_TOP - 18);
+
+    for (let frame = 0; frame < 4; frame += 1) await frames.run();
+    expect(document.activeElement, "t v did not focus the history").toBe(history);
+    const landed = heading.getBoundingClientRect().top;
+    expect(landed, `t v left the History heading ${BOX_TOP - landed} px above Details' view`).toBe(
+      BOX_TOP
+    );
+
+    page.grow("row-above", 18);
+    page.resized();
+    expect(
+      heading.getBoundingClientRect().top,
+      "the row above grew again and moved the heading from the top of Details' view"
+    ).toBe(BOX_TOP);
+  } finally {
+    frames?.restore();
+    page.restore();
+  }
+});
+
 // The hold lasts while the focus stays on the control: a key or a turn of the wheel that leaves it
 // there leaves the hold on, and a row above that grows later scrolls Details by as much.
 test("the hold survives a key and a turn of the wheel, and a later growth above the control scrolls Details by as much", async () => {
@@ -3078,16 +3147,18 @@ function claimsNewestFirst(count: number): DispatchEvent[] {
 }
 
 /** A full first page of the log, 200 events, whose entries in the history are `entries` claims
- *  (`claimsNewestFirst`) and the agents' thread: the rest are moves of a child's status, which
- *  the outline draws and the history leaves out. With no more entries than one press of Show
- *  more draws, every entry read is drawn, and Show more reads the log's next page. */
+ *  (`claimsNewestFirst`), the agents' thread and a claim older than all of them, at sequence 0,
+ *  which the reader has read: the rest are moves of a child's status, which the outline draws and
+ *  the history leaves out. With `PAGE_SIZE - 1` claims the history holds one entry more than a
+ *  press of Show more draws, so it draws the claims and the thread under a Show more that says
+ *  "1+", whose press reads the log's next page before it draws. */
 function fullPageOfFewEntries(entries: number): DispatchEvent[] {
   const left = Array.from(
-    { length: 200 - entries },
+    { length: 199 - entries },
     (_, index) =>
       ({ ...claimMade(1000 + index, 1), payload: {}, type: "child.status" }) as DispatchEvent
   );
-  return [...left, ...claimsNewestFirst(entries)];
+  return [...left, ...claimsNewestFirst(entries), claimMade(0, (entries + 1) * 9)];
 }
 
 /** How long the case lets pass for a scroll not to be taken for the reader's own: past the
@@ -3115,12 +3186,12 @@ type EarlierPlace = "older" | "pin" | "pointer" | "scroll";
 /**
  * Draws Details with the history of `place`'s case open in it, and the reader's place left in
  * that history by `place`: a log of 30 claims and the agents' thread, or, where the reader
- * pressed Show more to read the log's next page, a full page of 200 events that holds 19 claims
- * and the thread, with older pages left to read, whose next page is never answered while the case
- * runs. The box anchors its scroll as the browser does while its own scroll anchoring is on, and
- * the clock the reader's acts are read by stands still until a case moves it on. Returns the
- * page, the entry the reader's place names, and the point of the page the reader looked at: that
- * entry's middle.
+ * pressed Show more to read the log's next page, a full page of 200 events that holds 19 claims,
+ * the thread and one older claim (`fullPageOfFewEntries`), with older pages left to read, whose
+ * next page is never answered while the case runs. The box anchors its scroll as the browser does
+ * while its own scroll anchoring is on, and the clock the reader's acts are read by stands still
+ * until a case moves it on. Returns the page, the entry the reader's place names, and the point of
+ * the page the reader looked at: that entry's middle.
  */
 async function readerLeftAPlace(place: EarlierPlace) {
   const { client, getIssueCoverage, names } = agentsThreadClient();
@@ -3177,7 +3248,7 @@ async function readerLeftAPlace(place: EarlierPlace) {
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(api.putIssueState).toHaveBeenCalledTimes(1));
     } else if (place === "older") {
-      const more = screen.getByRole("button", { name: CONTROL_LABELS.show_more });
+      const more = screen.getByRole("button", { name: SHOW_MORE });
       act(() => more.focus());
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(more).toHaveAttribute("aria-busy", "true"));
@@ -3403,7 +3474,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
         expect(whollyInBox(seen), "the reader's entry is not in the view").toBe(true);
 
         if (above === "arrives") {
-          act(() => prependEventToLog(client, claimMade(log.length + 1, 1)));
+          act(() => arriveInHistoryLog(client, KEY, claimMade(log.length + 1, 1)));
           await page.historyDrawn(PAGE_SIZE + 1);
         } else {
           growEntryAbove(page, entry);

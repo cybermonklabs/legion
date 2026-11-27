@@ -1464,7 +1464,10 @@ test("every state of the tree read, the decisions view read and the asks read dr
 test("a decision past Conversation's first page is a row of its part, which the keys and an address reach", async () => {
   const user = userEvent.setup();
   const made = (block: string, at: string) =>
-    decision(block, { decision: { changed_at: at, links: [shaped(specRef("s1"))] } });
+    decision(block, {
+      decision: { changed_at: at, links: [shaped(specRef("s1"))] },
+      role: "query",
+    });
   const first = made("first", "2026-11-10T12:00:00Z");
   const view = renderBody(
     {
@@ -1566,6 +1569,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
       decision: {
         links: [shaped(specRef("s1"))],
       },
+      role: "query",
     }),
   ];
 

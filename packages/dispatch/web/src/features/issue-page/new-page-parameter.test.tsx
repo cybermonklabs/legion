@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { act, type RenderResult, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useContext, useEffect, useRef } from "react";
@@ -13,6 +13,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { KeepNewIssuePage } from "./new-page-parameter";
 
 /** The address of the issue's activity, the target of the one link the probe draws. */
@@ -319,6 +320,27 @@ for (const { click, href = ACTIVITY, link, what } of LEFT_TO_THE_BROWSER) {
   });
 }
 
+// A link inside an SVG is no HTML link: the rule leaves it to the browser, whatever it points to.
+test("a plain click on a link inside an SVG is left to the browser, and the router stays where it is", () => {
+  const view = drawAt(
+    OPENED,
+    <svg>
+      <title>Picture</title>
+      <a href={ACTIVITY}>
+        <text>Words</text>
+      </a>
+    </svg>
+  );
+  try {
+    const link = view.container.querySelector("svg a[href]");
+    if (link === null) throw new Error("the case drew no link inside the SVG");
+    expect(pressOn(link), "a click on a link inside an SVG was followed in place").toBe(true);
+    expect(address()).toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
 // A link in an editable text is the editor's: a plain click puts the caret in it, which the
 // document editor does on purpose, and the page must not move there.
 test("a link inside an editable text is left to the editor, and the router stays where it is", () => {
@@ -408,6 +430,74 @@ test("a plain click on a link's inner element that a handler detaches, in a link
   }
 });
 
+// The row editor draws a block's header and footer inside the editable text as parts that are
+// not editable (`contenteditable="false"`), and a reply's body is drawn there: the editor takes no
+// click on a link in such a part, so the rule follows it as it follows any rendered link.
+test("a plain click on a link in a part of an editable text drawn as not editable is followed in place", () => {
+  const view = drawAt(
+    OPENED,
+    // biome-ignore lint/a11y/useSemanticElements: the case draws the attribute the editor's text carries.
+    <div contentEditable role="textbox" suppressContentEditableWarning tabIndex={0}>
+      <div contentEditable={false}>
+        <a href={ACTIVITY}>Words</a>
+      </div>
+    </div>
+  );
+  try {
+    expect(press("Words"), "the click was left to load the page").toBe(false);
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a plain click on a link's inner element that a handler detaches, in a part of an editable text drawn as not editable, is still followed in place", () => {
+  const view = drawAt(
+    OPENED,
+    <Detaching>
+      {/* biome-ignore lint/a11y/useSemanticElements: the case draws the attribute the editor's text carries. */}
+      <div contentEditable role="textbox" suppressContentEditableWarning tabIndex={0}>
+        <div contentEditable={false}>
+          <a href={ACTIVITY}>
+            <span>Words</span>
+          </a>
+        </div>
+      </div>
+    </Detaching>
+  );
+  try {
+    const words = screen.getByText("Words");
+    expect(pressOn(words), "the click was left to load the page").toBe(false);
+    expect(
+      words.isConnected,
+      "the handler left the words in their link, so the case proves nothing"
+    ).toBe(false);
+    expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a link inside an editable text that stands in a part drawn as not editable is left to the editor", () => {
+  const view = drawAt(
+    OPENED,
+    <div contentEditable={false}>
+      {/* biome-ignore lint/a11y/useSemanticElements: the case draws the attribute the editor's text carries. */}
+      <div contentEditable role="textbox" suppressContentEditableWarning tabIndex={0}>
+        <a href={ACTIVITY}>Words</a>
+      </div>
+    </div>
+  );
+  try {
+    expect(press("Words"), "a click on a link in an editable text was followed in place").toBe(
+      true
+    );
+    expect(address()).toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** A rendered link whose own handler takes a plain click, as a row's words take theirs: it moves
  *  to the issue's collaborators itself, wherever its `href` points. */
 function TakenLink(): ReactNode {
@@ -441,15 +531,138 @@ test("a click a link's own handler already took moves the router once, where tha
   }
 });
 
-test("a click the router's Link already took moves the router once, where the Link moved it", () => {
-  const view = drawAt(OPENED);
+/**
+ * The loads the window was asked for while `run` ran: each address given to `assign`, and
+ * `"reload"` for a `reload`. Both are stood in for, since a real one would load a page into the
+ * unit suite's document.
+ */
+function loadsDuring(run: () => void): string[] {
+  const loads: string[] = [];
+  const assign = spyOn(window.location, "assign").mockImplementation((url) => {
+    loads.push(String(url));
+  });
+  const reload = spyOn(window.location, "reload").mockImplementation(() => {
+    loads.push("reload");
+  });
   try {
-    expect(press("Activity"), "the router's Link left the click to load the page").toBe(false);
+    run();
+  } finally {
+    assign.mockRestore();
+    reload.mockRestore();
+  }
+  return loads;
+}
+
+/** `press` the link named `name`, and answer whether the click was left to the browser and the
+ *  addresses the window was asked to load as it went. */
+function pressLoading(name: string): { readonly left: boolean; readonly loads: string[] } {
+  let left = true;
+  const loads = loadsDuring(() => {
+    left = press(name);
+  });
+  return { left, loads };
+}
+
+/** The boxes a rendered link may stand in that are a modal dialog the page draws over itself:
+ *  each by what marks it. */
+const MODAL_DIALOGS: readonly {
+  readonly box: { readonly "aria-modal"?: "true"; readonly role?: "dialog" };
+  readonly what: string;
+}[] = [
+  { box: { "aria-modal": "true", role: "dialog" }, what: "a modal dialog" },
+  { box: { role: "dialog" }, what: "a box with the dialog role alone" },
+  { box: { "aria-modal": "true" }, what: "a box marked modal alone" },
+];
+
+// The page behind a modal dialog would move in place while the dialog, its scroll lock and its
+// keys stayed over it, and the press would look like it did nothing: the rule loads the kept
+// address instead, so the dialog goes with the document.
+for (const { box, what } of MODAL_DIALOGS) {
+  test(`a plain click on a rendered link inside ${what} loads the issue's address with the parameter, and the router stays where it is`, () => {
+    const view = drawAt(
+      OPENED,
+      <div {...box}>
+        <a href={ACTIVITY}>Words</a>
+      </div>
+    );
+    try {
+      const { left, loads } = pressLoading("Words");
+      expect(left, "the click was left to load the address without the parameter").toBe(false);
+      expect(loads, "the click loaded no document").toEqual([`${ACTIVITY}?issue_page=new`]);
+      expect(address(), "the router moved behind the dialog").toBe(OPENED);
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+/** Details' own sheet as it is drawn at phone width while it is open: a modal dialog that closes
+ *  as a link in it is pressed (`Margin.tsx`). */
+function DetailsSheet({ children }: { children: ReactNode }): ReactNode {
+  return (
+    <aside aria-modal="true" role="dialog" {...{ [DETAILS_ATTRIBUTE]: "" }}>
+      {children}
+    </aside>
+  );
+}
+
+test("a plain click on a rendered link in Details' own sheet is followed in place, and loads no document", () => {
+  const view = drawAt(
+    OPENED,
+    <DetailsSheet>
+      <a href={ACTIVITY}>Words</a>
+    </DetailsSheet>
+  );
+  try {
+    const { left, loads } = pressLoading("Words");
+    expect(left, "the click was left to load the page").toBe(false);
+    expect(loads, "the click in Details' own sheet loaded a document").toEqual([]);
     expect(address()).toBe(`${ACTIVITY}?issue_page=new`);
-    act(() => held.navigate?.(-1));
-    expect(address(), "the click moved the router twice").toBe(OPENED);
   } finally {
     view.unmount();
+  }
+});
+
+test("a plain click on a rendered link in a modal dialog inside Details' own sheet loads the issue's address with the parameter", () => {
+  const view = drawAt(
+    OPENED,
+    <DetailsSheet>
+      <div aria-label="Reviews" aria-modal="true" role="dialog">
+        <a href={ACTIVITY}>Words</a>
+      </div>
+    </DetailsSheet>
+  );
+  try {
+    const { left, loads } = pressLoading("Words");
+    expect(left, "the click was left to load the address without the parameter").toBe(false);
+    expect(loads, "the click loaded no document").toEqual([`${ACTIVITY}?issue_page=new`]);
+    expect(address(), "the router moved behind the dialog").toBe(OPENED);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A move that changes only the hash is no load of a document: the window would only scroll, the
+// router would move behind the dialog, and the dialog would stay. The rule loads the document
+// again.
+test("a plain click inside a modal dialog on a link that differs from the window's address only by its hash loads the document again", () => {
+  window.history.replaceState(null, "", OPENED);
+  const view = drawAt(
+    OPENED,
+    <div aria-modal="true" role="dialog">
+      <a href="/issues/CORE-1#b-x">Words</a>
+    </div>
+  );
+  try {
+    const { left, loads } = pressLoading("Words");
+    expect(left, "the click was left to load the address without the parameter").toBe(false);
+    expect(loads, "the window was not asked to load the document again").toEqual([
+      "/issues/CORE-1?issue_page=new#b-x",
+      "reload",
+    ]);
+  } finally {
+    view.unmount();
+    window.history.replaceState(null, "", "/");
   }
 });
 
