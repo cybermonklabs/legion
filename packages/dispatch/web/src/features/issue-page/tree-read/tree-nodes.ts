@@ -772,8 +772,7 @@ function draftResult(
  * is handed too (`coverageStatements`, `TreeDraftContext.isCoverageStatement`). A decision node
  * that carries no `decision`, or that no document holds, is no decision of `decisionNodes` - the
  * one has no review state, the other no address and no document a Keep could be written against
- * - so it waits on nobody, and is unsure only where the read says so. Nor does one the read
- * answers `overtaken` wait on anybody (R2), as the header's count does not count it.
+ * - so it waits on nobody, and is unsure only where the read says so.
  *
  * A decision whose `decided_by` names a person is that person's decision (`decision-review.ts`'
  * `decidedByPerson`, INFRA-1196's decision 516), so its author is that person, and it is not an
@@ -821,7 +820,6 @@ function draftDecision(
   // A decision the read hangs no Change under may have one on a comment page not read yet.
   markChangeUnread(draft, decision, answer);
   draft.waiting =
-    node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&
     inReviewList(decided, context.isCoverageStatement, changed);

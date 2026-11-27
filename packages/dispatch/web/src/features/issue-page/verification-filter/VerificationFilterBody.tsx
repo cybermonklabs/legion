@@ -324,9 +324,11 @@ export function VerificationFilterBody({
   if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
   // No count reads a proposed statement, or one at or under an overtaken node (R3), so the
-  // covered count reads the coverage read less each row it marks `proposed` or `closed`
-  // (`countedCoverage`).
-  const countable = useMemo(() => countedCoverage(coverage), [coverage]);
+  // covered count reads the coverage read less each row it marks `proposed` or `closed`, and less
+  // each row whose statement the issue's reading - every statement of the view as it came
+  // (`issueView`), at any depth - holds out of the counts, which the read leaves unclosed under
+  // an overtaken comment or message (`countedCoverage`).
+  const countable = useMemo(() => countedCoverage(coverage, issue.statements), [coverage, issue]);
   coverage = countable;
   const covered = useMemo(() => issueCovered(coverage), [coverage]);
   // Whether the view read holds nodes no page read yet holds, so each count of the statements
@@ -1024,8 +1026,8 @@ function Summary({
 }: {
   counts: Readonly<Record<StatementState, number>>;
   /** How the issue's covered count stands (`issueCovered`): from the coverage read, less the rows
-   *  `countedCoverage` leaves out, the same on every read, whichever page of the view is loaded;
-   *  or each line saying a document of the issue is still being indexed in place of any count. */
+   *  `countedCoverage` leaves out; or each line saying a document of the issue is still being
+   *  indexed in place of any count. */
   covered: IssueCovered;
   /** Whether the view read holds nodes no page read yet holds: each count of the loaded
    *  statements and checks then carries "+" (R15). */

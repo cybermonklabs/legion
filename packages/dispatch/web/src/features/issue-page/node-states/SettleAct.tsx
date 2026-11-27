@@ -1,12 +1,17 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useRef } from "react";
 
 import { ApiError } from "../../../api/client";
 import { pageFailedText, pageRowAct } from "../../../theme/classes";
 import type { TreeNode } from "../issue-tree";
 import { pageChrome } from "../page-structure";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
-import { READER_ACTS } from "../useNodeEditing";
-import { settleKeyOf, useSettle, useSettleIssue, useSettleWaits } from "./settle-write";
+import {
+  settleKeyOf,
+  useSettle,
+  useSettleIssue,
+  useSettleRefusal,
+  useSettleWaits,
+} from "./settle-write";
 
 /** The sentence a refused settle draws after the act, read from the refusal's status and
  *  code, never from its text: every refusal the page names no sentence for - a 403 with no code,
@@ -47,8 +52,10 @@ function focusRowOf(control: HTMLElement | null): void {
  * after `f`) moves it to the row first, since the act then takes no press, and says so. On a
  * landing the focus goes to the row before the reads, so `j` goes on from there; the reads then
  * draw the row with no mark and no act, and where they draw the node still proposed, the act
- * takes a press again. A refusal reads nothing and leaves the row as drawn, its mark included,
- * and draws one sentence after the act with the role `status`, until the reader's next act.
+ * takes a press again. A refusal reads nothing and leaves the row as drawn, its mark included;
+ * the sentence that says why (`SettleRefusal`), drawn right after the act with the role `status`,
+ * stands until the reader's next act, also after a read draws the node settled and the act goes
+ * (R4).
  */
 export function SettleAct({
   node,
@@ -77,50 +84,45 @@ function Settle({
   const control = useRef<HTMLButtonElement>(null);
   const settle = useSettle(issueKey, reference, () => focusRowOf(control.current));
   const waits = useSettleWaits(reference);
-  const { error, reset } = settle;
   const out = settle.isPending || waits;
-  // The sentence goes at the reader's first act after it was drawn, read in the capture phase so
-  // a handler that answers the act and stops it still ends it; the listeners go with it, or with
-  // the act.
-  useEffect(() => {
-    if (error === null) return;
-    const acted = new AbortController();
-    const end = () => {
-      acted.abort();
-      reset();
-    };
-    for (const type of READER_ACTS) {
-      document.addEventListener(type, end, { capture: true, signal: acted.signal });
-    }
-    return () => acted.abort();
-  }, [error, reset]);
   return (
-    <>
-      <button
-        className={`dispatch-inline-link ${pageRowAct}`}
-        data-row-act="settle"
-        disabled={out}
-        onClick={(event) => {
-          // A focused control that is disabled drops the focus to the page, and the tree then lets
-          // go of the row, its acts with it; on the row the focus stays in the tree.
-          if (event.currentTarget.contains(document.activeElement)) {
-            focusRowOf(event.currentTarget);
-          }
-          settle.mutate();
-        }}
-        onMouseDown={(event) => event.preventDefault()}
-        ref={control}
-        tabIndex={tabStops ? undefined : -1}
-        type="button"
-        {...pageChrome}
-      >
-        {out ? SETTLE_ANSWERS.settling : CONTROL_LABELS.settle}
-      </button>
-      {error === null ? null : (
-        <span className={pageFailedText} data-settle-answer="" role="status" {...pageChrome}>
-          {refusalWords(error)}
-        </span>
-      )}
-    </>
+    <button
+      className={`dispatch-inline-link ${pageRowAct}`}
+      data-row-act="settle"
+      disabled={out}
+      onClick={(event) => {
+        // A focused control that is disabled drops the focus to the page, and the tree then lets
+        // go of the row, its acts with it; on the row the focus stays in the tree.
+        if (event.currentTarget.contains(document.activeElement)) {
+          focusRowOf(event.currentTarget);
+        }
+        settle.mutate();
+      }}
+      onMouseDown={(event) => event.preventDefault()}
+      ref={control}
+      tabIndex={tabStops ? undefined : -1}
+      type="button"
+      {...pageChrome}
+    >
+      {out ? SETTLE_ANSWERS.settling : CONTROL_LABELS.settle}
+    </button>
+  );
+}
+
+/**
+ * The sentence of the refusal of the newest settle of the node `reference` names, with the role
+ * `status`, right after Settle on the focused row (`NodeRow.tsx`'s `RowActs`): from the refusal
+ * until the reader's next act, or a new press of that Settle (`settle-write.ts`'s
+ * `useSettleRefusal`). It is the node's and not the act's, so where a read draws the node settled
+ * meanwhile, the act goes from the row and the sentence stays in its place: it tells the reader
+ * why their press did nothing (R4).
+ */
+export function SettleRefusal({ reference }: { reference: string }): ReactNode {
+  const refusal = useSettleRefusal(reference);
+  if (refusal === undefined) return null;
+  return (
+    <span className={pageFailedText} data-settle-answer="" role="status" {...pageChrome}>
+      {refusalWords(refusal)}
+    </span>
   );
 }
