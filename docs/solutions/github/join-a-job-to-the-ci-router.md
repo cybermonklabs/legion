@@ -361,7 +361,7 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
   with the family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
-  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-smoke`, `go-envoy-darwin-vet` and `go-envoy-infra`,
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-smoke`, `go-envoy-race`, `go-envoy-darwin-vet` and `go-envoy-infra`,
   and `go-notices` in the order the item below gives; `go-envoy-darwin-vet` restores into the
   build cache directory its step's `GOCACHE` names, not into `~/.cache/go-build`). In
   `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job

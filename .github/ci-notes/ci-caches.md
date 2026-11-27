@@ -154,15 +154,20 @@ nats-server, and they compile the hooked copy and what imports it as before.
 go-envoy-smoke holds what ci.yaml's envoy-smoke compiles, and no more: the smoke test
 (`go test -tags smoke ./internal/smoke/`) in the root workspace, and envoy-infra's host live tests
 (`go test -tags pulumilive ./host/`) and plugin (`go build ./cmd/pulumi-resource-envoy-infra`) in
-the infra module's go.work. Before it the job restored no build cache, the one Go job of ci.yaml
-that restored none, and compiled all three from nothing on every run. Over the 99 green merge-group
+the infra module's go.work. Before it the job restored no build cache and compiled all three from
+nothing on every run. Over the 99 green merge-group
 jobs of 2026-11-26T12:00Z to 2026-11-27T07:30Z the job took 689 s at the median; in 20 of their
 logs the live step spent 182 s from its last `go: downloading` line to its first `=== RUN`, and
-the smoke step 34 s. That compile is CPU-bound on the job's runner (ubuntu-24.04, 4 CPUs): the
-host test binary built from empty caches in 211 to 216 s at 341 to 344% CPU and wrote 2,959 MB of
-build cache (scratch run 45994580307).
+the smoke step 34 s. That compile is CPU-bound on the job's runner (ubuntu-24.04, 4 CPUs): in the
+8 jobs of scratch run 45994580307, each of which built the host test binary from empty caches
+after its own work, that build took 180 to 272 s at 340 to 355% CPU and wrote 2,959 MB of build
+cache. The three jobs that had restored nothing read 211 to 216 s of that spread; the spread
+itself is the runner's, and nothing of the arm the job ran.
 
-Why a family of its own. Each other family holds one workspace's build. go-envoy-test restored in
+Why a family of its own. No other family holds the build of these three packages. go-notices
+builds in both workspaces too (ci-caches.yaml's notices job: "that step also builds the envoy and
+infra modules' commands"), but what it holds is the release commands' objects, not these. What
+decides it is the measurement. go-envoy-test restored in
 14 to 22 s and took the smoke step's compile to 1 s, but left the live step's at 174 and 228 s: the
 infra workspace chooses other versions of the modules the two share (golang.org/x/sys 0.49 there,
 0.50 in the root workspace), and holds the Pulumi SDKs, which no envoy job builds. go-envoy-infra's

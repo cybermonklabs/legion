@@ -1285,7 +1285,7 @@ architecture-check and spec-check at this paragraph's end). dispatch-two-builds 
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
 ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of nine families with
+included). The jobs that cache Go restore, in steps of their own, one of the families below with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
@@ -1299,8 +1299,8 @@ and visual jobs of dispatch-browser.yaml, which build the Dispatch server and th
 broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
 whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
 dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-smoke
-(envoy-smoke, whose smoke test and envoy-infra live tests build in two workspaces no other family
-holds together; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
+(envoy-smoke, whose smoke test, envoy-infra live tests and plugin build no other family holds
+together; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
 envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane, whose race objects
 no other family holds; .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family), go-envoy-darwin-vet
 (envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
@@ -1360,10 +1360,10 @@ ci-caches.yaml's browsers job, the only writer of that entry, is gone with the r
 (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-stand in for the install each of their cases is a reading of. An eighth family,
-`architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, and a ninth,
-`spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-build runs
+stand in for the install each of their cases is a reading of. Two more families are the composite
+actions' own: `architecture-check-<os>-<arch>-go<version>-<hash>` is
+.github/actions/architecture-check's, and
+`spec-check-<os>-<arch>-go<version>-<hash>` is .github/actions/spec-check's; envoy-go-build runs
 both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own
 setup-go installed and on the SHA-256 of packages/envoy/go.sum (a miss restores the newest entry

@@ -14,7 +14,7 @@ name: CI caches
 # request lands in that run's own scope, which the next pull request's run cannot read, so it
 # would reach nobody.
 #
-# Eight Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
+# The Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 # architecture and on the Go version the family's own module installs: go-notices, go-daemon,
 # go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race, go-envoy-darwin-vet and go-envoy-infra. Which jobs read
 # each, why the key carries the architecture, and which runners each family is filled on:
@@ -39,7 +39,7 @@ name: CI caches
 # matrix that fails leaves the other running (`fail-fast: false`): a cancelled leg saves nothing,
 # and one architecture's fill has no reason to cost the other's.
 #
-# Beside those seven, the architecture-check and spec-check jobs fill the families of the composite
+# Beside those families, the architecture-check and spec-check jobs fill the families of the composite
 # actions .github/actions/architecture-check and .github/actions/spec-check, which restore and
 # save their entries themselves.
 # why: .github/ci-notes/ci-caches.md#the-architecture-check-and-spec-check-families
@@ -56,7 +56,7 @@ name: CI caches
 # writes it on main, and the workflows that run there call it, this one's dispatch-builds job too.
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
-# by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: the six
+# by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: the
 # families filled on every push hold the build of many packages of a module and of the modules it
 # imports, so nearly any change to Go code is theirs, and a push that changes none of it compiles
 # nothing on the restored entry; the other keys hold a Go version, that toolchain file's hash, the
@@ -487,7 +487,9 @@ jobs:
 
       # envoy-smoke's three go commands, each in its own directory and workspace: the two test
       # binaries built and started as that job's go test starts them, `-run '^$'` running no test,
-      # so no image and no Docker are needed, and the plugin built as its schema step builds it.
+      # so no image and no Docker are needed, and the plugin's packages, built as its schema step
+      # builds them but without its `-ldflags`, which reaches the main package's action ID alone
+      # and misses on every commit anyway.
       # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-starts-each-test-binary
       - name: Build and start the smoke and live test binaries, running no test, and build the plugin
         run: |
