@@ -1,6 +1,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueAskThreadsQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
@@ -36,10 +37,11 @@ import {
  * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
  * (`issueAskThreadsQuery`), and the tree read's answer, whose comments are the Changes
  * (`treeComments`): a decision node takes the Changes the read hangs under it, as the outline
- * does. The view reads one more of its own, which the tree does not make: the blocks of each
- * document that a decision a Change can be asked of stands in (`changeDocumentIds`), under the
- * page's key for them (`artifactBlocksQuery`), one read for each such document, sent as the
- * view first mounts. Each takes the tree's freshness too (`EVENT_FRESH`),
+ * does. The view reads one more of its own, which the tree does not make: the blocks of the
+ * spec, the plan and the Verification document (`primarySpec`, `roleDocument`) that a decision a
+ * Change can be asked of stands in (`changeDocumentIds`), under the page's key for them
+ * (`artifactBlocksQuery`), one read for each such document, sent as the view first mounts. Each
+ * takes the tree's freshness too (`EVENT_FRESH`),
  * whose own doc gives the reason. The blocks are why a Change stands under the decision whose
  * block holds its anchor (`decision-review.ts`): the quote alone cannot say which, since two
  * decisions can hold the same words. Until the blocks answer, a Change stands under the first
@@ -150,13 +152,21 @@ export function useDecisionsEntries({
   // (`decision-review.ts`): a decision node's are the ones the read hangs under it, as the
   // outline reads them.
   const answer = useTreeRead(issue).answer;
-  // The blocks of each document that a decision's block stands in, which name the
-  // decision whose block holds each Change's anchor and so the decision it changes, under the
-  // key the page reads them by (`artifactBlocksQuery`), though the tree reads none of them. A
-  // document no decision stands in is not read here. `combine` keeps one value for them,
-  // replaced only when a document's own read changes.
+  // The blocks of the spec, the plan and the Verification document, in that order and each once,
+  // that a decision's block stands in, which name the decision whose block holds each Change's
+  // anchor and so the decision it changes, under the key the page reads them by
+  // (`artifactBlocksQuery`), though the tree reads none of them. No other document is read here,
+  // a `decisions.md` an older release stored among them: a decision of one, which the tree holds
+  // no node for, finds its Change by its words (R3). `combine` keeps one value for them, replaced
+  // only when a document's own read changes.
   const decided = changeDocumentIds(issue, decisions);
-  const documentIds = [...decided];
+  const documentIds = [
+    ...new Set(
+      [primarySpec(issue), roleDocument(issue, "plan"), roleDocument(issue, "verification")]
+        .flatMap((document) => document?.id ?? [])
+        .filter((id) => decided.has(id))
+    ),
+  ];
   const documents = useQueries({
     combine: (answers): DocumentBlocks[] =>
       answers.flatMap((answer, index) => {

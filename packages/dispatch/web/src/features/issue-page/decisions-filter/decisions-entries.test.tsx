@@ -6,7 +6,14 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import type { Actor, ArtifactBlock, Comment, Decision, IssueDecisions } from "../../../api/types";
+import type {
+  Actor,
+  ArtifactBlock,
+  Comment,
+  Decision,
+  IssueDecisions,
+  IssueDetails,
+} from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { readComment } from "../outline-fixtures";
 import { presetView } from "../presets";
@@ -16,11 +23,15 @@ import { useDecisionsEntries } from "./decisions-entries";
 import {
   AGENT,
   answeredAsk,
+  artifact,
   closing,
   commentsTree,
+  DECISIONS_DOCUMENT,
+  DECISIONS_SLUG,
   decision,
   decisionNode,
   decisionsRead,
+  entryOf,
   issueDetails,
   issueTree,
   KEY,
@@ -53,7 +64,8 @@ const BOB: Actor = { id: "bob", kind: "user" };
  *  gives (`answer`) - and the spec's `blocks`, until the case unmounts it. A read given as null
  *  is left out of the cache, as before it answers; the tree read with `comments` null. By default
  *  no answer ever goes stale; `staleTime` gives the client the app's own default instead, and
- *  `answeredAt` the moment the cache's answers were given, now where it is left out. */
+ *  `answeredAt` the moment the cache's answers were given, now where it is left out. The issue is
+ *  `issueDetails()` where the case gives none (`issue`). */
 async function mountEntries(
   children: readonly TreeNode[],
   decisions: IssueDecisions | null,
@@ -63,8 +75,9 @@ async function mountEntries(
   {
     answer,
     answeredAt,
+    issue = issueDetails(),
     staleTime = Number.POSITIVE_INFINITY,
-  }: { answer?: TreeAnswer; answeredAt?: number; staleTime?: number } = {}
+  }: { answer?: TreeAnswer; answeredAt?: number; issue?: IssueDetails; staleTime?: number } = {}
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime } } });
   const given = { updatedAt: answeredAt };
@@ -82,7 +95,6 @@ async function mountEntries(
   if (blocks !== null) {
     client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], blocks, given);
   }
-  const issue = issueDetails();
   const root = issueTree(children);
   const view = presetView(root, "decisions", "").root;
   const wrapper = ({ children: inside }: { children: ReactNode }) => (
@@ -481,6 +493,49 @@ test("answers older than the app's staleTime are not read again as the seam moun
   } finally {
     for (const read of reads) read.mockRestore();
     request.mockRestore();
+  }
+});
+
+// The seam reads the blocks of the spec, the plan and the Verification document that a decision
+// stands in, in that order, and of no other document a decision stands in: a decision of a
+// `decisions.md` an older release stored is no node of the tree, and finds its Change by its words
+// (R3). Here the decisions read lists one of that document, one of the plan and one of the spec,
+// in that order, and the seam reads the spec's blocks, then the plan's, and not the decisions
+// document's.
+test("the seam reads the blocks of the spec and the plan its decisions stand in, and not those of another document", async () => {
+  const plan = artifact("artifact-plan", "plan-md");
+  const issue: IssueDetails = {
+    ...issueDetails(),
+    artifacts: [SPEC_DOCUMENT, plan, DECISIONS_DOCUMENT],
+    queries: [
+      { artifact_id: plan.id, query: "plan", subtree: `issue:${KEY}`, takes: ["plan_task"] },
+    ],
+  };
+  const atAddress = (block: string, slug: string) =>
+    decision(block, { ref: `dispatch://${KEY}/artifact/${slug}#b-${block}` });
+  const decisions: IssueDecisions = {
+    ...decisionsRead([]),
+    entries: [
+      // The view names a document only for a typed block of a role document.
+      { ...entryOf(atAddress("old", DECISIONS_SLUG)), document: null },
+      entryOf(atAddress("step", plan.slug), plan),
+      entryOf(decision("minor")),
+    ],
+  };
+  const blocksRead = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  try {
+    const { hook } = await mountEntries(
+      [statement("s1"), decisionNode("minor")],
+      decisions,
+      [],
+      [],
+      null,
+      { issue }
+    );
+    expect(blocksRead.mock.calls.map(([id]) => id)).toEqual([SPEC_DOCUMENT.id, plan.id]);
+    hook.unmount();
+  } finally {
+    blocksRead.mockRestore();
   }
 });
 
