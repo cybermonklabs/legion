@@ -443,6 +443,61 @@ describe("a refusal says why", () => {
   });
 });
 
+// What the scan still does not see, each as it reads it today: these are the limits the pull
+// request names, not guarantees. All but the last refuse by name. The last is a source the scan
+// does not follow at all. A row here changes when its limit is closed, and so does the line
+// naming it.
+describe("known limits, each shown as the scan reads it today", () => {
+  test("a function only a trap calls runs with nothing known, so its source is refused", () => {
+    const found = scan([
+      entry(bindRoot, 'load() { . "$root/scripts/e2e/lib/demo.sh"; }', "trap load EXIT"),
+      library("scripts/e2e/lib/demo.sh"),
+    ]);
+    expect(found.refusedAt).toEqual(["scripts/e2e/entry.sh:3"]);
+    expect(found.read).toEqual(["scripts/e2e/entry.sh"]);
+  });
+
+  test("a command named by a variable leaves unknown what any function binds", () => {
+    const found = scan([
+      entry(bindDir, "set_dir() { dir=/elsewhere; }", "fn=set_dir", '"$fn"', '. "$dir/demo.sh"'),
+      library("scripts/e2e/demo.sh"),
+    ]);
+    expect(found.refused).toEqual([
+      'scripts/e2e/entry.sh:6: . "$dir/demo.sh": $dir may be bound by a function called through a variable',
+    ]);
+  });
+
+  test("a branch that exits merges as one that goes on, so a binding bash keeps is refused", () => {
+    const found = scan([
+      entry(bindDir, 'if [ -n "${X:-}" ]; then dir=/elsewhere; exit 1; fi', '. "$dir/demo.sh"'),
+      library("scripts/e2e/demo.sh"),
+    ]);
+    expect(found.refusedAt).toEqual(["scripts/e2e/entry.sh:4"]);
+  });
+
+  test("a path read out of an array is refused", () => {
+    const found = scan([
+      entry(`dirs=("$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd -P)")`, '. "${dirs[0]}/demo.sh"'),
+      library("scripts/e2e/demo.sh"),
+    ]);
+    expect(found.refusedAt).toEqual(["scripts/e2e/entry.sh:3"]);
+  });
+
+  test("an associative array's key holding a : and no quotes makes the whole script refused", () => {
+    const found = scan([entry("declare -A seen", "seen[label:$key]=1", ". /dev/null")]);
+    expect(found.refusedAt).toEqual(["scripts/e2e/entry.sh"]);
+  });
+
+  test("a source inside text another shell runs is not followed: neither read nor refused", () => {
+    const found = scan([
+      entry(bindDir, `bash -c '. "$1/demo.sh"' bash "$dir"`),
+      library("scripts/e2e/demo.sh"),
+    ]);
+    expect(found.refused).toEqual([]);
+    expect(found.read).toEqual(["scripts/e2e/entry.sh"]);
+  });
+});
+
 describe("without the parser the scan refuses", () => {
   // The scan reads shell through shfmt's syntax tree. Where shfmt cannot be built it must fail
   // naming the build, not pass over every script as one it read.
