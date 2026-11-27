@@ -170,8 +170,8 @@ func (w *idleRigWorkspaces) readyDisk(ctx context.Context, diskRoot string, ws w
 		}
 		return w.run(ctx, ws.Dir, "jj", "git", "fetch")
 	}
-	// `jj git clone` makes the directories above the clone, and `jj workspace add` does not make
-	// those above the workspace.
+	// This makes diskRoot too, where `jj git clone` runs below: the clone makes the directories
+	// above itself, and `jj workspace add` does not make those above the workspace.
 	if err := os.MkdirAll(filepath.Dir(ws.Dir), 0o755); err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func idleRigPathExists(path string) (bool, error) {
 	return err == nil, err
 }
 
-// run runs one git or jj of a provision in dir under the rig's environment, bounded at two
+// run runs one jj command of a provision in dir under the rig's environment, bounded at two
 // minutes, answering its failure with its output.
 func (w *idleRigWorkspaces) run(ctx context.Context, dir string, argv ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
