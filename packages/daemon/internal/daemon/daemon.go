@@ -3524,7 +3524,8 @@ type source struct {
 // NameUndeliveredHookPrompt where it opens a message, and ExpediteOutbox — wakes the row's lane
 // (outbox.wake) once the transaction has committed, through the transaction's commit hooks
 // (store.OnCommit), so no lane runs a row it cannot yet read, and
-// no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
+// no lane polls for one. So does DropStatusWrites for each row its drop lets out from behind the
+// issue's status writes. wake is nil where there is no workflow to wake, or where the writer wakes
 // its own lanes once it commits: the API-only daemon, the state route's reads, the stranded report
 // and the project's pause (projectPause.stopped).
 //
@@ -3763,11 +3764,29 @@ func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, i
 	return s.Store.DropUnfencedCheckWakes(ctx, tx, issue)
 }
 
+// DropStatusWrites wakes, once the drop commits, the board lane of each issue whose write into
+// work outboxInOrder held behind the status writes it drops (record.WaitingChildStatusIssues), as
+// the outbox's finish of a status row wakes them (wakeWaitingChildren): a held row takes no lease
+// and its lane exits with nothing due, so nothing else would wake it before the sweep. The issues
+// are read in the drop's own transaction, after the drop, and only where there is a lane to wake.
 func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
 		return nil
 	}
-	return s.Store.DropStatusWrites(ctx, tx, issue)
+	if err := s.Store.DropStatusWrites(ctx, tx, issue); err != nil {
+		return err
+	}
+	if s.wake == nil {
+		return nil
+	}
+	children, err := record.WaitingChildStatusIssues(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		s.wakeOnCommit(ctx, record.OutboxRow{Issue: child, Kind: record.OutboxKindDispatchStatus})
+	}
+	return nil
 }
 
 // ClearGeneration queues the publication of every gate it empties, keyed by the issue

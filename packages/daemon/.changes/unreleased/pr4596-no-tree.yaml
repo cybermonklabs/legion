@@ -22,8 +22,8 @@ body: |-
   release before and that is still in Legion's work: it starts again in its phase at a new
   phase entry, or waits in `awaiting_children` for an open Dispatch child. Before the pin moves,
   run this release's `legion members-back` for each project to list those members, and set any of
-  them to backlog to keep it stopped (`docs/kubernetes.md`, "Rolling back the release that stores
-  no tree").
+  them to backlog to keep it stopped (`docs/kubernetes.md`, "Before the pin that carries the
+  release that stores no tree moves: the members its first boot brings back").
 time: 2026-11-22T22:26:12Z
 custom:
     Issue: pr4596

@@ -10,8 +10,10 @@ import "github.com/sjawhar/legion/daemon/internal/record"
 // with `todo`; `POST /legion/v1/children/rerun` (`api.RerunChildRequest`) takes `parent` the same
 // way, and `POST /legion/v1/waves/release` takes none. Each refuses with the new codes
 // `CHILDREN_ARGUMENT_REQUIRED`, `PARENT_ARGUMENT_REQUIRED` and `PARENT_NOT_RELEASED` where the rule
-// asks, and every architect call refuses `CHAIN_UNKNOWN` where the copy cannot read the issue's chain
-// to its top; `ISSUE_OUTSIDE_TREE`, `CHILD_IN_OTHER_TREE`, `CHILD_NOT_ADOPTABLE`, `TREE_LINGERING`
+// asks; set_status refuses an issue of another Dispatch project, whose own daemon alone writes its
+// status, with the new code `ISSUE_OF_ANOTHER_PROJECT` (422, naming the issue's project); and every
+// architect call refuses `CHAIN_UNKNOWN` where the copy cannot read the issue's chain to its top;
+// `ISSUE_OUTSIDE_TREE`, `CHILD_IN_OTHER_TREE`, `CHILD_NOT_ADOPTABLE`, `TREE_LINGERING`
 // and `CHILD_REQUIRED` are answered no more, and `ISSUE_NOT_OWNED`, `ROOT_REQUIRED` and
 // `GATE_ROOT_ONLY` read the chain and name the architect claim that may act. register_plan and
 // stop_task (219's routes) refuse a caller that does not act on the issue over the chain

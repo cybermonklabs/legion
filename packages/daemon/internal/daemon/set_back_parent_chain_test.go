@@ -248,6 +248,46 @@ func TestASetBackRunsAsSoonAsItsParentsRowFinishesOnTheLanes(t *testing.T) {
 	chain.wantNoWaits()
 }
 
+// A drop of a parent's queued status writes (DropStatusWrites: a person's move of the parent out
+// of the workflow, or its leave) lifts the hold the parent's write into work put on its child's,
+// as that row's finish does. The child's lane found its row held and exited, and nothing else
+// wakes it, so the drop's commit wakes it (projectRecords.DropStatusWrites): the child's set-back
+// runs with the sweep never fired. Dispatch shows the parent in work already, so its rule takes
+// the child's write. Without that wake the child's row would wait for the sweep, up to a lease
+// later.
+func TestADropOfAParentsStatusWritesWakesItsHeldChildsLane(t *testing.T) {
+	t.Parallel()
+	const root, child = "LEGION-1", "LEGION-2"
+	chain := newSetBackChain(t, true, root, child)
+	inWork := chain.client.issues[root]
+	inWork.Status = "in_progress"
+	chain.client.issues[root] = inWork
+	clock := microClock()
+	stop := runLanes(t, chain.runner, clock)
+	// The root's write into work is not due on the held clock, so only the drop ends it.
+	chain.reassertAt(root, clock.Now().Add(time.Hour))
+	chain.reassertAt(child, clock.Now())
+	chain.runner.wake(child, record.OutboxKindDispatchStatus)
+	testwait.WithinPolling(t, 30*time.Second, 25*time.Millisecond, "the child's lane exited with its row held", func() bool {
+		return liveLanes(chain.runner) == 0
+	})
+	if left := statusRowsOf(t, chain.pool, child); left != 1 {
+		t.Fatalf("%s keeps %d status rows before the drop, want its set-back held behind %s's write into work", child, left, root)
+	}
+	records := projectRecords{Store: chain.records, project: "LEGION", wake: chain.runner.wake, log: quietLogger()}
+	if err := store.Transact(context.Background(), chain.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.DropStatusWrites(ctx, tx, root)
+	}); err != nil {
+		t.Fatalf("drop the status writes of %s: %v", root, err)
+	}
+	testwait.WithinPolling(t, 30*time.Second, 25*time.Millisecond, "the child's set-back ran once the drop committed", func() bool {
+		return statusRowsOf(t, chain.pool, child) == 0
+	})
+	stop()
+	chain.wantSetBack(root, child)
+	chain.wantNoWaits()
+}
+
 // A person took the child out from under its parent: Dispatch's read of the child names no parent
 // and the copy's row of it shows none, while the record's own issues.parent still names the parent
 // it had. The child's set-back into work waits for nothing of that former parent's, since the

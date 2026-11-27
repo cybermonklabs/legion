@@ -30,10 +30,13 @@ const oldestReleaseNewest = 20261119003157
 
 // oldestReleaseLacksBelowItsNewest are the migrations dated below oldestReleaseNewest that
 // legion-v22.16.2 does not hold, since each merged to main after that release: 20261114064234 and
-// 20261114232555 (INFRA-4728's design-gate basis and awaiting_children) and 20261117034837
-// (issue_plans). No migration merged later can join them, since its version is above that release's
-// newest.
-var oldestReleaseLacksBelowItsNewest = []int{20261114064234, 20261114232555, 20261117034837}
+// 20261114232555 (INFRA-4728's design-gate basis and awaiting_children), 20261115060739
+// (claim_suspended_by_controller), 20261115121838 (drop_controller_wakes_for_nothing) and
+// 20261117034837 (issue_plans). A forward merge of main can bring in a migration dated below that
+// release's newest, since a migration keeps the date it was written under however late it merges,
+// so at each such merge this list is checked against the up.sql files that
+// `git show legion-v22.16.2:packages/daemon/internal/store/migrations/` lists.
+var oldestReleaseLacksBelowItsNewest = []int{20261114064234, 20261114232555, 20261115060739, 20261115121838, 20261117034837}
 
 // oldestReleaseMigrations are the migrations that legion-v22.16.2 does not carry: every embedded
 // migration above its newest (oldestReleaseNewest), this release's own among them, and the ones
@@ -197,6 +200,10 @@ func seedMembersBackWorld(t *testing.T, st *store.Store) *copyBoard {
 	}
 	board.listing = append(board.listing, conversionSummary(backChild, "todo", 3, backWaiting),
 		conversionSummary(backAcceptingChild, "todo", 3, backAcceptingWaiting))
+	// A person's todo left each unrecorded child todo, which the listing reads from its log, as it
+	// reads the writer of any unrecorded todo child under a parent at work (childTransition).
+	board.logs = map[string][]map[string]any{backChild: {boardStatusEvent(backChild, "todo", 3)},
+		backAcceptingChild: {boardStatusEvent(backAcceptingChild, "todo", 3)}}
 	return board
 }
 
