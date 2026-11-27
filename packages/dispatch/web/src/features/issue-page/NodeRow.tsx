@@ -996,14 +996,16 @@ export function NodeOptions({
 /**
  * What the reader can do with the focused row, on one quiet line under it (the prototype's
  * `.acts`, drawn on the focused row alone): Reply on every row that takes a reply - a comment, a
- * message, an ask whatever its state, and the issue itself, whose reply is a new comment on it
- * (R16), but never a comment or a message its author deleted, which Dispatch takes no reply to
- * (`replyItemOf`) - Answer on an open question, and Change answer on a question the
- * reader answered. Each sets the line at the foot of the outline and puts the caret in it; `r`
- * and `a` press the first two from the keyboard (`useTreeKeymap.ts`). A typed node - a
- * statement, a check, a decision - takes no reply in today's model, which holds no reply to a
- * block, so it draws none; and with no writer (`OutlineWriterProvider`)
- * the row draws none of the three.
+ * message, an ask whatever its state, a statement of the spec, and the issue itself, whose reply
+ * is a new comment on it (R16), but never a comment or a message its author deleted, which
+ * Dispatch takes no reply to (`replyItemOf`) - Answer on an open question, and Change answer on
+ * a question the reader answered. Reply aims the box at the foot of the outline at the row and
+ * puts the caret in it; Answer and Change answer set the page's writer to answer the question,
+ * which its own row draws, and put no caret in the box (R5). `r` and `a` press Reply and Answer
+ * from the keyboard (`useTreeKeymap.ts`). Every other typed node - a check, a decision, a block
+ * of a document other than the spec - takes no reply in today's model, which holds no reply to
+ * such a block, so it draws none; and with no writer (`OutlineWriterProvider`) the row draws none
+ * of the three.
  *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
