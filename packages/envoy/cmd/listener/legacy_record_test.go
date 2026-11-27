@@ -19,6 +19,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -26,7 +27,7 @@ import (
 // it: the same fields, a registration time of now, and no session_id.
 func rewriteAsEarlierBuild(t *testing.T, conn *natsgo.Conn, sessionID string) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

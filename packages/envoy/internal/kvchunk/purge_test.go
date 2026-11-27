@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // malformedChunkKeys are keys under the chunk prefix that no write of this build makes, and that any
@@ -36,7 +37,7 @@ var malformedChunkKeys = []string{
 // control: it is purged.
 func TestAMalformedChunkKeyIsRefusedAndPurgesNothing(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

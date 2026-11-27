@@ -124,7 +124,7 @@ func requireUnansweredBeside(t *testing.T, relay *unansweredRelay, client *Clien
 // client's handle on it, opened as a rebuild opens one (OpenKeyValue), and the key's revision.
 func readModeBucket(t *testing.T, admin *nats.Conn, client *Client, bucket, key string, direct bool) (KeyValue, uint64) {
 	t.Helper()
-	js, err := admin.JetStream()
+	js, err := admin.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open the admin's JetStream: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
 	t.Run("its read held over a found consumer beside a refusal of its create", func(t *testing.T) {
 		t.Parallel()
 		admin, client, relay := deniedRelayedClient(t, read, create)
-		js, err := admin.JetStream()
+		js, err := admin.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("open the admin's JetStream: %v", err)
 		}

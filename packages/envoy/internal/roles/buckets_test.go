@@ -21,7 +21,7 @@ import (
 func bucketsRig(t *testing.T) (*roles.Buckets, *store.Registry, *session.SessionRegistry, nats.JetStreamContext) {
 	t.Helper()
 	holders, registry, sessions, conn := bucketsRigConn(t)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

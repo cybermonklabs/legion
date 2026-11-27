@@ -121,7 +121,7 @@ func openState(tb testing.TB) bus.KeyValue {
 		tb.Fatalf("connect NATS: %v", err)
 	}
 	tb.Cleanup(nc.Close)
-	js, err := nc.JetStream()
+	js, err := nc.JetStream(testnats.MaxWait(tb))
 	if err != nil {
 		tb.Fatalf("JetStream: %v", err)
 	}

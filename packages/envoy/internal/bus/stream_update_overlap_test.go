@@ -267,9 +267,13 @@ func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
 	startOnCluster(t, cluster, WithReplicas(3))
 	deployed := testnats.AwaitStreamCopies(t, js, Stream, 3).Config
 
+	// Each member's context bounds a send by RequestTimeout, as a program opens its own:
+	// updateStream sends an update again when it draws no answer, and a member drops an update
+	// unanswered when its metadata proposal fails because the term moved, so a send waiting until
+	// the test binary's deadline would hold the round there.
 	members := make([]nats.JetStreamContext, 0, len(cluster.URLs()))
 	for i, url := range cluster.URLs() {
-		memberJS, err := testnats.Connect(t, url).JetStream()
+		memberJS, err := testnats.Connect(t, url).JetStream(nats.MaxWait(RequestTimeout))
 		if err != nil {
 			t.Fatalf("member %d JetStream: %v", i, err)
 		}

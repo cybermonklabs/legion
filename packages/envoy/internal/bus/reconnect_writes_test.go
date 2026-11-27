@@ -107,7 +107,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		observer := testnats.Connect(t, uri)
 		t.Cleanup(observer.Close)
-		js, err := observer.JetStream()
+		js, err := observer.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("open JetStream: %v", err)
 		}

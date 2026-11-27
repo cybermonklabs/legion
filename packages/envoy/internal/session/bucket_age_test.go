@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A session bucket the registry creates keeps a record one hour past the gone horizon. A record
@@ -21,7 +22,7 @@ func TestANewSessionBucketOutlivesTheGoneHorizon(t *testing.T) {
 	t.Cleanup(registry.StopWatch)
 	want := GoneHorizon + time.Hour
 
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

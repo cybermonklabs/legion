@@ -523,7 +523,7 @@ func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	defer cleanup()
 
 	// Pre-populate the KV bucket before Open()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	defer cleanup()
 
 	// Pre-populate
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	defer cleanup()
 
 	// Pre-populate
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -644,7 +644,7 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	t.Cleanup(conn.Close)
 
 	// Pre-populate and open
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestOpen_EmptyBucketSucceeds(t *testing.T) {
 // Its watcher is never started, so the cache stays cold for the test's lifetime.
 func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -1174,7 +1174,7 @@ func clockedRegistry(t *testing.T, clock *manualClock) (*Registry, natsgo.KeyVal
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("interest cache not ready: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -1398,7 +1398,7 @@ func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 // registration, the reaper and every other listener read, rather than from this registry's cache.
 func storedInterest(t *testing.T, conn *natsgo.Conn, sessionID string) Interest {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -3178,7 +3178,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, func() bool { return len(reg.Match("m1", "notifications.ghost")) == 1 })
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3234,7 +3234,7 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	js, err := first.JetStream()
+	js, err := first.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3283,7 +3283,7 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 		roles, err := reg.RolesHeldBy("ses_role_holder")
 		return err == nil && slices.Equal(roles, []string{"reviewer"})
 	})
-	js, err := first.JetStream()
+	js, err := first.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3319,7 +3319,7 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3431,7 +3431,7 @@ func putRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder string) uint64 
 func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3522,7 +3522,7 @@ func (w *earlyEndWatcher) Updates() <-chan jetstream.KeyValueEntry { return w.up
 func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3712,7 +3712,7 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	direct, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := direct.JetStream()
+	js, err := direct.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

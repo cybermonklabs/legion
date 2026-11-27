@@ -19,7 +19,7 @@ import (
 // one deletes it whether or not this build can read its key.
 func TestASessionRegistryOverKeysAnEarlierListenerStoredServesAndDeletesThem(t *testing.T) {
 	client := setupNATS(t)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

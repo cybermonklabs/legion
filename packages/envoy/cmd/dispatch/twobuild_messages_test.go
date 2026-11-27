@@ -524,7 +524,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	}
 	builds.startPrevious(t, previousEnv)
 
-	js, err := testnats.Connect(t, builds.nats).JetStream()
+	js, err := testnats.Connect(t, builds.nats).JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}

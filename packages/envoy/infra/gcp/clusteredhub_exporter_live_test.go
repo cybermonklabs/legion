@@ -97,7 +97,7 @@ func serveExporter(t *testing.T, exporter string, rendered []string) []promSerie
 	srv, natsURL := testnats.Start(t)
 	conn := testnats.Connect(t, natsURL)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	_, err = js.AddStream(&natsgo.StreamConfig{
 		Name: exporterTestStream, Subjects: []string{"live.limited.>"}, Storage: natsgo.FileStorage, MaxBytes: exporterTestStreamBytes,

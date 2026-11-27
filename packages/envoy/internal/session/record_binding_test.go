@@ -50,7 +50,7 @@ func awaitApplied(t *testing.T, r *SessionRegistry, key string, revision uint64)
 // from the stream's leader.
 func storedValue(t *testing.T, conn *natsgo.Conn, key string) []byte {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestADeleteRemovesASessionRecordNamingAnotherKey(t *testing.T) {
 func TestASessionsOwnInterestRowReadsAbsentAtItsSessionKey(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

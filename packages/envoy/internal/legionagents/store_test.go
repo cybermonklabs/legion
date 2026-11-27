@@ -62,7 +62,7 @@ func openRegistryAt(t *testing.T, uri string) *registry {
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

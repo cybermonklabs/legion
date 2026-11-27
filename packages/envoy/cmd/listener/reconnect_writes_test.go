@@ -149,7 +149,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		t.Helper()
 		conn := testnats.Connect(t, uri)
 		t.Cleanup(conn.Close)
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("open JetStream to read what the listener wrote: %v", err)
 		}

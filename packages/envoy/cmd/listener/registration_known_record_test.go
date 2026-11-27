@@ -160,7 +160,7 @@ func TestARegistrationWhoseKnownSessionChunkIsNotWrittenIsRefusedAndLeavesNoReco
 	}
 	wantWriteBusUnanswered(t, "POST /v1/interests/subscribe with a chunk of its record unwritten", recorder)
 
-	js, err := direct.JetStream()
+	js, err := direct.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open a JetStream context on a connection of the test's own: %v", err)
 	}

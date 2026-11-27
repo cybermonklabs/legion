@@ -85,7 +85,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 	registry := rig.harness.registry
 	raw := testnats.Connect(t, url)
 	t.Cleanup(raw.Close)
-	js, err := raw.JetStream()
+	js, err := raw.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

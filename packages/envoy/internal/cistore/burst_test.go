@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // writtenState is one state the store wrote to a record, at the revision the write created.
@@ -973,7 +974,7 @@ func TestADeletedBucketFailsAWriteWithinTheBudget(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s, _ := wrapStore(t, conn, 0)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

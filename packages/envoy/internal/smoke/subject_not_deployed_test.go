@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // The listener image refuses a send while a hub move's quiesce has narrowed the stream, so that
@@ -57,7 +58,7 @@ func TestSmokeASendWhileTheStreamLacksTheAgentSubjectAnswers503(t *testing.T) {
 		t.Fatalf("connect to NATS: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

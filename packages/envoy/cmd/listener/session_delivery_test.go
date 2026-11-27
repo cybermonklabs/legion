@@ -1286,7 +1286,7 @@ func cappedNotificationStream(t *testing.T, uri string, limit int) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream to create the capped stream: %v", err)
 	}

@@ -3008,7 +3008,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	t.Parallel()
 	_, uri := testnats.Start(t)
 	legacyConn := testnats.Connect(t, uri)
-	legacyJS, err := legacyConn.JetStream()
+	legacyJS, err := legacyConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open legacy JetStream: %v", err)
 	}
@@ -5092,7 +5092,7 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 	if err := registry.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

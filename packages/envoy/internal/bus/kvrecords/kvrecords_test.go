@@ -68,7 +68,7 @@ func newRig(t *testing.T) *rig {
 	admin, err := testnats.ConnectSeed(t, url, adminSeed)
 	require.NoError(t, err)
 	t.Cleanup(admin.Close)
-	js, err := admin.JetStream()
+	js, err := admin.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	operator, err := testnats.ConnectSeed(t, url, operatorSeed, nats.CustomInboxPrefix(natsgrant.OperatorInbox))
 	require.NoError(t, err)

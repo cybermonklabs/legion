@@ -157,7 +157,7 @@ func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
 	const valueBound = 4096
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A loop's done channel closes only once a pass in flight when its context ends has finished, and
@@ -55,7 +56,7 @@ func TestTheMarkerCollectorDeletesItsScansConsumerBeforeItEnds(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	registry := openRegistry(t, conn)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

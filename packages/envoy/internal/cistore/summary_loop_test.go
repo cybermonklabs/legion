@@ -476,7 +476,7 @@ func TestARecreatedBucketForgetsTheOldBucketsRecords(t *testing.T) {
 		t.Fatalf("the pass over the old bucket published %d settlements, want none", got)
 	}
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

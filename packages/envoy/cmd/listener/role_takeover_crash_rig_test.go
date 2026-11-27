@@ -283,7 +283,7 @@ func (rig *crashRig) lateForward(previous, role, message string) string {
 func (rig *crashRig) storeToSession(sessionID string, n int) {
 	rig.t.Helper()
 	subject := contracts.LegacyAgentSubject(sessionID)
-	js, err := rig.lane.JetStream()
+	js, err := rig.lane.JetStream(testnats.MaxWait(rig.t))
 	if err != nil {
 		rig.t.Fatalf("open JetStream: %v", err)
 	}

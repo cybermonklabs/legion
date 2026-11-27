@@ -56,7 +56,7 @@ type ConsumerHold struct {
 // and the bucket must be idle: no write lands on it while the hold runs.
 func HoldConsumerLost(t testing.TB, conn *natsgo.Conn, stream, consumer string) *ConsumerHold {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

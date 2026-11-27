@@ -24,7 +24,7 @@ import (
 // message on: live chunks and the markers replaced chunks left, read from the stream itself.
 func chunkSubjects(t *testing.T, conn *nats.Conn) int {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestAChunkMarkerPassTheGrantRefusesPurgesNothingWarnsOnceAndTheStoreServes(
 // for that session.
 func TestTheChunkMarkerPassLeavesARecordsOwnMarker(t *testing.T) {
 	rig := newMarkerRig(t)
-	js, err := rig.conn.JetStream()
+	js, err := rig.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -372,7 +372,7 @@ func openKnownOn(t *testing.T, conn *nats.Conn, now func() time.Time) *KnownSess
 // reassembly of its own.
 func rawKnown(t *testing.T, conn *nats.Conn) nats.KeyValue {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

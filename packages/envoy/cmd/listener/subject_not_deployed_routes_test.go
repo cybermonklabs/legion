@@ -40,7 +40,7 @@ func newNotDeployedRig(t *testing.T) *notDeployedRig {
 	rig.limit(1, 1)
 	rig.conn = testnats.Connect(t, url)
 	t.Cleanup(rig.conn.Close)
-	if rig.js, err = rig.conn.JetStream(); err != nil {
+	if rig.js, err = rig.conn.JetStream(testnats.MaxWait(t)); err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	return rig

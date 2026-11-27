@@ -71,7 +71,7 @@ func TestDecodeEntryReadsOnlyARecordBoundToItsKey(t *testing.T) {
 // and a registration time, and no key.
 func putOlderBuildRecord(t *testing.T, conn *natsgo.Conn, key string) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestAJetStreamAnswerAndAnEmptyRecordReadAbsent(t *testing.T) {
 func TestANewerBuildsFieldDoesNotHideARecord(t *testing.T) {
 	client := setupNATS(t)
 	registry := openBindingRegistry(t, client)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

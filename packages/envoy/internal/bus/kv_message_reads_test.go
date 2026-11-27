@@ -27,7 +27,7 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 		t.Fatalf("the client that reads with stream message gets sent no stream message get of %s", stream)
 	}
 
-	other, err := watcher.Conn.JetStream()
+	other, err := watcher.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

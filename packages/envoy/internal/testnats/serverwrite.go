@@ -111,7 +111,7 @@ func StreamInfo(stream string) string { return "$JS.API.STREAM.INFO." + stream }
 // 404 status that carries no data.
 func NoWaitPull(t testing.TB, conn *natsgo.Conn, bucket string) (string, []byte) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

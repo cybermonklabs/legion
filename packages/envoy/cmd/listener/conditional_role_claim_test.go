@@ -54,7 +54,7 @@ func newConditionalClaimRig(t *testing.T, sessionIDs ...string) *conditionalClai
 	// whose GET reports no revision at all, and fails there too rather than only here.
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open jetstream: %v", err)
 	}

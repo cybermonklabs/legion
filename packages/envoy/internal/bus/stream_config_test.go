@@ -208,7 +208,7 @@ func TestConnectOwningStreamMigratesExistingStreamDuplicatesWindow(t *testing.T)
 	uri := testnats.URL(t)
 	legacyConn := testnats.Connect(t, uri)
 	t.Cleanup(legacyConn.Close)
-	legacyJS, err := legacyConn.JetStream()
+	legacyJS, err := legacyConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open legacy JetStream: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart(t *testing.T) {
 	uri := testnats.URL(t)
 	legacyConn := testnats.Connect(t, uri)
-	legacyJS, err := legacyConn.JetStream()
+	legacyJS, err := legacyConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open legacy JetStream: %v", err)
 	}
@@ -589,7 +589,7 @@ func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t 
 	}
 	otherConn := testnats.Connect(t, uri)
 	t.Cleanup(otherConn.Close)
-	otherJS, err := otherConn.JetStream()
+	otherJS, err := otherConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open the other deployment's JetStream: %v", err)
 	}
@@ -674,7 +674,7 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 			uri := testnats.URL(t)
 			conn := testnats.Connect(t, uri)
 			t.Cleanup(conn.Close)
-			js, err := conn.JetStream()
+			js, err := conn.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("open JetStream: %v", err)
 			}
@@ -861,7 +861,7 @@ func streamTestJetStream(t *testing.T) nats.JetStreamContext {
 	t.Helper()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -991,7 +991,7 @@ func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
 
 	otherConn := testnats.Connect(t, uri)
 	t.Cleanup(otherConn.Close)
-	otherJS, err := otherConn.JetStream()
+	otherJS, err := otherConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open the other deployment's JetStream: %v", err)
 	}

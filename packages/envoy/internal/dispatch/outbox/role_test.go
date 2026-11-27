@@ -196,7 +196,7 @@ func (r *roleRig) claimRegisteredAt(t *testing.T, role, holder string, age time.
 // write records through.
 func (r *roleRig) sessionBucket(t *testing.T) (natsgo.KeyValue, error) {
 	t.Helper()
-	js, err := r.conn.JetStream()
+	js, err := r.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -400,7 +400,7 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 // and the keeper would add them back.
 func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	t.Helper()
-	js, err := r.conn.JetStream()
+	js, err := r.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

@@ -156,7 +156,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 	// NumPending is what the server reports; what it hands over is a separate question. Fetch
 	// from a fresh pull durable of each shape by name, through the jetstream package, which binds
 	// no subject, and count what actually arrives.
-	js, err := jetstream.New(natsClient.Conn)
+	js, err := jetstream.New(natsClient.Conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open the jetstream API: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create the plural-filter durable: %v", err)
 	}
-	js, err := jetstream.New(natsClient.Conn)
+	js, err := jetstream.New(natsClient.Conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open the jetstream API: %v", err)
 	}

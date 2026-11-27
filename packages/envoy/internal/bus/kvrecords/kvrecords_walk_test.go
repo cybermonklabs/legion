@@ -114,7 +114,7 @@ func TestAWalkAcrossAStreamMadeAgainFails(t *testing.T) {
 		server, _ := testnats.Start(t)
 		nc := testnats.Connect(t, server.URL())
 		t.Cleanup(nc.Close)
-		js, err := nc.JetStream()
+		js, err := nc.JetStream(testnats.MaxWait(t))
 		require.NoError(t, err)
 		created := func() time.Time {
 			_, err := js.AddStream(&nats.StreamConfig{Name: "KV_made_again", Subjects: []string{"$KV.made_again.>"}})

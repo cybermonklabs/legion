@@ -23,7 +23,7 @@ func leaderReadBucket(t *testing.T, bucket string) (string, KeyValue) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestTheNewestLeaderReadAnswersAMarkerAtTheSequenceItIsStoredAt(t *testing.T
 	source := testnats.LastSequence(t, conn, bucket, "ses_source")
 	copied := testnats.ServerCopiesKey(t, conn, bucket, "ses_copied", bucket, "ses_source")
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

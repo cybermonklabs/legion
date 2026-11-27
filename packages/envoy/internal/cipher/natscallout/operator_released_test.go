@@ -140,7 +140,7 @@ func TestTheMeasureUserMakesNoStream(t *testing.T) {
 	admin, err := testnats.ConnectSeed(t, url, adminSeed)
 	require.NoError(t, err)
 	t.Cleanup(admin.Close)
-	js, err := admin.JetStream()
+	js, err := admin.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	_, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bus.SessionBucket})
 	require.NoError(t, err)

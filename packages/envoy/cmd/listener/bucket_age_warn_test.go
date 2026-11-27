@@ -28,7 +28,7 @@ func TestAListenerWarnsWhenTheBucketAgeIsShort(t *testing.T) {
 		uri := testnats.URL(t)
 		conn := testnats.Connect(t, uri)
 		t.Cleanup(conn.Close)
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("jetstream: %v", err)
 		}

@@ -70,7 +70,7 @@ func TestPublishAsyncKeepsSendOrder(t *testing.T) {
 		}
 	}
 
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

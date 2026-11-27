@@ -106,7 +106,7 @@ func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetti
 	const stream, waited = "NEVER", 2 * time.Second
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ const refusalWait = 5 * time.Second
 func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ const resentWait = 10 * time.Second
 func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
 func TestAnUpdateAnsweredWithAnother503IsARefusal(t *testing.T) {
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate(t *testing.T
 	uri := URL(t)
 	direct := Connect(t, uri)
 	t.Cleanup(direct.Close)
-	directJS, err := direct.JetStream()
+	directJS, err := direct.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -75,7 +75,7 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 	process.waitForHealth(t, 30*time.Second, "nats true", func(health healthBody) bool {
 		return health.OK && health.NATS != nil && *health.NATS
 	})
-	js, err := testnats.Connect(t, natsURL).JetStream()
+	js, err := testnats.Connect(t, natsURL).JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A damaged chunked record is answered with no layout, so no store deletes the chunks its manifest
@@ -23,7 +24,7 @@ import (
 // and a record it reads whole is the control, answered with its layout.
 func TestReadAnswersADamagedRecordWithNoLayout(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestReadAnswersADamagedRecordWithNoLayout(t *testing.T) {
 // same old manifest after the key is deleted, which is answered as no record at all.
 func TestReadOfAManifestARewriteReplacedAnswersTheNewRecord(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

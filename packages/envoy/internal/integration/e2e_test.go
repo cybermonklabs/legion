@@ -10,6 +10,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -29,7 +30,7 @@ func TestE2E_InterestReaperCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal stale interest: %v", err)
 	}
-	js, err := env.client.Conn.JetStream(natsgo.MaxWait(5 * time.Second))
+	js, err := env.client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

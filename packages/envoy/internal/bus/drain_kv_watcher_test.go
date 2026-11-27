@@ -189,7 +189,7 @@ func TestWarnOrErrorRecordsTakesAClientThatHasLoggedNothing(t *testing.T) {
 // nothing), so a listing that read nothing is never taken for a stream that carries nothing.
 func consumerNames(t *testing.T, admin *natsgo.Conn, stream string) []string {
 	t.Helper()
-	js, err := jetstream.New(admin)
+	js, err := jetstream.New(admin, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("admin JetStream: %v", err)
 	}

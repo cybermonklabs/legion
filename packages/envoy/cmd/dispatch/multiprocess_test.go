@@ -742,7 +742,7 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 	pair := startPair(t, nil)
 	rig := newSessionRig(t, pair.nats)
 	conn := rig.conn
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -1932,7 +1932,7 @@ func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWi
 	killed.waitHealthy(t)
 
 	rig := newSessionRig(t, pair.nats)
-	js, err := rig.conn.JetStream()
+	js, err := rig.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -2324,7 +2324,7 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 		rig.registerHolder(t, role, leaving.id)
 		rig.registerSession(t, arriving.id)
 		key := routedIssue(t, role)
-		js, err := rig.conn.JetStream()
+		js, err := rig.conn.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("JetStream context: %v", err)
 		}
@@ -2657,7 +2657,7 @@ func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
 	pair.start(t, env)
 
 	conn := testnats.Connect(t, pair.nats)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -2758,7 +2758,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	}
 
 	conn := testnats.Connect(t, pair.nats)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -2881,7 +2881,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	pair.startEach(t, envFor("A"), envFor("B"))
 
 	conn := testnats.Connect(t, pair.nats)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -3356,7 +3356,7 @@ func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testi
 	pair.start(t, env)
 
 	conn := testnats.Connect(t, pair.nats)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -4948,7 +4948,7 @@ func TestTwoProcessesAnnounceTheirBuildOnce(t *testing.T) {
 		return start(binary)
 	}
 	conn := testnats.Connect(t, pair.nats)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -7638,7 +7638,7 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 		pair := startPair(t, env)
 		conn := testnats.Connect(t, pair.nats)
 		t.Cleanup(conn.Close)
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("JetStream context: %v", err)
 		}
@@ -7765,7 +7765,7 @@ func backDateRedeliveryClaim(t *testing.T, natsURL, guid string, by time.Duratio
 		t.Fatalf("connect NATS: %v", err)
 	}
 	defer nc.Close()
-	js, err := nc.JetStream()
+	js, err := nc.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

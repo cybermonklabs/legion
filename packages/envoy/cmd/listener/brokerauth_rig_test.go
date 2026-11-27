@@ -492,7 +492,7 @@ func TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route(t *testing.T) {
 func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

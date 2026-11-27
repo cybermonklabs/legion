@@ -164,7 +164,7 @@ func TestAnInterestRowNamingNoMachineOrTimeIsReplacedNotMerged(t *testing.T) {
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
 	ctx := context.Background()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestAWriteOverACopiedDeleteMarkerReplacesItAtItsTrueSequence(t *testing.T) 
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
 	ctx := context.Background()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

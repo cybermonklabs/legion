@@ -345,7 +345,7 @@ func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *te
 		t.Fatalf("session_max_age = %s, want the %s the bucket was opened with", got, time.Hour)
 	}
 
-	js, err := d.client.Conn.JetStream()
+	js, err := d.client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

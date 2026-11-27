@@ -56,7 +56,7 @@ func TestAChunkedWriteBegunDuringAHeldHandshakeAnswersAtItsBoundAndWritesNothing
 	if got := conn.MaxPayload(); got != kvchunktest.MaxPayload {
 		t.Fatalf("the server's max payload is %d bytes, want %d", got, kvchunktest.MaxPayload)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

@@ -117,7 +117,7 @@ func fillCIBucket(b *testing.B, conn *natsgo.Conn, kv bus.KeyValue, keys int) {
 	if keys == 0 {
 		return
 	}
-	js, err := conn.JetStream(natsgo.PublishAsyncMaxPending(1024))
+	js, err := conn.JetStream(natsgo.PublishAsyncMaxPending(1024), testnats.MaxWait(b))
 	if err != nil {
 		b.Fatalf("jetstream: %v", err)
 	}
@@ -158,7 +158,7 @@ func benchmarkStoreRewatch(b *testing.B, keys int) {
 	_, uri := testnats.Start(b)
 	conn := testnats.Connect(b, uri)
 	b.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(b))
 	if err != nil {
 		b.Fatalf("jetstream: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // counterValue reads name's unlabelled sample from met's own scrape, the only way a counter's
@@ -408,7 +409,7 @@ func TestAPassAdoptsAMaximumAgeAnotherProcessSet(t *testing.T) {
 		t.Fatalf("the registry opened on a %s maximum age, want the minute the bucket was created with", got)
 	}
 
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -444,7 +445,7 @@ func TestOpeningWithAMaximumAgeWritesItOnTheBucket(t *testing.T) {
 		t.Fatalf("the maximum age in use = %s, want the 90m the registry was opened with", got)
 	}
 
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

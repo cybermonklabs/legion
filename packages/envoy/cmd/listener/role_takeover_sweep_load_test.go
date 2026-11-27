@@ -116,7 +116,7 @@ func (w *takeoverWire) countAfter(publishMark func() error) takeoverReads {
 // the roles.
 func (rig *crashRig) burstRecords(prefix string, n, roles int, age time.Duration, pastNext bool) []string {
 	rig.t.Helper()
-	js, err := rig.lane.JetStream()
+	js, err := rig.lane.JetStream(testnats.MaxWait(rig.t))
 	if err != nil {
 		rig.t.Fatalf("open JetStream: %v", err)
 	}

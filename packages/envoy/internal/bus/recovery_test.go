@@ -531,7 +531,7 @@ func waitOutHeldDurable(t *testing.T, client *bus.Client, uri string) {
 	}
 	holderConn := testnats.Connect(t, uri)
 	t.Cleanup(holderConn.Close)
-	holderJS, err := holderConn.JetStream()
+	holderJS, err := holderConn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("holder JetStream: %v", err)
 	}

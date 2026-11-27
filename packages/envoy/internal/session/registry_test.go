@@ -645,7 +645,7 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 		t.Fatalf("ping after rewatch: %v", err)
 	}
 
-	js, err := replacement.JetStream()
+	js, err := replacement.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open replacement JetStream: %v", err)
 	}

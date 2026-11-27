@@ -54,7 +54,7 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 	msg := next(t, pull)
 	// A context of the caller's own, as the listener opens its spent-proof bucket through one
 	// (cmd/listener/brokerauth.go): nothing names its requests until a bucket call is handed it.
-	handed, err := owner.Conn.JetStream()
+	handed, err := owner.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open a JetStream context of the test's own: %v", err)
 	}

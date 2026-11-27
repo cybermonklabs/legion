@@ -171,7 +171,7 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 	}
 	t.Cleanup(client.Close)
 	admin := testnats.Connect(t, uri)
-	adminJS, err := admin.JetStream()
+	adminJS, err := admin.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestAStreamDeletedWhileTheClientRunsIsRecreatedOnItsReconnect(t *testing.T)
 
 	checker := testnats.Connect(t, uri)
 	t.Cleanup(checker.Close)
-	checkerJS, err := checker.JetStream()
+	checkerJS, err := checker.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

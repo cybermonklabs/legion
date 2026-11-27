@@ -223,7 +223,7 @@ func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 			admin, err := testnats.ConnectSeed(t, url, adminSeed)
 			require.NoError(t, err)
 			defer admin.Close()
-			adminJS, err := admin.JetStream()
+			adminJS, err := admin.JetStream(testnats.MaxWait(t))
 			require.NoError(t, err)
 			adminKV, err := adminJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
 			require.NoError(t, err, "a static user of %s could not make the bucket through its import", envoyAccount)

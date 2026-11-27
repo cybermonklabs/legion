@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -388,7 +389,7 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	h.post("check_run", webhookBody("check_run", run), "d1")
 	request := h.waitForRequest(0)
 	// The request's own value, as the listener writes it again at its next timeout.
-	js, err := h.bus.Conn.JetStream()
+	js, err := h.bus.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

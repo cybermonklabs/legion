@@ -874,7 +874,7 @@ func TestATakeOverCreatesTheDurableAlreadyBound(t *testing.T) {
 	lookups := make(chan lookup, 8)
 	observer := testnats.Connect(t, natsURL)
 	t.Cleanup(observer.Close)
-	observerJS, err := observer.JetStream()
+	observerJS, err := observer.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open the observer's JetStream context: %v", err)
 	}
@@ -1125,7 +1125,7 @@ func durablePartWayThrough(t *testing.T, ctx context.Context, publisher *bus.Cli
 	}); err != nil {
 		t.Fatalf("create the durable: %v", err)
 	}
-	js, err := jetstream.New(publisher.Conn)
+	js, err := jetstream.New(publisher.Conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open the jetstream API: %v", err)
 	}

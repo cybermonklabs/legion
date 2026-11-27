@@ -30,7 +30,7 @@ func TestAGitHubDeliveryWhileTheDeployedStreamLacksItsSubjectIsAnswered503(t *te
 	t.Cleanup(client.Close)
 	raw := testnats.Connect(t, url)
 	t.Cleanup(raw.Close)
-	js, err := raw.JetStream()
+	js, err := raw.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

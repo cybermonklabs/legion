@@ -16,13 +16,14 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // rawInterests is the interest bucket on conn as a raw handle, which reads what is stored with
 // no reassembly of its own.
 func rawInterests(t *testing.T, conn *natsgo.Conn) natsgo.KeyValue {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

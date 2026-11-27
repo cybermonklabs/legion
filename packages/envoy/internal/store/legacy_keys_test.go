@@ -193,7 +193,7 @@ func openRegistryOver(t *testing.T, seed func(js natsgo.JetStreamContext, rawInt
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

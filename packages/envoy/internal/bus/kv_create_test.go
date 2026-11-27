@@ -114,7 +114,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 			t.Fatalf("connect in the background: %v", err)
 		}
 		t.Cleanup(client.Close)
-		unconnected, err := client.Conn.JetStream()
+		unconnected, err := client.Conn.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("open JetStream: %v", err)
 		}

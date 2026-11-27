@@ -50,7 +50,7 @@ func openVerifyingStoreWithTTL(t *testing.T, conn *natsgo.Conn, ttl time.Duratio
 // own, with no cache.
 func dispatchWriter(t *testing.T, conn *natsgo.Conn) *Writer {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 	}
 	stale := requests[0]
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

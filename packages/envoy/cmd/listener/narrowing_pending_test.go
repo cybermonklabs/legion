@@ -61,7 +61,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 	rig := newSessionConsumerRigOn(t, client, url)
 	raw := testnats.Connect(t, url)
 	t.Cleanup(raw.Close)
-	js, err := raw.JetStream()
+	js, err := raw.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

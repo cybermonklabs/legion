@@ -182,7 +182,7 @@ func startLiveDispatch(t *testing.T, binary, image string, grant core.Permission
 	process, port := startDispatch(t, binary, databaseURL, uri, seeds.dispatch, github.server.URL)
 	requireHealthy(t, process, port, dispatchHealthWindow, dispatchHealthy)
 	conn, errs := connect(t, uri, seeds.client)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	sessionConn, sessionErrs := connect(t, uri, seeds.session)
 	dispatchConn, dispatchErrs := connect(t, uri, seeds.dispatch)

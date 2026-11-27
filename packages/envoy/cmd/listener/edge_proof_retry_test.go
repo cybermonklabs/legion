@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // switchableSpentProofs is a spent-proof store that answers nothing and records nothing while it
@@ -278,7 +279,7 @@ func (k lostCreate) Create(string, []byte) (uint64, error) {
 func TestEdgeReleaseDeletesOnlyTheRecordItsRequestWrote(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t, bus.WithStreamMessageReads())
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

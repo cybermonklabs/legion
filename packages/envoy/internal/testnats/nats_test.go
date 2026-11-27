@@ -80,7 +80,7 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 	t.Run("leaves a stream and a message", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -94,7 +94,7 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 	t.Run("finds none of it", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	t.Run("publishes a burst and ends", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -134,7 +134,7 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	t.Run("recreates the stream and finds none of it", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +181,7 @@ func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
 	}
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
 		}
 		sub := Connect(t, subURI)
 		defer sub.Close()
-		subJS, err := sub.JetStream()
+		subJS, err := sub.JetStream(MaxWait(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,7 +227,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 	server := ownAccountServer(t, 2)
 	live := Connect(t, server.url(namedTB{t, "live"}))
 	defer live.Close()
-	js, err := live.JetStream()
+	js, err := live.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,7 +759,7 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 		t.Fatalf("connect with the seed: %v", err)
 	}
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
