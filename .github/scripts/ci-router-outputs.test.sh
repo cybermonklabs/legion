@@ -244,11 +244,14 @@ statement_of() {
   # lane-verdicts.py reads the ci.yaml beside it, so a copied workflow gets the script copied
   # beside it too, and a case that breaks an output reads the broken output.
   local verdicts="$script_dir/lane-verdicts.py"
+  # A copy is made once per tree, so a case may change a copied module before it runs the script.
   if [ "$workflow" != "$repo/.github/workflows/ci.yaml" ]; then
     verdicts="${workflow%/workflows/*}/scripts/lane-verdicts.py"
-    mkdir -p "${verdicts%/*}"
-    cp "$script_dir/lane-verdicts.py" "$script_dir/ci_router_outputs.py" "$script_dir/ci_filter_coverage.py" \
-      "$script_dir/go_build_tags.py" "$script_dir/workflow_paths.py" "${verdicts%/*}/"
+    if [ ! -e "$verdicts" ]; then
+      mkdir -p "${verdicts%/*}"
+      cp "$script_dir/lane-verdicts.py" "$script_dir/ci_router_outputs.py" "$script_dir/ci_filter_coverage.py" \
+        "$script_dir/go_build_tags.py" "$script_dir/workflow_paths.py" "${verdicts%/*}/"
+    fi
   fi
   said_by=harness
   if ! spec=$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --event "$event" \
@@ -384,8 +387,18 @@ broken=$(copy_with "$work/statement-other-file" ci.yaml \
 statement_of "$broken" pull_request
 check "statement_of stops with 3" "$(is "$said_status" 3)"
 check "  naming both files" "$(contains "$said_err" "reads FILTERS_FILE='/home/runner/work/_temp/ci-filters.computed.yaml' and the paths-filter step reads '/home/runner/work/_temp/ci-filters.yaml'")"
-check "  which lines_hold reports as the harness's, not the script's" \
+check "  which lines_hold reports as the harness's" \
   "$(contains "$(lines_hold "$(outputs --event pull_request)")" '^the harness stopped the case (status 3) before lane-verdicts.py ran')"
+check "  and not as the script's" "$(is "$(lines_hold "$(outputs --event pull_request)" | grep -c '^lane-verdicts.py exited' || true)" 0)"
+
+echo "case: a byte that is not UTF-8 after a good first line does not refuse it"
+# Review 6089168911: text-mode readline decodes a buffered chunk, not one line.
+{ head -5 "$filters"; printf '# \351 is not UTF-8\n'; tail -n +6 "$filters"; } > "$work/later-byte.yaml"
+statement_of "$ci_yaml" pull_request --filters-file "$work/later-byte.yaml"
+check "the script exits 0" "$(is "$said_status" 0)"
+check "  every line is its output" "$(is "$(lines_hold "$(outputs --event pull_request)")" "")"
+check "  and all ${#held[@]} say their paths matched" \
+  "$(is "$(lines_with ": does not run on this head: its paths matched and the pull request does not carry lane:")" "${#held[@]}")"
 
 echo "case: a step handed the wrong facts says what the outputs do not, and the case fails on it"
 broken=$(copy_with "$work/statement-wrong-step" ci.yaml \
@@ -872,6 +885,31 @@ check "filters that fell open (the generator's fail-open file): the script exits
 check "  every line is its output" "$(is "$(lines_hold "$(outputs --event merge_group)")" "")"
 check "  and all ${#held[@]} say their filter was widened" \
   "$(is "$(lines_with ': runs on this merge_group run: its filter was widened to every path')" "${#held[@]}")"
+
+echo "case: an engine that does not import still has its fail-open file read, and its header is refused"
+# Review 6089168911: the fail-open file is what the generator writes when the filter engine fails,
+# and then the engine may not import. The script reads that line without it, and imports the
+# engine only to check a computed header, which it then refuses rather than trusts.
+engine="$work/engine-does-not-import"
+mkdir -p "$engine/.github/workflows" "$engine/.github/scripts"
+cp "$repo/.github/workflows/ci.yaml" "$engine/.github/workflows/"
+cp "$script_dir/lane-verdicts.py" "$script_dir/ci_router_outputs.py" "$script_dir/ci_filter_coverage.py" \
+  "$script_dir/go_build_tags.py" "$script_dir/workflow_paths.py" "$engine/.github/scripts/"
+printf '\ndef broken(:\n' >> "$engine/.github/scripts/go_build_tags.py"
+check "the copied engine does not import" \
+  "$(is "$(cd "$engine/.github/scripts" && python3 -c 'import ci_filter_coverage' >/dev/null 2>&1 && echo imports)" "")"
+statement_of "$engine/.github/workflows/ci.yaml" merge_group --filters-file "$work/fallback.yaml"
+check "  on its fail-open file the script exits 0" "$(is "$said_status" 0)"
+check "  every line is its output" "$(is "$(lines_hold "$(outputs --event merge_group)")" "")"
+check "  and all ${#held[@]} say their filter was widened" \
+  "$(is "$(lines_with ': runs on this merge_group run: its filter was widened to every path')" "${#held[@]}")"
+statement_of "$engine/.github/workflows/ci.yaml" pull_request
+check "  on the computed header, which it cannot check, the script exits 1" "$(is "$said_status" 1)"
+check "  with one ::error:: naming the import" \
+  "$(is "$(grep -c '^::error::lane-verdicts.py: .*importing ci_filter_coverage failed (SyntaxError' <<<"$said" || true)" 1)"
+check "  no suite's line says its paths matched" "$(is "$(lines_with 'its paths matched and')" 0)"
+check "  and all ${#held[@]} say the widening is UNKNOWN" \
+  "$(is "$(lines_with 'whether that filter was widened to every path is UNKNOWN')" "${#held[@]}")"
 
 # generated_tree <dir>: a tree holding the real ci-filters-generate.sh and ci.yaml, whose
 # check-ci-filters.sh writes this run's computed filters, so the script goes on to read its base.

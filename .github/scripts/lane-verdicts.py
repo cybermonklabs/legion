@@ -15,14 +15,20 @@ Apart from those it writes no annotation: ci-ok's notice names the suites a run 
 (.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite).
 
 Whether a filter was widened is read from the first line of the file the paths-filter step read,
-which must be, as a whole line, one of the four ci-filters-generate.sh writes (COMPUTED_HEADER,
-FAIL_OPEN, FORCED_ALL, FORCED_NAMES): the computed filters' own header (nothing widened), the
-fail-open line and the every-filter FORCED line (every filter), or the FORCED line naming the
-filters that differ from the base tree's (those). A file that cannot be read or decoded, or a
-first line in no such form, is an `::error::` and exit 1, and every line whose paths matched then
-says that whether its filter was widened is UNKNOWN: such a line never falls back to "its paths
-matched". A line whose paths did not match, or on a run that selects every job, says so as
-before.
+which must be, as a whole line, one of the four ci-filters-generate.sh writes (FAIL_OPEN,
+FORCED_ALL, FORCED_NAMES, and the computed filters' own header): the fail-open line and the
+every-filter FORCED line (every filter), the FORCED line naming the filters that differ from the
+base tree's (those), or the computed header (nothing widened). A file that cannot be read, or a
+first line in no such form, is an `::error::` and exit 1, and each line that would say its paths
+matched says instead that whether its filter was widened is UNKNOWN.
+
+The computed header is the first line of ci_filter_coverage.GENERATED_HEAD, its owner's text, and
+it is imported only when the first line is none of the other three forms, which need no import.
+The fail-open file is what ci-filters-generate.sh writes when the filter engine fails, and on such
+a run the engine may not import at all, while this script must still read the fail-open line. A
+computed header is written only by an engine that ran, so its import is then safe; if it still
+fails, that is the `::error::` above, never a header taken on trust.
+
 ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to, checks that its
 FILTERS_FILE is the file the paths-filter step reads, feeds it files ci-filters-generate.sh itself
 wrote, and holds each line to the output it is about.
@@ -42,7 +48,6 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ci_filter_coverage import GENERATED_HEAD  # noqa: E402
 from ci_router_outputs import Evaluator, Refused, expression_of, label_readers, text_of  # noqa: E402
 
 WORKFLOW = Path(__file__).resolve().parent.parent / "workflows" / "ci.yaml"
@@ -55,11 +60,11 @@ def read_json(name, default):
 
 
 # The first lines ci-filters-generate.sh writes into the file the paths-filter step reads, and the
-# filters each widens to `'**'`, each matched as the whole line: the computed filters copied as
-# they are (their header, whose owner is ci_filter_coverage.GENERATED_HEAD, the text
-# `check-ci-filters.sh generate` writes), the fail-open file (its `$why` free), the base it cannot
-# read or compute (its reason free), and the filters whose patterns differ from the base tree's.
-COMPUTED_HEADER = GENERATED_HEAD[0]
+# filters each widens to `'**'`, each matched as the whole line: the fail-open file (its `$why`
+# free), the base it cannot read or compute (its reason free), and the filters whose patterns
+# differ from the base tree's. The fourth, the computed filters copied as they are, is the first
+# line of ci_filter_coverage.GENERATED_HEAD, read in widened() after these three (the module
+# docstring says why).
 FAIL_OPEN = re.compile(r"# FAIL-OPEN: the filters could not be computed \(.*\), so every filter matches every path "
                        r"and every job runs\.")
 FORCED_ALL = re.compile(r"# FORCED: every filter matches every path: .+\.")
@@ -73,18 +78,26 @@ def widened(path):
     if not path:
         return None, "FILTERS_FILE is not set, so which filters were widened to every path is unknown"
     try:
-        with open(path) as fh:
+        # errors="replace": text-mode readline decodes a whole buffered chunk, so a byte that is
+        # not UTF-8 on a later line must not refuse a good first line. One on the first line makes
+        # it a line in no accepted form.
+        with open(path, errors="replace") as fh:
             first = fh.readline().rstrip("\n")
-    except (OSError, UnicodeDecodeError) as error:
-        why = error.strerror if isinstance(error, OSError) and error.strerror else error
-        return None, f"FILTERS_FILE {path} cannot be read ({why}), so which filters were widened to every path is unknown"
-    if first == COMPUTED_HEADER:
-        return set(), None
+    except OSError as error:
+        return None, f"FILTERS_FILE {path} cannot be read ({error.strerror or error}), so which filters were widened to every path is unknown"
     if FAIL_OPEN.fullmatch(first) or FORCED_ALL.fullmatch(first):
         return {"*"}, None
     forced = FORCED_NAMES.fullmatch(first)
     if forced:
         return set(forced.group(1).split(", ")), None
+    try:
+        from ci_filter_coverage import GENERATED_HEAD
+    except Exception as error:  # noqa: BLE001 - any failure to load the engine leaves the header unchecked
+        return None, (f"the first line of FILTERS_FILE {path} is no fail-open or FORCED line, and the computed "
+                      f"header cannot be checked: importing ci_filter_coverage failed ({type(error).__name__}: "
+                      f"{error}), so which filters were widened to every path is unknown")
+    if first == GENERATED_HEAD[0]:
+        return set(), None
     return None, (f"the first line of FILTERS_FILE {path} is in none of the forms ci-filters-generate.sh writes "
                   f"({first[:160]!r}), so which filters were widened to every path is unknown")
 
