@@ -3235,7 +3235,7 @@ The earlier release names the column in no statement, and each row it inserts ta
 Its header's way back is owed to the roll-forward alone: it drops the column and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the column back at 0 on every row:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases drop column if exists return_to;
 delete from schema_version where version = 20261126110302;
@@ -3250,7 +3250,7 @@ This release writes nothing to the column, so a daemon of the earlier release, d
 Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial`, deletes the keys `head`, `waits_for`, `waiting` and `failing` from each queued notice and the keys `pull_request`, `head`, `check`, `ci_case`, `checks` and `statuses` from each queued role message, and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 update phases set verdict = '' where verdict <> '';
 alter table phases drop column if exists states_serial;
@@ -3270,7 +3270,7 @@ The `verdict` key needs nothing: the earlier release decodes a notice with no `v
 Then run the way back in the header of `20261126110300_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 drop table if exists check_states;
 drop table if exists check_state_sets;
@@ -3296,7 +3296,7 @@ This release queues such rows: the `ci-failed` notice, a fix's start with `fix`,
 It also records the fix that owns a merge forward under `fix` on the pull request's `merge_forward` and on each landing in its `earlier`, which the earlier release does not know.
 It also writes two new reasons of a hold on `issues.hold_reason`: `fix`, an issue held while its fix runs, and `ci`, an issue held until each check a CI job runs passes at its head.
 
-At the rollback, with every daemon of the database stopped and before the earlier image is pinned, run the way back below in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
+At the rollback, with every daemon of the database stopped and before the earlier image is pinned, run the way back below in one `PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
 The outbox and `pending_task_deliveries` hold the rows of every project that shares the database, and the tables and the columns are the database's, so every daemon of one database moves back together.
 Run the block once for each project: a later run drops nothing again, and deletes and strips that project's rows.
 

@@ -45,8 +45,8 @@
 --
 -- There is no down file: migrations here are forward-only. The way back is the one transaction
 -- that ends this header, its last paragraph (migrations.WayBack), run with every daemon of the
--- database stopped and before the earlier image is pinned, through
--- psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1, with <PROJECT> the key of the project whose daemon
+-- database stopped and before the earlier image is pinned, through PGPASSFILE=<pgpass file>
+-- psql '<postgres_url>' -X -v ON_ERROR_STOP=1, with <PROJECT> the key of the project whose daemon
 -- rolls back. The outbox and pending_task_deliveries hold the rows of every project that shares
 -- the database, and the tables and columns are the database's, so every daemon of one database
 -- moves to this release, and back, together. docs/kubernetes.md carries the same block under

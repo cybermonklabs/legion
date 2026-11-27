@@ -21,13 +21,13 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
 -- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The drop and the delete of
--- this migration's row go together. The release before needs neither, since it never names the
--- column: both are owed to the roll-forward. With the column dropped and the row deleted,
--- store.apply finds no row of this version and runs this file again, which adds the column again at
--- its default; an add of a column that stands would fail. What the drop costs is the step a tester's
--- completion still waiting for its states named: after the roll-forward its fail returns the task
--- to the first implementation step before the tester.
+-- before starts, through PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1. The
+-- drop and the delete of this migration's row go together. The release before needs neither, since
+-- it never names the column: both are owed to the roll-forward. With the column dropped and the
+-- row deleted, store.apply finds no row of this version and runs this file again, which adds the
+-- column again at its default; an add of a column that stands would fail. What the drop costs is
+-- the step a tester's completion still waiting for its states named: after the roll-forward its
+-- fail returns the task to the first implementation step before the tester.
 --
 -- begin;
 -- alter table phases drop column if exists return_to;
