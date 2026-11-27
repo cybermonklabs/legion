@@ -39,6 +39,7 @@ const (
 	wakeBound  = "bound"
 	wakeNamed  = "check wake"
 	wakeResult = "result"
+	wakeRead   = "read"
 )
 
 // checkRole is Config.ProductionCheckRole read in one place, so no two sites can disagree on who
@@ -242,9 +243,10 @@ func resultCommit(block dispatch.CheckBlock, merge string) string {
 // that opened the check (wakeMerge, the merge commit as its detail), its bound (wakeBound, the
 // check's own bound and the check's opening it is counted from, and nothing of why the looks
 // before it were pending), a check_wake row (wakeNamed), whose reason is either the summary the
-// pending report gave (checkReported) or the retry of a look nobody reported (endLook), or a result
-// recorded after the check closed as not run (wakeResult, lookAfterNotRun). The named wake reads
-// as one sentence after the dash, so the lead names who named the wake rather than what it says.
+// pending report gave (checkReported) or the retry of a look nobody reported (endLook), a result
+// recorded after the check closed as not run (wakeResult, lookAfterNotRun), or a read after that
+// close in which each check passes (wakeRead, lookAfterNotRunRead). The named wake reads as one
+// sentence after the dash, so the lead names who named the wake rather than what it says.
 func wokenBy(cause, detail string) string {
 	switch cause {
 	case wakeMerge:
@@ -255,6 +257,8 @@ func wokenBy(cause, detail string) string {
 		return "the wake named at the last look — " + detail
 	case wakeResult:
 		return "a result of check " + detail
+	case wakeRead:
+		return "a read of the checks " + detail
 	default:
 		return cause + " " + detail
 	}

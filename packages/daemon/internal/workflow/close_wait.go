@@ -451,6 +451,9 @@ func (e *Engine) closeChecksRead(ctx context.Context, tx pgx.Tx, fact intake.Clo
 	if err := e.openCheckAtRead(ctx, tx, *issue); err != nil {
 		return intake.Result{}, err
 	}
+	if err := e.lookAfterNotRunRead(ctx, tx, *issue, read); err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.judgeClose(ctx, tx, *issue)
 }
 
@@ -556,6 +559,42 @@ func (e *Engine) lookAfterNotRun(ctx context.Context, tx pgx.Tx, issue record.Is
 	e.logOnCommit(ctx, "workflow: a result after the production check closed as not run opens one more look", "issue", issue.Key,
 		"check", fact.Check, "result", fact.ResultID, "seq", fact.Seq)
 	return e.startLook(ctx, tx, issue, check, wakeResult, fmt.Sprintf("%s, recorded after the check closed as not run", fact.Check), true)
+}
+
+// lookAfterNotRunRead opens one more look of issue's production check, the last, where the check
+// of the issue's generation and newest merge closed not_run, no look is open, and read, a read
+// made after that close, shows a pass for each check (D6). It is the door lookAfterNotRun leaves
+// shut: a look whose checking agent recorded each check's pass and ended before it reported
+// closes the check not_run with every check passing, so no result after the close is one for a
+// check without a pass, and the issue would wait in verifying until a person's done. The open look
+// fences every read after it, and a look that closes not_run again is opened again only by a read
+// made after that close, so each look this opens answers a read of its own. A read in which a
+// check has no pass opens nothing: a result for that check opens the look (lookAfterNotRun).
+func (e *Engine) lookAfterNotRunRead(ctx context.Context, tx pgx.Tx, issue record.Issue, read record.CheckRead) error {
+	if e.checkRole() == "" || read.Failure != "" || len(read.Answer) == 0 {
+		return nil
+	}
+	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+	if err != nil || check == nil {
+		return err
+	}
+	if check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation || check.MergeSHA != issue.Merge.SHA ||
+		check.ClosedAt == nil || !read.ReadAt.After(*check.ClosedAt) {
+		return nil
+	}
+	var answer record.CheckReadAnswer
+	if err := json.Unmarshal(read.Answer, &answer); err != nil || len(answer.Results.Checks) == 0 {
+		return nil
+	}
+	for _, block := range answer.Results.Checks {
+		if block.PassStands.Answer != dispatch.PassStandsYes {
+			return nil
+		}
+	}
+	check.ClosedAt, check.Outcome = nil, ""
+	e.logOnCommit(ctx, "workflow: a read in which each check passes, after the production check closed as not run, opens one more look",
+		"issue", issue.Key, "read_at", read.ReadAt)
+	return e.startLook(ctx, tx, issue, check, wakeRead, "in which each check passes, made after the check closed as not run", true)
 }
 
 // closeWaitNoResult tells the owning architect once, at the close of the production check of issue,
@@ -961,7 +1000,7 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 			state = "open, its next look at " + since(*production.NextLookAt)
 		}
 		terms = append(terms, fmt.Sprintf("Its production check of generation %d at merge commit %s is %s since %s.", production.Generation, production.Merge, state, since(production.Since)),
-			"Its way out is a pass at its look, one more look after a late result, or the next change of a fail.")
+			"Its way out is a pass at its look, one more look after a late result or after a read in which each check passes, or the next change of a fail.")
 	}
 	for _, defect := range stored.Defects {
 		terms = append(terms, fmt.Sprintf("Reason %d waits since %s: %s.", defect.ID, since(defect.Since), defect.Text))
