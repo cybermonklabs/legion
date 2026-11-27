@@ -39,7 +39,6 @@ import {
   backToList,
   inboxPane,
   inboxRow,
-  paneScroller,
   readingView,
   selectedRow,
   selectRow,
@@ -380,9 +379,12 @@ test("each surface draws the ask with the one ask body", async ({ page }) => {
         body.getByRole(role, { exact: true, name: `${label} ${description}` })
       );
       for (const option of options) await expect(option).toHaveAttribute("data-ask-option", "");
-      await expect(body.locator(OPTION)).toHaveCount(options.length);
       const other = body.getByRole(role, { exact: true, name: "Other" });
-      await expect(other).not.toHaveAttribute("data-ask-option");
+      // Other carries the option mark after the real options: the digit after the last real
+      // option picks it (dispatch://INFRA-2160 R17).
+      await expect(other).toHaveAttribute("data-ask-option", "");
+      await expect(body.locator(OPTION)).toHaveCount(options.length + 1);
+      await expect(body.locator(OPTION).last()).toHaveAccessibleName("Other");
       await expectOrdered([
         ...(surface.block ? [] : [body.getByText(surface.question, { exact: true }).first()]),
         ...options,
@@ -581,23 +583,30 @@ test("the reading pane keeps its approval view and the block draws the body with
   await expect(button(approval, "Show diff")).toBeVisible();
 });
 
-/** Presses 1 to 9, each from `row` itself, and finds `card`'s two real options picked - the
- *  first by 1, the second by every digit after it - and its "Other" row never. */
-async function expectRealOptionDigits(page: Page, row: Locator, card: Locator): Promise<void> {
+/** Presses 1 to 9, each from `row` itself, and finds `card`'s two real options picked by 1 and
+ *  2, its "Other" row picked by 3, the digit after the last real option, and nothing more picked
+ *  by the digits past it (dispatch://INFRA-2160 R17). */
+async function expectOptionDigits(page: Page, row: Locator, card: Locator): Promise<void> {
   const options = card.locator(OPTION);
   const other = card.getByRole("radio", { exact: true, name: "Other" });
-  await expect(options).toHaveCount(2);
+  await expect(options).toHaveCount(3);
   for (const digit of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
     await row.focus();
     await page.keyboard.press(String(digit));
-    await expect(options.nth(digit === 1 ? 0 : 1)).toBeChecked();
-    await expect(other).not.toBeChecked();
+    if (digit < 3) {
+      await expect(options.nth(digit - 1)).toBeChecked();
+      await expect(other).not.toBeChecked();
+    } else {
+      await expect(other).toBeChecked();
+    }
   }
 }
 
 // SLOW(>=2s): the full issue seed and the live document in the Inbox's reading pane, in the
 // reading view a short row opens below 1280 px, and the drawer's cards.
-test("in the Inbox 1 to 9 pick only real options and Enter reaches the box", async ({ page }) => {
+test("in the Inbox 1 and 2 pick the real options, 3 picks Other, and Enter reaches the box", async ({
+  page,
+}) => {
   test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
   const data = await seed();
   await wide(page);
@@ -607,13 +616,13 @@ test("in the Inbox 1 to 9 pick only real options and Enter reaches the box", asy
   const card = ask(inboxPane(page), data.records.block);
   const field = card.locator(ANSWER);
   await expect(field, "Enter must reach an already visible field").toBeVisible();
-  await expectRealOptionDigits(page, row, card);
+  await expectOptionDigits(page, row, card);
   await row.focus();
   await page.keyboard.press("Enter");
   await expect(field).toBeFocused();
 
   // Below 1280 px the same question's short row holds no box: Enter on it opens its reading
-  // view, which lands the focus in its scroller, and Enter there reaches the box in the view.
+  // view with the caret in the view's answer box (dispatch://INFRA-2160 R18).
   await narrow(page);
   await page.goto("/?assignee=everyone");
   const short = inboxRow(page, data.records.block);
@@ -625,9 +634,10 @@ test("in the Inbox 1 to 9 pick only real options and Enter reaches the box", asy
   await expect(readingView(page)).toHaveAttribute("data-inbox-reading-row", data.records.block);
   const opened = ask(readingView(page), data.records.block).locator(ANSWER);
   await expect(opened, "Enter must reach an already visible field").toBeVisible();
-  await expect(paneScroller(page), "the view's scroller holds the focus").toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(opened).toBeFocused();
+  await expect(
+    opened,
+    "Enter on the short row puts the caret in the view's answer box"
+  ).toBeFocused();
 
   // The drawer keeps a card in each row, and its keys act on the ask row that holds the focus
   // itself: not the control that opened the drawer, nor a control inside the card.
@@ -639,7 +649,7 @@ test("in the Inbox 1 to 9 pick only real options and Enter reaches the box", asy
   const drawerCard = ask(drawerRow, id);
   const drawerField = drawerCard.locator(ANSWER);
   await expect(drawerField, "Enter must reach an already visible field").toBeVisible();
-  await expectRealOptionDigits(page, drawerRow, drawerCard);
+  await expectOptionDigits(page, drawerRow, drawerCard);
   await drawerRow.focus();
   await expect(drawerRow).toBeFocused();
   await page.keyboard.press("Enter");
