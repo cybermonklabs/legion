@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
+import { realClock } from "../__tests__/fake-clock";
 import {
   type FakeLiveSocket,
   type FakeLiveSockets,
@@ -148,7 +149,7 @@ afterEach(() => {
   live.close();
   queryClient.clear();
   sockets.restore();
-  jest.useRealTimers();
+  if (jest.isFakeTimers()) realClock();
 });
 
 /** The page's live query options, without subscribing an observer. */

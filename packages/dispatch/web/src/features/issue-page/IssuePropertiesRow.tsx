@@ -36,7 +36,7 @@ import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { coverageStatements } from "./tree-drafts";
-import { useDecisionsView, useReadOlderDecisionComments, useTreeRead } from "./tree-read/tree-read";
+import { useDecisionsView, useReadUnloadedPages, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
@@ -107,8 +107,13 @@ export function IssuePropertiesRow({
     () => waitingOnReader(issue, viewer, isCoverageStatement, { answer }),
     [issue, viewer, isCoverageStatement, answer]
   );
-  // Read older comments after the first drawing, from the same answer the header counts.
-  useReadOlderDecisionComments(issue.key, answer, waiting.unread > 0, held !== undefined);
+  // A decision whose Change may stand on a page the read the count is taken from has not loaded
+  // is left out of the count until that page is read (`waiting.ts`): the header reads the next
+  // pages and then the older comment pages of that read - the decisions view read where the page
+  // holds it, else the outline read - once the page has drawn, until each such Change is held or
+  // no such page is left (decisions 563 (4) and 574 (B)), so the count is right on every view
+  // that holds either read.
+  useReadUnloadedPages(issue, () => waiting.unread > 0, held);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);

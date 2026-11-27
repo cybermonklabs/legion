@@ -379,7 +379,7 @@ var asOfUpsert = regexp.MustCompile(`(?is)\binsert\s+into\s+graph_tuples\b[^;]*?
 
 // asOfCreateTrigger is a create trigger, which writes no row of its table and runs only on later
 // writes, never on the rows already there (pgmigrate's catalogOnlyStatements): the head
-// projection's trigger on graph_tuples (20261123180100_issue_tree_head) writes none of its rows.
+// projection's trigger on graph_tuples (20261127120803_issue_tree_head) writes none of its rows.
 var asOfCreateTrigger = regexp.MustCompile(`(?is)^\s*(--[^\n]*\n\s*)*create\s+(or\s+replace\s+)?(constraint\s+)?trigger\b`)
 
 // requireTypeMigrationsAloneWriteTheTupleTable reads every migration of this child and every type

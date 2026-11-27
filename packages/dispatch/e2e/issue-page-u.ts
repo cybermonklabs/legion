@@ -7,9 +7,9 @@ import {
   NODE_STATE_WORDS,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
+import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/comment-positions";
 import {
   mergeTreePages,
-  nextTreeCursor,
   type TreeIdReads,
 } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import {

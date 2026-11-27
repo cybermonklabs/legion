@@ -38,13 +38,12 @@ import { presetOf } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
-import { olderCommentsBefore } from "./comment-positions";
+import { nextTreeCursor, olderCommentsBefore } from "./comment-positions";
 import {
   blocksOfRole,
   compareCommentPositions,
   mergeCommentPage,
   mergeTreePages,
-  nextTreeCursor,
   nodesRemaining,
   type TreeBlock,
 } from "./tree-nodes";
@@ -284,7 +283,7 @@ function readName(key: string, query: TreeQuery): string {
  * reader's press merged while this read was out is read too. A position the walk has read already
  * fails the read, naming it, as a cursor named twice does. A query with no older page loaded
  * reads none: the page reads an older page only where the reader asked for one, or, once the page
- * has drawn, where a reader names what one may hold (`useReadOlderComments`).
+ * has drawn, where a reader names what one may hold (`useReadUnloadedPages`).
  */
 async function withLoadedComments(
   key: string,
@@ -952,7 +951,7 @@ function writeKeepingStale(
  * It merges the page into that answer in the cache, where
  * the read's order puts each node (`mergeCommentPage`). A press while that page is out joins it,
  * and one after it merged reads the next, so each page is read once whichever control or reader
- * asks for it (`useReadOlderComments`). Where the cache holds no answer or no older comment it
+ * asks for it (`useReadUnloadedPages`). Where the cache holds no answer or no older comment it
  * reads nothing. A page that
  * lands once the answer has moved on - a read made again from the first page, which reads again
  * each page the reader had loaded (`withLoadedComments`) - is not merged into it. The merge writes
@@ -1123,11 +1122,11 @@ function useNextPage(
   );
 }
 
-/** How the reading of a read's next pages, or of its older comment pages, for what no page read
- *  yet holds stands (`useReadUntilHeld`, `useReadOlderComments`). */
+/** How the reading of a read's next pages, or of the pages a read the page holds has not loaded,
+ *  for what no page read yet holds stands (`useReadUntilHeld`, `useReadUnloadedPages`). */
 export interface PagesReading {
   /** Whether a page is being read: out, or asked for as the reading's effect runs, or, for the
-   *  older comment pages, waiting on the page's first drawing to be asked for. */
+   *  pages a read has not loaded, waiting on the page's first drawing to be asked for. */
   readonly reading: boolean;
   /** Whether the page the reading last asked for was refused, while the read still names that
    *  page as its next: nothing past it is read until a read of it answers. */
@@ -1174,70 +1173,83 @@ export function useReadUntilHeld(
 }
 
 /**
- * Reads the older comment pages of the outline read the page holds (R15), one at a time, while
- * `wants` says its answer lacks what a reader names that an older page may hold (decision 563
- * (4)): the comment an address names once the next pages are read to their end; or the node a
- * `?node=` address names once neither Conversation's read nor Graph's holds it (`slots/body.tsx`).
- * Each page merged draws the page again, and the caller says again whether it still wants one,
- * so the reading ends with the page that brings what it named, or with the last one: the answer
- * then names no `comments_before`. It asks for no page before the page has drawn the answer that
- * names what it wants (`useDrawnWith`), so a load reads no older page (decision 538). Each page is
- * the one the controls read (`readOlderComments`), so a press, another reader, or this one asking
- * for a page that is out joins it. A page refused stops the reading at that page, and the hook
- * answers it refused for as long as the answer names that page as its next, as
- * `useReadUntilHeld` answers a refused cursor: the controls above the outline and at the foot of
- * the Contents list read it again, and once it answers the reading goes on. Answers whether it is
- * still reading, which the address's landing waits on as on the next pages.
+ * Reads the pages a read the page holds has not loaded (R15), one at a time, while `wants` says
+ * its answer lacks what a reader names that such a page may hold (decisions 563 (4) and 574 (B)):
+ * the Change of a decision the outline marks as one that may stand on a page not loaded
+ * (`tree-drafts.ts`' `changeUnread`), which the header's count and the count of the Decisions
+ * view's review list hold out of what waits on the reader until it is read; the comment an
+ * address names once the next pages are read to their end; or the node a `?node=` address names
+ * once neither Conversation's read nor Graph's holds it (`slots/body.tsx`). The read is the one
+ * the caller draws or counts from: the decisions view read where the caller gives its answer
+ * (`view`), as the header's count and the Decisions view do wherever the page holds it
+ * (`useDecisionsView`), since the server pages that read's walk and its comments as it pages the
+ * outline's; and else the outline read the page holds. It reads the next pages first, while the
+ * answer names one (`cursor`), each by `readNextTreePage`, the path an address's reading and the
+ * control after a view's last row take (`useReadUntilHeld`, `useNextViewPage`), and then the
+ * older comment pages, while it names one (`comments_before`), each by `readOlderComments`, the
+ * page the controls read. So a press, another reader, or this one asking for a page that is out
+ * joins it. Each page merged draws the page again, and the caller says again whether it still
+ * wants one, so the reading ends with the page that brings what it named, or once the answer
+ * names neither page. It asks for no page before the page has drawn the answer that names what
+ * it wants (`useDrawnWith`), so a load reads no page past its first (decision 538), and none from
+ * an answer the read's query no longer holds: the decisions view's answer a Keep's or a Change's
+ * drop took, which the Decisions view draws while the read the drop started is out
+ * (`dropViews`). A page refused stops the reading at that page, and the hook answers it refused
+ * for as long as the answer names that page as its next, as `useReadUntilHeld` answers a refused
+ * cursor: the control after the outline's or the view's last row, and the controls above the
+ * outline and at the foot of the Contents list, read it again, and once it answers the reading
+ * goes on. Answers whether it is still reading, which the address's landing waits on as on the
+ * next pages.
  */
-export function useReadOlderComments(
+export function useReadUnloadedPages(
   issue: IssueDetails,
-  wants: (answer: TreeAnswer) => boolean
+  wants: (answer: TreeAnswer) => boolean,
+  view?: TreeAnswer
 ): PagesReading {
-  const {
-    choice: { outline },
-    read: { data: answer },
-  } = useOutlineRead(issue.key);
-  return useReadCommentPages(issue.key, outline, answer, answer !== undefined && wants(answer));
+  const queryClient = useQueryClient();
+  const choice = useOutlineChoice();
+  const { outline } = choice;
+  // The outline read, watched and never sent: the page sends it (`useTreeRead`), and a caller
+  // that sends none of its reads, the Decisions view's seam, sends none here either.
+  const tree = useQuery({ ...observedOutline(issue.key, choice), enabled: false }).data;
+  // The read the caller draws or counts from, and its answer.
+  const read: CommentRead | undefined = view === undefined ? outline : "decisions";
+  const answer = view ?? tree;
+  const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
+  const before = answer === undefined ? undefined : olderCommentsBefore(answer);
+  // The page read next, by the read it is read from and what it reads from: the next page while
+  // the answer names one, then the next older comment page.
+  const page =
+    read === undefined
+      ? undefined
+      : cursor !== undefined
+        ? `${issue.key} ${read} cursor ${cursor}`
+        : before === undefined
+          ? undefined
+          : `${issue.key} ${read} before ${before}`;
+  // The page that was refused, past which nothing is read.
+  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
+  const named = answer !== undefined && page !== undefined && wants(answer);
+  const drawn = useDrawnWith(named);
+  const refused = named && page === refusedAt;
+  const reading = named && !refused;
+  const next = cursor !== undefined;
+  useEffect(() => {
+    if (!reading || !drawn || read === undefined || page === undefined) return;
+    // The dropped Decisions answer may still be drawn, but cannot start a page read.
+    const { queryKey } = pagedQuery(issue.key, read, undefined);
+    if (queryClient.getQueryData(queryKey) !== answer) return;
+    // A next page's read answers whether it merged one, which the reading does not read: each
+    // page merged draws the page again, and the caller says again whether it still wants one.
+    const asked: Promise<unknown> = next
+      ? readNextTreePage(queryClient, issue.key, read)
+      : readOlderComments(queryClient, issue.key, read);
+    asked.catch(() => setRefusedAt(page));
+  }, [answer, drawn, issue.key, next, page, queryClient, read, reading]);
+  return { reading, refused };
 }
 
 type CommentRead = Outline | "decisions";
-
-/** Reads older pages for a possible Change (`changeUnread`) from the same read the caller
- *  draws or counts: the decisions view if held, otherwise the current outline. */
-export function useReadOlderDecisionComments(
-  key: string,
-  answer: TreeAnswer | undefined,
-  wanted: boolean,
-  viewHeld: boolean
-): void {
-  const { outline } = useOutlineChoice();
-  useReadCommentPages(key, viewHeld ? "decisions" : outline, answer, wanted);
-}
-
-function useReadCommentPages(
-  key: string,
-  read: CommentRead | undefined,
-  answer: TreeAnswer | undefined,
-  wanted: boolean
-): PagesReading {
-  const queryClient = useQueryClient();
-  const before = answer === undefined ? undefined : olderCommentsBefore(answer);
-  const position =
-    wanted && read !== undefined && before !== undefined ? `${key} ${read} ${before}` : undefined;
-  // The position whose page was refused, past which nothing is read.
-  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
-  const drawn = useDrawnWith(position !== undefined);
-  const refused = position !== undefined && position === refusedAt;
-  const reading = position !== undefined && !refused;
-  useEffect(() => {
-    if (!reading || !drawn || read === undefined) return;
-    // The dropped Decisions answer may still be drawn, but cannot start a page read.
-    const { queryKey } = pagedQuery(key, read, undefined);
-    if (queryClient.getQueryData(queryKey) !== answer) return;
-    readOlderComments(queryClient, key, read).catch(() => setRefusedAt(position));
-  }, [answer, drawn, key, position, queryClient, read, reading]);
-  return { reading, refused };
-}
 
 /** Whether the page has drawn a frame since a render in which `held` held: from the browser's
  *  next animation frame after that render, once it is painted (the task that frame queues), for as
@@ -1283,6 +1295,8 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
  *   which never cancels a read in flight - a walk of many pages is not started over by each event
  *   of a burst - reads a query that is out once more when it settles, and starts one at most once
  *   a second, and marks stale a view no filter has on, which is read when its filter is next on;
+ *   but the events of the block index catching up (`artifact.indexed`) of one issue are read once
+ *   for each burst they come in (`indexed-refresh.ts`' `indexedTreeTarget`);
  * - every write of the issue the write store makes - one whose request's path names the issue,
  *   or whose surface names it (`WriteSpec.issue`) - holds the tree and its views from going out to
  *   landing or refusal (`onIssueWrite`). A write of another issue, or one naming none, holds

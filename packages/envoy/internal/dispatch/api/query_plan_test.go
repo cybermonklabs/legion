@@ -112,6 +112,13 @@ func TestCommentQueriesAvoidSequentialCommentsScan(t *testing.T) {
 			args: append((threadPage{limit: 20}).args("TEST-1"), "", "in"),
 		},
 		{
+			// The validator of a comment list or page read with ?node_anchor=true reads the nodes
+			// the issue's comments are anchored on, and seeks those comments by an index.
+			name: "read the node-anchored comment list's basis",
+			sql:  issueNodeAnchoredCommentListBasis,
+			args: []any{"TEST-1"},
+		},
+		{
 			name: "load comment reply chain",
 			sql:  fmt.Sprintf(replyChainQuery, "reply_to"),
 			args: []any{"10000000-0000-0000-0000-000000000001"},

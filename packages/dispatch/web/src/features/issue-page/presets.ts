@@ -23,7 +23,8 @@ import {
   type Preset,
 } from "./page-words";
 import { storedReading } from "./stored-reading";
-import { isForeign, nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
+import { nextTreeCursor } from "./tree-read/comment-positions";
+import { isForeign, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -907,8 +908,10 @@ export interface PresetSignal {
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. The decisions' flag
-   *  is a count over the read Decisions' count is read from, so it carries "+" exactly where
-   *  that count does (`more`, R15); the failing checks' flag carries none. */
+   *  is a count over the read Decisions' count is read from: the decisions known to wait, with
+   *  "+" exactly where that count carries it (`more`, R15) and where a decision of the review list
+   *  waits on no reader for the mark of a Change on a page not read yet (decision 580, "0+" where
+   *  every one does); the failing checks' flag carries none. */
   readonly flag?: {
     readonly count: number;
     readonly more?: true;
@@ -942,7 +945,9 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
  *  and its flag are that read's, with "+" only where it names a next page itself; and `root`
  *  until then, with "+" while the tree read names one (R15): either way the "+" of the tree it is
  *  counted off (`TreeNode.moreToRead`), which the read it was built from sets by its cursor. Its
- *  flag of what waits for review is a count over the same read, and carries the same "+". */
+ *  flag of what waits for review is a count over the same read, and carries the same "+", and
+ *  "+" too while a decision of the review list carries the mark of a Change on a page not read
+ *  yet (`TreeNode.waitingUnread`, decision 580). */
 export function filterSignals(
   root: TreeNode,
   query: string,
@@ -982,14 +987,22 @@ export function filterSignals(
   // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
+  // The decisions of that list that would wait but for the mark of a Change on a page not read
+  // yet (`TreeNode.waitingUnread`): the flag's number, the decisions known to wait, counts none of
+  // them, and the flag draws "+" while any stands, as while the read names a next page, and "0+"
+  // where every decision of the list carries the mark (decision 580).
+  const marked = countOf(decisions.root, "decision", (node) => node.waitingUnread === true);
   // Each ask and each decision is one entry of the count: a person's decision is the answered
   // ask itself (`decision-nodes.ts`' `decisionNodes`), so no decision node restates an answer,
   // and a decision under an answered question is an agent's own that settles it.
   const decisionsMore = decisionsRoot.moreToRead === true ? { more: true as const } : {};
+  const flagMore = marked > 0 ? { more: true as const } : decisionsMore;
   return {
     decisions: {
       count: decisions.matches,
-      ...(toReview === 0 ? {} : { flag: { count: toReview, ...decisionsMore, word: "to_review" } }),
+      ...(toReview === 0 && marked === 0
+        ? {}
+        : { flag: { count: toReview, ...flagMore, word: "to_review" } }),
       ...decisionsMore,
     },
     plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },

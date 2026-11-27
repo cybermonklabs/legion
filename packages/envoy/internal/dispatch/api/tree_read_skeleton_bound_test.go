@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testbaseline"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -268,8 +269,10 @@ func skeletonListener(t *testing.T) string {
 
 // skeletonDatabase creates an empty database for this run alone on the server
 // DISPATCH_TEST_DATABASE_URL names and answers its URL; it is dropped when the test ends. It is
-// empty because the release before migrates it itself. The variable unset fails the run, since a
-// skipped measurement reads as one that held.
+// empty because the release before migrates it itself. Both builds serve it, the release before
+// and then this head, and it runs with JIT off (testdb.WithoutJIT), as production's database
+// does, whatever the server sets (docs/testing.md, "A database a Go test creates"). The variable
+// unset fails the run, since a skipped measurement reads as one that held.
 func skeletonDatabase(t *testing.T) string {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv(storetest.DatabaseURLEnv))
@@ -297,6 +300,9 @@ func skeletonDatabase(t *testing.T) string {
 		t.Fatalf("create the run's database: %v", err)
 	}
 	t.Cleanup(func() { dropSkeletonDatabase(t, admin.String(), name) })
+	if _, err := conn.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the run's database %s: %v", name, err)
+	}
 	own := *server
 	own.Path = "/" + name
 	t.Logf("the run's database is %s", name)
@@ -777,10 +783,11 @@ type skeletonDatabaseTime struct {
 }
 
 // newSkeletonStatements opens what database time is read with, for the run's database at
-// databaseURL: a database of its own beside it, dropped when the test ends, holding the extension.
-// Where pg_stat_statements cannot be read the run fails, printing that database time was not
-// measured and why, because two of the bounds hold on it. runConn is the test's own connection to
-// the run's database, which `show jit` is read over.
+// databaseURL: a database of its own beside it, dropped when the test ends, holding the extension,
+// with JIT off as every database a test creates (testdb.WithoutJIT). Where pg_stat_statements
+// cannot be read the run fails, printing that database time was not measured and why, because two
+// of the bounds hold on it. runConn is the test's own connection to the run's database, which
+// `show jit` is read over.
 func newSkeletonStatements(t *testing.T, databaseURL string, runConn *pgx.Conn) *skeletonStatements {
 	t.Helper()
 	unmeasured := func(format string, args ...any) *skeletonStatements {
@@ -802,12 +809,16 @@ func newSkeletonStatements(t *testing.T, databaseURL string, runConn *pgx.Conn) 
 	if err != nil {
 		return unmeasured("connect to the test server: %v", err)
 	}
-	_, err = conn.Exec(ctx, "create database "+own+" strategy file_copy")
-	_ = conn.Close(ctx)
-	if err != nil {
+	if _, err = conn.Exec(ctx, "create database "+own+" strategy file_copy"); err != nil {
+		_ = conn.Close(ctx)
 		return unmeasured("create %s, the database the snapshots are read from: %v", own, err)
 	}
 	t.Cleanup(func() { dropSkeletonDatabase(t, admin.String(), own) })
+	_, err = conn.Exec(ctx, testdb.WithoutJIT(own))
+	_ = conn.Close(ctx)
+	if err != nil {
+		return unmeasured("turn JIT off on %s, the database the snapshots are read from: %v", own, err)
+	}
 	s := &skeletonStatements{}
 	if s.conn, err = pgx.Connect(ctx, statements.String()); err != nil {
 		return unmeasured("connect to %s: %v", own, err)

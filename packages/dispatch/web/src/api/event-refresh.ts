@@ -2,6 +2,7 @@ import { isIdPrefix } from "@legion/contracts";
 import { hashKey, type Query, type QueryCache, type QueryClient } from "@tanstack/react-query";
 
 import { askProject } from "../features/inbox/list-row";
+import { indexedTreeTarget } from "../features/issue-page/tree-read/indexed-refresh";
 import { routeItem } from "../features/refs/block-reference";
 import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
@@ -395,9 +396,10 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   rank: MOVED_BY_NO_WRITE,
   state: MOVED_BY_NO_WRITE,
   visibility: MOVED_BY_NO_WRITE,
-  // A block's, an ask's, a decision's, a result's and a check's members, which no issue's node
-  // carries.
+  // A block's, an ask's (with the block its anchor names), a decision's, a result's and a check's
+  // members, which no issue's node carries.
   ask: MOVED_BY_NO_WRITE,
+  block_anchor: MOVED_BY_NO_WRITE,
   block_id: MOVED_BY_NO_WRITE,
   check: MOVED_BY_NO_WRITE,
   decision: MOVED_BY_NO_WRITE,
@@ -947,6 +949,8 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
     // event of a child moves can be in the outline (`["issue-tree", key]`) and in no view yet: a
     // child's first check serving the issue's requirement.
     when: (data, query, client) => {
+      // The issue's own tree and views are told of its event by their own target (`issueTreeKey`).
+      if (query.queryKey[1] === key) return false;
       const issues = above(client);
       const view = query.queryKey[2];
       if (
@@ -1931,7 +1935,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   // something draws it and marked stale where nothing does. A person's edit notice is not one of
   // them: it moves no node the tree or a view draws (its branch below).
   if (event.type !== "artifact.human_edited") {
-    targets.push({ queryKey: issueTreeKey(key) });
+    targets.push(
+      event.type === "artifact.indexed" ? indexedTreeTarget(key) : { queryKey: issueTreeKey(key) }
+    );
   }
   // A tree holds nodes of other issues as well, and is told of their events the same way: every
   // tree or view whose answer holds a node of the issue, or a node standing under one, that the

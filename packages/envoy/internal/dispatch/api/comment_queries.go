@@ -20,8 +20,8 @@ import (
 
 // listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored
 // in one of its documents. Under order=activity it answers threads, and the artifact scope
-// applies to the root so the page keeps its replies. With ?node_anchor=true it answers each
-// comment of the list with the member node_anchor (answerNodeAnchoredComments).
+// applies to the root so the page keeps its replies. With ?node_anchor=true each comment of the
+// list or of the page carries the member node_anchor (answerCommentList).
 func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -32,11 +32,7 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner, artifactFilter := issueOwner(r.PathValue("key")), strings.TrimSpace(r.URL.Query().Get("artifact"))
-	if nodeAnchors {
-		s.answerNodeAnchoredComments(w, r, owner, artifactFilter)
-		return
-	}
-	s.answerCommentList(w, r, owner, artifactFilter, r.PathValue("key"))
+	s.answerCommentList(w, r, owner, artifactFilter, r.PathValue("key"), nodeAnchors)
 }
 
 // wantsNodeAnchors reports whether the request asks for the member node_anchor on each comment
@@ -57,56 +53,72 @@ func wantsNodeAnchors(r *http.Request) (bool, error) {
 
 // nodeAnchoredComment is a comment as a read asked with ?node_anchor=true answers it: the comment
 // as every read shapes it, and, where its anchor names a node or a block, node_anchor
-// (model.CommentNodeAnchor).
+// (model.CommentNodeAnchor). The comment page's rows hold it whether or not the read asked
+// (commentThreadRow); without the parameter NodeAnchor is nil, which the encoding leaves out.
 type nodeAnchoredComment struct {
 	shapedComment
 	NodeAnchor *model.CommentNodeAnchor `json:"node_anchor,omitempty"`
 }
 
-// answerNodeAnchoredComments answers an issue's comment list asked with ?node_anchor=true: the
-// comments answerCommentList answers, in its order, each with its node_anchor (loadNodeAnchors).
-// It carries no ETag and keeps no answer: a node anchor names its node's state, which a write of
-// that node moves without writing a comment row, so the list's watermark, which only a write of a
-// comment raises, cannot stand behind it.
-func (s *server) answerNodeAnchoredComments(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter string) {
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	anchors, err := loadNodeAnchors(r.Context(), s.deps.Store.Pool, comments)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	shaped := shapedComments(comments, reader)
-	reader.resolve()
+// nodeAnchoredComments is shaped, comments read for a caller that sent ?node_anchor=true, each
+// with its node_anchor from anchors (loadNodeAnchors), in the same order. shaped's display trees
+// are resolved first, since each comment is copied here.
+func nodeAnchoredComments(shaped []shapedComment, anchors map[string]*model.CommentNodeAnchor) []nodeAnchoredComment {
 	reads := make([]nodeAnchoredComment, len(shaped))
 	for index := range shaped {
 		reads[index] = nodeAnchoredComment{shapedComment: shaped[index], NodeAnchor: anchors[shaped[index].ID]}
 	}
-	WriteJSON(w, http.StatusOK, reads)
+	return reads
 }
 
-// nodeAnchorsStatement is the node each comment $1 names whose anchor names one: a node anchor's
-// node (comments.node_anchor), and a document anchor's block, addressed as the block index
-// addresses it (graphstore.AnchorBlockAddressSQL), with the node's state, live where the store
-// holds no row of it, the anchor's quote, its occurrence, null for a document anchor, which stores
-// none, and its orphaned mark as stored.
-var nodeAnchorsStatement = `
-	select c.id::text, named.kind, named.id, coalesce(n.state, '` + graphstore.StateLive + `'),
-	       coalesce(case when c.node_anchor is not null then c.node_anchor->>'quote' else c.anchor->>'quote' end, ''),
-	       case when c.node_anchor is not null then (c.node_anchor->>'occurrence')::int end,
-	       coalesce(case when c.node_anchor is not null then (c.node_anchor->>'orphaned')::boolean
-	                     else (c.anchor->>'orphaned')::boolean end, false)
-	from comments c
+// commentAnchorNodeSQL joins to the comments row c, as the lateral `named`, the node its anchor
+// names - a node anchor's node (comments.node_anchor), and a document anchor's block, addressed as
+// the block index addresses it (graphstore.AnchorBlockAddressSQL), its id null where the anchor
+// names none - and that node's graph_nodes row as n, missing where the store holds none.
+// anchoredNodeStateSQL is the state such a node answers: its row's, live where there is none.
+var (
+	commentAnchorNodeSQL = `
 	cross join lateral (
 		select case when c.node_anchor is not null then c.node_anchor->>'node_kind' else '` + refs.BlockNodeKind + `' end as kind,
 		       case when c.node_anchor is not null then c.node_anchor->>'node_id' else ` + graphstore.AnchorBlockAddressSQL("c") + ` end as id
 	) named
-	left join graph_nodes n on n.kind = named.kind and n.id = named.id
+	left join graph_nodes n on n.kind = named.kind and n.id = named.id`
+	anchoredNodeStateSQL = `coalesce(n.state, '` + graphstore.StateLive + `')`
+)
+
+// nodeAnchorsStatement is the node each comment $1 names whose anchor names one
+// (commentAnchorNodeSQL), with the node's state (anchoredNodeStateSQL), the anchor's quote, its
+// occurrence, null for a document anchor, which stores none, and its orphaned mark as stored.
+var nodeAnchorsStatement = `
+	select c.id::text, named.kind, named.id, ` + anchoredNodeStateSQL + `,
+	       coalesce(case when c.node_anchor is not null then c.node_anchor->>'quote' else c.anchor->>'quote' end, ''),
+	       case when c.node_anchor is not null then (c.node_anchor->>'occurrence')::int end,
+	       coalesce(case when c.node_anchor is not null then (c.node_anchor->>'orphaned')::boolean
+	                     else (c.anchor->>'orphaned')::boolean end, false)
+	from comments c` + commentAnchorNodeSQL + `
 	where c.id = any($1::uuid[]) and named.id is not null`
+
+// issueAnchoredNodesSQL is SQL text answering text: the md5 of the node each comment of the issue
+// $1 names by its anchor and of that node's state, as nodeAnchorsStatement answers them, one line
+// per comment in the order of its id, and the empty text where no comment's anchor names a node.
+// These are the two parts of a node_anchor that no comment row holds (answerCommentList). It
+// reaches the comments as the tree read reaches the issue's comments on text
+// (textCommentsStatement): those anchored in a document of the issue through that document
+// (comments_anchor_artifact), since an issue's comment is anchored in a document of its own issue
+// alone (loadAnchorArtifact), and those on a node through the issue's comments that hold a node
+// anchor (comments_issue_node_anchor), rather than through every comment of the issue.
+var issueAnchoredNodesSQL = `(
+	select coalesce(md5(string_agg(c.id::text || ' ' || named.kind || ' ' || named.id || ' ' || ` + anchoredNodeStateSQL + `,
+	                               E'\n' order by c.id)), '')
+	from (
+		select c.id, c.anchor, c.node_anchor from artifacts a
+		join comments c on (c.anchor->>'artifact_id')::uuid = a.id
+		where a.issue_key = $1 and c.issue_key = $1
+		union all
+		select c.id, c.anchor, c.node_anchor from comments c
+		where c.issue_key = $1 and c.node_anchor is not null
+	) c` + commentAnchorNodeSQL + `
+	where named.id is not null)`
 
 // loadNodeAnchors is the node_anchor of each of comments whose anchor names a node or a block
 // (nodeAnchorsStatement), by comment id, read through q in one statement. A comment's row read
@@ -175,9 +187,20 @@ func loadNodeAnchors(ctx context.Context, q queryer, comments []model.Comment) (
 // hashes the same stamp for the same reason (eventFeedETag). A document's list needs none, since
 // its owner is a uuid that never comes back.
 //
+// Under ?node_anchor=true (nodeAnchors) each comment, of the list or of the page, carries its
+// node_anchor (loadNodeAnchors), and the validator hashes the parameter and, beside the rest, the
+// node each comment of the issue names by its anchor and that node's state (issueAnchoredNodesSQL),
+// the two parts of a node_anchor that no comment row holds. A write of a node's state appends no
+// event and writes no comment row (writeNodeState), so neither counter moves for it, and a
+// document anchor's block is spelled from its document's room. The rest of a node_anchor - its
+// quote, its occurrence and its orphaned mark - is the comment's own row, which the watermark
+// covers: the refresh that orphans a node anchor writes that row (docs.RefreshNodeAnchors). With
+// the parameter in the hash, a reader holding the validator of the answer without it is answered
+// this one whole, never 304, and the kept answer, whose key holds its ETag, is never the other's.
+//
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
-func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
+func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string, nodeAnchors bool) {
 	var page *threadPage
 	if owner.IssueKey != nil {
 		// Only the issue route accepts paging parameters.
@@ -188,13 +211,13 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 			return
 		}
 	}
-	basis, err := s.readCommentListBasis(r.Context(), owner)
+	basis, err := s.readCommentListBasis(r.Context(), owner, nodeAnchors)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	etag := s.commentListETag(owner, artifactFilter, basis, trees, page)
+	etag := s.commentListETag(owner, artifactFilter, basis, trees, page, nodeAnchors)
 	if answerNotModified(w, r, etag) {
 		return
 	}
@@ -207,15 +230,9 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	// author must never be the answer kept for the next.
 	var reads any
 	if page == nil {
-		var comments []model.Comment
-		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
-		if err == nil {
-			reader := s.readDisplayTrees(r.Context(), trees)
-			reads = shapedComments(comments, reader)
-			reader.resolve()
-		}
+		reads, err = s.readCommentList(r.Context(), owner, artifactFilter, trees, nodeAnchors)
 	} else {
-		reads, err = s.readCommentThreadPage(r.Context(), *owner.IssueKey, artifactFilter, *page, trees)
+		reads, err = s.readCommentThreadPage(r.Context(), *owner.IssueKey, artifactFilter, *page, trees, nodeAnchors)
 	}
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -229,37 +246,79 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	s.writeListAnswer(w, key, encoded, basis.ownerHeld)
 }
 
+// readCommentList is the comments of owner, scoped by artifactFilter, as the list answers them,
+// read as everyReader (answerCommentList): each shaped as the dashboard reads it, and under
+// nodeAnchors each with its node_anchor (nodeAnchoredComments).
+func (s *server) readCommentList(ctx context.Context, owner owner, artifactFilter string, trees, nodeAnchors bool) (any, error) {
+	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, everyReader, owner, artifactFilter)
+	if err != nil {
+		return nil, err
+	}
+	var anchors map[string]*model.CommentNodeAnchor
+	if nodeAnchors {
+		if anchors, err = loadNodeAnchors(ctx, s.deps.Store.Pool, comments); err != nil {
+			return nil, err
+		}
+	}
+	reader := s.readDisplayTrees(ctx, trees)
+	shaped := shapedComments(comments, reader)
+	reader.resolve()
+	if !nodeAnchors {
+		return shaped, nil
+	}
+	return nodeAnchoredComments(shaped, anchors), nil
+}
+
 // commentListBasis is what a comment list's validator is built on (commentListETag), with whether
 // a row holds the list's owner at all.
 type commentListBasis struct {
-	watermark int64     // the list's own counter, which every write the list shows raises
-	lastSeq   int64     // the newest event sequence of the list's owner
-	createdAt time.Time // an issue's, which tells it from every other issue to hold its key
-	ownerHeld bool
+	watermark     int64     // the list's own counter, which every write the list shows raises
+	lastSeq       int64     // the newest event sequence of the list's owner
+	createdAt     time.Time // an issue's, which tells it from every other issue to hold its key
+	anchoredNodes string    // under ?node_anchor=true, the digest of issueAnchoredNodesSQL
+	ownerHeld     bool
 }
 
-// readCommentListBasis reads a comment list's basis in one statement. Each counter reads 0 and
-// the stamp the zero time where no row answers - an owner nothing has written carries no counter,
-// a document has no stamp, and a key no issue holds answers the empty list rather than a refusal,
-// as this route has always done - so a list never written and one whose owner does not exist are
-// one case in the answer. They are two for the server's own keeping: the empty list of an owner no
-// row holds is kept under no key, since that key is the path the caller spelled
-// (writeListAnswer). The issue's row is read once, joined to a one-row table so that a key no
-// issue holds still answers a row.
-func (s *server) readCommentListBasis(ctx context.Context, owner owner) (commentListBasis, error) {
+// issueCommentListBasisSQL is readCommentListBasis's statement of an issue's list: its watermark,
+// its last_seq, its created_at, anchored, SQL text answering the digest of the list's anchored
+// nodes, and whether an issue holds the key. The issue's row is read once, joined to a one-row
+// table so that a key no issue holds still answers a row.
+func issueCommentListBasisSQL(anchored string) string {
+	return `
+		select coalesce((select seq from comment_watermarks where issue_key = $1), 0),
+		       coalesce(i.last_seq, 0), i.created_at, ` + anchored + `, i.key is not null
+		from (values (1)) as one(x) left join issues i on i.key = $1`
+}
+
+// issueCommentListBasis and issueNodeAnchoredCommentListBasis are an issue's list's basis
+// statement for a reader that does not send ?node_anchor=true, which reads no node, and for one
+// that does, which reads the digest of its anchored nodes (issueAnchoredNodesSQL).
+var (
+	issueCommentListBasis             = issueCommentListBasisSQL(`''`)
+	issueNodeAnchoredCommentListBasis = issueCommentListBasisSQL(issueAnchoredNodesSQL)
+)
+
+// readCommentListBasis reads a comment list's basis in one statement, under nodeAnchors with the
+// digest of an issue's anchored nodes; a document's list takes no ?node_anchor
+// (listArtifactComments). Each counter reads 0 and the stamp the zero time where no row answers -
+// an owner nothing has written carries no counter, a document has no stamp, and a key no issue
+// holds answers the empty list rather than a refusal, as this route has always done - so a list
+// never written and one whose owner does not exist are one case in the answer. They are two for
+// the server's own keeping: the empty list of an owner no row holds is kept under no key, since
+// that key is the path the caller spelled (writeListAnswer).
+func (s *server) readCommentListBasis(ctx context.Context, owner owner, nodeAnchors bool) (commentListBasis, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
-		query, value = `
-			select coalesce((select seq from comment_watermarks where issue_key = $1), 0),
-			       coalesce(i.last_seq, 0), i.created_at, i.key is not null
-			from (values (1)) as one(x) left join issues i on i.key = $1
-		`, *owner.IssueKey
+		query, value = issueCommentListBasis, *owner.IssueKey
+		if nodeAnchors {
+			query = issueNodeAnchoredCommentListBasis
+		}
 	case owner.ArtifactID != nil:
 		query, value = `
 			select coalesce((select seq from comment_watermarks where artifact_id = $1), 0),
 			       coalesce((select max(seq) from events where artifact_id = $1), 0),
-			       null::timestamptz,
+			       null::timestamptz, '',
 			       exists(select 1 from artifacts where id = $1)
 		`, *owner.ArtifactID
 	default:
@@ -267,7 +326,7 @@ func (s *server) readCommentListBasis(ctx context.Context, owner owner) (comment
 	}
 	var basis commentListBasis
 	var createdAt *time.Time
-	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&basis.watermark, &basis.lastSeq, &createdAt, &basis.ownerHeld); err != nil {
+	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&basis.watermark, &basis.lastSeq, &createdAt, &basis.anchoredNodes, &basis.ownerHeld); err != nil {
 		return commentListBasis{}, fmt.Errorf("read the comment list's watermark: %w", err)
 	}
 	basis.createdAt = timeOrZero(createdAt)
@@ -280,7 +339,7 @@ func (s *server) readCommentListBasis(ctx context.Context, owner owner) (comment
 // one count never share a validator. An issue's key alone does not name it, since a new issue
 // takes the key of one gone (answerCommentList), so its created_at is written beside the key as
 // eventFeedETag writes it.
-func (s *server) commentListETag(owner owner, artifactFilter string, basis commentListBasis, trees bool, page *threadPage) string {
+func (s *server) commentListETag(owner owner, artifactFilter string, basis commentListBasis, trees bool, page *threadPage, nodeAnchors bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "issue=%s\ncreated=%d\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
 		deref(owner.IssueKey), basis.createdAt.UnixMicro(), deref(owner.ArtifactID), artifactFilter, basis.watermark, basis.lastSeq)
@@ -291,6 +350,9 @@ func (s *server) commentListETag(owner owner, artifactFilter string, basis comme
 		}
 		_, _ = fmt.Fprintf(hash, "order=activity\nlimit=%d\nbefore=%q\nauthor=%q\nperson=%q\n",
 			page.limit, before, page.author, page.person)
+	}
+	if nodeAnchors {
+		_, _ = fmt.Fprintf(hash, "node_anchor=true\nanchored_nodes=%s\n", basis.anchoredNodes)
 	}
 	return s.listETag(hash, trees)
 }

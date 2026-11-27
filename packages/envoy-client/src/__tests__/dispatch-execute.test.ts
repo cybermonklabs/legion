@@ -8789,6 +8789,48 @@ describe("executeDispatchTool", () => {
       );
     });
 
+    // U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR and U+0085 NEXT LINE are left raw by JSON,
+    // and a reader that splits lines the Unicode way (Python's `str.splitlines`) ends a line at
+    // each. The text's asks carry a block id, which is the document writer's text, and the words
+    // and options chosen, which are the answerer's, so each can hold one. Each quoted field (the
+    // block id, the words and each option chosen) escapes all three, so each trailer line is one
+    // line to that reader too.
+    test("escapes line separators in quoted fields from the asks member", async () => {
+      const result = await readDocument({
+        markdown:
+          ':::ask{#q\u2028b urgency="med" multiple="false"}\nWhich?\n\n- A\u0085B: Both\n- C: Neither\n:::\n\n' +
+          ':::ask{#q-drive urgency="med" multiple="false"}\nWhich transport?\n:::',
+        token: "sha256:spec",
+        version: 4,
+        asks: [
+          {
+            block_id: "q\u2028b",
+            state: "answered",
+            answered_by: "dave",
+            answered_at: "2026-11-18T12:07:00Z",
+            selected: ["A\u0085B"],
+            answer: "Yes\u2029no.",
+          },
+          {
+            block_id: "q-drive",
+            state: "answered",
+            answered_by: "bob",
+            answered_at: "2026-11-18T12:05:00Z",
+            selected: [],
+            answer: "Plain HTTP.",
+          },
+        ],
+      });
+      // Split at each character that reader ends a line at and this trailer could hold: a line
+      // feed, a carriage return, U+0085, U+2028 and U+2029.
+      const trailer = result.text.split("\n\n").at(-1) ?? "";
+      expect(trailer.split(/\r\n|[\n\r\u0085\u2028\u2029]/u)).toEqual([
+        "Document token: sha256:spec",
+        'Answered "q\\u2028b" by dave at 2026-11-18T12:07:00Z: "Yes\\u2029no." (chose "A\\u0085B")',
+        'Answered "q-drive" by bob at 2026-11-18T12:05:00Z: "Plain HTTP."',
+      ]);
+    });
+
     test("from the opening lines a Dispatch of the release before writes, which sends no asks", async () => {
       const result = await readDocument({
         markdown:
@@ -8837,17 +8879,17 @@ describe("executeDispatchTool", () => {
     });
 
     // U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are no control characters, and a reader
-    // that splits lines the Unicode way (Python's `str.splitlines`) ends a line at each, as it does
-    // at U+0085. An opener's answerer or time that holds one is taken as none, as one that holds a
-    // control character is, and each quoted field (the block id, the words and each option chosen)
-    // escapes all three, so each trailer line is one line to that reader too. An honest opener
-    // beside them prints its line as before.
-    test("and an opener's answerer or time that holds a line separator is dropped, and each quoted field escapes one", async () => {
+    // that splits lines the Unicode way (Python's `str.splitlines`) ends a line at each. A Dispatch
+    // of the release before writes the answerer and the time on the opener, where the document's
+    // writer can set them too, and an opener's answerer or time that holds one is taken as none, as
+    // one that holds a control character is: with no answerer the ask prints no line, and with no
+    // time it prints its line at an unrecorded time. An honest opener beside them prints its line
+    // as before.
+    test("and drops an opener's answerer or time that holds a line separator", async () => {
       const result = await readDocument({
         markdown:
           ':::ask{#q-by urgency="med" multiple="false" state="answered" answered_by="carol&#x2028;" answered_at="2026-11-18T12:04:00Z" answer="No."}\nShip it?\n:::\n\n' +
           ':::ask{#q-at urgency="med" multiple="false" state="answered" answered_by="carol" answered_at="2026-11-18T12:06:00Z&#x2029;" answer="Later."}\nWhen?\n:::\n\n' +
-          ':::ask{#q\u2028b urgency="med" multiple="false" state="answered" answered_by="dave" answered_at="2026-11-18T12:07:00Z" selected="[&#x22;A&#x85;B&#x22;]" answer="Yes&#x2029;no."}\nWhich?\n:::\n\n' +
           ':::ask{#q-drive urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[]" answer="Plain HTTP."}\nWhich transport?\n:::',
         token: "sha256:spec",
         version: 4,
@@ -8858,7 +8900,6 @@ describe("executeDispatchTool", () => {
       expect(trailer.split(/\r\n|[\n\r\u0085\u2028\u2029]/u)).toEqual([
         "Document token: sha256:spec",
         'Answered "q-at" by carol at an unrecorded time: "Later."',
-        'Answered "q\\u2028b" by dave at 2026-11-18T12:07:00Z: "Yes\\u2029no." (chose "A\\u0085B")',
         'Answered "q-drive" by bob at 2026-11-18T12:05:00Z: "Plain HTTP."',
       ]);
     });

@@ -19,7 +19,8 @@ import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { storedReading } from "./stored-reading";
 import { type Draft, treeContext } from "./tree-drafts";
-import { nextTreeCursor, type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
+import { nextTreeCursor } from "./tree-read/comment-positions";
+import { type TreeWords, treeDraftsFrom } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -237,10 +238,10 @@ export interface TreeNode {
    *  document's line, which the server writes in place of every missing check, so the requirement
    *  is drawn lacking none and says why. Absent where the read holds none. */
   readonly coverageNotes?: readonly string[];
-  /** Whether a Change of this decision may stand on an older comment page than the read holds,
-   *  where it is drawn waiting for review or kept, with no Change (`tree-drafts.ts`'
-   *  `markChangeUnread`): its state word carries "+", as a count with more to read does (R15),
-   *  so it does not read as unchanged. Absent on every other node. */
+  /** Whether a Change of this decision may stand on a page the read has not loaded, a next page
+   *  or an older comment page, where it is drawn waiting for review or kept, with no Change
+   *  (`tree-drafts.ts`' `markChangeUnread`): its state word carries "+", as a count with more to
+   *  read does (R15), so it does not read as unchanged. Absent on every other node. */
   readonly changeUnread?: true;
   /** When its author deleted this comment or message, as its read stores the time
    *  (`deleted_at`); absent on every other node. A deleted post keeps its place in the tree and
@@ -362,6 +363,12 @@ export interface TreeNode {
    *  not resolved. The header's count of what waits puts the focus on the first of them (R13,
    *  `waiting.ts`). */
   readonly waiting: boolean;
+  /** Whether this decision is in the reader's review list and would wait on them but for its
+   *  mark of a Change on a page the read has not loaded (`changeUnread`), so it waits on no
+   *  reader until that page is read. The Decisions control's to-review flag counts it in no
+   *  number, and draws "+" for it (decision 580, `presets.ts`' `filterSignals`). Absent on every
+   *  other node. */
+  readonly waitingUnread?: true;
 }
 
 /** A decision that restates a person's answer (`TreeNode.restatedBy`), by the id the tree would
@@ -748,6 +755,7 @@ export function assemble(
       type: draft.type,
       ...(draft.unsure === undefined ? {} : { unsure: draft.unsure }),
       waiting: draft.waiting,
+      ...(draft.waitingUnread === undefined ? {} : { waitingUnread: draft.waitingUnread }),
     };
   };
   const children = childrenOf(key, [key]);

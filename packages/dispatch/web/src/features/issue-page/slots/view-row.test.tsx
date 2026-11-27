@@ -510,8 +510,10 @@ function decisionsSignal(container: HTMLElement) {
 // its flag of what waits for review read the decisions view read whenever the page holds it,
 // which is whole, with no "+"; until then they read Conversation's read, whose first page here
 // names a next one and holds one of the issue's two waiting decisions, and the count and the
-// flag both carry "+", since the flag is a count over the same read. No read is sent for it: the
-// page holds the view read once the Decisions filter was on.
+// flag both carry "+", since the flag is a count over the same read. While that read names a
+// next page, every waiting decision on it is marked (decision 574 (B)), so the flag reads "0+"
+// (decision 580, amended). No read is sent for it: the page holds the view read once the
+// Decisions filter was on.
 test("the Decisions control counts Conversation's paged read with + until the decisions view read is held, and that read whole after", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -531,7 +533,7 @@ test("the Decisions control counts Conversation's paged read with + until the de
         "the count over a read that names a next page"
       ).toEqual({
         count: "1+",
-        flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}`,
+        flag: ` · 0+ ${FILTER_SIGNAL_WORDS.to_review}`,
       })
     );
     await act(async () => {
@@ -564,7 +566,9 @@ test("the Decisions control counts Conversation's paged read with + until the de
 // since it is a count (part T's R15 holds every count over a paged read)". Once the page holds
 // the decisions view read, the flag is read from it as the count is, and carries "+" exactly
 // where the count does: while that read names a next page itself, whatever Conversation's read
-// names, which here names none. Once the view read answers whole, neither carries it.
+// names, which here names none. While the view read names a next page, every waiting decision
+// on it is marked (decision 574 (B)), so the flag reads "0+" (decision 580, amended). Once the
+// view read answers whole, neither carries it.
 test("the Decisions control's to-review flag carries + while the decisions view read it is read from names a next page", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -592,7 +596,7 @@ test("the Decisions control's to-review flag carries + while the decisions view 
       expect(
         decisionsSignal(view.container),
         "the flag over a decisions view read that names a next page"
-      ).toEqual({ count: "2+", flag: ` · 2+ ${FILTER_SIGNAL_WORDS.to_review}` })
+      ).toEqual({ count: "2+", flag: ` · 0+ ${FILTER_SIGNAL_WORDS.to_review}` })
     );
     await act(async () => {
       client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(decisions));
@@ -613,8 +617,10 @@ test("the Decisions control's to-review flag carries + while the decisions view 
 // R2, R15: Conversation's pages held so far hold two waiting decisions; the Decisions view read's
 // answer, a first page that names a next one, holds the first alone. The later decision stands
 // in the tree that read builds as Conversation's context alone (`useIssueTree.ts`'
-// `viewWithContext`), so the Decisions control counts the read's page, one decision and its
-// flag one to review, each with "+", never the later decision Conversation's pages hold.
+// `viewWithContext`), so the Decisions control counts the read's page, one decision, with "+",
+// never the later decision Conversation's pages hold. While that page names a next one, every
+// waiting decision on it is marked (decision 574 (B)), so the flag reads "0+" (decision 580,
+// amended).
 test("the Decisions control counts no decision Conversation's pages hold and the decisions view read's page does not", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -647,7 +653,7 @@ test("the Decisions control counts no decision Conversation's pages hold and the
       expect(
         decisionsSignal(view.container),
         "the count over the decisions view read's page reads a decision only Conversation's pages hold"
-      ).toEqual({ count: "1+", flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}` })
+      ).toEqual({ count: "1+", flag: ` · 0+ ${FILTER_SIGNAL_WORDS.to_review}` })
     );
   } finally {
     view.unmount();
@@ -662,7 +668,9 @@ test("the Decisions control counts no decision Conversation's pages hold and the
 // view read holds with alice's Change under it, a comment on its text that the view carries as
 // context. The flag is counted over the tree that read builds (`useDecisionsTree`), which finds
 // the Change by the one rule every reader of a Change reads, so `d2` counts among the decisions
-// and not to review, though no page of Conversation's read the page holds carries it.
+// and not to review, though no page of Conversation's read the page holds carries it. While
+// Conversation's first page names a next one, every waiting decision on it is marked (decision
+// 574 (B)), so the flag first reads "0+" (decision 580, amended).
 test("a decision past Conversation's first page with a Change in the decisions view read does not count to review", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -693,7 +701,7 @@ test("a decision past Conversation's first page with a Change in the decisions v
     await waitFor(() =>
       expect(decisionsSignal(view.container), "the count over Conversation's first page").toEqual({
         count: "1+",
-        flag: ` · 1+ ${FILTER_SIGNAL_WORDS.to_review}`,
+        flag: ` · 0+ ${FILTER_SIGNAL_WORDS.to_review}`,
       })
     );
     await act(async () => {

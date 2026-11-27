@@ -1609,19 +1609,22 @@ export class DispatchApiClient {
       : (answer.threads ?? []).flatMap(({ comment, replies }) => [comment, ...(replies ?? [])]);
   }
 
-  /** `GET /api/v1/issues/{key}/comments?order=activity`: one page of the issue's comment threads,
-   *  the newest last activity first, from `query.before` when it names the last page's position;
-   *  `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the route takes them.
-   *  A build from before the page answers the bare list, and the read rejects
+  /** `GET /api/v1/issues/{key}/comments?order=activity&node_anchor=true`: one page of the issue's
+   *  comment threads, the newest last activity first, from `query.before` when it names the last
+   *  page's position; `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the
+   *  route takes them. The read always sends `node_anchor=true`, so each comment, first or reply,
+   *  whose anchor names a node or a block carries its `node_anchor`; a build from before node
+   *  anchors ignores the parameter and answers none, which the member's being optional takes. A
+   *  build from before the page answers the bare list, and the read rejects
    *  (`threadPageNotOffered`). */
   async listCommentThreads(
     key: string,
-    query: ThreadPageQuery<"/api/v1/issues/{key}/comments"> = {}
+    query: Omit<ThreadPageQuery<"/api/v1/issues/{key}/comments">, "node_anchor"> = {}
   ): Promise<CommentThreadPage> {
     const answer = await this.read(
       "/api/v1/issues/{key}/comments",
       { key },
-      { ...query, order: "activity" }
+      { ...query, order: "activity", node_anchor: true }
     );
     if (Array.isArray(answer)) throw threadPageNotOffered();
     return answer;

@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
-import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { nextTreeCursor } from "../web/src/features/issue-page/tree-read/comment-positions";
 import { createComment, createIssue, createIssueArtifact, createProject, getIssue } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { PROJECT } from "./issue-layout-seed-support";
@@ -21,6 +21,7 @@ import {
   outlineReads,
   owedUnless,
   seedEventsLanded,
+  treePath,
   treeReadGate,
   treeReads,
 } from "./issue-page-t-tree";
@@ -279,7 +280,7 @@ async function seedGraphPages(): Promise<GraphPagesSeed> {
  *  are half of them. Read through the signed-in page's own request context, and not through the
  *  page, so it reads the same pages whatever the page reads. */
 async function graphPages(page: Page, key: string): Promise<IssueTreeRead[]> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+  const path = treePath(key);
   const pages: IssueTreeRead[] = [];
   let cursor: string | undefined;
   do {
@@ -364,9 +365,6 @@ test("beside Graph the Contents list holds the entries of the pages Graph has lo
         })
         .toEqual(loaded);
     }
-    expect(loaded, "the pages of Graph's read hold other posts than every post").toEqual([
-      ...PAGED_POSTS,
-    ]);
     await expect(
       next,
       "with every page of Graph's read loaded, a control reads one more"

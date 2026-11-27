@@ -455,7 +455,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // digest recorded before.
 //
 // It moved a sixth time, from ff98e8c680479fa8b9b29a1ff1f44c48b723dcfa7eab0f97bcb36decbbfd8226,
-// when a reply came to hang under the comment it answers (migration 20261125120200): the head-rows
+// when a reply came to hang under the comment it answers (migration 20261127120804): the head-rows
 // statement refs.CommentWrite.Queue sends (graphstore.QueueHeads) reads each comment's answers and
 // writes it into item_answers of issue_head_nodes, where it read replies_to_block into
 // item_replies_to_block. It still writes issue_head_nodes alone, so it marks no document, writes no
