@@ -13,6 +13,7 @@ import {
 } from "@legion/envoy-client/transport";
 import type { RoleRegainReason } from "@legion/pi-shared/role-claim-bridge";
 import { createHandBackLedger } from "./hand-back-ledger";
+import { createListenerReads } from "./listener-reads";
 import type { RoleTopicFollows } from "./role-topics";
 import type { SessionInbound } from "./session-inbound";
 import { createQueue, type RunningTask, refuseStep, type TaskQueue } from "./task-queue";
@@ -904,43 +905,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           "warning"
         );
       },
-      readRoleHolder: async (role) => {
-        guard();
-        return deps
-          .client()
-          .getRole(role)
-          .then(
-            (info) => ({ known: true, holder: info.holder }),
-            (error: unknown) => {
-              // The listener's 404 for a role no live session holds: it names a lapsed holder
-              // where it knows one, and nobody otherwise. Any other failure is no answer at all.
-              if (error instanceof EnvoyApiError && error.details.status === 404) {
-                return { known: true, holder: error.holder };
-              }
-              return { known: false };
-            }
-          );
-      },
-      readInterest: async (sessionID) => {
-        guard();
-        return deps
-          .client()
-          .getInterest(sessionID)
-          .catch(() => undefined);
-      },
-      unregisterTopics: async (sessionID, topics, warnings) => {
-        guard();
-        await deps
-          .client()
-          .unsubscribe({ sessionID, topics: [...topics] })
-          .catch((error: unknown) =>
-            deps.log.warn(isBusUnanswered(error) ? warnings.busUnanswered : warnings.failed, {
-              sessionID,
-              topics,
-              error: messageFor(error),
-            })
-          );
-      },
+      ...createListenerReads({ guard, client: deps.client, log: deps.log }),
       connect,
       subscribe: async (topic) => {
         guard();

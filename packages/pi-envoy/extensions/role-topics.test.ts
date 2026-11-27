@@ -515,14 +515,17 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
       }
     );
     // The role's backlog, stored after the killed process's stamp and before the resume: its
-    // holder's to read, which a resumed session opening the role's topics on its restored stamp
-    // would be shown before its claim was refused.
+    // holder's to read.
     const backlog = await post("left-backlog");
     await waitFor("the role's holder to show the backlog", () => other.shown(backlog));
 
-    // The killed session's id resumes from its whole transcript. The listener names another
-    // holder, so it opens none of the role's topics, and the pass takes the left-over out of its
-    // row.
+    // The killed session's id resumes from its whole transcript. This row checks the end state:
+    // its row loses the role's topic, the taker still holds the role, and it was shown none of
+    // the alerts. That the resume opens nothing where another session holds the role is checked
+    // by `envoy.test.ts`'s "a resumed session opens a recorded role's topics before its first
+    // registration only where no other session holds the role", which reads the first
+    // registration's topics; this row passed with that check removed, because the refused claim
+    // closed the topics before the consumer reached the backlog.
     const resumed = await start("left-2", env);
     await resumed.send({ op: "start", session: holder, branch: transcript });
     await waitFor(

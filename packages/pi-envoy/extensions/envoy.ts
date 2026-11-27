@@ -4272,8 +4272,15 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   const settleRoleTopics = async (
     handle: TaskHandle,
     host: string,
-    wanted?: string
+    branch: readonly unknown[]
   ): Promise<void> => {
+    // The row is read once, where a resume left one to read, and serves both readers: the role
+    // this host wants, whose lane the row may be the only record of, and the role topics the row
+    // still holds that nothing follows. Where none is read, the wanted role is the transcript's
+    // and the launch's alone, and no row sweep is due.
+    const row = roleRowCheck === host ? await handle.readInterest(host) : undefined;
+    handle.check();
+    const wanted = await desiredRole(handle, host, branch, row ?? false);
     const opened = roleTopicFollows.role();
     const unregister = new Set<string>();
     if (
@@ -4283,14 +4290,10 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     ) {
       for (const subject of roleTopicFollows.close()) unregister.add(subject);
     }
-    if (roleRowCheck === host) {
-      const row = await handle.readInterest(host);
-      handle.check();
-      if (row !== undefined) {
-        roleRowCheck = "";
-        for (const topic of row.topics) {
-          if (roleTopics.names(topic) && !followed.has(topic)) unregister.add(topic);
-        }
+    if (row !== undefined) {
+      roleRowCheck = "";
+      for (const topic of row.topics) {
+        if (roleTopics.names(topic) && !followed.has(topic)) unregister.add(topic);
       }
     }
     const baseLeft = await dropRoleSubjects(handle, host, [...unregister]);
@@ -4634,15 +4637,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     handle.check();
     // Every pass, not only a move that decided: a move decides nothing for a session that holds
     // no role and wants none, and the topics a resumed session opened must not outlive the host
-    // move away from it. The role this host wants now decides which opened topics stay: its own,
-    // until it holds or loses it.
-    const wantedNow = await desiredRole(
-      handle,
-      host,
-      context.sessionManager.getBranch?.() ?? [],
-      false
-    );
-    await settleRoleTopics(handle, host, wantedNow);
+    // move away from it.
+    await settleRoleTopics(handle, host, context.sessionManager.getBranch?.() ?? []);
     // The role move above was the last call for every session this process has left, so each
     // one's key pair and token go now (`leftSessions`), whether or not the move decided, but for
     // a session a delivery still holds (`underWay`), which stays for the next pass. The session
@@ -4973,7 +4969,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       // A subscription that lasts beyond any role is the session's own, even on a subject the
       // deployment's role topics already follow: claimed here, the role's end leaves it.
       if (whileHolding === undefined) {
-        for (const subject of expandSubscriptionTopics([topic])) roleTopicFollows.claimOwn(subject);
+        roleTopicFollows.claimOwn(topic);
       }
       // The registration is what tells the listener this session follows the topic, so a
       // subscription is open only once it lands.
@@ -5995,9 +5991,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           let claimed = false;
           for (const topic of requested) {
             (follow(topic) ? added : already).push(topic);
-            for (const subject of expandSubscriptionTopics([topic])) {
-              if (roleTopicFollows.claimOwn(subject)) claimed = true;
-            }
+            if (roleTopicFollows.claimOwn(topic)) claimed = true;
           }
           let warnings: readonly string[] | undefined;
           let registrationError: string | undefined;
@@ -6084,7 +6078,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           // session opened its topics for and is claiming.
           const held = registrationState.heldRole();
           const lastsFor =
-            held !== undefined ? `holds role ${held}` : `claims role ${roleTopicFollows.role()}`;
+            held !== undefined
+              ? `holds role ${held}`
+              : `claims role ${roleTopicFollows.role()?.role}`;
           return toolSuccess(
             kept.length === 0
               ? unsubscribed
