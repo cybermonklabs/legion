@@ -564,8 +564,9 @@ const Actor = z.strictObject({ kind: Name, id: Text });
  *   `stage-job` (`job`) and the checkout root the snapshot was taken from, the run's own
  *   directories written by the names the role was given for them (`source`: `$TMPDIR/stage-a`,
  *   `$LEGION_WORKSPACE`); both absent from a record written before outcome.ts kept them; and the
- *   input bundle path and the report path the role gave `stage-job` (`bundle`, `report`, from
- *   `--bundle` and `--report`), named the same way, each absent where the role gave none;
+ *   staging directory, the input bundle path and the report path the role gave `stage-job`
+ *   (`snapshot`, `bundle`, `report`, from `--snapshot`, `--bundle` and `--report`), named the same
+ *   way, each absent where the role gave none;
  * - envoy: an Envoy message the role sent with its Envoy tool and the tool answered without error,
  *   `publish` (envoy_publish) or `send` (envoy_send), by the tool's name or as a `write` to its
  *   `xd://` device: the topic it published to or the session it sent to (`target`), and the call's
@@ -608,6 +609,7 @@ const DETAILS = {
     files: z.array(Text).min(1),
     job: Text.optional(),
     source: Text.optional(),
+    snapshot: Text.optional(),
     bundle: Text.optional(),
     report: Text.optional(),
   },

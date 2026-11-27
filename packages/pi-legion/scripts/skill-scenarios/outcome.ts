@@ -69,6 +69,7 @@ const StageLine = z.object({
   files: z.array(z.string()),
   job: z.string().optional(),
   source: z.string().optional(),
+  snapshot: z.string().optional(),
   bundle: z.string().optional(),
   report: z.string().optional(),
 });

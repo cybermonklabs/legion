@@ -5355,7 +5355,7 @@ The driver writes the fallback receipt only when it wrote no receipt for the run
 A run that is not `HARNESS` writes `<outcome id>/effects.json` too, whose `diverged` entries name each difference in call order: the daemon answer's place among `answers` (`seq`), its `route`, the original call's tool call id (`call`) and the `outcome.json` action of the stand-in's answer (`outcomeSeq`), and the stand-in's and the daemon's status and refusal code.
 Neither file is ever written over, and the replay writes no answers file.
 
-A lane R run's `outcome.json` holds, beside the actions of the kinds above (`daemon`, `dispatch`, `github`, `push`, `staging`), five kinds that lane D carries and never replays, a `workspace` field, a `documents` field, and four fields of a `staging` action.
+A lane R run's `outcome.json` holds, beside the actions of the kinds above (`daemon`, `dispatch`, `github`, `push`, `staging`), five kinds that lane D carries and never replays, a `workspace` field, a `documents` field, and five fields of a `staging` action.
 All are additive: a record without them parses and means what it meant.
 
 - `envoy`: an Envoy message that the role sent with `envoy_publish` or `envoy_send` (by the tool's name, or as a `write` to `xd://envoy_publish` or `xd://envoy_send`), read from the role's transcript.
@@ -5389,7 +5389,7 @@ All are additive: a record without them parses and means what it meant.
   Neither is a `git show` whose every object is a file or a tree of a revision (`git show HEAD:README.md`), which prints that file and no diff.
 
 - `staging` also holds `job`, the name given to `stage-job`, and `source`, the checkout root the snapshot was taken from, written with the run's own directories replaced by the names the role was given for them (`$TMPDIR/stage-a`, `$LEGION_WORKSPACE`).
-  It holds `bundle` and `report` too, the input bundle and the report path the role gave `stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]`, named the same way, whether or not the path exists, and each absent where the role gave none.
+  It holds `snapshot`, `bundle` and `report` too, the staging directory, the input bundle and the report path the role gave `stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>]`, named the same way, whether or not the path exists, and each absent where the role gave none.
   `stage-job` runs no Job.
 
 - `workspace` is each jj operation of the run's workspace in the order it ended, from `workspace-ops.jsonl`: when it ended, its description, and the commits `@-` named in its view, as the world's commit ids where the world names them.
@@ -5411,7 +5411,7 @@ Where a trace states `documents`, the control reads each document back from the 
 The replay makes no document write yet, so a trace that writes one is `HARNESS` before that check.
 `internal/daemon/testdata/teardown-effects/carried-kinds-cases.json` is T0's example with actions of the five kinds among the actions of its four traces, each trace numbered again from 1 (its `.command` says how it was made):
 `--controls --cases` on it must write the same four `replay.json` and `effects.json`, each `ok`, with P05's completion at action 10 of its known-good trace and 8 of its known-bad one, P10's reports at actions 5 and 7, and P10's known-bad comment at action 3.
-`heldout-reader.ts` gives the reader each such action, `workspace` and `documents` under the same fresh ids and shuffle as the other records, and adds `CARRIED_INSTRUCTION` to its instruction only where an item holds one of them, or a staging action's `job`, `source`, `bundle` or `report`.
+`heldout-reader.ts` gives the reader each such action, `workspace` and `documents` under the same fresh ids and shuffle as the other records, and adds `CARRIED_INSTRUCTION` to its instruction only where an item holds one of them, or a staging action's `job`, `source`, `snapshot`, `bundle` or `report`.
 A record that stops short of the run's end holds a document only where the document's last write is among the actions it holds.
 
 A case's world also holds typed parts that a read a role makes through a tool answers from:
