@@ -763,6 +763,63 @@ func TestTheSplitterReadsTheReadFromEitherLayout(t *testing.T) {
 	}
 }
 
+// The approve list, #5239's approveScopeRoutes, is the second fact the old layout wrote as a list
+// of keys rather than as a map entry: every route an approve-only token may call, which is the
+// declaration's ApproveOnly field. A branch that holds the list adopts with that field set on its
+// routes and on no others. The control is the same tree without the list, where no route states
+// the field: that is what this splitter wrote for every branch before this test, and it is why
+// main's own route files were written without it.
+func TestTheSplitterReadsTheApproveList(t *testing.T) {
+	t.Parallel()
+	const (
+		listed   = "/api/v1/signins/{id}/revoke"
+		unlisted = "/api/v1/me/agent-tokens"
+	)
+	table := fixture(t, "testdata/main_routes_table.go.txt")
+	withList := strings.Replace(table, "var routeScopes = map[string]routeScopeSet{",
+		"var approveScopeRoutes = []string{\n\t\"POST "+listed+"\",\n}\n\nvar routeScopes = map[string]routeScopeSet{", 1)
+	if withList == table {
+		t.Fatal("the fixture holds no routeScopes map to write the approve list above")
+	}
+	split := func(t *testing.T, content string) map[string][]byte {
+		t.Helper()
+		files, err := splitOldLayout(oneFileTree{
+			tableFile: content, shapesFile: fixture(t, "testdata/main_routes_shapes.go.txt"),
+			"read_classes.go": fixture(t, "testdata/old_read_classes.go.txt"), "going_paths.go": goingPathsFile,
+		})
+		if err != nil {
+			t.Fatalf("split: %v", err)
+		}
+		return files
+	}
+	route := func(t *testing.T, files map[string][]byte, pattern string) string {
+		t.Helper()
+		name, err := routeFileName("POST", pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, written := files[name]
+		if !written {
+			t.Fatalf("the split wrote no %s", name)
+		}
+		return string(content)
+	}
+	listedFiles := split(t, withList)
+	if got := route(t, listedFiles, listed); !strings.Contains(got, "ApproveOnly: true") {
+		t.Errorf("a route the approve list names was written without ApproveOnly:\n%s", got)
+	}
+	if got := route(t, listedFiles, unlisted); strings.Contains(got, "ApproveOnly") {
+		t.Errorf("a route the approve list does not name was written with ApproveOnly:\n%s", got)
+	}
+	// The control: the same table with no approve list states the field nowhere, so the field
+	// above came from the list and not from the route.
+	for name, content := range split(t, table) {
+		if strings.Contains(string(content), "ApproveOnly") {
+			t.Errorf("%s states ApproveOnly though the table holds no approve list:\n%s", name, content)
+		}
+	}
+}
+
 // mainMovesOn gives main a commit past the branch's merge base and checks the branch out again: a
 // merge of main is then a real merge, which `git merge --no-commit` leaves in progress, so a step
 // that merged before it refused would leave MERGE_HEAD behind.

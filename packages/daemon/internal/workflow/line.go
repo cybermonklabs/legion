@@ -34,6 +34,9 @@ type Walk struct {
 	Text string
 	// Steps are the task's steps, by place from 1: todaysSteps where the run has no plan rows.
 	Steps []record.PlanStep
+	// Needs are the tasks the task needs, each by its id (record.PlanTask.Needs), which the run's
+	// plan node carries (planNode); nil where it needs none or the run has no plan rows.
+	Needs []string
 	// Line is the phases the task walks: one for each step, then retro and merging.
 	Line []phase.Phase
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
@@ -96,7 +99,7 @@ func readWalk(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 	if at := slices.Index(line, ""); at >= 0 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
-	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
+	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Needs: task.Needs, Line: line, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, Version: stored.Version}, nil
 }
 

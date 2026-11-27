@@ -57,10 +57,11 @@ func slotFreeNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) bool {
 	t.Helper()
 	var free bool
 	inTx(t, pool, func(tx pgx.Tx) {
-		var err error
-		if free, err = admission.slotFree(context.Background(), tx); err != nil {
+		judged, err := admission.finalJudgement(context.Background(), tx)
+		if err != nil {
 			t.Fatalf("read whether a slot stands free: %v", err)
 		}
+		free = admission.slotFree(judged)
 	})
 	return free
 }

@@ -15,6 +15,7 @@ import {
 } from "../../../api/queries";
 import type { Comment, IssueAskRow, IssueDecisions } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
+import { decision, KEY } from "../../decision-card/decision-fixture";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { EVENT_FRESH } from "../../refs/reference-target";
@@ -39,14 +40,7 @@ import {
   stubReads,
 } from "../slots/stage-fixtures";
 import { issueAsksQuery } from "../useIssueTree";
-import {
-  decision,
-  decisionNode,
-  decisionsRead,
-  issueDetails,
-  KEY,
-  READER,
-} from "./decisions-fixtures";
+import { decisionNode, decisionsRead, issueDetails, READER } from "./decisions-fixtures";
 
 let stubs: { mockRestore(): void }[] = [];
 beforeEach(() => {

@@ -84,8 +84,8 @@ func (l *tookLaunches) want(t *testing.T, want runtime.TakenPod, why, because st
 
 // readTaken is the replacement of pod that claim's launch made, which takes act, over the read
 // through the pod's launcher that found tookCommit (oneCommitRead).
-func readTaken(claim claim.Token, pod string, act runtime.RecordedAct) runtime.TakenPod {
-	return runtime.TakenPod{Claim: claim, Issue: testTree, PodUID: pod, Act: act,
+func readTaken(claim claim.Token, pod string, act runtime.RecordedAct, repo string) runtime.TakenPod {
+	return runtime.TakenPod{Claim: claim, Issue: testTree, PodUID: pod, Act: act, Repository: repo,
 		Work: runtime.WorkspaceWork{Head: oneCommitRead.Head, Commits: []string{tookCommit}, Count: 1, PodUID: pod}}
 }
 
@@ -119,7 +119,7 @@ func TestALaunchThatReplacesAPodWhoseStreamMovedSaysWhatItTook(t *testing.T) {
 	if fresh.Sandbox.PodUID == loc.Sandbox.PodUID {
 		t.Fatalf("Resume kept the pod %s, whose launchers dial a stream this daemon does not serve", loc.Sandbox.PodUID)
 	}
-	took.want(t, readTaken(workerToken, loc.Sandbox.PodUID, runtime.PodAct(loc.Sandbox.PodUID)), "", "")
+	took.want(t, readTaken(workerToken, loc.Sandbox.PodUID, runtime.PodAct(loc.Sandbox.PodUID), workerSpec(t).Repository.String()), "", "")
 }
 
 // The launch replaces an issue Sandbox of the disk shape before the pod-owned disk, Sandbox and pod
@@ -135,7 +135,7 @@ func TestALaunchThatReplacesASandboxOfTheSupersededDiskShapeSaysWhatItTook(t *te
 		t.Fatalf("the launch kept the pod uid-pod-old of the superseded disk shape, want a pod of the Sandbox it created")
 	}
 	// The launch takes the Sandbox's live pod with its volume (WithPod).
-	want := readTaken(workerToken, "uid-pod-old", runtime.VolumeAct("uid-sandbox-superseded"))
+	want := readTaken(workerToken, "uid-pod-old", runtime.VolumeAct("uid-sandbox-superseded"), "")
 	want.WithPod = true
 	took.want(t, want, "disk shape", "")
 }
@@ -161,7 +161,7 @@ func TestALaunchThatCannotReadAKeptPodsTemplateSaysWhatItTook(t *testing.T) {
 	if fresh.Sandbox.PodUID == loc.Sandbox.PodUID {
 		t.Fatalf("Resume kept the pod %s, whose stored template says nothing of what it was built with", loc.Sandbox.PodUID)
 	}
-	took.want(t, readTaken(workerToken, loc.Sandbox.PodUID, runtime.PodAct(loc.Sandbox.PodUID)), "stored template", "")
+	took.want(t, readTaken(workerToken, loc.Sandbox.PodUID, runtime.PodAct(loc.Sandbox.PodUID), workerSpec(t).Repository.String()), "stored template", "")
 }
 
 // The reviewer's start replaces the pod the tester runs in, because the reviewer's launcher Secret
@@ -181,7 +181,7 @@ func TestALaunchIntoAPodWithUnboundLaunchersReadsThroughALauncherThatCan(t *test
 	if reviewerLoc.Sandbox.PodUID == testerLoc.Sandbox.PodUID {
 		t.Fatalf("the reviewer's start kept the pod %s, whose reviewer launcher binds another pod", testerLoc.Sandbox.PodUID)
 	}
-	took.want(t, readTaken(otherToken, testerLoc.Sandbox.PodUID, runtime.PodAct(testerLoc.Sandbox.PodUID)), "not bound", "")
+	took.want(t, readTaken(otherToken, testerLoc.Sandbox.PodUID, runtime.PodAct(testerLoc.Sandbox.PodUID), workerSpec(t).Repository.String()), "not bound", "")
 }
 
 // The control: the same replacement where no launcher of the pod says it reads a workspace. No
@@ -200,7 +200,8 @@ func TestALaunchIntoAPodWithUnboundLaunchersAndNoReaderSaysNoReadCouldBeMade(t *
 		t.Fatalf("the reviewer's start kept the pod %s, whose reviewer launcher binds another pod", testerLoc.Sandbox.PodUID)
 	}
 	pod := testerLoc.Sandbox.PodUID
-	took.want(t, runtime.TakenPod{Claim: otherToken, Issue: testTree, PodUID: pod, Act: runtime.PodAct(pod), Work: runtime.WorkspaceWork{PodUID: pod}},
+	took.want(t, runtime.TakenPod{Claim: otherToken, Issue: testTree, PodUID: pod, Act: runtime.PodAct(pod),
+		Repository: workerSpec(t).Repository.String(), Work: runtime.WorkspaceWork{PodUID: pod}},
 		"not bound", "no launcher")
 	noReadSent(t, g, workerToken, otherToken)
 }

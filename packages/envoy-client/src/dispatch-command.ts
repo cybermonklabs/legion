@@ -364,6 +364,10 @@ function placeholder(info: FieldInfo): string {
   return "<text>";
 }
 
+/** `--dry-run`'s help for a command whose spec gives no `dryRunHelp` of its own. */
+export const DRY_RUN_HELP =
+  "Checks the arguments as the call would, then prints them as JSON and sends nothing.";
+
 /** The command's flags, each with its help text. `spec.dryRunHelp` is the spec's own sentence for
  *  `--dry-run`, for a command whose dry run asks Dispatch something past the argument check. */
 function flagTable(
@@ -455,9 +459,7 @@ function flagTable(
   add("--help", { action: "help", text: "Prints this help." });
   add("--dry-run", {
     action: "dry-run",
-    text:
-      spec.dryRunHelp ??
-      "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
+    text: spec.dryRunHelp ?? DRY_RUN_HELP,
   });
   return flags;
 }

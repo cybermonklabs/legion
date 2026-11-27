@@ -544,9 +544,6 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if err != nil {
 		return clusteredHubSettings{}, err
 	}
-	if args.AuthCallout != nil && listenerArgs != nil {
-		return clusteredHubSettings{}, listenerBesideCallout(listenerPath)
-	}
 	if s.tailnet, err = newClusteredHubTailnet(args); err != nil {
 		return clusteredHubSettings{}, err
 	}

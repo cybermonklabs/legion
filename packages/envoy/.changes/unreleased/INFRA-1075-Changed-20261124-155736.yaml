@@ -3,13 +3,16 @@ body: |-
   Each Dispatch route is now a file of its own in `internal/dispatch/api`,
   `route_<path>+<method>.go`, whose one `declareRoute(routeDecl{...})` states every fact of the
   route: method, pattern, auth, description, handler, write class, id kind, OAuth scopes, read
-  scope, test-hook flag and shape. The rows of `routes()`, the maps `writeClasses`, `idRoutes`,
-  `routeScopes`, `readScopeRoutes` and `routeShapes`, and the committed `testdata/routes.txt` are
-  gone, so two branches that add different routes touch no file in common. `envoy-dispatch routes`
-  and `envoy-dispatch openapi` print the same bytes as before. A test refuses two declarations of
-  one method and pattern. A branch made before this change adopts it with
-  `go run ./cmd/dispatch-route-adopt -C <that worktree>`, run from `packages/envoy` of a checkout
-  that holds the command, on a clean tree: the command makes the merge of main itself
+  class, approve-only flag, test-hook flag and shape. The rows of `routes()`, the maps
+  `writeClasses`, `idRoutes`, `routeScopes`, `readClasses` and `routeShapes`, the lists
+  `readScopeRoutes` and `approveScopeRoutes`, and the committed `testdata/routes.txt` are gone, so
+  two branches that add different routes touch no file in common. `envoy-dispatch routes` and
+  `envoy-dispatch openapi` print the same bytes as before. A test refuses two declarations of one
+  method and pattern. Who may call what is unchanged, and so is every answer but one: the 403
+  `APPROVE_ONLY_TOKEN` message now lists the routes an approve-only token may call by pattern and
+  then method, where the list named them in its own order. A branch made before this change adopts
+  it with `go run ./cmd/dispatch-route-adopt -C <that worktree>`, run from `packages/envoy` of a
+  checkout that holds the command, on a clean tree: the command makes the merge of main itself
   (`origin/main`, or `main@origin` under jj, unless it is given a revision), with git or jj, and
   refuses a tree that is mid-merge or holds a change, naming the commands that return it.
   `testdata/routes.txt`'s lines are `envoy-dispatch routes | jq -r

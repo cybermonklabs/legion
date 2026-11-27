@@ -35,9 +35,10 @@ import (
 // A restart writes its line once its delete lands, before its create, so a create that fails
 // still leaves the loss named; its retry, which creates the consumer at the pending start and
 // reads no deleted consumer, writes none. A delete whose answer is lost after the server applied
-// it is read back: a consumer gone gives the line as a landed delete does, and a read back that
-// fails too gives it with delete_confirmed false. An update counts from the consumer's next
-// sequence, past the messages it delivered before the update and awaits acks for.
+// it is read back within the restart's ctx: a consumer gone gives the line as a landed delete
+// does, and a read back that fails too, among them one that sends no request because the
+// restart's ctx has ended, gives it with delete_confirmed false. An update counts from the
+// consumer's next sequence, past the messages it delivered before the update and awaits acks for.
 func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 	t.Parallel()
 	const (
@@ -240,14 +241,26 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 
 	// A restart whose delete answer is lost after the server applied it: the delete brings no
 	// answer, so the restart reads the consumer back, and names the loss as for a landed delete
-	// when the consumer is gone, or with delete_confirmed false when that read fails too.
+	// when the consumer is gone, or with delete_confirmed false when that read fails too. The read
+	// back runs within the restart's own ctx (reportUnansweredDelete), so a restart whose ctx ends
+	// as its delete answer is lost sends no read back after it: the read fails unsent, and the
+	// loss is named with delete_confirmed false. Each row counts the info requests of the consumer
+	// the server takes during the restart, and the first row's read back, sent, is the count's
+	// control.
 	for _, tc := range []struct {
 		name, session string
 		// readBackFails fails every info read once the delete's answer was lost.
 		readBackFails bool
+		// ctxEnds ends the restart's ctx as the delete's answer is lost, as a delete that runs to
+		// the end of the relay's call bound does.
+		ctxEnds bool
+		// infoRequests is how many info requests of the consumer the server takes during the
+		// restart: the restart's own read before the delete, and the read back where it is sent.
+		infoRequests int
 	}{
-		{name: "a restart whose delete answer is lost after the server applied it", session: "ses_narrowing_lost_answer"},
-		{name: "a restart whose delete answer is lost and whose read back fails", session: "ses_narrowing_lost_unread", readBackFails: true},
+		{name: "a restart whose delete answer is lost after the server applied it", session: "ses_narrowing_lost_answer", infoRequests: 2},
+		{name: "a restart whose delete answer is lost and whose read back fails", session: "ses_narrowing_lost_unread", readBackFails: true, infoRequests: 1},
+		{name: "a restart whose ctx ends as its delete answer is lost", session: "ses_narrowing_lost_ended", ctxEnds: true, infoRequests: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			kept := "notifications.team.narrowing-kept-" + tc.session
@@ -261,10 +274,15 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 			}
 			name, _ := bus.SessionConsumerName(tc.session)
 			consumers := rig.deps.consumers.consumers
+			restartCtx, endRestart := context.WithCancel(ctx)
+			defer endRestart()
 			var lost atomic.Bool
 			consumers.SetDeleteAnswerFault(func(consumer string) error {
 				if consumer == name {
 					lost.Store(true)
+					if tc.ctxEnds {
+						endRestart()
+					}
 					return context.DeadlineExceeded
 				}
 				return nil
@@ -276,10 +294,29 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 				return nil
 			})
 			t.Cleanup(func() { consumers.SetDeleteAnswerFault(nil); consumers.SetInfoFault(nil) })
+			// The server hands this connection a copy of each info request of the consumer it
+			// takes, from any connection, the restart's among them.
+			infos, err := raw.SubscribeSync("$JS.API.CONSUMER.INFO." + bus.Stream + "." + name)
+			if err != nil {
+				t.Fatalf("subscribe the info requests of %s: %v", name, err)
+			}
+			defer func() { _ = infos.Unsubscribe() }()
+			if err := raw.Flush(); err != nil {
+				t.Fatalf("flush the subscription of the info requests: %v", err)
+			}
 			before := rig.harness.logs.Len()
-			if _, err := consumers.RestartAtFloor(ctx, tc.session, sessionConsumerFilter(tc.session, []string{pairFoo, pairBar, kept})); err == nil {
+			if _, err := consumers.RestartAtFloor(restartCtx, tc.session, sessionConsumerFilter(tc.session, []string{pairFoo, pairBar, kept})); err == nil {
 				t.Fatalf("the restart of %s whose delete answer was lost reported no error", tc.session)
 			}
+			// The server took each request the restart sent before it answered it, so it sends
+			// this connection the copy before it answers this flush.
+			if err := raw.Flush(); err != nil {
+				t.Fatalf("flush after the restart: %v", err)
+			}
+			if taken, _, err := infos.Pending(); err != nil || taken != tc.infoRequests {
+				t.Errorf("the server took %d info requests of the consumer of %s during the restart (%v), want %d", taken, tc.session, err, tc.infoRequests)
+			}
+			_ = infos.Unsubscribe()
 			consumers.SetDeleteAnswerFault(nil)
 			consumers.SetInfoFault(nil)
 			if _, err := rig.consumers.Info(ctx, tc.session); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
@@ -291,7 +328,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 			narrowed(t, logs, tc.session, 2)
 			line := linesIn(logs, leftLine, map[string]any{"session_id": tc.session, "from": "narrowing"})[0]
 			want := any(nil)
-			if tc.readBackFails {
+			if tc.readBackFails || tc.ctxEnds {
 				want = false
 			}
 			if line["delete_confirmed"] != want {
