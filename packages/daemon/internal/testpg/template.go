@@ -52,9 +52,9 @@ var shared struct {
 }
 
 // Clone is the URL of a database carrying every migration, cloned from this process's template and
-// dropped at the test's end. A pool opened on it holds testdb.PoolConns connections unless
-// LEGION_TEST_PG_DSN sets a size of its own, which it keeps (testdb.PoolBounded). Without
-// LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's is.
+// dropped at the test's end. A pool opened on it holds the `pool_max_conns` LEGION_TEST_PG_DSN
+// names, or four where it names none (testdb.PoolBounded). Without LEGION_TEST_PG_DSN the test is
+// skipped, as testdb.Database's is.
 func Clone(t testing.TB, prefix string) string {
 	t.Helper()
 	if !shared.main {
@@ -83,6 +83,9 @@ func Clone(t testing.TB, prefix string) string {
 		t.Fatalf("clone %s from the template: %v", name, err)
 	}
 	t.Cleanup(func() { dropInBackground(name) })
+	if _, err := shared.admin.Exec(context.Background(), testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the clone %s: %v", name, err)
+	}
 	return clone
 }
 
@@ -98,10 +101,11 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 	return st
 }
 
-// ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
-// since Clone registered that cleanup first. The pool is built from store.PoolConfig, as the
-// daemon's own is, so a test that wraps it with store.NewPool writes through the store's text
-// rule.
+// ClonePool is Clone opened as the pool its DSN names, closed when the test ends — before the clone
+// is dropped, since Clone registered that cleanup first. The pool is built from store.PoolConfig,
+// as the daemon's own is, so a test that wraps it with store.NewPool writes through the store's
+// text rule. PoolBounded already set MaxConns from LEGION_TEST_PG_DSN, so this function does not
+// overrule a size the developer chose.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
 	config, err := store.PoolConfig(Clone(t, prefix))
@@ -237,6 +241,9 @@ func prepare(dsn string) error {
 		return fmt.Errorf("create the template database: %w", err)
 	}
 	shared.template = name
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		return fmt.Errorf("turn JIT off on the template database: %w", err)
+	}
 	st, err := store.Open(ctx, templateURL)
 	if err != nil {
 		return fmt.Errorf("open the template database: %w", err)

@@ -1,6 +1,6 @@
 # Decomposing a tree
 
-Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, or attach architecture components.
+Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on other work, or attach architecture components.
 
 ## Reading the tree
 
@@ -91,7 +91,7 @@ Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
 
-When an issue must wait on a sibling or on an issue outside this tree, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
+When an issue must wait on a sibling, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
 A blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker whose close is the fact the issue needs.
 Legion starts the issue once its blockers close.
 

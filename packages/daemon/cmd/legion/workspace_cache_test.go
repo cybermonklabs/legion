@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -107,8 +106,8 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 			name: "a provisioning token file that is absent",
 			env:  func(t *testing.T, v *issueVolume) { v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token + ".absent" },
 			code: 1,
-			says: func(v *issueVolume) string {
-				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ".absent, which could not be read"
+			says: func(*issueVolume) string {
+				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: it does not exist"
 			},
 		},
 		{
@@ -131,9 +130,9 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 		},
 		{
 			name: "an unknown flag",
-			args: func(v *issueVolume) []string { return append(v.cacheArgs(), "--feed", v.feed) },
+			args: func(v *issueVolume) []string { return append(v.cacheArgs(), "--unused-option", v.root) },
 			code: 2,
-			says: func(*issueVolume) string { return "-feed" },
+			says: func(*issueVolume) string { return "-unused-option" },
 		},
 		{
 			name: "a positional argument",
@@ -175,11 +174,12 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 
 // `cache` exits 1 for every failure, a failure from GitHub too: the fetch's exit 3 for a cause
 // outside an issue's volume (workspace.InitExitOutsideVolume) is an issue pod's alone. Here GitHub
-// answers the cache's first clone with a 403, and the cache, with no clone to serve, ends.
+// answers the fetch of the cache's first fill with a 403, and the cache, with no clone to serve,
+// ends.
 func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
-	attempts := v.failClones(t, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
+	attempts := v.failFetches(t, 128, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
 	v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
 	v.env["LEGION_REPOSITORY_CACHE_TOKEN_FILE"] = writeCacheToken(t, cmdCacheToken)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -198,16 +198,15 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
 		t.Fatalf("cache did not end after GitHub refused its first clone, before the test binary's deadline: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
-	if got := cloneAttempts(t, attempts); got != 1 {
-		t.Fatalf("git cloned %d times, want 1", got)
+	if got := fetchAttempts(t, attempts); got != 1 {
+		t.Fatalf("git fetched %d times, want 1", got)
 	}
 }
 
-// `cache` serves the repository's cache until its context ends: it says where it listens, clones
-// the repository onto its root with the provisioning token handed to git as a one-shot credential
-// under its TMPDIR, answers /healthz ready at the remote's head to a request carrying no token,
-// holds no token on the volume, and
-// exits 0 once stopped.
+// `cache` serves the repository's cache until its context ends: it says where it listens, fills
+// its clone of the repository onto its root with the provisioning token handed to git as a one-shot
+// credential under its TMPDIR, answers /healthz ready at the remote's head to a request carrying no
+// token, holds no token on the volume, and exits 0 once stopped.
 func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
@@ -263,13 +262,16 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	if main := v.git(t, "--git-dir="+filepath.Join(v.root, "acme", "widgets.git"), "log", "-1", "--format=%s", "refs/heads/main"); main != "seed" {
 		t.Fatalf("the cache's main is %q, want the remote's", main)
 	}
-	credential, err := os.ReadFile(v.credentialLog)
-	if err != nil {
-		t.Fatalf("the clone recorded no credential: %v", err)
+	// The first fill reads GitHub's HEAD and then fetches its branch, each with the credential; a
+	// refresh the cache began since does the same.
+	credential := logLines(t, v.credentialLog)
+	if len(credential) < 2 {
+		t.Fatalf("GitHub was reached with %q, want at least the first fill's read of GitHub's HEAD and its fetch", credential)
 	}
-	tokenFile, held, _ := strings.Cut(strings.TrimSpace(string(credential)), " ")
-	if held != "ghs_test" || !strings.HasPrefix(tokenFile, v.tmp+string(filepath.Separator)) {
-		t.Fatalf("the clone was handed %s holding %q, want the provisioning token under TMPDIR %s", tokenFile, held, v.tmp)
+	for _, line := range credential {
+		if tokenFile, held, _ := strings.Cut(line, " "); held != "ghs_test" || !strings.HasPrefix(tokenFile, v.tmp+string(filepath.Separator)) {
+			t.Fatalf("the first fill was handed %s holding %q, want the provisioning token under TMPDIR %s", tokenFile, held, v.tmp)
+		}
 	}
 	holdsNoToken(t, v.root, "while the cache serves")
 
@@ -312,11 +314,12 @@ func cacheGet(t *testing.T, ctx context.Context, url, bearer string) (int, http.
 // `cache` runs the real command path with a Cloud Storage double on a loopback address that
 // STORAGE_EMULATOR_HOST names, as the real-binary harness runs it. With
 // LEGION_REPOSITORY_CACHE_BUCKET set it uploads each pack and index of its clone to that bucket and
-// answers /packs with its token: the bucket, the clone's refs, a planted branch's among them, and
-// every pack with its index, each the size and SHA-256 of the clone's own file, and each address
-// one the double serves that file's exact bytes for, with no credential. With the variable unset it
-// sends the double nothing and /packs is the mux's 404, naming no repository. Either way no line it
-// prints holds a signed address, a V4 parameter, its bearer or the planted ref's contents.
+// answers /packs with its token: the bucket, the narrowed clone's refs, its main at the planted
+// commit and no other branch, and every pack with its index, each the size and SHA-256 of the
+// clone's own file, and each address one the double serves that file's exact bytes for, with no
+// credential. With the variable unset it sends the double nothing and /packs is the mux's 404,
+// naming no repository. Either way no line it prints holds a signed address, a V4 parameter, its
+// bearer or the planted ref's contents.
 func TestWorkspaceInitCacheUsesTheBucketWhenSet(t *testing.T) {
 	// Not parallel: it sets STORAGE_EMULATOR_HOST for the whole process (startPacksCache), which the cache's bucket reads there as Google's clients do.
 	for _, tc := range []struct {
@@ -375,9 +378,10 @@ func TestWorkspaceInitCacheUsesTheBucketWhenSet(t *testing.T) {
 }
 
 // requireBucketManifest fails the test unless body is a /packs manifest of the volume's cache
-// clone: the test bucket; refs that hold the planted branch at its commit; and every pack and
-// index of the clone, each pack with its index, each under the repository's lowercase prefix with
-// the size and SHA-256 of the clone's own file. It answers the manifest's objects.
+// clone: the test bucket; refs that hold main at the planted commit and name no other branch, as
+// the narrowed clone holds them; and every pack and index of the clone, each pack with its index,
+// each under the repository's lowercase prefix with the size and SHA-256 of the clone's own file.
+// It answers the manifest's objects.
 func requireBucketManifest(t *testing.T, v *issueVolume, body []byte, planted string) []workspace.PackObject {
 	t.Helper()
 	var manifest workspace.PackManifest
@@ -389,10 +393,25 @@ func requireBucketManifest(t *testing.T, v *issueVolume, body []byte, planted st
 	}
 	plantedListed := false
 	for _, ref := range manifest.Refs {
-		plantedListed = plantedListed || bytes.Contains(ref.Bytes, []byte(planted+" refs/heads/planted")) || (ref.Path == "refs/heads/planted" && string(ref.Bytes) == planted+"\n")
+		switch {
+		case ref.Path == "refs/heads/main":
+			plantedListed = plantedListed || string(ref.Bytes) == planted+"\n"
+		case ref.Path == "packed-refs":
+			for _, line := range strings.Split(strings.TrimSpace(string(ref.Bytes)), "\n") {
+				if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
+					continue
+				}
+				if !strings.HasSuffix(line, " refs/heads/main") {
+					t.Errorf("the manifest's packed-refs holds %q, which the narrowed clone does not", line)
+				}
+				plantedListed = plantedListed || line == planted+" refs/heads/main"
+			}
+		case strings.HasPrefix(ref.Path, "refs/"):
+			t.Errorf("the manifest lists the ref %s, which the narrowed clone does not hold", ref.Path)
+		}
 	}
 	if !plantedListed {
-		t.Errorf("the manifest's refs hold no refs/heads/planted at %s", planted)
+		t.Errorf("the manifest's refs hold no refs/heads/main at %s", planted)
 	}
 	want := v.cachePacks(t)
 	got := map[string]string{}

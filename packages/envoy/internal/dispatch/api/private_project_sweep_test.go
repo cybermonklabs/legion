@@ -2,9 +2,9 @@ package api
 
 // The tests of INFRA-4799's R8 that walk Dispatch's whole route table. The cases of
 // private_project_writes_test.go name the write checks one by one. These walk every mutating route
-// that the table classes scopeProject (writeClasses), whichever object its path names (an issue, a
-// project, a document, an ask, a comment, a message or a check result), and send each as a broker
-// token that names one project:
+// whose declaration states the class scopeProject (routeDecl.WriteClass), whichever object its
+// path names (an issue, a project, a document, an ask, a comment, a message or a check result),
+// and send each as a broker token that names one project:
 //
 //   - at an object of another project that is public: the answer is never 403 PROJECT_SCOPE, which
 //     is what a credential that names no project gets at such an object too (R8's first sentence,
@@ -180,9 +180,9 @@ func (rig *privateProjectRig) sweepSend(t *testing.T, token, method, path string
 // <pattern>".
 func projectWriteRoutes() []string {
 	var routes []string
-	for key, class := range writeClasses {
-		if class == scopeProject {
-			routes = append(routes, key)
+	for _, route := range routeRegistry {
+		if route.WriteClass == scopeProject {
+			routes = append(routes, route.Method+" "+route.Pattern)
 		}
 	}
 	sort.Strings(routes)
