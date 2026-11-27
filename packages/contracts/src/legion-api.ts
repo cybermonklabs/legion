@@ -897,7 +897,9 @@ const legionCloseWait = z.object({
     )
     .optional(),
   nextChanges: z.number().int().nonnegative().optional(),
-  unapproved: z.object({ checks: z.array(z.string()).optional(), since: timestamp.optional() }).optional(),
+  unapproved: z
+    .object({ checks: z.array(z.string()).optional(), since: timestamp.optional() })
+    .optional(),
   unread: z.object({ cause: z.string().optional(), since: timestamp.optional() }).optional(),
 });
 

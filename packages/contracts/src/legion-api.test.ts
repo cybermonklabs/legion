@@ -2582,7 +2582,9 @@ test("an issue in verifying carries what its close waits on, every member option
     openChildren: [{ ...CLOSE_WAIT.openChildren[0], status: "" }],
     checks: [{ ...CLOSE_WAIT.checks[0], id: "", when: "", answer: "", reason: "" }],
     production: { ...CLOSE_WAIT.production, state: "", merge: "", outcome: "" },
-    defects: [{ ...CLOSE_WAIT.defects[0], id: "", kind: "", role: "", text: "", head: "", check: "" }],
+    defects: [
+      { ...CLOSE_WAIT.defects[0], id: "", kind: "", role: "", text: "", head: "", check: "" },
+    ],
     unapproved: { ...CLOSE_WAIT.unapproved, checks: [""] },
     unread: { ...CLOSE_WAIT.unread, cause: "" },
   };
