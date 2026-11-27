@@ -42,17 +42,12 @@ export async function copyText(text: string): Promise<boolean> {
 }
 
 /**
- * Reads where the focus, a field's caret and the page's selection are, and returns what puts them
- * back there. The selection goes back first: focusing a field moves the page's selection into it,
- * so a selection set after the focus would take the field's caret from it.
+ * Reads where the focus and the page's selection are, and returns what puts them back there. The
+ * selection goes back first: focusing a field moves the page's selection into it, so a selection
+ * set after the focus would take the field's caret from it.
  */
 function keepFocusAndSelection(): () => void {
   const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const field =
-    focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
-  const start = field?.selectionStart ?? null;
-  const end = field?.selectionEnd ?? null;
-  const direction = field?.selectionDirection ?? undefined;
   const selection = window.getSelection();
   const ranges =
     selection === null
@@ -70,12 +65,5 @@ function keepFocusAndSelection(): () => void {
     }
     if (!focused?.isConnected) return;
     focused.focus({ preventScroll: true });
-    if (field === null || start === null || end === null) return;
-    try {
-      field.setSelectionRange(start, end, direction);
-    } catch {
-      // A field whose type a handler of the copy changed to one with no caret (a number, a
-      // checkbox) refuses a caret, and the copy is still made.
-    }
   };
 }
