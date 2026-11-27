@@ -8,7 +8,7 @@ import {
   screen,
 } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { createRef, type ReactNode, useRef, useState } from "react";
+import { createRef, type ReactNode, type RefObject, useRef, useState } from "react";
 
 import { disarm } from "../__tests__/armed-press";
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
@@ -17,7 +17,7 @@ import { nextFrame } from "../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../hooks/useFootInset";
 import type { ControlSize } from "./control-names";
-import { ARM_ON_PRESS, holdHandOff } from "./focus-place";
+import { ARM_ON_PRESS, holdHandOff, useFocusPlace } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import {
   focusListStop,
@@ -2894,20 +2894,123 @@ test.each([
   }
 );
 
+// An act of the reader's that leaves the focus where it was keeps the remembered control: the act
+// forgets it only where, once the act is read, the focus no longer stands on it. ⌘C, whose keyup
+// macOS never sends while Meta is held, and a wheel move no focus and make no commit, so once each
+// is read the focus still stands on the checkbox of the row marked last, in a row the press names
+// as leaving. The writes then take its row and the bar away together, which drops the focus onto
+// the body before the hand-off reads it: the going owes the landing, and it is made on the row now
+// at the rows' place rather than left on the body.
+test.each(["⌘C, whose keyup never comes,", "a wheel"] as const)(
+  "%s on the checkbox of the row marked last while the press's writes are out keeps it remembered, and the landing is made on the row now at its place when the writes take its row and the bar away together",
+  async (how) => {
+    const laidOut = layRowsOut("[data-row]", 9);
+    const view = render(untickList(2, PLACED_KEYS));
+    let answered: () => void = () => undefined;
+    try {
+      pressInBar("Dismiss");
+      answered = holdHandOff();
+      view.rerender(untickList(2, PLACED_KEYS, UNTICK_PRESS));
+      const mark = rowBox("CORE-13");
+      act(() => mark.focus());
+      act(() => {
+        if (how === "a wheel") {
+          mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+          return;
+        }
+        const meta = { bubbles: true, code: "MetaLeft", key: "Meta" };
+        mark.dispatchEvent(new KeyboardEvent("keydown", { ...meta, metaKey: true }));
+        mark.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, code: "KeyC", key: "c", metaKey: true })
+        );
+        mark.dispatchEvent(new KeyboardEvent("keyup", meta));
+      });
+      // Read once the act has been answered.
+      await act(afterTask);
+      expect(focusedName()).toBe("Select CORE-13");
+      view.rerender(untickList(0, without(PLACED_KEYS, ...UNTICK_PRESS)));
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      expect(focusLanding()).toBe("Select CORE-14");
+    } finally {
+      answered();
+      disarm();
+      view.unmount();
+      laidOut();
+    }
+  }
+);
+
+// The landing a going owes after a wheel is chosen from what the reader sees after that wheel, so
+// it never scrolls back to where they scrolled away from. The wheel over the remembered checkbox of
+// the row marked last scrolls the list on, past that row and the row after the rows the press is
+// taking away: the row at the window's top is the sixteenth, or, scrolled further still, no row is
+// in sight. The writes then take the rows and the bar away together, and the landing is made on the
+// nearest row after the place that the reader can see, else on the list's own stop, with no scroll.
+test.each([
+  ["rows after the place in sight", 15, "Select CORE-18"],
+  ["no row in sight", 40, "Rows"],
+] as const)(
+  "a wheel that scrolls the remembered checkbox of the row marked last out of sight, with %s, lands from the sight after it once the writes take the rows and the bar away, and scrolls nothing back",
+  async (_sight, first, landed) => {
+    let laidOut = layRowsOut("[data-row]", 9);
+    const view = render(untickList(2, PLACED_KEYS));
+    const scroll = spyOn(window, "scrollBy").mockImplementation(() => {});
+    let answered: () => void = () => undefined;
+    try {
+      pressInBar("Dismiss");
+      answered = holdHandOff();
+      view.rerender(untickList(2, PLACED_KEYS, UNTICK_PRESS));
+      const mark = rowBox("CORE-13");
+      act(() => mark.focus());
+      act(() => {
+        mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+      });
+      // The wheel's scroll: the row at `first` in the list's order stands at the window's top now.
+      laidOut();
+      laidOut = layRowsOut("[data-row]", first);
+      // Read once the act has been answered.
+      await act(afterTask);
+      expect(focusedName()).toBe("Select CORE-13");
+      const moves = watchMoves();
+      try {
+        view.rerender(untickList(0, without(PLACED_KEYS, ...UNTICK_PRESS)));
+        expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+        expect(focusLanding()).toBe(landed);
+        expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+        expect(moves.scrolled.length).toBe(0);
+        expect(scroll.mock.calls).toEqual([]);
+      } finally {
+        moves.restore();
+      }
+    } finally {
+      scroll.mockRestore();
+      answered();
+      disarm();
+      view.unmount();
+      laidOut();
+    }
+  }
+);
+
 /** One row drawn in a list's place as a view of its own, as the Inbox draws the row it opens below
  *  1280 px (`features/inbox/ReadingView.tsx`): a `<div>` around the row's mark, which carries the
  *  row marker only where `marker` says so, and the bar over it with one action. The view is drawn
  *  for `open`, the one row the list holds, and is given to the hand-off as that row (`MarkedList`'s
- *  `row`) only where `gives` says so. CORE-1 is the row marked last. */
+ *  `row`) only where `gives` says so; the bar is handed what the hand-off answers of its rows
+ *  (`MarkedPlace`'s `rows`). CORE-1 is the row marked last. Where `held` is given, the view's mark
+ *  is ticked and the view draws a Dismiss of its own, which the bar's Dismiss holds while `held`,
+ *  as the Inbox's bar Snooze holds the Snooze in the view's head. */
 function OpenRowView({
   count,
   gives,
+  held,
   leaving = [],
   marker,
   open,
 }: {
   count: number;
   gives: boolean;
+  held?: boolean;
   leaving?: readonly string[];
   marker: boolean;
   open: string;
@@ -2926,12 +3029,16 @@ function OpenRowView({
   return (
     <>
       <div key={open} ref={view} {...(marker ? ROW_MARKER : {})}>
-        <input aria-label={`Select ${open}`} type="checkbox" />
+        <input aria-label={`Select ${open}`} defaultChecked={held !== undefined} type="checkbox" />
+        {held === undefined ? null : (
+          <button aria-disabled={held || undefined} aria-label={`Dismiss ${open}`} type="button" />
+        )}
       </div>
       <SelectionBar
         count={count}
         label="Selected rows"
         returnFocus={() => (landAtPlace.land() ? null : focusListStop(view.current))}
+        rows={landAtPlace.rows}
       >
         <button type="button">Dismiss</button>
       </SelectionBar>
@@ -2976,6 +3083,44 @@ test.each([
     }
   }
 );
+
+// A press on a control the bar's running action holds in a marked row counts as the bar's own
+// press, and the row is the element the list gives (`MarkedList`'s `row`) where no row marker
+// makes it one: the bar hands the press it arms at its root the rows the hand-off answers
+// (`MarkedPlace`'s `rows`), as the Inbox's bar Snooze holds the Snooze in the head of its reading
+// view. The view's own mark, its first checkbox, is ticked. One press on the held control, after
+// which the engine leaves the focus on the body, as WebKit does after a click on a button, takes
+// nothing but the hold, and the bar's press stays the cause: once the write lands and the bar goes
+// with the row, the focus lands on the next row's mark in the view.
+test("a press on a control the bar's action holds in a marked row the list gives, with no row marker, counts as the bar's press, and the landing is made on the next row's mark once the row goes", async () => {
+  const view = render(<OpenRowView count={1} gives held={false} marker={false} open="CORE-1" />);
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <OpenRowView count={1} gives held leaving={["CORE-1"]} marker={false} open="CORE-1" />
+    );
+    const own = screen.getByRole("button", { name: "Dismiss CORE-1" });
+    expect(own.getAttribute("aria-disabled")).toBe("true");
+    act(() => {
+      own.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      own.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      own.click();
+    });
+    await act(afterTask);
+    expect(focusLanding()).toBe("the body");
+    // The write lands: CORE-1 goes with the bar, and the view is drawn for CORE-2, the next row.
+    view.rerender(<OpenRowView count={0} gives held={false} marker={false} open="CORE-2" />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(focusLanding()).toBe("Select CORE-2");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+  }
+});
 
 // With a landing owed (a bar press whose writes are held), a pointer press on empty space inside
 // the bar's `tabindex="-1"` line counts as the reader's own act, never as the body and never as a
@@ -3073,3 +3218,151 @@ test("a pointer press on empty space in the bar's line while writes are held han
     laidOut();
   }
 });
+
+/** The rows `listed` names, each an `<li>` with its mark, ticked where `marked` names it, and a
+ *  Priority of its own, as the project List's table draws its rows (`DataTable`): the list arms the
+ *  hand-off at a press inside it (`ARM_ON_PRESS`), and its own hand-off counts each row's controls
+ *  in that row and walks back over the page's main content from the place a row that went left
+ *  (`useFocusPlace`). A child of `HandOffRows`, as the table is a child of the List that holds the
+ *  bar's hand-off, so its hand-off reads each commit before the bar's does. */
+function RowsWithHandOff({
+  listRef,
+  listed,
+  marked,
+}: {
+  listRef: RefObject<HTMLUListElement | null>;
+  listed: readonly string[];
+  marked: readonly string[];
+}): ReactNode {
+  const noteFocus = useFocusPlace(
+    (element) => element.closest("[data-row]"),
+    (row) => (row.isConnected && row instanceof HTMLElement ? row : null)
+  );
+  return (
+    <ul aria-label="Rows" {...ARM_ON_PRESS} onFocus={noteFocus} ref={listRef}>
+      {listed.map((key) => (
+        <li data-row={key} key={key}>
+          <input
+            aria-label={`Select ${key}`}
+            defaultChecked={marked.includes(key)}
+            type="checkbox"
+          />
+          <button aria-label={`Priority ${key}`} type="button" />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** `RowsWithHandOff` in the page's main content with the bar over them and its hand-off, at
+ *  `count` marks, with CORE-13 the row marked last and `leaving` named as leaving. */
+function HandOffRows({
+  count,
+  leaving = [],
+  listed,
+  marked,
+}: {
+  count: number;
+  leaving?: readonly string[];
+  listed: readonly string[];
+  marked: readonly string[];
+}): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  const landAtPlace = useLastMarkedPlace({
+    control: (key) => list.current?.querySelector<HTMLElement>(`[data-row="${key}"] input`) ?? null,
+    lastMarked: () => "CORE-13",
+    leaving: (key) => leaving.includes(key),
+    list: () => list.current,
+    order: () => listed,
+    shown: count > 0,
+  });
+  return (
+    <main>
+      <RowsWithHandOff listRef={list} listed={listed} marked={marked} />
+      <SelectionBar
+        count={count}
+        label="Selected rows"
+        returnFocus={() => (landAtPlace.land() ? null : focusListStop(list.current))}
+      >
+        <button type="button">Dismiss</button>
+      </SelectionBar>
+    </main>
+  );
+}
+
+/** The reader's click on a row's `mark` as Chromium and Firefox make it, all in one task: its
+ *  `pointerdown`, the focus it puts on the mark, its `pointerup`, and its `click`, which unticks a
+ *  ticked mark. The click arms the press on the mark (`SelectionBar`, `ARM_ON_PRESS`), live a
+ *  frame and a task on. */
+function clickMark(mark: HTMLElement): void {
+  act(() => {
+    mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    mark.focus();
+    mark.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    mark.click();
+  });
+}
+
+// While the bar's landing is owed, it wins over the row hand-off that a press on a marked row's
+// mark arms. The reader unticks the row marked last with a click while the press's writes are out
+// and another mark keeps the bar up, and the writes land within the frame and the task the click
+// keeps its press live for, taking both rows and the bar away together. The list's own hand-off
+// reads that commit first, as the project List's table does, and would hand the focus the row took
+// with it to the Priority before the rows' place; the bar's going owes its landing, so the row
+// hand-off moves nothing, and the landing puts the focus on the mark of the row now at the place.
+test("a click that unticks the row marked last while the press's writes are out, with its row and the bar then taken away together within the click's frame, lands on the mark of the row now at its place, not where the list's own hand-off would", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const page = (count: number, listed: readonly string[], leaving: readonly string[] = []) => (
+    <HandOffRows count={count} leaving={leaving} listed={listed} marked={UNTICK_PRESS} />
+  );
+  const view = render(page(2, PLACED_KEYS));
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(page(2, PLACED_KEYS, UNTICK_PRESS));
+    clickMark(rowBox("CORE-13"));
+    expect(rowBox("CORE-13")).not.toBeChecked();
+    view.rerender(page(1, PLACED_KEYS, UNTICK_PRESS));
+    expect(focusedName()).toBe("Select CORE-13");
+    expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
+    view.rerender(page(0, without(PLACED_KEYS, ...UNTICK_PRESS)));
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(focusedName()).toBe("Select CORE-14");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// With no landing of the bar's owed, the row hand-off a press on a marked row's mark arms acts as
+// it always has. Nothing of the bar's is out: the reader unticks CORE-13 with a click, the bar
+// staying over CORE-12's mark or going with the only mark, and within that click's frame and task
+// a live update takes CORE-13's row away. The list's own hand-off hands the focus the row took
+// with it to the Priority of the row before its place.
+test.each([
+  ["the bar stays over another mark", ["CORE-12", "CORE-13"], 1],
+  ["the bar goes with the only mark", ["CORE-13"], 0],
+] as const)(
+  "with no landing of the bar's owed, a click on a marked row's mark whose row an update then takes away, where %s, hands the focus on by the list's own hand-off",
+  (_bar, marked, after) => {
+    const laidOut = layRowsOut("[data-row]", 9);
+    const page = (count: number, listed: readonly string[]) => (
+      <HandOffRows count={count} listed={listed} marked={marked} />
+    );
+    const view = render(page(marked.length, PLACED_KEYS));
+    try {
+      clickMark(rowBox("CORE-13"));
+      view.rerender(page(after, PLACED_KEYS));
+      expect(focusedName()).toBe("Select CORE-13");
+      view.rerender(page(after, without(PLACED_KEYS, "CORE-13")));
+      expect(focusedName()).toBe("Priority CORE-12");
+    } finally {
+      disarm();
+      view.unmount();
+      laidOut();
+    }
+  }
+);

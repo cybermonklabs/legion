@@ -2,7 +2,15 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { onlineManager } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: an armed press is live only until a frame and a task after it, and user-event waits a task after every press it makes, so the click the armed cases make and the commit after it must come in the same task, which user-event has no form for; nor has it one for a key marked as an input method's, at keyCode 229.
 import { act, fireEvent, render, renderHook } from "@testing-library/react";
-import { Component, createElement, Fragment, type ReactNode, useRef, useState } from "react";
+import {
+  Component,
+  createElement,
+  Fragment,
+  type ReactNode,
+  type SyntheticEvent,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { disarm } from "../__tests__/armed-press";
@@ -2115,4 +2123,100 @@ test("a pointer press on empty space inside a held selection bar keeps the press
     disarm();
     view.unmount();
   }
+});
+
+/** A selection bar's root, which arms the hand-off at a press inside it as the bar does, handing
+ *  the press the rows its list names where `names` says so (`armOnPress`'s `rows`), with its own
+ *  Snooze selected asks, and beside it a view of one row as the Inbox draws its reading view below
+ *  1280 px: a `<div>` with no row marker, whose first checkbox is its own mark, ticked where
+ *  `marked` says so, and which draws its own Snooze, held while `held`, its Pinned, held all along,
+ *  and its Open, which nothing holds. */
+function BarOverView(props: {
+  readonly held: boolean;
+  readonly marked: boolean;
+  readonly names: boolean;
+}): ReactNode {
+  const view = useRef<HTMLDivElement>(null);
+  const rows = () => (view.current === null ? [] : [view.current]);
+  const arm = (event: SyntheticEvent) => armOnPress(event, props.names ? rows : undefined);
+  return createElement(
+    Fragment,
+    null,
+    createElement(
+      "div",
+      {
+        "data-control": CONTROL.selectionBar,
+        onChangeCapture: arm,
+        onClickCapture: arm,
+        role: "toolbar",
+      },
+      createElement("button", { type: "button" }, "Snooze selected asks")
+    ),
+    createElement(
+      "div",
+      { ref: view },
+      createElement("input", {
+        "aria-label": "Select CORE-1",
+        checked: props.marked,
+        readOnly: true,
+        type: "checkbox",
+      }),
+      createElement(
+        "button",
+        { "aria-disabled": props.held || undefined, type: "button" },
+        "Snooze"
+      ),
+      createElement("button", { "aria-disabled": true, type: "button" }, "Pinned"),
+      createElement("button", { type: "button" }, "Open")
+    )
+  );
+}
+
+// A control the selection bar's running action holds in a row its list names, where no row marker
+// makes that element a row, is the bar's press's own while that row's own mark, its first
+// checkbox, is ticked, as a control held in a marked row is: the bar's root hands the press it
+// arms those rows (`armOnPress`'s `rows`), as the Inbox's bar hands it its reading view, whose
+// head's Snooze the bar's Snooze holds. A pointer press on that held Snooze leaves the press armed.
+// A control of the view held before the arm, one nothing holds, the same Snooze with the view's
+// mark unticked, and the same Snooze where the bar hands the press no rows are the reader's next
+// act.
+test("a control the bar's action holds in a marked row the bar's root names, with no row marker, is the bar's press's own, and no other control there is", () => {
+  const read: Record<string, boolean> = {};
+  const view = render(createElement(BarOverView, { held: false, marked: true, names: true }));
+  let release: () => void = () => undefined;
+  const named = (label: string) => view.getByRole("button", { name: label });
+  /** The bar's Snooze selected asks pressed over the view drawn as `drawn` says, and the snooze it
+   *  sends held: its write holds the view's Snooze, and a hold keeps the press live. */
+  const snoozeFromBar = (drawn: { readonly marked: boolean; readonly names: boolean }) => {
+    release();
+    disarm();
+    view.rerender(createElement(BarOverView, { ...drawn, held: false }));
+    clickPress(named("Snooze selected asks"));
+    view.rerender(createElement(BarOverView, { ...drawn, held: true }));
+    release = holdHandOff();
+  };
+  try {
+    snoozeFromBar({ marked: true, names: true });
+    read["the view's held Snooze"] = pressIsArmedOwn(named("Snooze"));
+    read["the view's Pinned, held before the arm"] = pressIsArmedOwn(named("Pinned"));
+    read["the view's Open, which nothing holds"] = pressIsArmedOwn(named("Open"));
+    pointerPress(named("Snooze"));
+    read["armed after a pointer press on the view's held Snooze"] = pressArmed();
+    snoozeFromBar({ marked: false, names: true });
+    read["the view's held Snooze, its mark unticked"] = pressIsArmedOwn(named("Snooze"));
+    snoozeFromBar({ marked: true, names: false });
+    read["the view's held Snooze, the bar naming no rows"] = pressIsArmedOwn(named("Snooze"));
+  } finally {
+    release();
+    disarm();
+    view.unmount();
+  }
+  expect(read).toEqual({
+    "the view's held Snooze": true,
+    "the view's Pinned, held before the arm": false,
+    "the view's Open, which nothing holds": false,
+    "armed after a pointer press on the view's held Snooze": true,
+    "the view's held Snooze, its mark unticked": false,
+    "the view's held Snooze, the bar naming no rows": false,
+  });
 });

@@ -2302,6 +2302,25 @@ describe("the selection bar's hand-off over the Inbox reading view at 390 px, by
     expect(placeOf(document.activeElement)).toBe("the body");
   });
 
+  // A press on a control the bar's running action holds in a marked row counts as the bar's: the
+  // bar's Snooze over the open row holds the row's own Snooze in the view's head while its write
+  // is out. One press on it, held 100 ms as a hand holds it, after which the engine leaves the
+  // focus on the body, as WebKit does after a click on a button, takes nothing but the hold, and
+  // the bar's pick stays the cause: once the write lands and the bar goes with the row, the focus
+  // lands on the next row's own mark in its view.
+  test("a press on the view head's Snooze, which the bar's Snooze holds, counts as the bar's: the focus lands on the next row's own mark once the write lands", async () => {
+    const user = userEvent.setup();
+    const held = await snoozedOpenRow(user);
+    const snooze = within(screen.getByTestId("inbox-reading-view")).getByLabelText(
+      "Snooze CORE-2: Which format?"
+    );
+    expect(snooze.getAttribute("aria-disabled")).toBe("true");
+    await pressFor100ms(snooze, null, "pointerup");
+    expect(document.activeElement).toBe(document.body);
+    await held.letGo();
+    await landsInView(held.next);
+  });
+
   // Remembered: while the bar is up and nothing is owed, a focus in the open row, which is named
   // leaving, is remembered from the focus events. The bar's Snooze lands, and its answer takes the
   // row, its view and the bar away in one commit, the focus with the view onto the body before the
@@ -2317,6 +2336,14 @@ describe("the selection bar's hand-off over the Inbox reading view at 390 px, by
       },
     ],
     [
+      "⌘C on the row's own mark in its view, whose keyup never comes",
+      async (_user, held) => {
+        act(() => held.mark.focus());
+        metaKeyDown(held.mark, "c", "KeyC");
+        await act(afterTask);
+      },
+    ],
+    [
       "a press held 100 ms on the row's own mark in its view, whose click unticks it",
       async (_user, held) => {
         await pressFor100ms(held.mark, held.mark, "pointerup");
@@ -2327,6 +2354,16 @@ describe("the selection bar's hand-off over the Inbox reading view at 390 px, by
       "a press on the row's own mark in its view that the engine cancels",
       async (_user, held) => {
         await pressFor100ms(held.mark, held.mark, "pointercancel");
+      },
+    ],
+    [
+      "a wheel over the focused mark of the row in its view",
+      async (_user, held) => {
+        act(() => held.mark.focus());
+        act(() => {
+          held.mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        });
+        await act(afterTask);
       },
     ],
     [

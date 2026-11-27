@@ -4627,10 +4627,38 @@ describe("the selection bar's hand-off over the List, by each rule and each kind
       },
     ],
     [
+      "⌘C on the checkbox of the row marked last, whose keyup never comes",
+      async (_user, held) => {
+        act(() => listMark(held.last).focus());
+        metaKeyDown(listMark(held.last), "c", "KeyC");
+        await act(afterTask);
+      },
+    ],
+    [
+      "a press held 100 ms on the checkbox of the row marked last, whose click unticks it",
+      async (_user, held) => {
+        const mark = listMark(held.last);
+        await pressFor100ms(mark, mark, "pointerup");
+        expect(mark).not.toBeChecked();
+        expect(screen.getByRole("toolbar", { name: "Selected issues" })).toBeInTheDocument();
+      },
+    ],
+    [
       "a press on the checkbox of the row marked last that the engine cancels",
       async (_user, held) => {
         const mark = listMark(held.last);
         await pressFor100ms(mark, mark, "pointercancel");
+      },
+    ],
+    [
+      "a wheel over the focused checkbox of the row marked last",
+      async (_user, held) => {
+        const mark = listMark(held.last);
+        act(() => mark.focus());
+        act(() => {
+          mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        });
+        await act(afterTask);
       },
     ],
     [
@@ -4669,6 +4697,42 @@ describe("the selection bar's hand-off over the List, by each rule and each kind
       expect(focusedName()).toBe(`Select ${held.next}`);
     });
   }
+
+  // While no landing of the bar's is owed, the table's own hand-off answers a focus a row took
+  // with it under a press on a marked row's mark, as it always has (`yieldMarkPressTo`): nothing
+  // of the bar's is out, the reader unticks the row marked last by a click, the bar staying over
+  // the other mark, and within the frame and the task that click keeps its press live for, a live
+  // update takes that row off the list. The focus goes where the table's hand-off hands it, back
+  // from the row's place to the Priority of the row before it, and not to the body.
+  test("with no landing of the bar's owed, a click on a marked row's mark whose row a live update then takes away hands the focus on by the table's own hand-off", async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 6 }, (_, index) => issue(`CORE-${index + 2}`));
+    const { client } = table(rows, "?nofilter=1", { inMain: true });
+    await screen.findByRole("checkbox", { name: "Select CORE-7" });
+    const order = drawnRows().map((row) => row.getAttribute("data-issue-row") ?? "");
+    const [before = "", last = "", other = ""] = order.slice(1, 4);
+    await user.click(listMark(other));
+    await user.click(listMark(last));
+    // The live update: the listing no longer holds the row marked last.
+    rows.splice(
+      rows.findIndex((row) => row.key === last),
+      1
+    );
+    const mark = listMark(last);
+    act(() => {
+      mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      mark.focus();
+      mark.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      mark.click();
+    });
+    expect(mark).not.toBeChecked();
+    expect(screen.getByRole("toolbar", { name: "Selected issues" })).toBeInTheDocument();
+    await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+    await waitFor(() =>
+      expect(screen.queryByRole("checkbox", { name: `Select ${last}` })).toBeNull()
+    );
+    expect(`${focusedRow()} ${focusedName()}`).toBe(`${before} Priority`);
+  });
 });
 
 // When a write sent again by Finish is refused or stopped, its row stops being named as leaving.

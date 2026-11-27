@@ -29,7 +29,9 @@ import { ROW_SELECTOR } from "./row-marker";
  * hold keeps the press live up to the write deadline. A Tab that moves the focus inside the region
  * a press was made in, while that press's own write is out, leaves the press live, since the
  * region's later going is that press's own doing. Nothing armed, a loss is answered as the page
- * answered it before it had any hand-off: the focus stays on the body, and nothing scrolls.
+ * answered it before it had any hand-off: the focus stays on the body, and nothing scrolls. A loss
+ * under a press on a row's mark is the selection bar's to land while its landing is owed
+ * (`yieldMarkPressTo`), and no component's hand-off moves the focus then.
  *
  * A loss the reader caused lands on the control now at the lost control's place in the
  * component's container - one that moved there from the lost control's own row, card or toolbar,
@@ -290,7 +292,8 @@ function walkBackInRegion(element: Element, around: RegionPlace): void {
  * place. Nor does a going the reader did not cause (`causedByReader`): a loss is the reader's
  * only while a press that armed the hand-off is live (`armHandOff`), which is why the component
  * puts `armOnPress` on the same root as this handler, and any other loss leaves the focus on the
- * body with no scroll.
+ * body with no scroll. Nor does a loss under a press on a row's mark while the selection bar's
+ * own landing is owed (`yieldMarkPressTo`): that landing puts the mark at the place in the focus.
  */
 export function useFocusPlace(
   containerOf: (element: Element) => Element | null,
@@ -321,7 +324,7 @@ export function useFocusPlace(
     if (held.portal !== null && !held.element.isConnected && present(held.portal)) return;
     place.current = null;
     if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
-    if (!causedByReader(held.element)) return;
+    if (!causedByReader(held.element) || armed?.yieldsTo?.() === true) return;
     let walked: HTMLElement[] = [];
     if (held.container.isConnected) {
       const controls = focusableIn(held.container);
@@ -407,10 +410,14 @@ export function isRowMark(element: Element): boolean {
 }
 
 /** Whether `row` is marked: its own mark - the first checkbox it draws (`MARK`), in no row
- *  inside it - is ticked. */
+ *  inside it - is ticked. `row` is a row by `row-marker.ts`'s one rule (`ROW_SELECTOR`), or an
+ *  element a selection bar's list names as a row with no row marker on it (`armHandOff`'s
+ *  `rows`), where a mark in no row at all, or in a row around it, is its own. */
 function isMarked(row: Element): boolean {
   const mark = row.querySelector(MARK);
-  return mark instanceof HTMLInputElement && mark.checked && mark.closest(ROW_SELECTOR) === row;
+  if (!(mark instanceof HTMLInputElement) || !mark.checked) return false;
+  const own = mark.closest(ROW_SELECTOR);
+  return own === row || own === null || !row.contains(own);
 }
 
 /** The list the selection bar `bar` stands over: the nearest element around the bar that holds a
@@ -952,8 +959,10 @@ export const LONE_MODIFIERS: Readonly<Record<string, true>> = {
 interface ArmedPress {
   /** Adds `root` to the roots the press was armed at (`roots`), and, where no root already added
    *  holds it in the page, the controls held in it now (`HELD`) to those held before the press
-   *  (`holds`): the same press heard at a component's root inside another's is armed at both. */
-  readonly addRoot: (root: Element) => void;
+   *  (`holds`): the same press heard at a component's root inside another's is armed at both. A
+   *  selection bar's root comes with `rows`, the elements its list names as rows that are no rows
+   *  by their markup (`armHandOff`), read with the list it stands over. */
+  readonly addRoot: (root: Element, rows?: () => readonly Element[]) => void;
   /** Whether `pressed` is empty space inside a selection bar root this press was armed at while
    *  its write is out (landing on no control in `ROW_CONTROL` inside the bar): clicking empty
    *  space in the bar's line focuses that box and acts on no control, so it keeps the bar's held
@@ -976,9 +985,11 @@ interface ArmedPress {
    *  open list sent is out - or, for a press armed at a selection bar, a control in a marked row
    *  of the list the bar stands over that was not held as the bar's root was read
    *  (`markedListAround`): a marked Inbox card's own Snooze, which the bar's Snooze holds while
-   *  its write is out. A press there takes nothing but the hold, and leaves this press the cause
-   *  (`armHandOff`). It needs neither the press's control nor the list it was made in still in
-   *  the page: the pick takes both away. */
+   *  its write is out. A row the bar's list names that is no row by its markup counts as such a
+   *  row, marked by its own mark (`isMarked`): the Snooze in the head of the Inbox's reading view,
+   *  which the bar's Snooze holds over the row the view shows. A press there takes nothing but the
+   *  hold, and leaves this press the cause (`armHandOff`). It needs neither the press's control
+   *  nor the list it was made in still in the page: the pick takes both away. */
   readonly holds: (pressed: Element) => boolean;
   /** The focused element and the dialog, panel or selection bar around it (`PRESS_REGION`), read
    *  at the arm and at every focus while the press is armed, which `pressRegionOf` reads for an
@@ -1009,6 +1020,10 @@ interface ArmedPress {
   /** Counts the press's action bound (`ACTION_BOUND_MS`) from now, as its action begins another
    *  write (`actionWriteBegins`); nothing once the bound has passed or the press has ended. */
   readonly wrote: () => void;
+  /** For a press on a row's mark, what says whether the selection bar's own landing is owed
+   *  (`yieldMarkPressTo`), else null: a component's hand-off leaves a loss under the press to
+   *  that landing while it says so. */
+  yieldsTo: (() => boolean) | null;
 }
 
 /** The armed press while one is (`armHandOff`), else null. */
@@ -1020,7 +1035,9 @@ let armed: ArmedPress | null = null;
  * page answered it before it had any hand-off, on the body with nothing scrolled
  * (`causedByReader`). A component calls it at its own root through `armOnPress`, which hands it
  * that root (`root`); the selection bar also arms it for a press on a row's mark
- * (`SelectionBar`), with no root.
+ * (`SelectionBar`), with no root. A selection bar's root hands it `rows` as well: the elements the
+ * list it stands over names as its rows where their markup makes them none (`SelectionBar`'s
+ * `rows`, the Inbox's reading view for the row it shows), read at the arm with that list.
  *
  * The press records the control it landed on (`ArmedPress`'s `control`), the root of the
  * component it was armed at (`roots`) with the controls already held in it, the region it was
@@ -1033,16 +1050,20 @@ let armed: ArmedPress | null = null;
  * press holds now by a hold that began after it, or on anything inside that control (`holds`):
  * its own control, a control of a root it was armed at that was not held as it was armed, or,
  * for a press armed at a selection bar, such a control in a marked row of the list the bar stands
- * over (`markedListAround`), which counts for nothing else. A double click or a repeated Enter on
- * a held control takes the press without a write, so the first press stays the cause, with its
- * bounds as they were: a second Enter on the Inbox bar's Snooze selected asks, held while the
- * snooze picked in its list is out, though that pick took the list's text box it was made in
- * away, and a double click on a marked Inbox card's own Snooze, which that snooze holds too. A
+ * over (`markedListAround`) or in a marked row of the `rows` it was handed, which counts for
+ * nothing else. A double click or a repeated Enter on a held control takes the press without a
+ * write, so the first press stays the cause, with its bounds as they were: a second Enter on the
+ * Inbox bar's Snooze selected asks, held while the snooze picked in its list is out, though that
+ * pick took the list's text box it was made in away, a double click on a marked Inbox card's own
+ * Snooze, which that snooze holds too, and a press on the Snooze in the head of the Inbox's
+ * reading view, which the bar's Snooze holds over the row the view shows. A
  * press on a control held before the arm is the reader's next act, and arms anew, and so is any
  * other press in that list: another row's own Dismiss, a row's link, a control in a marked row
  * the bar's action does not hold. A press on a control the armed press holds outside its own
  * control notes where it took the focus from (`takenFrom`), which the selection bar reads as it
- * goes (`repeatTookFocusFrom`).
+ * goes (`repeatTookFocusFrom`). A press on a row's mark takes what says whether the selection
+ * bar's own landing is owed (`yieldMarkPressTo`), and while it is, a component's hand-off leaves
+ * a loss under that press to the bar's landing (`useFocusPlace`).
  *
  * The press is live from the arm until a frame and a task after the last of what keeps it live
  * ends (`afterComponents`), so the commit that draws its answer and the effects after it are
@@ -1083,18 +1104,22 @@ let armed: ArmedPress | null = null;
  * element is not in the page and drawn, so what the last read before it went saw stands, and the
  * loop stops with the press.
  */
-export function armHandOff(pressed: Element, root?: Element): void {
+export function armHandOff(
+  pressed: Element,
+  root?: Element,
+  rows?: () => readonly Element[]
+): void {
   const control = pressed.closest(ROW_CONTROL) ?? pressed;
   const before = armed;
   if (
     before !== null &&
     (before.control === control || before.holds(pressed) || before.blankInBar(pressed))
   ) {
-    if (root !== undefined) before.addRoot(root);
+    if (root !== undefined) before.addRoot(root, rows);
     return;
   }
   before?.end();
-  armed = armPress(control, root);
+  armed = armPress(control, root, rows);
 }
 
 /** The React handler a component that hands its focus off puts on its root, the one that carries
@@ -1110,18 +1135,19 @@ export function armHandOff(pressed: Element, root?: Element): void {
  *  An input method's key (`inputMethodKey`) arms nothing, Enter included: the Enter that ends a
  *  composition, which Safari sends after its end with keyCode 229, commits what the reader was
  *  composing into the text box and presses nothing (`isPress`). So a keyboard reader arms what a
- *  pointer reader arms. It makes nothing interactive. */
-export function armOnPress(event: SyntheticEvent): void {
+ *  pointer reader arms. It makes nothing interactive. A selection bar's root hands it the rows its
+ *  list names (`rows`, `armHandOff`); every other root arms with none. */
+export function armOnPress(event: SyntheticEvent, rows?: () => readonly Element[]): void {
   const pressed = event.nativeEvent;
   if (pressed instanceof KeyboardEvent) {
     const { key, target } = pressed;
     if (!(target instanceof Element) || inputMethodKey(pressed)) return;
     if (key === "Enter" || (key === " " && !takesText(target))) {
-      armHandOff(target, event.currentTarget);
+      armHandOff(target, event.currentTarget, rows);
     }
     return;
   }
-  if (isPress(pressed)) armHandOff(pressed.target, event.currentTarget);
+  if (isPress(pressed)) armHandOff(pressed.target, event.currentTarget, rows);
 }
 
 /** What a component that hands its focus off spreads onto its root, the one that carries its
@@ -1218,9 +1244,14 @@ function sightOfFocused(element: HTMLElement): Sight {
   return { boxes, element, seen: true, shown: inSight(element, boxes) };
 }
 
-/** Arms a press on `control`, armed at `root` where a component's root armed it (`armHandOff`):
- *  starts its timers, its watch, its listeners and its frame loop, and answers it. */
-function armPress(control: Element, root: Element | undefined): ArmedPress {
+/** Arms a press on `control`, armed at `root` where a component's root armed it, with the `rows`
+ *  a selection bar's root names (`armHandOff`): starts its timers, its watch, its listeners and
+ *  its frame loop, and answers it. */
+function armPress(
+  control: Element,
+  root: Element | undefined,
+  rows: (() => readonly Element[]) | undefined
+): ArmedPress {
   /** Whether `control` was already held (`HELD`) as the press was made: that hold took the press
    *  without a write, so it keeps the press armed no longer than a press on a control held by
    *  nothing. */
@@ -1237,15 +1268,19 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
    *  the controls held in it as it is heard. */
   const heldAtArm = new Set<Element>();
   /** The list the selection bar the press was armed at stands over (`markedListAround`), else
-   *  null, and the controls held in it as the bar's root was added (`heldInList`): a control in a
-   *  marked row of that list that a hold begun after that holds is the press's own (`holds`), as
-   *  a control of a root is. The Inbox's cards draw each ask's own Snooze in the list beside the
-   *  bar, not in it, and the bar's Snooze holds the marked cards' Snoozes while its write is out.
-   *  The list counts for that alone and is no root: a press on anything else in it is the
-   *  reader's next act, and no place in it holds the press (`pressMadeIn`). */
+   *  null, the rows that bar's list names that are no rows by their markup (`namedRows`, from
+   *  `armHandOff`'s `rows`), and the controls held in either as the bar's root was added
+   *  (`heldInList`): a control in a marked row of that list, or in a marked named row, that a hold
+   *  begun after that holds is the press's own (`holds`), as a control of a root is. The Inbox's
+   *  cards draw each ask's own Snooze in the list beside the bar, not in it, and the bar's Snooze
+   *  holds the marked cards' Snoozes while its write is out, as it holds the Snooze in the head of
+   *  the reading view, which carries no row marker, over the row the view shows. The list and the
+   *  named rows count for that alone and are no roots: a press on anything else in them is the
+   *  reader's next act, and no place in them holds the press (`pressMadeIn`). */
   let markedList: Element | null = null;
+  let namedRows: readonly Element[] = [];
   const heldInList = new Set<Element>();
-  const addRoot = (added: Element) => {
+  const addRoot = (added: Element, rowsOfBar?: () => readonly Element[]) => {
     if (roots.has(added)) return;
     let covered = false;
     for (const each of roots) covered ||= each.contains(added);
@@ -1253,9 +1288,12 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
     if (!covered) for (const held of added.querySelectorAll(HELD)) heldAtArm.add(held);
     if (markedList !== null || !added.matches(SELECTION_BAR)) return;
     markedList = markedListAround(added);
-    for (const held of markedList?.querySelectorAll(HELD) ?? []) heldInList.add(held);
+    namedRows = rowsOfBar?.() ?? [];
+    for (const list of [markedList, ...namedRows]) {
+      for (const held of list?.querySelectorAll(HELD) ?? []) heldInList.add(held);
+    }
   };
-  if (root !== undefined) addRoot(root);
+  if (root !== undefined) addRoot(root, rows);
   const holds = (pressed: Element) => {
     if (!heldBefore && heldControl(control)?.contains(pressed) === true) return true;
     const held = heldControl(pressed);
@@ -1265,10 +1303,10 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
         if (each.contains(held)) return true;
       }
     }
+    if (heldInList.has(held)) return false;
     return (
-      markedList?.contains(held) === true &&
-      !heldInList.has(held) &&
-      rowsAround(held).some(isMarked)
+      (markedList?.contains(held) === true && rowsAround(held).some(isMarked)) ||
+      namedRows.some((row) => row.contains(held) && isMarked(row))
     );
   };
   /** What cancels the press's end, from the moment nothing keeps it live until the end runs. */
@@ -1451,6 +1489,7 @@ function armPress(control: Element, root: Element | undefined): ArmedPress {
       window.clearTimeout(bound);
       bound = window.setTimeout(atBound, ACTION_BOUND_MS);
     },
+    yieldsTo: null,
   };
   const deadline = window.setTimeout(() => {
     late = true;
@@ -1583,6 +1622,19 @@ export function pressIsArmedOwn(target: EventTarget | null): boolean {
  *  mark the reader can have just pressed. */
 export function pressOnRowMark(): boolean {
   return armed?.control.isConnected === true && isRowMark(armed.control);
+}
+
+/** Hands the armed press (`armHandOff`), where it was made on a row's mark that is still in the
+ *  page (`pressOnRowMark`), what says whether the selection bar's own landing is owed, or will be
+ *  once the bar goes (`SelectionBar`'s `useLastMarkedPlace`, which hands it on in each commit of
+ *  its page, and so in the one that answers the press). While that says so, the bar's landing
+ *  wins over a component's hand-off of a loss under this press (`useFocusPlace`), which moves
+ *  nothing then, and the bar lands the mark at the place: the project List's table hands a focus
+ *  its row took with it to the control before that row's place (`DataTable`), in the commit that
+ *  takes the rows the bar's press was writing away and ahead of the bar's own read of that
+ *  commit. With no landing owed, that hand-off answers the loss as it always has. */
+export function yieldMarkPressTo(landingOwed: () => boolean): void {
+  if (armed !== null && pressOnRowMark()) armed.yieldsTo = landingOwed;
 }
 
 /** Where a node stood in the page while it was there: the parent holding it and the siblings

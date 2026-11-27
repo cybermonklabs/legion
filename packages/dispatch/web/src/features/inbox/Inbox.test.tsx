@@ -10220,7 +10220,7 @@ for (const [host, column] of LIST_WIDTHS) {
         async (user, held) => {
           await user.keyboard("{Tab}");
           await act(afterTask);
-          expect([held.last, held.other]).toContain(focusedInboxRow());
+          expect([held.last, held.other]).toContain(focusedInboxRow() ?? "no row");
         },
       ],
       [
@@ -10463,6 +10463,14 @@ for (const [host, column] of LIST_WIDTHS) {
         },
       ],
       [
+        "⌘C on the mark of the row marked last, whose keyup never comes",
+        async (_user, held) => {
+          act(() => markOf(held.last).focus());
+          metaKeyDown(markOf(held.last), "c", "KeyC");
+          await act(afterTask);
+        },
+      ],
+      [
         "a press held 100 ms on the mark of the row marked last, whose click unticks it",
         async (_user, held) => {
           const mark = markOf(held.last);
@@ -10475,6 +10483,17 @@ for (const [host, column] of LIST_WIDTHS) {
         async (_user, held) => {
           const mark = markOf(held.last);
           await pressFor100ms(mark, mark, "pointercancel");
+        },
+      ],
+      [
+        "a wheel over the focused mark of the row marked last",
+        async (_user, held) => {
+          const mark = markOf(held.last);
+          act(() => mark.focus());
+          act(() => {
+            mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+          });
+          await act(afterTask);
         },
       ],
       [
@@ -10511,6 +10530,44 @@ for (const [host, column] of LIST_WIDTHS) {
         await landsOn(held.next);
       });
     }
+
+    // The landing a going owes after a wheel is chosen from what the reader sees after that wheel,
+    // so it never scrolls back to where they scrolled away from. The bar's Snooze is held over the
+    // two rows, and the reader's wheel over the remembered mark of the row marked last scrolls the
+    // window on past them and the row after them. Once the write lands and the two rows go with the
+    // bar, the landing is made on the first row after the place that the reader can see, or, with
+    // no row in sight, on the list's own stop, and the row at the place stays above the window.
+    test.each([
+      ["a row after the place in sight", 6 * LAID_ROW_PX],
+      ["no row in sight", 40 * LAID_ROW_PX],
+    ] as const)(
+      "Remembered: a wheel over the remembered mark of the row marked last that scrolls the window past it, with %s, lands from the sight after the wheel and scrolls nothing back",
+      async (_sight, by) => {
+        const user = userEvent.setup();
+        const held = await heldSnooze(user);
+        const mark = markOf(held.last);
+        act(() => mark.focus());
+        act(() => {
+          mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+          window.scrollBy({ top: by });
+        });
+        await act(afterTask);
+        expect(focusPlace()).toBe(`the mark of ${held.last}`);
+        await held.letGo();
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+        await waitFor(() => expect(focusPlace()).not.toBe("the body"));
+        await afterFrameAndTasks();
+        // The first row the reader can see now, the place and every row before it standing above
+        // the window.
+        const inSight = rowIds().find((id) => markOf(id).getBoundingClientRect().top >= 0);
+        if (inSight === undefined) {
+          expect(document.activeElement === screen.getByTestId("inbox-list")).toBe(true);
+        } else {
+          expect(focusPlace()).toBe(`the mark of ${inSight}`);
+        }
+        expect(markOf(held.next).getBoundingClientRect().bottom).toBeLessThanOrEqual(0);
+      }
+    );
   });
 }
 

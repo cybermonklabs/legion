@@ -3,6 +3,7 @@ import {
   type ReactNode,
   type Ref,
   type RefObject,
+  type SyntheticEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -15,7 +16,6 @@ import { afterFootPass, footPassNow, useFootInset } from "../hooks/useFootInset"
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
 import {
-  ARM_ON_PRESS,
   armHandOff,
   armOnPress,
   causedByReader,
@@ -32,6 +32,7 @@ import {
   repeatTookFocusFrom,
   scrollToNearest,
   visibleMarkPoint,
+  yieldMarkPressTo,
 } from "./focus-place";
 import { ROW_SELECTOR } from "./row-marker";
 
@@ -62,6 +63,12 @@ export interface SelectionBarProps {
    *  the hand-off asked the table to draw the row and focus its checkbox once drawn
    *  (`MarkedList`'s `drawRow`). */
   readonly returnFocus?: () => HTMLElement | null;
+  /** The elements the list the bar stands over names as its rows where their markup makes them
+   *  none (`MarkedPlace`'s `rows`, from `MarkedList`'s `row`): the Inbox's reading view for the
+   *  row it shows. The bar hands them to the press it arms at its root (`armOnPress`), so a
+   *  control its running action holds in one of them that is marked is that press's own, as a
+   *  control it holds in a marked row is (`focus-place.ts`'s `holds`). */
+  readonly rows?: () => readonly Element[];
   /** How much room the bar's own box takes (`ControlSize`): its padding. The actions in it are
    *  the page's, and each carries the page's size itself. */
   readonly size?: ControlSize;
@@ -89,7 +96,9 @@ export interface MarkedList {
    *  A focus anywhere inside it is a focus in that row. A list whose rows are each the row around
    *  their mark (`ROW_SELECTOR`) leaves this out, and that row is read. The Inbox gives its reading
    *  view for the row it shows: the view is no row by its markup, and a row marker on it would make
-   *  it one for `components/focus-place.ts`'s row hand-offs inside it too. */
+   *  it one for `components/focus-place.ts`'s row hand-offs inside it too. The page hands these
+   *  elements to its bar as well (`MarkedPlace`'s `rows`), where the first checkbox in each is its
+   *  mark, as a row's own mark is. */
   readonly row?: (id: string) => Element | null;
   /** Draws row `id`, which the list holds (`order`) and its window has not drawn (`control` is
    *  null), and lands on its mark once drawn, calling `onLand` with that mark in the task that
@@ -136,9 +145,13 @@ export interface MarkedList {
  * marked last while another mark keeps the bar up, and the press's writes then take both rows and
  * the bar away together. So while the bar is drawn and nothing is owed, the hand-off remembers
  * the control that holds the focus in a row the list names as leaving, from the focus events
- * (`focusin`) and from the host's commits, never from a frame or a timer. The reader's own act
- * (`READER_ACTS`), a focus on a control outside those rows, a landing owed and the hook's unmount
- * forget it; the focus the act then puts in a leaving row is remembered again. A going that finds
+ * (`focusin`) and from the host's commits, never from a frame or a timer. A focus on a control
+ * outside those rows, a landing owed and the hook's unmount forget it. The reader's own act
+ * (`READER_ACTS`) forgets it only where, once the act is read - when **Cancelled** reads one
+ * (`afterAnswer`) - the focus no longer stands on it: ⌘C and a wheel move no focus and make no
+ * commit, so the control stays remembered through them, while a press on blank space, which
+ * drops the focus onto the body and raises no `focusin`, forgets it. A window `blur` ends that
+ * read unmade. The focus an act puts in a leaving row is remembered again. A going that finds
  * the focus on the body and that control gone from the page owes the landing as well, and asks
  * for it at once. Each commit asks again.
  *
@@ -150,8 +163,10 @@ export interface MarkedList {
  * head the hand-off is given); else the list's own stop, with no scroll, which is given
  * `tabindex="-1"` where it has none. The mark takes the focus with no scroll of the engine's own,
  * which centres a control it scrolls to, and is shown whole at its nearest edge below that head
- * and inside a box's own scroll padding, the least scroll (`landNearest`). Every landing is made
- * once the foot's own pass has given the list the room the bar's foot had back
+ * and inside a box's own scroll padding, the least scroll (`landNearest`). The rows are read as
+ * they stand when the landing is made, so a landing after the reader's wheel is chosen from what
+ * they can see after it and never scrolls back to where they scrolled away from. Every landing is
+ * made once the foot's own pass has given the list the room the bar's foot had back
  * (`hooks/useFootInset.ts`'s `afterFootPass`), since that pass moves the box the reader sees the
  * rows through. Before fitting the list (`MarkedList`'s `fit`), the hand-off runs `footPassNow`
  * to account for floats whose boxes changed before their observers ran. Where the list holds the
@@ -160,7 +175,13 @@ export interface MarkedList {
  * `drawRow`, `land` answers false and leaves the landing to the list's own stop. Right after a
  * landing's scroll, the hand-off runs `footPassNow` again, fits the box and checks the landing
  * against that box in the same task. A scroll off the box's end can release kept end room before
- * the first painted frame.
+ * the first painted frame. While a landing is owed, or will be once the bar goes because the
+ * control remembered in a leaving row has left the page with it (Owed), the landing wins over a
+ * component's hand-off that a press on a row's mark armed (`yieldMarkPressTo`): the project
+ * List's table hands a focus its row took with it to a control before the row's place, in the
+ * commit that takes the row and ahead of this hand-off's own read of it, and takes its bar away a
+ * commit later. That hand-off moves nothing then, so the mark at the place takes the focus. With
+ * no landing owed, that hand-off answers the loss as it always has.
  *
  * **Cancelled.** The reader's own press, key or wheel (`READER_ACTS`) ends what is owed when
  * it leaves focus on a control that stays or puts focus on the body. A press outside every row
@@ -192,6 +213,8 @@ export interface MarkedList {
  * the hand-off did not make, ends what is owed, and the hand-off never takes the focus back from
  * such a control: on the project List, the question dialog of a Move to epic whose dry run is out
  * takes the focus while the bar's going, both marks unticked by the reader, owes a landing too.
+ * A component's hand-off that a press on a row's mark armed moves nothing while a landing is
+ * owed (Landed), so it hands nothing on.
  * Where the focus stands is noted once the landing is owed, and again
  * after each move the hand-off makes itself (`park`, and the list's own stop it puts the focus on
  * in `drawLast`), and read when the landing is made, once the foot's pass has run: a focus that
@@ -238,7 +261,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // with the focus before the going could read it there (Owed).
   const leavingFocus = useRef<Element | null>(null);
   // What ends the watch that keeps `leavingFocus` from the focus events and the reader's acts,
-  // while it runs, else null.
+  // with the read of an act still to come, while it runs, else null.
   const leavingWatch = useRef<AbortController | null>(null);
   /** Forgets the control remembered in a leaving row and ends the watch that keeps it. */
   const forgetLeaving = useCallback(() => {
@@ -268,10 +291,12 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   /** Remembers, while the bar is drawn and nothing is owed, the control that holds the focus in a
    *  row the list names as leaving, for the bar's going to read (Owed): as this commit of the host
    *  leaves it, and at each move of the focus until the watch ends (`forgetLeaving`). A focus on a
-   *  control outside those rows forgets it, and so does the reader's own act (`READER_ACTS`); the
-   *  focus the act then puts in a leaving row is remembered again by its `focusin` or by the commit
-   *  after it. A focus on the body keeps it: a control taken out of the page with its row drops
-   *  the focus there and raises no `focusin`. */
+   *  control outside those rows forgets it. The reader's own act (`READER_ACTS`) forgets it only
+   *  where, once the act has been answered (`afterAnswer`, the read **Cancelled** makes), the
+   *  focus no longer stands on it: ⌘C and a wheel leave it there, and a press on blank space puts
+   *  the focus on the body. The focus an act puts in a leaving row is remembered again by its
+   *  `focusin` or by the commit after it. A focus on the body keeps it otherwise: a control taken
+   *  out of the page with its row drops the focus there and raises no `focusin`. */
   const rememberLeaving = useCallback((live: MarkedList) => {
     if (leavingWatch.current === null) {
       const watch = new AbortController();
@@ -288,8 +313,19 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
         },
         options
       );
+      // What ends, unread, the read of where the reader's last act left the focus, while it is
+      // still to come, else null. A later act's read takes its place, and the watch's end ends it.
+      let read: (() => void) | null = null;
+      watch.signal.addEventListener("abort", () => read?.());
       const onAct = (event: Event) => {
-        if (leavingFocus.current !== null && readerActed(event)) leavingFocus.current = null;
+        if (leavingFocus.current === null || !readerActed(event)) return;
+        read?.();
+        read = afterAnswer(event, new AbortController(), (answered) => {
+          read = null;
+          if (answered && document.activeElement !== leavingFocus.current) {
+            leavingFocus.current = null;
+          }
+        });
       };
       for (const kind of READER_ACTS) document.addEventListener(kind, onAct, options);
     }
@@ -432,28 +468,34 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     },
     [landAfterFootPass]
   );
+  /** Whether a landing is owed now, or will be once the bar goes: the control remembered in a
+   *  leaving row has left the page with that row and dropped the focus onto the body, so the
+   *  bar's going owes the landing (`goingOwes`), in the commit that takes the row or in a later
+   *  one, as the project List takes its bar away a commit after the rows, once its selection is
+   *  pruned. Read in a commit before this hook's own read of it below: a component's hand-off that
+   *  a press on a row's mark armed leaves its loss to this landing then (`yieldMarkPressTo`,
+   *  Landed). */
+  const landingOwed = useCallback(
+    () =>
+      owed.current !== null || (focusOnDocument() && leavingFocus.current?.isConnected === false),
+    []
+  );
   // Each commit of the host asks the hand-off again while a landing is owed: the commit that lets
   // the press's rows go is the one that makes the landing. The page's own landing is its table's,
   // and is made once the focus stands in the list's rows.
   useLayoutEffect(() => {
+    // A press on a row's mark is armed in the event this commit answers, as the reader's untick
+    // of a mark is: it takes what says whether this hand-off's landing is owed.
+    yieldMarkPressTo(landingOwed);
     const live = latest.current;
     const went = drawn.current && !live.shown;
     drawn.current = live.shown;
     const place = owed.current;
     if (place === null) {
-      // The bar gone with the focus in a row the list names as leaving: the reader unticked the
-      // last mark while the press's writes are out, by a click that leaves the focus on the mark,
-      // as Chromium's and Firefox's do. The bar hands on only a focus its going dropped onto the
-      // body (`land`), and this one is the reader's, so nothing moves now. The row's going would
-      // drop it onto the body, so the landing is owed, as after the bar's own hand-off. So it is
-      // where this commit took that row away with the bar and dropped the focus onto the body
-      // first: the control remembered in a leaving row has left the page. The landing is asked
+      // The bar gone with the focus in a row the list names as leaving, or with the control
+      // remembered in such a row gone from the page (`goingOwes`): the landing is owed, and asked
       // for at once, as each commit asks while it is owed, so with no row leaving it is made now.
-      if (
-        went &&
-        (focusInLeavingRow(live) ||
-          (focusOnDocument() && leavingFocus.current?.isConnected === false))
-      ) {
+      if (goingOwes(live, went, leavingFocus.current)) {
         const last = live.lastMarked();
         owe({ actRow: null, kind: "place", last });
         parkOrLand(live, last);
@@ -519,6 +561,14 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       owePlace(list, last, null);
       return true;
     },
+    rows: () => {
+      const { order, row } = latest.current;
+      if (row === undefined) return [];
+      return order().flatMap((id) => {
+        const element = row(id);
+        return element === null ? [] : [element];
+      });
+    },
   };
 }
 
@@ -537,6 +587,20 @@ type Owed = OwedFor & { readonly unwatch: () => void };
 function anyLeaving(list: MarkedList): boolean {
   const { leaving } = list;
   return leaving !== undefined && list.order().some((row) => leaving(row));
+}
+
+/** Whether the bar's going owes the landing (`useLastMarkedPlace`'s Owed): the bar `went` in the
+ *  host's commit being read, with the focus in a row the list names as leaving - the reader
+ *  unticked the last mark while the press's writes are out, by a click that leaves the focus on
+ *  the mark, as Chromium's and Firefox's do - or on the page's body with `remembered`, the control
+ *  the hand-off remembered in such a row, gone from the page: that commit took the row away with
+ *  the bar and dropped the focus onto the body first. The bar hands on only a focus its going
+ *  dropped onto the body (`land`), and a focus in a leaving row is the reader's, so nothing moves
+ *  then: the row's going would drop it onto the body, and the landing takes it then. */
+function goingOwes(list: MarkedList, went: boolean, remembered: Element | null): boolean {
+  return (
+    went && (focusInLeavingRow(list) || (focusOnDocument() && remembered?.isConnected === false))
+  );
 }
 
 /** Whether the focus stands in a row the list holds and names as leaving (`MarkedList`'s
@@ -591,15 +655,19 @@ export interface MarkedPlace {
    *  false only where the list holds that row, has not drawn it and gave no `drawRow`, in which
    *  case the page hands the focus to the list's own stop (`focusListStop`). */
   readonly land: () => boolean;
+  /** The elements the list names as its drawn rows (`MarkedList`'s `row`), in its order; none
+   *  where it gives no `row`. The page hands this to its bar (`SelectionBarProps`'s `rows`). */
+  readonly rows: () => readonly Element[];
 }
 
 /** What the reader does that the hand-off reads as their act (`useLastMarkedPlace`): while a
- *  landing is owed, and while the bar is drawn, where it forgets the control remembered in a
- *  leaving row. A press, a key or a wheel of theirs, read on the document's capture so nothing can
- *  stop it on the way. Where it leaves the focus decides whether the landing stays owed. A press
- *  the armed press counts as its own is not one (`pressIsArmedOwn`), and neither is a keydown of a
- *  modifier alone (`LONE_MODIFIERS`): a reader who holds Shift for Shift+Tab has not acted yet,
- *  and the Tab that follows is their act (`readerActed`). */
+ *  landing is owed, and while the bar is drawn, where the act's read can forget the control
+ *  remembered in a leaving row. A press, a key or a wheel of theirs, read on the document's
+ *  capture so nothing can stop it on the way. Where it leaves the focus decides whether the
+ *  landing stays owed, and whether that control stays remembered. A press the armed press counts
+ *  as its own is not one (`pressIsArmedOwn`), and neither is a keydown of a modifier alone
+ *  (`LONE_MODIFIERS`): a reader who holds Shift for Shift+Tab has not acted yet, and the Tab that
+ *  follows is their act (`readerActed`). */
 const READER_ACTS = ["pointerdown", "keydown", "wheel"] as const;
 
 /** Whether `event`, one of `READER_ACTS`, is the reader's act: no press the armed press counts as
@@ -811,10 +879,11 @@ function markShown(mark: HTMLElement, clips: Map<Element, boolean>, head: Elemen
  * (`outOfSight`). Nor does a going the reader did not cause - a refetch
  * that drops every marked row and empties the bar - which leaves the focus on the body, in no row,
  * and scrolls nothing. The press these read is the one that armed the hand-off (`armHandOff`): a
- * press on the bar's own actions arms it at the bar's root (`armOnPress`), and so do Escape from a
- * control inside the bar (`armOnBarKey`) and the project List's press that answers a dialog a bar
- * action opened (`IssuesTable`); a press on a row's mark arms it while the bar is drawn. A going
- * with nothing armed leaves the focus on the body and scrolls nothing.
+ * press on the bar's own actions arms it at the bar's root (`armOnPress`), with the rows the page
+ * names that are no rows by their markup (`rows`), and so do Escape from a control inside the bar
+ * (`armOnBarKey`) and the project List's press that answers a dialog a bar action opened
+ * (`IssuesTable`); a press on a row's mark arms it while the bar is drawn. A going with nothing
+ * armed leaves the focus on the body and scrolls nothing.
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
   // Set by the drawn bar to what held the focus when the focus dropped with it - the bar's
@@ -878,12 +947,16 @@ const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
  *  for (`armOnPress`), and Escape from a control inside the bar besides, which the bar's hand-off
  *  counts as the reader's own (`SelectionBar`): on a page whose keymap clears the selection on
  *  Escape, as the Inbox's does, Escape there clears the selection the bar holds (the project List
- *  binds no such key), where a component's root reads it as the reader leaving a control. */
-function armOnBarKey(event: KeyboardEvent<HTMLDivElement>): void {
+ *  binds no such key), where a component's root reads it as the reader leaving a control. Each
+ *  arm takes the rows the page names (`SelectionBarProps`'s `rows`). */
+function armOnBarKey(
+  event: KeyboardEvent<HTMLDivElement>,
+  rows: (() => readonly Element[]) | undefined
+): void {
   if (event.key === "Escape" && event.target instanceof Element) {
-    armHandOff(event.target, event.currentTarget);
+    armHandOff(event.target, event.currentTarget, rows);
   } else {
-    armOnPress(event);
+    armOnPress(event, rows);
   }
 }
 
@@ -894,6 +967,7 @@ function DrawnBar({
   count,
   label,
   notice,
+  rows,
   size = "comfortable",
   state,
   wentHolding,
@@ -940,6 +1014,9 @@ function DrawnBar({
       }
     };
   }, [ref, wentHolding]);
+  // What the bar's root arms the hand-off with at a press inside it, as every component's root
+  // does (`ARM_ON_PRESS`), with the rows the page names besides (`rows`).
+  const armAtRoot = (event: SyntheticEvent) => armOnPress(event, rows);
   // A press on a row's mark arms the hand-off while the bar is drawn (`armHandOff`), as a press
   // on the bar's own actions does at its root: unticking the last marked row by its mark takes
   // the bar away, and that going is the reader's (`pressOnRowMark`). Heard on the document, in
@@ -975,8 +1052,9 @@ function DrawnBar({
       aria-label={label}
       className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${BAR_BOX[size]} ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
       data-control={CONTROL.selectionBar}
-      {...ARM_ON_PRESS}
-      onKeyDownCapture={armOnBarKey}
+      onChangeCapture={armAtRoot}
+      onClickCapture={armAtRoot}
+      onKeyDownCapture={(event) => armOnBarKey(event, rows)}
       onFocus={(event) => {
         focused.current = event.target;
       }}

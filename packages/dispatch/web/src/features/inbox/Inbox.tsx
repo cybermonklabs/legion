@@ -2840,6 +2840,9 @@ function InboxBody({
       // (`landAtPlace`) puts the focus itself. The list's own stop (`barStop`) is the last place
       // the focus can go.
       returnFocus={() => (landAtPlace.land() ? null : focusListStop(barStop()))}
+      // The reading view for the open row, which no row marker names (`row` above): a control the
+      // bar's Snooze holds in its head counts as the bar's press, as a marked row's does.
+      rows={landAtPlace.rows}
       size={BAR_SIZE}
       state={barState}
     >
