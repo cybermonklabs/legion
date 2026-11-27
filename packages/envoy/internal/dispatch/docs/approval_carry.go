@@ -124,9 +124,11 @@ const carriedReasonEnd = ", were the whole change since it."
 // askServerAttributeNames are the attributes of an ask block the release before kept in agreement
 // with its ask row, which a stored version may hold: `invalid` never reaches stored bytes
 // (pmdoc.BlockAttributeSchema.InMarkdown), and the other seven do wherever that release wrote
-// them. It is the one place the eight are spelled, and the carry its one reader
-// (attributeRemovalCase): it compares against stored versions, which are never rewritten, so it
-// stays after the fleet stops writing them.
+// them. It is the one place the eight are spelled. Outside the tests two read it, each through
+// withoutAskServerAttributes: the carry (attributeRemovalCase), which compares stored versions, and
+// the text routes (TextWithAsks, through servedAskTree), which take the eight off every tree they
+// render for a reader of the asks member. A stored version is never rewritten, so both still meet
+// the eight after the fleet stops writing them, and the list stays.
 var askServerAttributeNames = [...]string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"}
 
 // carryCase is one kind of difference between an approved version and a later one that carries
