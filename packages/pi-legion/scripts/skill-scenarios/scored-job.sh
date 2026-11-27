@@ -51,8 +51,8 @@
 # its Oh My Pi (LEGION_TEST_OMP) as SKILL_SCENARIOS_OMP, each unless the variable of the rig's own
 # is set; the model route; `bun install --frozen-lockfile`; for owner-walk, the capture of a real
 # plans read at the label checkout (rig.sh plans-capture), whose answer every run's proxy serves,
-# its keys mapped to the run's; each label's tree and profile; each case's or world's batch; then
-# the rows, the reach lines and the cells.
+# its keys mapped to the run's; each label's tree, a control tree's `bun install --frozen-lockfile`,
+# and its profile; each case's or world's batch; then the rows, the reach lines and the cells.
 #
 # The model: SKILL_SCENARIOS_MODEL=standin runs every turn on the model stand-in (model-standin.ts),
 # and standin-report on its scripted mode, a path check's. Without it, the gateway, on the family's
@@ -313,6 +313,8 @@ forward_job() {
       exit 3
     fi
     tree=$SKILL_SCENARIOS_WORK/label-trees/$label/tree
+    (cd "$tree" && bun install --frozen-lockfile) >>"$SKILL_SCENARIOS_WORK/bun-install.log" 2>&1 ||
+      refuse "bun install --frozen-lockfile in the label tree $label failed; see $SKILL_SCENARIOS_WORK/bun-install.log"
   fi
   bash "$rig" profile "$label" "$tree"
   for world in "${worlds[@]}"; do
