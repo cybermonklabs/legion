@@ -684,15 +684,16 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 // writes it, each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles
 // nobody defines, and 80,659 steps `acceptance:k`, each with a key but owner on acceptance and
 // with no implementer before it. Each answer is within perKind bytes for each kind it holds, and
-// counts the rest of each kind past the bound, in its sentence too. Three more quote or list long
+// counts the rest of each kind past the bound, in its sentence too. Four more quote or list long
 // values, each within perLongKind for each kind, a bound computed from those constants: a ring of
 // 40,000 tasks, each needing a word that names no task too, whose reasons are those words and the
-// cycle through the tasks, its chain cut; a task whose id is 900 KB; and a task whose one need is
-// a word of 1 MiB, each of the last two quoted with its mark. The faults are an answer with a
-// reason for each cause and one that quotes or lists a value whole; the controls take out plan's
+// cycle through the tasks, its chain cut; the same 40,000 tasks needing nothing, whose one reason
+// lists the tasks that no task needs, its list cut; a task whose id is 900 KB; and a task whose one
+// need is a word of 1 MiB, each of the last two quoted with its mark. The faults are an answer with
+// a reason for each cause and one that quotes or lists a value whole; the controls take out plan's
 // bound of the reasons, under which the first two versions are answered in 34 and 44 MB, and
-// quoted's cut with chainOf's, under which the long id and the long need are answered whole. It
-// holds the counts and the size, and no sentence.
+// quoted's cut with listed's and chainOf's, under which the list of the 40,000 tasks, the long id
+// and the long need are answered whole. It holds the counts and the size, and no sentence.
 func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
 	// `error` and in `reasons`) at under 200 bytes with its JSON.
@@ -733,6 +734,11 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	for i := range ring {
 		ring[i] = needing(taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer"), fmt.Sprintf("t%05d x%05d", (i+1)%ringSize, i))
 	}
+	// The same tasks, t00000 to t39999, needing nothing: each is a task that no task needs.
+	sinks := make([]dispatch.DocumentBlock, ringSize)
+	for i := range sinks {
+		sinks[i] = taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer")
+	}
 	longID := strings.Repeat("a", 900<<10)
 	longNeed := strings.Repeat("x", mib)
 	for _, tc := range []struct {
@@ -753,6 +759,8 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}, ""},
 		// Two kinds: the word of each task that names no task, and the one cycle, its chain cut.
 		{"a ring of 40,000 tasks", ring, 2 * perLongKind, plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}, ""},
+		// One kind: the tasks that no task needs, the list of them cut.
+		{"40,000 tasks that no task needs", sinks, perLongKind, 1, []int{ringSize - plan.MostReasons}, ""},
 		// The id alone is refused; with steps that each name it, a whole id gave tens of MB.
 		{"a task whose id is 900 KB", []dispatch.DocumentBlock{taskBlock(longID, "tester:k tester:k")},
 			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longID))},
