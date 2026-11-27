@@ -1696,7 +1696,9 @@ test("withdraw_defect posts the defect's id and its reason with a fresh grant, a
         "/legion/v1/defects/withdraw",
         403,
         "DEFECT_WITHDRAW_NOT_OWNER",
-        sentence
+        sentence,
+        true,
+        0
       ),
     },
   });
@@ -1736,11 +1738,7 @@ test("report_defect and withdraw_defect refuse each field they require by name, 
   const { defect, head } = DEFECT_REPORT;
   const { reason } = withdrawal;
   const refusals: ReadonlyArray<readonly [LegionToolSession, Record<string, unknown>, string]> = [
-    [
-      claimSession("merger"),
-      { op: "report_defect", defect, head },
-      "report_defect requires issue",
-    ],
+    [claimSession("merger"), { op: "report_defect", defect, head }, "report_defect requires issue"],
     [
       claimSession("merger"),
       { op: "report_defect", issue: "LEGION-208", head },

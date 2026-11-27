@@ -681,7 +681,12 @@ test("reportDefect and withdrawDefect post the contract's requests to the defect
     ],
     ["reportDefect", "/legion/v1/defects/report", report, { defect: "41", state: "same" }],
     ["reportDefect", "/legion/v1/defects/report", report, { defect: "41", state: "a_later_word" }],
-    ["withdrawDefect", "/legion/v1/defects/withdraw", withdrawal, { defect: "41", state: "withdrawn" }],
+    [
+      "withdrawDefect",
+      "/legion/v1/defects/withdraw",
+      withdrawal,
+      { defect: "41", state: "withdrawn" },
+    ],
   ] as const) {
     const { fetch, requests } = daemon(() => Response.json(answer));
     const client = createLegionDaemonClient("http://daemon.test", {
