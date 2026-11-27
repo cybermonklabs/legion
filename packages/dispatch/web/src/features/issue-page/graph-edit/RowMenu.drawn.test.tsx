@@ -1577,12 +1577,17 @@ function HeldOutline({
 }
 
 /** The outline of the fixture's converted issue at `path` (Graph's where none is given), its read
- *  held by a signed-in client under the page's row writer, so a row is edited in the issue's room
- *  as the page edits it (`model-rows/room-target.ts`), with a live room for each document, and
- *  the asks read `asks` where a case gives one. */
-function drawLive(path = `/issues/${KEY}/graph`, asks?: readonly TreeAsk[]): LiveOutline {
+ *  - `held`, the converted read where a case gives none - held by a signed-in client under the
+ *  page's row writer, so a row is edited in the issue's room as the page edits it
+ *  (`model-rows/room-target.ts`), with a live room for each document, and the asks read `asks`
+ *  where a case gives one. */
+function drawLive(
+  path = `/issues/${KEY}/graph`,
+  asks?: readonly TreeAsk[],
+  held: TreeAnswer = converted
+): LiveOutline {
   const client = signedIn();
-  client.setQueryData(outlineQuery(KEY, "graph").queryKey, converted);
+  client.setQueryData(outlineQuery(KEY, "graph").queryKey, held);
   // The writer's own reads, answered empty, so it asks the network for nothing.
   for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
@@ -2272,6 +2277,99 @@ test("a new row below a criterion under a question stands in the question's row,
   expect(fresh.row.dataset.rowKey, "the placed node's row moved").toBe(`${questionKey}>${id}`);
   expect(document.activeElement, "the row lost the caret").toBe(fresh.editable);
   expect(caretPlace(), "the caret moved").toEqual(before);
+});
+
+const MEMO = nodeOf(converted, "<memo>");
+const PARAGRAPH = nodeOf(converted, "<tree/paragraph>");
+
+/** The fixture's read with the question's block the last block of the spec under the issue: the
+ *  criterion, with all that stands under it, moved from under the ask to stand right under the
+ *  issue after the memo, and the decision and its reading left out. The criterion is then a block
+ *  of the spec before the question's block under the issue, and the paragraph of the issue's own
+ *  fragment the ranked node right after that block. */
+function questionLastInSpec(): TreeAnswer {
+  const under = new Set([CRITERION.id]);
+  const moved: TreeAnswerNode[] = [];
+  const kept: TreeAnswerNode[] = [];
+  for (const node of converted.nodes ?? []) {
+    const parent = node.parent?.id;
+    if (node === CRITERION || (parent !== undefined && under.has(parent))) {
+      under.add(node.id);
+      moved.push(node === CRITERION ? { ...node, parent: MEMO.parent } : node);
+    } else if (node !== DECISION && parent !== DECISION.id) {
+      kept.push(node);
+    }
+  }
+  const at = kept.indexOf(MEMO) + 1;
+  return { ...converted, nodes: [...kept.slice(0, at), ...moved, ...kept.slice(at)] };
+}
+
+// R4 and R8: Indent of the ranked node right after the question's block puts it under the block,
+// which the outline draws in the question's row, the one row of the ask and its block, read as
+// the ask. Once the move is taken, the node's row there takes the focus, as after any taken move,
+// although the parent the read gives the node is the block and not the ask the row is read as.
+test("a node indented under the question's block takes the focus in the question's row", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const placed = `${String(PARAGRAPH.placement_seq)}@2`;
+  const sent = answerNodeRoutes({
+    deletes: [deleted.dry_run],
+    patches: [
+      { body: { after: null, parent: QUESTION_BLOCK.id, placement_seq: placed }, status: 200 },
+    ],
+  });
+  const live = drawLive(undefined, [QUESTION_ASK], questionLastInSpec());
+  const question = await waitFor(() => {
+    const row = rowOf(live.view, QUESTION_BLOCK);
+    if (row === null) throw new Error("no row is drawn for the question's block");
+    return row;
+  });
+  expect(question.dataset.nodeReadId, "the question's row is not read as the ask").toBe(
+    QUESTION.id
+  );
+  await pickOn(live, user, PARAGRAPH, CONTROL_LABELS.edit_indent);
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  expect(sent.patches[0]?.body, "Indent names another parent").toEqual({
+    after: null,
+    parent: QUESTION_BLOCK.id,
+  });
+  const under = await waitFor(() => {
+    const found = rowUnder(live.view, QUESTION_BLOCK, PARAGRAPH);
+    if (found === null) throw new Error("the question's row draws no row of the paragraph");
+    return found;
+  });
+  expect(heldNode(live, PARAGRAPH.id)?.parent?.id, "the read gives another parent").toBe(
+    QUESTION_BLOCK.id
+  );
+  await waitFor(() =>
+    expect(document.activeElement, "the moved row does not hold the focus").toBe(under)
+  );
+  await waitInAct(50);
+  expect(document.activeElement, "the focus left the moved row").toBe(under);
+});
+
+// R3: New row below on a block of the spec draws the new row right after the spec's last block
+// under the parent. Where that block is the question's, the new row is drawn right after the
+// question's row, the one row of the ask and its block, read as the ask.
+test("a new row below a block of the spec stands right after the question's row where the question's block is the spec's last", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  answerNodeRoutes({ deletes: [deleted.dry_run] });
+  const live = drawLive(undefined, [QUESTION_ASK], questionLastInSpec());
+  const question = await waitFor(() => {
+    const row = rowOf(live.view, QUESTION_BLOCK);
+    if (row === null) throw new Error("no row is drawn for the question's block");
+    return row;
+  });
+  expect(question.dataset.nodeReadId, "the question's row is not read as the ask").toBe(
+    QUESTION.id
+  );
+  await pickOn(live, user, CRITERION, CONTROL_LABELS.edit_new_below);
+  const below = await caretInNewRow(live);
+  const top = childKeys(live.view, KEY);
+  expect(top.indexOf(`${KEY}>${below.row.dataset.nodeId}`), "New row below stands elsewhere").toBe(
+    top.indexOf(question.dataset.rowKey ?? "") + 1
+  );
 });
 
 // R3: the reader typing on while the placing PATCH is out, and after it lands, loses no character,

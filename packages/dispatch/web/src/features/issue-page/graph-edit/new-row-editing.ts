@@ -32,7 +32,13 @@ import {
   typeNewRow,
 } from "./new-rows";
 import { heldRead, type NewEntry, readAfterRoomWrite } from "./node-writes";
-import type { NewPlace, PlaceLine, RetypeAttributes, RetypeKind } from "./placement";
+import {
+  type NewPlace,
+  type PlaceLine,
+  type RetypeAttributes,
+  type RetypeKind,
+  rowReadIds,
+} from "./placement";
 import { retypeKinds, writeNewBlock, writeRetype } from "./room-writes";
 import type { RowEditor, RowReveal } from "./row-edits";
 import { ownPathTo, ownPathWhere } from "./row-reveal";
@@ -109,6 +115,22 @@ function drawnRowOf(
     (row): row is Extract<DrawnRow, { kind: "node" }> =>
       row.kind === "node" && row.node.id === blockId && !row.node.transcluded
   );
+}
+
+/** `place` as the outline draws it among the children of the row `under`: right after the row
+ *  that its `after`, a node of `held`, is drawn in, named by the read id that row carries. The
+ *  outline draws an ask and the block it was asked on in one row, read as the first of the two
+ *  the read's walk reaches, so the block the place names can be drawn in a row read as the ask
+ *  (`placement.ts`' `rowReadIds`); a row read as the node itself is the one it is drawn after. */
+function drawnPlace(place: NewPlace, under: TreeNode, held: TreeAnswer | undefined): NewPlace {
+  if (place.after === null || held === undefined) return place;
+  for (const after of rowReadIds(held, place.after)) {
+    const drawn = under.children.some(
+      (child) => !child.transcluded && (child.readId ?? child.id) === after
+    );
+    if (drawn) return after === place.after ? place : { ...place, after };
+  }
+  return place;
 }
 
 /**
@@ -245,9 +267,9 @@ export function useNewRowEditing({
       // The row is drawn under the row the tree draws its place's parent in, found from the own
       // row of the node it is made from, by the drawn id that the read's `parent` need not share:
       // the node the read gives that read id, or a new row named by its block id while the read
-      // holds none of it (`RowEditor.readIdOf`).
+      // holds none of it (`RowEditor.readIdOf`); and right after the row its place names there.
       const path = ownPathWhere(root, (each) => (each.readId ?? each.id) === node);
-      const under = (entry === "new_under" ? path : path?.slice(0, -1))?.at(-1)?.id;
+      const under = (entry === "new_under" ? path : path?.slice(0, -1))?.at(-1);
       if (parent === undefined || under === undefined) return;
       const blockId = crypto.randomUUID();
       const from = document.activeElement?.closest<HTMLElement>("[data-node-row]") ?? null;
@@ -269,8 +291,8 @@ export function useNewRowEditing({
         from: node,
         ...(line === undefined ? {} : { line }),
         parent,
-        place,
-        under,
+        place: drawnPlace(place, under, held),
+        under: under.id,
       });
     },
     [body, client, issue, reader, root]

@@ -478,6 +478,56 @@ test("outdent is grey on a child of the zoomed node", () => {
   expect(place("<statement-1>").outdent.kind).toBe("move");
 });
 
+/** The fixture's read with a paragraph of the issue's own fragment right under the question's row
+ *  from each of the two nodes it draws: under the ask, with the parent the read gives the
+ *  criterion there, and under the block of the spec it was asked on. Each is a copy of the
+ *  paragraph under the issue, ranked as that one is. */
+function paragraphsUnderTheQuestion(): {
+  readonly held: TreeAnswer;
+  readonly underAsk: TreeAnswerNode;
+  readonly underBlock: TreeAnswerNode;
+} {
+  const paragraph = nodeOf(converted, "<tree/paragraph>");
+  const underAsk: TreeAnswerNode = {
+    ...paragraph,
+    id: "<paragraph-under-ask>",
+    parent: nodeOf(converted, "<criterion>").parent,
+  };
+  const underBlock: TreeAnswerNode = {
+    ...paragraph,
+    id: "<paragraph-under-question>",
+    parent: {
+      first_line: "Which edits does the graph take?",
+      id: nodeOf(converted, "<question-block>").id,
+      kind: "block",
+      supertag: "ask",
+    },
+  };
+  const held: TreeAnswer = {
+    ...converted,
+    nodes: [...(converted.nodes ?? []), underAsk, underBlock],
+  };
+  return { held, underAsk, underBlock };
+}
+
+// Graph draws the question once, in the row of the block of the spec it was asked on, read as the
+// ask (the test below on retype says why): zoomed to that row, the zoom root is the ask's read id,
+// and a node right under the row stands under the ask or under its block. Outdent of either takes
+// it out of the zoom.
+test("outdent is grey on a child of the zoomed question's row, under the ask or under its block", () => {
+  const { held, underAsk, underBlock } = paragraphsUnderTheQuestion();
+  for (const paragraph of [underAsk, underBlock]) {
+    expect(place(paragraph.id, { zoomRoot: "<question>" }, held).outdent, paragraph.id).toEqual(
+      grey("grey_zoom_root")
+    );
+    // Zoomed to another node, it goes under the issue, which both of the two stand under.
+    expect(
+      place(paragraph.id, { zoomRoot: "<criterion>" }, held).outdent,
+      paragraph.id
+    ).toStrictEqual({ body: { parent: "issue/<issue>" }, kind: "move" });
+  }
+});
+
 // The tree read of the issue's own fragment never returns a block that still owes its index
 // (`owed_documents` names the tree artifact until the index runs, and the block the room wrote is
 // not in the read at all): the fixture's `owed` member is that read, and the read after the
@@ -654,10 +704,11 @@ test("retype keeps the node's place in its parent and serves attributes and grey
 test("retype under the question names the ask as the parent, whether the paragraph stands under the ask or under its block", () => {
   // Graph draws the question once, in the row of the block of the spec it was asked on, and that
   // row carries the ask's read id: the read walks the ask before its block, and the first of the
-  // two the walk reaches names the row. A paragraph made under that row stands under the ask, as
-  // the criterion does; one an earlier build made there stands under the block. A criterion and a
-  // statement in either place name the ask: under the ask by its own node, under the block by the
-  // ask the read joins to it with the ask's `asked_on` tuple.
+  // two the walk reaches names the row. New node under on that row puts a paragraph under the ask,
+  // as the criterion stands; Indent of the ranked sibling right after the block puts one under the
+  // block, since the block is ranked and the ask is not. A criterion and a statement in either
+  // place name the ask: under the ask by its own node, under the block by the ask the read joins
+  // to it with the ask's `asked_on` tuple.
   const question = nodeOf(converted, "<question-block>");
   const asked = converted.tuples?.find(
     (tuple) => tuple.kind === "asked_on" && tuple.to.id === question.id
@@ -666,25 +717,9 @@ test("retype under the question names the ask as the parent, whether the paragra
   // The parent the read gives a node that stands under the ask: the criterion's.
   const toAsk = nodeOf(converted, "<criterion>").parent;
   expect(toAsk?.kind, "the criterion stands under no ask").toBe("ask");
-  const underAsk: TreeAnswerNode = {
-    ...nodeOf(converted, "<tree/paragraph>"),
-    id: "<paragraph-under-ask>",
-    parent: toAsk,
-  };
-  const underBlock: TreeAnswerNode = {
-    ...nodeOf(converted, "<tree/paragraph>"),
-    id: "<paragraph-under-question>",
-    parent: {
-      first_line: "Which edits does the graph take?",
-      id: question.id,
-      kind: "block",
-      supertag: "ask",
-    },
-  };
-  const held: TreeAnswer = {
-    ...converted,
-    nodes: [...(converted.nodes ?? []), underAsk, underBlock],
-  };
+  const { held, underAsk, underBlock } = paragraphsUnderTheQuestion();
+  expect(underAsk.parent, "the paragraph under the ask stands elsewhere").toEqual(toAsk);
+  expect(underBlock.parent?.id, "the paragraph under the block stands elsewhere").toBe(question.id);
   const ask = { attributes: { parent: "dispatch://<issue>/ask/<question>" }, kind: "to" } as const;
   for (const paragraph of [underAsk, underBlock]) {
     const retyped = place(paragraph.id, {}, held).retype;

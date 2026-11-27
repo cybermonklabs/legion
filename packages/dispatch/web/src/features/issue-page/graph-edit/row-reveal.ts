@@ -8,12 +8,12 @@ import { moveToRow } from "../useTreeKeymap";
 import type { RowDelete, RowReveal } from "./row-edits";
 
 /** What the outline waits for to take the reader to a row of a node `id` (`TreeNode.id`): a move
- *  that was taken, until the outline draws the node under its new parent (`moved`); a write of the
- *  node that was refused or dropped, until a read draws the node's own row under another key than
- *  `from`, the row the focus was on (`kept`); then the key of the row that takes the focus once
- *  it is drawn (`focus`). */
+ *  that was taken, until the outline draws the node under a row read as one of `parents`, the read
+ *  ids that name its new parent's row (`moved`); a write of the node that was refused or dropped,
+ *  until a read draws the node's own row under another key than `from`, the row the focus was on
+ *  (`kept`); then the key of the row that takes the focus once it is drawn (`focus`). */
 type Pending =
-  | { readonly kind: "moved"; readonly id: string; readonly parent: string }
+  | { readonly kind: "moved"; readonly id: string; readonly parents: readonly string[] }
   | { readonly kind: "kept"; readonly id: string; readonly from: string }
   | { readonly kind: "focus"; readonly key: string };
 
@@ -128,7 +128,7 @@ export function useRowReveal({
     const trail = path.slice(0, -1).map((above) => above.id);
     const key = rowKeyOf({ kind: "node", level: path.length, node, trail });
     // The issue is the tree's root, which the read names by its key, its `TreeNode.id`.
-    if (pending.kind === "moved" && (parent.readId ?? parent.id) !== pending.parent) return;
+    if (pending.kind === "moved" && !pending.parents.includes(parent.readId ?? parent.id)) return;
     if (pending.kind === "kept" && key === pending.from) return;
     const row = rowOf(key);
     if (row !== null && row !== undefined) {
@@ -200,7 +200,7 @@ export function useRowReveal({
         if (latest.current.body.current?.contains(focused) !== true) return;
         wait({ from, id, kind: "kept" });
       },
-      moved: (id, parent) => wait({ id, kind: "moved", parent }),
+      moved: (id, parents) => wait({ id, kind: "moved", parents }),
       toRow: (node) => {
         const found = nodeOfRead(latest.current.root, node);
         if (found !== undefined) latest.current.reach(found.id);

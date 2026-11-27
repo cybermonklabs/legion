@@ -50,12 +50,14 @@ export const NEW_ROW_WAIT_MS = 120_000;
  *  block id the page chose for its block, the read id of the row it was made from and of the node
  *  it stands under (the issue's key for the issue), its place and its line (`placement.ts`), and
  *  the reader, its author. `parent` and `place.body` are the server's pointer, which the verdicts
- *  and the placing `PATCH` read; `under` is the place as the outline draws it: the id of the row
- *  it stands under (`TreeNode.id`), the parent of the own row of the node it was made from, or
- *  that row itself for New row under. The two need not name one node: an ask the asks read
- *  indexed from a block is drawn in that block's row, by the block's id in its document
+ *  and the placing `PATCH` read; `under` and `place.after` are the place as the outline draws it:
+ *  the id of the row it stands under (`TreeNode.id`), the parent of the own row of the node it was
+ *  made from, or that row itself for New row under, and the read id of the row it stands right
+ *  after there (`TreeNode.readId`). Neither need name a node the read places it by: an ask the
+ *  asks read indexed from a block is drawn in that block's row, by the block's id in its document
  *  (`tree-nodes.ts`' `treeIdOfNode`), while that row's read id, and the parent a criterion under
- *  it names, is the ask's own id. */
+ *  it names, is the ask's own id, and the block, which a place can name as the node it stands
+ *  right after, is drawn in that row too (`placement.ts`' `rowReadIds`). */
 export interface NewRowAsk {
   readonly author?: Actor;
   readonly blockId: string;

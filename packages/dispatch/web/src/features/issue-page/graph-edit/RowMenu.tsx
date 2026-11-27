@@ -49,6 +49,7 @@ import {
   RETYPE_KINDS,
   type RetypeKind,
   type RetypeOption,
+  rowReadIds,
 } from "./placement";
 import {
   editingRead,
@@ -207,12 +208,14 @@ function holdsEditing(client: QueryClient, outline: OutlineEdits, node: TreeNode
  * new one - a move, whose answer `node-writes.ts` writes into the held read - and the reader has
  * not acted since, the outline unfolds every branch above the node's own row under its new
  * parent, a folded new parent among them, and gives that row the focus once it is drawn
- * (`RowReveal.moved`). A taken delete leaves the sequence as it was: the outline's drop rule moves
- * the focus once a read draws the tree without the node. An act refused with a refusal that reads
- * the tree again (a 412, a gone node), and an act dropped unsent - a move queued behind a refused
- * one, whose own pick ended the earlier act's hold on the reader's acts - keeps the focus on the
- * node's row where that read draws it (`RowReveal.kept`), so a `412 PRECONDITION_FAILED` whose
- * read draws the node under the parent the server holds leaves the reader on its row.
+ * (`RowReveal.moved`): under the row of the new parent, which can be read as another node that row
+ * draws with it (`placement.ts`' `rowReadIds`). A taken delete leaves the sequence as it was: the
+ * outline's drop rule moves the focus once a read draws the tree without the node. An act refused
+ * with a refusal that reads the tree again (a 412, a gone node), and an act dropped unsent - a
+ * move queued behind a refused one, whose own pick ended the earlier act's hold on the reader's
+ * acts - keeps the focus on the node's row where that read draws it (`RowReveal.kept`), so a
+ * `412 PRECONDITION_FAILED` whose read draws the node under the parent the server holds leaves
+ * the reader on its row.
  */
 function keepInView(
   client: QueryClient,
@@ -231,10 +234,11 @@ function keepInView(
       edit.outline.reveal?.kept(node);
       return;
     }
-    const now = heldNode(client, key, node);
+    const held = heldRead(client, key);
+    const now = held?.nodes?.find((each) => each.id === node);
     const parent = now?.parent?.id;
-    if (outcome.status !== "taken" || parent === undefined) return;
-    if (now?.placement_seq !== before) edit.outline.reveal?.moved(id, parent);
+    if (outcome.status !== "taken" || held === undefined || parent === undefined) return;
+    if (now?.placement_seq !== before) edit.outline.reveal?.moved(id, rowReadIds(held, parent));
   };
 }
 

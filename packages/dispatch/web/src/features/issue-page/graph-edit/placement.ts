@@ -65,7 +65,8 @@ export interface PlacementInput {
   /** The issue's status; `"done"` closes the issue. */
   readonly status: string;
   readonly row?: PlacementRow;
-  /** The read id of the node Graph is zoomed to. */
+  /** The read id of the row Graph is zoomed to (`TreeNode.readId`), which can draw two nodes
+   *  (`rowReadIds`). */
   readonly zoomRoot?: string;
   /** The kinds the editor's schema for the fragment lets the editor make (default: all four). */
   readonly kinds?: readonly RetypeKind[];
@@ -390,11 +391,14 @@ function indent({ walk, node }: Focus): Verdict {
 }
 
 /** Outdent: under the parent's parent, after the old parent where that is a block of the node's
- *  own document. */
+ *  own document; grey where the parent's row is the row Graph is zoomed to, read as either node
+ *  that row draws (`rowReadIds`). */
 function outdent({ held, walk, node }: Focus, zoomRoot: string | undefined): Verdict {
   const parent = parentOf(node);
   if (parent.id === held.issue) return grey("grey_directly_under_issue");
-  if (parent.id === zoomRoot) return grey("grey_zoom_root");
+  if (zoomRoot !== undefined && rowReadIds(held, parent.id).includes(zoomRoot)) {
+    return grey("grey_zoom_root");
+  }
   const old = walk.byId.get(parent.id);
   if (old === undefined) throw new Error(`the held read holds no parent ${parent.id}`);
   const above = routeId(parentOf(old));
@@ -492,8 +496,9 @@ function isOneParagraph(node: TreeAnswerNode): boolean {
  *  statement under it name as their `parent` (R5): an ask, a comment or a message by its own node,
  *  and an ask by the block of a document it was asked on (its `asked_on` tuple). Graph draws the
  *  question once, in that block's row, read as the ask, the first of the two the read's walk
- *  reaches: a node made under that row stands under the ask, and one an earlier build made there
- *  stands under the block. Undefined for any other parent. */
+ *  reaches (`rowReadIds`): New node under on that row puts a node under the ask, and Indent of the
+ *  ranked sibling right after the block puts one under the block, since the block is ranked and
+ *  the ask is not. Undefined for any other parent. */
 function itemAddress(parent: Parent, held: TreeAnswer): string | undefined {
   const issue = parent.issue ?? held.issue;
   if (Object.hasOwn(ITEM_KINDS, parent.kind))
@@ -503,6 +508,25 @@ function itemAddress(parent: Parent, held: TreeAnswer): string | undefined {
     (tuple) => tuple.kind === "asked_on" && tuple.from.kind === "ask" && tuple.to.id === parent.id
   );
   return asked === undefined ? undefined : `dispatch://${issue}/ask/${asked.from.id}`;
+}
+
+/** The read ids that name the row Graph draws the node of read id `id` in, `id` first: the node's
+ *  own, and, for an ask and the block of supertag `ask` of a document its `asked_on` tuple names,
+ *  the other of the two as well. The outline draws the ask by the block the asks read indexed it
+ *  from, the block of the asks row, which is the block the store states that tuple to, and draws
+ *  the block by its id in its document (`tree-nodes.ts`' `askNodeId`, `treeIdOfNode`): one row,
+ *  read as the first of the two the read's walk reaches, so a stored parent of either is that row.
+ *  An ask anchored on any other block states no `asked_on`, and a block the read gives no
+ *  `document`, one of the issue's own fragment, is drawn by its block id alone: neither shares a
+ *  row with an ask. */
+export function rowReadIds(held: TreeAnswer, id: string): readonly string[] {
+  for (const { from, kind, to } of held.tuples ?? []) {
+    if (kind !== "asked_on" || from.kind !== "ask" || (from.id !== id && to.id !== id)) continue;
+    const block = held.nodes?.find((node) => node.id === to.id);
+    if (block?.supertag !== "ask" || block.document === undefined) continue;
+    return [id, from.id === id ? to.id : from.id];
+  }
+  return [id];
 }
 
 /** Retype (R5): on a prose block that is one paragraph alone, each kind its place can give, with

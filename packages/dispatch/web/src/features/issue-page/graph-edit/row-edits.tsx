@@ -43,11 +43,12 @@ export interface RowDelete {
 
 /** The reader taken to a row of the outline (`IssueTree.tsx`'s, `useRowReveal`). */
 export interface RowReveal {
-  /** Once the outline draws the node `id` (`TreeNode.id`) under the node of read id `parent`,
-   *  where a taken move put it, unfolds every branch above that node's own row, a folded new
-   *  parent among them, and gives the row the focus; until then, and unless the reader acts
-   *  first, it waits for the tree that draws it (R4). */
-  readonly moved: (id: string, parent: string) => void;
+  /** Once the outline draws the node `id` (`TreeNode.id`) under a row read as one of `parents` -
+   *  the read ids that name the row of the node a taken move put it under (`placement.ts`'
+   *  `rowReadIds`) - unfolds every branch above that node's own row, a folded new parent among
+   *  them, and gives the row the focus; until then, and unless the reader acts first, it waits for
+   *  the tree that draws it (R4). */
+  readonly moved: (id: string, parents: readonly string[]) => void;
   /** Keeps the focus the reader holds on a row of the node of read id `node` on the node's own
    *  row, after a write of it that was refused or dropped: once a read draws that row under
    *  another key - the node where the server holds it, under another parent - it takes the focus
