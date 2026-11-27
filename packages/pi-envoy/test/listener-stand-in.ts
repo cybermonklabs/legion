@@ -485,11 +485,15 @@ export function responseWithRegistration(
   init: RequestInit | undefined,
   fallback: unknown
 ): Response {
-  const request = new Request(input, init);
-  const path = new URL(request.url).pathname;
+  // The URL and the method are read off the call rather than from a `new Request(input, init)`,
+  // which TypeScript refuses for an input this wide: a Request names its own, and a string or a
+  // URL carries the method in `init` alone, defaulting to GET as fetch does.
+  const asRequest = typeof input === "string" || input instanceof URL ? undefined : input;
+  const path = new URL(asRequest?.url ?? input.toString()).pathname;
+  const method = (init?.method ?? asRequest?.method ?? "GET").toUpperCase();
   const written =
-    (request.method === "POST" || request.method === "PATCH") && path.startsWith("/api/v1/")
-      ? leastAnswerFor(request.method, path)
+    (method === "POST" || method === "PATCH") && path.startsWith("/api/v1/")
+      ? leastAnswerFor(method, path)
       : undefined;
   if (written !== undefined) {
     return new Response(JSON.stringify(written.body), {
