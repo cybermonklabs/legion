@@ -23,9 +23,11 @@ const weightsFile = new URL("./shard-weights.json", import.meta.url);
  *  positional filters, but not `--shard` (types/testReporter.d.ts:230-242). It then tells
  *  Playwright to skip that filter, and excludes every file of every project that the placement
  *  gives another leg (`testRun.exclude`, :759-764: an excluded suite's rows are neither run nor
- *  reported). `--shard=N/M` still names the leg and the leg count, which Playwright still
- *  prints ("Running 404 tests using 4 workers, shard 2 of 4") and still writes into the blob
- *  report's metadata, so nothing downstream of the run reads a different shape.
+ *  reported). Each file of a project is placed once, with the rows of every copy `--repeat-each`
+ *  makes of it, and every copy goes where the file goes. `--shard=N/M` still names the leg and
+ *  the leg count, which Playwright still prints ("Running 404 tests using 4 workers, shard 2
+ *  of 4") and still writes into the blob report's metadata, so nothing downstream of the run
+ *  reads a different shape.
  *
  *  It is named in `e2e/playwright.config.ts`'s reporter list, so a local `--shard` run splits as
  *  CI does, and on the shard job's command line (.github/scripts/dispatch-browser-shard-suite.sh),
@@ -73,7 +75,8 @@ export default class ShardReporter implements Reporter {
     if (!shard) return;
     testRun.skipSharding();
     const weights = JSON.parse(readFileSync(weightsFile, "utf8")) as ShardWeights;
-    const files: { unit: Unit; suite: Suite; rows: number }[] = [];
+    // One entry for each file of each project, by `project\nfile`.
+    const files = new Map<string, { unit: Unit; suites: Suite[]; rows: number }>();
     const setups = dependencyProjects(
       suite.suites.map((projectSuite) => projectSuite.project() ?? {})
     );
@@ -91,24 +94,34 @@ export default class ShardReporter implements Reporter {
         // A file suite's title is its path relative to the config's root, where a report names
         // the same file (playwright/lib/common/index.js:2872 at 1.64.1), so it keys the table.
         const file = fileSuite.title.split(sep).join("/");
-        files.push({ rows: tests.length, suite: fileSuite, unit: { file, project, rows: runs } });
+        // Under `--repeat-each` each copy of a file is a file suite of its own, with the same
+        // project and file. The copies are one entry, so the file is placed once with the rows
+        // of them all. Placed one by one, the copies would be placements under one key: the last
+        // would take every copy to its leg and leave the other copies' legs nothing to run.
+        const key = `${project}\n${file}`;
+        const copies = files.get(key);
+        files.set(key, {
+          rows: (copies?.rows ?? 0) + tests.length,
+          suites: [...(copies?.suites ?? []), fileSuite],
+          unit: { file, project, rows: (copies?.unit.rows ?? 0) + runs },
+        });
       }
     }
     const { loads, placed } = placeUnits(
-      files.map((entry) => entry.unit),
+      [...files.values()].map((entry) => entry.unit),
       weights,
       shard.total
     );
     const legOf = new Map(placed.map((unit) => [`${unit.project}\n${unit.file}`, unit]));
     let rows = 0;
     let estimated = 0;
-    for (const entry of files) {
-      const unit = legOf.get(`${entry.unit.project}\n${entry.unit.file}`);
+    for (const [key, entry] of files) {
+      const unit = legOf.get(key);
       if (unit?.shard === shard.current) {
         rows += entry.rows;
         if (!unit.measured) estimated += entry.rows;
       } else {
-        testRun.exclude(entry.suite);
+        for (const fileSuite of entry.suites) testRun.exclude(fileSuite);
       }
     }
     const total = loads.reduce((sum, load) => sum + load, 0);
