@@ -62,12 +62,18 @@ func (w *outsideWalk) check() {
 	h := w.h
 	c, stored := h.claim(), h.store.load(h.token)
 	budgets, storedBudgets := beyond(c.Budgets, w.base), beyond(stored.Budgets, w.base)
-	if w.reads > 0 {
+	if w.reads > 0 || w.sweeps > 0 {
 		budgets.PromptFailures, storedBudgets.PromptFailures = 0, 0
 	}
 	e, sent := c.EndedWork, len(h.prompts())
 	// A suspension that stops the process, or a launch that replaces it, ends it as a report that
-	// finds it gone does (invariant 9).
+	// finds it gone does (invariant 9). No launch of the walk replaces a process a running verdict
+	// found running before a step ended it: the relaunch of the death that verdict ended goes with
+	// that death (dropOutlivedRelaunch), and left waiting it lets the live process go for that
+	// death at its turn.
+	if w.alive && !w.closing && c.Generation != w.generation {
+		w.fail("a launch replaced the process a running verdict found running, want no launch to let it go for the death that verdict ended")
+	}
 	if c.State == StateSuspended || c.Generation != w.generation || c.Locator == nil {
 		w.alive = false
 	}
@@ -104,6 +110,9 @@ func (w *outsideWalk) check() {
 	case w.alive && (e.Tells() && e.Generation == w.generation || stored.EndedWork.Tells() && stored.EndedWork.Generation == w.generation):
 		w.fail("the claim's record %+v (%+v stored) tells while the process a read found running lives, want no end told that did not happen",
 			e, stored.EndedWork)
+	case e.Tells() && w.toldOutlived(e.Cause) != "" || stored.EndedWork.Tells() && w.toldOutlived(stored.EndedWork.Cause) != "":
+		w.fail("the claim's record %+v (%+v stored) tells the death a running verdict ended, want no end told that did not happen",
+			e, stored.EndedWork)
 	}
 	// The earlier launch's record is told where a confirmation told it, and untold again where a
 	// let-go takes that telling back, so a death's record joins it and keeps it (EndedWork.Earlier,
@@ -124,6 +133,10 @@ func (w *outsideWalk) check() {
 		behind := earlier && strings.HasSuffix(p.Message, "Then continue the task.\n\n"+sentAgainTask+owedTask)
 		if w.alive && p.DeliveryID == w.sentAgain && behind {
 			w.earlierSentAgain++
+		}
+		if cause := w.toldOutlived(p.Message); cause != "" {
+			w.fail("the claim's process was sent %q, which tells %s, the death a running verdict ended: want no end told that did not happen",
+				p.Message, cause)
 		}
 		switch {
 		case !w.alive:
@@ -148,6 +161,17 @@ func (w *outsideWalk) check() {
 		deathUnjudged(h, w.ended)); wrong != "" {
 		w.fail("%s", wrong)
 	}
+}
+
+// toldOutlived is the cause of a death a running verdict ended (outsideWalk.outlived) that text
+// tells, and "" where it tells none: that death never came, so nothing may tell it (invariant 9).
+func (w *outsideWalk) toldOutlived(text string) string {
+	for _, cause := range w.outlived {
+		if strings.Contains(text, cause) {
+			return cause
+		}
+	}
+	return ""
 }
 
 // tellsEnd is whether a prompt tells its process that it ended, or that a turn of it was cut off:
