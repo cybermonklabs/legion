@@ -71,15 +71,16 @@ func (e *Engine) judgeHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 	if err := e.store.PutIssue(ctx, tx, current); err != nil {
 		return err
 	}
-	// The chain a write is judged on is read once and again only after a write is taken, which
-	// moves records (applyStatus); a set-back writes none, so the next write reads what it read.
-	var chains *record.Chains
+	// The reading a write is judged on (readWriteChains) is made once and again only after a write
+	// is taken, which moves records (applyStatus); a set-back writes none, so the next write reads
+	// what it read.
+	var chains writeChains
 	for _, write := range writes {
 		if write.Status == current.Status {
 			continue
 		}
-		if chains == nil {
-			read, err := record.ReadChains(ctx, tx, e.store, current.Project, []string{current.Key})
+		if chains.Chains == nil {
+			read, err := e.readWriteChains(ctx, tx, current.Project, current.Key)
 			if err != nil {
 				return err
 			}
@@ -87,7 +88,7 @@ func (e *Engine) judgeHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 		}
 		var err error
 		verdict, agent := writeTaken, false
-		if legionOnChain(chains, current.Key) {
+		if legionOnChain(chains.Chains, current.Key) {
 			if verdict, agent, err = e.judgeSessionWrite(ctx, tx, chains, current, write); err != nil {
 				return err
 			}
@@ -109,7 +110,7 @@ func (e *Engine) judgeHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 		if err != nil {
 			return err
 		}
-		current, chains = *moved, nil
+		current, chains = *moved, writeChains{}
 	}
 	// A move in work reads the held write as Dispatch's latest status (observedIssue); the record
 	// keeps what Dispatch shows now.

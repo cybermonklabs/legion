@@ -692,19 +692,20 @@ const restartReason = "the issue was set to todo while its task was stopped"
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
 // does not act on. A session holding a claim on an issue of the written issue's Dispatch chain —
 // the issue and every issue above it up to its top, whichever of them holds its own gate — or on
-// an issue of its gate root's tree (record.Chains.Chain, record.Chains.GateTree,
-// Store.SessionClaimsOf) is an agent of its tree, never a human move, since a phase ends only by
-// its completion (the `legion` tool's `handoff_complete`) and a tree only by the architect's
-// sign-off (R26 of dispatch://INFRA-3320). Any other session on a gate root that runs
-// (record.TreeRuns) — one holding its admission slot, or one waiting on a person, whose tree
-// stays live and which keeps its slot — another tree's agent, or one outside Legion that took the
-// issue for its own, has no part in the tree it would end or park, so the tree's architect is told
-// who wrote what. Either way the workflow does not react: the observation is recorded with the
-// status kept (keepStatus), and the daemon re-asserts its own status through the outbox. A
-// person's move and the daemon's own write carry no session (intake.DispatchIssue.ActorSession):
-// they are the workflow's to act on. So is any write on an issue on whose Dispatch chain no issue
-// carries the legion label (legionOnChain): its status is anyone's to write (R26 of
-// dispatch://INFRA-3320).
+// an issue of its gate root's tree (judgeSessionWrite, on the reading readWriteChains makes:
+// record.Chains.Chain, record.Chains.GateTree, Store.SessionClaimsOf) is an agent of its tree,
+// never a human move, since a phase ends only by its completion (the `legion` tool's
+// `handoff_complete`) and a tree only by the architect's sign-off (R26 of dispatch://INFRA-3320).
+// Any other session on a gate root that runs (record.TreeRuns) — one holding its admission slot,
+// or one waiting on a person, whose tree stays live and which keeps its slot — another tree's
+// agent, or one outside Legion that took the issue for its own, has no part in the tree it would
+// end or park, so the tree's architect is told who wrote what. Either way the workflow does not
+// react: the observation is recorded with the status kept (keepStatus), and the daemon re-asserts
+// its own status through the outbox. A person's move and the daemon's own write carry no session
+// (intake.DispatchIssue.ActorSession): they are the workflow's to act on. So is any write on an
+// issue on whose Dispatch chain no issue carries the legion label (legionOnChain): its status is
+// anyone's to write (R26 of dispatch://INFRA-3320). The same reading and the same rule judge a
+// session's todo on a child the daemon does not record (sessionTodoOnChild).
 //
 // One write of a session is not set back: the done, backlog, icebox or triage of the architect of
 // an issue above the written issue on its Dispatch chain (architectAbovesMove), whether or not the
@@ -728,7 +729,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if fact.ActorSession == "" {
 		return false, nil
 	}
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	chains, err := e.readWriteChains(ctx, tx, issue.Project, issue.Key)
 	if err != nil {
 		return false, err
 	}
@@ -736,9 +737,9 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	// only once the chain is: a write on an unknown chain is held before either is read.
 	write := record.HeldSessionWrite{Session: fact.ActorSession, Status: fact.Status, Seq: fact.Seq, At: fact.At}
 	if !chains.Chain(issue.Key).Known() || len(issue.HeldSessionWrites) > 0 {
-		return true, e.holdSessionWrite(ctx, tx, chains, issue, fact, write)
+		return true, e.holdSessionWrite(ctx, tx, chains.Chains, issue, fact, write)
 	}
-	if !legionOnChain(chains, issue.Key) {
+	if !legionOnChain(chains.Chains, issue.Key) {
 		e.logOnCommit(ctx, "workflow: a session wrote the status of an issue on whose chain no issue carries the legion label; the daemon re-asserts nothing",
 			"issue", issue.Key, "session", fact.ActorSession, "wrote", fact.Status)
 		return false, nil
@@ -769,12 +770,35 @@ const (
 	writeSetBack
 )
 
+// writeChains is the reading of the Dispatch chains a session's status write is judged on
+// (judgeSessionWrite), and only readWriteChains makes one, so a write on an issue the daemon
+// records (sessionStatusWrite, judgeHeld) and a todo on a child it does not record
+// (recordChildUnderParentAtWork, sessionTodoOnChild) are judged on one reading and cannot take the
+// same session differently (the architect's rulings,
+// dispatch://INFRA-4730/comment/ada915ba-c94a-4876-8d6e-6cc1a1423f32 and
+// dispatch://INFRA-4730/comment/317d3111-94a2-4777-81e9-ea15937a8c78). Its caller asks what else
+// it decides of the written issue on the same reading.
+type writeChains struct{ *record.Chains }
+
+// readWriteChains reads the chains a session's status write of key is judged on: the whole
+// project's reading with key named (record.ReadChains), in its three queries whatever the number
+// of issues and links (k47, R16 of dispatch://INFRA-3320). judgeSessionWrite counts as agents the
+// claims on key, on the issues above it on its chain, and on every issue of its gate root's tree
+// (record.Chains.GateTree), which is each issue in Legion's work whose gate root that is, key's
+// siblings and their children among them. Only a walk from those issues reaches them: a read of
+// key's own chain (record.ReadChainsOf) holds that chain and key's own children alone, so it
+// would take a sibling's session for a person.
+func (e *Engine) readWriteChains(ctx context.Context, tx pgx.Tx, project, key string) (writeChains, error) {
+	chains, err := record.ReadChains(ctx, tx, e.store, project, []string{key})
+	return writeChains{chains}, err
+}
+
 // judgeSessionWrite is the repair's rule for write, a session's status write of issue, over
-// chains, the Dispatch chain the write is judged on (sessionStatusWrite says the rule), and
-// whether the session is an agent of the issue's tree, which hears of its own set-back from no
-// one. It writes nothing.
-func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, write record.HeldSessionWrite) (sessionVerdict, bool, error) {
-	if stands, err := e.architectAbovesMove(ctx, tx, chains, issue, write); err != nil || stands {
+// chains, the reading readWriteChains made of issue's chain and its gate root's tree
+// (sessionStatusWrite says the rule), and whether the session is an agent of the issue's tree,
+// which hears of its own set-back from no one. It writes nothing.
+func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains writeChains, issue record.Issue, write record.HeldSessionWrite) (sessionVerdict, bool, error) {
+	if stands, err := e.architectAbovesMove(ctx, tx, chains.Chains, issue, write); err != nil || stands {
 		return writeTaken, false, err
 	}
 	gateRoot := chains.GateRoot(issue.Key)
@@ -933,21 +957,22 @@ func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // intake.ApplyFact, before admission, which records an unrecorded issue only where its chain makes
 // it a root (admit's putNewRoot).
 //
-// The chain is the copy's, read over the issue's own chain (record.ReadChainsOf, whose known chain
-// answers every question asked here as the whole project's read would), which holds this event's
-// own reading of the issue (the mirror, which runs before this handler). An issue on an unknown
-// chain is recorded by nothing (R16): admission notes its key for the daemon to read Dispatch
-// again. An issue whose parent is not in Legion's work is recorded by nothing here either: with an
-// issue above that parent in Legion's work it is held `ancestry` (record.HeldReasonOf), and with
-// none it is a root, admission's to take on a person's handover.
+// The chains are the copy's, the reading a session's write of the issue is judged on
+// (readWriteChains: the whole project's, with the issue named), and every decision here asks that
+// one reading, which holds this event's own reading of the issue (the mirror, which runs before
+// this handler). An issue on an unknown chain is recorded by nothing (R16): admission notes its key
+// for the daemon to read Dispatch again. An issue whose parent is not in Legion's work is recorded
+// by nothing here either: with an issue above that parent in Legion's work it is held `ancestry`
+// (record.HeldReasonOf), and with none it is a root, admission's to take on a person's handover.
 //
-// A todo that a session of the child's own tree wrote is neither R19's release nor a person's, so
-// it starts nothing, and nor does one whose writer nothing proved (sessionTodoOnChild).
+// A todo that a session of the child's tree wrote, a claim on its chain or in its gate root's tree,
+// is neither R19's release nor a person's, so it starts nothing, and nor does one whose writer
+// nothing proved (sessionTodoOnChild).
 func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fact intake.DispatchIssue) (intake.Result, error) {
 	if !fact.ChildTodo() {
 		return intake.Result{}, nil
 	}
-	chains, err := record.ReadChainsOf(ctx, tx, e.store, e.cfg.Project, []string{fact.Key})
+	chains, err := e.readWriteChains(ctx, tx, e.cfg.Project, fact.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -965,11 +990,12 @@ func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fa
 	if setBack, err := e.sessionTodoOnChild(ctx, tx, chains, fact); err != nil || setBack {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.recordChild(ctx, tx, chains, root, fact)
+	return intake.Result{}, e.recordChild(ctx, tx, chains.Chains, root, fact)
 }
 
 // sessionTodoOnChild judges the todo fact shows on an issue the daemon does not record under a
-// parent in Legion's work, on chains, the child's known chain, and says whether it starts nothing.
+// parent in Legion's work, on chains, the reading recordChildUnderParentAtWork made of the child's
+// known chain and its gate root's tree (readWriteChains), and says whether it starts nothing.
 // It judges the todo by its writer, the actual status transition that left the child todo
 // (intake.DispatchIssue.StatusWriter), and never by the actor of the fact's own event where the
 // preparation read that transition: a comment, a rename or a re-read after an agent's todo leaves
@@ -978,11 +1004,13 @@ func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fa
 // nothing, since no write is known to undo, and logs one line.
 //
 // A session's todo is judged as sessionStatusWrite judges a session's status write on a recorded
-// issue (legionOnChain, judgeSessionWrite). The todo of a session that holds a claim on an issue of
-// the child's chain or of its gate root's tree is an agent's, which starts nothing, since only the
-// release_children and rerun_child of an architect above it, which the daemon writes, and a person
-// start such a child (R19 of dispatch://INFRA-3320; the architect's ruling,
-// dispatch://INFRA-4730/comment/ada915ba-c94a-4876-8d6e-6cc1a1423f32). Until the release that
+// issue (legionOnChain, judgeSessionWrite), on the same reading. The todo of a session that holds a
+// claim on an issue of the child's chain or of its gate root's tree, a sibling's under the same
+// gate root as well as the parent's and the root's, is an agent's, which starts nothing, since only
+// the release_children and rerun_child of an architect above it, which the daemon writes, and a
+// person start such a child (R19 of dispatch://INFRA-3320; the architect's rulings,
+// dispatch://INFRA-4730/comment/ada915ba-c94a-4876-8d6e-6cc1a1423f32 and
+// dispatch://INFRA-4730/comment/317d3111-94a2-4777-81e9-ea15937a8c78). Until the release that
 // removes the repair (dispatch://INFRA-4733) the daemon sets that write back to the status Dispatch
 // showed before it (intake.StatusTransition.StatusBefore), fenced at the transition's own
 // sequence, so the set-back still writes over a later edit and stands aside for a later move (the
@@ -992,15 +1020,18 @@ func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fa
 // no status before the write, the issue having been created at todo, there is nothing to set it
 // back to: no row is queued, and the child stays todo in Dispatch and out of Legion's work. Either
 // way it logs one line. Any other session's todo is taken as a person's, as it is on a recorded
-// issue under no running root.
-func (e *Engine) sessionTodoOnChild(ctx context.Context, tx pgx.Tx, chains *record.Chains, fact intake.DispatchIssue) (bool, error) {
+// issue under no running root. A sibling's across a gate holder is one: its claim is on neither
+// the child's chain nor the gate holder's tree, and judgeSessionWrite takes that session for a
+// person on a recorded issue too (ruling 2 of
+// dispatch://INFRA-4730/comment/317d3111-94a2-4777-81e9-ea15937a8c78).
+func (e *Engine) sessionTodoOnChild(ctx context.Context, tx pgx.Tx, chains writeChains, fact intake.DispatchIssue) (bool, error) {
 	written, known := fact.StatusWriter()
 	if !known {
 		e.logOnCommit(ctx, "workflow: Dispatch's event log proves no writer of the todo on a child the daemon does not record; it starts nothing",
 			"issue", fact.Key, "parent", fact.Parent, "seq", fact.Seq)
 		return true, nil
 	}
-	if written.Session == "" || !legionOnChain(chains, fact.Key) {
+	if written.Session == "" || !legionOnChain(chains.Chains, fact.Key) {
 		return false, nil
 	}
 	write := record.HeldSessionWrite{Session: written.Session, Status: fact.Status, Seq: written.Seq, At: written.At}
