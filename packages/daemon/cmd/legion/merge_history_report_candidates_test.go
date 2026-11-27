@@ -162,6 +162,7 @@ func TestMergeHistoryCensusResumesWithoutApplyingIt(t *testing.T) {
 	config := candidateConfig(t, dsn, standIns.dispatch.URL)
 	progressFile := filepath.Join(t.TempDir(), "census-progress.json")
 	rows := testdb.TableRows(t, st.Pool())
+	passes := 0
 	run := func(maxGets string) census {
 		t.Helper()
 		args := []string{"--config", config, "--project", "ACME", "--repo", old, "--repo", renamed, "--read-candidates", "--progress", progressFile,
@@ -173,6 +174,7 @@ func TestMergeHistoryCensusResumesWithoutApplyingIt(t *testing.T) {
 		if read.code != 0 {
 			t.Fatalf("the census's candidate read exited %d, want 0:\n%s", read.code, read.stdout)
 		}
+		passes++
 		return read
 	}
 
@@ -192,12 +194,23 @@ func TestMergeHistoryCensusResumesWithoutApplyingIt(t *testing.T) {
 	standIns.mu.Lock()
 	standIns.failing["/repos/acme/old-widgets/pulls/51"] = 1
 	standIns.mu.Unlock()
-	full := run("")
+	// A pass sends at most eight GETs, and the four candidate issues need more: the reads go on,
+	// pass by pass, until a pass sends none, which is where every issue is answered, unread, or
+	// waiting for a retry that is not due.
+	var full census
+	for spent := ""; ; {
+		full = run("")
+		if got := full.read("read_cost")["gets"]; got == spent {
+			break
+		} else {
+			spent = got
+		}
+	}
 	want := map[string]map[string]string{
 		"read_PARTIAL": {"candidates": "3", "answering": "1", "unread": "1", "unfinished": "1", "unfinished_active": "1", "unfinished_wait": "0"},
-		"read_NONE":    {"candidates": "1", "answering": "0", "unread": "0", "unfinished": "1", "unfinished_active": "1", "unfinished_wait": "0"},
-		"read_total":   {"candidates": "4", "answering": "1", "unread": "1", "unfinished": "2", "unfinished_active": "2", "unfinished_wait": "0"},
-		"read_cost": {"gets": "10", "retries": "0", "uncertain": "0", "passes": "3", "passes_lower_bound": "2", "token_requests": "3",
+		"read_NONE":    {"candidates": "1", "answering": "0", "unread": "1", "unfinished": "0", "unfinished_active": "0", "unfinished_wait": "0"},
+		"read_total":   {"candidates": "4", "answering": "1", "unread": "2", "unfinished": "1", "unfinished_active": "1", "unfinished_wait": "0"},
+		"read_cost": {"gets": "11", "retries": "0", "uncertain": "0", "passes": strconv.Itoa(passes), "passes_lower_bound": "2", "token_requests": "3",
 			"dispatch_downstream": "UNKNOWN"},
 	}
 	for label, values := range want {
