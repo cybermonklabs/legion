@@ -63,6 +63,11 @@ case "\$*" in
     last=\$(find "$work/reads-\$run" -name '[0-9]*' | wc -l)
     [ "\$n" -le "\$last" ] || n=\$last
     jq -r "\$filter" "$work/reads-\$run/\$n" ;;
+  # `.github/scripts/gh-read.sh#gh_wait_reset` asks the rate_limit route whether a command that
+  # failed with 1 spent the budget: both budgets have calls left, so a refusal here is the
+  # command's own.
+  "api rate_limit "*)
+    jq -r "\$filter" <<<'{"resources": {"core": {"remaining": 5000, "reset": 0}, "graphql": {"remaining": 5000, "reset": 0}}}' ;;
   *) echo "unexpected gh \$*" >&2; exit 2 ;;
 esac
 GH
@@ -151,7 +156,7 @@ reset; event 150 1 1
 touch "$work/write-fails"
 run_label
 check "fails the step" "$(is "$status" 1)"
-check "tried three times" "$(is "$(call_count)" 3)"
+check "tried the write three times" "$(is "$(grep -c -e '--method POST repos/o/r/issues/7/labels' "$work/calls")" 3)"
 check "says what that costs" "$(contains "$out" '::error::GitHub refused the label large-pr on #7 at every attempt gh-read.sh made, so an approval of it would run no slow suite before the merge queue')"
 
 echo "case: GitHub refuses to take the label off"

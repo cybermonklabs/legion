@@ -22,7 +22,7 @@
 #          its token cannot write a label, and its change reaches the queue only once a maintainer
 #          takes the branch into this repository, where it is labelled at the next push.
 #
-#   lead   large-pr-lanes.yaml's `lead` job: decides whether this approval runs the suites
+#   lead   the `lead` job of large-pr-lanes.yaml: decides whether this approval runs the suites
 #          (`run=true` in GITHUB_OUTPUT) or follows the approval-time run already at this head
 #          (`run=false`, `follows=<run id>`). It follows the earliest earlier run of that workflow
 #          at HEAD_SHA whose ci-ok job is still open or passed (`target`). So two approval-time
