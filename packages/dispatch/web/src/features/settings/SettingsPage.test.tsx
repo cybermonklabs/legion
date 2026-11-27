@@ -187,8 +187,9 @@ test.each([
 
     pending.resolve({ pending: [] });
     expect(await screen.findByRole("heading", { name: "Live grants" })).toBeDefined();
-    // The settled read's render has run its effects by the time its heading is drawn.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The render that drew Live grants started the section's own read in the same effects pass as
+    // the page's, so that read's answer drawn means the page's effects have run.
+    expect(await screen.findByText("No live grants.")).toBeDefined();
     expect(scrolled).toEqual([ARCHITECTURE_SOURCES_HEADING_ID]);
   } finally {
     cleanup();

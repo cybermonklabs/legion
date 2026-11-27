@@ -49,7 +49,7 @@ test("an unsafe address is no link, and its title holds the whole address", () =
   try {
     expect(view.q.queryByRole("link")).not.toBeInTheDocument();
     const text = view.q.getByText(url);
-    expect(text.getAttribute("title")).toBe(`Unsafe external link, not opened: ${url}`);
+    expect(text).toHaveAttribute("title", `Unsafe external link, not opened: ${url}`);
   } finally {
     view.unmount();
   }

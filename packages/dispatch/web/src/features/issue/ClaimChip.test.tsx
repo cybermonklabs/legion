@@ -207,8 +207,9 @@ test("over the holder's name the claim chip's own tooltip shows, not the name al
     const name = within(chip).getByRole("link", { name: "Implementer" });
     const tooltipOver = name.closest("[title]");
     expect(tooltipOver).toBe(chip);
-    expect(tooltipOver?.getAttribute("title")).toMatch(
-      /^Claimed by Implementer · since .*two agents never take the same work/
+    expect(tooltipOver).toHaveAttribute(
+      "title",
+      expect.stringMatching(/^Claimed by Implementer · since .*two agents never take the same work/)
     );
   } finally {
     view.unmount();
