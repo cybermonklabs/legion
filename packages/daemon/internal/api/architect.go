@@ -1177,7 +1177,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		return ok
 	}
 	record := func(child releasedChild) {
-		if failure := s.recordOwnStatusWrite(r.Context(), written[child.view.Key]); failure != nil {
+		if failure := s.recordOwnStatusWrite(r.Context(), written[child.view.Key], claim.RoleArchitect, ""); failure != nil {
 			s.log.Warn("api: release_children wrote a child todo, but the record did not take the write; the write's event will record it",
 				"issue", child.view.Key, "code", failure.code, "reason", failure.message)
 		}
@@ -1756,7 +1756,7 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.Key, ancestor, "run it again"))
 		return
 	}
-	if written, ok := s.setDispatchStatus(w, r, child.Key, "todo"); ok && s.applyOwnStatusWrite(w, r, written) {
+	if written, ok := s.setDispatchStatus(w, r, child.Key, "todo"); ok && s.applyOwnStatusWrite(w, r, written, claim.RoleArchitect, "") {
 		s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, EmptyResponse{})
 	}
 }
