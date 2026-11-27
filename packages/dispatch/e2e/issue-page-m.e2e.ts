@@ -6324,6 +6324,7 @@ async function seedRecentRuns(): Promise<{
     {
       agent: agent("implementer"),
       ended_at: later(2),
+      generation: 1,
       kind: "step",
       model: "anthropic/claude-opus-5",
       result: "passed",
@@ -6336,6 +6337,7 @@ async function seedRecentRuns(): Promise<{
     {
       agent: agent("reviewer"),
       ended_at: later(4),
+      generation: 1,
       kind: "step",
       model: "openai/gpt-6.1-sol",
       result: "failed",
@@ -6348,6 +6350,7 @@ async function seedRecentRuns(): Promise<{
     },
     {
       agent: agent("implementer"),
+      generation: 1,
       kind: "step",
       role: "implementer",
       started_at: later(5),
@@ -6643,7 +6646,8 @@ async function seedTimeline(): Promise<TimelineSeed> {
   const handoffs = {
     plan: await write("plan", { summary: "The plan of the timeline." }),
     implement: await write("implement", {
-      summary: "The first pass of the timeline.",
+      summary:
+        "The first pass of the timeline: the history draws each run as one entry with the handoff it reported.",
       filesChanged: ["web/src/a.ts", "web/src/b.ts"],
       implementerProof: { verdict: "verified", how: "Each check passed." },
     }),
@@ -6667,6 +6671,7 @@ async function seedTimeline(): Promise<TimelineSeed> {
     {
       agent: agent("planner"),
       ended_at: ago(25 * 60),
+      generation: 1,
       kind: "step",
       model: "anthropic/claude-opus-5",
       report: handoffs.plan,
@@ -6683,6 +6688,7 @@ async function seedTimeline(): Promise<TimelineSeed> {
     run(
       {
         agent: agent("implementer"),
+        generation: 1,
         kind: "step",
         role: "implementer",
         started_at: ago(2),
@@ -6704,6 +6710,7 @@ async function seedTimeline(): Promise<TimelineSeed> {
       {
         agent: agent("reviewer"),
         ended_at: ago(2),
+        generation: 1,
         kind: "step",
         model: "openai/gpt-6.1-sol",
         report: handoffs.review,
@@ -6730,6 +6737,7 @@ async function seedTimeline(): Promise<TimelineSeed> {
       {
         agent: agent("implementer"),
         ended_at: ago(3),
+        generation: 1,
         kind: "step",
         model: "anthropic/claude-opus-5",
         report: handoffs.implement,
@@ -6859,7 +6867,7 @@ test("the history is the one timeline: each run holds the handoff it reported @p
     await expect(stepRun(page, running.id).locator("[data-handoff-line]")).toHaveCount(0);
     const implementFields = handoffFieldsOf(page, handoffs.implement);
     await expect(
-      implementFields.filter({ hasText: "The first pass of the timeline." }),
+      implementFields.filter({ hasText: "The first pass of the timeline:" }),
       "the implementation's handoff is not drawn open"
     ).toHaveCount(1);
     await expect(
@@ -6901,40 +6909,50 @@ test("the history is the one timeline: each run holds the handoff it reported @p
       expect(await fieldsPastTheirEntry(page), "a field does not fit its entry's box").toEqual([]);
     }
 
-    // The fold control folds the handoff and opens it again; folded once more, it stays folded.
-    const fold = handoffFoldControl(page, handoffs.implement);
+    // The fold control folds a handoff and opens it again; folded once more, it stays folded.
+    // The handoff no run reports is the one folded, so that the run written live below takes it
+    // into its own entry: a fold held in the handoff's own drawing would go with that move.
+    const fold = handoffFoldControl(page, handoffs.unreported);
+    const unreportedFields = handoffFieldsOf(page, handoffs.unreported);
     await fold.click();
     await expect(fold).toHaveAttribute("aria-expanded", "false");
-    await expect(implementFields).toHaveCount(0);
+    await expect(unreportedFields).toHaveCount(0);
     await fold.click();
     await expect(fold).toHaveAttribute("aria-expanded", "true");
-    await expect(implementFields.first()).toBeVisible();
+    await expect(unreportedFields.first()).toBeVisible();
     await fold.click();
     await expect(fold).toHaveAttribute("aria-expanded", "false");
 
-    // A run written while the history is open, which it follows live.
+    // A run written while the history is open, which it follows live, and which reports the
+    // folded handoff: the handoff moves into the run's entry and stays folded there.
     const live = crypto.randomUUID();
     await putStep(seeded.key, live, {
       agent: `legion-core-${seeded.key.toLowerCase()}-tester`,
+      generation: 1,
       kind: "step",
+      report: handoffs.unreported,
       role: "tester",
       started_at: new Date().toISOString(),
       step: 3,
       task: "default",
       type: "test",
     });
-    await expect(stepRun(page, live), "the run written live is not drawn").toHaveCount(1, {
-      timeout: 20_000,
-    });
+    await expect(
+      stepRun(page, live).locator(`[data-handoff-line="${handoffs.unreported}"]`),
+      "the run written live, with the handoff it reports, is not drawn"
+    ).toHaveCount(1, { timeout: 20_000 });
     await expect(fold, "a live update opened the folded handoff").toHaveAttribute(
       "aria-expanded",
       "false"
     );
 
-    // Details shut and opened again.
+    // Details shut and opened again, at the issue's own address, where shutting Details takes
+    // the history away with it.
+    await navigateInApp(page, `/issues/${seeded.key}`);
     await closeDetails(page);
+    await expect(history).toHaveCount(0);
     await openDetails(page);
-    await expect(stepRun(page, implementRun.id)).toHaveCount(1);
+    await expect(stepRun(page, live)).toHaveCount(1);
     await expect(fold, "Details opened again drew the folded handoff open").toHaveAttribute(
       "aria-expanded",
       "false"
@@ -6959,7 +6977,7 @@ test("the history is the one timeline: each run holds the handoff it reported @p
     }
 
     // t8: the folded handoff's page address opens it again.
-    await navigateInApp(page, `/issues/${seeded.key}/handoffs/${handoffs.implement}`);
+    await navigateInApp(page, `/issues/${seeded.key}/handoffs/${handoffs.unreported}`);
     await expect(fold, "the handoff's page address did not open it").toHaveAttribute(
       "aria-expanded",
       "true"
@@ -7035,6 +7053,7 @@ test("the Legion block and the history follow a change with no reload", async ({
     const run = crypto.randomUUID();
     await putStep(issue.key, run, {
       agent: `legion-core-${issue.key.toLowerCase()}-implementer`,
+      generation: 1,
       kind: "step",
       role: "implementer",
       started_at: new Date().toISOString(),
