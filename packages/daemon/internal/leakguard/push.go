@@ -175,9 +175,17 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // reached by two of the push's refs is read once. A deletion adds no commit, and a push of
 // deletions alone reads nothing of the repository. An error of emit stops the read and is the
 // answer.
+//
+// Which commits the push would add is bounded by what the destination says it holds: before the
+// first update with a commit, the push's URL is read twice, its advertised refs and a fetch
+// negotiation from every update's local commit (destinationHolds), and the remotes whose
+// remote-tracking refs hold what the destination has are read (heldRemotes), which bound the
+// range too only where the negotiation does not answer (Guard.commits).
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	var held []string
+	// not is the lines ^<id> of the commits the destination says it holds (destinationHolds).
+	var not string
 	heldRead := false
 	// from is what the refusal of a shallow push names to fetch from: the remote the push names,
 	// or for a push to a URL, that URL as the URL rule prints it (redact.URLCredentials): an
@@ -190,11 +198,11 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 				return err
 			}
 		}
-		if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
+		if !addsCommits(update) {
 			continue
 		}
 		if !heldRead {
-			var named bool
+			var named, negotiated bool
 			var err error
 			if held, named, err = g.heldRemotes(ctx, req); err != nil {
 				return err
@@ -203,9 +211,21 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			if named {
 				from = req.Remote
 			}
+			var tips []string
+			for _, update := range req.Updates {
+				if addsCommits(update) && !slices.Contains(tips, update.LocalSHA) {
+					tips = append(tips, update.LocalSHA)
+				}
+			}
+			if not, negotiated, err = g.destinationHolds(ctx, req.Dir, req.URL, tips); err != nil {
+				return err
+			}
+			if negotiated {
+				held = nil
+			}
 			heldRead = true
 		}
-		commits, err := g.commits(ctx, req.Dir, held, from, update)
+		commits, err := g.commits(ctx, req.Dir, held, not, from, update)
 		if err != nil {
 			return err
 		}
@@ -222,22 +242,33 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 	return nil
 }
 
-// heldRemotes are the remotes whose remote-tracking refs say what the push's destination holds:
-// each remote whose every URL, fetch and push, names the repository the push's URL names
-// (sameRepository), so that its tracking refs hold what the destination has, and among whose
-// refs no other remote's fetch can file one (filedByAnother). Where the push names a remote of the
-// repository, which named answers, that remote is the only one it can hold. git hands a pre-push
-// hook the URL where the remote's name goes for a push to a URL (`git push <url>`), and no
-// tracking ref is filed under a URL, so such a push can hold any remote. The URLs on both sides
-// are git's own, after its insteadOf rewriting. A push that holds no remote has every commit read
-// that the destination's ref does not reach: a remote that is not shown to be the destination
-// says nothing of what it holds.
+// addsCommits is whether update can add a commit to the destination: whether its local side is a
+// commit, which a deletion's is not.
+func addsCommits(update Update) bool {
+	return update.LocalSHA != "" && !zeroSHA(update.LocalSHA)
+}
+
+// heldRemotes are the remotes whose remote-tracking refs say what the push's destination holds,
+// which bound the commits a push reads only where the destination's own answer does not
+// (destinationHolds): where the fetch negotiation with it fails, beside the commits its
+// advertised refs name. They are each remote whose every URL, fetch and push, names the
+// repository the push's URL names (sameRepository), so that its tracking refs hold what the
+// destination has, and among whose refs no other remote's fetch can file one (filedByAnother).
+// Where the push names a remote of the repository, which named answers, that remote is the only
+// one it can hold. git hands a pre-push hook the URL where the remote's name goes for a push to a
+// URL (`git push <url>`), and no tracking ref is filed under a URL, so such a push can hold any
+// remote. The URLs on both sides are git's own, after its insteadOf rewriting. A push that holds
+// no remote, and whose destination answers neither read, has every commit read that the
+// destination's ref does not reach: a remote that is not shown to be the destination says
+// nothing of what it holds.
 //
 // What is read is the repository as it is now, so two kinds of ref are held as a remote's
 // although its repository need not hold them, as `--remotes=<name>` held them before: refs the
-// remote fetched before a `git remote set-url` to another repository, and refs under
-// refs/remotes/<name>/ that no configuration files there, which a fetch given a refspec on its
-// command line (`git fetch <url> <src>:refs/remotes/<name>/<ref>`) and `git update-ref` write.
+// remote fetched, or a push to it filed, before a `git remote set-url` to another repository, and
+// refs under refs/remotes/<name>/ that no configuration files there, which a fetch given a
+// refspec on its command line (`git fetch <url> <src>:refs/remotes/<name>/<ref>`) and `git
+// update-ref` write. Where the negotiation answers they bound nothing, so a commit such a ref
+// names that the destination does not hold is read.
 //
 // The URLs are read with `git remote get-url`, which prints one URL a line and nothing else, and
 // not from `git remote -v`, which writes a blobless clone's filter after its fetch URL. The
@@ -392,34 +423,51 @@ func filedByAnother(name string, files map[string][]string) bool {
 }
 
 // commits are the commits one update would add to the destination, oldest first: the commits
-// the local side has, less the ones the destination is taken to hold already. It holds every
-// commit on a remote-tracking ref of the held remotes (heldRemotes): a commit there was fetched
-// from the destination, so the push does not publish it. Where the destination has a commit at
-// the ref and the repository has it too, it also holds that commit and everything before it. The
-// remote-tracking refs count for a ref the destination has as much as for a new one. Without them,
-// a forward merge (the default branch merged onto an older tip of the branch) would read every
-// commit of the default branch since that tip, not only the merge and the branch's own commits.
+// the local side has, less the ones the destination is taken to hold already. It holds each
+// commit of not, the lines ^<id> of the commits the destination says it holds
+// (destinationHolds), and everything before it: a commit there is the destination's, so the
+// push does not publish it. held, the remotes whose remote-tracking refs say what the destination
+// holds (heldRemotes), is empty where the destination's fetch negotiation answered, whose answer
+// replaces theirs; elsewhere it holds every commit on a remote-tracking ref of theirs too: a
+// commit there was fetched from the destination. Where the destination has a commit at the ref
+// and the repository has it too (holds), it also holds that commit and everything before it. What
+// the destination says it holds, and the remote-tracking refs, count for a ref the destination
+// has as much as for a new one. Without them, a forward merge (the default branch merged onto an
+// older tip of the branch) would read every commit of the default branch since that tip, not only
+// the merge and the branch's own commits. One rev-list answers, fed on its standard input the
+// local side, then ^<sha> for the remote side where the repository has it, and then not:
 //
-// In a shallow repository the walk from a remote-tracking ref stops at a shallow commit, whose
-// parents the repository does not hold, so the destination's commits beneath it read as the
-// push's own: a scan of history the destination has published, refused over a commit it already
-// holds. A commit of the push with parents the repository does not hold is therefore refused
-// rather than read (shallowFloor).
-func (g *Guard) commits(ctx context.Context, dir string, held []string, from string, update Update) ([]string, error) {
+//	git rev-list --reverse --parents --stdin [--not --remotes=<held>...]
+//
+// which is `git rev-list --reverse --parents <local> --not [<remote>] <not...>
+// [--remotes=<held>...]` with the shas off the command line, since a repository can advertise
+// thousands of refs. rev-list reads its standard input where --stdin stands, and each line there
+// is read on its own, so the --not after it applies to the remotes alone.
+//
+// In a shallow repository the walk stops at a shallow commit, whose parents the repository does
+// not hold, so where nothing the destination is taken to hold reaches that commit, the
+// destination's commits beneath it read as the push's own: a scan of history the destination has
+// published, refused over a commit it already holds. A commit of the push with parents the
+// repository does not hold is therefore refused rather than read (shallowFloor).
+func (g *Guard) commits(ctx context.Context, dir string, held []string, not, from string, update Update) ([]string, error) {
 	// --parents writes each commit's parents after it, as the repository holds them: none for a
 	// root commit, and none for a shallow one.
-	argv := []string{"rev-list", "--reverse", "--parents", update.LocalSHA, "--not"}
+	argv := []string{"rev-list", "--reverse", "--parents", "--stdin"}
+	if len(held) > 0 {
+		argv = append(argv, "--not")
+		for _, remote := range held {
+			argv = append(argv, "--remotes="+remote)
+		}
+	}
+	fed := update.LocalSHA + "\n"
 	has, err := g.holds(ctx, dir, update.RemoteSHA)
 	if err != nil {
 		return nil, err
 	}
 	if has {
-		argv = append(argv, update.RemoteSHA)
+		fed += "^" + update.RemoteSHA + "\n"
 	}
-	for _, remote := range held {
-		argv = append(argv, "--remotes="+remote)
-	}
-	out, err := g.git(ctx, dir, argv...)
+	out, err := g.gitFed(ctx, dir, nil, fed+not, argv...)
 	if err != nil {
 		return nil, err
 	}
@@ -457,13 +505,17 @@ func (g *Guard) shallowFloor(ctx context.Context, dir, commit, from string) erro
 }
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates
-// (a sha of all zeros), and false for a remote sha this repository has never fetched, where the
-// remote-tracking refs alone say what the destination holds.
+// (a sha of all zeros), and false for a remote sha this repository does not have, where what the
+// destination says it holds and, where its negotiation fails, the remote-tracking refs say the
+// rest (Guard.commits). It asks as the read of what the destination holds asks
+// (Guard.advertised), fetching nothing (fetchesNothing): in a partial clone, git fetches a commit
+// the clone lacks from the promisor remote the moment cat-file asks for it, so a remote sha the
+// clone never fetched would be fetched to be answered.
 func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 	if sha == "" || zeroSHA(sha) {
 		return false, nil
 	}
-	status, _, err := g.run(ctx, child{argv: gitArgv("cat-file", "-e", sha+"^{commit}"), dir: dir})
+	status, _, err := g.run(ctx, child{argv: gitArgv("cat-file", "-e", sha+"^{commit}"), dir: dir, env: fetchesNothing})
 	if err != nil {
 		return false, err
 	}
@@ -743,9 +795,45 @@ func (g *Guard) gitWith(ctx context.Context, dir string, stdout func(io.Reader) 
 		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}
 	if status != 0 {
-		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, gitSaid(stderr.String()))
+		return "", gitExited("git "+args[0], status, stderr.String())
 	}
 	return out, nil
+}
+
+// gitFed runs one git command in dir under env, with input on its standard input, none where
+// input is empty, and answers its standard output alone, failing where git itself does, as
+// Guard.git does: a record this package could not read is a setup failure, never a push read as
+// clean. What it answers is read as data, a list of commits or of objects' types, so a warning
+// git writes to its standard error must not land in it, and that error is what a failure carries
+// (gitExited). The rev-list of a push's commits is fed the commits it starts from and the ones it
+// stops at (Guard.commits), and the batch check of which advertised ids the repository has as
+// commits is fed those ids and runs under an env that fetches nothing (Guard.advertised).
+func (g *Guard) gitFed(ctx context.Context, dir string, env []string, input string, args ...string) (string, error) {
+	var stdin io.Reader
+	if input != "" {
+		stdin = strings.NewReader(input)
+	}
+	var stderr strings.Builder
+	status, out, err := g.run(ctx, child{
+		argv:   gitArgv(args...),
+		dir:    dir,
+		env:    env,
+		stdin:  stdin,
+		stderr: &stderr,
+	})
+	if err != nil {
+		return "", procgroup.Said(err, gitSaid(stderr.String()))
+	}
+	if status != 0 {
+		return "", gitExited("git "+args[0], status, stderr.String())
+	}
+	return out, nil
+}
+
+// gitExited is the failure of a git, what ("git cat-file"), that exited status, quoting stderr,
+// git's own account of the failure, as gitSaid quotes it.
+func gitExited(what string, status int, stderr string) error {
+	return fmt.Errorf("%s exited %d: %s", what, status, gitSaid(stderr))
 }
 
 // gitErrorBytes is the most of git's standard error a failure of Guard.git quotes: git says why it

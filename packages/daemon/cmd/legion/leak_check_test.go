@@ -814,7 +814,11 @@ type localPush struct {
 // command line, the git wrapper's mark, GIT_EXEC_PATH at another directory, and a legacy remote
 // file at a host; and every URL that is not one of the four spellings of a local path the hook
 // clears. Each expected text is the one the same row printed with the base's code (f57cfa7e),
-// which clears no push.
+// which clears no push, but for one: with the stand-in that passes, the push to `.` exits 0 and
+// prints nothing, where the base's guard refused it. That verdict is R10's (dispatch://INFRA-3524's
+// spec, under its plan's decision 18): the destination is the repository itself, whose refs the
+// guard's reads of what a destination holds answer, so the push adds no commit to it and the
+// rules read no commit, as they read none of a push the destination holds whole.
 func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
@@ -825,6 +829,9 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 		// github is whether the URL names a repository on GitHub, whose push the passing
 		// stand-in would hand to a visibility read.
 		github bool
+		// holdsThePush is whether the destination holds every commit of the push, as the reads of
+		// what it holds answer, so that with the stand-in that passes the push passes (R10).
+		holdsThePush bool
 	}{
 		{name: "a local URL in a repository that also has a remote at the host URL", push: func(t *testing.T, r localPush) string {
 			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
@@ -918,13 +925,14 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 		{name: "https://github.com/invented-org/invented-repo.git", github: true, push: func(*testing.T, localPush) string {
 			return "https://github.com/invented-org/invented-repo.git"
 		}},
-		{name: ".", push: func(*testing.T, localPush) string { return "." }},
+		{name: ".", holdsThePush: true, push: func(*testing.T, localPush) string { return "." }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, check := range []struct {
 				name string
 				// set names the row's shared check, after the repository is built, and answers
-				// the status and the whole text the base's guard answered with it.
+				// the status and the whole text the base's guard answered with it, or, where R10
+				// changes that verdict (holdsThePush), the one this change answers.
 				set  func(t *testing.T) (int, string)
 				skip bool
 			}{
@@ -943,6 +951,9 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 				}},
 				{name: "with a stand-in check that passes", skip: tc.github, set: func(t *testing.T) (int, string) {
 					t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes))
+					if tc.holdsThePush {
+						return 0, ""
+					}
 					return 3, "LEAK CHECK: refusing the push to origin: the deployment's private-name rules match it\n" +
 						"  " + leakguardtest.ReportLine(refusedFile, leakguardtest.RulesHostClass, leakguardtest.RulesHost, 1, refusedLine) + "\n"
 				}},

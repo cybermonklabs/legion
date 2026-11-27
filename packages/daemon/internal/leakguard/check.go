@@ -419,8 +419,9 @@ type child struct {
 	// which Guard.env splits once. It is made from the whole base because what one entry may keep
 	// can depend on another, as ALL_PROXY does on what HTTPS_PROXY names (TokenChildKeeps). The
 	// guard's own names and env go on top either way. Nil keeps the whole base, which is what
-	// every child keeps but the visibility read made with no credential (Guard.lsRemote) and the
-	// read through curl (Guard.CurlGet).
+	// every child keeps but the visibility read made with no credential (Guard.lsRemote), the
+	// read through curl (Guard.CurlGet), and the two reads of what a push's destination holds
+	// (Guard.advertised, Guard.negotiated), which keep what the read with no credential keeps.
 	inherit func(base []string) func(name, value string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
@@ -432,8 +433,10 @@ type child struct {
 	// reads read gh's answer alone (Guard.ghVisibility, Guard.graphQLVisibility), the read through
 	// curl curl's answer alone (Guard.CurlGet), the token read quotes gh's error without its output
 	// (Guard.ghToken), a git read of a push's records quotes git's error without the push's content
-	// (Guard.git), and the hook's read of git's own exec path reads git's answer alone
-	// (Guard.StaysLocal). Nil answers the two together.
+	// (Guard.git), the hook's read of git's own exec path reads git's answer alone
+	// (Guard.StaysLocal), and the two reads of what a push's destination holds read git's list of
+	// its refs and of the commits it holds alone (Guard.advertised, Guard.negotiated). Nil answers
+	// the two together.
 	stderr io.Writer
 }
 
