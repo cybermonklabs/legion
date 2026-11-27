@@ -25,8 +25,12 @@
 -- message, which the settled attempt's error says (model.KeptDeliveryExpiredError). A second
 -- notice of the copy keeps a true value.
 --
--- recorded_at is when the outbox recorded the notice, for an operator and for a later pruning of
--- rows whose copies' attempts are long settled.
+-- recorded_at is when the outbox recorded the notice. The outbox's expiry pass deletes a row once
+-- it is older than 73 hours, the copy's hour on the role's kept lane plus the listener's dedupe
+-- window of 72 hours (store.KeptDeliveryExpiryRetention): a send reports the copy's envelope only
+-- when it kept the copy, or when it repeats that send's key inside the dedupe window, so no settle
+-- still to come reads a row past that bound. The table holds a row only for each copy whose end
+-- was recorded inside the bound, so the delete reads it whole and no index of recorded_at is kept.
 --
 -- A new table: nothing existing is read, locked or rewritten here, and the release before this one
 -- neither reads nor writes it, which is what a rolling update requires of a migration

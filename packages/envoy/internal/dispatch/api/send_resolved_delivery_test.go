@@ -129,9 +129,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 			})
 			go func() {
 				defer close(returned)
-				delivery := testDelivery(tc.target, "session:s1")
-				delivery.post = testDeliveredPost
-				answered <- s.sendResolvedDelivery(ctx, delivery)
+				answered <- s.sendResolvedDelivery(ctx, testDelivery(tc.target, "session:s1"))
 			}()
 			outcome := testwait.Receive(t, "sendResolvedDelivery to answer", answered)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
@@ -161,11 +159,10 @@ func keptForPlanner() ResolvedMention {
 var testDeliveredPost = listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: "8f14e45f-ceea-467a-9c1e-000000000001"}
 
 // testDelivery is the resolved delivery these tests send to target by route: a steer of the body
-// "body" under the key m1:steer that wants a reply and carries an empty frame. It names no post,
-// which only a publish for a role's first holder reads (publishForRole): a test of one sets post.
+// "body" of testDeliveredPost under the key m1:steer that wants a reply and carries an empty frame.
 func testDelivery(target ResolvedMention, route string) resolvedDelivery {
 	return resolvedDelivery{
-		target: target, route: route, body: "body", idempotencyKey: "m1:steer",
+		target: target, route: route, post: testDeliveredPost, body: "body", idempotencyKey: "m1:steer",
 		wanted: contracts.ExpectsReplyOptional, frame: []byte(`{}`),
 	}
 }
@@ -211,9 +208,7 @@ func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 				window = 150 * time.Millisecond
 			}
 			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(window), envoy.WithAccountTokenFile(testEnvoyAccountTokenFile(t, listener.URL)))}}
-			delivery := testDelivery(keptForPlanner(), "role:planner")
-			delivery.post = testDeliveredPost
-			outcome := s.sendResolvedDelivery(context.Background(), delivery)
+			outcome := s.sendResolvedDelivery(context.Background(), testDelivery(keptForPlanner(), "role:planner"))
 			if outcome.failure != tc.failure || outcome.envelopeID != nil || outcome.queued {
 				t.Fatalf("sendResolvedDelivery = %+v, want failure %q with no envelope", outcome, tc.failure)
 			}

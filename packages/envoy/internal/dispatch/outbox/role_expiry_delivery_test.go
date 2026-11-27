@@ -182,13 +182,20 @@ func keepDelivery(t *testing.T, rig *roleRig, role string, post listenerwire.Dis
 	item := contracts.MessageEnvelope(contracts.Message{Source: "dispatch", Text: "For the role's first holder."},
 		contracts.RoleTopicPrefix+role, "publish."+uuid.NewString())
 	item.SourceEventID = bus.DispatchPostEventID(post)
+	return keepCopy(t, rig, role, item)
+}
+
+// keepCopy stores item on role's kept lane under the message id the listener keeps it under
+// (bus.KeptMsgID), and answers the copy as the stream holds it.
+func keepCopy(t *testing.T, rig *roleRig, role string, item contracts.Envelope) bus.StoredMessage {
+	t.Helper()
 	data, err := json.Marshal(item)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ack, err := rig.client.JS().Publish(bus.KeptRoleSubject(role), data, natsgo.MsgId(bus.KeptMsgID(item.DedupeKey, role)))
 	if err != nil {
-		t.Fatalf("keep the copy of %s %s's delivery on role %s's kept lane: %v", post.Kind, post.ID, role, err)
+		t.Fatalf("keep the copy %s (source event %s) on role %s's kept lane: %v", item.EventID, item.SourceEventID, role, err)
 	}
 	stored, err := rig.client.NextStoredMessage(context.Background(), bus.KeptRoleSubject(role), ack.Sequence)
 	if err != nil || stored.Sequence != ack.Sequence {
@@ -640,19 +647,7 @@ func TestAKeptDeliverysNoticeThatNamesNoCopyOfItIsPassedOver(t *testing.T) {
 		{"its key is the outbox's while its source event id names a post", "kept-delivery-crossed", func(t *testing.T, rig *roleRig, role string, kept bus.StoredMessage) uint64 {
 			item := envelopeOf(t, kept)
 			item.DedupeKey = "dispatch-" + uuid.NewString()
-			data, err := json.Marshal(item)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ack, err := rig.client.JS().Publish(bus.KeptRoleSubject(role), data, natsgo.MsgId(bus.KeptMsgID(item.DedupeKey, role)))
-			if err != nil {
-				t.Fatalf("keep the crossed copy on role %s's kept lane: %v", role, err)
-			}
-			crossed, err := rig.client.NextStoredMessage(context.Background(), bus.KeptRoleSubject(role), ack.Sequence)
-			if err != nil || crossed.Sequence != ack.Sequence {
-				t.Fatalf("read the crossed copy at %d back: sequence %d, %v", ack.Sequence, crossed.Sequence, err)
-			}
-			expire(t, rig.client, role, crossed)
+			expire(t, rig.client, role, keepCopy(t, rig, role, item))
 			return lastNotice(t, rig, bus.KeptExpiredSubject(role))
 		}},
 	} {
@@ -730,9 +725,6 @@ func keptDeliveryExpiryRows(t *testing.T, database *store.Store) []keptDeliveryE
 // settled, and the end of the copy is recorded with the qualifier. With the qualifier taken away,
 // the two rows' attempts read alike, and the second fails its error.
 func TestAKeptDeliverysNoticeSaysWhetherItsForwardMayHaveReachedAHolder(t *testing.T) {
-	if model.KeptDeliveryExpiredError(true) == model.KeptDeliveryExpiredError(false) {
-		t.Fatalf("the error of a copy whose forward may have reached its holder reads as the plain one: %q", model.KeptDeliveryExpiredError(true))
-	}
 	for _, kind := range keptDeliveryKinds {
 		for _, tc := range []struct {
 			name    string
@@ -857,75 +849,131 @@ func TestAKeptDeliverysNoticeReadBeforeItsAttemptIsQueuedIsRecordedAndHoldsNothi
 }
 
 // A kept delivery's notice stored on one role's expiry subject settles no attempt of another role,
-// whatever post and envelope it names: a forged frame an edge publisher stores on its own role's
-// lane, carrying the post and the envelope id of another role's queued attempt, reads as a
-// delivery's copy of that post, and its notice settles nothing and appends no receipt. The store
-// holds no delivery of a message to the forging role, so it records no end either; a comment that
-// mentions the forging role too is a delivery to it, whose end is recorded under the forging
-// role's own name, which no read for the other role finds, and whose attempt, queued under a copy
-// of its own, is not the envelope the notice names. The real notice of the other role is then
-// recorded and settled as ever: the forged one blocked nothing. With the target check taken away,
-// the real attempt is settled by the forged notice, and with the record keyed by the envelope
-// alone, the real notice records nothing.
+// whatever post and envelope it names. A forged notice that names the sequence of a copy on its
+// own role's lane beside the envelope id of another role's queued attempt names no copy the lane
+// holds - the copy there is under an envelope of its own (noticedCopy) - and is passed over: it
+// settles nothing, appends no receipt and records no end. A forged frame an edge publisher stores
+// on its own role's lane, carrying the post and the very envelope of another role's queued
+// attempt, is a delivery's copy of that post under that envelope, and its notice settles nothing
+// and appends no receipt either. The store holds no delivery of a message to the forging role, so
+// that notice records no end; a comment that mentions the forging role too is a delivery to it,
+// whose end is recorded under the forging role's own name, which no read for the other role
+// finds, and whose attempt, queued under a copy of its own, is not the envelope the notice names.
+// Either way the real notice of the other role is then recorded and settled as ever: the forged
+// one blocked nothing. With the envelope check taken away, the first forgery records an end of a
+// comment under the forging role; with the target check taken away, the second settles the real
+// attempt; and with the record keyed by the envelope alone, the real notice records nothing.
 func TestAKeptDeliverysNoticeOfAnotherRoleSettlesNothingAndBlocksNothing(t *testing.T) {
 	for _, kind := range keptDeliveryKinds {
-		t.Run(kind.post, func(t *testing.T) {
-			rig := newRoleRig(t)
-			home, forger := "kept-delivery-project-a-"+kind.post, "kept-delivery-project-b-"+kind.post
-			seedIssue(t, rig.database, "T-1", nil)
-			post := seedRolePost(t, rig.database, kind.post, home)
-			homeCopy := keepDelivery(t, rig, home, post)
-			carried := roleAttempt{
-				attempt: 1, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, homeCopy).EventID,
-				state: model.DeliveryStateQueued, failure: sqlNull,
-			}
-			seedRoleAttempts(t, rig.database, post, home, carried)
-			forgedCopy := keepDelivery(t, rig, forger, post)
-			standing := []roleAttempt{carried}
-			var forgedEnds []keptDeliveryExpiryRow
-			if kind.post == listenerwire.DispatchPostComment {
-				mentioned := roleAttempt{
-					attempt: 2, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, forgedCopy).EventID,
+		for _, tc := range []struct {
+			name string
+			// carriesEnvelope is whether the forged copy on the forging role's lane carries the
+			// envelope of the other role's copy, so that the forged notice names its copy's own
+			// envelope as a listener's does, rather than naming another copy's.
+			carriesEnvelope bool
+		}{
+			{"the notice names another copy's envelope", false},
+			{"the forged copy carries the other role's envelope", true},
+		} {
+			t.Run(kind.post+", "+tc.name, func(t *testing.T) {
+				rig := newRoleRig(t)
+				home, forger := "kept-delivery-project-a-"+kind.post, "kept-delivery-project-b-"+kind.post
+				seedIssue(t, rig.database, "T-1", nil)
+				post := seedRolePost(t, rig.database, kind.post, home)
+				homeCopy := keepDelivery(t, rig, home, post)
+				carried := roleAttempt{
+					attempt: 1, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, homeCopy).EventID,
 					state: model.DeliveryStateQueued, failure: sqlNull,
 				}
-				seedRoleAttempts(t, rig.database, post, forger, mentioned)
-				standing = append(standing, mentioned)
-				forgedEnds = []keptDeliveryExpiryRow{{envelope: carried.envelope, role: forger, kind: kind.post, post: post.ID}}
-			}
-			outbox := holding(t, rig.deps())
-			subscription, unsubscribe := rig.broker.Subscribe()
-			defer unsubscribe()
-			forged := expiryNoticeOf(t, forger, forgedCopy)
-			forged.EventID = carried.envelope
-			if err := rig.client.PublishKeptCopyExpiry(context.Background(), forged); err != nil {
-				t.Fatalf("store the forged notice: %v", err)
-			}
-			forgery := lastNotice(t, rig, bus.KeptExpiredSubject(forger))
+				seedRoleAttempts(t, rig.database, post, home, carried)
+				// The forging role's own copy of the post's delivery, under an envelope of its own.
+				forgerCopy := keepDelivery(t, rig, forger, post)
+				standing := []roleAttempt{carried}
+				if kind.post == listenerwire.DispatchPostComment {
+					mentioned := roleAttempt{
+						attempt: 2, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, forgerCopy).EventID,
+						state: model.DeliveryStateQueued, failure: sqlNull,
+					}
+					seedRoleAttempts(t, rig.database, post, forger, mentioned)
+					standing = append(standing, mentioned)
+				}
+				var forged bus.KeptCopyExpiry
+				var forgedEnds []keptDeliveryExpiryRow
+				if tc.carriesEnvelope {
+					forged = expiryNoticeOf(t, forger, keepCopy(t, rig, forger, envelopeOf(t, homeCopy)))
+					if kind.post == listenerwire.DispatchPostComment {
+						forgedEnds = []keptDeliveryExpiryRow{{envelope: carried.envelope, role: forger, kind: kind.post, post: post.ID}}
+					}
+				} else {
+					forged = expiryNoticeOf(t, forger, forgerCopy)
+					forged.EventID = carried.envelope
+				}
+				outbox := holding(t, rig.deps())
+				subscription, unsubscribe := rig.broker.Subscribe()
+				defer unsubscribe()
+				if err := rig.client.PublishKeptCopyExpiry(context.Background(), forged); err != nil {
+					t.Fatalf("store the forged notice: %v", err)
+				}
+				forgery := lastNotice(t, rig, bus.KeptExpiredSubject(forger))
 
-			passExpiries(t, outbox)
+				passExpiries(t, outbox)
 
-			if got := roleAttempts(t, rig.database, post); !slices.Equal(got, standing) {
-				t.Fatalf("the attempts after the forged notice are %+v, want them as they were %+v", got, standing)
-			}
-			if receipts := deliveryReceiptCount(t, rig.database); receipts != 0 {
-				t.Fatalf("the forged notice appended %d delivery receipts, want none", receipts)
-			}
-			if ends := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(ends, forgedEnds) {
-				t.Fatalf("the forged notice left the recorded ends %+v of copies, want %+v", ends, forgedEnds)
-			}
-			if cursor := expiryCursor(t, rig.database); cursor != int64(forgery) {
-				t.Fatalf("the expiry cursor is %d, want it at the forged notice's sequence %d", cursor, forgery)
-			}
+				if got := roleAttempts(t, rig.database, post); !slices.Equal(got, standing) {
+					t.Fatalf("the attempts after the forged notice are %+v, want them as they were %+v", got, standing)
+				}
+				if receipts := deliveryReceiptCount(t, rig.database); receipts != 0 {
+					t.Fatalf("the forged notice appended %d delivery receipts, want none", receipts)
+				}
+				if ends := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(ends, forgedEnds) {
+					t.Fatalf("the forged notice left the recorded ends %+v of copies, want %+v", ends, forgedEnds)
+				}
+				if cursor := expiryCursor(t, rig.database); cursor != int64(forgery) {
+					t.Fatalf("the expiry cursor is %d, want it at the forged notice's sequence %d", cursor, forgery)
+				}
 
-			expire(t, rig.client, home, homeCopy)
-			passExpiries(t, outbox)
+				expire(t, rig.client, home, homeCopy)
+				passExpiries(t, outbox)
 
-			want := append([]roleAttempt{expiredAttempt(carried)}, standing[1:]...)
-			checkKeptDeliverySettled(t, rig, subscription, post, home, want, []roleAttempt{carried})
-			wantEnds := append([]keptDeliveryExpiryRow{{envelope: carried.envelope, role: home, kind: kind.post, post: post.ID}}, forgedEnds...)
-			if ends := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(ends, wantEnds) {
-				t.Fatalf("the recorded ends of kept deliveries are %+v, want the real notice's and no other role's settled, %+v", ends, wantEnds)
-			}
-		})
+				want := append([]roleAttempt{expiredAttempt(carried)}, standing[1:]...)
+				checkKeptDeliverySettled(t, rig, subscription, post, home, want, []roleAttempt{carried})
+				wantEnds := append([]keptDeliveryExpiryRow{{envelope: carried.envelope, role: home, kind: kind.post, post: post.ID}}, forgedEnds...)
+				if ends := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(ends, wantEnds) {
+					t.Fatalf("the recorded ends of kept deliveries are %+v, want the real notice's and no other role's settled, %+v", ends, wantEnds)
+				}
+			})
+		}
+	}
+}
+
+// The record of a kept delivery's end (kept_delivery_expiries) is deleted once it is older than
+// its retention (store.KeptDeliveryExpiryRetention, 73 hours: the copy's hour plus the listener's
+// dedupe window), by the expiry pass's first run: no send still to come reports that copy's
+// envelope, so no settle reads the record. One younger than the bound stays, since a settle can
+// still read it. With the prune taken away, the old record stays too.
+func TestARecordOfAKeptDeliverysEndIsPrunedOnceItIsPastItsRetention(t *testing.T) {
+	ctx := context.Background()
+	rig := newRoleRig(t)
+	const role = "kept-delivery-pruned"
+	outbox := holding(t, rig.deps())
+	recent := keptDeliveryExpiryRow{envelope: "recorded-72-hours-ago", role: role, kind: listenerwire.DispatchPostMessage, post: uuid.NewString()}
+	for _, row := range []struct {
+		end   keptDeliveryExpiryRow
+		hours int
+	}{
+		{keptDeliveryExpiryRow{envelope: "recorded-74-hours-ago", role: role, kind: listenerwire.DispatchPostComment, post: uuid.NewString()}, 74},
+		{recent, 72},
+	} {
+		if _, err := rig.database.Pool.Exec(ctx, `
+			insert into kept_delivery_expiries (envelope_id, role, post_kind, post_id, recorded_at)
+			values ($1, $2, $3, $4, now() - make_interval(hours => $5))
+		`, row.end.envelope, row.end.role, row.end.kind, row.end.post, row.hours); err != nil {
+			t.Fatalf("record the end of the copy %s %d hours ago: %v", row.end.envelope, row.hours, err)
+		}
+	}
+
+	passExpiries(t, outbox)
+
+	if ends := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(ends, []keptDeliveryExpiryRow{recent}) {
+		t.Fatalf("the recorded ends of kept deliveries are %+v, want only the one recorded inside the retention, %+v", ends, recent)
 	}
 }

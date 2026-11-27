@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // maxRoleKeeps is how many times the outbox keeps one event's copy for one role on that role's
@@ -53,11 +54,13 @@ const (
 // passKeptExpiries is the outbox's work on the copies it kept for roles whose hour ended with no
 // session taking them: it reads the listeners' expiry notices into outbox_role_copy_expiries
 // (readKeptExpiries), keeps each event again whose expiry owes it a keep, or forwards it to the
-// session that holds the role by now (keepExpiredCopiesAgain), and posts the message about each
-// window of events recorded undelivered that has ended (postUndeliveredNotes). It runs on the
-// publisher hold's holder, after the fallback pass of each scan and every keptExpiryReadEvery
+// session that holds the role by now (keepExpiredCopiesAgain), posts the message about each
+// window of events recorded undelivered that has ended (postUndeliveredNotes), and deletes the
+// records of ended kept deliveries no settle reads any more (pruneKeptDeliveryExpiries). It runs on
+// the publisher hold's holder, after the fallback pass of each scan and every keptExpiryReadEvery
 // besides (Outbox.serve), and reports what the holder does next as that pass does: full, there is
-// more to read, keep or post now; failed, a read or a claim failed and the holder backs off.
+// more to read, keep or post now; failed, a read, a claim or a prune failed and the holder backs
+// off.
 //
 // A Deps with no kept-lane reader reads no notice and keeps nothing again: the outbox has no
 // stream to read the notices or the copies from, as it makes no keep's handover then
@@ -66,7 +69,60 @@ func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed
 	readFull, readFailed := readKeptExpiries(ctx, o.deps, hold, o.instance, &o.keptStream)
 	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, o.deps, hold, o.instance)
 	postFull, postFailed := postUndeliveredNotes(ctx, o.deps, hold, o.instance)
-	return readFull || keepFull || postFull, readFailed || keepFailed || postFailed
+	pruneFailed := o.pruneKeptDeliveryExpiries(ctx, hold)
+	return readFull || keepFull || postFull, readFailed || keepFailed || postFailed || pruneFailed
+}
+
+// pruneKeptDeliveryExpiries deletes the kept_delivery_expiries rows the outbox recorded more than
+// store.KeptDeliveryExpiryRetention ago (73 hours: the copy's hour on the role's kept lane plus
+// the listener's dedupe window), which no settle reads any more, so the table holds only the ends
+// of copies that a send can still report. It prunes on the pass's first run and then at most once
+// every keptExpiryReadEvery, so a row goes within half a minute of its bound and the holder prunes
+// once each half minute, however often it scans. It runs where the notices' read runs - a Deps
+// with a kept-lane reader, before the hold's deadline - in one transaction under recordTimeout
+// that writes nothing while the publisher hold is not this process's (holdsPublisherHold), and it
+// reports failed when the prune failed, which the next pass makes again.
+func (o *Outbox) pruneKeptDeliveryExpiries(ctx context.Context, hold fence) (failed bool) {
+	if o.deps.KeptLanes == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
+		return false
+	}
+	if !o.keptDeliveriesPrunedAt.IsZero() && time.Since(o.keptDeliveriesPrunedAt) < keptExpiryReadEvery {
+		return false
+	}
+	pruned, err := pruneKeptDeliveryExpiriesOnce(ctx, o.deps, o.instance)
+	if err != nil {
+		if !lostToContextEnd(ctx, err) {
+			slog.Error("dispatch outbox: prune the records of ended kept deliveries", "error", err)
+		}
+		return true
+	}
+	o.keptDeliveriesPrunedAt = time.Now()
+	if pruned > 0 {
+		slog.Info("dispatch outbox: pruned the records of ended kept deliveries past their retention",
+			"pruned", pruned, "retention", store.KeptDeliveryExpiryRetention)
+	}
+	return false
+}
+
+// pruneKeptDeliveryExpiriesOnce is pruneKeptDeliveryExpiries's transaction: the hold's row read
+// first (holdsPublisherHold), then the delete (store.PruneKeptDeliveryExpiries). It answers how
+// many rows it deleted, none when the hold is not instance's.
+func pruneKeptDeliveryExpiriesOnce(ctx context.Context, deps Deps, instance uuid.UUID) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, recordTimeout)
+	defer cancel()
+	tx, err := deps.Store.Pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	if mine, err := holdsPublisherHold(ctx, tx, instance); err != nil || !mine {
+		return 0, err
+	}
+	pruned, err := store.PruneKeptDeliveryExpiries(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	return pruned, tx.Commit(ctx)
 }
 
 // errNotTheHolder is a holder transaction's answer when the publisher hold's row does not name the

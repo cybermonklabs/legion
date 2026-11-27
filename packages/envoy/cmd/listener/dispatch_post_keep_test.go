@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -529,9 +531,6 @@ func TestADeliverysNoticeClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 		if first.step != keptCopyExpiryNotice || first.drop.reason != tc.reason || first.drop.forwarded != tc.forwarded || (first.report != nil) != tc.reported {
 			t.Fatalf("%s: judged %+v, want a notice for %s with forwarded %t and a report: %t", tc.name, first, tc.reason, tc.forwarded, tc.reported)
 		}
-		if notice := keptCopyExpiry(role, stored, first.item, first.at, first.drop.forwarded); notice.ForwardUnconfirmed != tc.forwarded {
-			t.Fatalf("%s: the notice says forward_unconfirmed %t, want %t", tc.name, notice.ForwardUnconfirmed, tc.forwarded)
-		}
 		claimed := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: first.drop.claimReason()}
 		if claimed.DeadLetter != tc.claim {
 			t.Fatalf("%s: the notice's claim names %q, want %q", tc.name, claimed.DeadLetter, tc.claim)
@@ -544,5 +543,112 @@ func TestADeliverysNoticeClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 					tc.name, at, again, tc.reason, tc.forwarded, tc.claim)
 			}
 		}
+	}
+}
+
+// A walk whose forward of a copy failed releases its claim, so the role's next walk reads the copy
+// at once, and the release keeps what the claim said of the copy's forward: where the walk had
+// taken over a forward's claim another walk left, or its own forward may have stored the copy
+// (mayHaveStored), the stream may hold a forward of it, and the release names the copy as one
+// whose forward may have reached the holder (roleKeepLaneCursor.release,
+// bus.KeptRoleCursor.ForwardUnconfirmed), which the next walk reads as a forward's claim
+// (keptCopyClaimOf). When the hour of that copy of Dispatch's delivery then ends, the walk that
+// drops it tells Dispatch so (bus.KeptCopyExpiry.ForwardUnconfirmed), and a person who retries the
+// delivery is not told that nothing took it. The control is a first forward that failed storing
+// nothing: its release names no forward, and its notice says none may have reached a holder. With
+// the release writing only the cursor the claim replaced, the first two rows' notices say none.
+func TestAReleasedForwardClaimStillSaysItsForwardMayHaveReachedAHolder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		role string
+		// claimed is whether a walk before the failing one claimed the copy to forward it and
+		// ended with neither its forward confirmed nor its claim released.
+		claimed bool
+		// failure is what the failing walk's forward answers.
+		failure error
+		// forwarded is whether the copy's forward may have reached a holder, which the release
+		// and the notice both say.
+		forwarded bool
+	}{
+		{"a forward's claim taken over, whose forward then fails", "released-forward-taken-over", true, errors.New("nats: connection closed"), true},
+		{"a first forward that may have stored the copy", "released-forward-unacknowledged", false, fmt.Errorf("forward the copy: %w", bus.ErrUnacknowledged), true},
+		{"control: a first forward that stored nothing", "released-forward-unsent", false, errors.New("nats: connection closed"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			harness := newListenerDeliveryHarness(t)
+			const holder = "ses_released_forward_holder"
+			item := listenerTestEnvelope(contracts.RoleTopicPrefix+tc.role, bus.PublishDedupePrefix+tc.role)
+			item.Source, item.SourceEventID = "dispatch", bus.DispatchPostEventID(deliveredPost)
+			if kind := bus.ClassifyKeptCopy(item); kind != bus.KeptCopyDispatchDelivery {
+				t.Fatalf("the copy is kind %d, want a copy of Dispatch's delivery of a post", kind)
+			}
+			kept, err := keepRoleMessage(harness.config, tc.role, item)
+			if err != nil {
+				t.Fatalf("keep the copy of Dispatch's delivery: %v; the listener log says why:\n%s", err, harness.logs.String())
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if tc.claimed {
+				// The cursor a walk leaves when it ends with the copy claimed to forward it,
+				// written as the bytes a walk writes.
+				claim := []byte(fmt.Sprintf(`{"kept":0,"claiming":%d}`, kept.sequence))
+				if _, err := harness.client.PublishCursorAt(ctx, bus.KeptRoleCursorSubject(tc.role), claim, 0); err != nil {
+					t.Fatalf("write the forward's claim an ended walk left: %v", err)
+				}
+			}
+			claimRoleWith(t, harness, holder, tc.role, liveRoleActEntry)
+			// walk reads role's kept lane head and walks it once with cfg, for forHolder (empty
+			// for a walk with no live holder), by a clock at after now.
+			walk := func(cfg listenerDeliveryHandlerConfig, forHolder string, at time.Duration) error {
+				t.Helper()
+				head, err := readKeptLaneHead(ctx, harness.client, tc.role)
+				if err != nil || !head.left {
+					t.Fatalf("read role %s's kept lane head: %+v, %v; want the copy left on it", tc.role, head, err)
+				}
+				_, err = walkKeptRole(ctx, cfg, tc.role, forHolder, liveRoleActEntry, head, func() time.Time { return time.Now().Add(at) })
+				return err
+			}
+
+			// Inside the copy's hour, and past the window of any claim on it, the walk for the
+			// live holder claims the copy to forward it, and its forward fails.
+			failing := harness.config
+			failing.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error { return tc.failure })
+			if err := walk(failing, holder, bus.KeptRoleClaimWindow+time.Minute); !errors.Is(err, tc.failure) {
+				t.Fatalf("the walk whose forward failed ended with %v, want the forward's failure %v", err, tc.failure)
+			}
+			released, err := harness.client.ReadKeptRoleCursor(ctx, tc.role)
+			if err != nil {
+				t.Fatalf("read role %s's drain cursor: %v", tc.role, err)
+			}
+			want := bus.KeptRoleCursor{}
+			if tc.forwarded {
+				want.ForwardUnconfirmed = kept.sequence
+			}
+			if released.Cursor != want {
+				t.Fatalf("the walk's release left the drain cursor %+v, want %+v: nothing claimed, and the copy named as one whose forward may have reached the holder exactly when the stream may hold that forward",
+					released.Cursor, want)
+			}
+
+			// After the copy's hour, the walk drops it and tells Dispatch.
+			var notices []bus.KeptCopyExpiry
+			ending := harness.config
+			ending.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+				t.Error("a walk after the copy's hour forwarded it")
+				return nil
+			})
+			ending.publishExpiryNotice = func(ctx context.Context, notice bus.KeptCopyExpiry) error {
+				notices = append(notices, notice)
+				return harness.client.PublishKeptCopyExpiry(ctx, notice)
+			}
+			if err := walk(ending, "", roleKeepWindow+time.Minute); err != nil {
+				t.Fatalf("the walk after the copy's hour: %v\n%s", err, harness.logs.String())
+			}
+			if len(notices) != 1 || notices[0].Sequence != kept.sequence || notices[0].ForwardUnconfirmed != tc.forwarded {
+				t.Fatalf("the walk after the copy's hour stored the notices %+v, want the one of the copy at %d with forward_unconfirmed %t",
+					notices, kept.sequence, tc.forwarded)
+			}
+		})
 	}
 }

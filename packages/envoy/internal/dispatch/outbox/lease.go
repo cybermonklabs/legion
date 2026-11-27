@@ -138,6 +138,10 @@ type Outbox struct {
 	// keptStream is the stream's identity as the expiry pass last took it (readKeptExpiries). Only
 	// the goroutine that runs the pass reads and writes it.
 	keptStream keptStreamRead
+	// keptDeliveriesPrunedAt is when the expiry pass last pruned kept_delivery_expiries
+	// (pruneKeptDeliveryExpiries), zero before its first prune. Only the goroutine that runs the
+	// pass reads and writes it.
+	keptDeliveriesPrunedAt time.Time
 }
 
 // New returns an outbox for deps, with an instance id of its own. Run starts it. It makes the

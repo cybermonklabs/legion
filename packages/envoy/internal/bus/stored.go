@@ -96,7 +96,8 @@ const KeptRoleClaimWindow = 60 * time.Second
 // none is outstanding: a walk writes it before it forwards that copy and clears it with the same
 // write that moves Kept past the copy, so a walk that ends between the two leaves Kept short of
 // the copy and the next walk reads that copy again. A claim is also the lane's lock while it is
-// outstanding (ClaimOutstanding).
+// outstanding (ClaimOutstanding). ForwardUnconfirmed names, beside a Claiming of 0, the copy after
+// Kept as one whose forward a walk began and no walk confirmed (below).
 //
 // The listener's drain is its only writer, which writes it with Client.PublishCursorAt as this
 // small body rather than an envelope (cmd/listener/role_keep.go). It lives here because
@@ -133,6 +134,22 @@ type KeptRoleCursor struct {
 	// it reads only Kept and Claiming; an earlier listener's struct has no such field, and
 	// encoding/json drops it when that listener decodes the body.
 	DeadLetter string `json:"dead_letter,omitempty"`
+	// ForwardUnconfirmed is the copy after Kept, by its stream sequence, whose forward a walk
+	// began and no walk confirmed, once the claim that showed it was given up: a walk whose
+	// forward failed releases its claim with Claiming 0 so the next walk reads the copy at once,
+	// and writes this where the stream may hold a forward of the copy - the walk took over a
+	// forward's claim, or its own forward may have stored the copy - so the next walk still
+	// judges the copy as one under a forward's claim, and the dead letter or the expiry notice
+	// the copy turns out to be owed says that it may have reached the session that held the role
+	// then (cmd/listener/role_keep.go: roleKeepLaneCursor.release, keptCopyClaimOf). Every write
+	// that moves Kept past the copy, or claims it, leaves it out. It is no claim: ClaimOutstanding
+	// reads Claiming alone, so the lane is not held by it.
+	//
+	// 0 names no copy, and it is left out of the body then, so every other body is written
+	// exactly as before the field existed. Dispatch's outbox reads only Kept and Claiming; an
+	// earlier listener's struct has no such field and drops it, and a walk of that listener judges
+	// the copy as one no walk claimed.
+	ForwardUnconfirmed uint64 `json:"forward_unconfirmed,omitempty"`
 }
 
 // ClaimOutstanding reports whether the copy this cursor claims is still one walk's to forward: a

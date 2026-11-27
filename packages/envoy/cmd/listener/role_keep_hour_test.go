@@ -1461,6 +1461,8 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 	}{
 		{"a dead letter's claim of the copy before it", bus.KeptRoleCursor{Kept: 5, Claiming: 6, DeadLetter: string(deadLetterDeliveryMode)}, keptCopyClaim{kind: keptCopyUnclaimed}},
 		{"a forward's claim", forward, keptCopyClaim{kind: keptCopyForwardClaimed}},
+		{"a forward's claim given up with its forward unconfirmed", bus.KeptRoleCursor{Kept: 6, ForwardUnconfirmed: 7}, keptCopyClaim{kind: keptCopyForwardClaimed}},
+		{"the copy before it given up with its forward unconfirmed", bus.KeptRoleCursor{Kept: 5, ForwardUnconfirmed: 6}, keptCopyClaim{kind: keptCopyUnclaimed}},
 		{"a dead letter's claim for the copy's delivery mode", mode, keptCopyClaim{kind: keptCopyModeClaimed}},
 		{"a dead letter's claim for the copy's hour", expiry, keptCopyClaim{kind: keptCopyExpiryClaimed}},
 		{"a dead letter's claim for the hour of a copy whose forward was claimed",

@@ -742,41 +742,34 @@ func (s *server) completeMessageDelivery(
 	outcome sendOutcome,
 ) (model.MessageDelivery, error) {
 	state, failure := deliveryOutcome(outcome.failure, outcome.queued)
-	// The receipt this send owes, read off the row it is about to write.
-	receipt := messageDeliveryReceipt(message, actor, model.MessageDelivery{
+	// The receipt of the attempt as this send reported it, read off the row it is about to write.
+	reported := messageDeliveryReceipt(message, actor, model.MessageDelivery{
 		MessageID: message.ID, Attempt: pending.attempt, Delivery: pending.resolved.Delivery,
 		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: outcome.duplicate, Error: failure,
 	}, pending.resolved.title)
-	// write records an outcome on the pending attempt this sender claimed and returns the row it
-	// left; pgx.ErrNoRows says the attempt is no longer that row.
-	write := func(ctx context.Context, tx pgx.Tx, envelopeID *string, written string, writtenFailure *string) (model.MessageDelivery, error) {
-		return scanMessageDelivery(tx.QueryRow(ctx, `
-			update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7, session_id = $8
-			where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
-			returning `+messageDeliveryColumns,
-			message.ID, pending.attempt, pending.claimedAt, envelopeID, written, writtenFailure, outcome.duplicate,
-			pending.resolved.attemptSessionID,
-		))
-	}
-	return settleDeliveryAttempt(ctx, s, receipt,
+	return settleDeliveryAttempt(ctx, s, reported,
+		// The outcome is recorded on the pending attempt this sender claimed, and the row it
+		// left returned; pgx.ErrNoRows says the attempt is no longer that row. The copy the
+		// listener kept for a role may have ended, and the outbox read its notice, before this
+		// send's report is recorded: the attempt is then recorded failed, with no envelope, as
+		// the outbox's own settle would have left it had it found the attempt queued.
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
-			return write(ctx, tx, outcome.envelopeID, state, failure)
-		},
-		// The copy the listener kept for a role may have ended, and the outbox read its notice,
-		// before this send's report is recorded: the attempt is then settled failed, as the
-		// outbox's own settle would have left it had it found the attempt queued.
-		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, error) {
+			envelopeID, written, writtenFailure := outcome.envelopeID, state, failure
 			post := listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: message.ID}
 			expired, ended, err := keptDeliveryExpired(ctx, tx, post, messageTarget(message.Target), state, outcome.envelopeID)
-			if err != nil || !ended {
-				return model.MessageDelivery{}, false, err
+			if err != nil {
+				return model.MessageDelivery{}, err
 			}
-			settled, err := write(ctx, tx, nil, model.DeliveryStateFailed, &expired)
-			if errors.Is(err, pgx.ErrNoRows) {
-				// This sender no longer holds the attempt: the settle after this reads what it is now.
-				return model.MessageDelivery{}, false, nil
+			if ended {
+				envelopeID, written, writtenFailure = nil, model.DeliveryStateFailed, &expired
 			}
-			return settled, err == nil, err
+			return scanMessageDelivery(tx.QueryRow(ctx, `
+				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7, session_id = $8
+				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
+				returning `+messageDeliveryColumns,
+				message.ID, pending.attempt, pending.claimedAt, envelopeID, written, writtenFailure, outcome.duplicate,
+				pending.resolved.attemptSessionID,
+			))
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
 			var mine bool
@@ -786,8 +779,8 @@ func (s *server) completeMessageDelivery(
 			`, message.ID, pending.attempt, pending.claimedAt), &mine)
 			return answered, mine, answered.ReplyID, err
 		},
-		func(answered model.MessageDelivery) model.Event {
-			return messageDeliveryReceipt(message, actor, answered, pending.resolved.title)
+		func(settled model.MessageDelivery) model.Event {
+			return messageDeliveryReceipt(message, actor, settled, pending.resolved.title)
 		},
 		// The session this attempt reached, in the transaction that records that it did and
 		// under the receipt that records it (graphstore.QueueReached): an attempt the listener

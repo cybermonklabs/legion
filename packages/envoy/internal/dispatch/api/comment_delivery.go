@@ -153,8 +153,8 @@ type sendOutcome struct {
 // recipient its resolution named (target) and the route its row names (route), the body, the
 // idempotency key and the urgency every send of it carries, what the delivered thing wants back
 // (wanted), the frame, and whether the send asks for a session running now (connectedOnly). post
-// is the comment whose mention, or the message, the delivery is of, which only a publish for a
-// role's first holder names (publishForRole): its zero value says a delivery is of no post.
+// is the comment whose mention, or the message, the delivery is of, which a publish for a role's
+// first holder names (publishForRole).
 type resolvedDelivery struct {
 	target         ResolvedMention
 	route          string
@@ -764,41 +764,32 @@ func (s *server) completeCommentDelivery(
 	sent := recorded
 	sent.State, sent.Error = deliveryOutcome(outcome.failure, outcome.queued)
 	sent.Duplicate, sent.EnvelopeID = outcome.duplicate, outcome.envelopeID
-	// write records row on the pending attempt this sender claimed and returns the row it left;
-	// pgx.ErrNoRows says the attempt is no longer that row.
-	write := func(ctx context.Context, tx pgx.Tx, row model.CommentDelivery) (model.CommentDelivery, error) {
-		return scanCommentDelivery(tx.QueryRow(ctx, `
-			update comment_deliveries
-			set envelope_id = $5, state = $6, error = $7, duplicate = $8, session_id = $9, resolve_error = $10
-			where comment_id = $1 and target = $2 and attempt = $3
-			  and state = 'pending' and claimed_at = $4
-			returning `+commentDeliveryColumns,
-			comment.ID, row.Target, claim.attempt, claim.claimedAt,
-			row.EnvelopeID, row.State, row.Error, row.Duplicate,
-			row.SessionID, row.ResolveError,
-		))
-	}
 	return settleDeliveryAttempt(ctx, s, commentDeliveryReceipt(comment, actor, sent),
+		// The outcome is recorded on the pending attempt this sender claimed, and the row it
+		// left returned; pgx.ErrNoRows says the attempt is no longer that row. The copy the
+		// listener kept for a role may have ended, and the outbox read its notice, before this
+		// send's report is recorded: the attempt is then recorded failed, with no envelope, as
+		// the outbox's own settle would have left it had it found the attempt queued.
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, error) {
-			return write(ctx, tx, sent)
-		},
-		// The copy the listener kept for a role may have ended, and the outbox read its notice,
-		// before this send's report is recorded: the attempt is then settled failed, as the
-		// outbox's own settle would have left it had it found the attempt queued.
-		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, error) {
+			row := sent
 			post := listenerwire.DispatchPost{Kind: listenerwire.DispatchPostComment, ID: comment.ID}
-			failure, expired, err := keptDeliveryExpired(ctx, tx, post, sent.Target, sent.State, sent.EnvelopeID)
-			if err != nil || !expired {
-				return model.CommentDelivery{}, false, err
+			failure, expired, err := keptDeliveryExpired(ctx, tx, post, row.Target, row.State, row.EnvelopeID)
+			if err != nil {
+				return model.CommentDelivery{}, err
 			}
-			failed := sent
-			failed.State, failed.Error, failed.EnvelopeID = model.DeliveryStateFailed, &failure, nil
-			settled, err := write(ctx, tx, failed)
-			if errors.Is(err, pgx.ErrNoRows) {
-				// This sender no longer holds the attempt: the settle after this reads what it is now.
-				return model.CommentDelivery{}, false, nil
+			if expired {
+				row.State, row.Error, row.EnvelopeID = model.DeliveryStateFailed, &failure, nil
 			}
-			return settled, err == nil, err
+			return scanCommentDelivery(tx.QueryRow(ctx, `
+				update comment_deliveries
+				set envelope_id = $5, state = $6, error = $7, duplicate = $8, session_id = $9, resolve_error = $10
+				where comment_id = $1 and target = $2 and attempt = $3
+				  and state = 'pending' and claimed_at = $4
+				returning `+commentDeliveryColumns,
+				comment.ID, row.Target, claim.attempt, claim.claimedAt,
+				row.EnvelopeID, row.State, row.Error, row.Duplicate,
+				row.SessionID, row.ResolveError,
+			))
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
@@ -809,8 +800,8 @@ func (s *server) completeCommentDelivery(
 			`, comment.ID, sent.Target, claim.attempt, claim.claimedAt), &mine)
 			return answered, mine, answered.ReplyID, err
 		},
-		func(answered model.CommentDelivery) model.Event {
-			return commentDeliveryReceipt(comment, actor, answered)
+		func(settled model.CommentDelivery) model.Event {
+			return commentDeliveryReceipt(comment, actor, settled)
 		},
 		// The session this attempt reached, in the transaction that records that it did and
 		// under the receipt that records it (graphstore.QueueReached): an attempt the listener
@@ -866,7 +857,6 @@ func (s *server) supersedeCommentDelivery(
 				comment.ID, bound.Target, claim.attempt, claim.claimedAt, mentionSupersededError,
 			))
 		},
-		nil,
 		func(ctx context.Context, tx pgx.Tx) (model.CommentDelivery, bool, *string, error) {
 			var mine bool
 			answered, err := scanCommentDelivery(tx.QueryRow(ctx, `
@@ -876,8 +866,8 @@ func (s *server) supersedeCommentDelivery(
 			`, comment.ID, bound.Target, claim.attempt, claim.claimedAt), &mine)
 			return answered, mine, answered.ReplyID, err
 		},
-		func(answered model.CommentDelivery) model.Event {
-			return commentDeliveryReceipt(comment, actor, answered)
+		func(settled model.CommentDelivery) model.Event {
+			return commentDeliveryReceipt(comment, actor, settled)
 		},
 		nil,
 	)

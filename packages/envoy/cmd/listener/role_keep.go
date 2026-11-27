@@ -288,9 +288,10 @@ func (c *roleKeepLaneCursor) write(ctx context.Context, cursor bus.KeptRoleCurso
 //
 //   - kept at cursor.Kept with nothing claimed is this write, or the release of a walk that
 //     started from this write, claimed the copy after it and gave that claim up
-//     ({Kept: cursor.Kept}, release): no walk writes that cursor unless this write landed, so
-//     either is proof of it. Its sequence is the one the next write names, so confirm adopts
-//     it, logs it at debug, and reports it landed with no error, and the walk goes on.
+//     ({Kept: cursor.Kept}, with or without that copy named forward-unconfirmed, release): no
+//     walk writes that cursor unless this write landed, so either is proof of it. Its sequence
+//     is the one the next write names, so confirm adopts it, logs it at debug, and reports it
+//     landed with no error, and the walk goes on.
 //   - kept past cursor.Kept, or at it with a claim of a later copy, is this write with another
 //     walk gone on from it: it is reported landed, so the walk reports the copy, with an error
 //     wrapping bus.ErrCursorMoved, which ends the walk as roleKeepLaneBusy (roleKeepWriteFailed).
@@ -334,8 +335,17 @@ func (c *roleKeepLaneCursor) confirm(ctx context.Context, cursor bus.KeptRoleCur
 // answers nobody: a release the cursor refused or failed leaves a claim the next walk takes over
 // once bus.KeptRoleClaimWindow has passed, so it is logged at debug and changes nothing the walk
 // says.
-func (c *roleKeepLaneCursor) release(ctx context.Context, kept uint64) {
-	if err := c.write(ctx, bus.KeptRoleCursor{Kept: kept}); err != nil {
+//
+// forwardUnconfirmed is the claimed copy's sequence where the stream may hold a forward of it, so
+// the copy may have reached the role's holder - the claim this walk took over was a forward's, or
+// this walk's own forward may have stored the copy (mayHaveStored) - and 0 where no forward of it
+// can have been stored. The cursor written names it (bus.KeptRoleCursor.ForwardUnconfirmed), so
+// the next walk, which reads the copy at once since nothing is claimed, still judges it as one
+// under a forward's claim (keptCopyClaimOf): its dead letter or its expiry notice, when its hour
+// ends or the holder refuses its mode, says that it may have reached a holder, as the claim given
+// up would have made it say.
+func (c *roleKeepLaneCursor) release(ctx context.Context, kept, forwardUnconfirmed uint64) {
+	if err := c.write(ctx, bus.KeptRoleCursor{Kept: kept, ForwardUnconfirmed: forwardUnconfirmed}); err != nil {
 		c.cfg.logger.LogEvent(slog.LevelDebug, "listener kept role drain could not release its claim",
 			slog.String("role", c.role),
 			slog.String("session_id", c.holder),
@@ -1222,7 +1232,11 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 // role's live holder does not take its delivery mode, the dead letter says that the message may
 // have reached the session that held the role then. The claim of that dead letter says so as
 // well, whichever reason it names (keptRoleDrop.claimReason), so every walk that takes it over
-// after this one sends the dead letter that says so too.
+// after this one sends the dead letter that says so too. A walk whose forward failed gives a
+// forward's claim up without losing that either: its release names the copy as one whose forward
+// may have reached the holder (bus.KeptRoleCursor.ForwardUnconfirmed) where it took over a
+// forward's claim or its own forward may have stored the copy, and the next walk reads that as a
+// forward's claim (keptCopyClaimOf).
 //
 // The last write of those three is a confirm (roleKeepLaneCursor.confirm), whether the copy was
 // forwarded or ended with a dead letter. A confirm the stream stored with its answer lost is read
@@ -1307,7 +1321,8 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			result.end = roleKeepDrainFailed
 			return result, fmt.Errorf("read role %s's kept lane after %d: %w", role, kept, err)
 		}
-		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, seen)
+		claim := keptCopyClaimOf(head.cursor, stored.Sequence)
+		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, claim, now, seen)
 		switch judged.step {
 		case keptCopyWait:
 			result.end, result.waiting = roleKeepCopyWaits, stored.Sequence
@@ -1365,11 +1380,19 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the
 			// claim: the cursor goes back to what it was before the claim, and the role's next
-			// walk reads this copy again at once rather than waiting the claim out. A release
+			// walk reads this copy again at once rather than waiting the claim out. The release
+			// still names the copy as one whose forward may have reached the holder when the
+			// stream may hold a forward of it: the claim this walk took over was a forward's,
+			// or this walk's own forward may have stored it (mayHaveStored). A release
 			// that cannot be written leaves the claim, which the next walk takes over once it
-			// is older than bus.KeptRoleClaimWindow; either way the copy is not lost.
+			// is older than bus.KeptRoleClaimWindow; either way the copy is not lost, and
+			// neither is what its forward may have done.
 			cfg.attemptCache.Clear(item.DedupeKey, holder)
-			lane.release(ctx, kept)
+			var unconfirmed uint64
+			if claim.forwardUnconfirmed() || mayHaveStored(forwarded) {
+				unconfirmed = stored.Sequence
+			}
+			lane.release(ctx, kept, unconfirmed)
 			result.end = roleKeepDrainFailed
 			return result, fmt.Errorf("forward role %s's kept message %s to %s: %w", role, item.EventID, holder, forwarded)
 		}
@@ -1491,7 +1514,9 @@ const (
 	// keptCopyUnclaimed: no walk's claim names the copy.
 	keptCopyUnclaimed keptCopyClaimKind = iota
 	// keptCopyForwardClaimed: a walk claimed the copy to forward it, and no walk confirmed the
-	// forward.
+	// forward - the claim is on the cursor still, or a walk whose forward failed gave it up with
+	// the copy marked as one whose forward may have reached the holder
+	// (bus.KeptRoleCursor.ForwardUnconfirmed, roleKeepLaneCursor.release).
 	keptCopyForwardClaimed
 	// keptCopyModeClaimed: a walk claimed the copy to end it because the role's live holder does
 	// not take its delivery mode - with a dead letter, or, for a copy of Dispatch's delivery of a
@@ -1516,10 +1541,15 @@ func (c keptCopyClaim) forwardUnconfirmed() bool {
 }
 
 // keptCopyClaimOf is the claim cursor, the cursor a walk started from, holds on the copy stored at
-// seq. A dead letter's claim names the reason the walk that made it ended the copy for, and
-// whether the copy's forward may have reached the holder (bus.KeptRoleCursor.DeadLetter, which
-// endKeptCopyWithDeadLetter writes as keptRoleDrop.claimReason makes it), so the walk that takes
-// it over sends the dead letter again for that reason and with that qualifier. Both are read
+// seq. A forward's claim names the copy with no reason, and a forward's claim a walk gave up when
+// its forward failed while the stream may hold a forward of the copy names it as
+// bus.KeptRoleCursor.ForwardUnconfirmed beside no claim (roleKeepLaneCursor.release): both are a
+// forward's claim, so the walk that reads either judges the copy as one whose forward may have
+// reached the holder, however many walks claimed and released it before. A dead letter's claim
+// names the reason the walk that made it ended the copy for, and whether the copy's forward may
+// have reached the holder (bus.KeptRoleCursor.DeadLetter, which endKeptCopyWithDeadLetter writes
+// as keptRoleDrop.claimReason makes it), so the walk that takes it over sends the dead letter
+// again for that reason and with that qualifier. Both are read
 // here: the value with unconfirmedClaimSuffix cut from its end is the reason,
 // deadLetterDeliveryMode for a mode claim and deadLetterExpired for an expiry claim, and the
 // suffix is the qualifier of either. A value that names neither reason is an expiry claim with no
@@ -1533,6 +1563,8 @@ func (c keptCopyClaim) forwardUnconfirmed() bool {
 // cursor once a dead letter's claim replaced it.
 func keptCopyClaimOf(cursor bus.KeptRoleCursor, seq uint64) keptCopyClaim {
 	switch {
+	case cursor.Claiming == 0 && cursor.ForwardUnconfirmed == seq:
+		return keptCopyClaim{kind: keptCopyForwardClaimed}
 	case cursor.Claiming != seq:
 		return keptCopyClaim{kind: keptCopyUnclaimed}
 	case cursor.DeadLetter == "":
@@ -1713,8 +1745,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 		age := at.Sub(stored.Time)
 		stale := claim.kind == keptCopyUnclaimed && age > roleKeepStaleAge
 		report := keptRoleDroppedReport(cfg, role, holder, stored, item, age, stale)
-		switch kind {
-		case bus.KeptCopyOutbox, bus.KeptCopyDispatchDelivery:
+		if kind.IsDispatch() {
 			return notice(report, deadLetterExpired)
 		}
 		if !owed || stale {

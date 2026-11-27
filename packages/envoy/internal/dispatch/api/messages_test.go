@@ -2250,10 +2250,10 @@ func TestReplyDuringASendStillRecordsTheDeliveryReceipt(t *testing.T) {
 // owed-receipt-from-row rule: a send that errors after the session has already replied leaves
 // the row "sent" (the reply's own write, which always wins over whatever the send reports), so
 // the one receipt this attempt owes must say "sent" too - built from that row, not from the
-// send's own failed outcome. completeMessageDelivery's pre-built send-side receipt already
+// send's own failed outcome. The receipt as completeMessageDelivery's send reported it already
 // reads "failed" with the send's error text at the point the settle discovers the row was
-// answered first; only answeredReceipt, built from the row settleDeliveryAttempt just read,
-// gets this right.
+// answered first; only receiptOf, built from the row settleDeliveryAttempt just read, gets this
+// right.
 func TestReplyDuringASendThatErrorsStillRecordsTheOwedReceiptAsSent(t *testing.T) {
 	t.Parallel()
 	var handler http.Handler

@@ -20,7 +20,11 @@ body: |-
   `notifications.envoy.kept.expired.<role>` naming the copy and the post, counted on
   `envoy_role_kept_expiry_notices_total`. The notice carries `forward_unconfirmed` when a walk
   claimed the copy to forward it and never confirmed the forward, so the copy may have reached the
-  session that held the role; a Dispatch of an earlier release ignores the member. The drop is
+  session that held the role; a Dispatch of an earlier release ignores the member. A walk whose
+  forward of the copy fails gives its claim up still naming the copy as one whose forward may
+  have reached the holder when it had taken over another walk's forward claim or its own forward
+  may have been stored (`forward_unconfirmed` on the role's drain cursor), so the notice says so
+  when the copy ends; a listener of an earlier release drops that mark. The drop is
   counted on `envoy_role_kept_expired_total` under `kept_by="listener"` when its hour ended, and
   not when the walk ended it for the holder's delivery mode, whichever walk of several finishes
   it: the claim a walk writes for the notice names that reason, and `_unconfirmed` after it for a

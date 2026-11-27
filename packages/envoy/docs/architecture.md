@@ -797,6 +797,11 @@ neither of the first two. The claim a walk writes for a notice names the end it 
 letter's claim does: `expired` or `delivery_mode`, and `_unconfirmed` after it for a forward that
 may have reached the holder, so the walk that takes the claim over stores the same notice, with
 the same `forward_unconfirmed`, and a delivery mode refusal is never reported as an expired copy.
+A walk whose forward of a copy fails gives its claim up so the next walk reads the copy at once,
+and where it had taken over another walk's forward claim or its own forward may have been
+stored, the cursor it writes names the copy as one whose forward may have reached the holder
+(`forward_unconfirmed` on the drain cursor, `bus.KeptRoleCursor`), which the next walk reads as
+a forward's claim, so the notice still says so.
 The subject lies under the listener's own kept
 lane. So only a NATS user whose grant publishes every notification topic writes it: `Listener`,
 `Dispatch` (its envoy-listener runs beside envoy-dispatch), and the legacy `ListenerHost` and
@@ -815,8 +820,9 @@ notices from the first. It passes over a notice whose role is no valid role name
 on another role's expiry subject, whose dedupe key and source event id name neither kind of copy,
 whose event was never routed to that role, or that does not name that event's copy: the notice's
 sequence is not below its own; the role's kept lane holds a message there that no read can decode,
-or another copy than Dispatch's copy of the notice's kind under the notice's source event id and
-dedupe key; or the lane holds nothing there, and the sequence is at or past the first message the
+another copy than Dispatch's copy of the notice's kind under the notice's source event id and
+dedupe key, or that copy under another envelope than the notice's event id names; or the lane
+holds nothing there, and the sequence is at or past the first message the
 stream still holds, so the stream's retention did not remove a copy there: the stream removes
 messages oldest first by its age alone, since it discards new messages at its byte limit, and this
 assumes it has no per-subject limit, which would remove older messages mid-stream. A passed-over
@@ -828,7 +834,9 @@ notice's role (a message whose own target is another role, a comment none of who
 that role), so a notice stored for one role never settles or records anything for another role's
 attempts of the same post. It locks the owner, records the end of the copy in
 `kept_delivery_expiries` (keyed by the copy's envelope id, the role, and the post's kind and id,
-with `forward_unconfirmed`), and settles every attempt of the post to that role that still names
+with `forward_unconfirmed`; the expiry pass deletes a row once it is older than 73 hours, the
+copy's hour plus the listener's 72-hour dedupe window, past which no send reports the copy's
+envelope), and settles every attempt of the post to that role that still names
 the copy's envelope, reads `queued` and names no session and no reply: `failed`, with one of two
 fixed errors (`model.KeptDeliveryExpiredError`): that the listener kept the message for the role
 and no session took it before the listener dropped it, or, when the notice's forward is

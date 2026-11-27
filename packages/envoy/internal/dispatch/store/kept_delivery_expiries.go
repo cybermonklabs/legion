@@ -3,9 +3,24 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
+
+// KeptDeliveryExpiryRetention is how long a kept_delivery_expiries row is kept after the outbox
+// recorded it (recorded_at): 73 hours, the copy's hour on the role's kept lane (the listener's
+// roleKeepWindow, cmd/listener/role_keep.go) plus the listener's dedupe window
+// (contracts.DeliveryDuplicateWindow, 72 hours). Only the settle of an attempt whose send reported
+// the copy's envelope reads the row (ReadKeptDeliveryExpiry), and a send reports it when it kept
+// the copy, or when it repeats that send's key inside the dedupe window, which the listener
+// answers with the copy it keeps under the key. Both are sent inside the dedupe window from when
+// the copy was kept, which is before its notice was recorded, and the copy's hour on top of it is
+// room for a settle still in flight at the window's end: no settle still to come reads a row older
+// than the bound, and PruneKeptDeliveryExpiries deletes it.
+const KeptDeliveryExpiryRetention = time.Hour + contracts.DeliveryDuplicateWindow
 
 // KeptDeliveryExpiry names one copy of Dispatch's delivery of a post to a role that the listener
 // kept for the role's first holder (kept_delivery_expiries): the copy's envelope id, which every
@@ -53,4 +68,17 @@ func ReadKeptDeliveryExpiry(ctx context.Context, tx pgx.Tx, expiry KeptDeliveryE
 		return false, false, err
 	}
 	return forwardUnconfirmed, true, nil
+}
+
+// PruneKeptDeliveryExpiries deletes in tx every kept_delivery_expiries row the outbox recorded
+// more than KeptDeliveryExpiryRetention ago on the database's clock, which no settle will read,
+// and answers how many it deleted. It is the outbox's, on the publisher hold's holder, in the
+// expiry pass that records the rows (internal/dispatch/outbox, pruneKeptDeliveryExpiries). The
+// table holds a row only for each copy whose end was recorded inside the bound, so the statement
+// reads all of it rather than an index of recorded_at.
+func PruneKeptDeliveryExpiries(ctx context.Context, tx pgx.Tx) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+		delete from kept_delivery_expiries where recorded_at < now() - make_interval(secs => $1)
+	`, KeptDeliveryExpiryRetention.Seconds())
+	return tag.RowsAffected(), err
 }

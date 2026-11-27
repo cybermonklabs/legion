@@ -178,11 +178,12 @@ func (r *keptStreamRead) refresh(ctx context.Context, reader KeptLaneReader, for
 // Dispatch answers for: its body does not decode; its dedupe key and its source event id name
 // neither kind of copy, or an event that is no number; its role is no role name (roles.Valid); it
 // was stored on another role's expiry subject than the one its role names; the stream holds
-// something else than that copy at the sequence the notice names (noticedCopy); the event it names
-// was never routed to that role - the event's own destinations, and its comment's fallback rows,
-// do not name the role's topic - which an event the log does not hold is not either; or the post
-// it names is one the store holds no delivery of to that role. No read of such a notice will ever
-// name one. Only a NATS user on the listener's grant can store a notice at all, so this guards the
+// something else than that copy at the sequence the notice names, or holds that copy under another
+// envelope than the notice names (noticedCopy); the event it names was never routed to that
+// role - the event's own destinations, and its comment's fallback rows, do not name the role's
+// topic - which an event the log does not hold is not either; or the post it names is one the
+// store holds no delivery of to that role. No read of such a notice will ever name one. Only a
+// NATS user on the listener's grant can store a notice at all, so this guards the
 // role that becomes a subject (bus.KeptRoleSubject) and is written into a posted message, and the
 // event whose delivery to the role a notice reopens or ends, and the post whose attempts it
 // settles, not a door. The notice's own attempt decides nothing (recordExpiry).
@@ -453,18 +454,22 @@ func settleKeptDelivery(ctx context.Context, deps Deps, tx pgx.Tx, post listener
 // noticedCopy reads the copy notice names back from reader, at the sequence it names on its role's
 // kept lane (laneCopyAt), and answers why that is not the copy a listener dropped that the notice
 // names - the copy of its event, or of its delivery's post, under its dedupe key, of the kind the
-// notice's own key and source event id say (bus.KeptCopyExpiry.CopyKind) - or "" when it may be. A
-// listener stores a copy's notice after it reads the copy, and it notices only a copy Dispatch
-// answers for, which decodes: one Dispatch's outbox kept, or one of Dispatch's delivery of a post
-// that the publish route kept (bus.KeptCopyOutbox and bus.KeptCopyDispatchDelivery), so:
+// notice's own key and source event id say (bus.KeptCopyExpiry.CopyKind), and whose envelope is
+// the notice's - or "" when it may be. A listener stores a copy's notice after it reads the copy,
+// names the copy's own envelope in it (EventID), and notices only a copy Dispatch answers for,
+// which decodes: one Dispatch's outbox kept, or one of Dispatch's delivery of a post that the
+// publish route kept (bus.KeptCopyOutbox and bus.KeptCopyDispatchDelivery), so:
 //
 //   - the copy's sequence is below the notice's own (stored);
 //   - a message the lane holds there is the notice's copy only when it decodes and is Dispatch's
 //     copy of the notice's kind under the notice's source event id and dedupe key (copyOfEvent),
-//     which the one classifier the listener judged it by says (bus.ClassifyKeptCopy). One no read
-//     can decode, or another copy, is no copy the notice names, and the notice is passed over: no
-//     row is written, so nothing is kept again, nothing is recorded undelivered and no attempt is
-//     settled;
+//     which the one classifier the listener judged it by says (bus.ClassifyKeptCopy), and its
+//     envelope is the one the notice names. One no read can decode, another copy, or the copy
+//     under another envelope is no copy the notice names, and the notice is passed over: no row
+//     is written, so nothing is kept again, nothing is recorded undelivered and no attempt is
+//     settled. The envelope is what a delivery's notice settles attempts by (settleKeptDelivery),
+//     so a notice that names one copy's sequence beside another copy's envelope settles nothing
+//     of either;
 //   - a lane that holds nothing there lost the copy to the stream's retention only when the
 //     sequence is below the first message the stream still holds. The stream removes its messages
 //     oldest first by its age alone: it discards new messages at its byte limit
@@ -486,6 +491,10 @@ func noticedCopy(ctx context.Context, reader KeptLaneReader, stored bus.StoredMe
 	}
 	switch held.state {
 	case laneCopyOfEvent:
+		if held.item.EventID != notice.EventID {
+			return fmt.Sprintf("role %s's kept lane holds at sequence %d event %s's copy under dedupe key %s as envelope %q, not the notice's envelope %q",
+				notice.Role, notice.Sequence, notice.SourceEventID, notice.DedupeKey, held.item.EventID, notice.EventID), nil
+		}
 		return "", nil
 	case laneCopyUndecodable:
 		return fmt.Sprintf("role %s's kept lane holds at sequence %d a message no read can decode, which is no copy Dispatch's outbox kept: %v",
@@ -561,8 +570,8 @@ func laneCopyAt(ctx context.Context, reader KeptLaneReader, role string, seq uin
 // judged it by (bus.ClassifyKeptCopy), so a copy is never an outbox copy to the listener and a
 // delivery's to this read, and a want that is neither kind names no copy.
 func copyOfEvent(item contracts.Envelope, want bus.KeptCopyKind, sourceEventID, dedupeKey string) bool {
-	return (want == bus.KeptCopyOutbox || want == bus.KeptCopyDispatchDelivery) &&
-		bus.ClassifyKeptCopy(item) == want && item.SourceEventID == sourceEventID && item.DedupeKey == dedupeKey
+	return want.IsDispatch() && bus.ClassifyKeptCopy(item) == want &&
+		item.SourceEventID == sourceEventID && item.DedupeKey == dedupeKey
 }
 
 // routedToRole reports, in tx, whether the outbox ever routed eventID to role: the role's topic is

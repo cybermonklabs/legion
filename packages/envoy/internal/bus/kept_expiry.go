@@ -67,38 +67,56 @@ const (
 	KeptCopyDispatchDelivery
 )
 
+// IsDispatch reports whether k is one of the copies Dispatch answers for (KeptCopyOutbox,
+// KeptCopyDispatchDelivery), whose end a walk tells Dispatch with an expiry notice.
+func (k KeptCopyKind) IsDispatch() bool {
+	return k == KeptCopyOutbox || k == KeptCopyDispatchDelivery
+}
+
 // ClassifyKeptCopy is the kind of item, a copy on a role's kept lane, and the one rule every
 // reader of a kept copy decides it by: the listener's walk, its keep and its wake scan, and
 // Dispatch's outbox, which reads a notice's copy back (KeptCopyExpiry.CopyKind). A copy whose
 // source is dispatch and that carries no role mark (contracts.Envelope.Role) is Dispatch's when
-// its dedupe key and source event id agree on which of Dispatch's copies it is:
-//
-//   - KeptCopyDispatchDelivery: its key begins with PublishDedupePrefix, and its source event id
-//     names a post (ParseDispatchPostEventID), which only the publish route writes, from
-//     Dispatch's own principal;
-//   - KeptCopyOutbox: its key does not begin with PublishDedupePrefix, and its source event id
-//     names no post.
-//
-// A copy whose key and source event id disagree - a key of the outbox's beside a post's source
-// event id, or a key of the route's beside none - is neither, so no copy is told to Dispatch as an
-// outbox copy by one reader and as a delivery by another. Every other copy is the listener's: a
-// send Dispatch's API marked with its role (the send route kept it, or a takeover copied it from
-// its holder's subject), and every copy from any other source. It is KeptCopySession when it names
-// a source session and KeptCopyUnanswered when it names none.
+// its dedupe key and source event id agree on which of Dispatch's copies it is
+// (dispatchCopyKind). Every other copy is the listener's: a send Dispatch's API marked with its
+// role (the send route kept it, or a takeover copied it from its holder's subject), and every
+// copy from any other source. It is KeptCopySession when it names a source session and
+// KeptCopyUnanswered when it names none.
 func ClassifyKeptCopy(item contracts.Envelope) KeptCopyKind {
 	if item.Source == "dispatch" && item.Role == "" {
-		_, delivers := ParseDispatchPostEventID(item.SourceEventID)
-		switch routeKey := strings.HasPrefix(item.DedupeKey, PublishDedupePrefix); {
-		case routeKey && delivers:
-			return KeptCopyDispatchDelivery
-		case !routeKey && !delivers:
-			return KeptCopyOutbox
+		if kind, agree := dispatchCopyKind(item.DedupeKey, item.SourceEventID); agree {
+			return kind
 		}
 	}
 	if item.SourceSession != "" {
 		return KeptCopySession
 	}
 	return KeptCopyUnanswered
+}
+
+// dispatchCopyKind is which of Dispatch's copies a dispatch copy's dedupe key and source event id
+// name, and whether the two agree on one:
+//
+//   - KeptCopyDispatchDelivery: the key begins with PublishDedupePrefix, and the source event id
+//     names a post (ParseDispatchPostEventID), which only the publish route writes, from
+//     Dispatch's own principal;
+//   - KeptCopyOutbox: the key does not begin with PublishDedupePrefix, and the source event id
+//     names no post.
+//
+// A key and a source event id that disagree - a key of the outbox's beside a post's source event
+// id, or a key of the route's beside none - name neither, and answer KeptCopyUnanswered and
+// false, so no copy is told to Dispatch as an outbox copy by one reader and as a delivery by
+// another. It is the one rule both a copy (ClassifyKeptCopy) and a notice of one
+// (KeptCopyExpiry.CopyKind) are judged by.
+func dispatchCopyKind(dedupeKey, sourceEventID string) (KeptCopyKind, bool) {
+	_, delivers := ParseDispatchPostEventID(sourceEventID)
+	switch routeKey := strings.HasPrefix(dedupeKey, PublishDedupePrefix); {
+	case routeKey && delivers:
+		return KeptCopyDispatchDelivery, true
+	case !routeKey && !delivers:
+		return KeptCopyOutbox, true
+	}
+	return KeptCopyUnanswered, false
 }
 
 // dispatchPostEventIDPrefix begins the source_event_id of the envelope of a role publish that
@@ -228,17 +246,14 @@ type KeptCopyExpiry struct {
 	ForwardUnconfirmed bool   `json:"forward_unconfirmed,omitempty"`
 }
 
-// CopyKind is the kind of copy n names, by the one rule ClassifyKeptCopy applies to an envelope:
-// KeptCopyOutbox or KeptCopyDispatchDelivery when n's dedupe key and source event id agree on
-// which of Dispatch's copies it names, and KeptCopyUnanswered when they do not. Every reader of a
-// notice judges it here, so the listener and Dispatch's outbox can never read one copy as two
-// kinds.
+// CopyKind is the kind of copy n names, by the one rule ClassifyKeptCopy applies to a dispatch
+// copy (dispatchCopyKind): KeptCopyOutbox or KeptCopyDispatchDelivery when n's dedupe key and
+// source event id agree on which of Dispatch's copies it names, and KeptCopyUnanswered when they
+// do not. Every reader of a notice judges it here, so the listener and Dispatch's outbox can never
+// read one copy as two kinds.
 func (n KeptCopyExpiry) CopyKind() KeptCopyKind {
-	return ClassifyKeptCopy(contracts.Envelope{
-		Source:        "dispatch",
-		SourceEventID: n.SourceEventID,
-		DedupeKey:     n.DedupeKey,
-	})
+	kind, _ := dispatchCopyKind(n.DedupeKey, n.SourceEventID)
+	return kind
 }
 
 // PublishKeptCopyExpiry stores notice on its role's expiry subject (KeptExpiredSubject) under the

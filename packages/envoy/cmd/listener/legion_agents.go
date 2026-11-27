@@ -283,23 +283,24 @@ func legionAgentErrorStatus(err error) int {
 
 // writeLegionAgentError answers a registry call that failed with legionAgentErrorStatus's status. A
 // 503 carries `Retry-After: 1` and says the registry did not answer; a record that does not decode
-// (listenerwire.FaultStatus) carries no Retry-After, since asking again reads the same record, says
-// the registry holds a record it cannot decode, which the error names, and carries the code
-// listenerwire.CodeMalformedRecord, so a writer tells it from every other 500 and drops that one
-// entry's write rather than send it again. A batch that failed after its checks
-// (legionagents.PartialWriteError) answers how many entries it wrote whole as `written`, whatever
-// its status.
+// (legionagents.ErrMalformedRecord, answered listenerwire.FaultStatus) carries no Retry-After,
+// since asking again reads the same record, says the registry holds a record it cannot decode,
+// which the error names, and carries the code listenerwire.CodeMalformedRecord, so a writer tells
+// it from every other 500 and drops that one entry's write rather than send it again. The code is
+// read off the error, not off the status, so no other failure that answers the same status carries
+// it. A batch that failed after its checks (legionagents.PartialWriteError) answers how many
+// entries it wrote whole as `written`, whatever its status.
 func writeLegionAgentError(w http.ResponseWriter, err error) {
 	status := legionAgentErrorStatus(err)
 	message := err.Error()
 	code := ""
-	switch status {
-	case http.StatusServiceUnavailable:
-		w.Header().Set("Retry-After", "1")
-		message = "envoy: the legion agent registry did not answer: " + message
-	case listenerwire.FaultStatus:
+	switch {
+	case errors.Is(err, legionagents.ErrMalformedRecord):
 		message = "envoy: the legion agent registry holds a record it cannot decode: " + message
 		code = listenerwire.CodeMalformedRecord
+	case status == http.StatusServiceUnavailable:
+		w.Header().Set("Retry-After", "1")
+		message = "envoy: the legion agent registry did not answer: " + message
 	}
 	var partial *legionagents.PartialWriteError
 	if errors.As(err, &partial) {
