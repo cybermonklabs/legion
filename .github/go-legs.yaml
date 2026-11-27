@@ -133,6 +133,7 @@ packages/daemon:
       - internal/testdoc
       - internal/testlog
       - internal/testnkeys
+      - internal/testparallel
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle

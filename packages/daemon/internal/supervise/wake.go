@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
@@ -736,9 +737,12 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // death (reportedProcess), and the relaunch was raised for that death alone, so the daemon
 // replaces no live process and no let-go records an end of the death's words (letGo, recordEnd).
 // judge drops only the wake that raise marked as the death's own (wake.deathRelaunch,
-// relaunchDeath); any other launch waiting over the process keeps its turn. The same report has
-// already given back the launch failure that relaunch charged and cleared the cause it left
-// pending (reportedProcess), so the wake goes with nothing of its own left on the claim.
+// relaunchDeath); any other launch waiting over the process keeps its turn. The cause the death's
+// relaunch left pending goes with the relaunch (Claim.PendingCause): no relaunch of a failure is in
+// flight any more. Only a cause that relaunch recorded goes, read as died over an end the policy
+// charges (processOutcome, Charges): an end it charges nothing recorded none, and the cause pending
+// is the earlier failure's that this process is the relaunch of. What the death counted stays
+// counted, as for any death: its launch failure until the next ready clears it.
 // The wake goes off the machine and gives up what held it: its place in the pacing
 // (placeTimer), the turn it would have taken going to the wake behind it, or the gate's own stop
 // of the claim for the pause (TimerPause, pauseStopDue), which the gate posted because the launch
@@ -759,6 +763,9 @@ func (m *Machine) dropOutlivedRelaunch() {
 	m.disarm(TimerWake)
 	m.disarm(TimerPause)
 	m.wake = nil
+	if m.claim.PendingCause == CauseDied && Charges(m.processOutcome(runtime.OutcomeProcessDied)) {
+		m.claim.PendingCause = ""
+	}
 	m.watchAgain()
 }
 

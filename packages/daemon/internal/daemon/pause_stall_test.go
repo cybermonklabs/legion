@@ -18,6 +18,7 @@ import (
 // (supervise's onStallBackstop rows). The negative control undoes both: the backstop then ends
 // the stopped agent's "turn", brings its session back and tells its owner a worker-stalled notice.
 func TestTheStallBackstopTellsNobodyOfAnAgentThePauseStopped(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stopped := rig.claim(claim.RoleImplementer, "LEGION-218", backstopBound+time.Hour, true)
 	stopped.State, stopped.SuspendedBy, stopped.Locator = supervise.StateSuspended, supervise.SuspendedByReleased, nil
@@ -45,6 +46,7 @@ func TestTheStallBackstopTellsNobodyOfAnAgentThePauseStopped(t *testing.T) {
 // The negative control is podlessRound's hold check undone: the sweep tells the controller, past
 // the bound, that no claim of the issue records a process in a pod.
 func TestPodUpdateTellsNobodyOfARoundWhoseRoleThePauseStopped(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.tick()

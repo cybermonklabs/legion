@@ -61,12 +61,10 @@ const (
 // a walk whose first report was read neither way before any report read the pod ended, where
 // the claim records the ended launch live and the store takes its writes, whatever waits or runs:
 // a death's relaunch waiting in the pacing, any launch waiting, ready or idle, in a turn, after a
-// restart; a read of the process at a caller's request that finds it running (ReadProcess), in
-// such a walk, wherever no launch waits; either running verdict ends every death died judged it
-// finds, as often as one comes, and gives back the Death and the launch failure that death
-// charged (reportedProcess, EndedWork.DeathCounted), so no run of false deaths reaches the deaths
-// limit (chargeDeath); on the daemon that read the end, where the claim stood holding its task
-// sent and still holds it, a late acknowledgement of that task's
+// restart; a read of the process at a caller's request that finds it running (ReadProcess), once
+// in a walk, in such a walk, wherever no launch waits; either running verdict ends a death died
+// judged once in a walk at most; on the daemon that read the end, where the
+// claim stood holding its task sent and still holds it, a late acknowledgement of that task's
 // prompt (acked), as the send in flight at the end gives one, or the shim's second answer for one
 // prompt; the steps of a process a read found running (live): the end of its turn with an
 // activity report that says nothing runs, the turn start of the task sent again, a suspension
@@ -82,10 +80,9 @@ const (
 //  1. Where the end's first report was read as outside, or was the daemon's own replacement of
 //     the pod, and no restart came while the store held no record of the ended launch typed as
 //     an end from outside the pod or as displaced's, the claim is charged nothing, in memory or
-//     in the store; otherwise, at most one death and its launch failure, those of the one death
-//     judged that no running verdict ended: a read that finds the process running ends a judged
-//     death and gives back what it charged (reportedProcess), so the end a later report finds is
-//     judged afresh, however many came before it. What the earlier launch's death charged before
+//     in the store; otherwise, at most one death and its launch failure for each death judged,
+//     and a read that finds the process running ends a judged death (reportedProcess), so the
+//     end a later report finds is judged afresh. What the earlier launch's death charged before
 //     the walk began is no part of either (outsideWalk.base).
 //  2. The claim and the store hold the task, where the claim held one, at every step: it is
 //     never retired, but by the end of a turn that confirmed it in a process a read found
@@ -181,39 +178,32 @@ const (
 // Over the record of a death a running verdict ended: reportedProcess keeping the take-back's
 // mark (Machine.cutTurnOf) fails invariant 7 (37 seeds, 48, 638 and 976 among them), and keeping
 // the death's turn on the record fails it too (23 seeds, 9 and 48 among them); markDisplaced
-// leaving that record untyped fails invariant 8 (seeds 48, 271, 341, 404, 457, 481, 504, 768,
-// 960), and so does died typing it without its own cause (14 seeds, 9, 48 and 204 among them),
-// markFromOutside typing it so (seeds 74, 151, 204, 206, 472, 754, 894), and retype leaving it
-// told (14 seeds, 9 and 204 among them); reportedProcess leaving it untold fails invariant 9 (63
-// seeds, 9 and 48 among them), and so does Delivery.message sending the task sent again with no
-// sentence (41 seeds, 9 and 48 among them), and reportedProcess marking a record that joined the
-// earlier launch's told whole rather than putting that one back (18 seeds, 115, 262 and 638
-// among them; at 638 and 906 the task the death took back goes again with no word of that
-// launch's end). judge leaving a death's relaunch waiting when the sweep finds the process
-// running, its order before 4728740d, fails invariant 9 at the relaunch's turn, which records
-// that death again and tells it (seeds 247, 306, 403, 483, 687, 767), or invariant 6 first, a
-// report the waiting launch drops leaving the turn-start timer armed over the process it found
-// gone (seeds 125, 130, 359, 372, 544, 917). The walk holds no project pause, so judge dropping
-// only a relaunch the pacing holds walks here as the fix does; the rows of a relaunch the pause's
-// gate holds catch it (relaunch_waits_test.go). reportedProcess keeping the Death a death counted
-// fails invariant 1 where false deaths follow one another (seeds 125, 204, 325, 359, 415, 544,
-// 771), and so does chargeDeath counting it without marking it (EndedWork.DeathCounted), on the
-// same seeds; reportedProcess keeping the launch failure that death's relaunch charged fails it
-// too (38 seeds, 9 and 48 among them).
+// leaving that record untyped fails invariant 8 (seeds 48, 271, 341, 457, 481, 504, 768), and so
+// does died typing it without its own cause (14 seeds, 9, 48 and 204 among them), markFromOutside
+// typing it so (seeds 74, 151, 206, 472, 754, 894), and retype leaving it told (23 seeds, 9 and
+// 48 among them); reportedProcess leaving it untold fails invariant 9 (63 seeds, 9 and 48 among
+// them), and so does Delivery.message sending the task sent again with no sentence (41 seeds, 9
+// and 48 among them), and reportedProcess marking a record that joined the earlier launch's told
+// whole rather than putting that one back (18 seeds, 115, 262 and 638 among them; at 638 and 906
+// the task the death took back goes again with no word of that launch's end). judge leaving a
+// death's relaunch waiting when the sweep finds the process running, its order before 4728740d,
+// fails invariant 9 at the relaunch's turn, which records that death again and tells it (seeds
+// 247, 306, 403, 483, 687, 767), or invariant 6 first, a report the waiting launch drops leaving
+// the turn-start timer armed over the process it found gone (seeds 125, 130, 359, 372, 544, 917).
+// The walk holds no project pause, so judge dropping only a relaunch the pacing holds walks here
+// as the fix does; the rows of a relaunch the pause's gate holds catch it (relaunch_waits_test.go).
 //
 // The test fails unless some seed walks each of the orders the walk was given for them: the
 // running read, the late acknowledgement over a gone process, a report read neither way over
 // displaced's record, an idle turn end, a turn start of the task sent again after a read, a
 // suspension held for a turn, an operator's suspension that lands where it arrives, after a read,
 // a displacement, a death and an end from outside the pod, a read over the earlier launch's death
-// still untold, the task sent again behind that death's words, the sweep's report of the process
-// running, and running verdicts ending as many deaths in one walk as the deaths limit, and
-// unless some sweep report lands while a death's relaunch waits in the pacing, while any launch
-// waits, ready or idle, in a turn and after a restart; it logs how many seeds walk each, how many
-// end two deaths so, and how many sweep reports land at each of those points.
+// still untold, the task sent again behind that death's words, and the sweep's report of the
+// process running, and unless some sweep report lands while a death's relaunch waits in the
+// pacing, while any launch waits, ready or idle, in a turn and after a restart; it logs how many
+// seeds walk each, and how many sweep reports land at each of those points.
 func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 	var reads, acks, displacedReports, turnEnds, turnStarts, held, suspended, earlierReads, earlierSentAgain, sweeps int
-	var twice, limit int
 	var liveEnds [3]int
 	var sweepsAt [5]int
 	for seed := uint64(1); seed <= outsideSeeds; seed++ {
@@ -226,8 +216,6 @@ func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 			held, suspended = held+min(w.held, 1), suspended+min(w.suspended, 1)
 			earlierReads, earlierSentAgain = earlierReads+min(w.earlierReads, 1), earlierSentAgain+min(w.earlierSentAgain, 1)
 			sweeps += min(w.sweeps, 1)
-			twice += min(w.outlivedDeaths/2, 1)
-			limit += min(w.outlivedDeaths/testLimits().LaunchFailures, 1)
 			for kind, n := range w.liveEnds {
 				liveEnds[kind] += min(n, 1)
 			}
@@ -240,10 +228,9 @@ func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 		reads, acks, displacedReports, turnEnds, turnStarts, held, suspended, liveEnds[0], liveEnds[1], liveEnds[2], earlierReads, earlierSentAgain, sweeps)
 	t.Logf("sweep reports of the process running while a death's relaunch waits in the pacing: %d; while any launch waits: %d; ready or idle: %d; in a turn: %d; after a restart: %d",
 		sweepsAt[0], sweepsAt[1], sweepsAt[2], sweepsAt[3], sweepsAt[4])
-	t.Logf("seeds whose running verdicts end two deaths or more: %d; as many as the deaths limit: %d", twice, limit)
 	if !t.Failed() && (reads == 0 || acks == 0 || displacedReports == 0 || turnEnds == 0 || turnStarts == 0 || held == 0 ||
 		suspended == 0 || slices.Contains(liveEnds[:], 0) || earlierReads == 0 || earlierSentAgain == 0 || sweeps == 0 ||
-		limit == 0 || slices.Contains(sweepsAt[:], 0)) {
+		slices.Contains(sweepsAt[:], 0)) {
 		t.Fatal("a seed list that walks none of one of the orders, want each walked")
 	}
 }
@@ -313,6 +300,9 @@ type outsideWalk struct {
 	// (decidedFromOutside) at the last check that found it recording the ended launch, which
 	// the relaunch never tells as a death (outsideWalk.relaunch).
 	outside bool
+	// judged is how many deaths of the ended launch the claim may be charged: one, and one more
+	// for each read that found the process running over a judged death (invariant 1).
+	judged int
 	// reads, acks and displacedReports are how many running reads, late acknowledgements, and
 	// reports read neither way over displaced's record the walk took.
 	reads, acks, displacedReports int
@@ -382,10 +372,9 @@ type outsideWalk struct {
 	// reason more is. sweeps is how many such reports the machine judged, and sweepsAt how many
 	// came while a death's relaunch waited in the pacing, while any launch waited, ready or idle,
 	// in a turn, and after a restart. outlivedDeaths is how many running verdicts, a read's or a
-	// sweep's, ended a death died judged, as many as come: each gives back the Death that death
-	// counted (EndedWork.DeathCounted), so no run of them takes the claim to the deaths limit
-	// (chargeDeath). outlived is the causes of those deaths, the record's and the relaunch's,
-	// which nothing may tell again (invariant 9).
+	// sweep's, ended a death died judged, which comes once in a walk at most: a second would let
+	// a third death fail the claim at the deaths limit (chargeDeath). outlived is the causes of
+	// those deaths, the record's and the relaunch's, which nothing may tell again (invariant 9).
 	sweep          *rand.Rand
 	sweeps         int
 	sweepsAt       [5]int
@@ -396,7 +385,7 @@ type outsideWalk struct {
 func newOutsideWalk(t *testing.T, seed uint64) *outsideWalk {
 	w := &outsideWalk{t: t, seed: seed, rng: rand.New(rand.NewPCG(seed, 0)), more: rand.New(rand.NewPCG(seed, 1)),
 		extra: rand.New(rand.NewPCG(seed, 3)), kinds: rand.New(rand.NewPCG(seed, 4)), life: rand.New(rand.NewPCG(seed, 6)),
-		sweep: rand.New(rand.NewPCG(seed, 8)), h: pacedHarness(t, wakeRate), cutAts: map[int64]bool{}}
+		sweep: rand.New(rand.NewPCG(seed, 8)), h: pacedHarness(t, wakeRate), judged: 1, cutAts: map[int64]bool{}}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("seed %d walked: %s", seed, strings.Join(w.walked, "; "))
@@ -523,7 +512,7 @@ func (w *outsideWalk) standEarlier(own bool) {
 	ready := h.wantPrompts(sent + 1)[sent]
 	stood := "in its task's own turn, its prompt's result still to come"
 	if !own {
-		h.must(StreamPromptResult{Claim: h.token, DeliveryID: ready.DeliveryID, AgentInvoked: false, Error: busyAnswer})
+		h.must(StreamPromptResult{Claim: h.token, DeliveryID: ready.DeliveryID, AgentInvoked: false, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 		stood = "in a turn its agent was in when its task came"
 	}
 	h.must(StreamTurnStart{Claim: h.token})
@@ -600,23 +589,24 @@ func (w *outsideWalk) observe(name string, observation runtime.Observation) {
 // two, the runtime's sweep reporting the process running (sweepRunning), in a walk whose first
 // report was read neither way before any report read the pod ended, where the claim records the
 // ended launch live and the store takes every write but the relaunch's recheck; from extra, one
-// time in two, a running read (readRunning), in such a walk, where no launch waits, and, one time
-// in three, a late acknowledgement of the prompt of the task the claim stood owing (lateAck); the
-// steps of a process a running verdict found running (live); and from kinds, one time in two an
-// idle turn end where such a verdict found the process running and the claim is in a turn
-// (idleTurnEnd), and one time in eight an operator's suspension, once in a walk (suspend). A
-// running verdict ends every death died judged it finds, however many came before it
-// (outlivedDeaths), and gives back the Death that death counted, so a later death is judged
-// under the deaths limit as the first was (chargeDeath) and relaunched.
+// time in two, a running read (readRunning), once in a walk, in such a walk, where no launch
+// waits, and, one time in three, a late acknowledgement of the prompt of the task the claim stood
+// owing (lateAck); the steps of a process a running verdict found running (live); and from
+// kinds, one time in two an idle turn end where such a verdict found the process running and the
+// claim is in a turn (idleTurnEnd), and one time in eight an operator's suspension, once in a
+// walk (suspend). A running verdict ends a death died judged once in a walk at most
+// (outlivedDeaths): a second would let a third death be judged, which fails the claim at the
+// deaths limit (chargeDeath) rather than relaunching it, and the walk closes on the relaunch.
 func (w *outsideWalk) beside() {
 	c := w.h.claim()
 	ours := c.Generation == w.generation && c.Locator != nil
 	writes := w.fault == "" || w.fault == faultRelaunchRefused
-	if ours && w.diedFirst && !w.podEnded && writes && slices.Contains(LiveStates(), c.State) && w.sweep.IntN(2) == 0 {
+	if ours && w.diedFirst && !w.podEnded && writes && slices.Contains(LiveStates(), c.State) &&
+		(w.outlivedDeaths == 0 || !c.DeathCharged && !c.judgedDeath()) && w.sweep.IntN(2) == 0 {
 		w.sweepRunning()
 	}
-	if c = w.h.claim(); ours && w.diedFirst && !w.podEnded && w.h.m.View().WakeWaiting == nil && writes &&
-		w.extra.IntN(2) == 0 {
+	if c = w.h.claim(); ours && w.reads == 0 && w.diedFirst && !w.podEnded && w.h.m.View().WakeWaiting == nil && writes &&
+		w.extra.IntN(2) == 0 && w.outlivedDeaths == 0 {
 		w.readRunning()
 	}
 	if c = w.h.claim(); ours && w.owing && !w.restarted && c.Pending != nil && c.Pending.ConfirmedAt.IsZero() &&
@@ -783,6 +773,7 @@ func (w *outsideWalk) outlive(pre Claim, verdict string) {
 			c.judgedDeath(), stored.judgedDeath(), verdict)
 	}
 	if pre.DeathCharged || pre.judgedDeath() {
+		w.judged++
 		w.outlivedDeaths++
 		w.outlived = append(w.outlived, endRecordedDeath(pre.LastDeathCause))
 		if e := pre.EndedWork; e.Died && e.Generation == w.generation {

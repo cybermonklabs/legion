@@ -109,6 +109,7 @@ func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 // register its design gate on that approval. Otherwise, and where the record shows the parent
 // accepted whatever the read found, both are told today's words.
 func TestAReparentReadNamesR1sPathOnlyWhereItIsOpen(t *testing.T) {
+	t.Parallel()
 	const ran = "it ran as a tree of its own"
 	stays := "LEGION-500 is now a child of LEGION-208 in Dispatch, and it stays a tree of its own in Legion: " + ran +
 		", so the tree of LEGION-208 cannot take it in and no architect of that tree can release it."

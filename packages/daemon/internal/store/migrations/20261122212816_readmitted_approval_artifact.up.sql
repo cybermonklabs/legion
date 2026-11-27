@@ -1,0 +1,22 @@
+-- 20261122212816_readmitted_approval_artifact.up.sql — the kept approval names the document
+-- approved (dispatch://INFRA-3136).
+--
+-- readmitted_approvals keeps the one approval a re-admission found below its document's latest
+-- version, for the new architect's start task, which tells that architect to request approval of
+-- the latest version. The start asks first whether that approval is still the person's word
+-- (workflow.SupersedingApproval): it stands while the step has no gate, as the re-admission's clear
+-- leaves it, and while the gate holds that version of that document approved. The new generation
+-- can register the step on another document, and an approval of that version there is no approval
+-- of the one the person approved. So the row keeps the document approved, the gate's artifact_id
+-- at the keep (record.KeptApproval.Artifact), and the start asks the approval of it.
+--
+-- The default is what every row stored before this migration reads as: a row with no document,
+-- which the start asks of whichever document the gate holds, as every earlier release asked it.
+--
+-- Migrations here are forward-only and this one has no down file. A daemon of an earlier release
+-- names each column of the table it reads and writes (record's UnclaimedKept and
+-- KeepReadmittedApproval), so it runs on this schema as before. Its keep of a pair over a row this
+-- release kept leaves the column as it stood, the document of the earlier approval, which the
+-- rollback of docs/kubernetes.md under contract entry 20261125181104 clears before the earlier
+-- image is pinned.
+alter table readmitted_approvals add column artifact text not null default '';

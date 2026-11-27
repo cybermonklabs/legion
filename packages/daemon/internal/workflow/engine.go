@@ -105,13 +105,28 @@ type Config struct {
 	// takes it into that repository's recovery whatever it resolves to by then. It keeps no state
 	// of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
-	// HearRepository is told, inside the transaction that writes a new issue record, of the
-	// repository GitHub spells that record's: the daemon has GitHub intake hear it and the
-	// runtime keep a repository cache of it from that moment, on the transaction's commit, so
-	// the first issue on a repository gets the same event and cache service as every later
-	// one (daemon's hearRecorded). It is told every recording, including one on a
+	// HearRepository is told, inside the transaction that writes a new issue record or corrects
+	// a record onto another repository (ApplyRepositoryChange), of the repository GitHub spells
+	// that record's: the daemon has GitHub intake hear it and the runtime keep a repository
+	// cache of it from that moment, on the transaction's commit, so the first issue on a
+	// repository gets the same event and cache service as every later one (daemon's
+	// hearRecorded). It is told every recording and every correction, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
+	// FollowIssue is asked, on the commit of a fact whose correction ApplyRepositoryChange did not
+	// write, for a follow of that issue where nothing else asked one: the record's repository
+	// moved after the fact was prepared (intake.DispatchIssue.PreparedAgainst), or the fact was
+	// prepared while the issue had no record, or while its record held no repository, and so
+	// carries no read of GitHub for the repository Dispatch moves it onto. The daemon reads
+	// Dispatch's resolution of it and GitHub again (workflowRuntime.requestFollowOf), so the
+	// record still ends on what Dispatch resolves.
+	// Asked from that transaction's commit hook, it is asked exactly when the skip is committed,
+	// and a transaction rolled back asks nothing. A process that stops between that commit and
+	// the hook loses only the ask: its next boot's listing has every recorded issue Dispatch
+	// resolves to another repository than its record names followed (the daemon's
+	// prepareRecorded, requestFollow). Nil asks for none, which is a test that drives its follows
+	// itself.
+	FollowIssue func(key string)
 	// ReadMergeState is asked, on the commit of a fact of one pull request that owes a read of
 	// GitHub's merge state (askMergeState, by mergeStateOwed), to read it for the pull
 	// request's head: a fact that leaves a review round waiting on GitHub's answer, which is what
@@ -174,13 +189,18 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
-	// WorkspaceDir is the directory the runtime starts an issue's role processes in, the issue's
-	// working copy, which the task of each start and resume of a phase's worker names (the working
-	// copy line of task and of resumeText). The daemon reads it from the runtime it runs
-	// (engineWorkspaceDir in internal/daemon), the one place each runtime puts that directory. Nil,
-	// or "" for an issue, names no directory, and the task names the branch alone: an API-only
-	// daemon and every test that runs no runtime.
-	WorkspaceDir func(record.Issue) string
+	// WorkspaceDir is the directory the runtime starts the role processes of the issue key in, when
+	// they work repo, the issue's working copy: the working copy line each start and resume of a
+	// phase's worker opens its task with (WorkingCopy, task, resumeText) names it for the repository
+	// the issue's record holds at the composing, and names the branch alone for a record that holds
+	// no repository, every launch of which the daemon refuses; every send of such a task names it
+	// again for the repository the process it goes to works (Engine.WorkingCopyAtSend), the zero
+	// Repository for a launch that named none, so a task kept across a correction of the issue's
+	// repository names the workspace that process is in. The daemon reads it from the runtime it
+	// runs (engineWorkspaceDir in internal/daemon), the one place each runtime puts that directory.
+	// Nil, or "" for a key and a repository, names no directory, and the task names the branch
+	// alone: an API-only daemon and every test that runs no runtime.
+	WorkspaceDir func(key string, repo ghrepo.Repository) string
 }
 
 // Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line)
@@ -409,13 +429,13 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	if issue == nil {
 		return e.recordChildUnderLiveTree(ctx, tx, fact)
 	}
-	// The record keeps the repository it was recorded with, so a newer event resolving the issue
-	// to another is not applied, which the issue is told. This runs before any fence below: an
-	// edit of the repository alone changes no status. So does the telling of a root a person has
-	// made a child of a live tree (tellReparented), which is a parent change and often no status
-	// change at all.
-	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
-		if err := e.NoteRepositoryKept(ctx, tx, *issue, fact.ResolvedRepo); err != nil {
+	// The record's repository is Dispatch's fact, so an event resolving the issue to another moves
+	// the record onto it, written from what the event's preparation read from GitHub for that
+	// repository (ApplyRepositoryChange). This runs before any fence below: an edit of the
+	// repository alone changes no status. So does the telling of a root a person has made a child
+	// of a live tree (tellReparented), which is a parent change and often no status change at all.
+	if !issue.Outdates(record.EventSeq, fact.Seq) {
+		if err := e.ApplyRepositoryChange(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
 		if err := e.tellReparented(ctx, tx, issue, fact); err != nil {
@@ -431,10 +451,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	//
 	// This is the sequence fence, which the engine and admission both keep: an event the record
 	// has already applied — a redelivery, or one older than the newest the record took — teaches
-	// the record nothing, so nothing below here runs for it. The engine's own reaction waits
-	// behind a second fence, the status one, and that fence stands below the mark: an event the
-	// record has not applied is news of the issue whether or not it moves its status.
-	if fact.Seq != 0 && fact.Seq <= issue.LastDispatchSeq {
+	// the record nothing (record.Issue.Outdates), so nothing below here runs for it. The engine's
+	// own reaction waits behind a second fence, the status one, and that fence stands below the
+	// mark: an event the record has not applied is news of the issue whether or not it moves its
+	// status.
+	if issue.Outdates(record.EventSeq, fact.Seq) {
 		return intake.Result{}, nil
 	}
 	// The daemon has seen the issue move (record.Issue.MovedAt). This is the first of the eleven
@@ -790,7 +811,7 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 	if err := e.store.DeleteHandover(ctx, tx, issue.Key); err != nil {
 		return false, err
 	}
-	if fact.Seq == 0 || fact.Seq > issue.LastDispatchSeq {
+	if !issue.Outdates(record.EventSeq, fact.Seq) {
 		if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 			return false, err
 		}
@@ -851,11 +872,12 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	return e.drawExperiments(ctx, tx, fact.Key)
 }
 
-// HearRepository QUEUES the repository an issue has just been recorded on, inside the transaction
-// that writes the record (Config.HearRepository). It makes no stream call under the lock and
-// cannot fail the transaction: hearRecorded publishes once the transaction has returned, and only
-// then does GitHub intake hear the repository and the runtime keep a repository cache of it.
-// Admission calls it for the roots and orphans it records; a deployment that configures none is
+// HearRepository QUEUES the repository an issue has just been recorded on, or its record corrected
+// onto, inside the transaction that writes the record (Config.HearRepository). It makes no stream
+// call under the lock and cannot fail the transaction: hearRecorded publishes once the transaction
+// has returned, and only then does GitHub intake hear the repository and the runtime keep a
+// repository cache of it. Admission calls it for the roots and orphans it records, and the engine
+// for the children it records and the records it corrects; a deployment that configures none is
 // told nothing.
 func (e *Engine) HearRepository(ctx context.Context, repo string) {
 	if hear := e.cfg.HearRepository; hear != nil {
@@ -928,7 +950,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
-	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, child, e.now()); err != nil {
 		return err
 	}
 	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child)); err != nil {

@@ -605,7 +605,7 @@ func TestTheWorkspaceTakenNoticeNamesItsRolesUnderOneSentence(t *testing.T) {
 		"a read that found work": {work: runtime.WorkspaceWork{Head: "abc123", Commits: []string{"def456"}, Count: 1}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			notice := workspaceTakenMessage(podUpdateIssue, podUpdateRound, podUpdatePod, roundBreakingDrift, []supervise.Claim{planner}, tc.work, tc.failed, false)
+			notice := workspaceTakenMessage(podUpdateIssue, podUpdateRound, podUpdatePod, roundBreakingDrift, []supervise.Claim{planner}, tc.work, tc.failed, false, repositoryMove{})
 			if want := toldTakenRoles + "planner (suspended)."; !strings.Contains(notice, want) {
 				t.Errorf("the notice reads:\n%s\nwant it to say %q", notice, want)
 			}
@@ -681,17 +681,17 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 		rt := fake.NewRuntime()
 		rt.ScriptPodDrift(waiting.Token, podUpdateExchangeDrift)
 		s := &supervision{runtime: rt, log: quietLogger()}
-		reasons, reading := s.groupDrift(context.Background(), podUpdateIssue, []supervise.Claim{waiting})
-		if reading != podRead || !slices.Equal(reasons, []string{podUpdateExchangeDrift}) {
-			t.Fatalf("groupDrift = %q, reading %d; want %q, podRead", reasons, reading, podUpdateExchangeDrift)
+		drift := s.groupDrift(context.Background(), podUpdateIssue, []supervise.Claim{waiting})
+		if drift.reading != podRead || !slices.Equal(drift.reasons, []string{podUpdateExchangeDrift}) {
+			t.Fatalf("groupDrift = %q, reading %d; want %q, podRead", drift.reasons, drift.reading, podUpdateExchangeDrift)
 		}
 		asked := rt.CallsOf("PodDrift")
 		if len(asked) != 1 || asked[0].Pod.Claim != waiting.Token || !reflect.DeepEqual(asked[0].Pod.Locator, waiting.AwaitsPod) {
 			t.Fatalf("PodDrift was asked %+v, want the waiting claim's awaited pod %+v once", asked, waiting.AwaitsPod)
 		}
 		rt.ScriptPodGone(waiting.Token, true)
-		if _, reading := s.groupDrift(context.Background(), podUpdateIssue, []supervise.Claim{waiting}); reading != podGone {
-			t.Fatalf("groupDrift of an awaited pod that is gone reads %d, want podGone", reading)
+		if drift := s.groupDrift(context.Background(), podUpdateIssue, []supervise.Claim{waiting}); drift.reading != podGone {
+			t.Fatalf("groupDrift of an awaited pod that is gone reads %d, want podGone", drift.reading)
 		}
 	})
 }

@@ -133,7 +133,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "state_dir", Default: "none: the daemon refuses a file that names no state directory", RequiredBy: "yes",
-			Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own.",
+			Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own. A path that holds a line break, as the daemon resolves it, is refused: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.StateDir = v }),
 		},
 		{

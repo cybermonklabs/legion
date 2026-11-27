@@ -656,7 +656,7 @@ func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T
 				h.reportActivity(row.kinds...)
 				h.advance(time.Second)
 			}
-			h.conn.RefusePrompt(busyAnswer)
+			h.conn.FailPrompt(busyRefusal())
 			h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 			h.wantState(StateWorking)
 			answered := h.clock.Now()
@@ -1023,8 +1023,7 @@ func TestARelaunchRecordsTheStallBackstopDuringACompaction(t *testing.T) {
 // the claim still in the working the park left it in and the compaction long dropped
 // (compactionLostProcess). What it reads that working as is the dropped compaction, kept for that
 // let-go (Machine.lostCompaction): read as a turn, the wake's turn would record one the process was
-// never in. Until that turn the claim's record is the mark of the Death the death counted, with
-// no cause (EndedWork.DeathCounted), which records nothing; the let-go drops it with the charge.
+// never in.
 func TestARelaunchRecordsNoTurnAtAParkedWakesTurnAfterACompactionLostItsProcess(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
@@ -1038,7 +1037,7 @@ func TestARelaunchRecordsNoTurnAtAParkedWakesTurnAfterACompactionLostItsProcess(
 	}
 	h.m.Wait()
 	h.wantState(StateWorking)
-	h.wantEnded(EndedWork{DeathCounted: true})
+	h.wantNoEnded()
 
 	h.advance(waiting.At.Sub(h.clock.Now()))
 

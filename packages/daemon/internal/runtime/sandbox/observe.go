@@ -547,7 +547,9 @@ func (r *Runtime) fetchCacheState(pod *corev1.Pod) string {
 	}
 	status, found := r.RepositoryCache(repo)
 	if !found {
-		return fmt.Sprintf("; %s has no repository cache, so workspace-init clones from GitHub alone", repo)
+		// Every issue pod is given its repository's cache address (prepare), so a pod whose cache
+		// the runtime cannot find waits for one that never answers and fails at CacheWaitTimeout.
+		return fmt.Sprintf("; the runtime knows no repository cache of %s, which workspace-init waits for", repo)
 	}
 	state := fmt.Sprintf("; the repository cache of %s, which workspace-init fills the clone from, is %s", repo, status.State)
 	if status.Reason != "" {
@@ -566,6 +568,17 @@ func fetchRepository(pod *corev1.Pod) (ghrepo.Repository, bool) {
 		}
 	}
 	return ghrepo.Repository{}, false
+}
+
+// fetchRepositoryName is the repository pod's fetch container names (fetchRepository) as
+// `<owner>/<name>`, and "" for a pod whose fetch names none that parses: an unknown, which its one
+// reader, PodRepository, answers as no name at all.
+func fetchRepositoryName(pod *corev1.Pod) string {
+	repo, named := fetchRepository(pod)
+	if !named {
+		return ""
+	}
+	return repo.String()
 }
 
 func containerStatus(pod *corev1.Pod, name string) *corev1.ContainerStatus {

@@ -94,9 +94,9 @@ func (w *outsideWalk) check() {
 	case !w.lost && !w.diedFirst && (budgets != Budgets{} || storedBudgets != Budgets{}):
 		w.fail("the claim carries budgets %+v (%+v stored), want nothing charged for an end from outside the pod or a displacement that no restart lost the record of",
 			c.Budgets, stored.Budgets)
-	case !atMostDeaths(budgets, 1) || !atMostDeaths(storedBudgets, 1):
-		w.fail("the claim carries budgets %+v (%+v stored), want at most one death and its launch failure, those of the death no running verdict ended, %d running verdicts having given back what the deaths they ended charged",
-			c.Budgets, stored.Budgets, w.outlivedDeaths)
+	case !atMostDeaths(budgets, w.judged) || !atMostDeaths(storedBudgets, w.judged):
+		w.fail("the claim carries budgets %+v (%+v stored), want at most %d deaths and a launch failure for each",
+			c.Budgets, stored.Budgets, w.judged)
 	case e.Tells() && (e.Turn || e.TaskTurn) && !w.cutAts[e.At.UnixNano()]:
 		w.fail("the claim's record %+v tells a turn cut off, want none told where no end cut one off", e)
 	case e.Generation == w.generation && w.judgedCause != "" && e.Cause != "" && e.Cause != w.judgedCause && e.Cause != w.earlierCause:
