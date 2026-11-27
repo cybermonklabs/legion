@@ -28,7 +28,7 @@ export const CAPABILITY_PROBE_OUT = "LEGION_TEST_CAPABILITY_PROBE_OUT";
  * The messages the probe asks the host's cyber-policy classifier about, each the assistant message
  * that ends a refused turn, which `src/turn-outcome.ts` hands it as the host hands it the same
  * message to set a `prompt_result`'s `code` (`modes/rpc/rpc-prompt-results.ts:232` at
- * v18.18.6-sami.20261126-110039). `refusal` is OpenAI's refusal as a gateway relays it, a 503 with
+ * v18.18.6-sami.20261126-222037). `refusal` is OpenAI's refusal as a gateway relays it, a 503 with
  * the code in its words, the shape the host's own `test/rpc-prompt-result.test.ts:205-212` gives
  * it at that tag; `other` is a refusal of the same status that is not one, so only the words can
  * tell them apart. Synthetic refusal text only.

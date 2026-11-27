@@ -1530,9 +1530,10 @@ RACE_FILLS = [
      f"{CI}'s race step", CI, f"{CI}'s two race steps follow it already"),
     (ENVOY_RACE_FILL_JOB, "ENVOY_RACE_FILL_JOB", [word for job in ENVOY_RACE_LANE for word in race_pkgs(job)],
      "ENVOY_RACE_LANE", "the envoy race lane's steps", "the envoy race lane",
-     "envoy-go-race's legs follow it already (hold_envoy_legs holds .github/go-legs.yaml's envoy-go-race "
-     "legs to its packages), and envoy-go-race-api's and envoy-go-race-docs' legs each run the one package "
-     "their entry names (RACE_API_SCRIPT, RACE_DOCS_SCRIPT), so a change to either entry changes that line too"),
+     "envoy-go-race-api's step follows it already (RACE_API_SCRIPT), envoy-go-race's legs are held to it "
+     "(hold_envoy_legs refuses race legs whose packages are not the lane's, every package under a tree "
+     "among them), and envoy-go-race-docs' line is RACE_DOCS_SCRIPT's, written by hand, so a change to the "
+     "lane's docs entry changes that line too"),
 ]
 
 
@@ -2649,7 +2650,7 @@ def browser_gate(filter, job):
         # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
         # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
-        # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
+        # `build:dispatch`, whose four entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "`packages/dispatch/e2e/inbox-cli.e2e.ts#runDispatch` runs it through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`"),
         (f"{FIX}/priority-ids.json", "`packages/dispatch/e2e/priorities.e2e.ts#idFixture` reads the shared list of the priority "
                                      "id rule's cases by path"),

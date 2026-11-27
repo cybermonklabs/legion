@@ -19,6 +19,8 @@ interface FakeGithubRepo {
       head_ref?: string;
       base_ref?: string;
       updated_at?: string;
+      merged_at?: string;
+      merge_commit_sha?: string;
     }
   >;
   readonly check_runs?: Record<

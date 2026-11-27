@@ -305,11 +305,15 @@ def problems(module: str, entry: dict, packages: list, legs_path: str = LEGS) ->
 def go_packages(module: str) -> list:
     """The packages `go list ./...` prints in the module, as directories under it. It lists them as
     `go list -e -find -f {{.Dir}} ./...` with GOPROXY=off and GOFLAGS empty, as
-    go_build_tags.compiled does: `-find` names each package without loading what it imports, so no
-    module is resolved or downloaded, no go.work.sum is written, and a cold machine, the changes
-    job's, lists the module in a second with no network; -e keeps a package whose import is not in
-    the cache, which plain `go list ./...` would fail on. The directories are the same: a directory
-    whose every file a constraint excludes is no package either way."""
+    go_build_tags.compiled does. `-find` names each package without loading its imports, so an
+    import no module cache holds fails nothing. Module mode still resolves imports, and in a
+    workspace it downloads a module the cache lacks and writes its checksum into go.work.sum when a
+    proxy answers, so GOPROXY=off is what keeps the listing offline: a cold machine, the changes
+    job's, lists the module with no network and writes nothing. -e keeps a package with an error of
+    its own, a parse error say, in the listing rather than failing it. go-legs.test.sh holds the
+    offline listing with a workspace whose module imports one only a file:// proxy serves. The
+    directories are the same as plain `go list ./...` prints: a directory whose every file a
+    constraint excludes is no package either way."""
     directory = ROOT / module
     listing = subprocess.run(["go", "list", "-e", "-find", "-f", "{{.Dir}}", "./..."], cwd=directory,
                              capture_output=True, text=True, env={**os.environ, "GOPROXY": "off", "GOFLAGS": ""})

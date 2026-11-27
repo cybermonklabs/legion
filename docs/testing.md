@@ -265,6 +265,23 @@ itself, whose tests import its sources by relative path.
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
+- A server a suite or a rig script starts never binds a port the caller found free and let go of:
+  any other program on the machine can take that port first, and the server then fails to start
+  or another program answers in its place. The server binds port 0 and the caller reads the port
+  from what the server reports (natsd's `-p -1 -m -1`, the listener's `PORT=0`, a broker's
+  `*_LISTEN_ADDR` of `127.0.0.1:0`, `moto_server -p 0`, `python3 -u -m http.server 0`,
+  `Bun.serve({ port: 0 })`), or takes a socket the caller holds (`start_held` in
+  `scripts/e2e/lib/rig.sh`), or listens on a unix socket in a directory of the run's own and on no
+  TCP port, as the Dispatch e2e harness's Postgres does in both providers
+  (`packages/dispatch/e2e/harness-postgres.ts`). A URL a server must hold before it binds names a
+  front bound first and pointed at the port the server reports (`dev-airlock-stands front`, as
+  `packages/envoy/scripts/dev-broker.sh` and `lib/project-access-stack.sh` run it). A port a
+  process names as closed for its whole life is held bound and never listening (`holdRefusedPort`
+  in `@legion/test-fixtures/refused-port`, which the outside-path-reach tests' `closedPort` takes),
+  and a broker that must refuse and later answer at one address is a listener the row holds from
+  its start, which drops each connection until it relays to the broker (`heldBrokerAddress` in
+  `packages/claude-envoy/tests/channel-nats.test.ts`).
+
 - Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
   unless the row tests that cache. Where neither that variable nor `XDG_CACHE_HOME` names another
   place, Bun keeps its transpiler cache under HOME, so a child in an empty HOME writes a file and a
@@ -336,15 +353,41 @@ itself, whose tests import its sources by relative path.
   third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
   the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
   that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
-  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
-  measured download or one measured process run with no shared wait in it: such a hook or row
-  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
-  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
-  guards are written, gives that number with the readings and their runs. A file whose rows need a
-  much larger guard than the rest runs in a second `bun test` command of the same script, with its
-  own `--timeout` and the same preload. Tests written before this rule still set guards of their
-  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
-  guard as it is carried to the shared wait.
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`; a row that needs more than the command's
+  guard by design, such as one that starts a cold role pane (5-6 s, more than Bun's 5000 ms default),
+  which calls `@legion/test-fixtures/deadline`'s `useRowGuard(ms)` for the shared wait's deadline and
+  passes the same value as `test`'s third argument, which Bun honours as the row's kill under
+  `bun test`, `--parallel` and `bun run test` alike, so the two agree in every mode (the guard is
+  forgotten at the next mark, so it belongs to that one row); and if that row's own cleanup runs past
+  the command's guard in raw awaits (no shared wait), its `afterEach` passes the same value as its
+  own hook timeout, which Bun arms a clock of its own for; and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it. Such a row takes a guard
+  of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev
+  box's), and the `"//"` note of its package's `package.json`, where the command's guards are
+  written, gives that number with the readings and their runs. A file whose rows need a much larger
+  guard than the rest runs in a second `bun test` command of the same script, with its own
+  `--timeout` and the same preload. Tests written before this rule still set guards of their own
+  (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's guard as
+  it is carried to the shared wait.
+
+- The guard belongs on the command line, because Bun 1.4.4 gives no other way to raise it across a
+  whole non-parallel run. It reads no `[test] timeout` from `bunfig.toml`, and a `setDefaultTimeout`
+  from a preload holds only for the first file of a non-parallel (shared-process) `bun test`: a
+  two-file run with `setDefaultTimeout(20000)` in a preload passed the first file's 8 s row and
+  timed the second file's out at 5000 ms, and a `setDefaultTimeout` inside a `beforeEach` changes
+  nothing, because a row's guard is fixed when the row is registered. Under `--parallel` each file is
+  its own process and reloads the preload, so a preload's `setDefaultTimeout` does hold there. So
+  `packages/test-fixtures` and `packages/pi-envoy`, which run non-parallel, keep `--timeout` in their
+  `test` scripts, and a plain `bun test` in them (no `--timeout`) gives each row Bun's 5000 ms
+  default, not the script's guard. `packages/pi-legion` runs `--parallel=4`, so its `test` script
+  sets the guard through a preload instead (`test-timeout-preload.ts`): inside a `--test-worker` it
+  calls `setDefaultTimeout` beside `@legion/test-fixtures/deadline`'s `declareGuard`, so Bun's kill
+  and the shared wait's deadline are one length for every worker. It sets neither outside a worker,
+  because a non-parallel `bun test` would raise the deadline for the first file alone, so `bun test`
+  (and a `--parallel` run of a single file, which takes no worker) keeps Bun's 5000 ms, as on main;
+  only the `--parallel=4` `bun run test` gets the 300000 ms guard. The declared guard wins over the
+  command line, so the worker `--timeout=5000` that `--parallel` injects does not lower it; a package
+  that declares none takes the command line's `--timeout`, unchanged.
 
 ## A test that looks for a process it started
 
@@ -419,6 +462,22 @@ printed an act message, naming each message with its component and the frames th
   the row. Under a lane's load that is rare, and the file alone does not show it:
   `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
   reader position in O(1) rect reads" failed 1 run in 20 that way.
+
+- A row whose tree can still hold a real timer when its body ends, such as the 150 ms debounce of
+  a composer's draft pills (`useSettled`), ends its body by unmounting inside `act`: `cleanup()` in
+  a `finally` around the body, as `web/src/features/delivery/DeliveryPage.test.tsx` and
+  `web/src/features/inbox/ThreadBody.test.tsx` wrap their rows. Bun gives the event loop a turn
+  between a row's body and its `afterEach`, so a timer due then fires with the act environment on
+  and no act scope open, and an `afterEach` that unmounts comes after that turn. Only a loaded run
+  ends the body before the timer: `ThreadBody.test.tsx`'s row "an Agent card whose thread moves on
+  under a refused reply says what its box can do" failed 1 run in 20 that way. A row that reads
+  what the timer does lets it run out inside `act` instead (`settleRefPickerSearch` in
+  `web/src/features/refs/ref-picker-fixture.ts`).
+
+- Bun drops the frame of an arrow whose whole body is the call that sets the state, as in
+  `setTimeout(() => setValue(next), ms)`: JavaScriptCore runs that call as a tail call. The act
+  rule then names the component and no frame of `web/src`, so look in that component's own hooks
+  for a timer or a promise that ends in such a call.
 
 - `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
   `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.
@@ -705,6 +764,11 @@ redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `Te
 `storetest.DefaultParallel` says why it is 4. Each test has a database of its own
 (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
 
+`internal/dispatch/refs` follows the same rule and runs 4 at once through the same
+`storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
+re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
+resolver tests that replace the default logger.
+
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
 through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
@@ -752,8 +816,9 @@ leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go)
 of the module warns, naming it, until the file does. A package under one of envoy's race trees
 (`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) must be listed in
 the race leg of its tree: the import of `.github/scripts/ci_job_reads.py` refuses it unlisted, so
-the ci-filters and lint jobs fail naming it (the changes job's filter generation falls open and
-selects every job), since the last plain leg would run it without the race detector. A line that
+the ci-filters job fails naming it, and the changes job's filter generation falls open and selects
+every job, which the lint job then fails on (its checks refuse the fall-open filters file, without
+naming the package), since the last plain leg would run it without the race detector. A line that
 names a directory that is no package, or a package in two places (but the two legs of a package
 `twice` names), fails every leg of the module. Put a new package in the leg its measured time
 fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` and `.github/ci-notes/ci.md`, "Why
@@ -839,6 +904,19 @@ copy writes a few hundred bytes. `storetest`'s own test fails when a clone write
 hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+
+The same test then runs `testdb.WithoutJIT(name)` on the database it made (`alter database … set
+jit = off`; `internal/testpg/testdb` in each module), so every session on it starts with JIT off,
+as production's database does: Dispatch runs on Cloud SQL, which does not support PostgreSQL's
+LLVM JIT (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"), and CI's
+Postgres image runs with `jit = on`. Under it a statement whose estimate passes `jit_above_cost`
+compiles before it runs: in `internal/dispatch/refs` one oracle statement spent 445-475 ms of each
+453-564 ms run compiling, 200 times a run. The setting is the database's, and a clone does not
+copy its template's, so each database takes it when it is made, a template included. Each
+module's `internal/textcheck` test `TestEveryCreatedDatabaseRunsWithoutJIT` fails on any function
+that opens a database's creation in a string and calls no `WithoutJIT`, and
+`TestEveryDatabaseRunsWithoutJIT` (Dispatch's `storetest`, the daemon's `testpg`) reads `jit = off`
+from the source `database` on each kind of database those harnesses hand out.
 
 In Envoy, a test that already holds a server's URL makes its database with
 `internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links

@@ -21,6 +21,7 @@ import (
 // envoy-go-race-impossible, beside the API package's other tests the race build cannot run
 // (dispatch://INFRA-5794/spec#b-r5).
 func TestTheClaimModelCatchesEachBrokenSender(t *testing.T) {
+	// Not parallel: it swaps the default logger (cmModelRuns, slog.SetDefault).
 	runs := []cmModelRun{{v: cmBlindRepair, periods: 3, breaks: []string{"stale"}}}
 	if os.Getenv("ENVOY_MENTION_ORDER_MODEL") == "full" {
 		// Four periods reach a lapsed claim, which this control's refresh writes again.

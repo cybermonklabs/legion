@@ -377,6 +377,7 @@ func cmModelRuns(t *testing.T, runs []cmModelRun) {
 // TestALostRefreshNeverRevivesALapsedClaim and TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
 // on the database and TestAHandOffAfterTheRetryCheckIsNotDropped on a sender with stub statements.
 func TestTheMentionSenderClaimModel(t *testing.T) {
+	// Not parallel: it swaps the default logger (cmModelRuns, slog.SetDefault).
 	runs := []cmModelRun{{v: cmAsBuilt, periods: 3}}
 	if os.Getenv("ENVOY_MENTION_ORDER_MODEL") == "full" {
 		// A claim lapses only after a lease with no committed refresh, and the sweep then takes

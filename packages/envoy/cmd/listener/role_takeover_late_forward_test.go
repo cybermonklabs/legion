@@ -26,6 +26,7 @@ import (
 //
 // The control is the same rig with no hold: the forward is stored inside its wait and delivered.
 func TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderOnce(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_late_a", "ses_late_b", "late"
 	previous := rig.relayed(a, answerDone)
@@ -104,6 +105,7 @@ func TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderO
 //
 // The control is a write at the subject's newest message, which lands.
 func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_moved_a", "ses_moved_b", "moved"
 	rig.gone(a)
@@ -157,6 +159,7 @@ func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
 // forwarder, whose seam the hold is on (crashRig.holdForward). This keeps that true: a change that
 // moved the route off the forwarder would leave the rows above holding nothing.
 func TestTheHoldSeamIsOnThePathARolePublishTakes(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const holder, role = "ses_seam", "seam"
 	standIn := rig.relayed(holder, answerDone)
