@@ -1281,13 +1281,17 @@ const underQuestion: TreeAnswer = {
   ],
 };
 
+const OUTDENT_SEQ = "<seq:tree/paragraph>@2";
+
 /** The server's second page once the outdent is taken: the paragraph right after the code block. */
 const outdentedSecond: TreeAnswer = {
   ...secondPage,
   nodes: (secondPage.nodes ?? [])
     .filter((node) => node.id !== PAGED)
     .flatMap((node) =>
-      node.id === LAST_OWN ? [node, { ...pagedParagraph, rank: "<rank:8>" }] : [node]
+      node.id === LAST_OWN
+        ? [node, { ...pagedParagraph, placement_seq: OUTDENT_SEQ, rank: "<rank:8>" }]
+        : [node]
     ),
 };
 
@@ -1295,7 +1299,7 @@ const outdentedSecond: TreeAnswer = {
  *  `after` names, under its next placement_seq. */
 function outdentedTo(after: string): Exchange {
   return {
-    body: { after, parent: "issue/<issue>", placement_seq: "<seq:tree/paragraph>@2" },
+    body: { after, parent: "issue/<issue>", placement_seq: OUTDENT_SEQ },
     status: 200,
   };
 }
@@ -1382,6 +1386,40 @@ test("a taken move to a place the held pages lack reads the next page before R7'
     ).toBe("idle")
   );
   expect(heldNode(client, PAGED)?.parent?.id, "R7's re-read lost the paragraph").toBe(KEY);
+});
+
+test("a move queued behind a move to a page not loaded is planned after that page is read", async () => {
+  const { client, writes } = mount(underQuestion);
+  answerOutdentedReads(outdentedSecond);
+  const patches: { body: unknown; ids: string[]; ifMatch: string | null }[] = [];
+  const movedUp = { after: "<tree/table>", parent: `issue/${KEY}` };
+  answerRequests(
+    http.patch(`/api/v1/issues/${KEY}/nodes/:id`, async ({ request }) => {
+      // Capture the held nodes when the PATCH arrives, before its answer or a refresh can change them.
+      const ids = (heldRead(client, KEY)?.nodes ?? []).map((node) => node.id);
+      patches.push({ body: await request.json(), ids, ifMatch: request.headers.get("If-Match") });
+      return Response.json(
+        patches.length === 1
+          ? renamed(outdentedTo(LAST_OWN).body)
+          : { ...movedUp, placement_seq: OUTDENT_SEQ }
+      );
+    })
+  );
+
+  await act(async () => {
+    const outcomes = await Promise.all([
+      writes().move(PAGED, "outdent"),
+      writes().move(PAGED, "move_up"),
+    ]);
+    expect(outcomes).toEqual([{ status: "taken" }, { status: "taken" }]);
+  });
+
+  expect(patches).toHaveLength(2);
+  expect(patches[0]?.ids).not.toContain(LAST_OWN);
+  expect(patches[1]?.ids, "the second PATCH waits for the next page").toContain(LAST_OWN);
+  expect(patches[1]?.body).toEqual(movedUp);
+  expect(patches[1]?.ifMatch).toBe(`"${OUTDENT_SEQ}"`);
+  expect(patches[1]?.ids.filter((id) => id === PAGED)).toHaveLength(1);
 });
 
 // The reads go only where the held pages lack the answer's place. The same outdent answered with

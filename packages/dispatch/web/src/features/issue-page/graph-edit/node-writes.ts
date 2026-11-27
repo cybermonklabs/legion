@@ -52,11 +52,12 @@ import {
  * it; a refusal of an act drops each move after it too, and the row's line says why and how many
  * moves were not sent. A delete waits its turn the same way and goes with the `placement_seq`
  * the held read holds then. Where the body, or the node itself, stands on a page the page has not
- * loaded, that page is read first (`readNextTreePage`). No other read goes between two acts of a
- * chain: the next act goes out within the answer's own reaction, before the write store's hold on
- * the tree reads ends (`subscribeTreeFreshness`). Whether a node's chain holds an act is
- * `NodeWrites.busy`: the editor's move keys ask it, so that a key pressed while an act is out
- * waits its turn here rather than being judged on the read that act's answer is about to change.
+ * loaded, that page is read first (`readNextTreePage`). If a move's answer puts the node on a
+ * page not loaded, the chain reads up to that place before planning the next act (`readToPlace`).
+ * If no pages are needed, the next act goes out within the answer's own reaction, before the
+ * write store's hold on the tree reads ends (`subscribeTreeFreshness`). The editor's move keys
+ * check `NodeWrites.busy` so a key pressed while an act is out waits its turn, rather than being
+ * judged on the read that act's answer is about to change.
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
@@ -65,11 +66,9 @@ import {
  *
  * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
  * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read
- * it holds again, once, its loaded pages included (`readOutlinesAgain`). Where the newest taken
- * answer of the chain put the node at a place none of the loaded pages holds, and a next page
- * remains, it first reads the next pages until one holds that place (R4, `readToPlace`), so the
- * read again reads as far and still holds the node. After any other refusal it reads nothing. A
- * retype, a write of the room that sends no request, has them read again once it is taken, or
+ * it holds again, once, its loaded pages included (`readOutlinesAgain`). This includes any pages
+ * read to find the moved node's place. After any other refusal it reads nothing. A retype, a
+ * write of the room that sends no request, has them read again once it is taken, or
  * once its node's chain is empty where one waits (`readAfterRoomWrite`). No word of this file is
  * a literal: each is `ANSWER_LINES`' or `CONTROL_LABELS`', from `page-words-r.ts`.
  */
@@ -247,10 +246,8 @@ interface Chain {
   readonly issue: string;
   readonly node: string;
   readonly acts: Act[];
-  /** The place the newest taken move or placing of the chain put its node at, where none of the
-   *  pages Graph's held read holds held that place and a next page remained: what the chain
-   *  reads the next pages for once it is empty, before the outline reads are read again
-   *  (`readToPlace`). */
+  /** The place the last move or placing put the node at, if it is past the loaded pages.
+   *  The chain reads for that place before planning its next act or refreshing the outlines. */
   place: Place | undefined;
   /** Whether an act of the chain was taken, or refused with an answer that says the tree is
    *  stale: what reads the outline reads again once the chain is empty. */
@@ -707,15 +704,20 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
 }
 
 /**
- * Runs `chain` from the act whose turn it is: drops each act that goes unsent, and sends the
- * first that goes, or first reads the page it needs, and is run again from that answer's own
- * reaction. Nothing awaits between an answer and the next act going out, so no tree read the
- * store's hold would let go is sent between two acts. Once the chain is empty it first reads the
- * next pages up to the place its newest taken answer put the node at, where Graph's held read
- * lacks that place (`readToPlace`); then it leaves the client, and reads the outline reads again
- * where an act of it asked for that.
+ * Reads missing pages up to the last move's place before planning the next act (`readToPlace`).
+ * Drops each act that goes unsent and sends the first that goes, or reads the page that act
+ * needs. Each write or page read resumes the chain when it settles. Once the chain is empty,
+ * removes it and refreshes the outlines if an act requested a refresh.
  */
 function advance(client: QueryClient, chain: Chain): void {
+  if (chain.place !== undefined) {
+    const held = heldRead(client, chain.issue);
+    if (held !== undefined && lacksPlace(held, chain.place)) {
+      readToPlace(client, chain, held);
+      return;
+    }
+    chain.place = undefined;
+  }
   for (let act = chain.acts[0]; act !== undefined; act = chain.acts[0]) {
     try {
       const next = nextOf(client, chain, act);
@@ -740,12 +742,6 @@ function advance(client: QueryClient, chain: Chain): void {
       refuse(client, chain, error);
     }
   }
-  const held = heldRead(client, chain.issue);
-  if (chain.place !== undefined && held !== undefined && lacksPlace(held, chain.place)) {
-    readToPlace(client, chain, held);
-    return;
-  }
-  chain.place = undefined;
   const { chains } = stateOf(client);
   const id = hashKey([chain.issue, chain.node]);
   if (chains.get(id) === chain) chains.delete(id);
@@ -753,13 +749,11 @@ function advance(client: QueryClient, chain: Chain): void {
 }
 
 /**
- * Reads the page after the pages `held`, Graph's held read of the chain's issue, holds, as the
- * chain's newest taken answer put its node at a place they lack (`Chain.place`), and runs the
- * chain again from that page's own reaction: so the next pages are read one at a time until one
- * holds the place or none remains, and an act pressed meanwhile waits on the chain, as behind any
- * act. A page that holds the node merges after the copy `movedIn` placed after the last child the
- * pages held, so that copy is taken out as the page lands (`withoutMovedCopy`), before TanStack
- * tells an observer of the merge, which it does in a later task: no render draws the node twice.
+ * Reads the next page of `held` and resumes the chain. The chain reads one page at a time until
+ * it finds the last move's place, runs out of pages, or a page is refused. Queued acts wait in
+ * the meantime. If a page contains the moved node, removes the temporary copy `movedIn` left
+ * behind before TanStack notifies observers, so neither the next act nor the outline sees two
+ * copies.
  */
 function readToPlace(client: QueryClient, chain: Chain, held: TreeAnswer): void {
   const before = held.nodes?.length ?? 0;
@@ -775,8 +769,7 @@ function readToPlace(client: QueryClient, chain: Chain, held: TreeAnswer): void 
       }
     },
     () => {
-      // A refused page ends the reads, and R7's re-read goes as after any taken act: it reads the
-      // tree again from its first page, and its answer decides where the node is drawn.
+      // Stop looking for this place. The outline refresh still waits for the chain to empty.
       chain.place = undefined;
       advance(client, chain);
     }
