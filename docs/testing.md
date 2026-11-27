@@ -114,7 +114,11 @@ itself, whose tests import its sources by relative path.
   `temporaryDirectory(prefix)`: call it at the test file's module scope, or in the body of a
   `describe`, never inside a test body. It reserves the path at the call and returns it, and
   registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
-  called. A directory per test is `temporaryDirectories(prefix)`, registered in those same two
+  called; with `{ removeInBackground: true }` the `afterAll` hands the directory to a removal in a
+  process of its own and does not wait for it, so no removal runs under Bun's 5 s default hook
+  limit, which a slow disk's removal of a large tree (a stack's built binaries) can outlast. A
+  directory per test is
+  `temporaryDirectories(prefix)`, registered in those same two
   places, which returns a maker that makes a directory at each call and removes every one of them in
   its `afterEach`. Call that maker from a test body or a `beforeEach`, never from a `beforeAll`: it
   makes its directory at the call, and its `afterEach` removes it after the scope's first row, so
@@ -858,13 +862,47 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/envoy/internal/dispatch/legion`, the Legion state intake, took 489 s alone on an issue
-pod's two shared CPUs, and ran go test's ten minutes out with another test run beside it. Its
-seeded test of the read rule
-(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`)
-takes 226 s of that: where a row ends with a message handed back with a delay, the row waits in
-real time for its redelivery, up to `ReadRetryAfter`, a minute (seed 12's row waits 59 s of its
-92 s).
+`packages/envoy/internal/dispatch/legion`, the Legion state intake, waits rather than computes: the
+whole package used 2 % of one core over the 913 s it took alone on a four-CPU CI runner
+(`/usr/bin/time -v`, job 140689032093). Its seeded test of the read rule
+(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`) was
+508 s of that, because a row that ends with a message handed back with a delay waits in real time
+for its redelivery, up to `ReadRetryAfter`, a minute. So each of its seeds is a parallel subtest,
+`storetest.DefaultParallel` of them at once (the package's `TestMain` calls
+`storetest.SetDefaultParallel`), and the test takes about as long as its longest seed alone.
+
+A seed holds a rig of its own: its own database (`storetest.Open`), its own NATS account
+(`testnats.URL`), its own fake daemons and its own intake, whose clock, logger and client window
+are the rig's. The intake writes its lines to `Intake.log` and calls its daemons with
+`Intake.stateOptions`, both of them the rig's, so **a seed** replaces neither the process's default
+logger nor `http.DefaultTransport`, which every test of the process shares. That is what lets the
+seeds run beside each other.
+
+The package's other tests are the package's serial ones, and **none of them runs while a seed
+does**: a top-level test that calls no `t.Parallel` holds the binary to itself, and the seeds'
+parent holds it while they run. The 86 tests of the files declared before
+`read_rule_model_test.go` run before them and the 33 of the five files after it run after. Five of
+those tests still write something the whole process shares, which is what stands in the way of
+making them parallel next:
+
+- `TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes`,
+  `TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes`,
+  `TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes` and
+  `TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead` each clone
+  `http.DefaultTransport`, give the clone a `ResponseHeaderTimeout` and put it back at the end, so
+  their daemons' answers have a window. A test beside one of them would take that window too.
+  Each is the rig's `windowed` written out before the rig existed; `rig.windowed(d)`, which names
+  the window on that rig's intake alone (`Intake.stateOptions`), replaces it where someone makes
+  them parallel.
+- `TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler` replaces the process's default
+  logger (`logtest.SetDefault`) on purpose: it reads the whole-read line as `cmd/dispatch`'s own
+  text handler writes it, through `ReadWhole`, which builds an intake with no logger of its own.
+  It stays serial.
+
+A test here holds wall-clock bounds of its own besides (`ReadRetryAfter`, the client window, a
+NATS redelivery), so one made parallel needs its bound read again under the load of the tests
+beside it.
+
 CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
 and a command that runs the whole package passes the same:
 

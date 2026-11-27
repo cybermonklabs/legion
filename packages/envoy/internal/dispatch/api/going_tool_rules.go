@@ -118,7 +118,9 @@ const (
 
 	goingPreconditionRule = "A precondition selects exactly one of document or blocks."
 
-	goingResultRetractRule = "Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it."
+	goingResultRetractRule     = "Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it."
+	goingResultProjectRule     = "With project, the call records a CI job's result of a check of the spec files. It takes project, check, verdict, commit and observed, and no other argument."
+	goingResultCouldNotRunRule = "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail."
 
 	goingArtifactSourceRule = "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit."
 	goingDocumentIsMarkdown = "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph)"
@@ -448,10 +450,39 @@ var goingResultFields = []string{"issue", "check", "role", "verdict", "commit", 
 // goingResultRequired is how many of goingResultFields a record must carry.
 const goingResultRequired = 5
 
-// goingResultProblem is dispatch_result's rule (`resultProblem`): a call with retract retracts a
-// result, with its reason and no other argument, and a call without it records one, with the five
-// arguments a record must carry.
+// goingResultProjectFields is every argument a CI job's record of a check of the spec files carries
+// beside project, the three it must carry first (RESULT_PROJECT_FIELDS, RESULT_PROJECT_REQUIRED).
+var goingResultProjectFields = []string{"check", "verdict", "commit", "observed"}
+
+// goingResultProjectRequired is how many of goingResultProjectFields a CI job's record must carry.
+const goingResultProjectRequired = 3
+
+// goingResultNotProjectFields is every argument a CI job's record refuses, a role's record's and a
+// retraction's, in the order the spec names them (RESULT_NOT_PROJECT_FIELDS).
+var goingResultNotProjectFields = append(slices.DeleteFunc(slices.Clone(goingResultFields), func(field string) bool {
+	return slices.Contains(goingResultProjectFields, field)
+}), "retract", "reason")
+
+// goingResultProblem is dispatch_result's rule (`resultProblem`): a call with project records a
+// CI job's result of a check of the spec files, with check, verdict and commit, observed beside
+// them, and no other argument; verdict could_not_run goes with project alone; a call with retract
+// retracts a result, with its reason and no other argument, and any other call records one, with
+// the five arguments a record must carry.
 func goingResultProblem(call goingRuleCall, _ string) string {
+	if call.has("project") {
+		others := slices.DeleteFunc(slices.Clone(goingResultNotProjectFields), func(field string) bool { return !call.has(field) })
+		if len(others) > 0 {
+			return fmt.Sprintf("%s This call also carries %s.", goingResultProjectRule, strings.Join(others, ", "))
+		}
+		missing := slices.DeleteFunc(slices.Clone(goingResultProjectFields[:goingResultProjectRequired]), call.has)
+		if len(missing) > 0 {
+			return fmt.Sprintf("a CI job's result needs %s. %s", strings.Join(missing, ", "), goingResultProjectRule)
+		}
+		return ""
+	}
+	if call["verdict"] == "could_not_run" {
+		return goingResultCouldNotRunRule
+	}
 	carried := slices.DeleteFunc(slices.Clone(goingResultFields), func(field string) bool { return !call.has(field) })
 	if call.isText("retract") {
 		if reason, _ := call.text("reason"); strings.TrimSpace(reason) == "" {

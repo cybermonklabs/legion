@@ -23,7 +23,8 @@ const actor = { kind: "session" as const, id: "session-1" };
 const file = { name: "notes.md", file: new Blob(["# Notes"], { type: "text/markdown" }), actor };
 const inline = { name: "notes.md", content: "# Notes", actor };
 
-/** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
+/** One call of each method, with arguments of the shapes it takes; what it answers is not read,
+ *  except by the census, which reads each write's answer and not a read's. */
 export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
   issue: (client) => client.issue({ project: "DSP", title: "A title", actor }),
   resolveIssue: (client) => client.resolveIssue("owner/repo#1"),
@@ -33,6 +34,13 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   listIssueArtifacts: (client) => client.listIssueArtifacts("DSP-1"),
   markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n", false),
   fileRoundTrip: (client) => client.fileRoundTrip(new TextEncoder().encode("# Notes\n"), false),
+  recordSpecCheckResult: (client) =>
+    client.recordSpecCheckResult("DSP", {
+      commit: "1".repeat(40),
+      check: "Typecheck",
+      verdict: "pass",
+    }),
+  specCheckResults: (client) => client.specCheckResults("DSP", "1".repeat(40)),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes"),
   agentArtifact: (client) => client.agentArtifact("session-1", file),
@@ -57,7 +65,11 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
   callRoute: (client) =>
-    client.callRoute("PATCH", ["api", "v1", "priorities", "ship-it"], { body: { title: "Ship" } }),
+    client.callRoute(
+      { method: "PATCH", path: "/api/v1/priorities/{id}" },
+      ["api", "v1", "priorities", "ship-it"],
+      { body: { title: "Ship" } }
+    ),
   readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
   sendRoute: (client) => client.sendRoute("POST", "/api/v1/issues/DSP-1/comments", "{}"),
   inbox: (client) => client.inbox("me"),

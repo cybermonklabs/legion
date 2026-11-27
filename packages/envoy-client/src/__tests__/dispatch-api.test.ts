@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { SUBJECT_TOKEN_TYPE_GITHUB } from "@legion/cipher-client/wire";
 import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { keyedLayer } from "../../test/keyed-layer";
 import { processStart } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { type ResultEntry, readResultsSince } from "../dispatch-session-state";
@@ -104,14 +105,16 @@ interface Sent {
  * version as `serveFileVersion` answers it (`fileVersion`), typed JSON cut short
  * (`/api/v1/cut`) or empty (`/api/v1/empty`), plain text to any method (`/api/v1/accepted`), the
  * bare token (`/api/v1/echo-token`) or the DPoP proof (`/api/v1/echo-proof`) it was sent, echoed
- * in a plain-text 200, and any other request with the method and path it was sent.
+ * in a plain-text 200, and any other request with the method and path it was sent. It answers
+ * behind Dispatch's keyed layer, so each 2xx to a keyed write, a bound command's, names its key
+ * back.
  */
 function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: Sent[] } {
   const sent: Sent[] = [];
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: async (request) => {
+    fetch: keyedLayer(async (request: Request) => {
       const url = new URL(request.url);
       sent.push({
         method: request.method,
@@ -175,7 +178,7 @@ function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: S
         default:
           return Response.json({ method: request.method, path: url.pathname });
       }
-    },
+    }),
   });
   servers.push(server);
   return { url: `http://127.0.0.1:${server.port}`, sent };

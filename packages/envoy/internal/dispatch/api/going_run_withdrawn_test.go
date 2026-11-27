@@ -950,6 +950,7 @@ var goingPostlessReads = map[string]goingPostlessRead{
 	"GET /api/v1/projects/{key}/legion/daemon":       {reason: "a project's Legion daemon setting"},
 	"GET /api/v1/projects/{key}/plans":               {reason: "a project's finished issues and their plans"},
 	"GET /api/v1/projects/{key}/related":             {reason: "issues related by their words, printed by owner label alone (census C.15)"},
+	"GET /api/v1/projects/{key}/results":             {reason: "the results CI jobs stored for checks of a project's spec files at one commit, each an in-toto statement of the check, its verdict, what the job printed and its run, which name no post"},
 	"GET /api/v1/references/questions":               {reason: "which asks a source cites, by id (census C.15)"},
 	"GET /api/v1/related-checks":                     {reason: "how many related-item checks ran"},
 	"GET /api/v1/schema/blocks":                      {reason: "the typed blocks' schema"},

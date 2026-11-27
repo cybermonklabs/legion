@@ -1150,6 +1150,36 @@ var goingSchemaStateOnly = map[string]string{
 	"dispatch_rebuild_document":        "a rebuild takes a document whose history does not load, which no route makes (409 DOCUMENT_LOADS)",
 }
 
+// goingSchemaRuleRefuses names, for each write tool whose rule refuses on purpose a call its schema
+// takes and repair cannot make keep the rule without dropping the field the call varies, which
+// calls those are and why. Such a call passes where GoingCaller refuses it with that rule's own
+// refusal (goingToolRules), before any request; every other call of the tool is held as every
+// tool's is.
+var goingSchemaRuleRefuses = map[string]struct {
+	refuses func(arguments map[string]any) bool
+	why     string
+}{
+	"dispatch_result": {
+		refuses: func(arguments map[string]any) bool {
+			_, project := arguments["project"]
+			return project || arguments["verdict"] == "could_not_run"
+		},
+		why: "project names a CI job's record of a check of the spec files, which only that job's results token writes and no session holds, and could_not_run is that record's verdict alone, since a role's result on an issue is pass or fail: the rule (goingResultProblem) refuses both beside a record on an issue",
+	},
+}
+
+// goingSchemaRuleRefused reports whether refused, GoingCaller's refusal of a call of tool, refuses
+// a call goingSchemaRuleRefuses names, in the words the tool's rule refuses it with.
+func goingSchemaRuleRefused(tool string, action GoingAction, arguments map[string]any, refused GoingArgumentError) bool {
+	named, held := goingSchemaRuleRefuses[tool]
+	rule := goingToolRules[tool]
+	if !held || rule == nil || !named.refuses(arguments) {
+		return false
+	}
+	reason := rule(arguments, action.rule)
+	return reason != "" && refused.Reason == reason
+}
+
 // TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes: every call each write tool's own schema
 // takes (goingSchemaSets), made to satisfy the rules its spec states beside the schema
 // (goingSchemaItemsOf.repair) and naming real items, goes through the tool's own translation to
@@ -1159,10 +1189,11 @@ var goingSchemaStateOnly = map[string]string{
 // an item the call did not make, a 409 for a state the seed did not set up, a 403 for a person
 // who may not. A call the bar never sends as written (goingUnsendable: a picture, a file, a link
 // where the bar names the place, an option of a status change set to true, which a plan writes out
-// as the rows of the issues it changes) is refused before any request, by design, and passes. A call
-// naming its document by id (goingSchemaItemsOf.byID) writes, or fails the test. Every tool but
-// goingSchemaStateOnly's writes at least one of its calls, and the log tallies what each tool's
-// calls were answered.
+// as the rows of the issues it changes) is refused before any request, by design, and passes, as
+// does a call a tool's rule refuses on purpose (goingSchemaRuleRefuses) with that rule's own
+// refusal. A call naming its document by id (goingSchemaItemsOf.byID) writes, or fails the test.
+// Every tool but goingSchemaStateOnly's writes at least one of its calls, and the log tallies what
+// each tool's calls were answered.
 func TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes(t *testing.T) {
 	t.Parallel()
 	rig := newGoingSchemaRig(t)
@@ -1226,6 +1257,9 @@ func TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes(t *testing.T) {
 					if set.byID || goingSchemaShapeRefusal(read.Status, read.Code) {
 						t.Errorf("%s (%s) %s: a read its translation made was refused: status=%d body=%s", spec.Name, set.name, sent, read.Status, read.body)
 					}
+					continue
+				case errors.As(err, &refused) && goingSchemaRuleRefused(spec.Name, action, set.arguments, refused):
+					answered["refused by its rule, by design"]++
 					continue
 				case err != nil:
 					answered["refused before its route"]++

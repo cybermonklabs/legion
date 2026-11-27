@@ -67,7 +67,7 @@ export async function callBoundRoute(
     }
     body["actor"] = actor;
   }
-  const answer = await client.callRoute(route.method, path, { body, query });
+  const answer = await client.callRoute(route, path, { body, query });
   return {
     text: answer === undefined ? "" : JSON.stringify(answer),
     details: { route: `${route.method} ${route.path}`, answer },

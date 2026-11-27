@@ -66,8 +66,9 @@ async function refusalCode(response: Response): Promise<string | null> {
   }
 }
 
-// Reserved at the file's module scope: the file's own `afterAll` removes it once the `describe`
-// below has stopped the server writing into it.
+// Reserved at the file's module scope. Once the `describe` below has stopped the server, the
+// file's `afterAll` hands the directory to a removal it does not wait for
+// (`useDispatchStackDirectory`).
 const stackDirectory = useDispatchStackDirectory();
 
 describe.skipIf(!dispatchStackEnabled)(

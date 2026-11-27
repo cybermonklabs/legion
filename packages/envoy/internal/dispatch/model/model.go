@@ -131,7 +131,7 @@ type Credential struct {
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
 	// read-only personal token, a row of agent_read_tokens, which a person made holding read
 	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
-	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseLimitedToken),
 	// before anything else the route does. The scope itself is not among Scopes: those are what a
 	// route can require of a credential, and read meets no route's requirement; it narrows what
 	// this credential may call rather than widening it. whoami lists it as ScopeRead after
@@ -144,7 +144,7 @@ type Credential struct {
 	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
 	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes whose declaration states
 	// ApproveOnly (api's routeDecl.ApproveOnly) alone, answering it 403 APPROVE_ONLY_TOKEN on every
-	// other (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// other (refuseLimitedToken), before anything else the route does. False for every other
 	// credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
@@ -154,14 +154,14 @@ type Credential struct {
 	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
 	// mapped to its one project, or to none for an account entry that names a person and no
 	// project or neither; `person`, a token held to no one project, a person's own or a
-	// machine's nobody signed in on; `none`, the read entry's token's; or `public`, a job's token
+	// machine's nobody signed in on; `none`, the read entry's token's; `public`, a job's token
 	// that names no one project, which writes wherever a token naming no project may, since no
-	// write check reads its list (Projects) at this release. A token narrowed to reading carries
-	// the word it narrows, with ReadOnly beside it. Empty for every other credential. A
-	// broker-issued token that names a service and no person writes only under `named` or
-	// `public` — a job's two shapes, and under `named` an account entry's naming no person, whose
-	// writes are recorded under its account — and is refused every write under any other
-	// (writeNeedsASignedInPerson).
+	// write check reads its list (Projects) at this release; or `results`, a results token's,
+	// which carries ResultsOnly and CI. A token narrowed to reading carries the word it narrows,
+	// with ReadOnly beside it. Empty for every other credential. A broker-issued token that names
+	// a service and no person writes only under `named` or `public` — a job's two shapes, and
+	// under `named` an account entry's naming no person, whose writes are recorded under its
+	// account — and is refused every write under any other (writeNeedsASignedInPerson).
 	ProjectScope string
 	// Principal is who a broker-issued token acts for, in the form that names its kind and scope
 	// (ciphertoken.Caller.Principal): the one the Envoy listener records a registration on that
@@ -174,6 +174,19 @@ type Credential struct {
 	// access.CredentialCovers': for a full member's credential, and one that names no person, only
 	// which private projects it reaches; for a restricted member's, every project it reaches.
 	Projects []string
+	// ResultsOnly is a broker-issued token that writes only the results of its project's spec
+	// checks (ciphertoken.ScopeResults): one the secrets broker minted from a result entry for one
+	// CI run, naming a person, one project and the run. The person stays inside the server: a
+	// result, an answer and the access log name the run (SpecCheckRecorder). Dispatch serves it on
+	// the routes whose declaration states ResultsScope (api's routeDecl.ResultsScope) alone and
+	// answers it 403 RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else
+	// the route does. False for every other credential.
+	ResultsOnly bool
+	// CI is the run a ResultsOnly credential was minted for, read whole by the verifier
+	// (ciphertoken.Caller.CI, oauthwire.ParseCIRun): what that credential writes is held to the
+	// run's commit, repository and check run, and its stored columns come from this one reading.
+	// Nil for every other credential.
+	CI *oauthwire.Run
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -1934,6 +1947,86 @@ type CheckResultRetracted struct {
 	Reason    string    `json:"reason"`
 	Actor     Actor     `json:"actor"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// SpecCheckResultKindRun is the kind of every result a CI job writes for a check of the spec
+// files: one run of the check's test (SpecCheckResult.Kind).
+const SpecCheckResultKindRun = "run"
+
+// SpecCheckResult is one result a CI job wrote for a check of the spec files at the commit it
+// tested (POST /api/v1/projects/{key}/results): Dispatch's id and record number for it, its kind,
+// and the in-toto statement of the run. Seq orders the results as Dispatch recorded them, and
+// the read orders by it. Nothing updates a stored result: another run, attempt or leg is another
+// one.
+type SpecCheckResult struct {
+	ID          string               `json:"id"`
+	Seq         int64                `json:"seq"`
+	Kind        string               `json:"kind"`
+	Attestation SpecCheckAttestation `json:"attestation"`
+}
+
+// SpecCheckAttestation is an in-toto Statement v1 (https://in-toto.io/Statement/v1): the subject
+// it read, a commit of a repository, and the predicate of a spec check's result.
+type SpecCheckAttestation struct {
+	Type          string               `json:"_type"`
+	Subject       []AttestationSubject `json:"subject"`
+	PredicateType string               `json:"predicateType"`
+	Predicate     SpecCheckPredicate   `json:"predicate"`
+}
+
+// AttestationSubject is one subject of an in-toto statement: its name and its digests by
+// algorithm. A spec check result's one subject is git+https://github.com/<repository> with the
+// digest gitCommit, the commit the job tested.
+type AttestationSubject struct {
+	Name   string            `json:"name"`
+	Digest map[string]string `json:"digest"`
+}
+
+// SpecCheckPredicate is what a spec check's result says. Dispatch writes every field from the
+// results token, from GitHub and from the spec files at the commit, except Verdict and Observed,
+// which the job wrote: Check and ProcedureDigest are the check as the files hold it, Test its test
+// part, Job and Leg the name of the run's check run cut at its last " (", Run the run the token
+// was minted for, and Recorder the run's session and principal the token proved.
+type SpecCheckPredicate struct {
+	Project         string            `json:"project"`
+	Check           string            `json:"check"`
+	ProcedureDigest string            `json:"procedure_digest"`
+	Test            SpecCheckTest     `json:"test"`
+	Verdict         string            `json:"verdict"`
+	Observed        string            `json:"observed"`
+	Job             string            `json:"job"`
+	Leg             string            `json:"leg"`
+	Run             SpecCheckRun      `json:"run"`
+	Recorder        SpecCheckRecorder `json:"recorder"`
+	RecordedAt      time.Time         `json:"recorded_at"`
+}
+
+// SpecCheckTest is the test part of a check: the runner and the selector that pick one test, and
+// the job whose reports alone count for the check.
+type SpecCheckTest struct {
+	Runner   string `json:"runner"`
+	Selector string `json:"selector"`
+	Job      string `json:"job"`
+}
+
+// SpecCheckRun is the GitHub Actions run a result was written in, as its token names it.
+type SpecCheckRun struct {
+	Repository        string `json:"repository"`
+	WorkflowRef       string `json:"workflow_ref"`
+	Ref               string `json:"ref"`
+	EventName         string `json:"event_name"`
+	RunID             string `json:"run_id"`
+	Attempt           int    `json:"attempt"`
+	CheckRunID        string `json:"check_run_id"`
+	RunnerEnvironment string `json:"runner_environment"`
+}
+
+// SpecCheckRecorder is who wrote a result, as its token proved it: the session of the run's
+// workflow and the broker's principal of it. It names no person: the airlock authenticated a run,
+// and the person a result entry names is the broker's configuration, who ran no test.
+type SpecCheckRecorder struct {
+	Session   string `json:"session"`
+	Principal string `json:"principal"`
 }
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification

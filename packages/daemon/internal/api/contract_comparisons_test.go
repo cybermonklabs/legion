@@ -70,9 +70,12 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "The owner's plan", declares: []declarationSite{
 		{"internal/api/plan.go", "OwnerPlanContract"},
 	}},
+	// The running-step entry's row of shapeAnswer takes `running` off register_plan's answer for a
+	// caller below the entry, as the two refusals' rows take their bodies' newer parts off.
 	{row: "The pause and plan refusals", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(runningStepContract)"),
 	}},
 	// The replaces entry's two rows of shapeAnswer (contract_20261125170509_replaces.go), which take
 	// `replaces` off both registration answers; the Design's table predates the entry.

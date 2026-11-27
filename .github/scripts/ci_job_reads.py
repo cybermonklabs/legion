@@ -526,7 +526,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
         (".claude-code-pin", "`.github/actions/install-claude-code/action.yml#pin=$(<.claude-code-pin)`, the release "
                              "`packages/claude-envoy/tests/answers-claude.test.ts#print` and `packages/claude-envoy/tests/answers-claude.test.ts#streamSession` runs"),
-        ("packages/envoy-client/test/**", "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#@legion/envoy-client/test/envoy-stack` and tests/agent-stream-reply-grant.test.ts import modules of that directory, and tsc puts them in the claude-envoy program"),
+        ("packages/envoy-client/test/**", "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#@legion/envoy-client/test/envoy-stack` and tests/agent-stream-reply-grant.test.ts import modules of that directory, `packages/claude-envoy/tests/envoy-channel-server.test.ts#keyedLayer` imports keyed-layer.ts, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "`packages/claude-envoy/tests/legion-tool.test.ts#withImageManifest` imports it from @legion/pi-shared/test/image-manifest"),
         (f"{FIX}/daemon-api/**", "`packages/claude-envoy/tests/legion-claim.test.ts#daemonFixture`, `packages/claude-envoy/tests/legion-pane-mcp.test.ts#daemonFixture` "
                                  "and `packages/claude-envoy/tests/legion-tool.test.ts#daemonFixture` read its responses; "
@@ -2514,6 +2514,8 @@ BROWSER_SUITE_STEPS = (
 )
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
+CI_RESULTS_STEP = "A CI job's result through the real broker and a real Dispatch"
+CI_RESULTS_REFUSAL_STEP = "A CI job's refused result prints no workflow command"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"

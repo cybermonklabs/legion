@@ -89,25 +89,29 @@ function send(
 }
 
 /**
+ * What a result's check names on an issue: `resultRecordArguments` describes its check with it,
+ * and `dispatch_result` (`dispatch-tools.ts`) with its project form's words after it.
+ */
+export const RESULT_CHECK =
+  "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it.";
+
+/**
  * The arguments of a result's record beside the issue it is recorded on: the check, who ran it,
  * its verdict, its commit, and what the run read. `dispatch_check_result` sends them as the dry
  * run's body, and `dispatch_result` (`dispatch-tools.ts`) takes them as a record's. `required` is
  * applied to each one a record must carry: the dry run keeps them required, and `dispatch_result`
  * makes them optional, since it also retracts a result with none of them and its own validation
- * requires them of a record.
+ * requires them of a record. `dispatch_result` alone also records a CI job's result of a check of
+ * the spec files, with project, so it takes project beside these and gives check and verdict again
+ * with that form's words, verdict with could_not_run among its values: the dry run is a record on
+ * an issue, whose verdict is pass or fail.
  */
 export function resultRecordArguments<E extends SchemaNode<E>>(
   z: SchemaApi<E>,
   required: (field: E) => E
 ) {
   return {
-    check: required(
-      z
-        .string()
-        .describe(
-          "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
-        )
-    ),
+    check: required(z.string().describe(RESULT_CHECK)),
     role: required(
       z
         .string({ max: 32 })

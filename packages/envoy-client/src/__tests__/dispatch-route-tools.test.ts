@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -27,10 +28,11 @@ interface Sent {
   readonly body: unknown;
 }
 
-/** A fetch that records each request and answers `answer` as JSON. */
+/** A fetch that records each request and answers `answer` as JSON, behind Dispatch's keyed layer:
+ *  each 2xx to a bound POST or PATCH, a keyed write, names the write's key back. */
 function recording(answer: unknown): { readonly sent: Sent[]; readonly fetchImpl: typeof fetch } {
   const sent: Sent[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchImpl = keyedLayer(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     sent.push({
       method: init?.method ?? "GET",

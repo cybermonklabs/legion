@@ -932,8 +932,12 @@ var goingReadTools = map[string]goingReadTool{
 		{Method: http.MethodGet, Pattern: "/api/v1/agents/{session_id}/artifacts/{slug}", Path: map[string]string{"session_id": "ref", "slug": "ref"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}", Path: map[string]string{"session_id": "ref", "slug": "ref", "number": "version"}},
 	}},
+	// A call names one of issue and project, which fills its row: an issue's checks with their
+	// results, or the results CI jobs stored for checks of a project's spec files, at commit and of
+	// check where the call names it, which the project's row sends in its query.
 	"dispatch_results": {Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/results", Path: map[string]string{"key": "issue"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/projects/{key}/results", Path: map[string]string{"key": "project"}},
 	}},
 	// A read of the deploys of one repository: its repo is the route's query.
 	"dispatch_deploys": {Routes: []goingToolRoute{
@@ -1102,6 +1106,7 @@ var goingExcludedRoutes = map[string]string{
 	"PUT /api/v1/issues/{key}/steps/{id}/rating":                    goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/steps/{id}/experiment":                goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemon + " STEP_WRITER",
+	"POST /api/v1/projects/{key}/results":                           "only a CI job's results token writes it, and the going loop acts as an agent session, so no tool of the catalogue performs it",
 	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,

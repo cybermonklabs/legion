@@ -61,6 +61,15 @@ var goingTranslatorConsumes = map[string]map[string]string{
 		"force":        "the approval of the row that shows the document is the consent (rowUpload)",
 		"precondition": "the runner sends the token its own read before found (rowUpload)",
 	},
+	// project names a CI job's record of a check of the spec files, which only that job's results
+	// token writes and no session holds, so the bar sends no such call: dispatch_result's rule
+	// (goingResultProblem) refuses project beside any argument of a record on an issue or of a
+	// retraction, and a call without them fills neither row
+	// (TestAGoingResultCallNamingAProjectFillsNoRoute). This test's write (goingGuardWrite) runs
+	// no rule, so neither row forwards it.
+	"dispatch_result": {
+		"project": "a call naming it is refused before any request: by the rule beside a record's or a retraction's arguments (goingResultProblem), else by no row taking it; only a CI job's results token writes the project form",
+	},
 }
 
 func goingRouteKey(r GoingRoute) string { return r.Method + " " + r.Pattern }
