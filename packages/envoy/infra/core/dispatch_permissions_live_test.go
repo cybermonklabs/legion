@@ -224,9 +224,12 @@ func startDispatchServer(t *testing.T, image string, grant core.Permissions) (di
 // own entry and it can create or delete none of the consumers it inspects. Added to the host's
 // set are the exact calls its checks make, so it leans on nothing of Dispatch's grant: each
 // Dispatch durable's consumer info and the redelivery bucket's reads, writes and watch — not the
-// bucket's create or the update that raises its copies, which are Dispatch's to make.
+// bucket's create or the update that raises its copies, which are Dispatch's to make. It also
+// plays the listener that receives GitHub's webhook, since requireDurablesAcknowledge publishes a
+// GitHub event, so GitHub's lane is taken off the host set's publish deny.
 func testClientPermissions() core.Permissions {
 	client := core.HostPermissions(testClientMachineID)
+	client.Publish.Deny = slices.DeleteFunc(client.Publish.Deny, func(lane string) bool { return lane == contracts.GithubTopicPrefix+">" })
 	redelivery := "KV_" + bus.WebhookRedeliveryBucket
 	client.Publish.Allow = append(client.Publish.Allow,
 		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchDeliveryDurable,
@@ -565,6 +568,19 @@ func newDispatchGitHub(t *testing.T) *dispatchGitHub {
 				_, _ = fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
 			case path == "POST /graphql":
 				_, _ = fmt.Fprint(w, `{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}`)
+			// The GitHub rate reading's two counter reads (cmd/dispatch/ratereading.go), which
+			// Dispatch makes for each installation at start: the core counter from the headers of
+			// a workflows read, and the GraphQL counter from GET /rate_limit.
+			case path == "GET /repos/acme/widgets/actions/workflows":
+				header := w.Header()
+				header.Set("X-RateLimit-Resource", "core")
+				header.Set("X-RateLimit-Used", "1")
+				header.Set("X-RateLimit-Limit", "5000")
+				header.Set("X-RateLimit-Remaining", "4999")
+				header.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+				_, _ = fmt.Fprint(w, `{"total_count":0,"workflows":[]}`)
+			case path == "GET /rate_limit":
+				_, _ = fmt.Fprintf(w, `{"resources":{"graphql":{"limit":5000,"used":0,"remaining":5000,"reset":%d}}}`, time.Now().Add(time.Hour).Unix())
 			case strings.HasPrefix(path, "GET /repos/acme/widgets/actions/workflows/"):
 				_, _ = fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
 			case path == "GET /app/hook/deliveries":

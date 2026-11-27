@@ -3,17 +3,19 @@
  *  3) and the line it ends on, each look that cannot measure (exit 2), and the verdict a look
  *  reads from the probe's access log lines (exit 0 or 1).
  *
- *  Every row runs the script with stand-ins first on PATH for each program that reaches past this
- *  host: `curl`, which answers Dispatch's /healthz, priorities and issue reads from the row's own
- *  table and records each request's User-Agent and URL; `gh`, which answers GitHub's compare with
- *  the row's status and records its arguments; `gcloud`, which answers `logging read` with the
- *  row's lines, the probe id its filter names put in each, and records its arguments; and `sleep`,
- *  which records its argument and returns at once. So the script's 30 s pauses between reads of
- *  the log cost nothing, and the rows count them; the script itself holds no variable a test sets
- *  for its waits. The three-hour wait and the two-hour window are read against the host's own
- *  clock, from the FLEET_SINCE and PROBE_AT a row gives. DISPATCH_URL names a host no row reaches.
- *  What this file shares with `priorities-production.test.ts`, the stand-in `gh` among it, is
- *  `production-look-fixture.ts`'s.
+ *  Every row runs the script with stand-ins for each program that reaches past this host: `curl`,
+ *  which answers Dispatch's /healthz, priorities and issue reads from the row's own table and
+ *  records each request's User-Agent and URL; `gh`, which answers GitHub's compare with the row's
+ *  status and records its arguments; `gcloud`, which answers `logging read` with the row's lines,
+ *  the probe id its filter names put in each, and records its arguments; and `sleep`, which
+ *  records its argument and returns at once. Each is a bash function the script's bash imports
+ *  from its environment, so the script runs unchanged, calls each by the name it calls the
+ *  program by, and starts no process for a request (`standIns` says why). So the script's 30 s
+ *  pauses between reads of the log cost nothing, and the rows count them; the script itself holds
+ *  no variable a test sets for its waits. The three-hour wait and the two-hour window are read
+ *  against the host's own clock, from the FLEET_SINCE and PROBE_AT a row gives. DISPATCH_URL names
+ *  a host no row reaches. What this file shares with `priorities-production.test.ts`, the stand-in
+ *  `gh` among it, is `production-look-fixture.ts`'s.
  *
  *  A row that replays an earlier probe (PROBE_ID, PROBE_AT and PROBE_STOPPED given) has a `curl`
  *  that fails and is recorded where it runs, so the row holds that the look sent nothing.
@@ -44,7 +46,7 @@ import {
   requestLine,
   requiredInputs,
   said,
-  standInBin,
+  standInFunctions,
   times,
 } from "./production-look-fixture";
 
@@ -95,19 +97,26 @@ interface Production {
   readonly lateReads?: number;
 }
 
-/** Writes the four stand-ins into `dir`/bin and the log into `dir`/log. What they record goes
- *  beside them in `dir`, and lasts from one look of a row to the next. */
-function standIns(dir: string, production: Production): string {
+/** The four stand-ins of a look, as its environment carries them (`standInFunctions`), and the
+ *  log in `dir`/log. Each runs in the shell that calls it and starts no process: a look of 600
+ *  reads that started a process for each one took from 1.9 s to 60.1 s in one leg of the repeated
+ *  harness lane (run 45866491242, round 3), so its 60 s bound decided the row there. What the
+ *  stand-ins record goes in `dir`, and lasts from one look of a row to the next; each also records
+ *  the process and the subshell depth it ran in, which the row "each stand-in a look calls runs in
+ *  the shell that calls it" reads. */
+function standIns(dir: string, production: Production): Record<string, string> {
   const time = (form: Form) => (production.slowForm === form ? "1.500000" : "0.040000");
   const status = production.issueStatus ?? 200;
   const issues = production.noIssue ? [] : [{ key: "ACME-1", title: "One issue" }];
   const page = JSON.stringify({ issues, total: issues.length, limit: 50, offset: 0 });
   const list = JSON.stringify(issues);
+  const shells = join(dir, "shells");
   const curl = [
     ...curlArguments,
     `printf '%s %s\\n' "$agent" "$url" >>'${join(dir, "curl-calls")}'`,
+    `printf 'curl %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
     ...(production.sendsNothing
-      ? ["echo 'curl: this look was to send nothing' >&2", "exit 7"]
+      ? ["echo 'curl: this look was to send nothing' >&2", "return 7"]
       : []),
     "case $url in",
     `  */healthz) printf '%s' '${healthz(production.fleetCommit)}' >"$out"; echo '200 0.012000' ;;`,
@@ -115,35 +124,54 @@ function standIns(dir: string, production: Production): string {
     `  *'/api/v1/issues?'*'&limit=50') printf '%s' '${page}' >"$out"; echo '${status} ${time("page")}' ;;`,
     `  *'/api/v1/issues?'*'&open=true') printf '%s' '${list}' >"$out"; echo '${status} ${time("open")}' ;;`,
     `  *'/api/v1/issues?advances='*) printf '%s' '${list}' >"$out"; echo '${status} ${time("whole")}' ;;`,
-    `  *) echo "curl: no answer for $url" >&2; exit 6 ;;`,
+    `  *) echo "curl: no answer for $url" >&2; return 6 ;;`,
     "esac",
-    "",
-  ].join("\n");
+  ];
+  // The probe id the filter names, a commit's 40 hex digits, a slash and 16 hex digits, is read
+  // with a glob and not a regular expression, which would set the script's own BASH_REMATCH. The
+  // log is read whole and written back with the probe id in it, its last newline or the lack of one
+  // kept, the bytes `sed` wrote.
+  const agent = "user_agent=priority-list-production/";
+  const probeId = `${"[0-9a-f]".repeat(40)}/${"[0-9a-f]".repeat(16)}`;
   const gcloud = [
-    "#!/usr/bin/env bash",
-    `dir='${dir}'`,
+    `local dir='${dir}' calls=0 probe='' argument='' text=''`,
     gcloudRecord(dir),
+    `printf 'gcloud %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
     'read -r calls 2>/dev/null <"$dir/gcloud-count" || calls=0',
     "calls=$((calls + 1))",
     `printf '%s\\n' "$calls" >"$dir/gcloud-count"`,
-    `((calls > ${production.lateReads ?? 0})) || exit 0`,
-    "probe=''",
+    `((calls > ${production.lateReads ?? 0})) || return 0`,
     'for argument in "$@"; do',
-    "  if [[ $argument =~ user_agent=priority-list-production/([0-9a-f]{40}/[0-9a-f]{16})/ ]]; then",
-    `    probe=\${BASH_REMATCH[1]}`,
+    `  if [[ $argument == *${agent}${probeId}/* ]]; then`,
+    `    probe=\${argument#*${agent}}`,
+    `    probe=\${probe:0:57}`,
     "  fi",
     "done",
-    "[[ -n $probe ]] || exit 0",
-    `sed "s|@PROBE@|$probe|g" "$dir/log"`,
-    "",
-  ].join("\n");
-  const sleep = ["#!/bin/sh", `printf '%s\\n' "$*" >>'${join(dir, "sleeps")}'`, ""].join("\n");
-  return standInBin(dir, { curl, gh: gh(dir, production.compare), gcloud, sleep }, production.log);
+    "[[ -n $probe ]] || return 0",
+    `IFS= read -r -d '' text <"$dir/log" || true`,
+    `printf '%s' "\${text//@PROBE@/"$probe"}"`,
+  ];
+  const sleep = [
+    `printf '%s\\n' "$*" >>'${join(dir, "sleeps")}'`,
+    `printf 'sleep %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
+  ];
+  return standInFunctions(
+    dir,
+    {
+      curl,
+      gh: gh(dir, production.compare, [
+        `printf 'gh %s %s\\n' "$BASHPID" "$BASH_SUBSHELL" >>'${shells}'`,
+      ]),
+      gcloud,
+      sleep,
+    },
+    production.log
+  );
 }
 
 /** What one look did: what it printed, and what the stand-ins recorded so far in the row's
  *  directory, this look's and any earlier look's of the row: each request `curl` was asked for,
- *  the arguments of each `gh` and `gcloud` run, and each pause `sleep` was asked for. */
+ *  the arguments of each `gh` and `gcloud` call, and each pause `sleep` was asked for. */
 interface Look extends Printed {
   readonly requests: readonly { readonly agent: string; readonly url: string }[];
   readonly gh: readonly string[];
@@ -151,21 +179,21 @@ interface Look extends Printed {
   readonly sleeps: readonly string[];
 }
 
-/** One look: the script run from the package root with the stand-ins of `production` first on
- *  PATH, the required inputs with `inputs` over them (an undefined one taken away), and `label` as
- *  DISPATCH_E2E_CASE. */
+/** One look: the script run from the package root with the stand-ins of `production` in its
+ *  environment, the required inputs with `inputs` over them (an undefined one taken away), and
+ *  `label` as DISPATCH_E2E_CASE. */
 async function look(
   dir: string,
   label: string,
   production: Production,
   inputs: Readonly<Record<string, string | undefined>> = {}
 ): Promise<Look> {
-  const bin = standIns(dir, production);
+  const functions = standIns(dir, production);
   const run = await runBounded({
     argv: ["bash", "e2e/acceptance/priority-list-production.sh"],
     bound: "short",
     cwd: dispatchPackage,
-    env: lookEnv(label, bin, { ...required, ...inputs }),
+    env: lookEnv(label, functions, { ...required, ...inputs }),
     from: import.meta.url,
   });
   return {
@@ -548,6 +576,39 @@ test(
     });
   },
   rowLimit("short", "short")
+);
+
+test(
+  "each stand-in a look calls runs in the shell that calls it, and not in a process of its own",
+  async () => {
+    const dir = directories();
+    const run = await look(
+      dir,
+      "own-shell",
+      { slowForm: "page", lateReads: 1, log: formLines("page", times(21, 150)) },
+      settled()
+    );
+    // Each line: the stand-in, its process ($BASHPID) and its subshell depth ($BASH_SUBSHELL).
+    // The script calls gh inside `$(...)`, one subshell down, and the other three in its own
+    // shell. A stand-in that runs as an executable, or in a subshell of its own, changes its depth
+    // or its process.
+    const shells = recorded(dir, "shells").map((line) => line.split(" "));
+    const calls: Record<string, number> = {};
+    for (const [name, , depth] of shells) {
+      const call = `${name} at ${depth}`;
+      calls[call] = (calls[call] ?? 0) + 1;
+    }
+    const scriptShell = shells.filter(([, , depth]) => depth === "0").map(([, pid]) => pid);
+    expect(
+      { code: run.code, calls, scriptProcesses: new Set(scriptShell).size },
+      said(run)
+    ).toEqual({
+      code: 3,
+      calls: { "curl at 0": 23, "gh at 1": 1, "gcloud at 0": 2, "sleep at 0": 1 },
+      scriptProcesses: 1,
+    });
+  },
+  rowLimit("short")
 );
 
 test(

@@ -1,11 +1,11 @@
 /** What `priorities-production.test.ts` and `priority-list-production.test.ts` share, the tests of
  *  the two looks at production whose common steps `e2e/acceptance/lib.sh` holds: the commits and
  *  the Dispatch every row names, the stand-in `gh` and the parts of the stand-ins of `curl` and
- *  `gcloud` both files write alike, an access log line, the `gcloud logging read` a look runs, the
- *  reads of what the stand-ins recorded, and the environment a look runs in. It starts no process;
- *  each test file runs its look itself, through `runBounded`, so `e2e/row-limits.ts` reads every
- *  row that waits for one. Each helper that writes takes a directory of the test file's own
- *  `temporaryDirectories`, whose hooks remove it. */
+ *  `gcloud` both files write alike, the bash functions every stand-in runs as, an access log line,
+ *  the `gcloud logging read` a look runs, the reads of what the stand-ins recorded, and the
+ *  environment a look runs in. It starts no process; each test file runs its look itself, through
+ *  `runBounded`, so `e2e/row-limits.ts` reads every row that waits for one. Each helper that
+ *  writes takes a directory of the test file's own `temporaryDirectories`, whose hooks remove it. */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -61,18 +61,18 @@ export function said({ code, stdout, stderr }: Printed): string {
   return ` The script exited ${code}. Its stdout read:\n${stdout || "(nothing)"}\nIts stderr read:\n${masked(stderr) || "(nothing)"}`;
 }
 
-/** The environment of one look: the stand-ins of `bin` first on PATH, this process's HOME and
- *  TMPDIR, each of `inputs` but an undefined one, and `label` as DISPATCH_E2E_CASE, which the
- *  script never reads and which tells the cost lines apart. */
+/** The environment of one look: the stand-ins `standIns` carries (`standInFunctions`), this
+ *  process's HOME and TMPDIR, each of `inputs` but an undefined one, and `label` as
+ *  DISPATCH_E2E_CASE, which the script never reads and which tells the cost lines apart. */
 export function lookEnv(
   label: string,
-  bin: string,
+  standIns: Readonly<Record<string, string>>,
   inputs: Readonly<Record<string, string | undefined>>
 ): Record<string, string> {
   const env: Record<string, string> = {
     DISPATCH_E2E_CASE: label,
     HOME: process.env.HOME ?? "",
-    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    ...standIns,
     ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
   };
   for (const [name, value] of Object.entries(inputs)) {
@@ -89,10 +89,9 @@ export function healthz(fleetCommit: string | null | undefined): string {
 }
 
 /** The head of a stand-in `curl`: it reads its arguments into `out` (-o), `agent` (-A) and `url`,
- *  and skips the value of each other option a look passes with one. */
+ *  each local to the call, and skips the value of each other option a look passes with one. */
 export const curlArguments: readonly string[] = [
-  "#!/bin/sh",
-  "out='' agent='' url=''",
+  "local out='' agent='' url=''",
   'while [ "$#" -gt 0 ]; do',
   "  case $1 in",
   "    -o) out=$2; shift ;;",
@@ -112,39 +111,49 @@ export function gh(
   dir: string,
   compare: string | undefined,
   before: readonly string[] = []
-): string {
+): string[] {
   return [
-    "#!/bin/sh",
     `printf '%s\\n' "$*" >>'${join(dir, "gh-calls")}'`,
     ...before,
     compare === "unanswered"
-      ? "echo 'HTTP 502: Bad Gateway (https://api.github.com/repos/cybermonklabs/legion/compare)' >&2; exit 1"
+      ? "echo 'HTTP 502: Bad Gateway (https://api.github.com/repos/cybermonklabs/legion/compare)' >&2; return 1"
       : `echo '${compare ?? "ahead"}'`,
-    "",
-  ].join("\n");
+  ];
 }
 
-/** The line of a stand-in `gcloud`, a bash script, that records its arguments in
- *  `dir`/gcloud-calls: `call`, then each argument, each ended by a NUL, which `gcloudCalls` reads
- *  back. */
+/** The line of a stand-in `gcloud` that records its arguments in `dir`/gcloud-calls: `call`,
+ *  then each argument, each ended by a NUL, which `gcloudCalls` reads back. */
 export function gcloudRecord(dir: string): string {
   return `{ printf 'call\\0'; printf '%s\\0' "$@"; } >>'${join(dir, "gcloud-calls")}'`;
 }
 
-/** Writes each stand-in of `scripts` into `dir`/bin, executable, and `log` into `dir`/log, a line
- *  each. Answers `dir`/bin, for the head of PATH. */
-export function standInBin(
+/** Writes `log` into `dir`/log, a line each, and answers the environment that carries each
+ *  stand-in of `bodies`, which is the lines of a bash function: a `BASH_FUNC_<name>%%` variable,
+ *  the form in which bash exports a function, so the script's bash imports it and runs it in place
+ *  of the program of that name, in the shell that calls it, starting no process. So a body ends
+ *  with `return`, never `exit`, which would end the script's own shell, and declares `local` each
+ *  variable it sets. Executables of the same names, in `dir`/bin, come first on PATH and only fail,
+ *  so a shell that did not import a function reaches nothing past this host. */
+export function standInFunctions(
   dir: string,
-  scripts: Readonly<Record<string, string>>,
+  bodies: Readonly<Record<string, readonly string[]>>,
   log: readonly string[] = []
-): string {
+): Record<string, string> {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true });
-  for (const [name, text] of Object.entries(scripts)) {
-    writeFileSync(join(bin, name), text, { mode: 0o755 });
+  const unreached = [
+    "#!/bin/sh",
+    `echo "$0: this row's stand-in function of that name did not reach the script's shell" >&2`,
+    "exit 127",
+    "",
+  ].join("\n");
+  const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH ?? ""}` };
+  for (const [name, body] of Object.entries(bodies)) {
+    writeFileSync(join(bin, name), unreached, { mode: 0o755 });
+    env[`BASH_FUNC_${name}%%`] = ["() {", ...body.map((line) => `  ${line}`), "}"].join("\n");
   }
   writeFileSync(join(dir, "log"), log.map((line) => `${line}\n`).join(""));
-  return bin;
+  return env;
 }
 
 /** The text of a file of `dir`, empty where the file is missing. Any other failure to read it

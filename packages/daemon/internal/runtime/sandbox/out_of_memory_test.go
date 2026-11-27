@@ -115,9 +115,13 @@ func TestAnOutOfMemoryEndOutsideTheRolesContainerIsNotMarked(t *testing.T) {
 	t.Run("an init container", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
+		// Past its restart grace (initRestartGrace), so the end is the pod's death (failedInit), not
+		// one more start the kubelet makes in a pod still provisioning (startingAgain).
+		ended := endedContainer(initContainer, outOfMemoryEnd)
+		ended.RestartCount = initRestartGrace + 1
 		g.update(g.pod(loc.Sandbox.Name), func(p *corev1.Pod) {
 			p.Status.Phase = corev1.PodPending
-			p.Status.InitContainerStatuses = []corev1.ContainerStatus{endedContainer(initContainer, outOfMemoryEnd)}
+			p.Status.InitContainerStatuses = []corev1.ContainerStatus{ended}
 		})
 		g.eventually("the pod store to see the failed init", func() bool {
 			p := g.r.storedPod(loc.Sandbox.Name)

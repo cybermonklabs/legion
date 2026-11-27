@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercises k7's required operator inputs before it creates a work directory or starts a stack.
 # A stand-in mktemp stops the accepted run at that boundary, without network calls or builds.
+# Then, under fakes, k7's fixture and consumer boundary (airlock/k7-consumers.sh), and k8a's
+# broker start, k6's az wrapper and the run's result line, each read out of airlock-check.sh.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,7 +10,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/airlock-k7-inputs.XXXXXX")"
 approve_stand=""
 # One EXIT trap for the whole test: it stops the approval page's stand-in, where one was started,
 # by its PID and waits for it, then removes the work directory.
-trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null; wait "$approve_stand" 2>/dev/null || true; }; rm -rf "$work"' EXIT
+trap '[[ -z "$approve_stand" ]] || { kill "$approve_stand" 2>/dev/null || true; wait "$approve_stand" 2>/dev/null || true; }; rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 cat >"$work/bin/mktemp" <<'EOF'
 #!/usr/bin/env bash
@@ -71,6 +73,35 @@ label='all four inputs pass preflight and reach setup'; check test "$status" -eq
 label='the accepted run reaches the work directory boundary'; check test "${output#*'airlock-input-test: reached work directory creation'}" != "$output"
 check_id=k6 run_check
 label='other checks do not require the k7 inputs'; check test "$status" -eq 93
+
+# --- The result, read out of airlock-check.sh and run on its own: a run that asserted nothing
+# proved nothing, so report says UNKNOWN and fails; one property of two failing fails by count. Its
+# pass, fail, judge and report run in a subshell, apart from this test's own check.
+airlock_report() { # <judge status>...: report's exit status and its last line
+  (
+    for name in pass fail judge report; do
+      definition="$(sed -n "/^${name}() {/,/^}/p" "$script_dir/airlock-check.sh")"
+      [[ -n "$definition" ]] || { echo "airlock-check.sh defines no ${name}()"; exit 0; }
+      eval "$definition"
+    done
+    # shellcheck disable=SC2034 # report reads each
+    CHECK_ID=test EXPECTED=() OBSERVED=() CONTROL=() VERDICTS=() PASSED=0 TOTAL=0 NOT_JUDGED=0
+    for verdict in "$@"; do judge "$verdict" "a property" "seen"; done
+    verdict=0
+    report >"$work/report.out" || verdict=$?
+    echo "$verdict:$(tail -n1 "$work/report.out")"
+  )
+}
+status=0
+output="$(airlock_report)"
+label="airlock-check.sh's report says UNKNOWN and fails when the run judged no property"
+check test "$output" = "3:check test: UNKNOWN: no property was judged, so nothing passed"
+output="$(airlock_report 0 1)"
+label="airlock-check.sh's report fails a run with one property of two failing"
+check test "$output" = "1:check test: failed (1 of 2)"
+output="$(airlock_report 0 0)"
+label="airlock-check.sh's report passes a run whose every property passed"
+check test "$output" = "0:check test: passed"
 
 # The fixture and Google-consumer boundary is called directly below. It does not parse text from
 # airlock-check.sh, so splitting or changing that caller cannot change this fixture test.
@@ -534,6 +565,40 @@ wait "$steps" || status=$?
 label="a TERM to k6's login steps ends them with 143 and still removes their directory"
 output="status $status; left: $(ls -A "$login_dir/tmp")"
 check test "$output" = "status 143; left: "
+
+# --- This file's own EXIT trap, read out of it and run in a shell of its own under set -euo
+# pipefail, as this test runs: with a stand-in process to stop, still running or already exited,
+# the shell must end with the status its last command left - 0 after a pass, 1 after a failure -
+# must have stopped the stand-in, and must remove its work directory either way. A trap whose wait
+# on the killed stand-in ends the shell under set -e answers 143 and leaves the directory, which is
+# how CI read a test that passed as a failure; one whose kill of a stand-in that already exited
+# ends it answers 1; and one that stops nothing leaves the stand-in running after the shell ends.
+trap_line="$(grep -m1 '^trap .*approve_stand.* EXIT$' "${BASH_SOURCE[0]}")"
+[[ -n "$trap_line" ]] || { printf 'FAIL: this file has no EXIT trap that stops approve_stand\n'; exit 1; }
+for stand in running exited; do
+  for want in 0 1; do
+    trap_work="$(mktemp -d "$work/trap.XXXXXX")/work"
+    mkdir -p "$trap_work"
+    status=0
+    # The child writes its stand-in's PID beside the work directory, which the trap does not
+    # remove, so the test can ask after the child has exited whether that process still runs.
+    # shellcheck disable=SC2016 # the script is the child shell's, expanded there
+    bash -c 'set -euo pipefail; work="$1"; sleep 60 & approve_stand=$!; printf "%s\n" "$approve_stand" >"$1.pid"; if [[ "$4" == exited ]]; then kill "$approve_stand"; wait "$approve_stand" || true; fi; eval "$2"; exit "$3"' \
+      _ "$trap_work" "$trap_line" "$want" "$stand" >/dev/null 2>&1 || status=$?
+    stand_pid="$(cat "$trap_work.pid" 2>/dev/null || true)"
+    stopped=unknown
+    if [[ -n "$stand_pid" ]]; then
+      stopped=stopped
+      if kill -0 "$stand_pid" 2>/dev/null; then
+        stopped=running
+        kill "$stand_pid" 2>/dev/null || true
+      fi
+    fi
+    label="this file's EXIT trap, with a stand-in that is $stand, ends the shell with its own status $want, stops the stand-in and removes the work directory"
+    output="status $status; left: $([[ -e "$trap_work" ]] && echo "$trap_work" || echo nothing); stand-in: $stopped"
+    check test "$output" = "status $want; left: nothing; stand-in: stopped"
+  done
+done
 
 # --- k47's readers, read out of airlock-check.sh and run on fixtures of the shapes the stack writes:
 # the kind of dev-airlock.sh's profiles file, broker log lines, the Admin API stand's records, the

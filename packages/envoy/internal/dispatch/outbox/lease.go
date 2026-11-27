@@ -135,6 +135,9 @@ type Outbox struct {
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
 	probeBeforeHold bool
+	// keptStream is the stream's identity as the expiry pass last took it (readKeptExpiries). Only
+	// the goroutine that runs the pass reads and writes it.
+	keptStream keptStreamRead
 }
 
 // New returns an outbox for deps, with an instance id of its own. Run starts it. It makes the
@@ -184,7 +187,8 @@ func (o *Outbox) Publishing() bool {
 // process's own commits (the events broker, which still reaches the outbox while the LISTEN
 // connection redials), the NATS connection changing (the prompt resend of the events a lost
 // connection released), and the holder's one retry timer, armed to the earliest back-off due
-// (nextRetry). Nothing scans on a period.
+// (nextRetry). Nothing scans on a period: the one read on a period is the expiry notices'
+// (keptExpiryReadEvery, passKeptExpiries), which the listeners write to NATS and no insert wakes.
 //
 // On ctx's end the holder takes no further batch. In each batch in flight it makes no further
 // send, settles the sends still in flight as lost (sendChains), records what NATS already
@@ -498,10 +502,19 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // batch or write a send of one, or NATS was lost - down for natsLossGrace without a break and
 // still down when the grace ends, or a batch's sends failed for the connection and a probe of
 // that connection failed too.
+//
+// After the fallback pass comes the expiry pass (passKeptExpiries), under the same hold and fenced
+// the same way: it reads the listeners' notices of the copies the outbox kept for roles whose hour
+// ended, and keeps each such event again or records it undelivered. Those notices arrive over NATS
+// and wake nothing, so the expiry pass also runs by itself every keptExpiryReadEvery while nothing
+// else wakes the holder, with no scan of events before it; a row its pass backed off is taken by
+// the first pass after its wait. A full read or a full claim leaves the holder due again.
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
 	var disconnectedFor, retryDue <-chan time.Time
-	due := true
+	expiries := time.NewTicker(keptExpiryReadEvery)
+	defer expiries.Stop()
+	due, expiriesDue := true, false
 	for {
 		if !o.deps.Publisher.Connected() {
 			if disconnected == nil {
@@ -528,7 +541,12 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				if ctx.Err() != nil {
 					return stopping
 				}
-				due = fullPass
+				fullExpiries, failedExpiries := o.passKeptExpiries(ctx, hold)
+				if ctx.Err() != nil {
+					return stopping
+				}
+				failedPass = failedPass || failedExpiries
+				due, expiriesDue = fullPass || fullExpiries, false
 				if retryTimer != nil {
 					retryTimer.Stop()
 					retryTimer, retryDue = nil, nil
@@ -543,6 +561,16 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				// The client's state is read again before waiting: a scan takes the wakes that
 				// reach it while it runs (scan), the change of this connection among them, so the
 				// loop would otherwise wait on a grace it never armed.
+				continue
+			}
+			if expiriesDue {
+				expiriesDue = false
+				full, _ := o.passKeptExpiries(ctx, hold)
+				if ctx.Err() != nil {
+					return stopping
+				}
+				// A pass that failed is tried again at the next tick.
+				due = full
 				continue
 			}
 		}
@@ -569,6 +597,8 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 		case <-retryDue:
 			retryTimer, retryDue = nil, nil
 			due = true
+		case <-expiries.C:
+			expiriesDue = true
 		}
 	}
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -298,7 +299,7 @@ func newLeakCheckBroker(t *testing.T, refuse bool) leakCheckBroker {
 	}
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s\\n' \"$LEGION_GITHUB_OWNER\" \"$LEGION_GITHUB_READ_ONLY\" >>%q\n%s\n", calls, answer)
 	command := filepath.Join(dir, "broker")
-	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(command, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return leakCheckBroker{command: command, calls: calls}
@@ -342,7 +343,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 				case r.URL.Path == "/apps/legion-implementer":
 					fmt.Fprint(w, `{"id":12345,"slug":"legion-implementer"}`)
 				case r.URL.Path == "/users/legion-implementer[bot]":
-					fmt.Fprint(w, `{"id":271566630}`)
+					fmt.Fprint(w, `{"id":100000001}`)
 				case r.URL.Path == leakCheckTarballRoute+leakCheckTag:
 					tarballs.Add(1)
 					if r.Header.Get("Authorization") != "Bearer "+leakCheckLease {

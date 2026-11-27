@@ -4,8 +4,10 @@ import { dirname, relative, resolve } from "node:path";
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DEFAULT_THREAD_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_APPROVE_ONLY_TOKEN,
   DISPATCH_AS_OF_TOKEN_NOT_SERVED,
   DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
@@ -46,6 +48,7 @@ import {
   MAX_ISSUE_COMPONENTS,
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
+  MAX_THREAD_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
   PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
@@ -67,6 +70,7 @@ import {
   HANDOFF_PHASE_RULE_WORDS,
   PLAN_INPUT_CODE,
   PLAN_OTHER_ISSUE_CODE,
+  PLANNED_STEP_STATES,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
@@ -78,10 +82,14 @@ import {
   STEP_KINDS,
   STEP_OTHER_ISSUE_CODE,
   STEP_RESULTS,
+  STEP_TASK_MAX,
+  STEP_TASK_PATTERN,
+  STEP_TASK_RULE_WORDS,
   STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
+  BUS_UNANSWERED_PREFIX,
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
@@ -132,6 +140,11 @@ import {
   SUBJECT_SEGMENT_REPLACED,
   uncapturedTopicRefusal,
 } from "../src/subject";
+import {
+  renderDispatchFrameSchema,
+  renderDispatchFrameSchemaGo,
+  renderDispatchFrameVerdicts,
+} from "./gen-go-dispatch-frame";
 import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
@@ -547,6 +560,15 @@ const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
 
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = ${MAX_THREAD_PAGE_LIMIT}
+const DefaultThreadPageLimit = ${DEFAULT_THREAD_PAGE_LIMIT}
+
 // PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
 // GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
 // in packages/contracts so the page the server reads and the full page on which the
@@ -647,6 +669,14 @@ const (
 	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
 )
 
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = ${JSON.stringify(PLANNED_STEP_STATES[0])}
+	PlannedStepRunning    = ${JSON.stringify(PLANNED_STEP_STATES[1])}
+)
+
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
 // whose plan is the plan of another issue (a writer that is not the daemon's session is refused
 // StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
@@ -666,6 +696,17 @@ const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
 // StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
+
+// StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
+// plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
+// a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
+// side gives. Generated from STEP_TASK_PATTERN, STEP_TASK_MAX and STEP_TASK_RULE_WORDS in
+// packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
+// such an id, whose steps Dispatch could record none of.
+const StepTaskPattern = ${JSON.stringify(STEP_TASK_PATTERN.source)}
+const StepTaskMax = ${STEP_TASK_MAX}
+const StepTaskRule = ${JSON.stringify(STEP_TASK_RULE_WORDS)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -766,6 +807,12 @@ const ListenerCallTimeout = ${LISTENER_CALL_TIMEOUT_MS} * time.Millisecond
 const ListenerCallRetryDelay = ${LISTENER_CALL_RETRY_DELAY_MS} * time.Millisecond
 const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
 
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = ${JSON.stringify(BUS_UNANSWERED_PREFIX)}
+
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
 // is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
@@ -794,6 +841,13 @@ const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
+// DispatchApproveOnlyToken is the code of the 403 for a request by an approve-only token - the
+// token the secrets broker mints for a person's approve grant and spends through Cipher's proxy -
+// to a route the approve list does not name, or for its answer of an ask that is not an approval
+// request: nothing ran and nothing was recorded. Generated from DISPATCH_APPROVE_ONLY_TOKEN in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchApproveOnlyToken = ${JSON.stringify(DISPATCH_APPROVE_ONLY_TOKEN)}
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
 // carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
@@ -1125,7 +1179,8 @@ function envelopeObjects(schema: Schema) {
 }
 
 // The envelope's Go mirror is the Envoy listener's wire package's, packages/envoy/listenerwire,
-// which the listener and its clients import and which imports the standard library alone.
+// which the listener and its clients import and which imports the standard library and
+// httpoutage alone; the generated file imports the standard library alone.
 function renderListenerwireEnvelope(envelope: Schema) {
   return `// Code generated by scripts/gen-go.ts from schemas/envelope.schema.json. DO NOT EDIT.
 
@@ -1391,6 +1446,8 @@ ${definitions.join("\n\n")}
 const envelope = (await Bun.file(envelopeFile).json()) as Schema;
 const blockSchema = (await Bun.file(blockSchemaFile).json()) as BlockSchemaDocument;
 
+const dispatchFrameSchema = renderDispatchFrameSchema();
+
 // Every generated file this script owns, each marked with the language it is written in: a Go
 // file is gofmt-formatted before it is written and before it is compared.
 const outputs = [
@@ -1419,7 +1476,22 @@ const outputs = [
     rendered: renderBlockSchemaTypes(blockSchema),
     language: "ts",
   },
-] satisfies { path: string; rendered: string; language: "go" | "ts" }[];
+  {
+    path: resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
+    rendered: dispatchFrameSchema,
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../fixtures/dispatch-frame-verdicts.json"),
+    rendered: renderDispatchFrameVerdicts(),
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
+    rendered: renderDispatchFrameSchemaGo(dispatchFrameSchema),
+    language: "go",
+  },
+] satisfies { path: string; rendered: string; language: "go" | "ts" | "json" }[];
 const fmt = Bun.which("gofmt");
 
 // `--check` pipes each Go render through gofmt and compares every render with the committed

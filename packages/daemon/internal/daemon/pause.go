@@ -124,6 +124,11 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // pause's suspension ends in, with the pause's records, in one store transaction, whose context
 // carries the machine's claim-write deadline. In order:
 //
+//   - the issue's release mark for share (store.PodRecords.LockReleaseMark), before any other
+//     lock: the owed launch below is a take, and a take locks the mark before the issue's lock,
+//     the pause's row and every write of a resume (store.PodRecords.TakePodWake gives the order),
+//     so a release's record or cancel of the same pod runs wholly before this transaction or
+//     wholly after it;
 //   - the issue's lock (store.LockIssueForPause), so two stops of one pod's roles, the resume's
 //     end of the pod's hold and a role's ready run one after another; then the row of the
 //     suspension's pause for share (store.LockPauseTx), open or ended, so a resume of it waits;
@@ -235,6 +240,9 @@ type pauseStopMade struct {
 // stopTx is stopped's transaction.
 func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, stop supervise.PauseStop, at time.Time) (pauseStopMade, error) {
 	var made pauseStopMade
+	if err := p.pods.LockReleaseMark(ctx, tx, c.Issue); err != nil {
+		return made, err
+	}
 	if err := store.LockIssueForPause(ctx, tx, c.Issue); err != nil {
 		return made, err
 	}
@@ -506,12 +514,13 @@ func (p *projectPause) resumeOwedSpawns(ctx context.Context, ended store.Pause) 
 }
 
 // resumeOwedSpawn posts the rule's resume (supervise.RequestRuleResume) of token, an operator's
-// spawn that pause stopped owing a launch, which no start row can carry: the resume of the
-// pause's own (resumeOwedSpawns) or a stop that committed once that pause had ended (stopped).
-// The machine paces it (supervise's exemptWake exempts no rule's resume), finds a claim that
-// already runs nothing to do, and never resumes a claim the operator suspended. The post only
-// queues the event (supervisor.post), so a stop transaction, which runs inside its machine's own
-// decision, may make it.
+// spawn that pause stopped owing a launch, which no start row can carry: the resume of the pause's
+// own (resumeOwedSpawns) or a stop that committed once that pause had ended (stopped). The machine
+// paces it (supervise's exemptWake exempts no rule's resume), finds a claim that already runs
+// nothing to do, and never resumes a claim a suspension that holds is over (the operator's or the
+// controller's, supervise.Claim.RuleMayResume). The post only queues the event
+// (supervisor.post), so a stop transaction, which runs inside its machine's own decision, may make
+// it.
 func (p *projectPause) resumeOwedSpawn(token claim.Token, pause int64) {
 	p.supervisor.post(token, supervise.RequestRuleResume{Claim: token,
 		Reason: fmt.Sprintf("the project's resume: pause %d stopped it with a launch owed, and its issue has no record a start row could carry", pause)})

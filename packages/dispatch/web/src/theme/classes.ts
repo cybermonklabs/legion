@@ -900,6 +900,23 @@ export const pageFocusedRow =
 export const pageOwnWordsRule = "shadow-[inset_2px_0_0_var(--color-page-ink)] pl-2.5";
 /** A folded branch's bullet keeps a halo of the hairline grey around it (`.card.collapsed`). */
 export const pageFoldedHalo = "shadow-[0_0_0_4px_var(--color-page-hair)]";
+/** The conversation's current point, the node the reader's next turn answers: a quiet ring 2 px
+ *  off the bullet's dot on the point's own row. It is an outline and not a shadow because a
+ *  folded branch's halo is a box-shadow, and the ring has to stand outside it without the two
+ *  classes fighting over one property; an outline is also still drawn in forced colours, where a
+ *  shadow is not. The colour is part B's `--color-page-quiet` (styles.css), which Tailwind serves
+ *  as `outline-page-quiet`. */
+export const pagePointRing = "outline-[1.5px] outline-offset-2 outline-page-quiet";
+/** The same ring on a folded branch's bullet (R12), 5 px off the dot so it stands outside the
+ *  4 px halo (`pageFoldedHalo`). */
+export const pagePointRingFolded = "outline-[1.5px] outline-offset-[5px] outline-page-quiet";
+/** A lighter ring on the bullet of each row above the current point on its path while the
+ *  point's own row is folded away (R12), so the reader sees which branch to open: thinner, and
+ *  in part B's `--color-page-bullet`, served as `outline-page-bullet`. An outline for the same
+ *  reasons as `pagePointRing`. */
+export const pagePathRing = "outline-1 outline-offset-2 outline-page-bullet";
+/** The path's ring on a folded branch's bullet (R12), outside its 4 px halo. */
+export const pagePathRingFolded = "outline-1 outline-offset-[5px] outline-page-bullet";
 /** Each kind of node's colour (the prototype's `--k`): its bullet's fill, and the words of the
  *  tag that names a typed kind at the right of its row (R34). An agent's words have the quiet
  *  grey bullet and no tag; a person's the ink. The tag's word says the kind, and the author's
@@ -993,6 +1010,13 @@ export const pageComposer = {
 const pageSendBox = `ml-1 rounded-[7px] px-3 py-px text-xs leading-[22px] font-semibold text-page-paper refused:cursor-default refused:bg-page-hair refused:text-page-muted ${focusVisibleRing}`;
 export const pageSend = `${pageSendBox} bg-page-ink`;
 export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
+
+/** A control of the issue page's box - a kind's chip, the control that ends its target, a
+ *  refusal's Retry and Discard draft - with its words centred in its target. The target's 24 by
+ *  24 px at every width (WCAG 2.2's 2.5.8, which `pageComposer`'s 22 px chips and 20 px clear
+ *  control fall short of) is one rule of `styles.css`, which holds every button of the box to it,
+ *  Send and Stop trying too, and below 1280 px puts it in place of the 44 px floor. */
+export const pageComposerControl = "inline-flex items-center justify-center";
 
 /** The quiet line of what the focused row's reader can do with it, under its words (the
  *  prototype's `.acts`): plain words in the muted grey, each a control that underlines on hover,
@@ -1245,13 +1269,6 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
-
-/**
- * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs
- * the class as literal text, so the class spells the same number; `classes.test.ts` holds the two
- * equal.
- */
-export const scrollFadeTrailingPx = 32;
 
 // ---------------------------------------------------------------------------------------------
 // Spec block marks: editor decorations (`ProofEditorHandle.setBlockMarks`), never classes written

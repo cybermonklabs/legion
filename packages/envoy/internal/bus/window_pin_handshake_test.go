@@ -95,21 +95,23 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		count := func() { waits.Add(1) }
 		w.connectionWaitEntered.Store(&count)
 		answers := make(chan error, 2)
+		// No span of its own: each first send waits for a connection until 15 s before the test
+		// binary's deadline, and the hold's release gives it one. That outlasts the row's own
+		// wait below, which gives up 30 s before the deadline, so a defect run fails there, on
+		// the line that names the cause, and not on a pin that ran out first.
+		wait := testwait.Remaining(t, 15*time.Second)
 		for range 2 {
-			go func() { answers <- w.pin(time.Minute) }()
+			go func() { answers <- w.pin(wait) }()
 		}
-		deadline := time.Now().Add(30 * time.Second)
-		for waits.Load() < 2 {
+		testwait.UntilPolling(t, time.Millisecond, "both first sends to reach their wait for a connection side by side (the last read is how many had; one that waits behind the other on the window's pin never does)", func() (int64, bool) {
 			select {
 			case err := <-answers:
 				t.Fatalf("a first send answered %v before both first sends had reached their wait for a connection: they did not wait side by side", err)
 			default:
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("only %d of two first sends reached their wait for a connection within 30 s: one waits behind the other on the window's pin", waits.Load())
-			}
-			time.Sleep(time.Millisecond)
-		}
+			reached := waits.Load()
+			return reached, reached >= 2
+		})
 		select {
 		case err := <-answers:
 			t.Fatalf("a first send answered %v while the handshake was held, want it still waiting for a connection", err)
@@ -144,10 +146,10 @@ func heardReconnects(client *Client) <-chan struct{} {
 // refuses the reconnected connection before the client has heard of the drop, before it has heard of
 // the reconnect, and after. nats.go marks a reconnected connection connected before its callback
 // goroutine runs the client's onDisconnect and onReconnect, and onDisconnect waits for the client's
-// lock, which a caller of Client.Connected holds while nats.go's lock keeps it waiting. So a check
-// that waited for the client to hear of an event let the old window send on the reconnected
-// connection in that gap, and a check that took any client event since the pin for a loss refused
-// the new window's good connection once the client heard.
+// lock, which a caller may hold while nats.go's lock keeps it waiting: Drain holds it while it reads
+// the connection's reconnect count. So a check that waited for the client to hear of an event let
+// the old window send on the reconnected connection in that gap, and a check that took any client
+// event since the pin for a loss refused the new window's good connection once the client heard.
 //
 // The row holds both gaps open. It holds the client's lock through the drop and the reconnect, as
 // that caller would, so the client has heard of neither; then a disconnect hook, which runs on
@@ -184,21 +186,18 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	})
 	heard := heardReconnects(client)
 
-	// The client's lock, held as a caller of Client.Connected holds it while it waits for
-	// nats.go's lock. Let go before the client closes, whose Close takes it.
+	// The client's lock, held as Drain holds it while it waits for nats.go's lock to read the
+	// reconnect count. Let go before the client closes, whose Close takes it.
 	client.mu.Lock()
 	var unlocked sync.Once
 	unlock := func() { unlocked.Do(client.mu.Unlock) }
 	t.Cleanup(unlock)
 	hold.Cut()
 	hold.Restore()
-	deadline := time.Now().Add(30 * time.Second)
-	for conn.Status() != nats.CONNECTED || conn.Stats().Reconnects == before {
-		if time.Now().After(deadline) {
-			t.Fatalf("control: nats.go did not reconnect within 30 s of the cut: status %v, %d reconnect(s)", conn.Status(), conn.Stats().Reconnects-before)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "control: nats.go to reconnect after the cut", func() (string, bool) {
+		status, reconnects := conn.Status(), conn.Stats().Reconnects
+		return fmt.Sprintf("status %v, %d reconnect(s)", status, reconnects-before), status == nats.CONNECTED && reconnects != before
+	})
 	select {
 	case <-entered:
 		t.Fatal("control: the client heard of the drop while the row held its lock, so the first gap was not held")

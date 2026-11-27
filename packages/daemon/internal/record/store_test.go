@@ -2238,6 +2238,61 @@ func TestAStartWaitsForItsIssuesBranch(t *testing.T) {
 	}
 }
 
+// A start of an issue's role waits while an older issue_release row of the issue is in the
+// outbox, so no role starts in the pod the release's teardown is about to take: a wake taken after
+// the release recorded its role starts that role in the pod that comes back. Nothing else waits
+// on the teardown: a start queued before it, the release's own role stop (a supervise row of op
+// `release`), a suspend of the same issue, a row of another kind and another issue's start are
+// each due.
+func TestAStartWaitsForItsIssuesReleaseTeardown(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
+		row, err := NewOutboxRow(issue, payload, now)
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+	}
+	start := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1}
+	inTx(t, st, func(tx pgx.Tx) {
+		enqueue(tx, "LEGION-208", start)
+		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1})
+		enqueue(tx, "LEGION-208", IssueRelease{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1})
+		enqueue(tx, "LEGION-208", start)
+		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1})
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("testing", "in_progress", ""))
+		enqueue(tx, "LEGION-209", SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleArchitect, Generation: 1})
+	})
+	// claimed is every row due at at, in claim order, each claimed and finished before the next is
+	// claimed, as a lane runs its rows.
+	claimed := func(at time.Time) []string {
+		var keys []string
+		inTx(t, st, func(tx pgx.Tx) {
+			rows, err := records.DueRows(ctx, tx, "LEGION", "", nil, at)
+			must(t, err)
+			keys = outboxKeys(rows)
+			for _, row := range rows {
+				leased, ok, err := records.ClaimRow(ctx, tx, row.ID, at, time.Minute)
+				must(t, err)
+				if !ok {
+					t.Fatalf("row %d was listed due but not claimed", row.ID)
+				}
+				must(t, records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken))
+			}
+		})
+		return keys
+	}
+
+	if got, want := claimed(now), []string{"supervise:LEGION-208:start", "supervise:LEGION-208:release", "issue_release:LEGION-208",
+		"supervise:LEGION-208:suspend", "dispatch_status:LEGION-208:testing", "supervise:LEGION-209:start"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claimed with the teardown in the outbox = %v, want %v", got, want)
+	}
+	if got, want := claimed(now.Add(2*time.Minute)), []string{"supervise:LEGION-208:start"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claimed once the teardown finished = %v, want the start that waited for it alone", got)
+	}
+}
+
 // A status write the outbox failed and pushed back is still unwritten, so it stays listed through its
 // backoff; a finished one is deleted and gone, and a row of another kind is never listed. The list
 // runs oldest first, the order an issue's statuses run in, so a newer write queued behind a
@@ -2377,14 +2432,16 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
-			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "members_owed", "priority"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
+			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
+			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
+			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "earlier_givers"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome", "failed_looks"},
-		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
+		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "basis_issue", "basis_artifact_id", "basis_version", "basis_approved_seq", "basis_approved_at", "basis_approver", "basis_serves", "basis_reason", "basis_session", "basis_registered_at", "basis_pending_ask", "kept_person_version", "kept_person_seq", "kept_person_at", "rests_on", "basis_moves"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
 			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq", "applied_seq"},

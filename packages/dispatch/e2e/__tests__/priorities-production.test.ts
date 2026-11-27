@@ -4,15 +4,16 @@
  *  log lines of GET /api/v1/priorities (exit 0 or 1), the full read and the summary told apart by
  *  each line's `bytes`.
  *
- *  Every row runs the script with stand-ins first on PATH for each program that reaches past this
- *  host or reads its clock: `curl`, which answers Dispatch's /healthz from the row's own table and
- *  records each URL; `gh`, which answers GitHub's compare with the row's status and records its
- *  arguments; `gcloud`, which answers `logging read` with the row's lines and records its
- *  arguments; and `date`, which answers `date -u +%s` with the row's own now and records its
- *  arguments. So every time a row reads is the row's own, and a row holds the exact line the
- *  script prints. DISPATCH_URL names a host no row reaches. What this file shares with
- *  `priority-list-production.test.ts`, the stand-in `gh` among it, is
- *  `production-look-fixture.ts`'s.
+ *  Every row runs the script with stand-ins for each program that reaches past this host or reads
+ *  its clock: `curl`, which answers Dispatch's /healthz from the row's own table and records each
+ *  URL; `gh`, which answers GitHub's compare with the row's status and records its arguments;
+ *  `gcloud`, which answers `logging read` with the row's lines and records its arguments; and
+ *  `date`, which answers `date -u +%s` with the row's own now and records its arguments. Each is a
+ *  bash function the script's bash imports from its environment (`standInFunctions`), so the
+ *  script runs unchanged and calls each by the name it calls the program by. So every time a row
+ *  reads is the row's own, and a row holds the exact line the script prints. DISPATCH_URL names a
+ *  host no row reaches. What this file shares with `priority-list-production.test.ts`, the
+ *  stand-in `gh` among it, is `production-look-fixture.ts`'s.
  *
  *  A row of the negative control (WINDOW_START) has a `curl` and a `gh` that fail and are
  *  recorded where they run, so the row holds that the look tested no commit of the fleet.
@@ -43,7 +44,7 @@ import {
   requestLine,
   requiredInputs,
   said,
-  standInBin,
+  standInFunctions,
   times,
 } from "./production-look-fixture";
 
@@ -69,11 +70,12 @@ interface Production {
   readonly clock?: string;
 }
 
-/** Writes the four stand-ins into `dir`/bin and the log into `dir`/log. What they record goes
- *  beside them in `dir`. */
-function standIns(dir: string, production: Production): string {
+/** The four stand-ins of a look, as its environment carries them (`standInFunctions`), and the
+ *  log in `dir`/log. What they record goes beside them in `dir`. */
+function standIns(dir: string, production: Production): Record<string, string> {
+  // `$FUNCNAME` names the stand-in, curl or gh, whose function runs the line.
   const refuse = production.testsNoCommit
-    ? ['echo "$0: this look was to test no commit of the fleet" >&2', "exit 7"]
+    ? ['echo "$FUNCNAME: this look was to test no commit of the fleet" >&2', "return 7"]
     : [];
   const curl = [
     ...curlArguments,
@@ -83,36 +85,31 @@ function standIns(dir: string, production: Production): string {
       ? [
           "echo 'curl: (6) Could not resolve host: dispatch.internal.example' >&2",
           "printf '000'",
-          "exit 6",
+          "return 6",
         ]
       : []),
     "case $url in",
     `  */healthz) printf '%s' '${healthz(production.fleetCommit)}' >"$out"; printf '200' ;;`,
-    `  *) echo "curl: no answer for $url" >&2; exit 6 ;;`,
+    `  *) echo "curl: no answer for $url" >&2; return 6 ;;`,
     "esac",
-    "",
-  ].join("\n");
+  ];
   const gcloud = [
-    "#!/usr/bin/env bash",
     gcloudRecord(dir),
     ...(production.logRefused
       ? [
           "echo 'ERROR: (gcloud.logging.read) PERMISSION_DENIED: Permission denied for all log views.' >&2",
-          "exit 1",
+          "return 1",
         ]
       : []),
     `cat '${join(dir, "log")}'`,
-    "",
-  ].join("\n");
+  ];
   const epoch = Date.parse(production.clock ?? now) / 1000;
   const date = [
-    "#!/bin/sh",
     `printf '%s\\n' "$*" >>'${join(dir, "date-calls")}'`,
-    `[ "$*" = '-u +%s' ] || { echo "date: the stand-in answers -u +%s alone, not $*" >&2; exit 64; }`,
+    `[ "$*" = '-u +%s' ] || { echo "date: the stand-in answers -u +%s alone, not $*" >&2; return 64; }`,
     `echo ${epoch}`,
-    "",
-  ].join("\n");
-  return standInBin(
+  ];
+  return standInFunctions(
     dir,
     { curl, gh: gh(dir, production.compare, refuse), gcloud, date },
     production.log
@@ -120,7 +117,7 @@ function standIns(dir: string, production: Production): string {
 }
 
 /** What one look did: what it printed, and what the stand-ins recorded: each URL `curl` was asked
- *  for, and the arguments of each `gh`, `gcloud` and `date` run. */
+ *  for, and the arguments of each `gh`, `gcloud` and `date` call. */
 interface Look extends Printed {
   readonly urls: readonly string[];
   readonly gh: readonly string[];
@@ -128,21 +125,21 @@ interface Look extends Printed {
   readonly date: readonly string[];
 }
 
-/** One look: the script run from the package root with the stand-ins of `production` first on
- *  PATH, the required inputs with `inputs` over them (an undefined one taken away), and `label` as
- *  DISPATCH_E2E_CASE. */
+/** One look: the script run from the package root with the stand-ins of `production` in its
+ *  environment, the required inputs with `inputs` over them (an undefined one taken away), and
+ *  `label` as DISPATCH_E2E_CASE. */
 async function look(
   label: string,
   production: Production,
   inputs: Readonly<Record<string, string | undefined>> = {}
 ): Promise<Look> {
   const dir = directories();
-  const bin = standIns(dir, production);
+  const functions = standIns(dir, production);
   const run = await runBounded({
     argv: ["bash", "e2e/acceptance/priorities-production.sh"],
     bound: "short",
     cwd: dispatchPackage,
-    env: lookEnv(label, bin, { ...requiredInputs, ...inputs }),
+    env: lookEnv(label, functions, { ...requiredInputs, ...inputs }),
     from: import.meta.url,
   });
   return {

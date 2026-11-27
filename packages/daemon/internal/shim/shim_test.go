@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -1628,7 +1629,7 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 // connection and send that line first again at each reconnect, so the role's stream would stay
 // down (ASVS v5.0.0-15.2.2). The answer keeps the start of the reason, which names the command and
 // its exit, and its end, where the note about a stale git lock goes, which tells the role what to
-// do; it says that the shim cut the bytes between. The connection then carries the next answer.
+// do; it says how many bytes were cut between. The connection then carries the next answer.
 func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testing.T) {
 	workspace := t.TempDir()
 	lock := filepath.Join(workspace, ".git", "index.lock")
@@ -1664,14 +1665,14 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	if !ok || got.ID != "adopt" || got.OK {
 		t.Fatalf("the shim answered %#v, want the failed adoption", got)
 	}
-	// The shim keeps 4 KiB of a reason and a line that says what it cut (shim's cutAnswerError).
+	// The shim keeps 4 KiB of a reason and a line that says what it cut (shimwire.CutAnswerError).
 	if len(got.Error) > 8<<10 {
 		t.Fatalf("the failed adoption's reason has %d bytes, want it cut to about 4 KiB", len(got.Error))
 	}
 	for _, want := range []string{
 		"Command failed (exit 1)",
 		"the working copy is stale",
-		"The shim cut",
+		"bytes of this error were cut here",
 		"git lock " + lock + " was last written 31m",
 		"Run the command again in about 16 minutes.",
 	} {
@@ -1695,7 +1696,8 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 // the small repositories tests build, the two read alike. The variable tells them apart: the
 // patched mapping refuses a value that is not a budget at every pack open
 // (lib/chunked-mmap/src/chunked.rs, open), and an unpatched jj never reads it. So on a git
-// repository whose one commit sits in its one pack, the jj on PATH lists the commit's file under
+// repository whose one commit sits in its one pack, the pinned jj (fixturegit.PinnedJJ, the jj on
+// PATH with the pin's sha256, whatever jj stands in front of it) lists the commit's file under
 // JJ_PACK_MAPPED_LIMIT=512m and fails under JJ_PACK_MAPPED_LIMIT=not-a-number, where jj
 // 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list the file both times. The
 // crate's own refusal names the variable, but it never reaches the user: gix-odb takes the pack it
@@ -1706,7 +1708,7 @@ func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the chunked pack mapping is Linux's alone: on %s the patched jj reads no JJ_PACK_MAPPED_LIMIT", runtime.GOOS)
 	}
-	jj := fixturegit.CompiledJJ(t)
+	jj := fixturegit.PinnedJJ(t)
 	const file = "README.md"
 	home := t.TempDir()
 	repository := t.TempDir()
@@ -1845,7 +1847,8 @@ func TestTheShimLogsAnExtensionError(t *testing.T) {
 // any (redact.Runes), and the URL rule runs on them before the cut: a cut inside a userinfo, before
 // its "@", would leave a start of the user name that no rule after it reads as a userinfo. Wherever
 // the cut of the arguments as written falls, inside the userinfo or inside the query, the summary
-// holds no part of either: it is the cut of the arguments the rule left.
+// holds no part of either: it is the cut of what the rule leaves of the arguments
+// (redact.URLCredentials, read from the rule, never written out here).
 func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 	const url = "https://legion-reader@github.com/o/r.git?token=planted-query-token-4463"
 	for _, tc := range []struct {
@@ -1870,7 +1873,7 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 					t.Fatalf("the summary %q holds a part of the URL's user name or of its query", line)
 				}
 			}
-			left := []rune(head + `https://github.com/o/r.git"}`)
+			left := []rune(redact.URLCredentials(head + url + `"}`))
 			summary := string(left)
 			if len(left) > 80 {
 				summary = string(left[:79]) + "…"

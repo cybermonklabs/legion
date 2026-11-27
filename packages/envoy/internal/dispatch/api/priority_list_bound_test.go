@@ -56,6 +56,8 @@ var priorityListRequests = []priorityListRequest{
 // the 90th percentile allows of 200, the percentile is over it whatever the rest read, and the
 // test stops there and names the plan's widest join filter.
 func TestAPriorityListAnswersWithinItsBoundOnEveryPlan(t *testing.T) {
+	// Not parallel: it holds each listing read's p90 to a wall-clock bound, priorityListBound's 200
+	// ms, which the package's parallel tests would share the machine with.
 	corpus := seedListCorpus(t)
 	t.Log(corpus.String())
 	for _, plan := range []struct{ name, mode string }{
