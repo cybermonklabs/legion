@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -15,7 +16,7 @@ import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/clie
 import { DispatchQueryClient } from "../../api/query-client";
 import type { CredentialPendingRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { runningAgent } from "./agent-fixture";
 import { CredentialRequestsSection } from "./CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "./pending";
@@ -223,6 +224,52 @@ test("Dismiss lets go at the credential write deadline and sends again", async (
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    cleanup();
+    client.clear();
+    dismiss.mockRestore();
+  }
+});
+
+// The Inbox draws this section above its asks, so the Peek drawer closed and opened again draws
+// it anew, and may do so while a dismissal's write is still out, before it lands. The row drawn
+// again holds its Dismiss from that dismissal's own state (`usePendingKeyedPress`), as the Dismiss
+// pressed did: a press of it sends nothing more, and it lets go at the dismissal's deadline
+// (`SEND_DEADLINE_MS`). Dispatch never answers it: each try fails at the network and is tried
+// again under its key.
+test("an expired row drawn again while its dismissal's write is out holds Dismiss until the dismissal's deadline and sends nothing more", async () => {
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
+    new NetworkError("/api/v1/credentials", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const credentials: CredentialRequests = { requests: [expiredSecretRow()], status: "listed" };
+  renderSection(credentials, client);
+  const dismissOf = () =>
+    screen.getByRole<HTMLButtonElement>("button", { name: /^Dismiss expired/ });
+  const sent = () => pressesOf([dismiss]);
+  try {
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(dismissOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    cleanup();
+    renderSection(credentials, client);
+    await tick(0);
+    expect(
+      heldNotDisabled(dismissOf(), "Dismiss"),
+      "the row drawn again let Dismiss go while its dismissal was out"
+    ).toBe(true);
+    await user.click(dismissOf());
+    await tick(0);
+    expect(sent(), "a press of the Dismiss drawn again sent a second dismissal").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(dismissOf(), "Dismiss")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(dismissOf(), "Dismiss")).toBe(false);
   } finally {
     realClock();
     cleanup();

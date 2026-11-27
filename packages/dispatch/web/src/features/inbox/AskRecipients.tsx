@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import {
@@ -20,7 +20,7 @@ import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteR
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { inboxActionMark } from "./inbox-action-mark";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
@@ -31,6 +31,24 @@ const EMPTY_SUBSCRIBERS: readonly Subscriber[] = [];
 /** What the card says where the read of its recipients after an Unfollow or an Unsubscribe has
  *  not settled once its hold ran out, before the reason (`useReadBound`). */
 const RECIPIENTS_NOT_LOADED = "Could not load the recipients.";
+
+/** An Unfollow as its press carries it: the ask it is of and the session it takes off. */
+interface UnfollowPress {
+  readonly askId: string;
+  readonly sessionId: string;
+}
+
+/** An Unsubscribe as its press carries it: the session and the owner's subscription it cuts. */
+interface UnsubscribePress {
+  readonly sessionId: string;
+  readonly subscription: OwnerSubscription | undefined;
+}
+
+/** The names every card's Unfollow and Unsubscribe go under, one for each write whatever card
+ *  makes it, under which a card finds the press of its own ask or owner that is out
+ *  (`usePendingKeyedPress`). */
+const UNFOLLOW_WRITE: MutationKey = ["ask-unfollow"];
+const UNSUBSCRIBE_WRITE: MutationKey = ["ask-unsubscribe"];
 
 /** The ask's owner, whose topic subscribers also hear every event on the ask. An ask on an
  *  issue (including one in an issue-linked document) routes through the issue's topics; an
@@ -228,9 +246,10 @@ type Confirming =
  * a subscriber's Unsubscribe each confirm first, name what still reaches the session (a
  * subscription, the claim or the route, or that a role route nobody is known to hold may, while
  * its reach is unknown), and then cut the route that actually delivers; the claim and route rows
- * have no control, since both change on the issue. Every Unfollow is held from the press that
- * confirms one until the commit after its write's answer, and every Unsubscribe the same way
- * (`useHeldThroughAnswer`), never disabled: the dialog hands the focus back to the one that
+ * have no control, since both change on the issue. Every Unfollow of the ask is held from the
+ * press that confirms one until the commit after its write's answer, and every Unsubscribe of the
+ * owner the same way (`useHeldThroughAnswer`), on a card drawn again while that write is out too
+ * (`usePendingKeyedPress`), never disabled: the dialog hands the focus back to the one that
  * opened it, which keeps it, and a press of a held one opens nothing. A write stays pending
  * until the read its landing starts has answered, which is the read that takes the session's
  * chip away, so the pressed control stays held until it goes with its chip. That wait has a
@@ -321,10 +340,24 @@ export function AskRecipients({
     subscription?.id,
   ]);
   const unsettled = unfollowUnsettled ?? unsubscribeUnsettled;
+  // Each write goes under one name for every card, and a card finds the press out on what it
+  // shows by the press's own values (`usePendingKeyedPress`): an Unfollow of its ask, an
+  // Unsubscribe from its owner's subscription. So a card drawn again while that write is out,
+  // before it lands, holds the write's controls as the card it was pressed on did, until the
+  // write's deadline (`late`). The name stays as a host draws the card for one ask after
+  // another, so the card keeps the press the reader stopped, which its Retry makes again.
+  const unfollowOut = usePendingKeyedPress(
+    UNFOLLOW_WRITE,
+    (press: UnfollowPress) => press.askId === askId
+  );
+  const unsubscribeOut = usePendingKeyedPress(
+    UNSUBSCRIBE_WRITE,
+    (press: UnsubscribePress) => press.subscription?.id === subscription?.id
+  );
   const unfollow = useKeyedWrite({
     method: "DELETE",
-    readsLate: true,
-    write: (press: { askId: string; sessionId: string }, bounds) =>
+    mutationKey: UNFOLLOW_WRITE,
+    write: (press: UnfollowPress, bounds) =>
       removedEvenIfGone(removeFollower(press.askId, press.sessionId, bounds), isFollowerNotFound),
     label: (press) => `${text.sessionText(press.sessionId, undefined)} taken off this ask`,
     onSuccess: (_result, press) =>
@@ -332,11 +365,8 @@ export function AskRecipients({
   });
   const unsubscribe = useKeyedWrite({
     method: "DELETE",
-    readsLate: true,
-    write: async (
-      press: { sessionId: string; subscription: OwnerSubscription | undefined },
-      bounds
-    ) => {
+    mutationKey: UNSUBSCRIBE_WRITE,
+    write: async (press: UnsubscribePress, bounds) => {
       if (press.subscription === undefined) {
         throw new Error("Ask recipients unsubscribe requires an owner.");
       }
@@ -353,9 +383,9 @@ export function AskRecipients({
       ),
   });
   const unfollowHeld =
-    useHeldThroughAnswer(unfollow.isPending && !unfollow.late) || unfollowHolding;
+    useHeldThroughAnswer(unfollowOut.isPending && !unfollowOut.late) || unfollowHolding;
   const unsubscribeHeld =
-    useHeldThroughAnswer(unsubscribe.isPending && !unsubscribe.late) || unsubscribeHolding;
+    useHeldThroughAnswer(unsubscribeOut.isPending && !unsubscribeOut.late) || unsubscribeHolding;
 
   if (
     followers.length === 0 &&

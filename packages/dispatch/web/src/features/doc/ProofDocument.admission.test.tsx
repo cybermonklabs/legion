@@ -27,7 +27,7 @@ import { DispatchQueryClient } from "../../api/query-client";
 import type { ArtifactText } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
 
@@ -730,6 +730,68 @@ test("inside NoTooltips, an editor drawn again while its rebuild's read is out s
     realClock();
     confirm.mockRestore();
     rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// The row's editor closed and opened again while a rebuild's write is still out, before it lands,
+// draws the offer again: the rebuild has not landed, so the document's text is refused as before.
+// Its Rebuild holds from that rebuild's own state (`usePendingKeyedPress`), as the Rebuild pressed
+// did: `Rebuilding…`, a press of it asks nothing and sends no second rebuild, and it lets go at
+// the rebuild's deadline (`SEND_DEADLINE_MS`). Dispatch never answers the rebuild: each try fails
+// at the network and is tried again under its key.
+test("inside NoTooltips, an editor drawn again while its rebuild's write is out holds Rebuild until the rebuild's deadline and sends no second rebuild", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuild = spyOn(api, "rebuildArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/rebuild", new TypeError("Failed to fetch"))
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = freshReadsQueryClient();
+  // The editor as it is drawn now: the one the press is made in, then the one drawn again.
+  let drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+  const rebuildOf = () =>
+    screen.getByRole<HTMLButtonElement>("button", {
+      name: /^(Rebuild from the latest version|Rebuilding…)$/,
+    });
+  const sent = () => pressesOf([rebuild]);
+  try {
+    await screen.findByRole("button", { name: "Rebuild from the latest version" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(rebuildOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    drawn.unmount();
+    drawn = renderProofDocument({ noTooltips: true, queryClient }).view;
+    await tick(1_000);
+    expect(
+      rebuildOf().textContent,
+      "the editor drawn again let Rebuild go while the rebuild's write was out"
+    ).toBe("Rebuilding…");
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(true);
+    await user.click(rebuildOf());
+    await tick(0);
+    expect(sent(), "a press of the Rebuild drawn again sent a second rebuild").toBe(1);
+    expect(confirm).toHaveBeenCalledTimes(1);
+
+    // A second short of the rebuild's deadline, counted from its press.
+    await tick(SEND_DEADLINE_MS - 2_000);
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(true);
+    await tick(2_000);
+    expect(heldNotDisabled(rebuildOf(), "Rebuild")).toBe(false);
+  } finally {
+    drawn.unmount();
+    queryClient.clear();
+    realClock();
+    confirm.mockRestore();
+    rebuild.mockRestore();
     getArtifactText.mockRestore();
     getArtifactBlocks.mockRestore();
     getArtifact.mockRestore();

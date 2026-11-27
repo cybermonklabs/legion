@@ -64,7 +64,7 @@ import {
 } from "./useMarginItems";
 
 /** The name every comment edit's save sits beneath, followed by the comment's id. */
-const COMMENT_EDIT_SEND_KEY: MutationKey = ["comment-edit"];
+export const COMMENT_EDIT_SEND_KEY: MutationKey = ["comment-edit"];
 
 /** 44 px tall through tablet widths (the compact sheet's `min-height: 44px` rule in `styles.css`
  *  holds until `xl`), 32 px in the desktop margin. */

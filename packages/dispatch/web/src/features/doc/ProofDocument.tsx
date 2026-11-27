@@ -67,7 +67,7 @@ import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
@@ -495,11 +495,17 @@ export function ProofDocument({
   const oneVersion = useOneCreateOut(nameVersion);
   // Why the read of the latest rebuilt document has not settled, once the hold over it ran out,
   // and whether that hold is on: an editor drawn again while the rebuild's read is out - the row's
-  // editor closed and opened again - finds both (`useReadBound`).
+  // editor closed and opened again - finds both (`useReadBound`). One drawn again while the
+  // rebuild itself is out, before it lands, draws the offer again, the document's text being
+  // refused still, and finds that rebuild by the document's name for it: its Rebuild is held from
+  // that press until the rebuild's deadline, as the one pressed was (`usePendingKeyedPress`).
   const [rebuildUnsettled, holdThrough, rebuildHolding] = useReadBound(["artifact", artifact.id]);
+  const rebuildKey = ["artifact-rebuild", artifact.id];
+  const rebuildOut = usePendingKeyedPress(rebuildKey);
   const rebuild = useKeyedWrite({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
+    mutationKey: rebuildKey,
     onSuccess: () => {
       // Outside `NoTooltips` the rebuild stops pending as it lands and the document's reads go on
       // after it, as on `main`. Inside, `onSuccess` returns them, which TanStack Query awaits
@@ -515,7 +521,6 @@ export function ProofDocument({
       return holdThrough(invalidateWaitingForPaused(queryClient, ["artifact", artifact.id]));
     },
     method: "POST",
-    readsLate: true,
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
   const liveMarkdown = liveTextQuery.data?.markdown ?? "";
@@ -1244,7 +1249,7 @@ export function ProofDocument({
             // held then (`heldPress`), `aria-disabled` in place of `disabled`, and a press does
             // nothing.
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            {...heldPress((rebuild.isPending && !rebuild.late) || rebuildHolding, () => {
+            {...heldPress((rebuildOut.isPending && !rebuildOut.late) || rebuildHolding, () => {
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1255,7 +1260,7 @@ export function ProofDocument({
             })}
             type="button"
           >
-            {rebuild.isPending || rebuildHolding
+            {rebuildOut.isPending || rebuildHolding
               ? "Rebuilding…"
               : "Rebuild from the latest version"}
           </button>

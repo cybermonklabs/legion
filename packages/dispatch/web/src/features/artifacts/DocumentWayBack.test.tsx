@@ -7,6 +7,7 @@ import { Link, MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -16,7 +17,7 @@ import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArtifactHeader } from "./ArtifactHeader";
 import { ArtifactRoutePanel } from "./ArtifactRoutePanel";
 
@@ -627,6 +628,58 @@ test("a removal that lands after the reader moved to another document leaves the
     view.unmount();
     listArtifacts.mockRestore();
     deleteArtifact.mockRestore();
+  }
+});
+
+// The header keys its Remove by the document (`ArtifactHeader`), so a reader who moves to another
+// document while a removal is still out, before it lands, and comes back meets a Remove drawn
+// again. It holds from that removal's own state (`usePendingKeyedPress`), as the one pressed did:
+// `Removing…`, a press of it sends nothing more, and it lets go at the removal's deadline
+// (`SEND_DEADLINE_MS`). Dispatch never answers it: each try fails at the network and is tried
+// again under its key.
+test("a document's Remove drawn again while its removal is out holds until the removal's deadline and sends nothing more", async () => {
+  const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document(), releaseNotes]);
+  const remove = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts", new TypeError("Failed to fetch"))
+  );
+  const view = renderPage(documentPath);
+  const sent = () => pressesOf([remove]);
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    await user.click(screen.getByRole("link", { name: "Release notes" }));
+    await tick(0);
+    expect(screen.getByRole("heading", { name: "Release notes" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Lauch notes" }));
+    await tick(0);
+    const button = within(screen.getByTestId("artifact-header")).getByRole<HTMLButtonElement>(
+      "button",
+      { name: /^(Remove|Removing…)$/ }
+    );
+    expect(button.textContent, "the Remove drawn again let go while its removal was out").toBe(
+      "Removing…"
+    );
+    expect(heldNotDisabled(button, "Remove")).toBe(true);
+    await user.click(button);
+    await tick(0);
+    expect(sent(), "a press of the Remove drawn again sent a second removal").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(button, "Remove")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(button, "Remove")).toBe(false);
+    expect(button.textContent).toBe("Remove");
+  } finally {
+    realClock();
+    view.unmount();
+    view.queryClient.clear();
+    listArtifacts.mockRestore();
+    remove.mockRestore();
   }
 });
 

@@ -43,7 +43,7 @@ import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/Age
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 
 import { deliveryAttempts } from "./attempts";
 import { excludedParts } from "./broadcast-plan";
@@ -87,14 +87,21 @@ function BroadcastRecipientRow({
   // names it, and the row's accessible name is the same name as text.
   const recipientAgent: AgentPart = { sessionId: recipient.session_id, storedTitle: undefined };
   const label = text.sessionText(recipient.session_id, undefined);
+  // The retry goes under the recipient's message's name, as every retry of a message does on
+  // whichever page, so a row drawn again while it is out, before it lands - after a broadcast
+  // read that failed draws the page's failure in place of every row - holds Retry and the mode
+  // changes from that press until its deadline, as the row it was made on did
+  // (`usePendingKeyedPress`).
+  const retryKey = ["message-delivery-retry", recipient.message.id];
+  const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcast"] }),
     method: "POST",
-    readsLate: true,
+    mutationKey: retryKey,
     write: (mode, bounds) => api.createMessageDelivery(recipient.message.id, mode, bounds),
   });
-  const retryHeld = retry.isPending && !retry.late;
+  const retryHeld = retryOut.isPending && !retryOut.late;
   // The row shows the recipient's whole thread, so its replies are read. Only these: the
   // session's replies anywhere else, older or newer, stay unread until a view shows them.
   const replies = recipient.replies ?? [];

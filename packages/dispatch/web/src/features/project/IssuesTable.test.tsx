@@ -9,6 +9,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { FootFloat } from "../../__tests__/foot-float";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { optionNames, panelOf, pick, pickNamed } from "../../__tests__/list-picks";
@@ -27,7 +28,12 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import {
+  SEND_DEADLINE_MS,
+  SendExpiredError,
+  SendStoppedError,
+  stoppedWriteNote,
+} from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import { issueTableLayout } from "./issues-table-columns";
@@ -3496,6 +3502,59 @@ test("a List drawn again while an action's list read is out holds its controls t
     await act(async () => reread.resolve());
     await tick(0);
     expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    realClock();
+  }
+});
+
+// A switch to the Board and back draws a new List, and may do so while an action's write is still
+// out, before it lands. The List drawn again holds its controls from that action's own state,
+// which TanStack's mutation cache keeps for the listing (`useIssueTableActions`), as the List it
+// ran in did: a press of Start next sends nothing more, no Finish is offered of the action still
+// out, and the controls let go once every write the action waits on is past its deadline
+// (`SEND_DEADLINE_MS`). Dispatch never answers the write: each try fails at the network and is
+// tried again under its key.
+test("a List drawn again while an action's write is out holds its controls until the write's deadline and sends nothing more", async () => {
+  const send = spyOn(api, "send").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-2", new TypeError("Failed to fetch"))
+  );
+  restores.push(() => send.mockRestore());
+  const { drawAgain } = table([
+    issue("CORE-1", { labels: ["legion"], rank: "B" }),
+    issue("CORE-2", { labels: ["legion"], rank: "C" }),
+  ]);
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNextOf = () =>
+    within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByRole<HTMLButtonElement>(
+      "button",
+      { name: "Start next" }
+    );
+  const sent = () => pressesOf([send]);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(startNextOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    drawAgain();
+    await tick(0);
+    expect(
+      heldNotDisabled(startNextOf(), "Start next"),
+      "the List drawn again let its controls go while the action's write was out"
+    ).toBe(true);
+    expect(
+      screen.queryByRole("button", { name: "Finish" }),
+      "the List drawn again offered to finish the action still out"
+    ).toBeNull();
+    await user.click(startNextOf());
+    await tick(0);
+    expect(sent(), "a press of the Start next drawn again sent a second write").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(startNextOf(), "Start next")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(startNextOf(), "Start next")).toBe(false);
   } finally {
     realClock();
   }

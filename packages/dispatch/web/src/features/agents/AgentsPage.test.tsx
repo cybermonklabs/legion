@@ -15,7 +15,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
-import { pressHeld } from "../../__tests__/held-press";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { pickIn } from "../../__tests__/issue-picks";
 import {
@@ -70,7 +70,7 @@ import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
+import { KEYED_SEND_ATTEMPT_MS, SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { writesOf } from "../writes/write-store";
 // The page itself is a lazy route of the app too, loaded here for the same reason.
@@ -2868,6 +2868,69 @@ test.each([
     await user.keyboard("{Enter}");
     await tick(1_000);
     expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    page.view.unmount();
+    page.queryClient.clear();
+    page.restore();
+  }
+});
+
+// A message folded under "Show N older" is off the page (`AgentMessageList`), so the older
+// exchanges folded and shown again draw a message's Retry anew, and may do so while its retry's
+// write is still out, before it lands. The Retry drawn again holds from that retry's own state
+// (`usePendingKeyedPress`), as the one pressed did: a press of it sends no second retry, and it
+// lets go at the retry's deadline (`SEND_DEADLINE_MS`). Dispatch never answers the retry: each
+// try fails at the network and is tried again under its key.
+test("a folded message's Retry shown again while its retry's write is out holds until the retry's deadline and sends no second retry", async () => {
+  const page = renderAgents({
+    listedAgents: steerCapableAgents(),
+    messages: [
+      exchange("message-2", "Second question", "2026-09-14T02:00:00Z"),
+      {
+        message: message("Can this ship?", {
+          created_at: "2026-09-14T01:00:00Z",
+          deliveries: [failedAttempt("message-1", "aside")],
+        }),
+        replies: [],
+      },
+    ],
+  });
+  page.createMessageDelivery.mockRejectedValue(
+    new NetworkError("/api/v1/agents", new TypeError("Failed to fetch"))
+  );
+  const sent = () => pressesOf([page.createMessageDelivery]);
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    const prepare = userEvent.setup();
+    await expand(prepare, planner, "Planner");
+    const older = await within(planner).findByRole("button", { name: "Show 1 older" });
+    await prepare.click(older);
+    await within(planner).findByRole("button", { name: "Retry" });
+    const retryOf = () => within(planner).getByRole<HTMLButtonElement>("button", { name: "Retry" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(retryOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    await user.click(older);
+    await tick(0);
+    expect(within(planner).queryByRole("button", { name: "Retry" })).toBeNull();
+    await user.click(older);
+    await tick(0);
+    expect(
+      heldNotDisabled(retryOf(), "Retry"),
+      "the Retry shown again let go while its retry was out"
+    ).toBe(true);
+    await user.click(retryOf());
+    await tick(0);
+    expect(sent(), "a press of the Retry shown again sent a second retry").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(retryOf(), "Retry")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(retryOf(), "Retry")).toBe(false);
   } finally {
     realClock();
     page.view.unmount();

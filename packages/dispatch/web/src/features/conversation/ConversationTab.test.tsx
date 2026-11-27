@@ -18,7 +18,7 @@ import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draf
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
-import { pressHeld } from "../../__tests__/held-press";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import {
   dwellOn,
@@ -63,7 +63,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
@@ -2683,6 +2683,91 @@ test.each([
   }
 });
 
+// The Conversation tab left and opened again draws its turns anew, and may do so while a delivery
+// Retry's write is still out, before it lands. Each retry goes under the name of what it delivers
+// again, so the Retry drawn again holds from that press's own state (`usePendingKeyedPress`), as
+// the one pressed did: a press of it sends no second retry, and it lets go at the retry's deadline
+// (`SEND_DEADLINE_MS`). Dispatch never answers the retry: each try fails at the network and is
+// tried again under its key.
+test.each([
+  "comment",
+  "message",
+  "reply",
+] as const)("%s: a Retry drawn again while its retry's write is out holds until the retry's deadline and sends no second retry", async (turn) => {
+  const target = "session:worker-session";
+  const failed = attempt({
+    delivery: "aside",
+    error: "no live session",
+    session_id: "worker-session",
+    state: "failed",
+  });
+  const lists =
+    turn === "comment"
+      ? {
+          comments: [
+            comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
+          ],
+        }
+      : {
+          messages: [
+            turn === "message"
+              ? thread(message("message-1", { deliveries: [failed], target }))
+              : thread(message("message-1", { target }), [
+                  message("message-2", {
+                    author: { id: "worker-session", kind: "session" },
+                    in_reply_to: "message-1",
+                  }),
+                  message("message-3", {
+                    deliveries: [{ ...failed, message_id: "message-3" }],
+                    in_reply_to: "message-1",
+                  }),
+                ]),
+          ],
+        };
+  const stub = stubLists({
+    ...lists,
+    agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
+  });
+  const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
+  const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
+  const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
+  const queryClient = newQueryClient();
+  let view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const retryOf = () => screen.getByRole<HTMLButtonElement>("button", { name: "Retry" });
+  const sent = () => pressesOf([retryComment, retryMessage]);
+  try {
+    await screen.findByRole("button", { name: "Retry" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(retryOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    view.unmount();
+    view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    await tick(0);
+    expect(
+      heldNotDisabled(retryOf(), "Retry"),
+      "the Retry drawn again let go while its retry was out"
+    ).toBe(true);
+    await user.click(retryOf());
+    await tick(0);
+    expect(sent(), "a press of the Retry drawn again sent a second retry").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(retryOf(), "Retry")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(retryOf(), "Retry")).toBe(false);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    retryComment.mockRestore();
+    retryMessage.mockRestore();
+    stub.restore();
+  }
+});
+
 test("a root targeted-message retry checks the role's current holder after a handoff, not the failed attempt's session", async () => {
   const stub = stubLists({
     // The role has since handed off; the live holder does not advertise steer.
@@ -2865,6 +2950,73 @@ test("Conversation restores edit controls and the draft when its owner save reje
     );
   } finally {
     view.unmount();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
+// The Conversation tab left and opened again draws its turns anew, and may do so while a comment
+// edit's save is still out, before it lands. The save is the held-send store's, so the card drawn
+// again opens its editor on it with Save held, and it hides every Edit of the card from that
+// save's own state (`useHeldSendsUnder`), as the card it was saved on did: a press of Save saves
+// nothing more, and the Edits come back at the save's deadline (`SEND_DEADLINE_MS`), where the
+// save is still tried and Save still held (`MentionComposer`). Dispatch never answers the save:
+// each try fails at the network and is tried again under its key.
+test("a card drawn again while a comment edit's save is out hides every Edit until the save's deadline, and its held Save saves nothing more", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const editComment = spyOn(api, "editComment").mockRejectedValue(
+    new NetworkError("/api/v1/comments/root-comment", new TypeError("Failed to fetch"))
+  );
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  let view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const card = () => screen.getByTestId("margin-comment-root-comment");
+  const editsOf = () => within(card()).queryAllByRole("button", { name: "Edit" });
+  const sent = () => pressesOf([editComment]);
+  try {
+    await screen.findByTestId("margin-comment-root-comment");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() => expect(editsOf()).toHaveLength(2));
+    await user.click(editsOf()[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(screen.getByRole("button", { name: "Save" }));
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    view.unmount();
+    view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+    await tick(0);
+    await onFakeClock.click(screen.getByRole("button", { name: "Expand thread" }));
+    await tick(0);
+    expect(
+      editsOf(),
+      "the card drawn again offered Edit while a save of its edit was out"
+    ).toHaveLength(0);
+    const save = within(card()).getByRole<HTMLButtonElement>("button", {
+      name: /^(Save|Sending…)$/,
+    });
+    expect(heldNotDisabled(save, "Save")).toBe(true);
+    await onFakeClock.click(save);
+    await tick(0);
+    expect(sent(), "a press of the Save drawn again saved a second time").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(editsOf()).toHaveLength(0);
+    await tick(1_000);
+    expect(editsOf()).toHaveLength(2);
+    expect(heldNotDisabled(save, "Save")).toBe(true);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
     editComment.mockRestore();
     stub.restore();
   }

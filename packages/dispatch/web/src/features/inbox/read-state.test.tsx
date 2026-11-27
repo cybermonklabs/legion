@@ -41,7 +41,7 @@ import type {
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { widenToReadingPane } from "./inbox-fixture";
 import { ListedCards } from "./thread-cards-fixture";
@@ -535,6 +535,56 @@ test("a card drawn again while its Mark read's re-read is out holds Mark read th
     await act(async () => reread.resolve(threadsRead([thread])));
     await tick(0);
     expect(within(card()).queryByRole("alert")).toBeNull();
+  } finally {
+    cleanup();
+    client.clear();
+    realClock();
+  }
+});
+
+// The drawer opened again may draw its cards while a Mark read's write is still out, before it
+// lands. The card drawn again holds Mark read from that write's own state
+// (`usePendingKeyedPress`), as the card it was pressed on did: it reads "Marking read…", a press
+// of it marks nothing more, and it lets go at the write's deadline (`SEND_DEADLINE_MS`). Dispatch
+// never answers the mark: each try fails at the network and is tried again under its key.
+test("a card drawn again while its Mark read's write is out holds Mark read, marks nothing more on a press, and lets go at the write's deadline", async () => {
+  const mark = answerThreadReads().mockRejectedValue(
+    new NetworkError("/api/v1/me/threads/comment-1/read", new TypeError("Failed to fetch"))
+  );
+  mockCommentReads();
+  const thread = { ...commentRow("comment-1", "The retry budget"), unread: false, unread_count: 0 };
+  const client = seeded([thread]);
+  renderInbox(client, { pane: false });
+  const markOf = () =>
+    document
+      .querySelector('[data-inbox-row="reply:comment-1"]')
+      ?.querySelector<HTMLButtonElement>('[data-inbox-action="mark-read"]') as HTMLButtonElement;
+  const sent = () => pressesOf([mark]);
+  try {
+    await screen.findByTestId("inbox-thread-comment");
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(markOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    // The drawer's list of cards, closed and drawn again as the drawer is.
+    cleanup();
+    renderInbox(client, { pane: false });
+    await tick(0);
+    expect(
+      heldNotDisabled(markOf(), "Mark read"),
+      "the card drawn again let Mark read go while its write was out"
+    ).toBe(true);
+    expect(markOf()).toHaveTextContent("Marking read…");
+    await user.click(markOf());
+    await tick(0);
+    expect(sent(), "a press of the Mark read drawn again marked a second time").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(markOf(), "Mark read")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(markOf(), "Mark read")).toBe(false);
   } finally {
     cleanup();
     client.clear();

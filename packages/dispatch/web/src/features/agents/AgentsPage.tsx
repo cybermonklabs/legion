@@ -101,7 +101,7 @@ import { textSourceOf } from "../refs/text-references";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
 import { AGENT_GROUP_LABELS, AGENT_GROUPS, type AgentGroup, agentGroup } from "./agent-groups";
 import {
@@ -227,6 +227,12 @@ function AgentExchangeReply({
 }): ReactNode {
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
+  // The retry goes under the reply's name, so a turn drawn again while it is out, before it
+  // lands - its exchange folded under "Show N older" and shown again - holds Retry and the mode
+  // changes from that press until its deadline, as the turn it was made on did
+  // (`usePendingKeyedPress`).
+  const mutationKey = ["message-delivery-retry", reply.id];
+  const retryOut = usePendingKeyedPress(mutationKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
@@ -237,7 +243,7 @@ function AgentExchangeReply({
     // them go then, and the conversation says why it is not read yet (`useReadBound`).
     onSuccess: holdThroughRead,
     method: "POST",
-    readsLate: true,
+    mutationKey,
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -272,7 +278,7 @@ function AgentExchangeReply({
                 canBtw: capabilities?.includes("btw") !== false,
                 canSteer: capabilities?.includes("steer") !== false,
                 onRetry: retry.mutate,
-                retrying: retry.isPending && !retry.late,
+                retrying: retryOut.isPending && !retryOut.late,
               },
               targetName: rowTarget(agent),
             }
@@ -322,6 +328,10 @@ function AgentTargetedMessage({
 }): ReactNode {
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
+  // The retry goes under the message's name, as a reply's does, and for the same reason: the
+  // message folded under "Show N older" and shown again holds its Retry from the press out.
+  const mutationKey = ["message-delivery-retry", read.message.id];
+  const retryOut = usePendingKeyedPress(mutationKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
@@ -329,7 +339,7 @@ function AgentTargetedMessage({
     // the same way.
     onSuccess: holdThroughRead,
     method: "POST",
-    readsLate: true,
+    mutationKey,
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -366,7 +376,7 @@ function AgentTargetedMessage({
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
       onRetry={retry.mutate}
       replyHeld={replyHeld}
-      retrying={retry.isPending && !retry.late}
+      retrying={retryOut.isPending && !retryOut.late}
       targetName={rowTarget(agent)}
       thread={
         replies.length === 0 ? null : (

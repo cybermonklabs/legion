@@ -38,7 +38,7 @@ import { usePlainHeadline } from "../refs/plain-text";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { anchorBlock, anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
@@ -393,12 +393,17 @@ function ChangeComposer({
   const [pressLate, setPressLate] = useState(false);
   const pressDeadline = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(pressDeadline.current), []);
+  // The comment goes under the decision's name, so a form drawn again while it is out, before it
+  // lands - the body closed and opened, and Change pressed again - finds it, and holds Send until
+  // that comment's deadline, as the form it was sent from did (`usePendingKeyedPress`).
+  const mutationKey = ["decision-change", issueKey, decision.ref];
+  const sentChange = usePendingKeyedPress(mutationKey);
   const send = useKeyedWrite({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
-    readsLate: true,
+    mutationKey,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
@@ -437,14 +442,16 @@ function ChangeComposer({
       setPressLate(false);
     },
   });
-  // A press past its deadline (`pressLate`, or `KeyedWriteResult.late` for a comment sent at
+  // A press past its deadline (`pressLate`, or the comment's own `late`, for a comment sent at
   // once) holds Send no longer. A press then would post the change twice, so it sends nothing
   // while that comment is out, and the form says so (`oneChange`). A form drawn again while its
   // press's document read is out holds Send through that read's hold (`ownRead`), whose press
-  // posts its change once the hold ends.
+  // posts its change once the hold ends, and one drawn again while the comment is out holds Send
+  // until that comment's deadline (`sentChange`), and then sends nothing while it is out.
   const sendHeld =
-    !pressLate && (reading || ownRead?.holding === true || (send.isPending && !send.late));
-  const oneChange = useOneCreateOut(send);
+    !pressLate &&
+    (reading || ownRead?.holding === true || (sentChange.isPending && !sentChange.late));
+  const oneChange = useOneCreateOut(sentChange);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
   // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).

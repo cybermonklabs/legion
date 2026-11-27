@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import {
   onlineManager,
   QueryClient,
@@ -13,11 +13,20 @@ import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled } from "../../__tests__/held-press";
+import { pressesOf } from "../../__tests__/held-until-late";
 import { userOnFakeClock } from "../../__tests__/user";
-import { AGENT_LIST_REFILLING, ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import {
+  AGENT_LIST_REFILLING,
+  ApiError,
+  api,
+  NetworkError,
+  REQUEST_DEADLINE_MS,
+  type WriteBounds,
+} from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, AskFollower, Subscriber } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { AskRecipients, type AskRecipientsProps, reachLabel, reachRows } from "./AskRecipients";
 import { followers, renderRecipients, subscriber } from "./ask-recipients-fixture";
 
@@ -534,6 +543,88 @@ test("a card drawn again while an Unfollow's read of the ask is out holds Unfoll
     unsubscribe();
     page.unmount();
     client.clear();
+  }
+});
+
+// The card drawn again - the reading view closed and opened, the window resized across 1280 px -
+// may be drawn while an Unfollow's write and an Unsubscribe's are still out, before either lands.
+// It holds each from that write's own state (`usePendingKeyedPress`), as the card they were
+// pressed on did: a press of either opens no dialog, so none can confirm a second write, and each
+// lets go at its write's deadline (`SEND_DEADLINE_MS`). Dispatch never answers either: each try
+// fails at the network and is tried again under its key.
+test("a card drawn again while an Unfollow's and an Unsubscribe's writes are out holds both, opens nothing on a press, and lets go at their deadline", async () => {
+  const dropped = new NetworkError("/api/v1/asks/ask-1", new TypeError("Failed to fetch"));
+  const removeFollower = mock((_askId: string, _sessionId: string, _bounds: WriteBounds) =>
+    Promise.reject<void>(dropped)
+  );
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockRejectedValue(dropped);
+  const page = await renderRecipients({
+    removeFollower,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const section = () => screen.getByRole("region", { name: "Recipients" });
+  /** The second follower's Unfollow and the subscriber's Unsubscribe of the card as drawn now,
+   *  its routing list unfolded. */
+  const controlsOfDrawn = async (user: UserEvent) => {
+    const toggle = within(section()).getByRole("button", { name: /^Reaches/ });
+    if (toggle.getAttribute("aria-expanded") === "false") await user.click(toggle);
+    return {
+      unfollow: within(section()).getAllByRole("button", {
+        name: "Unfollow",
+      })[1] as HTMLButtonElement,
+      unsubscribe: within(section()).getByRole<HTMLButtonElement>("button", {
+        name: "Unsubscribe",
+      }),
+    };
+  };
+  const sent = () => ({
+    unfollow: pressesOf([removeFollower]),
+    unsubscribe: pressesOf([unsubscribeIssueSession]),
+  });
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      const first = await controlsOfDrawn(user);
+      await user.click(first.unfollow);
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unfollow" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await user.click(first.unsubscribe);
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Unsubscribe" })).getByRole("button", {
+          name: "Confirm",
+        })
+      );
+      await tick(0);
+      expect(sent()).toEqual({ unfollow: 1, unsubscribe: 1 });
+
+      page.drawAgain();
+      const { unfollow, unsubscribe } = await controlsOfDrawn(user);
+      expect(
+        {
+          unfollow: heldNotDisabled(unfollow, "Unfollow"),
+          unsubscribe: heldNotDisabled(unsubscribe, "Unsubscribe"),
+        },
+        "the card drawn again let a control go while its write was out"
+      ).toEqual({ unfollow: true, unsubscribe: true });
+      await user.click(unfollow);
+      await user.click(unsubscribe);
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(heldNotDisabled(unfollow, "Unfollow")).toBe(true);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(true);
+      await tick(1_000);
+      expect(heldNotDisabled(unfollow, "Unfollow")).toBe(false);
+      expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(false);
+      expect(sent()).toEqual({ unfollow: 1, unsubscribe: 1 });
+    });
+  } finally {
+    page.unmount();
+    page.queryClient.clear();
+    unsubscribeIssueSession.mockRestore();
   }
 });
 

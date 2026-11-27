@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
+import { pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -736,6 +737,72 @@ test("offline, Approve is held until its review's deadline, let go there, and ke
     stopFocusFixup();
     realClock();
     createArtifactVersionReview.mockRestore();
+  }
+});
+
+// A host draws its chip again within the page - the document page's header after another document
+// and back (`ArtifactHeader` keys it by the document), the Inbox's reading pane after the
+// selection moves off the request and back - and may do so while a review's write is still out,
+// before it lands. The chip drawn again holds Approve and Request changes from that review's own
+// state (`usePendingKeyedPress`), as the chip pressed did: a press of Approve sends no second
+// review, one of Request changes opens no dialog, and both let go at the review's deadline
+// (`SEND_DEADLINE_MS`). Dispatch never answers the review: each try fails at the network and is
+// tried again under its key.
+test("a chip drawn again while its review's write is out holds Approve and Request changes until the review's deadline and sends no second review", async () => {
+  const review = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
+    new NetworkError(
+      "/api/v1/artifacts/artifact-1/versions/3/reviews",
+      new TypeError("Failed to fetch")
+    )
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const target = artifact({ latest_version: 3, state: "awaiting" });
+  const chip = (drawn: boolean) => (
+    <QueryClientProvider client={queryClient}>
+      {drawn ? <ApprovalChip artifact={target} variant="header" /> : null}
+    </QueryClientProvider>
+  );
+  const view = render(chip(true));
+  const sent = () => pressesOf([review]);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    view.rerender(chip(false));
+    view.rerender(chip(true));
+    await tick(0);
+    const approve = screen.getByRole<HTMLButtonElement>("button", { name: "Approve" });
+    const requestChanges = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Request changes",
+    });
+    const held = () => ({
+      approve: heldNotDisabled(approve, "Approve"),
+      requestChanges: heldNotDisabled(requestChanges, "Request changes"),
+    });
+    expect(held(), "the chip drawn again let its actions go while the review was out").toEqual({
+      approve: true,
+      requestChanges: true,
+    });
+    await user.click(approve);
+    await user.click(requestChanges);
+    await tick(0);
+    expect(sent(), "a press of the Approve drawn again sent a second review").toBe(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(held()).toEqual({ approve: true, requestChanges: true });
+    await tick(1_000);
+    expect(held()).toEqual({ approve: false, requestChanges: false });
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    review.mockRestore();
   }
 });
 

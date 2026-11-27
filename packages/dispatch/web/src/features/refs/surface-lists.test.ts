@@ -2258,8 +2258,8 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
   {
     file: `${FEATURES}/project/issues-table-actions.ts`,
     holds:
-      "the notice `IssuesTable.tsx` draws for what a table action did: the List's own line, which names the epic the action moved rows into or out of by its title, joined to the List's words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
-    written: "notice.text",
+      "the notice `IssuesTable.tsx` draws for what a table action did: the List's own line - this List's notice, or for a List drawn again since, that line as the list read's hold kept it (`useUnsettledRead`'s `row`) - which names the epic the action moved rows into or out of by its title, joined to the List's words for a list read that has not settled (`ISSUES_NOT_LOADED`) and the server's own reason for it",
+    written: "said",
   },
   {
     file: `${FEATURES}/project/IssuesTable.tsx`,
@@ -2269,8 +2269,8 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
   {
     file: `${FEATURES}/project/issues-table-actions.ts`,
     holds:
-      "the table's own notice of what a table action did, before the List's own words for a list read that has not settled",
-    written: "notice.text",
+      "the table's own notice of what a table action did, or that notice as the list read's hold kept it for a List drawn again, before the List's own words for a list read that has not settled",
+    written: "said",
   },
   {
     file: `${FEATURES}/refs/RefLink.tsx`,

@@ -55,7 +55,7 @@ import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
-import { ThreadCard } from "../margin/ThreadCard";
+import { COMMENT_EDIT_SEND_KEY, ThreadCard } from "../margin/ThreadCard";
 import { type CommentActionFailure, useCommentActionQueue } from "../margin/useCommentActionQueue";
 import type { Thread as CommentThread } from "../margin/useMarginItems";
 import {
@@ -80,7 +80,7 @@ import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { threadLayout } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { Avatar } from "./Avatar";
 import { type ReplyTarget, replyParentOf } from "./composer-model";
@@ -247,12 +247,18 @@ function ConversationReply({
   const queryClient = useQueryClient();
   const text = useAgentText();
   const targetName = recipientOf(reply.deliveries ?? [], root.root.target);
+  // The retry goes under the reply's name, as every retry of a message does on whichever page,
+  // so a turn drawn again while it is out, before it lands - the Conversation tab left and
+  // opened again - holds the retry row from that press until its deadline, as the turn it was
+  // made on did (`usePendingKeyedPress`).
+  const retryKey = ["message-delivery-retry", reply.id];
+  const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
     method: "POST",
-    readsLate: true,
+    mutationKey: retryKey,
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(root.root.target, agents);
@@ -289,7 +295,7 @@ function ConversationReply({
                 canBtw: capabilities?.includes("btw") !== false,
                 canSteer: capabilities?.includes("steer") !== false,
                 onRetry: retry.mutate,
-                retrying: retry.isPending && !retry.late,
+                retrying: retryOut.isPending && !retryOut.late,
               },
               targetName,
             }
@@ -806,26 +812,31 @@ function CommentTurn({
 }): ReactNode {
   const queryClient = useQueryClient();
   const agentText = useAgentText();
-  const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
-  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). The attempt
-   *  holds the edit - its editor, and every Edit of the card (`savingCommentEditId`) - until the
-   *  comments are read again with the saved words, or until the request deadline where that read
-   *  has not settled - one the network paused while the browser is offline - so no read holds
-   *  the edit for good, and the turn says why beneath the card until the read settles or the
-   *  next save of any comment's edit lands (`holdEditThrough`). */
+  // The comment of this turn whose edit's save is out within its deadline, as the held-send store
+  // holds it (`useHeldSendsUnder`): every Edit of the card is held off while it is
+  // (`savingCommentEditId`), on a turn drawn again while it is out too - the Conversation tab
+  // left and opened again, the phone's thread view closed and opened - until its deadline.
+  const savingCommentEditId = useHeldSendsUnder(COMMENT_EDIT_SEND_KEY).find(
+    ({ request, status }) =>
+      (status === "waiting" || status === "sending") &&
+      (request.edit?.id === item.root.id ||
+        item.replies.some((reply) => reply.id === request.edit?.id))
+  )?.request.edit?.id;
+  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). The save
+   *  holds the edit - its editor, and within its deadline every Edit of the card
+   *  (`savingCommentEditId`) - until the comments are read again with the saved words, or until
+   *  the request deadline where that read has not settled - one the network paused while the
+   *  browser is offline - so no read holds the edit for good, and the turn says why beneath the
+   *  card until the read settles or the next save of any comment's edit lands
+   *  (`holdEditThrough`). */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
-      setSavingCommentEditId(id);
-      try {
-        const comment = await api.editComment(id, { body, ...carried }, bounds);
-        await holdEditThrough(
-          item.id,
-          queryClient.invalidateQueries({ queryKey: ["comments", issueKey] })
-        );
-        return comment;
-      } finally {
-        setSavingCommentEditId(undefined);
-      }
+      const comment = await api.editComment(id, { body, ...carried }, bounds);
+      await holdEditThrough(
+        item.id,
+        queryClient.invalidateQueries({ queryKey: ["comments", issueKey] })
+      );
+      return comment;
     },
     [holdEditThrough, issueKey, item.id, queryClient]
   );
@@ -839,12 +850,18 @@ function CommentTurn({
     untilDeadline: true,
   });
   const retryGuard = useSubmitGuard();
+  // The retry goes under the thread's name, so a turn drawn again while it is out, before it
+  // lands - the Conversation tab left and opened again - holds every retry row of the thread from
+  // that press until its deadline, as the turn it was made on did (`usePendingKeyedPress`).
+  const retryKey = ["comment-delivery-retry", item.root.id];
+  const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (delivery: CommentDeliveryAttempt) =>
       `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
     onSettled: () => retryGuard.release(),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
     method: "POST",
+    mutationKey: retryKey,
     readsLate: true,
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
@@ -935,7 +952,7 @@ function CommentTurn({
             deleted={postDeletion(comment)}
             deliveries={deliveriesFor(comment.id)}
             onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
-            retrying={retry.isPending && !retry.late}
+            retrying={retryOut.isPending && !retryOut.late}
           />
         )}
         thread={thread}
@@ -1006,12 +1023,15 @@ function TargetedMessageTurn({
   const queryClient = useQueryClient();
   const text = useAgentText();
   const targetName = recipientOf(item.root.deliveries ?? [], item.root.target);
+  // The retry goes under the message's name, as a reply's does, and for the same reason.
+  const retryKey = ["message-delivery-retry", item.root.id];
+  const retryOut = usePendingKeyedPress(retryKey);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
     method: "POST",
-    readsLate: true,
+    mutationKey: retryKey,
     write: (delivery, bounds) => api.createMessageDelivery(item.root.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);
@@ -1053,7 +1073,7 @@ function TargetedMessageTurn({
       register={register}
       reference={reference}
       replyHeld={replyHeld}
-      retrying={retry.isPending && !retry.late}
+      retrying={retryOut.isPending && !retryOut.late}
       targetName={targetName}
       thread={
         <Thread

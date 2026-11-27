@@ -1346,6 +1346,58 @@ test("a Change opened again while its sent change's document read is out holds S
   }
 });
 
+// A Change sent and left while its comment is still out, before it lands, comes back closed, and
+// the Change pressed again draws a new form. Its Send change holds from that comment's own state
+// (`usePendingKeyedPress`), as the press's own did: a press of it sends no second comment, and it
+// lets go at the comment's deadline (`SEND_DEADLINE_MS`), past which a press while the comment is
+// still out sends nothing and the form says so (`useOneCreateOut`). Dispatch never answers the
+// comment: each try fails at the network and is tried again under its key.
+test("a Change opened again while its sent change's comment is out holds Send change until the comment's deadline and sends no second comment", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+  const body = renderBody();
+  const sent = () => pressesOf([createComment]);
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    body.close();
+    body.open();
+    await onFakeClock.click(screen.getByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await onFakeClock.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Again.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    expect(
+      heldNotDisabled(send, CONTROL_LABELS.send_change),
+      "the form drawn again let Send change go while the sent change's comment was out"
+    ).toBe(true);
+    await onFakeClock.click(send);
+    await tick(0);
+    expect(sent(), "a press of the Send change drawn again sent a second comment").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    await onFakeClock.click(send);
+    await tick(0);
+    expect(sent(), "a press past the deadline sent a second comment").toBe(1);
+    expect(screen.getByText(ANSWER_LINES.change_still_sending)).toBeInTheDocument();
+  } finally {
+    realClock();
+    body.unmount();
+    createComment.mockRestore();
+  }
+});
+
 // R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
 // anchored to as the reader reads the decision - the plain-text projection of its first block,
 // a reference in it read as its target's name - while the change it sends is still anchored to

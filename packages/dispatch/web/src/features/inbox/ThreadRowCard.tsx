@@ -20,7 +20,7 @@ import {
 import { storeAgentState } from "../agents/unread";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { Timestamp } from "../refs/Timestamp";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
 import { inboxActionMark } from "./inbox-action-mark";
@@ -45,7 +45,8 @@ export const INBOX_NOT_LOADED = "Could not load your inbox.";
  * Inbox** in the Dismissed view - which the list it is drawn in provides (`DismissControl`). A
  * thread anchored in a document shows the text it is anchored to rather than the document: a card
  * is no place to open one. Mark read is held while its write is out within its deadline
- * (`heldPress`, `late`) and through the re-read it starts, up to the read's request deadline.
+ * (`heldPress`, `late`), on a card drawn again while it is out too (`usePendingKeyedPress`), and
+ * through the re-read it starts, up to the read's request deadline.
  * Every Mark read reads the Inbox's one list again, so the list holds every card's Mark read
  * through that read with one hold (`useListReadBound`), which it hands the card (`holdThrough`)
  * with why that read has not settled where this card's mark made the latest one (`unsettled`),
@@ -71,12 +72,16 @@ export function ThreadRowCard({
   const queryClient = useQueryClient();
   // The press carries the row as it stood when Mark read was pressed: its newest reply and its
   // unread ids move as replies arrive, and the Retry of a press the reader stopped marks what
-  // that press marked.
+  // that press marked. The mark goes under the thread's name, so a card drawn again while it is
+  // out, before it lands - the Peek drawer closed and opened - holds Mark read from that press
+  // until its deadline, as the card it was made on did (`usePendingKeyedPress`).
+  const mutationKey = ["thread-mark-read", thread.thread_id];
+  const markOut = usePendingKeyedPress(mutationKey);
   const markRead = useKeyedWrite<UserAgentState | undefined, MyReplyRow>({
     label: () => "Thread marked read",
     // Either mark is a `PUT`.
     method: "PUT",
-    readsLate: true,
+    mutationKey,
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not
     // shown. Every other row carries a thread mark, which this moves to its newest write.
@@ -126,12 +131,12 @@ export function ThreadRowCard({
         <button
           className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
           {...inboxActionMark("inbox.mark-read")}
-          {...heldPress((markRead.isPending && !markRead.late) || holding, () =>
+          {...heldPress((markOut.isPending && !markOut.late) || holding, () =>
             markRead.mutate(thread)
           )}
           type="button"
         >
-          {markRead.isPending || holding ? "Marking read…" : "Mark read"}
+          {markOut.isPending || holding ? "Marking read…" : "Mark read"}
         </button>
         <DismissControl shown thread={thread} />
       </div>

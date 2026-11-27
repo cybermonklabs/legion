@@ -9,6 +9,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { heldAnswers } from "../../__tests__/held-answers";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -24,6 +25,7 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { ArtifactsTab } from "./ArtifactsTab";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -1555,6 +1557,61 @@ test("a tab drawn again while a removal's list read is out holds that row's Remo
     await act(async () => reread.resolve([]));
     await tick(0);
     expect(screen.queryByTestId("artifact-design-notes")).toBeNull();
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// The tab drawn again after the Spec tab and back may be drawn while a removal's write is still
+// out, before it lands. Its row's Remove holds from that removal's own state
+// (`usePendingKeyedPress`), as the Remove pressed did: `Removing…`, a press of it sends nothing
+// more, and it lets go at the removal's deadline (`SEND_DEADLINE_MS`). Dispatch never answers it:
+// each try fails at the network and is tried again under its key.
+test("a tab drawn again while a removal's write is out holds that row's Remove until the removal's deadline and sends nothing more", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const { drawAgain, getIssueReferences, listArtifacts, view } = renderTab([notes], noReferences, {
+    queryClient,
+  });
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts", new TypeError("Failed to fetch"))
+  );
+  await screen.findByTestId("artifact-design-notes");
+  const removeOf = () =>
+    within(screen.getByTestId("artifact-design-notes")).getByRole<HTMLButtonElement>("button", {
+      name: /^(Remove|Removing…)$/,
+    });
+  const sent = () => pressesOf([deleteArtifact]);
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(removeOf());
+    await tick(0);
+    expect(sent()).toBe(1);
+
+    drawAgain();
+    await tick(0);
+    expect(
+      removeOf().textContent,
+      "the tab drawn again let Remove go while the removal's write was out"
+    ).toBe("Removing…");
+    expect(heldNotDisabled(removeOf(), "Remove")).toBe(true);
+    await user.click(removeOf());
+    await tick(0);
+    expect(sent(), "a press of the Remove drawn again sent a second removal").toBe(1);
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(removeOf(), "Remove")).toBe(true);
+    await tick(1_000);
+    expect(heldNotDisabled(removeOf(), "Remove")).toBe(false);
+    expect(removeOf().textContent).toBe("Remove");
   } finally {
     view.unmount();
     queryClient.clear();

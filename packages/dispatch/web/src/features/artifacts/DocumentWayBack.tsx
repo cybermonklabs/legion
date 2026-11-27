@@ -15,7 +15,7 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { dangerText } from "../../theme/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";
 import { TitleForm } from "./TitleForm";
 
@@ -246,7 +246,10 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  * was, and this control says why that read has not settled only where its own document's
  * removal made the latest one. A host that draws this control again while that read is out - the
  * Artifacts tab left and opened again, or opened by a document page's way back - finds the hold:
- * the control is held through it, as the one the press was made on was, and then says why.
+ * the control is held through it, as the one the press was made on was, and then says why. One
+ * that draws it again while the removal itself is out, before it lands - the page's header after
+ * another document and back too - finds that removal, by the document's name for it
+ * (`usePendingKeyedPress`), and holds Remove until the removal's deadline.
  *
  * `onRemoved` is the host's own way back from the page of a document that has gone, handed the
  * document the removal was of. It is called when the removal lands, by when the reader may have
@@ -264,6 +267,8 @@ export function RemoveDocument({
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
   const [unsettledOf, holdThrough, holdingOf] = useListReadBound(["artifacts", artifact.issue_key]);
+  const mutationKey = ["artifact-remove", artifact.id];
+  const removeOut = usePendingKeyedPress(mutationKey);
   const remove = useKeyedWrite({
     inline: true,
     // The press carries the document it removes: the indicator names it, and the route takes its
@@ -273,6 +278,7 @@ export function RemoveDocument({
     // which is the removal done (`removedEvenIfGone`): it lands as a `204` does (`onSuccess`), and
     // no refusal is shown.
     method: "DELETE",
+    mutationKey,
     readsLate: true,
     write: ({ id }, bounds) =>
       removedEvenIfGone(api.deleteArtifact(id, bounds), isArtifactNotFound),
@@ -311,7 +317,9 @@ export function RemoveDocument({
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <RefusableButton
         busy={
-          (remove.isPending && !remove.late) || holdingOf(artifact.id) ? "Removing…" : undefined
+          (removeOut.isPending && !removeOut.late) || holdingOf(artifact.id)
+            ? "Removing…"
+            : undefined
         }
         look="secondary-compact"
         // A press of Remove while its refusal is on screen is the Retry of the press that refusal

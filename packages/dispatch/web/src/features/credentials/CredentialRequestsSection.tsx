@@ -22,7 +22,7 @@ import {
 import { useAgents } from "../conversation/useAgents";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { CredentialSessionLines } from "./CredentialSessionLines";
 import { brokerPage } from "./logic/brokerPage";
 import { useMachineCodePage } from "./logic/capabilities";
@@ -104,7 +104,9 @@ const CREDENTIAL_REQUESTS_NOT_LOADED = "Couldn't load credential requests.";
  *  one (`unsettled`). Dismiss is held (`heldPress`), not disabled, while its write is out and
  *  through the read that takes the row away, so it keeps the focus until the row goes, and the
  *  section hands it on then (`CredentialRequestsSection`); the submit guard drops a second press
- *  that lands before the hold is drawn. */
+ *  that lands before the hold is drawn. The dismissal goes under the request's name, so a row
+ *  drawn again while it is out - the Inbox's Peek drawer closed and opened - holds Dismiss from
+ *  that press until its deadline, as the row it was made on did (`usePendingKeyedPress`). */
 function ExpiredRowLines({
   holdThrough,
   row,
@@ -125,6 +127,8 @@ function ExpiredRowLines({
   // The row shows a refused dismissal itself, under its own line. The press carries the request
   // it dismisses and the name it shows by, so a Retry and the words it ends with are of that
   // request whatever this row is drawn for by then.
+  const mutationKey = ["credential-dismiss", row.record_id];
+  const dismissOut = usePendingKeyedPress(mutationKey);
   const dismiss = useKeyedWrite({
     inline: true,
     label: (press: { readonly label: string; readonly recordId: string }) => press.label,
@@ -145,6 +149,7 @@ function ExpiredRowLines({
         invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey)
       ),
     method: "POST",
+    mutationKey,
     readsLate: true,
     write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
@@ -158,7 +163,7 @@ function ExpiredRowLines({
         <button
           aria-label={label}
           className={secondaryButtonCompact}
-          {...heldPress(dismiss.isPending && !dismiss.late, () =>
+          {...heldPress(dismissOut.isPending && !dismissOut.late, () =>
             submitGuard.guard(() => dismiss.mutate({ label, recordId: row.record_id }))
           )}
           type="button"

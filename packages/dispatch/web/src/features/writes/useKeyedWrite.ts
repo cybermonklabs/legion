@@ -260,15 +260,29 @@ export function useLateWrites(keys: readonly string[]): ReadonlySet<string> {
 }
 
 /** The pending press of a keyed write shared by exact mutation key. A surface that mounts
- *  while the press is out can release its hold at that same press's deadline. */
-export function usePendingKeyedPress(mutationKey: MutationKey): {
+ *  while the press is out can release its hold at that same press's deadline. `of`, where given,
+ *  picks out the presses of what the surface is drawn for, by their variables: a hook whose one
+ *  key serves each subject in turn - a card drawn for one ask after another - keeps its key, and
+ *  with it the press it holds, as the surface moves on. */
+export function usePendingKeyedPress<TVariables = unknown>(
+  mutationKey: MutationKey,
+  of?: (variables: TVariables) => boolean
+): {
   readonly isPending: boolean;
   readonly late: boolean;
   readonly submittedAt: number;
 } {
   const writes = useWrites();
   const press = useMutationState({
-    filters: { exact: true, mutationKey, status: "pending" },
+    filters: {
+      exact: true,
+      mutationKey,
+      predicate:
+        of === undefined
+          ? undefined
+          : ({ state }) => of((state.variables as Press<TVariables>).variables),
+      status: "pending",
+    },
     select: ({ state }) => ({
       key: (state.variables as Press<unknown> | undefined)?.key,
       submittedAt: state.submittedAt,

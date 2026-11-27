@@ -1,5 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import {
+  type MutationKey,
+  type QueryClient,
+  useIsMutating,
+  useMutationState,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   ApiError,
@@ -26,7 +32,7 @@ import {
 } from "../issue/parent-status/useParentStatusMove";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useLateWrites } from "../writes/useKeyedWrite";
-import { plainWrite, useWrites } from "../writes/write-store";
+import { plainWrite, useWrites, type Writes } from "../writes/write-store";
 import { IN_WORK_STATUSES, statusText } from "./board-model";
 import { type IssueListing, listingName } from "./issues-table-data";
 import {
@@ -168,6 +174,36 @@ interface ResumableAction {
   resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>;
 }
 
+/** Holds `mutationKey` in TanStack's mutation cache, with `variables`, until `until` settles, as a
+ *  held send holds its name (`held-sends.ts`): a List drawn again while it is held counts it,
+ *  whatever took the List that holds it off the page. It runs whether or not the browser says it
+ *  is online (`networkMode: "always"`): a mutation TanStack paused offline would hold nothing.
+ *  Answers once the cache counts it no longer. */
+function holdInCache(
+  client: QueryClient,
+  mutationKey: MutationKey,
+  variables: unknown,
+  until: Promise<unknown>
+): Promise<unknown> {
+  return client
+    .getMutationCache()
+    .build(client, { mutationFn: () => until, mutationKey, networkMode: "always" })
+    .execute(variables)
+    .catch(() => undefined);
+}
+
+/** Answers once Dispatch decides the write `writes` holds under `key` - landed, refused, stopped
+ *  or discarded. */
+function decided(writes: Writes, key: string): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const unsubscribe = writes.onOutcome(({ write }) => {
+    if (write.key !== key) return;
+    unsubscribe();
+    resolve();
+  });
+  return promise;
+}
+
 export function useIssueTableActions({
   listing,
   issues,
@@ -181,26 +217,40 @@ export function useIssueTableActions({
 }) {
   const client = useQueryClient();
   const writes = useWrites();
+  // What an interrupted action is recorded under, which is the set it was started on: one
+  // priority's work table resumes its own action and not the table of the priority beside it.
+  // The actions out of the listing and the writes they wait on are held under it too.
+  const recoveryKey = listingName(listing);
   /** How many actions are out - each from its press through the read of the list after it - and
-   *  dry runs of an epic's move into work (`askTarget`). */
+   *  dry runs of an epic's move into work (`askTarget`), as this List counts them from the render
+   *  each press makes. */
   const [running, setRunning] = useState(0);
-  /** The key of each write of the page's store an action waits on now, from the moment it waits
-   *  on it until Dispatch decides it (the listener below). */
-  const [waiting, setWaiting] = useState<readonly string[]>([]);
-  const lateKeys = useLateWrites(waiting);
-  /** Notes that an action waits on the write the store holds under `key`. */
-  const waitOn = (key: string) => setWaiting((keys) => [...keys, key]);
-  // A write an action waits on that Dispatch decides - landed, refused, stopped or discarded - is
-  // waited on no longer.
-  useEffect(
-    () =>
-      writes.onOutcome(({ write }) =>
-        setWaiting((keys) =>
-          keys.includes(write.key) ? keys.filter((key) => key !== write.key) : keys
-        )
-      ),
-    [writes]
+  // Each action of the listing is held in TanStack's mutation cache under the listing's name from
+  // its press until its controls are let go, and each write it waits on, by the write's key, from
+  // the moment it waits on it until Dispatch decides it (`holdInCache`). So a List drawn again
+  // while an action is out - the List switched to the Board and back - counts that action as the
+  // List it ran in did, though no press of its own made it, and reads the lateness of the writes
+  // it waits on, which hold the controls only until each is late.
+  const actionsName = useMemo<MutationKey>(
+    () => ["issues-table-action", recoveryKey],
+    [recoveryKey]
   );
+  const waitsName = useMemo<MutationKey>(() => ["issues-table-wait", recoveryKey], [recoveryKey]);
+  const actionsHeld = useIsMutating({ exact: true, mutationKey: actionsName });
+  /** The actions out of the listing: this List's own, from the render each press makes, and
+   *  those the cache holds, which a List drawn again counts though none is its own. */
+  const out = Math.max(running, actionsHeld);
+  /** The key of each write of the page's store an action of the listing waits on now. */
+  const waiting = useMutationState({
+    filters: { exact: true, mutationKey: waitsName, status: "pending" },
+    select: ({ state }) => state.variables as string,
+  });
+  const lateKeys = useLateWrites(waiting);
+  /** Notes that an action waits on the write the store holds under `key`, until Dispatch decides
+   *  it. */
+  const waitOn = (key: string) => {
+    void holdInCache(client, waitsName, key, decided(writes, key));
+  };
   const [notice, setNotice] = useState<Notice>();
   // The latest action's hold through the read of this table's listing after it, under what that
   // action said it did, the row its press made (`useUnsettledRead`): why that read has not
@@ -240,9 +290,6 @@ export function useIssueTableActions({
   // The project a write of this table may name, which a scoped table has none of: the epic
   // actions are withheld rather than sent against a listing that belongs to no project.
   const project = "project" in listing ? listing.project : undefined;
-  // What an interrupted action is recorded under, which is the set it was started on: one
-  // priority's work table resumes its own action and not the table of the priority beside it.
-  const recoveryKey = listingName(listing);
   const recovery = useTableRecovery(recoveryKey, (text) =>
     setNotice({ kind: text.startsWith("Changes not saved") ? "error" : "success", text })
   );
@@ -362,6 +409,10 @@ export function useIssueTableActions({
     // this hold the press could end before the action did, and the bar's going would read as no
     // doing of the reader's.
     const endHold = holdHandOff();
+    // The cache holds the action under the listing's name until its controls are let go, for a
+    // List drawn again meanwhile (`out`); this List counts it from the render the press makes.
+    const run = Promise.withResolvers<void>();
+    const held = holdInCache(client, actionsName, undefined, run.promise);
     setRunning((count) => count + 1);
     setNotice(undefined);
     setMoved(new Set());
@@ -421,6 +472,9 @@ export function useIssueTableActions({
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
       if (mayHaveChanged) await waitWithinBound(told, listed);
+      // The cache lets the action go first, so no List counts it in the commit below.
+      run.resolve();
+      await held;
       // The bar's going and its hand-off are one render. This line runs outside any event of the
       // reader's - the turn a write's answer takes, or the read's own bound - so React would
       // commit it at normal priority and run the bar's hand-off, a passive effect
@@ -451,7 +505,7 @@ export function useIssueTableActions({
       // An action still out keeps the List's controls only until each write it waits on is late
       // (`busy`), and the List offers no Finish of a record while one is out (`interrupted`).
       text:
-        running > 0
+        out > 0
           ? "An action is still being sent. Start another once it ends."
           : "Finish or Dismiss the interrupted action before starting another one.",
     });
@@ -1187,14 +1241,16 @@ export function useIssueTableActions({
   // that read's hold bounded by the request deadline (`useUnsettledRead`), but not while every
   // write it waits on is past its deadline: each is tried under its key until Dispatch decides
   // it, so offline an action holds them no longer than that, and a press then goes behind those
-  // writes on their issues' lines. A List drawn again while an action's hold is on holds them by
+  // writes on their issues' lines. A List drawn again while an action is out holds them as the
+  // List it ran in did, from the action and the writes it waits on as the mutation cache holds
+  // them (`out`, `waiting`), and one drawn again while an action's read hold is on holds them by
   // that hold. An action still out keeps its record, and the List offers no Finish or Dismiss of
   // it until it ends, late or not (`interrupted`): a Finish then would run its steps a second
   // time beside it.
   const busy =
-    (running > 0 && !(waiting.length > 0 && waiting.every((key) => lateKeys.has(key)))) ||
+    (out > 0 && !(waiting.length > 0 && waiting.every((key) => lateKeys.has(key)))) ||
     listRead?.holding === true;
-  const interrupted = running > 0 ? undefined : recovery.action;
+  const interrupted = out > 0 ? undefined : recovery.action;
   // What the action said it did, which a list read that has not settled is said after: the
   // notice this List drew, else, for a List drawn again since, what the hold kept of it.
   const said = notice?.text ?? listRead?.row;
