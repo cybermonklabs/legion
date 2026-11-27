@@ -844,6 +844,42 @@ test("a panel the page cannot scroll far enough to show at its least height is c
   ]);
 });
 
+// The page scrolls to give a panel its least height as the panel opens, never against a later
+// scroll: a scroll of the reader's that leaves the room on the panel's side short of its least
+// height cuts the panel to that room, and neither that placement nor one after a later render
+// scrolls the page back.
+test("a scroll of the reader's that leaves an open panel less room than its least height cuts it to that room, and the page stays where the reader put it", async () => {
+  const user = userEvent.setup();
+  const view = render(<FlooredPanel parts />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  // Mid-window at 360 px: 146 px under the trigger and 146 over it.
+  const laid = layOutWindow(trigger, { height: 360, pageEnd: 400, top: 158 }, true);
+  try {
+    await user.click(trigger);
+    const panel = screen.getByRole("dialog", { name: "Labels" });
+    const placed = () => [panel.style.top, panel.style.maxHeight || "none", laid.page()];
+    // Where the panel stands as it opens, once the reader has scrolled the page back to its top,
+    // and after a render of the page that follows.
+    const seen = [placed()];
+    document.documentElement.scrollTop = 0;
+    // user-event has no form for a scroll of the page.
+    fireEvent.scroll(window);
+    seen.push(placed());
+    view.rerender(<FlooredPanel parts />);
+    seen.push(placed());
+    expect(seen).toEqual([
+      // At its least height, 168 px, with the page scrolled 22 px to show it.
+      ["184px", "168px", 22],
+      // Cut to the 146 px under the trigger, the page at the reader's 0.
+      ["206px", "146px", 0],
+      ["206px", "146px", 0],
+    ]);
+  } finally {
+    laid.restore();
+    view.unmount();
+  }
+});
+
 // Where the side it takes has room for its least height, a panel is placed and cut as it always
 // was, and nothing scrolls.
 test("a panel with room for its text box, one row and its foot is placed and cut as before, and the page does not scroll", async () => {

@@ -221,7 +221,8 @@ export type PanelDismissal = "escape" | "gone" | "press" | "tab";
  * one option and its Clear foot. Where the roomier side has less room than that, the panel takes
  * that side at its least height and the page scrolls the least that shows it within the window
  * (`moveAnchor`); where the page cannot scroll so far, it is cut to the room it has then, so it
- * never draws past the window's edge.
+ * never draws past the window's edge. The page scrolls so as the panel opens, never against a
+ * later scroll: once a scroll has been answered, a panel short of room is cut to the room it has.
  *
  * The press outside is read at the document's capture phase, before any control under it can
  * stop it on its way up: an ask card's hand-on keeps its press from the row it sits in, and a
@@ -296,6 +297,12 @@ export function AnchoredPanel({
   // The tallest the panel's own class lets it be, read whenever no cut of this placement's is on
   // it: what its height is capped at, cut or not.
   const classMax = useRef(Number.POSITIVE_INFINITY);
+  // Whether a scroll outside the panel has been answered since it opened: the reader's, or the
+  // one its own placement made to give it its least height. From then on, for as long as this
+  // panel stays open, no placement scrolls the page or a box around the anchor (`moveAnchor`), so
+  // no scroll of the reader's is undone: not by the placement that answers it, nor by the one
+  // after the render that placement makes. A panel opened again starts with none answered.
+  const scrolled = useRef(false);
   const enclosing = useContext(EnclosingPanel);
   const hold = useCallback<HoldPanel>(
     (panel) => {
@@ -379,8 +386,11 @@ export function AnchoredPanel({
       // A cut panel is cut no lower than its least height (`leastHeight`), or than all it holds
       // where it holds less. Where the room on its side is less than that, the page scrolls the
       // least that gives the panel that room (`moveAnchor`). Where it cannot scroll so far, the
-      // panel is cut to the room it has then, so it never draws past the window's edge.
-      if (panel && next.maxHeight !== undefined) {
+      // panel is cut to the room it has then, so it never draws past the window's edge. Once a
+      // scroll has been answered (`scrolled`), nothing scrolls and the panel is cut to the room
+      // it has, as with no least height: where that room holds the least height, it cuts the
+      // panel no differently.
+      if (panel && next.maxHeight !== undefined && !scrolled.current) {
         const least = Math.min(leastHeight(panel), height);
         let short: number;
         ({ short, spot: next } = placed(box, least));
@@ -405,6 +415,7 @@ export function AnchoredPanel({
         if (panelRef.current?.contains(target)) return;
         for (const held of inner) if (held.contains(target)) return;
       }
+      scrolled.current = true;
       place();
     };
     place();
