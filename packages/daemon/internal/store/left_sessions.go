@@ -13,9 +13,11 @@ import (
 )
 
 // The claims row keeps one session per claim, so a claim write that moves a claim off a session it
-// recorded leaves that session behind: after the write no claims.session names it, and a later
-// release of the issue's Dispatch claim (the outbox's releaseClaim) could not attribute the claim
-// that session still holds to the issue's tree, and would leave it (dispatch://INFRA-3144). So
+// recorded leaves that session behind: after the write no claims.session names it. The rows of a
+// move out of the workflow and of the boot pass (the outbox's releaseClaim) act only on an issue
+// whose record says it stopped (record.Stopped). While the issue runs, neither row releases the
+// Dispatch claim that the left session still holds on it, and the claim's new session cannot claim
+// the issue while Dispatch holds it for the left session (R5 of dispatch://INFRA-3144). So
 // once the daemon has turned the release on (ReleaseLeftSessionClaims), that write queues, in its
 // own transaction (putClaim), where every write of a claim's session converges, one claim_release
 // row keyed by the claim's issue whose payload names the left session: the move and the release it

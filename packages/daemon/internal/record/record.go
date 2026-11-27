@@ -2734,9 +2734,11 @@ type Store interface {
 	// or as one it left behind, which claim_sessions still holds for that claim (kind session) while
 	// the claim names another. Every name a claim records as its session is held for it in
 	// claim_sessions first (supervise's holdRecorded), so the claim the hold names is the only claim
-	// that can name the session now; a name held for no claim (claim = '', a conflict the boot logs)
-	// is no session of the tree. It reads a claim's hold under that claim's own project, so it takes
-	// no project, in one statement that reads by claims_tree, claim_sessions' primary key and claims'
+	// that can name the session now. A name held for no claim (claim = '', a conflict the boot logs)
+	// is a session of the tree only where a claim of the tree names it as its session now: the
+	// statement reads that off claims, whatever claim_sessions holds, and a hold of no claim is no
+	// claim's left session. It reads a claim's hold under that claim's own project, so it takes no
+	// project, in one statement that reads by claims_tree, claim_sessions' primary key and claims'
 	// own. An empty session answers false.
 	//
 	// It answers whose claim stands on an issue, and two readers ask that: the claim release

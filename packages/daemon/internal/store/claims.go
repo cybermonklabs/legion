@@ -320,8 +320,8 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // issue first (storedClaim.unlisted, queueClaimState). The release of a left session's Dispatch
 // claim is queued when the write moves the claim off a session the stored row names — a fresh
 // session that clears it, or a new session written over it — as one claim_release row of c's
-// issue that names that session (enqueueLeftSessionRelease): after the write no claims row names
-// it, so no later release could attribute the claim it holds (left_sessions.go says why). All
+// issue that names that session (enqueueLeftSessionRelease): while c's issue runs, no move's row
+// and no boot row releases the Dispatch claim that session holds (left_sessions.go says why). All
 // three are read against the row the write replaces, read under its lock (lockedClaim). The three
 // switches (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so
 // putClaim reads them inside tx before it takes that lock: a write for which all three are off

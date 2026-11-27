@@ -104,9 +104,9 @@ func releasedByPause(c supervise.Claim) supervise.Claim {
 	return c
 }
 
-// A claim write that moves a claim off a session it recorded leaves that session behind: no
-// claims row names it after the write, so a claim release that runs later could not attribute the
-// Dispatch claim that session still holds (the outbox's releaseClaim). So the write queues, in its
+// A claim write that moves a claim off a session it recorded leaves that session behind: no claims
+// row names it after the write, and while the claim's issue runs, no move's row and no boot row
+// (the outbox's releaseClaim) releases the Dispatch claim it holds. So the write queues, in its
 // own transaction, one claim_release row keyed by the claim's issue whose payload names the left
 // session, and once that transaction commits the store tells the issue (ReleaseLeftSessionClaims),
 // where the daemon wakes the issue's claim lane. Every claim write goes through putClaim, so each

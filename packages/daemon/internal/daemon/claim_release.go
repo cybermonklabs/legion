@@ -207,7 +207,14 @@ func (r *outbox) judgeClaim(ctx context.Context, tx pgx.Tx, key string, release 
 // that the operator does not hold: the session stays only where a claim names it as its current
 // session again, and is released otherwise. Whether the claim claim_sessions holds the name for left
 // it behind is read off that claim's current session, as the claim that recorded the name first is
-// the only one that can name it now.
+// the only one that can name it now. The row finds that claim through the hold alone
+// (record.Store.SessionClaim), where the move's row asks the tree's claims first
+// (record.Store.SessionOfTree). So where the name is held for no claim (an empty claim), the row
+// releases in every case: also where a claim names the session as its current one now, and where
+// the move's row leaves the Dispatch claim as unattributed. The only claims that name such a name
+// as their current session are the conflicts the boot logs (suspendSessionConflicts), and the hold
+// refuses every launch of each of them. So for each claim that runs, the hold names that claim, and
+// the two rows agree on whose session it is.
 func (r *outbox) judgeLeftSession(ctx context.Context, tx pgx.Tx, tree, session string) (claimVerdict, record.ClaimLeftReason, error) {
 	owner, found, err := r.records.SessionClaim(ctx, tx, r.project, session)
 	switch {

@@ -48,13 +48,14 @@ func (t *statementTx) plan(ctx context.Context, test *testing.T) string {
 	return strings.Join(plan, "\n")
 }
 
-// SessionClaimsTree is read on every admission pass for each root waiting on a person whose
-// Dispatch claim a session holds (workflow.Unresumable), and on the ask events of a recorded
-// root, all under the one fact lock. Its statement finds the claims of one tree by the index on
-// claims (tree), and the session among them: over a claims table of 10,000 rows, 100 trees of 100
-// claims each, PostgreSQL's plan of the statement the method sends, with the arguments it sends,
-// reads that index and scans no table whole. Without the index the plan is a sequential scan of
-// claims, which one deployment's daemon made 27,862 times in fifteen minutes at 6.4 ms each.
+// SessionClaimsTree is read for each status change a session writes on a recorded issue
+// (sessionStatusWrite) and on the ask events of a recorded root (the ask mirror's
+// dispatchAskOpened, closer and replyToAsk), all under the one fact lock. Its statement finds the
+// claims of one tree by the index on claims (tree), and the session among them: over a claims
+// table of 10,000 rows, 100 trees of 100 claims each, PostgreSQL's plan of the statement the
+// method sends, with the arguments it sends, reads that index and scans no table whole. Without
+// the index the plan is a sequential scan of claims, which one deployment's daemon made 27,862
+// times in fifteen minutes at 6.4 ms each.
 func TestSessionClaimsTreeReadsTheClaimsOfATreeByTheirIndex(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
