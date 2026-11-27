@@ -70,10 +70,16 @@ import {
 import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
-import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import {
+  CLEARANCE,
+  FOOT_BOX_ATTRIBUTE,
+  FOOT_BOX_TEST_ID,
+  FOOT_HEIGHT_PROPERTY,
+  IDENTITY_HEIGHT_PROPERTY,
+} from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import type { NodeChip, TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./margin-slot";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
 import { lineOrKindWord } from "./node-line";
@@ -497,18 +503,27 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
 
 /**
  * The tree under the providers the page's `slots/providers.tsx` draws around its body - the row
- * writer and the Contents list's requests - with `reader` signed in, and the writer's read of the
- * issue's messages answering `messages`. It hands back the list's ask and its Focus branch
- * toggle, the writer's landing, a switch that takes the tree off the page and draws it again (a
- * view drawn in its place and turned off), and a redraw over another tree (a read answering).
+ * writer and the Contents list's requests - with `reader` signed in, and the writer's reads of the
+ * issue's comments and messages answering `comments` and `messages`, none unless given. It hands
+ * back the list's ask and its Focus branch toggle, the writer's landing, a switch that takes the
+ * tree off the page and draws it again (a view drawn in its place and turned off), and a redraw
+ * over another tree (a read answering).
  */
-function renderPageTree(root: TreeNode, reader = "alice", messages: readonly MessageRead[] = []) {
+function renderPageTree(
+  root: TreeNode,
+  reader = "alice",
+  {
+    comments = [],
+    messages = [],
+  }: { readonly comments?: readonly Comment[]; readonly messages?: readonly MessageRead[] } = {}
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["whoami"], { kind: "user", login: reader });
   // The writer's own reads, answered, so it asks the network for nothing.
-  for (const read of ["asks", "comments"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], [...comments]);
   client.setQueryData(["issue-messages", KEY], [...messages]);
   const held: PageHold = {};
   const draw = (drawn: TreeNode) => (
@@ -516,7 +531,7 @@ function renderPageTree(root: TreeNode, reader = "alice", messages: readonly Mes
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <OutlineWriterProvider issueKey={KEY}>
+            <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
               <OutlineRequestProvider>
                 <IssueScope />
                 <PageBody drawn={drawn} held={held} />
@@ -628,7 +643,7 @@ function cardInDetails(): HTMLElement {
  *  it stands between the outline and Details in the order Tab goes: its field and its Send. */
 function boxAtFoot(): { readonly field: HTMLElement; readonly send: HTMLElement } {
   const drawn = render(
-    <section data-testid={FOOT_BOX_TEST_ID}>
+    <section {...{ [FOOT_BOX_ATTRIBUTE]: "" }} data-testid={FOOT_BOX_TEST_ID}>
       <textarea aria-label="Comment" />
       <button type="button">Send</button>
     </section>
@@ -8760,7 +8775,7 @@ test("a landing under a turn of the history is left to the history, and one unde
     text: "My reply.",
     type: "comment",
   });
-  const tree = renderPageTree(thread([]), "alice", [daemon]);
+  const tree = renderPageTree(thread([]), "alice", { messages: [daemon] });
   const { container } = tree.view;
   await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
 
@@ -8789,6 +8804,137 @@ test("a landing under a turn of the history is left to the history, and one unde
     )
   );
   expect(tree.writer()?.landing).toBeUndefined();
+});
+
+// Decision 573: a person's reply to an agents' comment tied to no text takes that thread out of
+// the history (`agents-only.ts`), so its landing is the outline's. The outline draws no row of the
+// comment until the read that brings the reply answers, which draws the comment and the reply
+// together. The tree looked for the comment once, as the landing was asked, and gave the landing
+// up where it drew no row of it. The writer marks the landing as one that takes the comment out of
+// the history (`HeldLanding.leavesHistory`), and the tree waits for that row as it waits for the
+// reply's, through a read that draws neither, and takes the reader to the reply under the comment
+// once a read draws both.
+test("a reply that takes an agents' comment thread out of the history lands on the reply's row under the comment, once a read draws both", async () => {
+  setViewport(1440);
+  const planner = { id: "planner", kind: "session" } as const;
+  const agent = {
+    anchor: null,
+    ask_id: null,
+    author: planner,
+    id: "comment-agent",
+    reply_to: null,
+  } as Comment;
+  const issue = (thread: TreeNode[]) =>
+    node({
+      children: [node({ id: "comment-1", text: "The first words.", type: "comment" }), ...thread],
+      id: KEY,
+      type: "issue",
+    });
+  const mine = node({
+    at: "2026-11-16T09:00:00Z",
+    author: { id: "alice", kind: "user" },
+    id: "comment-mine",
+    text: "My reply.",
+    type: "comment",
+  });
+  const tree = renderPageTree(issue([]), "alice", { comments: [agent] });
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  await tree.land(agent.id);
+  // Another read draws the tree again, still with no row of the agent's comment.
+  tree.redraw(issue([]));
+  expect(
+    tree.writer()?.landing,
+    "the outline gave up the landing before a read drew the comment it answers"
+  ).toBeDefined();
+  expect(
+    tree.writer()?.landing?.in,
+    "a person's reply to an agents' comment thread is not the outline's to land"
+  ).toBe("outline");
+  expect(
+    tree.writer()?.landing?.leavesHistory,
+    "the writer did not mark the reply as taking the agent's comment out of the history"
+  ).toBe(true);
+
+  tree.redraw(
+    issue([
+      node({
+        author: planner,
+        children: [mine],
+        held: 1,
+        id: agent.id,
+        text: "Status: the plan is drafted and waits on its review.",
+        type: "comment",
+      }),
+    ])
+  );
+  await waitFor(() =>
+    expect(
+      focusedRow(container),
+      "the outline did not take the reader to their reply under the agent's comment"
+    ).toBe("comment-mine")
+  );
+  expect(rowsFor(container, agent.id), "the agent's comment is not drawn").toHaveLength(1);
+  expect(tree.writer()?.landing).toBeUndefined();
+});
+
+// A landing under a node the outline draws no row of ends at once with the focus where it was,
+// unless the writer marks it as a reply that takes that node out of the history (decision 573,
+// above), whose row comes with the read that brings the reply. A reply to a comment of a person's
+// is no such reply: the outline draws no row of the comment only while a filter's view holds
+// none. The tree waited for that row with none of the reader's nodes under it noted, so the row
+// drawn again as the filter was cleared took the reader to an earlier reply of theirs under it.
+test("a landing under a node the outline draws no row of, which the reply does not take out of the history, ends at once with the focus where it was", async () => {
+  setViewport(1440);
+  const bob = { id: "bob", kind: "user" } as const;
+  const alice = { id: "alice", kind: "user" } as const;
+  const theirs = { anchor: null, ask_id: null, author: bob, id: "comment-2", reply_to: null };
+  const earlier = { ...theirs, author: alice, id: "comment-3", reply_to: theirs.id };
+  const issue = (thread: TreeNode[]) =>
+    node({
+      children: [node({ id: "comment-1", text: "The first words.", type: "comment" }), ...thread],
+      id: KEY,
+      type: "issue",
+    });
+  const tree = renderPageTree(issue([]), "alice", { comments: [theirs, earlier] as Comment[] });
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  // The reader replies to Bob's comment under a filter's view that draws no row of it.
+  await tree.land(theirs.id);
+  expect(
+    tree.writer()?.landing,
+    "the outline did not end a landing under a node it draws no row of"
+  ).toBeUndefined();
+  expect(focusedRow(container), "the landing moved the focus").toBe("comment-1");
+
+  // The filter is cleared: Bob's comment is drawn again, the reader's earlier reply under it.
+  tree.redraw(
+    issue([
+      node({
+        author: bob,
+        children: [
+          node({
+            at: "2026-11-15T09:00:00Z",
+            author: alice,
+            id: earlier.id,
+            text: "My earlier reply.",
+            type: "comment",
+          }),
+        ],
+        held: 1,
+        id: theirs.id,
+        text: "Bob's words.",
+        type: "comment",
+      }),
+    ])
+  );
+  await waitFor(() => expect(rowsFor(container, theirs.id)).toHaveLength(1));
+  expect(
+    focusedRow(container),
+    "the row drawn again took the reader to their earlier reply under it"
+  ).toBe("comment-1");
 });
 
 // `r` sets the line at the foot to reply to the focused row, and `a` the writer's answer to the

@@ -804,20 +804,13 @@ test("what the reader sends from the box as a reply to a turn of the daemon's th
   });
 });
 
-// c-replies (3), owed on parts M and T (root R1 and R15, decision 127): a reply from the panel's
-// history to an agent's comment tied to no text, in a thread no person wrote in, makes that thread
-// a person's, so the outline draws the comment with the reply under it, on screen and focused.
-// Until M's history with its Reply and T's outline are both under this part's head, the reading
-// is skipped with an annotation naming M and T and tagged `@owed`, which the check's run leaves
-// out (decision 135). The round that brings the second of them under the head takes the skip and
-// the tag off.
-test.skip("what the reader sends from the box as a reply to an agent's comment in the panel's history is drawn in the conversation under it @owed", {
-  annotation: {
-    description:
-      "Owed on parts M and T (decision 127): the panel's history and its Reply come with part M, and the outline that then draws the agent's comment with T, so this reading is skipped until both are under this part's head.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+// c-replies (3), part M's reading (root R1 and R15, decisions 127 and 573): a reply from the
+// panel's history to an agent's comment tied to no text, in a thread no person wrote in, makes
+// that thread a person's, so the outline draws the comment with the reply under it, on screen
+// and focused.
+test("what the reader sends from the box as a reply to an agent's comment in the panel's history is drawn in the conversation under it", async ({
+  browser,
+}) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
@@ -826,9 +819,9 @@ test.skip("what the reader sends from the box as a reply to an agent's comment i
       "the outline draws the agent's comment before a person wrote in its thread"
     ).toHaveCount(0);
     await openDetails(page);
-    const turn = panelEntry(page, seeded.agent.words);
+    const turn = historyItem(page, seeded.agent.id);
     await expect(turn, "the panel's history draws no agent's comment").toHaveCount(1);
-    await turn.getByRole("button", { exact: true, name: CONTROL_LABELS.reply }).click();
+    await turn.locator(`[data-history-reply="${seeded.agent.id}"]`).click();
     await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
     const words = "A reply to the agent's comment, from the history.";
     await sendFromComposer(page, words);

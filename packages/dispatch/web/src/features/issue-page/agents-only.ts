@@ -34,13 +34,13 @@ const DAEMON_SESSION = "legion-daemon:";
  * never in the set, and neither is a reply whose thread opens under one. The comments under an
  * approval request are a thread of their own, whose head is the ask and no comment, and it is in
  * the set when no person wrote in it: no anchor decides it, since the server stores no anchor on
- * a comment under an ask. `asks` - the asks read - is what tells a question from an approval
- * request; a caller that has not read them passes `undefined`, and every ask is then taken for a
- * question. It is required, so a caller cannot leave it out unseen and draw an agent's reply
- * under an approval request in the outline.
+ * a comment under an ask. `asks` - the issue's open asks and the asks read (`issueAsks`) - is
+ * what tells a question from an approval request; a caller that has read none of them passes
+ * `undefined`, and every ask is then taken for a question. It is required, so a caller cannot
+ * leave it out unseen and draw an agent's reply under an approval request in the outline.
  *
- * Pure, and the one place the rule is written: the outline, the history and the address of one
- * of these items read it alike.
+ * Pure, and the one place the rule is written: the outline, the history, the address of one of
+ * these items and the landing of a write from the line at the foot read it alike.
  */
 export function agentsOnlyIds(
   comments: readonly CommentTurn[] | undefined,
@@ -86,4 +86,66 @@ export function agentsOnlyIds(
     for (const one of [thread.message, ...(thread.replies ?? [])]) ids.add(one.id);
   }
   return ids;
+}
+
+/** The id a person's reply is read under before the server has stored it: no id the server
+ *  gives, which is a uuid, so it names no turn the reads hold. */
+const NEW_TURN = "";
+
+/** The author of that reply: a person, whose kind is all the rule reads of an author. */
+const PERSON = { id: "", kind: "user" } as const;
+
+/**
+ * Whether the history draws a person's reply to `under`, a comment or a message of the issue by
+ * its id and kind: whether `under` is in the set above over the reads with that reply added, as
+ * the server stores it, which climbs a reply to the head of its thread - the ask the thread hangs
+ * under, or its root comment (`comment_create.go`'s `threadHeadOf`). A person's turn takes a
+ * comment thread out of the set, so the outline then draws that thread whole, the reply under the
+ * comment it answers. A reply never moves a message thread, since the rule reads who wrote the
+ * thread's first message alone: one the Legion daemon began stays in the set, whoever replies,
+ * and no other is in it, so the reads need no reply added. An ask and a statement are never in
+ * the set, so a reply to one is never the history's. The line at the foot asks it as its reply
+ * lands, before the read that brings the reply has answered (`outline-writer.tsx`'s `land`), so
+ * the page takes the reader to the part that draws the reply.
+ */
+export function historyHoldsReply(
+  under: { readonly id: string; readonly kind: string },
+  comments: readonly CommentTurn[] | undefined,
+  messages: readonly MessageRead[] | undefined,
+  asks: readonly Pick<Ask, "id" | "kind">[] | undefined
+): boolean {
+  const answered =
+    under.kind === "comment" ? comments?.find((one) => one.id === under.id) : undefined;
+  const withComment =
+    answered === undefined
+      ? comments
+      : [
+          ...(comments ?? []),
+          {
+            anchor: null,
+            ask_id: answered.ask_id,
+            author: PERSON,
+            id: NEW_TURN,
+            reply_to: answered.ask_id === null ? (answered.reply_to ?? answered.id) : null,
+          },
+        ];
+  return agentsOnlyIds(withComment, messages, asks).has(under.id);
+}
+
+/**
+ * The asks of an issue that tell a question from an approval request: `openAsks`, the asks the
+ * issue read holds open (`IssueDetails.open_asks`), then `asks`, the asks read, `undefined` while
+ * it has not answered. The rule above reads this one list wherever it is read (`agentsOnlyIds`'
+ * `asks`) - the outline (`tree-drafts.ts`), which draws its questions from it too, the history
+ * (`IssueHistory.tsx`), the address of one of these items (`address-target.ts`) and the landing
+ * of a write from the line at the foot (`outline-writer.tsx`) - so no turn is in both the outline
+ * and the history or in neither, and no landing is left by both. While the asks read is out or
+ * has failed, the list is the open asks alone, and every reader of it takes the same asks for
+ * questions: the questions the issue holds open, and no other ask.
+ */
+export function issueAsks<Open, Read>(
+  openAsks: readonly Open[] | null,
+  asks: readonly Read[] | undefined
+): (Open | Read)[] {
+  return [...(openAsks ?? []), ...(asks ?? [])];
 }

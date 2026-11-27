@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Actor, Ask, Comment, MessageRead } from "../../api/types";
-import { agentsOnlyIds } from "./agents-only";
+import { agentsOnlyIds, historyHoldsReply } from "./agents-only";
 
 /**
  * Which comments and messages the history in the panel draws, each thread whole, and the outline
@@ -117,4 +117,41 @@ test("an agents' post is in the set until a person writes in it, and replies who
 
   expect(ids([post, reply, headless], [])).toEqual(["post", "post-reply"]);
   expect(ids([post, reply, person, headless], [])).toEqual([]);
+});
+
+// The line at the foot asks where a person's reply is drawn before the read that brings it has
+// answered (decision 573): the rule over the reads with that reply added, stored as the server
+// stores it, climbed to its thread's head - its root comment, or the ask its thread hangs under.
+// A person's turn takes an agents' comment thread out of the set, whichever turn it answers and
+// under an approval request too, and leaves a thread the daemon began in it.
+test("a person's reply to a turn of an agents' comment thread is not the history's, and one to a turn of the daemon's thread is", () => {
+  const comments = [
+    comment("post", AGENT),
+    comment("post-reply", REVIEWER, { reply_to: "post" }),
+    comment("under-request", AGENT, { ask_id: "approval-1" }),
+  ];
+  const messages = [
+    thread(message("daemon", DAEMON), message("agent-reply", AGENT, { in_reply_to: "daemon" })),
+  ];
+  const asks = [{ id: "approval-1", kind: "approval" }];
+
+  expect(ids(comments, messages, asks), "the reads before the reply").toEqual([
+    "agent-reply",
+    "daemon",
+    "post",
+    "post-reply",
+    "under-request",
+  ]);
+  expect(
+    ["post", "post-reply", "under-request"].filter((id) =>
+      historyHoldsReply({ id, kind: "comment" }, comments, messages, asks)
+    ),
+    "a person's reply left an agents' comment thread in the history"
+  ).toEqual([]);
+  expect(
+    ["daemon", "agent-reply"].filter((id) =>
+      historyHoldsReply({ id, kind: "message" }, comments, messages, asks)
+    ),
+    "a person's reply took the daemon's thread out of the history"
+  ).toEqual(["daemon", "agent-reply"]);
 });

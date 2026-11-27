@@ -242,13 +242,13 @@ export function focusedNodeFacts(page: Page): Locator {
 }
 
 /**
- * Opens the issue, puts the focus on node `id`'s row as a reader's press does, and opens Details
- * at its facts. An item's own address (`/asks/<id>`, `/comments/<id>`) does not put the focus on
- * its node yet, so a row reaches the node through the outline instead
- * (`focusedRowFacts`).
+ * Opens the issue's conversation (`/issues/<key>/conversation`, which draws the outline), puts
+ * the focus on node `id`'s row as a reader's press does, and opens Details at its facts. An
+ * item's own address (`/asks/<id>`, `/comments/<id>`) does not put the focus on its node yet, so
+ * a row reaches the node through the outline instead (`focusedRowFacts`).
  */
 export async function rowFacts(page: Page, issueKey: string, id: string): Promise<Locator> {
-  await gotoIssue(page, `/issues/${issueKey}`);
+  await gotoIssue(page, `/issues/${issueKey}/conversation`);
   return focusedRowFacts(page, id);
 }
 

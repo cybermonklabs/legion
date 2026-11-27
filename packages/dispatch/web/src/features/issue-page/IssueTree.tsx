@@ -24,10 +24,15 @@ import { useMediaQuery } from "../shell/useDialog";
 import { pointMarks } from "./current-point";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
-import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import {
+  bringOnScreen,
+  FOOT_BOX,
+  FOOT_HEIGHT_PROPERTY,
+  IDENTITY_HEIGHT_PROPERTY,
+} from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE, FOOT_BOX } from "./margin-slot";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
@@ -1205,7 +1210,16 @@ export function IssueTree({
   // Each landing goes to its node as `reach` does and notes that node (`landedOn`): a read that
   // drops its row before the reader's next key or press is their write's (`heldRow`). A write
   // that answered a turn of a thread the panel's history holds, of which the tree draws no row,
-  // is the history's to land (`HeldLanding.in`), and the tree leaves it alone.
+  // is the history's to land (`HeldLanding.in`), and the tree leaves it alone. A landing under a
+  // node the tree draws no row of - one a filter's view holds no row of - ends at once with the
+  // focus where it is, so the row drawn again later, as the filter is cleared, takes the reader
+  // to no earlier node of theirs under it. A reply that took such a thread out of the history - a
+  // person's reply to an agents' comment thread tied to no text (`agents-only.ts`) - is the
+  // tree's, and the writer says so (`HeldLanding.leavesHistory`): the comment it answers is a row
+  // only from the read that brings the reply, so the tree waits for that row as it waits for the
+  // new one, with none of the reader's nodes under it before, since it drew no row there to hold
+  // one. Where no read draws that row, the late fallback ends the landing with the focus where it
+  // is.
   const landing = writer?.landing?.in === "outline" ? writer.landing : undefined;
   const heldAtMount = useRef(landing);
   const landedFrom = useRef<
@@ -1228,16 +1242,16 @@ export function IssueTree({
       return;
     }
     const parent = landingParent(root, landing.under);
-    if (parent === undefined) {
+    if (parent === undefined && !landing.leavesHistory) {
       line.landed();
       return;
     }
     if (landing.to === "self") {
       line.landed();
-      reachWritten(parent.id);
+      if (parent !== undefined) reachWritten(parent.id);
       return;
     }
-    const own = parent.children.filter((child) => readerWrote(child, reader));
+    const own = (parent?.children ?? []).filter((child) => readerWrote(child, reader));
     const held = landedFrom.current;
     if (held?.landing !== landing) {
       landedFrom.current = { before: new Set(own.map((child) => child.id)), landing };

@@ -460,7 +460,7 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
     unmount = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <OutlineWriterProvider issueKey={KEY}>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
             <Probe />
             {history}
           </OutlineWriterProvider>
@@ -606,13 +606,17 @@ const FOLLOWING = "default /issues/CORE-1/messages";
 
 /** The history of `KEY` with nothing above it but a query client that never retries, drawn in
  *  `container` where one is given, at the address of the turn `item` where one is given, under
- *  the names a page published of its batched read (`published`) where those are given, and with
- *  the read mark `visitMark` of the visit (99,999 unless a case gives one). */
+ *  the names a page published of its batched read (`published`) where those are given, with
+ *  the read mark `visitMark` of the visit (99,999 unless a case gives one), and under the page's
+ *  writer where `writer` is given, which holds that writer for the case. The issue's newest event
+ *  is past the read mark, so the history reads the first event past it, which `stubHistoryReads`
+ *  answers with its `boundary`. */
 function drawHistory(
   item: string | undefined,
   container?: HTMLElement,
   published?: PublishedReferences,
-  visitMark = 99999
+  visitMark = 99999,
+  writer?: HeldWriter
 ): {
   queryClient: QueryClient;
   unmount: () => void;
@@ -631,22 +635,42 @@ function drawHistory(
       visitMark={visitMark}
     />
   );
+  const named =
+    published === undefined ? (
+      history
+    ) : (
+      <ReferenceNamesProvider>
+        <Publisher published={published} />
+        {history}
+      </ReferenceNamesProvider>
+    );
   const { unmount } = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        {published === undefined ? (
-          history
+        {writer === undefined ? (
+          named
         ) : (
-          <ReferenceNamesProvider>
-            <Publisher published={published} />
-            {history}
-          </ReferenceNamesProvider>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+            <WriterProbe held={writer} />
+            {named}
+          </OutlineWriterProvider>
         )}
       </QueryClientProvider>
     </MemoryRouter>,
     container === undefined ? {} : { container }
   );
   return { queryClient, unmount };
+}
+
+/** Where a case that draws the history under the page's writer (`drawHistory`) holds it. */
+interface HeldWriter {
+  writer?: OutlineWriter;
+}
+
+/** Holds the writer it is drawn under in `held`. */
+function WriterProbe({ held }: { readonly held: HeldWriter }): null {
+  held.writer = useOutlineWriter();
+  return null;
 }
 
 /** Refetches the log, whose reads the case has made fail, over the `entries` entries the history
@@ -2707,34 +2731,13 @@ async function drawLandingHistory(): Promise<{
     turnHeight
   );
   const field = document.body.appendChild(document.createElement("textarea"));
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  const held: HeldWriter = {};
+  const { queryClient, unmount } = drawHistory(undefined, box, undefined, undefined, held);
+  // alice signs in before any landing waits on her, which the history's read of who is signed
+  // in (`IssueHistory.tsx`'s `signedIn`) draws again.
+  act(() => {
+    queryClient.setQueryData(["whoami"], { kind: "user", login: ALICE.id });
   });
-  queryClient.setQueryData(["agents"], []);
-  queryClient.setQueryData(["whoami"], { kind: "user", login: ALICE.id });
-  const held: { writer?: OutlineWriter } = {};
-  function Probe(): ReactNode {
-    held.writer = useOutlineWriter();
-    return null;
-  }
-  const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
-  const { unmount } = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <OutlineWriterProvider issueKey={KEY}>
-          <Probe />
-          <HeldHistory
-            activityFollowing={undefined}
-            issue={issue}
-            item={undefined}
-            state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
-            visitMark={99999}
-          />
-        </OutlineWriterProvider>
-      </QueryClientProvider>
-    </MemoryRouter>,
-    { container: box }
-  );
   const restore = () => {
     unmount();
     restoreLayout();
@@ -2883,7 +2886,7 @@ test("a turn its author edited reads edited after its author, and a turn its aut
     unmount = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <OutlineWriterProvider issueKey={KEY}>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
             <HeldHistory
               activityFollowing={undefined}
               issue={issue}

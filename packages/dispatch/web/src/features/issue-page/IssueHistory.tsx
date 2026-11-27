@@ -23,6 +23,7 @@ import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
 import { noRunLine, taskNeedsLine, useCatchUp } from "../steps/StepsTab";
 import { type StepTaskRows, stepTasks, stepVariant } from "../steps/steps-model";
+import { issueAsks } from "./agents-only";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import { type HandoffFold, useHandoffBodies } from "./HistoryHandoff";
@@ -265,15 +266,15 @@ export function IssueHistory({
   const today = dateKey(new Date().toISOString());
   const days = useMemo(() => {
     // The outline's own ask input (`tree-drafts.ts`), so no turn is in both or neither.
-    const issueAsks = [...(issue.open_asks ?? []), ...(asks.data ?? [])];
+    const everyAsk = issueAsks(issue.open_asks, asks.data);
     // The blocks are known once every read they come from has answered: the asks read, and the
     // results read where a line names a check's block. A read that failed before it answered
     // holds no answer, so until it does no line says that a block is gone.
     const answered = asks.data !== undefined && (!refusesCheck || results.data !== undefined);
     return buildHistory({
       artifacts: issue.artifacts ?? [],
-      asks: issueAsks,
-      blocks: answered ? historyBlocks(issueKey, issueAsks, results.data?.checks ?? []) : undefined,
+      asks: everyAsk,
+      blocks: answered ? historyBlocks(issueKey, everyAsk, results.data?.checks ?? []) : undefined,
       comments: comments.data,
       events,
       handoffs: handoffs.data,
@@ -457,10 +458,8 @@ export function IssueHistory({
   const anchor = useRef<ViewportAnchor>(null);
   useEffect(() => {
     if (item === undefined || landed.current === item.following) return;
-    const entry = document.querySelector<HTMLElement>(
-      `[data-history-item="${CSS.escape(item.id)}"]`
-    );
-    if (entry === null || entry.getClientRects().length === 0) return;
+    const entry = drawnTurn(document, item.id);
+    if (entry === undefined) return;
     landed.current = item.following;
     const box = scrollingAncestor(entry);
     const tall = box !== null && entry.getBoundingClientRect().height > box.clientHeight;
@@ -679,28 +678,31 @@ export function IssueHistory({
   // (`keepFocusedInView`): the next hand-on ends it, and so does the history going.
   const focusKept = useRef<AbortController | null>(null);
   useEffect(() => () => focusKept.current?.abort(), []);
-  // Gives `element` the focus, brought first into Details' view by the least scroll, the one
-  // `block: "nearest"` makes (`nearestScroll`): each hand-on of a press below, and the landing of
-  // a write that answered a turn here (`landing`). The scroll is of Details' box alone, never of
-  // the page under it, and the history's anchor takes it for its own (`scrollBox`), so its event
-  // records no place. It comes before the focus, which then scrolls nothing (`preventScroll`), so
-  // that the focus moving into the entries, which the anchor records as the reader's place, is
-  // recorded where the reader sees it. The element can grow after the focus, as a reference in an
-  // entry's line does once its target's name is read, so it is kept wholly in Details' view by the
-  // same least scroll until the reader acts (`keepFocusedInView`). It can also stop being a link,
-  // as such a reference does once its target answers that it is missing: the focus then goes on to
-  // the entry's first control left, the same way.
+  // Brings `element` wholly into Details' view by the least scroll, the one `block: "nearest"`
+  // makes (`nearestScroll`): each hand-on of a press below (`handTo`), and the landing of a write
+  // that answered a turn here (`landing`), which brings the turn there before its control takes
+  // the focus. The scroll is of Details' box alone, never of the page under it, and the history's
+  // anchor takes it for its own (`scrollBox`), so its event records no place.
+  const bringIntoBox = (element: HTMLElement) => {
+    const box = scroller.current;
+    if (box === null) return;
+    const by = nearestScroll(element.getBoundingClientRect(), box.getBoundingClientRect());
+    if (by !== 0) anchor.current?.scrollBox(by);
+  };
+  // Gives `element` the focus, brought first into Details' view (`bringIntoBox`). The scroll comes
+  // before the focus, which then scrolls nothing (`preventScroll`), so that the focus moving into
+  // the entries, which the anchor records as the reader's place, is recorded where the reader
+  // sees it. The element can grow after the focus, as a reference in an entry's line does once its
+  // target's name is read, so it is kept wholly in Details' view by the same least scroll until
+  // the reader acts (`keepFocusedInView`). It can also stop being a link, as such a reference does
+  // once its target answers that it is missing: the focus then goes on to the entry's first
+  // control left, the same way.
   const handTo = (element: HTMLElement) => {
     focusKept.current?.abort();
     focusKept.current = null;
-    const box = scroller.current;
-    if (box !== null) {
-      const at = element.getBoundingClientRect();
-      const view = box.getBoundingClientRect();
-      const by = nearestScroll(at, view);
-      if (by !== 0) anchor.current?.scrollBox(by);
-    }
+    bringIntoBox(element);
     element.focus({ preventScroll: true });
+    const box = scroller.current;
     if (box !== null) {
       focusKept.current = keepFocusedInView(
         element,
@@ -779,8 +781,9 @@ export function IssueHistory({
   // been elsewhere since; one asked for while Details is shut around the list has no turn on
   // screen to go to, and nor has one whose thread this history no longer holds, as an agents' post
   // a person wrote in, which the outline draws from then on. Each of these ends with the focus
-  // where it is, as the outline ends a landing it draws no row for, and so does one whose new turn
-  // no read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
+  // where it is, as the outline ends a landing under a node it draws no row of, but for one whose
+  // reply takes that node out of this history (`HeldLanding.leavesHistory`), and so does one
+  // whose new turn no read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
   const writer = useOutlineWriter();
   const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
   const endLanding = writer?.landed;
@@ -812,20 +815,11 @@ export function IssueHistory({
       }
       to = turns.find((turn) => !held.before.has(turn.id) && isViewer(turn.author, reader));
     }
-    const drawnTurn =
-      to === undefined
-        ? null
-        : (anchorRoot.current?.querySelector<HTMLElement>(
-            `[data-history-item="${CSS.escape(to.id)}"]`
-          ) ?? null);
-    if (drawnTurn === null || drawnTurn.getClientRects().length === 0) return;
+    const landedOn = to === undefined ? undefined : drawnTurn(anchorRoot.current, to.id);
+    if (landedOn === undefined) return;
     endLanding();
-    const box = scroller.current;
-    if (box !== null) {
-      const by = nearestScroll(drawnTurn.getBoundingClientRect(), box.getBoundingClientRect());
-      if (by !== 0) anchor.current?.scrollBox(by);
-    }
-    const control = drawnTurn.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    bringIntoBox(landedOn);
+    const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
     if (control !== null) handTo(control);
   });
   useEffect(() => {
@@ -1110,6 +1104,14 @@ function TaskGroup({ task }: { task: StepTaskRows }): ReactNode {
 interface HeldParts {
   readonly controls: ReadonlySet<HTMLElement>;
   readonly entries: ReadonlySet<HTMLElement>;
+}
+
+/** The turn `id` as the history drawn under `root` draws it, where it has a box: undefined where
+ *  it is not drawn yet, and where Details is still closed around the list, which gives it none.
+ *  The address's landing finds it (`item`) and so does a write's (`landing`). */
+function drawnTurn(root: ParentNode | null, id: string): HTMLElement | undefined {
+  const turn = root?.querySelector<HTMLElement>(`[data-history-item="${CSS.escape(id)}"]`);
+  return turn == null || turn.getClientRects().length === 0 ? undefined : turn;
 }
 
 /**

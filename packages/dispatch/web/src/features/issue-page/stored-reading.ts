@@ -109,8 +109,9 @@ const releases = new FinalizationRegistry<string>((markdown) => {
 const NO_MARKS: readonly DisplayTree[] = [];
 
 /** A line ending, in any of the three forms markdown reads as one: inside a text run, where the
- *  parse leaves it, and between the lines of a plain text (`plainReading`). */
-const LINE_FEED = /\r\n?|\n/gu;
+ *  parse leaves it, between the lines of a plain text (`plainReading`), and between the lines of
+ *  a code block's code (`node-references/references-list.ts`'s `blockLine`). */
+export const LINE_FEED = /\r\n?|\n/gu;
 
 /**
  * Whatever in a stored text the parse could read as markup (`isPlainText`). Each alternative errs

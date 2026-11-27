@@ -30,6 +30,20 @@ const CONDENSED_AFTER = 40;
  *  brought on screen clears it as it clears the band at the top. Unset while no box is drawn. */
 export const FOOT_HEIGHT_PROPERTY = "--issue-composer-height";
 
+/** The attribute the box at the foot of the screen carries (`IssueComposer.tsx`), which
+ *  `FOOT_BOX` selects, as `DETAILS_ATTRIBUTE` marks Details. */
+export const FOOT_BOX_ATTRIBUTE = "data-foot-box";
+
+/** The box at the foot of the screen. Where Details stands beside the outline, Tab goes from a
+ *  row of the outline to the box and through it to Details, so the outline keeps the facts of the
+ *  node the focus leaves for the box as it does for Details, until the focus leaves the box for
+ *  the rest of the page (`IssueTree.tsx`'s `releaseFocus`, decision 570). */
+export const FOOT_BOX = `[${FOOT_BOX_ATTRIBUTE}]`;
+
+/** The test id of the box at the foot of the screen (`IssueComposer.tsx`), by which a test finds
+ *  it; the page finds it by `FOOT_BOX`. */
+export const FOOT_BOX_TEST_ID = "issue-composer";
+
 /** How far from the band a target is placed when it has to be scrolled to: enough that it does
  *  not sit flush against it. */
 export const CLEARANCE = 8;

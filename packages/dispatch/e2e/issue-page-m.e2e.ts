@@ -103,6 +103,7 @@ import {
   focusThePage,
   nodeRow,
   PHONE,
+  parentOfRow,
   rowWords,
   tree,
   unfoldEveryBranch,
@@ -115,7 +116,13 @@ import {
   pinsList,
 } from "./issue-page-h";
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
-import { composer } from "./issue-page-l";
+import {
+  clearOfBox,
+  composer,
+  composerTarget,
+  seedHistoryTurns,
+  sendFromComposer,
+} from "./issue-page-l";
 import {
   askFacts,
   bandPlaces,
@@ -159,6 +166,7 @@ import { withIssuePage } from "./issue-page-option";
 import { approvalChip, viewportAt } from "./issue-page-p";
 import { tabWalk } from "./issue-page-v";
 import { seedLegionState } from "./legion-state-seed";
+import { commentWithBody } from "./margin-helpers";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { sql } from "./psql";
@@ -5426,7 +5434,7 @@ test("at 1440 px Tab from a row passes through the box at the foot into its fact
       return { key: issue.key, statement: blockNode(spec.slug, "r-tabbed") };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       await expectOpeningLanded(page);
       // Details open at the statement's facts, and the focus back on the statement's row: every
@@ -5471,6 +5479,55 @@ test("at 1440 px Tab from a row passes through the box at the foot into its fact
       ).toHaveCount(1);
     }
   );
+});
+
+// Decision 573: a person's reply from the box to a turn of an agent's comment tied to no text, a
+// thread the history holds, takes that thread out of the history (`agents-only.ts`), so the reply
+// lands in the outline: its row under the comment it answers, focused and on screen. The history
+// no longer draws the thread, and the focus never falls to the page's body. Found by the tester
+// on a running build of 8e624e35, where the writer sent that landing to the history, which never
+// drew it, and the focus fell to the body at 1440 px by keyboard and at 390 px by pointer.
+// SLOW(>=2s): an issue with three entries written, a sign-in, one load of the issue and one reply.
+test("a reply sent by keyboard from the box to an agent's comment in the history lands in the outline under it, focused and on screen", async ({
+  browser,
+}) => {
+  await phase(browser, seedHistoryTurns, async (page, seeded) => {
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      nodeRow(page, seeded.agent.id),
+      "the outline draws the agent's comment before a person wrote in its thread"
+    ).toHaveCount(0);
+    await openDetails(page);
+    const turn = historyItem(page, seeded.agent.id);
+    await expect(turn, "the panel's history draws no agent's comment").toHaveCount(1);
+    await turn.locator(`[data-history-reply="${seeded.agent.id}"]`).focus();
+    await page.keyboard.press("Enter");
+    await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
+    const words = "A reply by keyboard to the agent's comment, from the history.";
+    await sendFromComposer(page, words);
+    const reply = (await commentWithBody(seeded.key, undefined, words)).id;
+    await expect
+      .poll(() => parentOfRow(page, reply), {
+        message: "the reply is not drawn in the outline under the agent's comment",
+      })
+      .toBe(seeded.agent.id);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the focus is not on the reply's row" })
+      .toBe(reply);
+    await expect
+      .poll(() => clearOfBox(nodeRow(page, reply)), { message: "the reply's row is off screen" })
+      .toBe(true);
+    await expect(
+      historyPanel(page).locator(`[data-history-entry="thread:${seeded.agent.id}"]`),
+      "the history still draws the thread a person wrote in"
+    ).toHaveCount(0);
+    expect(
+      await page.evaluate(() => document.activeElement === document.body),
+      "the focus fell to the page's body after the reply was sent"
+    ).toBe(false);
+  });
 });
 
 /** The first lines of the two tasks of the plan the row below seeds, each serving the statement:
@@ -5533,9 +5590,7 @@ test("what references the focused row names each task that serves it by the task
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      await expect(tree(page)).toBeVisible();
-      const facts = await focusedRowFacts(page, seeded.statement);
+      const facts = await rowFacts(page, seeded.key, seeded.statement);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
@@ -5661,7 +5716,7 @@ test("what references the focused row names a task whose block opens with long a
       return { key: issue.key, statement: blockNode(spec.slug, "r-served") };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expect(tree(page)).toBeVisible();
       const facts = await focusedRowFacts(page, seeded.statement);
       const references = facts.locator("[data-node-references]");
@@ -5748,9 +5803,7 @@ test("what references the focused row names a code block that quotes it by the f
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      await expect(tree(page)).toBeVisible();
-      const facts = await focusedRowFacts(page, seeded.task);
+      const facts = await rowFacts(page, seeded.key, seeded.task);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })

@@ -227,7 +227,7 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <OutlineWriterProvider issueKey={KEY}>
+        <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
           <Probe />
           {facts}
         </OutlineWriterProvider>
