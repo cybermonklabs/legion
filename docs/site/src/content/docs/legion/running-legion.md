@@ -782,19 +782,13 @@ What each part is for:
   finds each App's installations itself; `installations` (owner to installation id) is optional.
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
-<<<<<<< 7fa22de66d
   order a person approves them. No phase of the tree starts and no released child starts until a
   person has approved the document of every step listed. No merger merges while the document of a
   step that someone registered waits for a person's approval. A step that nobody registered names
-  no document, so it holds no merger. The
-  default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
-=======
-  order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. A list that names
-  `spec` and not `criteria` lets a root's architect also register the root's Verification document
-  as `criteria`, and that tree then waits for that document too. The default is `[spec]`, which
-  the word `root-issues` also means; the empty list `[]` skips the
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+  no document, so it holds no merger. A list that names `spec` and not `criteria` lets a root's
+  architect also register the root's Verification document as `criteria`, and that tree then
+  waits for that document too. The default is `[spec]`, which the word `root-issues` also means;
+  the empty list `[]` skips the
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
@@ -1572,13 +1566,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-17T10:15:02Z
   merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
-<<<<<<< 7fa22de66d
-  agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  agents in a tool call: 1 — WIDGETS-12 tester "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   waits: 1 — WIDGETS-13 reviewer wait 5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685 until 2026-10-03T12:00:00Z, declared 2026-10-03T10:52:30Z: "the architect's rewrite of check c-smoke"
   holds: 1 — WIDGETS-16 merger held by spec v3 (8a41c2e7-5b90-4f3d-a6e2-1c7d9b0f4e58)
-=======
-  agents in a tool call: 1 — WIDGETS-12 tester "bash toolu_01F3 since 2026-10-03T10:41:07Z"
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none

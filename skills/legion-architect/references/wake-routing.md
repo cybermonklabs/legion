@@ -1,22 +1,13 @@
 # Wake routing
 
-<<<<<<< 7fa22de66d
-Read this when a wake reaches you. A wake about an issue reaches its own architect while that
-architect holds its role, else the nearest one above that does. A `child-status` or `child-closed`,
-and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the
-child. Your role prompt describes each notice; this table says what to do. "Section N" is that
-section of `skill://legion-architect`. Where a row says to ask a person, a child's own architect
-sends the question to the architect above it. The daemon sends no `worker-silent` or
-`worker-background-stalled` notice about a worker whose wait stands or a merger the gate holds
-(its claim's `wait` or `hold` in `read_record`).
-=======
 Read this when a wake reaches you.
 A wake about an issue reaches its own architect while it holds its role, else the nearest one above that does.
 A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child. A root architect's own stall takes the same two finding asks as a child's own architect's (`worker-stalled`).
 Your prompt or its row describes each notice. When a wake leaves an issue in `accepting` waiting on no child, run its last round.
 "Section N" is that section of `skill://legion-architect`.
 Where a row says to ask a person, a child's own architect asks the architect above it.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+
+The daemon sends no `worker-silent` or `worker-background-stalled` notice about a worker whose wait stands or a merger the gate holds (its claim's `wait` or `hold` in `read_record`).
 
 | Wake | What to do |
 | --- | --- |

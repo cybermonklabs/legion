@@ -133,15 +133,15 @@ func TestTheComposedPromptsNameAMissingProductionCheckAsAGap(t *testing.T) {
 // move back with a reason naming the version and the change when the work is stale, with the
 // implementer alone pushing first, or a comment naming the version when it is current. The planner
 // carries its own answer, since a stale plan is its own work wherever its step stands. The merger
-// carries the opening a news task can bring in place of the opened message, and the WAITING line
-// that lets a task reach it between turns. Every architect carries the answers in `accepting` (a
-// sign-off, or a move back to the phase of an earlier step of its task), the root architect's
-// summary with both of its openers (a person's approval, or an ancestor's approval that every
-// version it names stands on) and its duty for a member whose pull request merged, and R4's
-// message: the architect's own Envoy message for a new version the daemon tells nobody of. Each
-// rule is counted once in each part that holds it, then read in the composed prompt of each role,
-// and the composed architect prompts no longer say the moves back that left planning out. This
-// shows the text is loaded, never that a role follows it.
+// carries the opening a news task can bring in place of the opened message, and the end of each
+// turn while the gate is closed, which lets a task reach it between turns. Every architect carries
+// the answers in `accepting` (a sign-off, or a move back to the phase of an earlier step of its
+// task), the root architect's summary with both of its openers (a person's approval, or an
+// ancestor's approval that every version it names stands on) and its duty for a member whose pull
+// request merged, and R4's message: the architect's own Envoy message for a new version the daemon
+// tells nobody of. Each rule is counted once in each part that holds it, then read in the composed
+// prompt of each role, and the composed architect prompts no longer say the moves back that left
+// planning out. This shows the text is loaded, never that a role follows it.
 func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -174,11 +174,11 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		)
 		for _, part := range []string{"roles/merger.md", "go/merger.md"} {
 			ruleIn(t, part, opening, "before you merge", "`request_backward_move`")
-			ruleIn(t, part, waiting, "each turn", "`WAITING`")
+			ruleIn(t, part, waiting, "End each turn while the gate is closed")
 		}
 		composedSays(t, composer, claim.RoleMerger, false, opening,
-			"`The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open`",
-			"end each turn with a line that starts `WAITING`", "The daemon sends a task only between turns")
+			"`The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every gated step that someone registered now stands open`",
+			"End each turn while the gate is closed", "The daemon sends a task only between turns")
 	})
 	t.Run("architects", func(t *testing.T) {
 		const (

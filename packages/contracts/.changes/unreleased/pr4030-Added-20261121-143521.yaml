@@ -1,9 +1,9 @@
 kind: Added
 body: |-
-  Daemon API contract 212: `LegionWaitRequest`, `LegionWaitResponse`, `LegionWaitNewsRequest` and
-  `LegionWaitNewsResponse` for `POST /legion/v1/claims/wait` and `claims/wait-news`; each claim
-  view of the state and the issue record gains an optional `wait` and `hold`; and
-  `LegionOwedResponse` gains an optional `wait` and `hold`.
+  Daemon API contract entry 20261127164432 (wait): `LegionWaitRequest`, `LegionWaitResponse`,
+  `LegionWaitNewsRequest` and `LegionWaitNewsResponse` for `POST /legion/v1/claims/wait` and
+  `claims/wait-news`; each claim view of the state and the issue record gains an optional `wait`
+  and `hold`; and `LegionOwedResponse` gains an optional `wait` and `hold`.
 time: 2026-11-21T14:35:21Z
 custom:
     Issue: pr4030

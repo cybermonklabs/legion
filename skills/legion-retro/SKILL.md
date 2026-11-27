@@ -20,21 +20,11 @@ What the work taught is a `dispatch comment` for the skill librarian; no role wr
 
 ## When retro stops
 
-<<<<<<< 7fa22de66d
-When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do
-not call `handoff_complete`: send the command and its output to the architect's topic on your
-`Legion addressing` line. A defect you find in the work goes to the architect with its evidence,
-and you hold your completion until it answers: while retro holds the phase,
-`request_backward_move` is yours, and `handoff_complete` takes it away. Before each turn of that
-hold ends, declare a wait with the `legion` tool's `declare_wait`, naming the defect and the
-answer you wait on.
-=======
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do not call `handoff_complete`:
 send the command and its output to the architect's topic on your `Legion addressing` line.
 A defect you find in the work, other than a bot thread that step 1 sends back, goes to the architect with its evidence, and you hold your completion until it answers:
 while retro holds the phase, `request_backward_move` is yours, and `handoff_complete` takes it away.
-End each turn of that hold with a WAITING line naming the defect and the answer you wait on.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+Before each turn of that hold ends, declare a wait with the `legion` tool's `declare_wait`, naming the defect and the answer you wait on.
 
 ## Steps
 

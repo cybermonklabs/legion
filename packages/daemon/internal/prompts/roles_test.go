@@ -653,22 +653,12 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // dispatch://INFRA-332's role-prompt rules R1, R2 and R4, dispatch://INFRA-924's fifth and
 // dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
 // when a later edit deletes the rule; it does not show that an agent follows it, which each
-<<<<<<< 7fa22de66d
-// issue's session runs measure. Each of the first four sentences sits in the core its role
-// composes, so the rule reaches that role and no other: the simplify pass and the class search are
-// the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
-// planner's, and the planner's declared wait is phase mechanics, so it lives in its residue rather
-// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
-// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
-// would copy from.
-=======
 // issue's session runs measure. Each INFRA-332 sentence sits in the core its role composes, so the
 // rule reaches that role and no other: the simplify pass is the implementer's, the procedure and
-// can-fail rules the tester's, the open-decision rule the planner's, and the planner's WAITING line
-// is phase mechanics, so it lives in its residue rather than its core. R5 is the exception: Compose
-// names core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of
-// that rule in the prompt tree, which a later core would copy from.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+// can-fail rules the tester's, the open-decision rule the planner's, and the planner's declared
+// wait is phase mechanics, so it lives in its residue rather than its core. R5 is the exception:
+// Compose names core/oracle.md for no role, and it is pinned beside core/common.md to keep one
+// wording of that rule in the prompt tree, which a later core would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// The phrase every part below carries for that rule. Outside these parts,
 	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
@@ -683,13 +673,8 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// R4: the planner completes no phase with an open decision.
 		{"core/planner.md", "A decision only whoever owns the plan can make is never left open in the plan"},
 		{"core/planner.md", "do not complete the phase, and do not choose for them so the plan can be finished"},
-<<<<<<< 7fa22de66d
-		{"core/planner.md", "An open decision in a finished plan is a gap the implementation inherits."},
-		{"planner.md", "declare a wait with the `legion` tool's `declare_wait`, its `waiting_on` naming the decision"},
-=======
 		{"core/planner.md", "An open decision in a finished plan is a gap the steps after yours inherit."},
-		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+		{"planner.md", "declare a wait with the `legion` tool's `declare_wait`, its `waiting_on` naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
 		// core every phase worker but the merger composes and in the oracle core the composer joins for
 		// no role, which is where a later core would copy the sentence from (dispatch://INFRA-924).

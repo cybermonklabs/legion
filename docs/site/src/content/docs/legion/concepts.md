@@ -466,23 +466,16 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-<<<<<<< 7fa22de66d
-again, naming what changed since your approval. Work already in flight carries on, but the merge
-waits: while a step that someone registered waits for a person's approval, the merger merges
-nothing, and each task it gets says the gate is closed. A step that nobody registered names no
-document, so it holds no merger. The daemon only reads approvals;
-nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
-answer is yours, in your name.
-=======
 again, naming what changed since your approval. Work already in flight carries on while the gate
-is closed, and of that work only the merge waits until you approve the new version. When you
-approve it, each worker that holds an affected issue gets a task that names the sections and
-checks that changed, and decides whether its work still matches. A worker whose work is stale
-moves its issue back, and a planner revises its plan instead and runs the plan review again. The
-daemon moves no issue and stops no turn itself, and an issue whose pull request has merged never
-moves back. The daemon only reads approvals; nothing in Legion approves a spec on a person's
-behalf, and the approval Dispatch records at your answer is yours, in your name.
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
+is closed, and of that work only the merge waits until you approve the new version: while a step
+that someone registered waits for a person's approval, the merger merges nothing, and each task it
+gets says the gate is closed. A step that nobody registered names no document, so it holds no
+merger. When you approve the new version, each worker that holds an affected issue gets a task
+that names the sections and checks that changed, and decides whether its work still matches. A
+worker whose work is stale moves its issue back, and a planner revises its plan instead and runs
+the plan review again. The daemon moves no issue and stops no turn itself, and an issue whose pull
+request has merged never moves back. The daemon only reads approvals; nothing in Legion approves a
+spec on a person's behalf, and the approval Dispatch records at your answer is yours, in your name.
 
 `gates.design` is a list, so a deployment can ask for more than one document of the root issue:
 `decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`

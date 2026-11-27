@@ -3582,8 +3582,8 @@ starts its tree from the task its start carries and the daemon's `catch-up` noti
 says: it writes the spec in the issue's own primary document and registers the gate, then waits.
 Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
-<<<<<<< 7fa22de66d
-message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
+message is the daemon's task line (`Working copy: branch legion/<key>, directory <dir>.` on a line
+of its own, then `Continue <title>. Issue: <key>. Phase: <phase>.` on the next): it names your
 phase and is not that message. Read what your role says to read, then declare a wait on the
 targeted message with the `legion` tool's `declare_wait`, its `wake_at` 23 hours from now, and end
 your turn. The targeted message ends the wait. When the daemon refuses the wait, end your turn all
@@ -3592,16 +3592,6 @@ says its previous process was ended), runs `sleep 300` as one bash call (its tim
 seconds) before it declares the wait: the proof holds a tree by ending an implementer's launches
 while its task is outstanding, an end that lands after the task's turn is over charges nothing,
 and the end takes up to a minute to land on a loaded host, so that turn must
-=======
-message is the daemon's task line (`Working copy: branch legion/<key>, directory <dir>.` on a line
-of its own, then `Continue <title>. Issue: <key>. Phase: <phase>.` on the next): it names your
-phase and is not that message. Read what your role says to read, then reply WAITING and wait for
-the targeted message. An implementer, on the daemon's task line and on a new task for the same
-phase (one that says its previous process was ended), runs `sleep 300` as one bash call (its
-timeout set to 600 seconds) before it replies WAITING: the proof holds a tree by ending an
-implementer's launches while its task is outstanding, an end that lands after the task's turn is
-over charges nothing, and the end takes up to a minute to land on a loaded host, so that turn must
->>>>>>> 67bcd7c78393eb8d85c10bbae0ceb998d1b01253
 last long enough to be ended inside. A production check's task (its first line `Production check of
 <key>: …`, handed to the tester once the merge closed its issue) is no phase's task line and
 waits for no targeted message, since the proof sends none to it. Run no
