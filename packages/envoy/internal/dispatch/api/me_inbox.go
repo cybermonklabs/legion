@@ -1487,16 +1487,6 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	),`
 			cut = `
 		limit ` + meInboxDismissedLimit
-		}
-		pageNodes = `
-	page_nodes(node_kind, node_id) as materialized (
-		select pr.node_kind, pr.node_id from page_rows pr` + cut + `
-	),`
-		walkFrom = `
-		cross join page_nodes p`
-		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = any(k.kinds)
-				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
-		if shape.state == myRepliesStateDismissed {
 			// The person's end is tested off every index (meInboxBuild's comment), so this read
 			// takes graph_tuples_as_of_in from the page's node and never an index led by the person.
 			outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = any(k.kinds)
@@ -1510,6 +1500,14 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 				and t.to_kind = p.node_kind and t.to_id = p.node_id
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
 		}
+		pageNodes = `
+	page_nodes(node_kind, node_id) as materialized (
+		select pr.node_kind, pr.node_id from page_rows pr` + cut + `
+	),`
+		walkFrom = `
+		cross join page_nodes p`
+		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = any(k.kinds)
+				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
 	}
 
 	var statement strings.Builder
