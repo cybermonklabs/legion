@@ -79,7 +79,7 @@ func (s *server) recordOwnStatusWrite(ctx context.Context, written dispatch.Issu
 	if written.LastSeq <= 0 || !s.ownDispatchIssue(written.Key) {
 		return nil
 	}
-	event := intake.OwnStatusWrite(written)
+	event := intake.OwnStatusWrite(written, "", "")
 	fact := intake.ObservedIssue(written)
 	fact.Delivered = &event
 	if s.prepare != nil {

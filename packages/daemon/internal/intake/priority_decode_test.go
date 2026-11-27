@@ -78,7 +78,7 @@ func TestTheListingAndTheDetailCarryTheIssuesPriorityOntoTheFact(t *testing.T) {
 			if observed := ObservedIssue(detail); observed.Priority != tc.want {
 				t.Fatalf("the detail's fact carries %v, want %v", observed.Priority, tc.want)
 			}
-			if own := OwnStatusWrite(detail); own.Priority != tc.want {
+			if own := OwnStatusWrite(detail, "", ""); own.Priority != tc.want {
 				t.Fatalf("the daemon's own status write carries %v, want %v", own.Priority, tc.want)
 			}
 		})

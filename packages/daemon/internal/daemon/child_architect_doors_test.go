@@ -151,7 +151,7 @@ func (r *childArchitectRig) apply(id string, fact intake.Fact) {
 func (r *childArchitectRig) written(id string, issue dispatch.Issue) {
 	r.t.Helper()
 	r.dispatch.issue = issue
-	event := intake.OwnStatusWrite(issue)
+	event := intake.OwnStatusWrite(issue, "", "")
 	fact := intake.ObservedIssue(issue)
 	fact.Delivered = &event
 	r.apply(id, fact)

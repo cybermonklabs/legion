@@ -82,7 +82,7 @@ func TestAMoveFromP0ToNoPriorityIsApplied(t *testing.T) {
 		admission := quiet(t, 1)
 		p0Holder(t, pool, "LEGION-1", "A", record.P0)
 		written := intake.OwnStatusWrite(dispatch.Issue{Key: "LEGION-1", Title: "LEGION-1", Status: "in_progress", Rank: "A", HandedOver: true,
-			LastSeq: 2, ResolvedRepo: "acme/widgets"})
+			LastSeq: 2, ResolvedRepo: "acme/widgets"}, "", "")
 		applyFact(t, pool, admission, "own-status-write", written)
 		if got := issue(t, pool, "LEGION-1").Priority; got != record.NoPriority {
 			t.Fatalf("LEGION-1 after its status write returned it with no priority stands at %s, want none", priorityName(got))

@@ -1136,7 +1136,7 @@ func TestAnOlderEventLeavesEachReadsResolvedPriority(t *testing.T) {
 				p0Holder(t, pool, "LEGION-1", "A", record.P1)
 				inheritedHolder(t, pool, "LEGION-9", "C", resolvedFrom(record.P2))
 				applyFact(t, pool, admission, "own-status-write", intake.OwnStatusWrite(dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9",
-					Status: "in_progress", Rank: "C", HandedOver: true, LastSeq: 5, ResolvedRepo: "acme/widgets", Resolved: served}))
+					Status: "in_progress", Rank: "C", HandedOver: true, LastSeq: 5, ResolvedRepo: "acme/widgets", Resolved: served}, "", ""))
 				keeps(t, pool, admission, "LEGION-9")
 			})
 		})

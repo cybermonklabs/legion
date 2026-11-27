@@ -119,3 +119,26 @@ func TestGetIssueKeepsEachChild(t *testing.T) {
 		t.Fatalf("the children = %+v, want %+v", issue.Children, want)
 	}
 }
+
+// The issue read keeps each external link Dispatch lists, by URL and kind, in Dispatch's order: the
+// merge read takes a link to a pull request as a candidate of the issue's merge.
+func TestGetIssueKeepsItsLinks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/ACME-1" {
+			t.Fatalf("request = %s %s, want GET /api/v1/issues/ACME-1", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"key":"ACME-1","project":"ACME","title":"ACME-1","status":"done","parent":null,"rank":"A","labels":[],"last_seq":9,` +
+			`"resolved_repo":"acme/widgets","blocked_by":[],"claim":null,"children":[],"external_links":[` +
+			`{"url":"https://github.com/acme/widgets/pull/70","kind":"github_pr"},{"url":"https://tracker.example/ACME-1"}]}`))
+	}))
+	defer server.Close()
+	issue, err := New(server.URL, BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "ACME-1")
+	if err != nil {
+		t.Fatalf("read the issue: %v", err)
+	}
+	want := []IssueLink{{URL: "https://github.com/acme/widgets/pull/70", Kind: "github_pr"}, {URL: "https://tracker.example/ACME-1"}}
+	if !reflect.DeepEqual(issue.Links, want) {
+		t.Fatalf("the links = %+v, want %+v", issue.Links, want)
+	}
+}

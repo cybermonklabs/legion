@@ -73,6 +73,18 @@ type DispatchIssue struct {
 	// by its daemon-authored todo event.
 	ActorSession string
 	DaemonActor  bool
+	// PersonActor is the id of the person whose event wrote the state: a Dispatch user actor's
+	// nonempty id as decoded, or the operator's own write through its grant (api's
+	// recordOwnStatusWrite). It is empty for a session, for Dispatch's own system actor, for an
+	// event naming no actor, and for a view or listing, which no one event wrote. Only a person may
+	// confirm never-merged work (D17), so a door reads it, never ActorSession or DaemonActor.
+	PersonActor string
+	// Requester is who asked for the status a route's own write made (OwnStatusWrite): the
+	// controller's set_status, an architect's rerun_child or release_children, or a person's,
+	// the operator's legion issue status among them. A request for new work on a merged issue
+	// carries it to the request it writes. It is empty for a decoded event, whose actor says who
+	// wrote it.
+	Requester claim.Role
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
 	// own, else its nearest ancestor's, else its project's default; empty when it resolves to none.
 	// The workflow takes it when it first records the issue, and never after.
@@ -186,8 +198,11 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 // (dispatch.Client.SetStatus), the state the event carries, at the event's sequence, and its actor
 // is the daemon's own session. An API route that writes a status applies it in the request, so the
 // record does not wait for the event to come back through the consumer; the event, at a sequence no
-// later than this one, then finds its fence.
-func OwnStatusWrite(written dispatch.Issue) DispatchIssue {
+// later than this one, then finds its fence. requester is who asked the route for the write
+// (DispatchIssue.Requester), and personActor the person who asked through the operator's grant,
+// "" for any other asker (DispatchIssue.PersonActor): Dispatch records every such write as the
+// daemon's, so only the route can say who asked.
+func OwnStatusWrite(written dispatch.Issue, requester claim.Role, personActor string) DispatchIssue {
 	event := ObservedIssue(written)
 	event.Observed, event.DaemonActor, event.StatusMove, event.Type = false, true, true, "issue.updated"
 	if written.Status == "done" {
@@ -1174,6 +1189,20 @@ type CloseChecksRead struct {
 }
 
 func (f CloseChecksRead) namedIssue() (string, bool) { return f.Issue, true }
+
+// MergeRead is the outbox's read of an older issue's merge (record.MergeRead) finding it, carried
+// back as a fact: never decoded from an event. Issue and Generation are the pending row's. Merge is
+// the newest merged pull request that names the issue, as GitHub answered it, in the snapshot's
+// fields (record.Store.PutMergeSnapshot), with a field GitHub did not answer left zero. The
+// executor posts no fact for a read with no answering candidate: an unread merge is no merge. The
+// workflow applies it under the fact lock, where it rereads who asked from the standing row.
+type MergeRead struct {
+	Issue      string
+	Generation uint64
+	Merge      record.Merge
+}
+
+func (f MergeRead) namedIssue() (string, bool) { return f.Issue, true }
 
 // ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
 // finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for

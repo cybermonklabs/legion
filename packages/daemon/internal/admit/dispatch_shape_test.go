@@ -259,7 +259,7 @@ func TestTheDispatchShapeReachesTheRecordFromBytes(t *testing.T) {
 				if err != nil {
 					t.Fatalf("write the status of %s: %v", tc.key, err)
 				}
-				applyFact(t, pool, admission, "own-status-write", intake.OwnStatusWrite(written))
+				applyFact(t, pool, admission, "own-status-write", intake.OwnStatusWrite(written, "", ""))
 				check(t, pool, "the status write")
 			})
 		})

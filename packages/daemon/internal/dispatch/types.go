@@ -312,6 +312,11 @@ type Issue struct {
 	// It is empty for an issue with no child, and for an Issue made from a listing
 	// (IssueSummary.Issue), which carries none.
 	Children []IssueChild
+	// Links is the issue's external links as the issue read lists them (GET /api/v1/issues/{key},
+	// its external_links), in Dispatch's order. The merge read takes a link to a pull request as a
+	// candidate of the issue's merge. It is empty for an issue with none, and for an Issue made from
+	// a listing (IssueSummary.Issue), which carries none.
+	Links []IssueLink
 }
 
 // IssueChild is one direct child of an issue as Dispatch's issue read lists it (its
@@ -321,6 +326,13 @@ type Issue struct {
 type IssueChild struct {
 	Key    string `json:"key"`
 	Status string `json:"status"`
+}
+
+// IssueLink is one external link of an issue as Dispatch's issue read lists it (its
+// model.ExternalLink): the URL, and the kind Dispatch names it by, "" for none.
+type IssueLink struct {
+	URL  string `json:"url"`
+	Kind string `json:"kind"`
 }
 
 // ResolvedPriority is a resolved priority as a Dispatch read serves it: Priority its level, 0 for P0
