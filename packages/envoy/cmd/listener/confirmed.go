@@ -748,9 +748,12 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 			// The sender is still waiting, so a forward whose relay frame would be past the max
 			// payload is refused here, the 413 the routes answer for the same rule
 			// (bus.Client.RelayFrameTooLarge), rather than stored for a holder that could be handed
-			// it only as the relay's notice. A forward of a copy the stream already holds - the
-			// kept lane's walk, the role lane's delivery - makes no such check: that copy is past
-			// refusing, and its holder is handed it whole or the notice in its place.
+			// it only as the relay's notice. The forwards no sender waits on make no such check: the
+			// kept lane's walk hands on a copy the stream already holds, and the role lane's
+			// delivery a role message it took from its core-NATS subscription, whose publisher waits
+			// for no answer. A refusal there would answer no sender: it would end the forward as a
+			// delivery exception and hand the holder nothing, where the stored copy reaches its
+			// holder whole or as the relay's notice.
 			if err := d.client.RelayFrameTooLarge(subject, forwarded); err != nil {
 				send.refused(err)
 				return

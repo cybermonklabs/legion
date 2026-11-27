@@ -1,12 +1,5 @@
 package bus
 
-import (
-	"encoding/json"
-	"fmt"
-
-	"github.com/sjawhar/envoy/internal/contracts"
-)
-
 // A stored message reaches a session in consumer mode as a relay frame: cmd/listener's relay
 // (sessionRelays.publishFrame) publishes the stored bytes, unchanged, on the session's relay
 // subject (DeliverSubject) under headers of its own (relayFrameHeader), and with none of the
@@ -23,8 +16,9 @@ import (
 // nanoseconds in UTC, Envoy-Gap (13) beside "true", and Envoy-Gap-Reason (20) beside its longest
 // value, repository_withheld (19). cmd/listener's TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader
 // requires the relay's largest header block to be this bound exactly, over every gap reason the
-// relay writes, so a header the relay adds or lengthens fails that test until this bound counts
-// it, and so does a bound set larger than the relay needs.
+// relay can write: the relay names a gap only by a value of its relayGapReason type, whose names
+// the row ranges over whole, so a header the relay adds or lengthens fails that test until this
+// bound counts it, and so does a bound set larger than the relay needs.
 const relayFrameHeaderBase = 12 + 17 + (20 + 20) + (19 + StreamIDBytes) + (19 + 20) + (19 + 30) + (13 + 4) + (20 + 19)
 
 // StreamIDBytes is the length of every stream identity this package writes (StreamIDMetadataKey):
@@ -40,41 +34,14 @@ const StreamIDBytes = 32
 // subject take (relayFrameHeaderBase): the room against the server's max payload that the
 // listener's own checks of a message leave beside its envelope, so a message they accept reaches a
 // session whole. Those checks are TooLargeToPublish, which both message routes ask first, the
-// publish of an envelope on its own topic (publishJetStream), and a role send's forward to a live
-// holder (RelayFrameTooLarge). Every other stored write is held to the stream's bound alone: a
-// publish window's sends (Dispatch's outbox), PublishStoredAck and PublishStoredAs (a role's kept
-// copy, a delivery exception), the raw stored writes, and a forward of a copy the stream already
-// holds (the kept lane's walk, the role lane's delivery). A message they store with less room than
-// this reaches a session as the relay's notice in its place.
+// publish of an envelope on its own topic (publishJetStream, by ownTopicTooLarge), and a role
+// send's forward to a live holder (RelayFrameTooLarge). Every other stored write is held to the
+// stream's bound alone: a publish window's sends (Dispatch's outbox), PublishStoredAck and
+// PublishStoredAs (a role's kept copy, a delivery exception), the raw stored writes, and the
+// forwards no sender waits on - the kept lane's walk, which hands on a copy the stream already
+// holds, and the role lane's delivery of a role message it took from its core-NATS subscription,
+// whose publisher waits for no answer (cmd/listener's startRoleLane). A message they store with
+// less room than this reaches a session as the relay's notice in its place.
 func RelayFrameHeaderBytes(subject string) int {
 	return relayFrameHeaderBase + len(subject)
-}
-
-// RelayFrameTooLarge is the ErrTooLarge of a forward of item to subject whose relay frame, the
-// envelope as encoded and the relay's headers (RelayFrameHeaderBytes), would be past the max payload
-// the client last read, and nil for one within it or while the client knows none. It sends
-// nothing. cmd/listener's role send asks it of its forward to a live holder, whose sender is still
-// waiting for the answer.
-func (c *Client) RelayFrameTooLarge(subject string, item contracts.Envelope) error {
-	var encoded byteCount
-	if err := json.NewEncoder(&encoded).Encode(item); err != nil {
-		// An envelope that does not encode is refused by the forward's own encoding, which
-		// names the failure.
-		return nil
-	}
-	// Encode ends what it writes with a newline, which json.Marshal, and so the forward, leaves
-	// out.
-	return relayFrameTooLarge(int64(encoded)-1, subject, c.maxPayload.Load())
-}
-
-// relayFrameTooLarge is the ErrTooLarge of a message of data bytes stored on subject whose relay
-// frame, its data and the relay's headers (RelayFrameHeaderBytes), is past maxPayload, and nil
-// for one within it or for a maxPayload of 0, which a client that knows no max payload reads.
-func relayFrameTooLarge(data int64, subject string, maxPayload int64) error {
-	frame := data + int64(RelayFrameHeaderBytes(subject))
-	if maxPayload <= 0 || frame <= maxPayload {
-		return nil
-	}
-	return fmt.Errorf("%w: a message of %d bytes, which reaches a session in a relay frame of %d bytes with the relay's headers, against the server's max payload of %d bytes",
-		ErrTooLarge, data, frame, maxPayload)
 }

@@ -46,20 +46,34 @@ const (
 	// repository answer for the session's projects, and names that gap in relayHeaderGapReason.
 	relayHeaderGap = "Envoy-Gap"
 	// relayHeaderGapReason names a gap that is not the stream's own loss, beside relayHeaderGap:
-	// relayGapRepositoryWithheld for the edge's withheld GitHub events (sessionRelays.edgeWithholds).
-	// A gap mark with no reason is the stream's retention gap.
+	// relayGapReasonNames[relayGapRepositoryWithheld] for the edge's withheld GitHub events
+	// (sessionRelays.edgeWithholds). A gap mark with no reason is the stream's retention gap.
 	relayHeaderGapReason = "Envoy-Gap-Reason"
-	// relayGapRepositoryWithheld is relayHeaderGapReason's value for a gap of GitHub events the
-	// edge withheld because no fresh repository answer could say they were the session's.
-	relayGapRepositoryWithheld = "repository_withheld"
 )
 
-// relayGapReasons is every value relayHeaderGapReason takes: relayNATS sets gapReason to these and
-// to "" alone. The room the listener's checks reserve for a frame's headers counts the longest of
-// them (bus.RelayFrameHeaderBytes), and TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader
-// ranges over this list, so a reason added here that is longer fails that row until the bound
-// counts it.
-var relayGapReasons = []string{relayGapRepositoryWithheld}
+// relayGapReason is the reason a frame's gap mark (relayHeaderGap) names: the stream's retention
+// gap, which writes no reason, or a reason relayHeaderGapReason carries by its name in
+// relayGapReasonNames. The relay names a gap by no other value: relayNATS's gapReason,
+// publishFrame and relayFrameHeader all take this type, and relayFrameHeader writes the name of
+// the reason it is given, so every reason the relay can write is one below relayGapReasonCount.
+// TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader ranges over all of them, so a reason added
+// here whose name is longer fails that row until the room the listener's checks reserve for a
+// frame's headers (bus.RelayFrameHeaderBytes) counts it.
+type relayGapReason uint8
+
+const (
+	// relayGapRetention is the stream's retention gap: messages the session had not taken are gone.
+	relayGapRetention relayGapReason = iota
+	// relayGapRepositoryWithheld is a gap of GitHub events the edge withheld because no fresh
+	// repository answer could say they were the session's.
+	relayGapRepositoryWithheld
+	// relayGapReasonCount is how many reasons there are: every one is below it.
+	relayGapReasonCount
+)
+
+// relayGapReasonNames is what relayHeaderGapReason carries for each reason, "" for the retention
+// gap, which writes none.
+var relayGapReasonNames = [relayGapReasonCount]string{relayGapRepositoryWithheld: "repository_withheld"}
 
 // The replies a session sends on a frame's reply subject, each exactly one ASCII word.
 const (
@@ -1176,8 +1190,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
 		return relayRetry
 	}
-	// gapReason names the gap the next frame marks, "" for the stream's retention gap
-	// (relayHeaderGapReason). owed is the mark the next frame carries for GitHub events withheld
+	// gapReason names the gap the next frame marks, relayGapRetention for the stream's retention
+	// gap (relayHeaderGapReason). owed is the mark the next frame carries for GitHub events withheld
 	// with no frame sent after them, which the frame clears once it is published
 	// (repositoryGapSent), "" for none: the events are acknowledged, so the stream's start says
 	// nothing of them. It is the mark this run noted for an event it withheld, and before each
@@ -1187,7 +1201,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// while it moves, which rides the first frame after the copy shows it. carried is the last
 	// mark a frame of this run carried, which the run does not take from the copy again: the copy
 	// can trail the clear, and the session would be sent the same gap notice twice.
-	streamID, gap, gapReason, owed, carried := start.StreamID, start.Gap, "", "", ""
+	streamID, gap, gapReason, owed, carried := start.StreamID, start.Gap, relayGapRetention, "", ""
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
@@ -1272,7 +1286,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.repositoryGapSent(ctx, sessionID, owed)
 			carried = owed
 		}
-		gap, gapReason, owed = false, "", ""
+		gap, gapReason, owed = false, relayGapRetention, ""
 	}
 }
 
@@ -1461,8 +1475,9 @@ func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
 // marks the frame as the first after a gap, and gapReason names that gap when it is not the
 // stream's retention gap.
 //
-// A frame the bus refuses for its size (bus.ErrTooLarge: the stored message and the relay's
-// headers past the server's max payload) goes out as a notice in its place (relayTooLargeNotice),
+// A frame the bus refuses for its size - the stored message and the relay's headers past the
+// server's max payload, which SessionConsumers.Publish answers as a bus.MessageTooLargeError, the
+// one form every size refusal takes - goes out as a notice in its place (publishTooLargeNotice),
 // under the same headers and the same reply subject, so the session's answer to the notice
 // settles the message as its answer to the frame would have: done acknowledges it, and nak has
 // the server deliver it again, and so the notice again. Such a message never reaches the session
@@ -1473,7 +1488,7 @@ func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
 // that meets this - a publish window's send of Dispatch's outbox, a delivery exception, a role's
 // kept copy and its forward, a role lane's forward, a raw stored write - and so can an older
 // build, or a max payload the server has since lowered.
-func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason, owed string) error {
+func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason relayGapReason, owed string) error {
 	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
 	token := reply[strings.LastIndexByte(reply, '.')+1:]
 	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered, gapMark: owed}
@@ -1492,10 +1507,11 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 		Data:    msg.Data,
 	}
 	err := m.delivery.consumers.Publish(ctx, out)
-	if !errors.Is(err, bus.ErrTooLarge) {
+	var tooLarge *bus.MessageTooLargeError
+	if !errors.As(err, &tooLarge) {
 		return err
 	}
-	return m.publishTooLargeNotice(ctx, run.sessionID, out, msg, streamID, err)
+	return m.publishTooLargeNotice(ctx, run.sessionID, out, msg, streamID, tooLarge)
 }
 
 // relayFrameHeader is the header of the frame of a message stored on subject at stream sequence
@@ -1503,7 +1519,7 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 // marking it the first after a gap that gapReason names when it is not the stream's retention
 // gap. Its largest is bus.RelayFrameHeaderBytes(subject), the room the listener's publish of an
 // envelope on its own topic leaves for it (TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader).
-func relayFrameHeader(subject string, seq uint64, streamID string, delivered uint64, storedAt time.Time, gap bool, gapReason string) nats.Header {
+func relayFrameHeader(subject string, seq uint64, streamID string, delivered uint64, storedAt time.Time, gap bool, gapReason relayGapReason) nats.Header {
 	header := nats.Header{}
 	header.Set(relayHeaderSubject, subject)
 	header.Set(relayHeaderStreamSeq, strconv.FormatUint(seq, 10))
@@ -1512,8 +1528,8 @@ func relayFrameHeader(subject string, seq uint64, streamID string, delivered uin
 	header.Set(relayHeaderStoredAt, storedAt.UTC().Format(time.RFC3339Nano))
 	if gap {
 		header.Set(relayHeaderGap, "true")
-		if gapReason != "" {
-			header.Set(relayHeaderGapReason, gapReason)
+		if name := relayGapReasonNames[gapReason]; name != "" {
+			header.Set(relayHeaderGapReason, name)
 		}
 	}
 	return header

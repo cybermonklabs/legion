@@ -48,9 +48,16 @@ var errRelayNoticeTooLarge = errors.New("the notice of a frame too large to publ
 // the relay's headers, and the server's max payload they are past - and who sent it, as far as
 // the message says. repo is the repository a GitHub event names (eventRepository), for an edge
 // listener's relay socket, which passes a frame on a GitHub subject only for a repository of the
-// session's projects and reads it from the payload. cut names each field the notice cut or left
-// out, by its name in this payload, so a reader can tell a value the message held whole from one
-// the notice shortened; it is absent when the notice cut nothing.
+// session's projects and reads it from the payload.
+//
+// cut names each text of the message the notice does not carry as the message holds it - cut
+// short, left out, or a topic replaced by the subject the stream stored the message on - so a
+// reader can tell a value the message held whole from one the notice changed; it is absent when
+// the notice carries every text the message holds whole. A text is named where the notice carries
+// it: by its name in this payload for the six this payload carries (event_id, original_topic,
+// source, source_session, payload_summary, repo), and by its name in the notice's own envelope
+// (contracts.Envelope) for the role mark and the trace id, which the envelope carries (role,
+// trace_id). noticeTexts.cut is the one rule that names them.
 type relayTooLargePayload struct {
 	Reason         string   `json:"reason"`
 	EventID        string   `json:"event_id,omitempty"`
@@ -69,20 +76,15 @@ type relayTooLargePayload struct {
 // publishTooLargeNotice publishes the notice of msg (relayTooLargeNotice) on frame, the frame the
 // bus refused for its size with refusal, in place of its data, so it goes under the frame's own
 // headers and reply subject (publishFrame), and writes one line naming the message. The frame's
-// size and the max payload it was held to are the refusal's own (bus.MessageTooLargeError), so the
-// notice and the line name the numbers the refusal was made on. The notice is built to fit the
-// room those headers leave under that max payload. A refusal that names no such numbers, a notice
-// that cannot fit (errRelayNoticeTooLarge) and a notice that cannot be published are the frame's
-// failure, which the relay answers as every failed publish: a restart at the ack floor.
-func (m *sessionRelays) publishTooLargeNotice(ctx context.Context, sessionID string, frame *nats.Msg, msg bus.SessionMessage, streamID string, refusal error) error {
-	var tooLarge *bus.MessageTooLargeError
-	if !errors.As(refusal, &tooLarge) {
-		return refusal
-	}
-	// What the server's max payload holds a message to is its data and its headers, never its
-	// subject or reply; the notice goes under the frame's own headers.
-	room := tooLarge.MaxPayload - int64((&nats.Msg{Header: frame.Header}).Size())
-	notice, payload, err := relayTooLargeNotice(msg, streamID, tooLarge.Size, tooLarge.MaxPayload, room)
+// size and the max payload it was held to are the refusal's own, so the notice and the line name
+// the numbers the refusal was made on, and so is the room the notice may take: the refusal counted
+// the frame's data and headers (bus.MessageBytes), so its size less the data is the headers the
+// notice goes under. A notice that cannot fit (errRelayNoticeTooLarge) and a notice that cannot be
+// published are the frame's failure, which the relay answers as every failed publish: a restart at
+// the ack floor.
+func (m *sessionRelays) publishTooLargeNotice(ctx context.Context, sessionID string, frame *nats.Msg, msg bus.SessionMessage, streamID string, refusal *bus.MessageTooLargeError) error {
+	room := refusal.MaxPayload - (refusal.Size - int64(len(frame.Data)))
+	notice, payload, err := relayTooLargeNotice(msg, streamID, refusal.Size, refusal.MaxPayload, room)
 	if err != nil {
 		return errors.Join(refusal, err)
 	}
@@ -117,71 +119,46 @@ func (m *sessionRelays) publishTooLargeNotice(ctx context.Context, sessionID str
 // floor is answered done there without being shown twice.
 //
 // The notice fits by construction. The stored message is read only here and can hold any bytes a
-// publisher gave it, so each text the notice copies from it is cut to one line of
-// relayNoticeFieldRunes (noticeField), a repo past GitHub's own limits is left out (noticeRepo), and
-// a topic past what NATS takes as a subject (bus.MaxSubjectBytes), which no publish of the bus made,
-// gives way to the subject the stream stored the message on; each field cut or left out is named
-// in the payload's cut. The rest is fixed in size, so the notice is a few kilobytes at most. It is
-// then measured against room, and a notice past it is built again with every text of the message
-// left out, each named in cut; a bare notice still past room, which only a server with a max
-// payload of a few kilobytes makes, is errRelayNoticeTooLarge, and nothing is published.
+// publisher gave it, so each text the notice copies is bounded (noticeTexts.carried), and the rest
+// is fixed in size, so the notice is a few kilobytes at most. It is then measured against room,
+// and a notice past it is built again bare: every text of the message left out and the topic the
+// stored subject. A bare notice still past room, which only a server with a max payload of a few
+// kilobytes makes, is errRelayNoticeTooLarge, and nothing is published. Both notices are built
+// from the same parts, and each names in its cut every text it does not carry as the message holds
+// it (noticeTexts.cut).
 func relayTooLargeNotice(msg bus.SessionMessage, streamID string, frameSize, maxPayload, room int64) ([]byte, relayTooLargePayload, error) {
 	// A message that does not decode, or decodes in part, still has its notice: the fields it
 	// does not name are left out, and the notice names it by the subject and sequence it was
 	// stored at.
 	var original contracts.Envelope
 	_ = json.Unmarshal(msg.Data, &original)
-	topic := original.Topic
-	if strings.TrimSpace(topic) == "" || len(topic) > bus.MaxSubjectBytes {
-		topic = msg.Subject
-	}
+	held := heldNoticeTexts(original, msg.Data)
 	seq := strconv.FormatUint(msg.StreamSeq, 10)
 	sum := sha256.Sum256([]byte(relayTooLargeReason + "\x00" + streamID + "\x00" + seq))
 	noticeID := hex.EncodeToString(sum[:16])
-	var cut []string
-	field := func(name, text string) string {
-		value, shortened := noticeField(text)
-		if shortened {
-			cut = append(cut, name)
+	build := func(carried noticeTexts) ([]byte, relayTooLargePayload, error) {
+		payload := relayTooLargePayload{
+			Reason:         relayTooLargeReason,
+			EventID:        carried.eventID,
+			OriginalTopic:  carried.originalTopic,
+			StreamSeq:      msg.StreamSeq,
+			Size:           len(msg.Data),
+			FrameSize:      frameSize,
+			MaxPayload:     maxPayload,
+			Source:         carried.source,
+			SourceSession:  carried.sourceSession,
+			PayloadSummary: carried.payloadSummary,
+			Repo:           carried.repo,
+			Cut:            held.cut(carried),
 		}
-		return value
-	}
-	payload := relayTooLargePayload{
-		Reason:         relayTooLargeReason,
-		EventID:        field("event_id", original.EventID),
-		OriginalTopic:  topic,
-		StreamSeq:      msg.StreamSeq,
-		Size:           len(msg.Data),
-		FrameSize:      frameSize,
-		MaxPayload:     maxPayload,
-		Source:         field("source", original.Source),
-		SourceSession:  field("source_session", original.SourceSession),
-		PayloadSummary: field("payload_summary", original.PayloadSummary),
-	}
-	repo, repoLeftOut := noticeRepo(msg.Data)
-	payload.Repo = repo
-	if repoLeftOut {
-		cut = append(cut, "repo")
-	}
-	// A role mark cut short would name another role, which an edge socket judges the notice by, so
-	// one past the bound is left out whole, as a repo is.
-	role, roleCut := noticeField(original.Role)
-	if roleCut {
-		role = ""
-		cut = append(cut, "role")
-	}
-	trace := field("trace_id", original.TraceID)
-	payload.Cut = cut
-	build := func(payload relayTooLargePayload, role string) ([]byte, error) {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
-			return nil, fmt.Errorf("encode the too-large notice: %w", err)
+			return nil, payload, fmt.Errorf("encode the too-large notice: %w", err)
 		}
 		named := payload.EventID
 		if named == "" {
 			named = "the message at stream sequence " + seq
 		}
-		shownTopic, _ := noticeField(payload.OriginalTopic)
 		notice := contracts.Envelope{
 			EventID:        noticeID,
 			Source:         "envoy",
@@ -189,65 +166,145 @@ func relayTooLargeNotice(msg bus.SessionMessage, streamID string, frameSize, max
 			Topic:          payload.OriginalTopic,
 			DedupeKey:      "envoy." + relayTooLargeReason + "." + noticeID,
 			IssuedAt:       contracts.NowMillis(),
-			PayloadSummary: fmt.Sprintf("a message too large to deliver: %s on %s, %d bytes", named, shownTopic, payload.Size),
+			PayloadSummary: fmt.Sprintf("a message too large to deliver: %s on %s, %d bytes", named, noticeField(payload.OriginalTopic), payload.Size),
 			Payload:        string(encoded),
-			TraceID:        cmp.Or(trace, noticeID),
-			Role:           role,
+			TraceID:        cmp.Or(carried.traceID, noticeID),
+			Role:           carried.role,
 		}
 		if err := notice.Validate(); err != nil {
-			return nil, fmt.Errorf("validate the too-large notice: %w", err)
+			return nil, payload, fmt.Errorf("validate the too-large notice: %w", err)
 		}
 		data, err := json.Marshal(notice)
 		if err != nil {
-			return nil, fmt.Errorf("encode the too-large notice: %w", err)
+			return nil, payload, fmt.Errorf("encode the too-large notice: %w", err)
 		}
-		return data, nil
-	}
-	data, err := build(payload, role)
-	if err != nil {
-		return nil, payload, err
-	}
-	if int64(len(data)) <= room {
 		return data, payload, nil
+	}
+	data, payload, err := build(held.carried(msg.Subject))
+	if err != nil || int64(len(data)) <= room {
+		return data, payload, err
 	}
 	// The bare notice: every text of the message left out, the topic the stored subject, which
 	// the frame's own Envoy-Subject header already carries, and the numbers kept.
-	bare := relayTooLargePayload{
-		Reason: relayTooLargeReason, OriginalTopic: msg.Subject, StreamSeq: msg.StreamSeq,
-		Size: len(msg.Data), FrameSize: frameSize, MaxPayload: maxPayload,
-		Cut: []string{"event_id", "original_topic", "source", "source_session", "payload_summary", "repo", "role"},
-	}
-	data, err = build(bare, "")
+	data, payload, err = build(noticeTexts{originalTopic: msg.Subject})
 	if err != nil {
-		return nil, bare, err
+		return nil, payload, err
 	}
 	if int64(len(data)) > room {
-		return nil, bare, fmt.Errorf("%w: the bare notice takes %d bytes and its frame leaves %d", errRelayNoticeTooLarge, len(data), room)
+		return nil, payload, fmt.Errorf("%w: the bare notice takes %d bytes and its frame leaves %d", errRelayNoticeTooLarge, len(data), room)
 	}
-	return data, bare, nil
+	return data, payload, nil
 }
 
-// noticeField is text as a notice carries it, and whether the notice shortened it: its first
-// non-empty line cut to relayNoticeFieldRunes with an ellipsis (contracts.OneLineSummary), and ""
-// for one that holds no such line. The message the notice stands for is read nowhere else, so
-// nothing else bounds what its fields hold.
-func noticeField(text string) (string, bool) {
-	trimmed := strings.TrimSpace(text)
-	value := contracts.OneLineSummary(trimmed)
-	return value, value != trimmed
+// noticeTexts is each text of a message a notice copies, under the name the notice's cut gives it:
+// the payload's own (relayTooLargePayload) for the six the payload carries, and the notice
+// envelope's own (contracts.Envelope) for the role mark and the trace id, which the envelope
+// carries. It is both what a message holds (heldNoticeTexts) and what a notice carries of it
+// (carried, and the bare notice's), so a notice's cut is the difference of the two (cut), one rule
+// for every text and the topic.
+type noticeTexts struct {
+	eventID, originalTopic, source, sourceSession, payloadSummary, repo, role, traceID string
+	// repoUnread, on what a message holds, is a repository the event names in a way readers
+	// disagree on (eventRepository's errAmbiguousFrameKey and errPrototypeFrameKey): it holds a
+	// repo that no notice can carry, so cut names it. What a notice carries never sets it.
+	repoUnread bool
 }
 
-// noticeRepo is the repository a GitHub event stored as data names (eventRepository), as the
-// notice carries it, and whether the notice left one out: a repo whose owner or name is past
-// GitHub's own limits names no GitHub repository, and cutting it would name another one, so it is
-// left out whole.
-func noticeRepo(data []byte) (string, bool) {
-	owner, name, named, _ := eventRepository(data)
-	if !named {
-		return "", false
+// heldNoticeTexts is each text of original, the message the stream stored as data, as the message
+// holds it (noticeTexts). Its repo is the repository the GitHub event names (eventRepository),
+// owner/name, and none for an event that names none; an event that names one in a way readers
+// disagree on holds one no notice carries (repoUnread).
+func heldNoticeTexts(original contracts.Envelope, data []byte) noticeTexts {
+	held := noticeTexts{
+		eventID:        original.EventID,
+		originalTopic:  original.Topic,
+		source:         original.Source,
+		sourceSession:  original.SourceSession,
+		payloadSummary: original.PayloadSummary,
+		role:           original.Role,
+		traceID:        original.TraceID,
 	}
+	owner, name, named, err := eventRepository(data)
+	switch {
+	case err != nil:
+		held.repoUnread = true
+	case named:
+		held.repo = owner + "/" + name
+	}
+	return held
+}
+
+// carried is what a notice carries of a message that holds held, each text bounded: cut to one
+// line of relayNoticeFieldRunes (noticeField); a repo past GitHub's own limits left out whole
+// (noticeRepo), and so is one readers disagree on; a role mark the notice would change left out
+// whole, since a role mark cut short would name another role, which an edge socket judges the
+// notice by; and a topic that is empty or past what NATS takes as a subject
+// (contracts.SubjectMaxBytes), which no publish of the bus made, replaced by subject, the one the
+// stream stored the message on.
+func (held noticeTexts) carried(subject string) noticeTexts {
+	topic := held.originalTopic
+	if strings.TrimSpace(topic) == "" || len(topic) > contracts.SubjectMaxBytes {
+		topic = subject
+	}
+	role := noticeField(held.role)
+	if role != held.role {
+		role = ""
+	}
+	return noticeTexts{
+		eventID:        noticeField(held.eventID),
+		originalTopic:  topic,
+		source:         noticeField(held.source),
+		sourceSession:  noticeField(held.sourceSession),
+		payloadSummary: noticeField(held.payloadSummary),
+		repo:           noticeRepo(held.repo),
+		role:           role,
+		traceID:        noticeField(held.traceID),
+	}
+}
+
+// cut is relayTooLargePayload's cut of a notice that carries carried of a message that holds held:
+// the name of each text the message holds that the notice does not carry as the message holds it
+// - cut short, left out, or a topic replaced by the stored subject - in the order the payload and
+// then the envelope carry them, and nil when the notice carries every text the message holds
+// whole. A text the message does not hold is no cut, whatever the notice carries in its place.
+func (held noticeTexts) cut(carried noticeTexts) []string {
+	var cut []string
+	for _, text := range []struct {
+		name, held, carried string
+		unread              bool
+	}{
+		{"event_id", held.eventID, carried.eventID, false},
+		{"original_topic", held.originalTopic, carried.originalTopic, false},
+		{"source", held.source, carried.source, false},
+		{"source_session", held.sourceSession, carried.sourceSession, false},
+		{"payload_summary", held.payloadSummary, carried.payloadSummary, false},
+		{"repo", held.repo, carried.repo, held.repoUnread},
+		{"role", held.role, carried.role, false},
+		{"trace_id", held.traceID, carried.traceID, false},
+	} {
+		if text.unread || (text.held != "" && text.carried != text.held) {
+			cut = append(cut, text.name)
+		}
+	}
+	return cut
+}
+
+// noticeField is text as a notice carries it: its first non-empty line, cut to
+// relayNoticeFieldRunes with an ellipsis (contracts.OneLineSummary), and "" for one that holds no
+// such line. A text it does not return unchanged is one the notice does not carry whole, which
+// noticeTexts.cut names. The message the notice stands for is read nowhere else, so nothing else
+// bounds what its fields hold.
+func noticeField(text string) string {
+	return contracts.OneLineSummary(strings.TrimSpace(text))
+}
+
+// noticeRepo is repo, the owner/name a GitHub event names (heldNoticeTexts), as a notice carries
+// it: whole, or left out whole when its owner or name is past GitHub's own limits, since such a
+// repo names no GitHub repository and cutting it would name another one.
+func noticeRepo(repo string) string {
+	owner, name, _ := strings.Cut(repo, "/")
 	if utf8.RuneCountInString(owner) > githubOwnerRunes || utf8.RuneCountInString(name) > githubNameRunes {
-		return "", true
+		return ""
 	}
-	return owner + "/" + name, false
+	return repo
 }

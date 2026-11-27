@@ -172,7 +172,7 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 	t.Parallel()
 	rig := newSizeRig(t)
 	const topic = "notifications.team.too-large"
-	header := messageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(sizeEnvelope(topic, "")))})
+	header := MessageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(sizeEnvelope(topic, "")))})
 	if header == 0 {
 		t.Fatal("UNKNOWN: the envelope earns no message id, so its publish carries no header to count")
 	}
@@ -227,7 +227,7 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 			item.DedupeKey = "dispatch-size-" + strings.Repeat("k", 300)
 			return item
 		}
-		header := messageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(long("")))})
+		header := MessageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(long("")))})
 		if header <= reserved {
 			t.Fatalf("UNKNOWN: the message id header takes %d bytes and the relay's headers %d: the row wants the message id the larger reserve", header, reserved)
 		}
@@ -325,7 +325,7 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsContext
 			return consumers.Publish(ended, &nats.Msg{Subject: DeliverSubject("ses_spent_time"), Header: frame, Data: []byte(data)})
 		}, sent, nil},
 	} {
-		header := messageBytes(&nats.Msg{Header: path.header})
+		header := MessageBytes(&nats.Msg{Header: path.header})
 		// body is what the send is handed for a message whose data takes size bytes: an envelope's
 		// payload, or the raw data itself.
 		body := func(size int) string {
@@ -399,7 +399,7 @@ func TestARefusalNatsGoMakesIsTheSameErrTooLargeHeadersIncluded(t *testing.T) {
 	const topic = contracts.RoleTopicPrefix + "unread"
 	holder := contracts.LegacyAgentSubject("ses_size_unread")
 	msgID := ForwardMsgID("dispatch-size", holder)
-	header := messageBytes(&nats.Msg{Header: msgIDHeader(msgID)})
+	header := MessageBytes(&nats.Msg{Header: msgIDHeader(msgID)})
 	item := sizeEnvelope(topic, sizedPayload(t, topic, rig.maxPayload+1-header))
 	says := sizeText(rig.maxPayload+1, rig.maxPayload)
 

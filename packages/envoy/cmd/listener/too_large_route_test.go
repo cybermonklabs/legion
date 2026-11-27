@@ -95,7 +95,7 @@ func storedSize(t *testing.T, item contracts.Envelope) int {
 	if err != nil {
 		t.Fatalf("encode the envelope: %v", err)
 	}
-	msgID := (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(item.DedupeKey, item.Topic)}}}).Size()
+	msgID := bus.MessageBytes(&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(item.DedupeKey, item.Topic)}}})
 	return len(encoded) + max(msgID, bus.RelayFrameHeaderBytes(item.Topic))
 }
 
