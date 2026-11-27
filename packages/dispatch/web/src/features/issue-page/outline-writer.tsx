@@ -1,5 +1,14 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
-import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { ownerAsksQuery, ownerCommentsQuery } from "../../api/queries";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
@@ -8,12 +17,19 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversation/held-sends";
+import {
+  type SentRequest,
+  type StatementAnchor,
+  sameStatement,
+} from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/page-routes";
 import { sessionOfAddress } from "../refs/party-mention";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { parseNodeReference } from "../refs/routes";
+import { wordsOf } from "../refs/tree-fragment";
 import type { TreeNode } from "./issue-tree";
+import { isStatement } from "./issue-tree";
 import { issueMessagesQuery } from "./useIssueTree";
 
 /**
@@ -21,18 +37,24 @@ import { issueMessagesQuery } from "./useIssueTree";
  * of the outline, and what it is written to. With nothing set it writes a new comment on the
  * issue, or a question with the Question chip pressed. A row's Reply - its control, or `r` - sets
  * it to reply to that row, and an open question's Answer - its control, one of its options, or
- * `a` - sets it to answer that question; Escape, or the line's own control, sets it back.
+ * `a` - sets the writer's answer to that question (`answer`), which the line does not send.
+ * Escape and the line's own control end a reply, not an answer, which another aim or a send clears.
  *
  * The state lives above the outline and the line both, because each sets it and both draw it:
- * a row draws the options the reader picked as picked, and the line names what it answers.
+ * a row draws the options the reader picked as picked, and the line names what it replies to.
  */
 export interface OutlineWriter {
-  /** The open question the line answers; undefined while it answers none. */
+  /** The open question an Answer, an option or a change of answer set, or undefined for none.
+   *  No control of the page sends it: the line at the foot answers no ask and draws nothing of
+   *  it, and the page draws no ask's own body yet. Its one reader draws the options picked on
+   *  the question's row (`NodeRow.tsx`'s `NodeOptions`), until the outline's ask rows move onto
+   *  the ask's body. */
   readonly answer: AnswerTarget | undefined;
-  /** Sets the line to answer `node`, an open question, and puts the caret in it. */
+  /** Sets the answer the writer holds to `node`, an open question (`answer`), and puts no caret
+   *  in the box. */
   readonly answerNode: (node: TreeNode) => void;
-  /** Sets the line to change the reader's own answer to `node`, an answered question: the line
-   *  answers it again over the answer it holds (`AnswerTarget.replacing`). */
+  /** Sets the answer the writer holds to a change of the reader's own answer to `node`, an
+   *  answered question, over the answer it records (`AnswerTarget.replacing`, and `answer`). */
   readonly changeAnswer: (node: TreeNode) => void;
   /** Sets the line back to a new comment on the issue. */
   readonly clear: () => void;
@@ -47,21 +69,44 @@ export interface OutlineWriter {
   readonly focus: () => void;
   /** What the line writes with no reply set: a comment, or a question. */
   readonly kind: WriterKind;
-  /** Picks `label` of `node`'s options, or lets it go, and sets the line to answer `node`. */
+  /** Picks `label` of `node`'s options, or lets it go, in the writer's answer to `node`. */
   readonly pick: (node: TreeNode, label: string) => void;
+  // A reply the line sent that Dispatch refused holds the line on it until the reader ends the
+  // reply in the line (`clear`), the reader's own move, which takes the refusal off it: the rule
+  // `statement` states for a refused send's target, its reply or its statement.
   /** The entry the line replies to; null while it replies to none. */
   readonly reply: ReplyTarget | null;
   /** Sets the line to reply to `node` and puts the caret in it. An open question's Reply is a
    *  question back, which hands the turn to whoever asked it; an answered or resolved one's is a
    *  word under it that carries no turn, so a reader can answer the thread they are reading. */
-  readonly replyTo: (item: ReplyItem) => void;
+  readonly replyTo: (item: ReplyItem | StatementItem) => void;
   /** The name the line's writes are held under (`held-sends.ts`), so a send that is out, or was
    *  refused, comes back with its draft and its reply whatever unmounts the line. */
   readonly sendKey: MutationKey;
   readonly setKind: (kind: WriterKind) => void;
   readonly setReply: (reply: ReplyTarget | null) => void;
-  /** Picks `label` of the options of the question the line answers, or lets it go. */
+  /** The statement the line comments on (`StatementTarget`), where a Reply on a statement's row,
+   *  its control or `r`, aimed it at one (`replyTo`); or, where the line mounted over a send held
+   *  under its name that was aimed at one (`SentRequest.statement`) - after the reader left the
+   *  issue and came back, or a reload - that send's document, words and row, which are all a held
+   *  send keeps of it, so a send from the line lands on that row either way; undefined otherwise.
+   *  It never stands beside a reply, an answer or an edit: setting it ends them, and setting any
+   *  of them, or `clear`, ends it. One rule holds the line on what a refused send was aimed at: a
+   *  send of the line's own that Dispatch refused, held under its name, holds the line on its
+   *  target - its reply or its statement - and every other aim puts the line back there instead
+   *  (`keptOnReply`, `keptOnStatement`), until the reader ends that target in the line - the
+   *  target line's control or Escape, which reach `clear`. That is the reader's own move of the
+   *  line's address, which the line's composer carries the refusal with to the issue
+   *  (`HeldSends.carry`), its words kept, unless the issue keeps a draft of the reader's own,
+   *  which no move writes over: the refusal then stays with its target, which still holds the
+   *  line. Once it is carried every aim takes effect again, and a line that mounts again over
+   *  that send writes on the issue. */
+  readonly statement: StatementTarget | undefined;
+  /** Picks `label` of the options of the answer the writer holds (`answer`), or lets it go. */
   readonly toggle: (label: string) => void;
+  // A send of the line's own that Dispatch refused holds the line on its target through the
+  // issue's own Reply too, as through every other aim (`statement`): only `clear`, which the
+  // target line's control and Escape reach, lets it go.
   /** Sets the line back to a new comment on the issue and puts the caret in it: the issue's own
    *  Reply, whose reply is a comment on the issue. */
   readonly writeOnIssue: () => void;
@@ -85,15 +130,17 @@ export type WriterKind = "ask" | "comment";
  */
 export interface Landing {
   /** `newest`: the reader's newest node under `under` - the reply, the comment or the question
-   *  they just wrote; `self`: `under`'s own row - the question they answered, whose answer is
-   *  drawn on its row, and the comment they edited. */
+   *  they just wrote; `self`: `under`'s own row - the statement a comment on its text was
+   *  written on, which draws no row for it, and the comment they edited. */
   readonly to: "newest" | "self";
-  /** What the write was made under: the item the line replied to or answered, or the comment
-   *  it edited; undefined for a write on the issue itself. */
-  readonly under: { readonly id: string; readonly kind: "ask" | "comment" | "message" } | undefined;
+  /** What the write was made under: the item the line replied to, the statement it commented
+   *  on, or the comment it edited; undefined for a write on the issue itself. */
+  readonly under:
+    | { readonly id: string; readonly kind: "ask" | "comment" | "message" | "statement" }
+    | undefined;
 }
 
-/** The question the line answers. */
+/** The answer the writer holds (`OutlineWriter.answer`, which says what reads it). */
 export interface AnswerTarget {
   /** The ask's own id, which the answer is written to. */
   readonly askId: string;
@@ -101,8 +148,8 @@ export interface AnswerTarget {
   readonly multiple: boolean;
   /** The question's row in the outline. */
   readonly nodeId: string;
-  /** The moment of the reader's own answer this one replaces (`expected_answer_at`), where the
-   *  line changes an answer rather than giving the first; its words seed the line. */
+  /** The reader's own answer this one replaces, where it changes an answer rather than giving
+   *  the first: its moment (`expected_answer_at`) and its words. */
   readonly replacing?: { readonly at: string; readonly text: string };
   /** The options picked, by their labels, in the order they were picked. */
   readonly selected: readonly string[];
@@ -121,7 +168,7 @@ export function conversationItem(
     : undefined;
 }
 
-/** Whether `node` carries the control that answers it: an open question. */
+/** Whether `node` carries an Answer, which sets the writer's answer to it: an open question. */
 export function takesAnswer(node: Pick<TreeNode, "reference" | "state" | "type">): boolean {
   return node.type === "ask" && node.state === "open" && conversationItem(node) !== undefined;
 }
@@ -159,6 +206,14 @@ export function OutlineWriterProvider({
   const landed = useCallback(() => setLanding(undefined), []);
   // The reader's own comment the line is editing, if it is: its id and its words as they stand.
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
+  // The statement the line comments on, if it does: set by a Reply on a statement's row, and
+  // taken up from the send held under the line's name, as the reply is (`useHeldReplyTo`), so a
+  // line that mounts again over a refused comment on a statement names the statement it was
+  // written to, sends it there and lands on its row. Ended by every other target the line takes
+  // and by `clear`, so no path holds it beside a reply, an answer or an edit.
+  const [statement, setStatement] = useState<StatementTarget | undefined>(
+    () => store.get(sendKey)?.request.statement
+  );
   const agentText = useAgentText();
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
   // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
@@ -166,15 +221,24 @@ export function OutlineWriterProvider({
   const asks = useQuery({ ...ownerAsksQuery({ issue: issueKey }), ...EVENT_FRESH });
   const comments = useQuery({ ...ownerCommentsQuery({ issue: issueKey }), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
+  // The wait `focus()` is on for the line's field to draw, if one is on; aborting it cancels the
+  // animation frame it waits on. A new `focus()` aborts the earlier wait before it starts its
+  // own, and unmounting the provider aborts it, so no frame of an unmounted writer moves the
+  // focus; the reader's own act aborts it too (below).
+  const focusWait = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => focusWait.current?.abort(), []);
   const focus = useCallback(() => {
+    focusWait.current?.abort();
     // A reader who acts before the line takes the focus (`READER_ACTS`) - a key the outline's
     // keymap reads, or a press in another field and words typed there - has put the focus where
-    // they want it, so the frames that wait for the line do nothing then.
+    // they want it, so the wait ends then and its frames do nothing.
     const acted = abortOnReaderAct();
-    // The field that is drawn: the line keeps its write field mounted, hidden, while it answers
-    // a question or edits a comment (`IssueComposer.tsx`), and a hidden field takes no caret.
+    focusWait.current = acted;
+    let frame = 0;
+    acted.signal.addEventListener("abort", () => cancelAnimationFrame(frame), { once: true });
+    // The field that is drawn: the line keeps its write field mounted, hidden, while it edits a
+    // comment (`IssueComposer.tsx`), and a hidden field takes no caret.
     const place = (left: number) => {
-      if (acted.signal.aborted) return;
       const field = [...document.querySelectorAll<HTMLTextAreaElement>(COMPOSER_FIELD)].find(
         (one) => one.closest("[hidden]") === null
       );
@@ -183,20 +247,45 @@ export function OutlineWriterProvider({
         field.focus({ preventScroll: true });
         return;
       }
-      if (left > 0) requestAnimationFrame(() => place(left - 1));
+      if (left > 0) frame = requestAnimationFrame(() => place(left - 1));
       else acted.abort();
     };
-    requestAnimationFrame(() => place(DRAWING_FRAMES));
+    frame = requestAnimationFrame(() => place(DRAWING_FRAMES));
   }, []);
   const replyTo = useCallback(
-    (item: ReplyItem) => {
+    (item: ReplyItem | StatementItem) => {
       // While a send of the line's own is out, a Reply is refused: the reply it was sent with is
       // the one the line shows until Dispatch decides it, and the redirect below reads only a
       // send that was refused or none (`held-sends.ts`'s `redirectedReplyTarget`).
       if (store.sendingNow(sendKey)) return;
+      // A send Dispatch refused keeps the line on its target, whatever the Reply is on: its
+      // statement (`keptOnStatement`), or the entry its reply answers (`keptOnReply`, and
+      // `redirectedReplyTarget` below). The caret goes back into the line on that target.
+      const line = { setAnswer, setEditing, setReply, setStatement };
+      // A statement is no entry of the conversation: the line writes a comment on the issue
+      // anchored to the statement's whole words, and holds no reply beside it.
+      if (item.kind === "statement") {
+        const target = statementTargetOf(item);
+        // A reply Dispatch refused is never sent as a comment on the statement instead.
+        if (keptOnTarget(store.get(sendKey)?.request, line, target)) {
+          focus();
+          return;
+        }
+        setReply(null);
+        setAnswer(undefined);
+        setEditing(undefined);
+        setStatement(target);
+        focus();
+        return;
+      }
+      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) {
+        focus();
+        return;
+      }
       const target = replyTargetOf(item, issueKey, comments.data, messages.data, agentText);
       setAnswer(undefined);
       setEditing(undefined);
+      setStatement(undefined);
       setReply(redirectedReplyTarget(store, sendKey, target));
       focus();
     },
@@ -214,12 +303,15 @@ export function OutlineWriterProvider({
       if (store.sendingNow(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
+      // A send Dispatch refused keeps the line on its target, and the caret stays where it is.
+      const line = { setAnswer, setEditing, setReply, setStatement };
+      if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       setReply(null);
       setEditing(undefined);
+      setStatement(undefined);
       setAnswer((held) => (held?.askId === target.askId ? held : target));
-      focus();
     },
-    [answering, focus, sendKey, setReply, store]
+    [answering, sendKey, setReply, store]
   );
   const changeAnswer = useCallback(
     (node: TreeNode) => {
@@ -227,49 +319,73 @@ export function OutlineWriterProvider({
       const target = answering(node);
       const recorded = (asks.data ?? []).find((ask) => ask.id === target?.askId)?.answer;
       if (target === undefined || recorded === null || recorded === undefined) return;
+      const line = { setAnswer, setEditing, setReply, setStatement };
+      if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       const offered = new Set((node.options ?? []).map((option) => option.label));
       setReply(null);
       setEditing(undefined);
+      setStatement(undefined);
       setAnswer({
         ...target,
         replacing: { at: recorded.at, text: recorded.text ?? "" },
         selected: (recorded.selected ?? []).filter((label) => offered.has(label)),
       });
-      focus();
     },
-    [answering, asks.data, focus, sendKey, setReply, store]
+    [answering, asks.data, sendKey, setReply, store]
   );
   const pick = useCallback(
     (node: TreeNode, label: string) => {
       if (store.sendingNow(sendKey)) return;
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
+      const line = { setAnswer, setEditing, setReply, setStatement };
+      if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       setReply(null);
       setEditing(undefined);
+      setStatement(undefined);
       setAnswer((held) => picked(held?.askId === target.askId ? held : target, label));
-      focus();
     },
-    [answering, focus, sendKey, setReply, store]
+    [answering, sendKey, setReply, store]
   );
   const toggle = useCallback((label: string) => {
     setAnswer((held) => (held === undefined ? held : picked(held, label)));
   }, []);
   const clear = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
+    // Ending the target in the line is the reader's own move of the line's address, which the
+    // line's composer counts (`OutlineLook.end`) and carries a refused send held for that target
+    // with (`HeldSends.carry`), so its hold on the line ends (`keptOnStatement`, `keptOnReply`):
+    // a send the reader stopped goes on as a new write under a key of its own, saying the first
+    // may have been delivered (`SendMovedError`). Where the issue keeps a draft of the reader's
+    // own, the composer carries nothing, and the refusal keeps its target. The guard above has
+    // run, so a send still out is never moved.
     setReply(null);
     setAnswer(undefined);
     setEditing(undefined);
+    setStatement(undefined);
   }, [sendKey, setReply, store]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `setReply` is the setter `useHeldReplyTo` hands back from `useState`, one function for the provider's life, which the rule cannot see through the hook
   const writeOnIssue = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
+    const line = { setAnswer, setEditing, setReply, setStatement };
+    if (keptOnTarget(store.get(sendKey)?.request, line)) {
+      focus();
+      return;
+    }
     clear();
     focus();
   }, [clear, focus, sendKey, store]);
   const edit = useCallback(
     (id: string, body: string) => {
       if (store.sendingNow(sendKey)) return;
+      const line = { setAnswer, setEditing, setReply, setStatement };
+      if (keptOnTarget(store.get(sendKey)?.request, line)) {
+        focus();
+        return;
+      }
       setReply(null);
       setAnswer(undefined);
+      setStatement(undefined);
       setEditing({ body, id });
       focus();
     },
@@ -294,6 +410,7 @@ export function OutlineWriterProvider({
       sendKey,
       setKind,
       setReply,
+      statement,
       toggle,
       writeOnIssue,
     }),
@@ -313,6 +430,7 @@ export function OutlineWriterProvider({
       replyTo,
       sendKey,
       setReply,
+      statement,
       toggle,
       writeOnIssue,
     ]
@@ -331,6 +449,86 @@ function picked(target: AnswerTarget, label: string): AnswerTarget {
   return { ...target, selected };
 }
 
+/** The writer's own setters, which `keptOnStatement` and `keptOnReply` set the line by. Neither
+ *  moves the caret: each aim of the box puts it in the line itself, and an answer's aim puts none
+ *  there. */
+interface HeldLine {
+  readonly setAnswer: (answer: undefined) => void;
+  readonly setEditing: (editing: undefined) => void;
+  readonly setReply: (reply: ReplyTarget | null) => void;
+  readonly setStatement: (
+    next: undefined | ((current: StatementTarget | undefined) => StatementTarget)
+  ) => void;
+}
+
+/**
+ * Keeps the line on `held`, the statement of a comment Dispatch refused that is held under the
+ * line's name, and says whether it did; `keptOnReply` does the same for a refused reply. Both
+ * keep one rule: a refused send of the line holds the line on its target - its reply or its
+ * statement - until the reader ends that target in the line (`clear`, which the target line's
+ * control and Escape reach), whose composer then carries the refusal to the issue (`statement`).
+ * Until then a press that would aim the line elsewhere - a Reply, an Edit, the issue's own Reply,
+ * or an Answer, an option or a change of answer, which set the answer the writer holds
+ * (`OutlineWriter.answer`) - leaves the line on that target instead, so the refused words are
+ * neither replaced by another target's seed nor sent under another target; the box's own aims
+ * then put the caret back in the line, and an answer's puts none there. A refusal the same
+ * words would meet again (`TARGET_AMBIGUOUS`) holds the line only until the reader lets its
+ * target go.
+ * A Reply on that same statement, `aimed`, takes its row's whole target. With none held it does
+ * nothing. Each caller's `sendingNow` guard runs first, so a send held then was refused. The
+ * writer's setters are handed in, so each setter that calls this keeps the dependencies it had.
+ */
+function keptOnStatement(
+  held: StatementAnchor | undefined,
+  line: HeldLine,
+  aimed?: StatementTarget
+): boolean {
+  if (held === undefined) return false;
+  line.setReply(null);
+  line.setAnswer(undefined);
+  line.setEditing(undefined);
+  // The same statement is the same document and the same words.
+  line.setStatement((current) =>
+    aimed !== undefined && sameStatement(aimed, held)
+      ? aimed
+      : current !== undefined && sameStatement(current, held)
+        ? current
+        : held
+  );
+  return true;
+}
+
+/**
+ * Keeps the line on `held`, the reply of a send Dispatch refused that is held under the line's
+ * name, and says whether it did, by the rule `keptOnStatement` states: an Edit, a Reply on a
+ * statement, the issue's own Reply, an Answer, an option or a change of answer leaves the line
+ * on that reply, until the reader ends it in the line (`clear`), whose composer then carries the
+ * refusal to the issue. A Reply on another entry is put back on it by `redirectedReplyTarget`.
+ * With none held it does nothing. Each caller's `sendingNow` guard runs first, so a send held
+ * then was refused.
+ */
+function keptOnReply(held: ReplyTarget | null | undefined, line: HeldLine): boolean {
+  if (held === undefined || held === null) return false;
+  line.setAnswer(undefined);
+  line.setEditing(undefined);
+  line.setStatement(undefined);
+  line.setReply(held);
+  return true;
+}
+
+/** Keeps the line on the target of `held`, the send held under the line's name - its statement
+ *  (`keptOnStatement`, which a Reply on that same statement, `aimed`, takes whole) or its reply
+ *  (`keptOnReply`) - and says whether it did. Every aim but a Reply on an entry, which
+ *  `redirectedReplyTarget` puts back on a refused reply, runs it first, the issue's own Reply
+ *  among them, so only the line's own end of the target (`clear`) lets that target go. */
+function keptOnTarget(
+  held: Pick<SentRequest, "replyTo" | "statement"> | undefined,
+  line: HeldLine,
+  aimed?: StatementTarget
+): boolean {
+  return keptOnStatement(held?.statement, line, aimed) || keptOnReply(held?.replyTo, line);
+}
+
 /** One item of the conversation the line can reply to: a row of the outline that takes a reply,
  *  or a turn of a thread the panel's history draws. */
 export interface ReplyItem {
@@ -341,15 +539,97 @@ export interface ReplyItem {
   readonly text: string;
 }
 
+/** A statement of the issue's spec the line can comment on: a `requirement` block of the spec
+ *  (`isStatement`), and never one of another document. It is no entry of the conversation, so
+ *  what the line writes to it is a comment on the issue anchored to the statement, never a
+ *  reply, and its row takes no thread read mark, since `conversationItem` answers none for it. */
+export interface StatementItem extends Pick<TreeNode, "author" | "text" | "tree"> {
+  /** The document the statement is a block of, by the slug its node id names it by, which the
+   *  server's `AnchorInput.artifact` takes as it takes an artifact's id. */
+  readonly artifact: string;
+  /** The statement's node id, `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`): its row,
+   *  which a landing names (`Landing.under`, of kind `statement`) and `IssueTree.tsx`'s
+   *  `landingParent` finds by node id. A comment anchored to the statement is not drawn under its
+   *  row but as a row under the issue, at the outline's end; no margin beside it draws it yet. */
+  readonly id: string;
+  readonly kind: "statement";
+}
+
+/**
+ * The statement the line comments on (`OutlineWriter.statement`): the anchor its comment carries,
+ * a `StatementAnchor` - the document and the statement's whole words, with no occurrence, so
+ * words the document holds twice are refused by the server (`ErrTargetAmbiguous`) rather than
+ * anchored to the wrong block, and the statement's row, which a send from the line lands on -
+ * and the author of the row a Reply aimed the line from, where that row carries one. The box
+ * hands its composer (`MentionComposer`'s `outline.anchor`) the anchor alone, so a held send
+ * stores those three fields and never the statement's author, and a line that mounts again over
+ * the send takes the statement up with no author and still lands on its row.
+ */
+export interface StatementTarget extends StatementAnchor {
+  /** The author the statement's row names (`TreeNode.author`), which the target line names.
+   *  Absent where the row carries none, and where the line took the statement up from a held
+   *  send, whose target line names no author. */
+  readonly author?: Actor;
+  /** The statement's whole words as the server matches a quote against them: `wordsOf` its
+   *  reading (`refs/tree-fragment.ts`), else its stored text where its read sent no reading. */
+  readonly quote: string;
+}
+
+/** The statement the line comments on once a Reply on `item`'s row aims it there: the row's
+ *  document, its author where it carries one, its whole words as the server matches a quote
+ *  against them (`StatementTarget.quote`) and the row itself. The box reads the same rule off
+ *  every statement row of the outline, so a draft it keeps for a statement is gone once no row
+ *  reads as that statement any more. */
+export function statementTargetOf(item: StatementItem): StatementTarget {
+  return {
+    artifact: item.artifact,
+    ...(item.author === undefined ? {} : { author: item.author }),
+    quote: item.tree === undefined ? item.text : wordsOf(item.tree),
+    row: item.id,
+  };
+}
+
 /** The item a row of the outline is, where the row takes a reply (R16): an ask in any state, a
  *  comment, a message. Every other row takes none in today's model, and neither does a comment or
  *  a message its author deleted: Dispatch refuses a reply to it (409 `POST_DELETED`, INFRA-1523
  *  R3), and its words are the deleted line, which no reply quotes. */
-export function replyItemOf(node: TreeNode): ReplyItem | undefined {
+export function replyItemOf(node: TreeNode): ReplyItem | StatementItem | undefined {
+  // A statement takes a Reply too, and is no item of the conversation, so it is read before one.
+  const statement = statementItemOf(node);
+  if (statement !== undefined) return statement;
   const item = conversationItem(node);
   return item === undefined || node.author === undefined || node.deletedAt !== undefined
     ? undefined
     : { ...item, author: node.author, text: node.text };
+}
+
+/** The statement a row of the outline is: a `requirement` block of the issue's spec, which the
+ *  row carries as `TreeNode.statement` (`isStatement`), read from its node id
+ *  `<slug>#b-<block id>` (`slugOfBlockNodeId`). A `requirement` block of the plan, the
+ *  Verification or the decisions document is a block and nothing more (`tree-drafts.ts`'s
+ *  `addDocumentBlocks`): it takes no Reply, and no comment is anchored to it from the line.
+ *  Undefined for every other row. */
+function statementItemOf(node: TreeNode): StatementItem | undefined {
+  if (!isStatement(node)) return undefined;
+  const artifact = slugOfBlockNodeId(node.id);
+  if (artifact === undefined) return undefined;
+  return {
+    artifact,
+    ...(node.author === undefined ? {} : { author: node.author }),
+    id: node.id,
+    kind: "statement",
+    text: node.text,
+    ...(node.tree === undefined ? {} : { tree: node.tree }),
+  };
+}
+
+/** The slug of the document a block node's id names, `<slug>#b-<block id>`, read as
+ *  `issue-artifacts.ts`'s `documentOfNode` reads it, with no artifact list: the document by the
+ *  slug the server's anchor takes. `undefined` for a node that is no block, and for an id whose
+ *  slug or block id is empty. */
+function slugOfBlockNodeId(nodeId: string): string | undefined {
+  const cut = nodeId.indexOf("#b-");
+  return cut <= 0 || cut + 3 === nodeId.length ? undefined : nodeId.slice(0, cut);
 }
 
 /**

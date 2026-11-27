@@ -1,13 +1,14 @@
 import { beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { framesByHand } from "./outline-fixtures";
-import { OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
+import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -116,6 +117,54 @@ test("a reader who moves to another field before the line's frame keeps the focu
     frames.restore();
     view.unmount();
     for (const read of reads) read.mockRestore();
+    client.clear();
+  }
+});
+
+// When the writer unmounts while its `focus()` is waiting on an animation frame for a field to
+// draw, that frame is cancelled: a box mounted afterwards does not lose the reader's focus to
+// the unmounted writer.
+test("unmounting the writer cancels a pending focus frame so a later box does not take the focus", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["asks", "CORE-1"], []);
+  client.setQueryData(["asks", "CORE-1", "thread"], []);
+  client.setQueryData(["comments", "CORE-1"], []);
+  client.setQueryData(["issue-messages", "CORE-1"], []);
+  const held: { writer?: OutlineWriter } = {};
+  function Capture(): null {
+    held.writer = useOutlineWriter();
+    return null;
+  }
+  const first = render(
+    <QueryClientProvider client={client}>
+      <OutlineWriterProvider issueKey="CORE-1">
+        <Capture />
+      </OutlineWriterProvider>
+    </QueryClientProvider>
+  );
+  let second: RenderResult | undefined;
+  try {
+    if (held.writer === undefined) throw new Error("the provider drew no writer");
+    // Queue a focus frame while no composer field is in the document, then unmount the writer.
+    act(() => held.writer?.focus());
+    first.unmount();
+
+    // Mount a fresh box with a field of its own, and let more frames run than the writer waits.
+    second = render(
+      <section data-testid="issue-composer">
+        <textarea aria-label="Comment" />
+      </section>
+    );
+    const field = second.getByLabelText("Comment");
+    for (let frame = 0; frame < 12; frame += 1) {
+      await act(() => nextFrame());
+    }
+    expect(field).not.toHaveFocus();
+  } finally {
+    second?.unmount();
+    first.unmount();
     client.clear();
   }
 });

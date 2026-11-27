@@ -12,8 +12,8 @@ import {
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 import type { HeldSend } from "./held-sends";
-import { KEYED_SEND_LATE_TEXT } from "./send-request";
 import type { SessionSends } from "./useSessionSends";
 
 /**

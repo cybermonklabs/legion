@@ -40,6 +40,7 @@ import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/rou
 import { retriesUnderItsKey, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { endedStopped, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { STOPPED_UPLOAD_WORDS, UPLOAD_FAILED_TEXT } from "./upload-words";
 
 /** Why a closed issue's Artifacts tab, or its document's repair, takes no upload: Dispatch refuses
  *  one until the issue is reopened. */
@@ -198,7 +199,7 @@ export function uploadErrorMessage(error: unknown): string {
     }
     return error.message;
   }
-  return "Could not upload the artifact.";
+  return UPLOAD_FAILED_TEXT;
 }
 
 /** The sentence a tab with no document of its own shows about the uploads that follow the one
@@ -434,7 +435,10 @@ export function DraftUploadStatus<Draft>({
       ) : null}
       {showRefusal && upload.isError ? (
         <QueryError
-          message={stoppedNote(upload, "the upload", "stored") ?? uploadErrorMessage(upload.error)}
+          message={
+            stoppedNote(upload, STOPPED_UPLOAD_WORDS.what, STOPPED_UPLOAD_WORDS.made) ??
+            uploadErrorMessage(upload.error)
+          }
           onRetry={upload.retry}
           retrying={upload.isPending}
         />

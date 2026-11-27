@@ -52,6 +52,26 @@ export function deliveryModesOf(capabilities: readonly string[]): MessageDeliver
   return modes;
 }
 
+/** What joins the titles of the sessions a line of the composer names, as `noDeliveryReasons` and
+ *  the mention composer's delivery notices list them. */
+export const TITLES_JOINER = " and ";
+
+/** The words of `noDeliveryReasons`: the cause of a list that holds nothing (`unlisted`), and the
+ *  cause of a list whose every capability is unknown here (`unknown`), around the sessions it is
+ *  true of, named by their titles, by `it` or by `they`, with its verb in one or many. */
+export const NO_DELIVERY_WORDS = {
+  unknown: {
+    after: {
+      many: " list is a delivery mode this Dispatch knows.",
+      one: " lists is a delivery mode this Dispatch knows.",
+    },
+    before: "None of the capabilities ",
+    it: "it",
+    they: "they",
+  },
+  unlisted: "A session advertises none while its plugin cannot reach its conversation.",
+} as const;
+
 /**
  * Why sessions whose capabilities hold no delivery mode (`deliveryModesOf`) take no message: the
  * sentences that follow a warning naming them. An empty list is not the only list that takes no
@@ -67,17 +87,18 @@ export function noDeliveryReasons(
   const listing = sessions.filter((session) => session.capabilities.length > 0);
   const reasons: string[] = [];
   if (listing.length < sessions.length) {
-    reasons.push("A session advertises none while its plugin cannot reach its conversation.");
+    reasons.push(NO_DELIVERY_WORDS.unlisted);
   }
   if (listing.length > 0) {
+    const { unknown } = NO_DELIVERY_WORDS;
     const subject =
       listing.length < sessions.length
-        ? listing.map((session) => session.title).join(" and ")
+        ? listing.map((session) => session.title).join(TITLES_JOINER)
         : listing.length > 1
-          ? "they"
-          : "it";
+          ? unknown.they
+          : unknown.it;
     reasons.push(
-      `None of the capabilities ${subject} ${listing.length > 1 ? "list" : "lists"} is a delivery mode this Dispatch knows.`
+      `${unknown.before}${subject}${listing.length > 1 ? unknown.after.many : unknown.after.one}`
     );
   }
   return reasons.join(" ");

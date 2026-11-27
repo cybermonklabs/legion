@@ -397,6 +397,280 @@ test("a send kept with its edit as a bare comment id still restores", async () =
   }
 });
 
+// A comment on a statement keeps the statement's row beside its document and its words across a
+// reload, so the issue page's box that mounts again over the send lands the comment on that row.
+// A record whose statement is no statement - a document that is no string, or no row - is
+// dropped as every malformed record is, rather than restored and sent again with an anchor the
+// server cannot read, or held on a statement the page cannot land on.
+test("a held statement keeps its row across a reload, and a record with a malformed statement is dropped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const statement = {
+    artifact: "core-1-spec",
+    quote: "The box stays at the foot of the screen.",
+    row: "core-1-spec#b-r1",
+  };
+  // The statement each malformed record holds, by its send's key, written over what was kept.
+  const malformed: Record<string, object> = {
+    "send-number": { artifact: 1 },
+    "send-rowless": { artifact: statement.artifact, quote: statement.quote },
+  };
+  const sendKeys = ["send-whole", ...Object.keys(malformed)];
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  try {
+    const before = heldOf(tab).held;
+    for (const sendKey of sendKeys) before.send(keyOf(sendKey), { ...request, sendKey, statement });
+    await settle();
+    for (const [sendKey, held] of Object.entries(malformed)) {
+      const kept = tab.kept(sendKey) as { detail: { request: object } };
+      const detail = { ...kept.detail, request: { ...kept.detail.request, statement: held } };
+      tab.storage.setItem(`dispatch.write:${sendKey}`, JSON.stringify({ ...kept, detail }));
+    }
+    for (const sendKey of sendKeys) pressedLongAgo(tab, sendKey);
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-whole"))?.request.statement).toEqual(statement);
+    for (const sendKey of Object.keys(malformed)) {
+      expect(after.get(keyOf(sendKey)), sendKey).toBeUndefined();
+      expect(tab.kept(sendKey), sendKey).toBeUndefined();
+    }
+    // Each press went out once, and no dropped record went out again.
+    expect(createComment).toHaveBeenCalledTimes(3);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+// A reply the issue page's box sent keeps the mentions the box wrote in front of its draft, so a
+// box that mounts again over the send after a reload takes those out when the reply ends, and no
+// link the reader wrote; the request goes out with the body alone. A record kept before the box
+// kept them holds none and loads with none. A record whose mentions are not mentions - a target
+// that is no string - is dropped as every malformed record is, rather than restored for the box
+// to read.
+test("a held reply keeps the mentions its box wrote across a reload, one kept without them loads with none, and one with malformed ones is dropped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const seeds = [{ target: "session:planner-session", text: link }];
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, namesParty: true, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+  };
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  try {
+    const before = heldOf(tab).held;
+    before.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
+    before.send(keyOf("send-unseeded"), { ...reply, sendKey: "send-unseeded" });
+    before.send(keyOf("send-malformed"), { ...reply, seeds, sendKey: "send-malformed" });
+    await settle();
+    // The record without mentions is the shape a build that kept none wrote.
+    const unseeded = tab.kept("send-unseeded") as { detail: { request: object } };
+    expect("seeds" in unseeded.detail.request).toBe(false);
+    const kept = tab.kept("send-malformed") as { detail: { request: object } };
+    const detail = { ...kept.detail, request: { ...kept.detail.request, seeds: [{ target: 1 }] } };
+    tab.storage.setItem("dispatch.write:send-malformed", JSON.stringify({ ...kept, detail }));
+    for (const sendKey of ["send-seeded", "send-unseeded", "send-malformed"]) {
+      pressedLongAgo(tab, sendKey);
+    }
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-seeded"))?.request.seeds).toEqual(seeds);
+    expect(after.get(keyOf("send-unseeded"))?.status).toBe("refused");
+    expect(after.get(keyOf("send-unseeded"))?.request.seeds).toBeUndefined();
+    expect(after.get(keyOf("send-malformed"))).toBeUndefined();
+    expect(tab.kept("send-malformed")).toBeUndefined();
+    // Each press went out once, with the body alone: the mentions are the page's own.
+    expect(createComment).toHaveBeenCalledTimes(3);
+    expect(createComment.mock.calls[0]?.[1]).toEqual({
+      body: `${link} hello`,
+      delivery: "steer",
+      reply_to: "comment-3",
+    });
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+// What the reader writes over a refused reply is kept with the mentions its box holds then
+// (`HeldDraft.seeds`): those still at the front of the draft as the box wrote them. They go into
+// the request, so a box that mounts again over the send after a reload takes out those and no
+// others. A keep that carries none - the reader deleted the box's link and wrote their own at the
+// front - leaves the request no mention of the box's, and the draft is kept as the reader wrote
+// it, with no mention of its own. A keep that carries no mentions at all - every other
+// composer's - leaves the request none either: a missing list and an empty one are both none.
+test("a keep over a refused reply writes the mentions its box holds into the request, across a reload", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const seeds = [{ target: "session:planner-session", text: link }];
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, namesParty: true, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+  };
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  const own = {
+    ask: reply.ask,
+    draft: { body: `${link} the reader wrote this link.`, namesParty: true, replacement: "" },
+  };
+  try {
+    const before = heldOf(tab).held;
+    before.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
+    before.send(keyOf("send-let-go"), { ...reply, seeds, sendKey: "send-let-go" });
+    before.send(keyOf("send-unkept"), { ...reply, seeds, sendKey: "send-unkept" });
+    await waitFor(() => expect(before.get(keyOf("send-seeded"))?.status).toBe("refused"));
+    await waitFor(() => expect(before.get(keyOf("send-let-go"))?.status).toBe("refused"));
+    await waitFor(() => expect(before.get(keyOf("send-unkept"))?.status).toBe("refused"));
+    before.keep(keyOf("send-seeded"), () => ({ ...own, seeds }));
+    before.keep(keyOf("send-let-go"), () => ({ ...own, seeds: [] }));
+    before.keep(keyOf("send-unkept"), () => own);
+    const letGo = tab.kept("send-let-go") as { detail: { draft: object; request: object } };
+    expect(letGo.detail.draft).toEqual(own);
+    expect("seeds" in letGo.detail.request).toBe(false);
+    const unkept = tab.kept("send-unkept") as { detail: { request: object } };
+    expect("seeds" in unkept.detail.request).toBe(false);
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-seeded"))).toMatchObject({ draft: own, status: "refused" });
+    expect(after.get(keyOf("send-seeded"))?.request).toEqual({
+      ...reply,
+      seeds,
+      sendKey: "send-seeded",
+    });
+    expect(after.get(keyOf("send-let-go"))).toMatchObject({ draft: own, status: "refused" });
+    expect(after.get(keyOf("send-let-go"))?.request).toEqual({ ...reply, sendKey: "send-let-go" });
+    expect(after.get(keyOf("send-unkept"))?.request).toEqual({ ...reply, sendKey: "send-unkept" });
+    expect(createComment).toHaveBeenCalledTimes(3);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+// A keep by the issue page's box over a refused reply writes nothing where the request holds its
+// mentions already, none and an empty list being alike: it tells no listener of the store and
+// leaves the entry as it was. The same draft kept with other mentions still writes them, as the
+// draft's own change does ("a keep of the draft a refused send holds already writes nothing, and
+// a changed one writes it", above, holds the draft and the ask).
+test("a keep of the mentions a refused reply holds already writes nothing, and the same draft with other mentions writes them", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const seeds = [{ target: "session:planner-session", text: link }];
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, namesParty: true, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+  };
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  const held = { ask: reply.ask, draft: reply.draft };
+  const others = [
+    { target: "session:other-session", text: "[@Other](dispatch://agent/other-session)" },
+  ];
+  const told = jest.fn();
+  const store = heldOf(tab).held;
+  const stop = store.subscribe(told);
+  try {
+    store.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
+    store.send(keyOf("send-unseeded"), { ...reply, sendKey: "send-unseeded" });
+    await waitFor(() => expect(store.get(keyOf("send-seeded"))?.status).toBe("refused"));
+    await waitFor(() => expect(store.get(keyOf("send-unseeded"))?.status).toBe("refused"));
+    const seeded = store.get(keyOf("send-seeded"));
+    const unseeded = store.get(keyOf("send-unseeded"));
+    told.mockClear();
+    store.keep(keyOf("send-seeded"), () => ({ ...held, seeds }));
+    store.keep(keyOf("send-unseeded"), () => ({ ...held, seeds: [] }));
+    expect(told).not.toHaveBeenCalled();
+    expect(store.get(keyOf("send-seeded"))).toBe(seeded);
+    expect(store.get(keyOf("send-unseeded"))).toBe(unseeded);
+
+    store.keep(keyOf("send-seeded"), () => ({ ...held, seeds: others }));
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(store.get(keyOf("send-seeded"))).toMatchObject({ draft: held, status: "refused" });
+    expect(store.get(keyOf("send-seeded"))?.request.seeds).toEqual(others);
+    const kept = tab.kept("send-seeded") as { detail: { request: { seeds?: unknown } } };
+    expect(kept.detail.request.seeds).toEqual(others);
+  } finally {
+    stop();
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+// The reader's own move off a refused reply - the box's own end of it - carries the send to the
+// issue with none of the mentions the box wrote for that reply (`carriedTo`), as it carries a
+// send off a statement on none. A box that mounts again over the send, after a reload too, then
+// has none to take out of the draft, which answers no reply.
+test("a refused reply the reader carries off its reply keeps none of its box's mentions, across a reload", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, namesParty: true, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+    sendKey: "send-carried",
+  };
+  const key: MutationKey = ["issue-composer", "send-carried"];
+  const carried = { ...reply, replyTo: null };
+  try {
+    const before = heldOf(tab).held;
+    before.send(key, { ...reply, seeds: [{ target: "session:planner-session", text: link }] });
+    await waitFor(() => expect(before.get(key)?.status).toBe("refused"));
+    before.carry(key, reply, { owner: reply.owner, replyTo: null });
+    expect(before.get(key)?.request).toEqual(carried);
+    const kept = tab.kept("send-carried") as { detail: { request: object } };
+    expect("seeds" in kept.detail.request).toBe(false);
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(key)?.status).toBe("refused");
+    expect(after.get(key)?.request).toEqual(carried);
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A record an older build wrote keeps a `mentions` array beside a body holding only the cosmetic
 // `@Planner` that build drew, and no answer of whether the text names a party, which only the
 // kinds chunk's composer kind reads (`kinds.ts`). A mention is a reference now, so each of those

@@ -30,6 +30,7 @@ import {
   type Address,
   type CarriedAddress,
   type CarriedBlockIds,
+  heldSeeds,
   type OutgoingDraft,
   requestFor,
   SendMovedError,
@@ -45,6 +46,11 @@ import {
 export interface HeldDraft {
   readonly ask: SentRequest["ask"];
   readonly draft: OutgoingDraft;
+  /** For a keep by the issue page's box (`HeldSends.keep`), the mentions it wrote in front of the
+   *  reply's draft that still open it as the reader left it (`openingSeeds`), which the keep
+   *  writes into the send's request (`SentRequest.seeds`) rather than into its draft; absent from
+   *  every other composer's keep, and from the draft a send holds. */
+  readonly seeds?: SentRequest["seeds"];
 }
 
 /** A composer's send as the write store holds it (`composerSend`): its name, which names its
@@ -156,8 +162,9 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
 }
 
 /** An ask's fields (`SentRequest.ask`). This shape and the draft's, the anchor's, the kind's, the
- *  owner's and the reply's below are what a composer's draft and its address are kept by: here,
- *  and in the drafts a composer keeps for a reload (`unsent-drafts.ts`). */
+ *  owner's, the reply's, the box's mentions' and the statement's below are what a composer's
+ *  draft and its address are kept by: here, and in the drafts a composer keeps for a reload
+ *  (`unsent-drafts.ts`). */
 export const keptAsk = shape.record({
   multiple: shape.boolean,
   options: shape.array(
@@ -302,6 +309,18 @@ export const keptReplyTo = shape.record({
   to: shape.optional(shape.string),
 });
 
+/** The mentions the issue page's box wrote in front of a reply's draft (`SentRequest.seeds`),
+ *  each the party and the link written for it. */
+export const keptSeeds = shape.array(shape.record({ target: shape.string, text: shape.string }));
+
+/** The statement the issue page's box aims a comment at (`StatementAnchor`), with the row the
+ *  comment lands under once it is sent. */
+export const keptStatement = shape.record({
+  artifact: shape.string,
+  quote: shape.string,
+  row: shape.string,
+});
+
 /** The shape of a composer's send as it is kept (`KeptComposerSend`), each of its drafts fitting
  *  `draft`: this build's records fit it with `keptOutgoingDraft`, and the kinds chunk reads an
  *  older build's too (`kinds.ts`). */
@@ -316,7 +335,16 @@ export function keptComposerSendOf<D>(draft: Shape<D>): Shape<KeptComposerSend<D
     pickedDelivery: shape.optional(keptDelivery),
     plainDelivery: keptDelivery,
     replyTo: shape.nullable(keptReplyTo),
+    // The mentions the issue page's box wrote for the reply (`SentRequest.seeds`), so a box that
+    // mounts again over the send after a reload takes out what the box that wrote them would, and
+    // no link the reader wrote. A record kept before they were holds none and reads as none; one
+    // whose mentions are not mentions is dropped.
+    seeds: shape.optional(keptSeeds),
     sendKey: shape.string,
+    // The statement the issue page's box aimed a comment at, with the row the comment lands
+    // under once it is sent (`StatementAnchor.row`), so a box that mounts again over the send
+    // after a reload lands on that row; a record whose statement is not one is dropped.
+    statement: shape.optional(keptStatement),
   }) satisfies Shape<KeptSentRequest<D>>;
   return shape.record({
     draft: shape.record({ ask: keptAsk, draft }),
@@ -544,15 +572,18 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
 
 /** `detail`, the record of a refused send whose refusal is `refusal`, carried to `to` by the
  *  reader's own move (`HeldSends.carry`): the request goes there, unless the send was stopped,
- *  whose key is used only at its own address. `at` is the words and kind of a margin compose the
- *  reader takes the draft into (`carryInto`), which is another address of the same owner. */
+ *  whose key is used only at its own address. The statement it is on is `to`'s, so a send the
+ *  issue page's box carries off a statement is on none, and it keeps none of the mentions the box
+ *  wrote for the reply it leaves (`SentRequest.seeds`). `at` is the words and kind of a margin
+ *  compose the reader takes the draft into (`carryInto`), which is another address of the same
+ *  owner. */
 function carriedTo(
   { stoppedSend, ...detail }: ComposerSend,
   refusal: Error,
   to: CarriedAddress,
   at?: Pick<SentRequest, "anchor" | "kind">
 ): ComposerSend {
-  const carried = { ...detail.request, ...to, ...at };
+  const carried = { ...detail.request, ...to, seeds: undefined, statement: to.statement, ...at };
   const stopped = stoppedSend ?? (refusal instanceof SendStoppedError ? detail.request : undefined);
   if (stopped === undefined) return { ...detail, request: carried };
   if (sameAddress(stopped, carried)) return { ...detail, request: stopped };
@@ -581,6 +612,18 @@ function holdsAlready(held: HeldSend, { ask, draft }: HeldDraft): boolean {
         option.label === options[at]?.label &&
         option.description === options[at]?.description
     )
+  );
+}
+
+/** Whether the refused send `held`'s request holds already the mentions a keep by the issue
+ *  page's box carries (`HeldDraft.seeds`), in order, where none and an empty list are alike
+ *  (`heldSeeds`): a keep of an equal draft with other mentions still writes them. */
+function holdsSeeds(held: HeldSend, seeds: HeldDraft["seeds"]): boolean {
+  const kept = seeds ?? [];
+  const holds = heldSeeds(held.request);
+  return (
+    kept.length === holds.length &&
+    kept.every((seed, at) => seed.target === holds[at]?.target && seed.text === holds[at]?.text)
   );
 }
 
@@ -676,13 +719,24 @@ export class HeldSends {
    *  refusal is held: a composer keeps after each pause in its typing, and reading its draft
    *  parses the whole body for whether it names a party (`outgoingDraft`). A keep of what the
    *  send holds already writes nothing (`holdsAlready`): writing it again would only rewrite the
-   *  entry and draw everything that reads the store again, for no change. */
+   *  entry and draw everything that reads the store again, for no change.
+   *
+   *  The issue page's box keeps with it the mentions it holds then (`HeldDraft.seeds`): they
+   *  replace the request's (`SentRequest.seeds`), so a box that mounts again over the send takes
+   *  out those and no link the reader wrote. A keep that carries none leaves the request none, and
+   *  a keep of the draft the send holds already still writes where its mentions are not the
+   *  request's (`holdsSeeds`). The box alone writes them, so every other composer's request holds
+   *  none before the keep and after. */
   keep(mutationKey: MutationKey, draft: () => HeldDraft): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;
-    const next = draft();
-    if (holdsAlready(held, next)) return;
-    this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft: next }));
+    const { seeds, ...next } = draft();
+    if (holdsAlready(held, next) && holdsSeeds(held, seeds)) return;
+    this.#writes.amend(held.id, composerSend, (detail) => {
+      const { seeds: _held, ...request } = detail.request;
+      const kept = seeds === undefined || seeds.length === 0 ? request : { ...request, seeds };
+      return { ...detail, draft: next, request: kept };
+    });
   }
 
   /** Re-addresses the refused send under `mutationKey`: a margin compose's kind switch after a

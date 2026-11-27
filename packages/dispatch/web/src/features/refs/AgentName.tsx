@@ -9,6 +9,7 @@ import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-r
 import {
   AGENT_SPAN_CLASS,
   type AgentRef,
+  type AgentStateWords,
   type AgentVariant,
   drawnSessionName,
   isSessionActor,
@@ -65,6 +66,10 @@ type AgentNameProps = AgentSubject &
     className?: string;
     /** Inside a sentence: the link keeps its line box (`.dispatch-inline-link`, `styles.css`). */
     inline?: boolean;
+    /** The words the session's state mark says, where its host words them (`AgentStateWords`):
+     *  the issue page's box, on its target line and in its picker's agent rows
+     *  (`RefPickerWords.marks`). With none, the mark's own (`SessionName.tsx`'s `STATE_WORDS`). */
+    stateWords?: AgentStateWords;
   };
 
 /**
@@ -125,6 +130,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
       <SessionAgentName
         className={props.className}
         inline={props.inline}
+        stateWords={props.stateWords}
         subject={{ sessionId: props.sessionId, storedTitle: props.storedTitle }}
         variant={props}
       />
@@ -143,6 +149,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
     <SessionAgentName
       className={props.className}
       inline={props.inline}
+      stateWords={props.stateWords}
       subject={{ actor }}
       variant={props}
     />

@@ -68,11 +68,11 @@ import "./BroadcastPage";
 // `test:web:cold` holds the chunk for a real second: a send pressed then would not have gone out
 // when the row counts its attempts. So the kinds are loaded here too.
 import "../writes/kinds";
-import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 // The page itself is a lazy route of the app too, loaded here for the same reason.
 import "./AgentsPage";
 import type { AgentGroup } from "./agent-groups";
