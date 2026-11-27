@@ -750,7 +750,7 @@ func (r *docsWriterRig) queryDrain(serverURL string) docsWriter {
 			leaveResultOwed(t, r.database, room)
 			versions := r.versionCount(t, room.verification)
 			return docsRun{document: room.verification, issue: room.issue, tree: room.tree, write: func() error {
-				if _, found, err := r.service.drainMark(ctx, room.issue); err != nil || !found {
+				if _, found, err := r.service.drainMark(ctx, room.issue, 0); err != nil || !found {
 					return fmt.Errorf("the drain of %s found its mark: %v, %v", room.issue, found, err)
 				}
 				if now, err := r.versionsOf(ctx, room.verification); err != nil || now != versions+1 {

@@ -291,9 +291,21 @@ type queryMark struct {
 // follow in the event log. A drain that fails is logged (drainLogLevel) and leaves the mark, which
 // the block-index tick drains (drainOwedQueryMarks); the write it follows stands committed either
 // way, and so does a fill that committed before the drain failed.
+//
+// Its fill and its drain each wait for a lock at most afterCommitWait (boundLockWaits): the write
+// has committed, so a longer wait for the issue's owner lock, behind a settlement or a stuck
+// transaction, gains its caller nothing and holds the caller's answer. A drain that meets the
+// bound rolls back whatever its transaction took, leaves the mark (and a fill that met it leaves
+// the digests owed), and is logged at Warn naming the issue and the bound; the tick drains it.
 func (s *Service) DrainOwedQueries(ctx context.Context, issueKey string) []model.Event {
-	appended, _, err := s.drainQueryMark(ctx, issueKey)
-	if err != nil {
+	wait := s.afterCommitWait()
+	appended, _, err := s.drainQueryMark(ctx, issueKey, wait)
+	switch {
+	case err == nil:
+	case lockWaitRanOut(err):
+		slog.Warn("dispatch: the drain of an issue's queries waited past its bound for a lock and left them owed to the block-index tick",
+			"issue", issueKey, "bound", wait, "error", err)
+	default:
 		slog.Log(ctx, drainLogLevel(err), "dispatch: drain the queries an issue owes", "issue", issueKey, "error", err)
 	}
 	return appended
@@ -312,18 +324,92 @@ func drainLogLevel(err error) slog.Level {
 	return slog.LevelError
 }
 
+// afterCommitLockWait bounds each lock wait of the fill and the drain a write's caller runs after
+// the write's COMMIT (fillOwed, DrainOwedQueries), the issue's owner lock first among them. The
+// write has committed, so the wait gains its caller nothing, and the block-index tick drains a mark
+// a drain leaves (drainOwedQueryMarks), as it fills the digests a fill leaves (fillLostDigests).
+// Without a bound the caller's answer waits as long as whatever holds the owner lock - a
+// settlement, a stuck transaction - with only the request's context to end it.
+//
+// It is set above the hold of the owner lock a settlement makes, the holder an edit's drain meets
+// most, so a drain behind a settlement waits it out and writes its versions before the answer, as
+// R7 has it. Measured on INFRA-1253's test Job (4 CPUs, no race detector), from the settlement's
+// hold of the lock to the moment a transaction queued on it took it, with an ask block written and
+// settled: a spec of 8 bytes, 20 runs, median 39 ms and max 157 ms; of 42 KB, 10 runs, median 99 ms
+// and max 128 ms; of 213 KB, 5 runs, median 197 ms and max 214 ms. A 1 MiB document's settlement
+// took 4.5 s at load 90 (TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad). Five seconds
+// is past all of these, and is the bound the store already gives a statement that waits on a lock
+// a request holds (artifactRemovalLockTimeout, pgmigrate.LockTimeout). Past it, a holder is no
+// settlement of a document of that size, and the tick takes the work.
+const afterCommitLockWait = 5 * time.Second
+
+// afterCommitWait is the bound of each lock wait of the fill and the drain a write's caller runs
+// after its COMMIT: afterCommitLockWait, or the value a test set (SetAfterCommitLockWaitForTest),
+// where a negative one is no bound (0).
+func (s *Service) afterCommitWait() time.Duration {
+	switch set := time.Duration(s.afterCommitLockWaitForTest.Load()); {
+	case set < 0:
+		return 0
+	case set > 0:
+		return set
+	}
+	return afterCommitLockWait
+}
+
+// boundLockWaits sets lock_timeout to wait for the rest of tx, local to it (set_config's local
+// flag, as SET LOCAL), so the transaction's every lock wait past wait fails its statement with
+// lock_not_available (55P03, lockWaitRanOut), and the transaction rolls back; the setting ends
+// with the transaction, so nothing of it reaches the pooled connection's next holder. A wait of
+// zero, the tick's, sets nothing. It runs before the owner lock, in the read phase, and is a read:
+// it gives tx no transaction id, so no transaction window grows by it.
+func boundLockWaits(ctx context.Context, tx pgx.Tx, wait time.Duration) error {
+	if wait <= 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", wait.Milliseconds())); err != nil {
+		return fmt.Errorf("bound the lock waits of the transaction at %s: %w", wait, err)
+	}
+	return nil
+}
+
+// lockWaitRanOut reports whether err is a lock wait that ran past the bound boundLockWaits set:
+// Postgres's lock_not_available (SQLSTATE 55P03). Every other error is a failure of its own.
+func lockWaitRanOut(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+}
+
+// HoldDrains sets hold to run at the start of every drain of an issue's query mark (drainMark),
+// once the fill before it has committed and before the drain's transaction begins, and nil takes
+// it off again. A test takes the issue's owner lock there, to hold the drain past its bound.
+func (s *Service) HoldDrains(hold func(issueKey string)) {
+	if hold == nil {
+		s.drainHold.Store(nil)
+		return
+	}
+	s.drainHold.Store(&hold)
+}
+
+// SetAfterCommitLockWaitForTest sets the bound of each lock wait of the fill and the drain a
+// write's caller runs after its COMMIT (afterCommitWait) to wait: a test shortens it to meet it
+// quickly, and a negative wait takes the bound out, as a control does.
+func (s *Service) SetAfterCommitLockWaitForTest(wait time.Duration) {
+	s.afterCommitLockWaitForTest.Store(int64(wait))
+}
+
 // drainQueryMark runs, for the issue issueKey, two transactions in order and never one inside the
 // other (R7): the fill of each record digest a version of the issue's queries owes
 // (fillOwedDigests), which commits first, and then the drain of the issue's mark, where one stands
 // (drainMark). It answers the events both appended, the fill's first, and whether it found a mark
 // to drain. A fill that fails runs no drain, so no mark is cleared while a digest is owed; a fill
-// that committed is answered whatever the drain does.
-func (s *Service) drainQueryMark(ctx context.Context, issueKey string) ([]model.Event, bool, error) {
-	filled, err := s.fillOwedDigests(ctx, issueKey)
+// that committed is answered whatever the drain does. Each of the two waits for a lock at most
+// wait (boundLockWaits): a request's drain is bounded (DrainOwedQueries), the tick's is not (0).
+func (s *Service) drainQueryMark(ctx context.Context, issueKey string, wait time.Duration) ([]model.Event, bool, error) {
+	filled, err := s.fillOwedDigests(ctx, issueKey, wait)
 	if err != nil {
 		return nil, false, err
 	}
-	drained, found, err := s.drainMark(ctx, issueKey)
+	drained, found, err := s.drainMark(ctx, issueKey, wait)
 	return append(filled, drained...), found, err
 }
 
@@ -346,13 +432,21 @@ func (s *Service) drainQueryMark(ctx context.Context, issueKey string) ([]model.
 // the causes read, and then what the versions state, caused by the mark's greatest_event or at the
 // sentinel where it holds none, with their head rows, the last rows the write takes. The write
 // phase is one batch, and the COMMIT follows it: the transaction's window is that batch and its
-// COMMIT. A failure rolls back everything, the clear of the mark with it.
-func (s *Service) drainMark(ctx context.Context, issueKey string) ([]model.Event, bool, error) {
+// COMMIT. A failure rolls back everything, the clear of the mark with it. Each lock wait of the
+// transaction lasts at most wait, where wait is not zero (boundLockWaits), set before the owner
+// lock.
+func (s *Service) drainMark(ctx context.Context, issueKey string, wait time.Duration) ([]model.Event, bool, error) {
+	if hold := s.drainHold.Load(); hold != nil {
+		(*hold)(issueKey)
+	}
 	tx, err := s.store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin the drain of %s: %w", issueKey, err)
 	}
 	defer tx.Rollback(ctx)
+	if err := boundLockWaits(ctx, tx, wait); err != nil {
+		return nil, false, err
+	}
 	if err := store.LockOwner(ctx, tx, store.IssueOwner(issueKey)); err != nil {
 		return nil, false, err
 	}
@@ -586,7 +680,9 @@ func appendsResultsAlone(held map[string]bool, approved, record QueryRecord) boo
 // QueryDrainActor where none stands there. It publishes what each appended once it has committed,
 // a fill that committed before its drain failed included, and counts the issues it drained in
 // tick.Queries. A mark it cannot drain is logged (drainLogLevel) and left for the next tick. It
-// reports whether the batch was full.
+// reports whether the batch was full. Its fills and drains wait for their locks with no bound of
+// their own (wait 0): no caller's answer waits on them, and they are what a request's drain that
+// met its bound leaves its work to (DrainOwedQueries).
 func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick) (bool, error) {
 	if err := s.fillLostDigests(ctx); err != nil {
 		return false, err
@@ -600,7 +696,7 @@ func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick)
 		return false, fmt.Errorf("list the issues whose queries are owed: %w", err)
 	}
 	for _, issue := range issues {
-		appended, drained, err := s.drainQueryMark(ctx, issue)
+		appended, drained, err := s.drainQueryMark(ctx, issue, 0)
 		for _, event := range appended {
 			s.events.Publish(event)
 		}
