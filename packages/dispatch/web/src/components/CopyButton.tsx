@@ -48,8 +48,9 @@ export function CopyButton({
   // would drop the focus to the page's body in a browser) and a press of it does nothing. The
   // press records where the focus is meanwhile: its button, then each element the focus lands on
   // after it. `copyText`'s fallback, which runs where the clipboard is missing or refuses, puts
-  // the focus in a temporary text box and removes it, which leaves the focus on the document
-  // (`focusOnDocument`); the focus then goes back to the last of those still on the page, the
+  // the focus in a temporary text box and gives it back to the element that had it once the box
+  // goes. Where that element had left the page before the fallback ran, the focus is left on the
+  // document (`focusOnDocument`); it then goes back to the last of those still on the page, the
   // button or wherever the reader moved it while the copy was out: right after `copy` returns,
   // where the fallback ran at once, and once `status` leaves `idle`, where it ran after the
   // clipboard refused. A press clears `status` first, so a copy that lands "Copied" while the

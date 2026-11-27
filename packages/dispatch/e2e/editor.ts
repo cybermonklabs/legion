@@ -58,6 +58,26 @@ export async function openSpecAndAwaitHeadingIds(
   return after;
 }
 
+/** Opens the page's Version list - the issue Spec tab's, or a document page's header's - and
+ *  answers the list, which its text box narrows: its options are the document's versions and
+ *  its current text. */
+export async function openVersions(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: /^Version(?: |$)/ }).click();
+  return page.getByRole("listbox", { name: "Version options" });
+}
+
+/** Picks `version` of the document from the page's Version list, or its current text for null,
+ *  as a reader does: opens the list and presses that version's option, named by its number with
+ *  a named version's summary after it. */
+export async function pickVersion(page: Page, version: number | null): Promise<void> {
+  const versions = await openVersions(page);
+  await versions
+    .getByRole("option", {
+      name: version === null ? /^Current\b/ : new RegExp(`^Version ${version}(?: — |$)`),
+    })
+    .click();
+}
+
 export function actionBar(page: Page): Locator {
   return page.locator(".dispatch-action-bar");
 }

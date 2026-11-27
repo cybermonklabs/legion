@@ -92,7 +92,8 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[5] },
     { reason: REASONS[6] }
   ),
-  ...answers("AgentsPage | AgentRow | key | <div key={agent.session_id}>", { reason: REASONS[5] }),
+  ...answers("AgentsPage | AgentRow | key | <li key={agent.session_id}>", { reason: REASONS[5] }),
+  ...answers("AgentsPage | AgentRow | conditional | <li hidden>", { reason: REASONS[5] }),
   ...answers(
     "AgentsPage | AgentRow | conditional | drawn by grouped[group] .filter((agent) => kept.has(agent.session_id) && !(shown[group] && matches(agent, group))) .map(…)",
     { reason: REASONS[5] },
@@ -114,7 +115,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers('AgentsPage | AgentRow | conditional | !(item.kind === "group") ? …', {
     reason: REASONS[7],
   }),
-  ...answers("WindowedList | AgentRow | key | <div key={item.key}>", { reason: REASONS[7] }),
+  ...answers("WindowedList | AgentRow | key | <li key={item.key}>", { reason: REASONS[7] }),
   ...answers("WindowedList | AgentRow | early return | if (item === undefined) return …", {
     reason: REASONS[5],
   }),

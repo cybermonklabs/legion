@@ -159,10 +159,11 @@ export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:r
 export const hasFocusVisibleRing =
   "has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400";
 export const cardHoverBorder = "hover:border-sky-400 dark:hover:border-sky-300";
-/** The `cardHoverBorder` accent, scoped to `enabled:` so it doesn't apply while a button is
- * `disabled` (paired with `disabled:opacity-50`-style buttons). */
+/** The `cardHoverBorder` accent while the button can be pressed: `not-refused:` (`styles.css`)
+ *  skips a `disabled` button and one held with `aria-disabled` alike (paired with
+ *  `refused:opacity-50`-style buttons). */
 export const enabledCardHoverBorder =
-  "enabled:hover:border-sky-400 dark:enabled:hover:border-sky-300";
+  "not-refused:hover:border-sky-400 dark:not-refused:hover:border-sky-300";
 export const controlHoverBorder = "hover:border-sky-500 dark:hover:border-sky-400";
 
 registerText("focus ring on canvas", FOCUS_ACCENT, CANVAS, 3);
@@ -542,8 +543,8 @@ registerText("decision pill: med", BADGE_MED_TEXT, ASK_BLOCK_PILL_MED_BG);
 registerText("danger text on danger callout", DANGER_TEXT, CALLOUT_DANGER_BG);
 registerText("danger text on warning callout", DANGER_TEXT, CALLOUT_WARNING_BG);
 registerText("danger text on surface-recessed", DANGER_TEXT, SURFACE_RECESSED);
-/** The issue-status select is a neutral control: its solid dot carries the state signal while
- * its label remains readable without requiring users to distinguish hues. */
+/** The issue header's Status pick is a neutral control: its solid dot carries the state signal
+ * while its label remains readable without requiring users to distinguish hues. */
 export const STATUS_PILL_BG = pair(P.SLATE_100, P.SLATE_800);
 export const STATUS_PILL_TEXT = pair(P.SLATE_800, P.SLATE_200);
 export const statusPill = {

@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useState } from "react";
-import { useLocation } from "react-router-dom";
 
+import { usePageAddress } from "../../lib/page-address";
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { routeProjectOf } from "../refs/routes";
@@ -48,26 +48,26 @@ export function useBarScope(
    *  alone, since with words in it that key rubs out a letter. */
   query: string
 ): BarScope {
-  const location = useLocation();
+  const address = usePageAddress();
   // The project of the page this open was made from (its own page, or an issue of it). It
   // narrows nothing: a search from a project page searches everything, as a search from
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,
   // and a reader who wants this project alone adds its chip.
-  const [pageProject] = useState(() => routeProjectOf(location.pathname));
+  const [pageProject] = useState(() => routeProjectOf(address.pathname));
   const [blockScope] = useState(scopeAtCursor);
-  const [projectScope] = useState(() => scopeOfProject(location.pathname));
+  const [projectScope] = useState(() => scopeOfProject(address.pathname));
   const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
   // The issues the issue list had selected as this open was made, so no render of the list
   // behind the bar moves a chip the reader is looking at.
   const [selectedIssues] = useState(readSelectedIssues);
   // The document page's own read, under the key that page uses, so the chip names the document
   // by its name with no request of its own.
-  const [documentRoute] = useState(() => documentRouteOf(location.pathname, location.search));
+  const [documentRoute] = useState(() => documentRouteOf(address.pathname, address.search));
   // The issue the bar was opened over, which is what an offer acts on while the chip is at page
   // level.
-  const [pageIssue] = useState(() => issueOfPage(location.pathname, location.search));
+  const [pageIssue] = useState(() => issueOfPage(address.pathname, address.search));
   const documentName = useProjectArtifact(documentRoute).data?.name;
-  const pageScope = scopeOfPage(location.pathname, location.search, documentName, selectedIssues);
+  const pageScope = scopeOfPage(address.pathname, address.search, documentName, selectedIssues);
   const scope =
     scopeLevel === "block" ? blockScope : scopeLevel === "project" ? projectScope : pageScope;
   // `Tab` narrows the chip to the block the writing cursor was in, and only where there was
@@ -89,10 +89,10 @@ export function useBarScope(
       }
       return false;
     },
-    // What the bar will act on, above the box, with the two keys that move it. The filter chips
-    // below the box are another thing and read as one: they say which items the words search,
-    // each with a Remove control of its own, while this says what the bar acts on and is moved
-    // by Tab and Backspace alone.
+    // What the bar will act on, above the row of controls, with the two keys that move it. The
+    // filter chips in that row are another thing and read as one: they say which items the
+    // words search, each with a Remove control of its own, while this says what the bar acts
+    // on and is moved by Tab and Backspace alone.
     header:
       scope === undefined ? null : (
         <div

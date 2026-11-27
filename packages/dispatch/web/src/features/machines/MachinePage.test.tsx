@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -283,6 +284,21 @@ test("a machine whose sessions are in no pane says so and opens the Agents page 
     );
     expect(screen.queryByTestId("machine-server")).toBeNull();
     expect(screen.queryByTestId("machine-drawing-age")).toBeNull();
+  } finally {
+    machine.close();
+  }
+});
+
+// The Agents page's `?machine=` is written whole at any length, so a host longer than
+// `SEARCH_QUERY_MAX` still has its link, and the link names the whole host.
+test("a machine whose name is past the address's cap names itself and links to the Agents page for all of it", async () => {
+  const host = "h".repeat(SEARCH_QUERY_MAX + 1);
+  const machine = renderMachine([session(id("a"), undefined, { host, machine_id: host })], host);
+  try {
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(host);
+    expect(
+      screen.queryByRole("link", { name: "Agents on this machine" })?.getAttribute("href")
+    ).toBe(`/agents?machine=${host}`);
   } finally {
     machine.close();
   }

@@ -30,6 +30,7 @@ import {
 } from "../../api/client";
 import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -657,7 +658,8 @@ function OutlineRefusal({
   /** Omitted for a refusal a retry cannot get past; no Retry is drawn then. */
   readonly onRetry?: () => void;
   readonly retryLabel: string;
-  /** Holds Retry while the retried request is out. */
+  /** Holds Retry while the retried request is out (`heldPress`): it keeps the focus and its Tab
+   *  stop, and a press of it sends nothing then. */
   readonly retrying: boolean;
 }): ReactNode {
   return (
@@ -669,9 +671,8 @@ function OutlineRefusal({
       <p>{message}</p>
       {onRetry === undefined ? null : (
         <button
-          className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
-          disabled={retrying}
-          onClick={onRetry}
+          className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${pageComposerControl}`}
+          {...heldPress(retrying, onRetry)}
           type="button"
         >
           {retryLabel}
@@ -801,6 +802,32 @@ interface MentionComposerProps {
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
    *  why it refused, which the composer shows under the switch. */
   readonly onKindChange?: (kind: ComposerKind) => string | undefined;
+}
+
+/** The keys that only move the focus or the caret, which a send's hold on the composer lets
+ *  through: the reader can still move about the draft, and leave the composer by keyboard. */
+const MOVING_KEYS: Readonly<Record<string, true>> = {
+  ArrowDown: true,
+  ArrowLeft: true,
+  ArrowRight: true,
+  ArrowUp: true,
+  End: true,
+  Home: true,
+  PageDown: true,
+  PageUp: true,
+  Tab: true,
+};
+
+/** Whether a key the send's hold stops (`stopHeldComposerKey`) is one the hold keeps from the
+ *  browser too, as one the composer acts on or one that would type: Enter, with a modifier or
+ *  none; Escape; Ctrl/Cmd+K; and, held with no Ctrl or Cmd, a character, Backspace or Delete.
+ *  Every other Ctrl/Cmd chord and every function key stay the browser's, so find, copy, select
+ *  all, reload, print and zoom still work while the send is out. */
+function heldFromBrowser(event: KeyboardEvent): boolean {
+  const { key } = event;
+  if (key === "Enter" || key === "Escape") return true;
+  if (event.ctrlKey || event.metaKey) return key.toLowerCase() === "k";
+  return key.length === 1 || key === "Backspace" || key === "Delete";
 }
 
 export function MentionComposer({
@@ -1447,7 +1474,7 @@ export function MentionComposer({
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
    *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
+   *  before React draws the fieldset held. From here on the held send keeps the draft, so the
    *  unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
@@ -1456,13 +1483,22 @@ export function MentionComposer({
       forgetUnsent();
       return sentRequest(refused);
     });
-  /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
-   *  fieldset's capture stops every key, click, input and change bound for a control in it - so
-   *  Escape raises no Discard prompt over a draft that is out. */
+  /** The hold on the draft from Send's own task on, before React draws the fieldset held: the
+   *  fieldset's capture stops every click, input, change, paste and drop bound for a control in
+   *  it - so no file goes into a draft that is out, and no press acts - and every key but the
+   *  ones that only move the focus or the caret (`stopHeldComposerKey`), so Escape raises no
+   *  Discard prompt. A key it stops reaches no handler of the
+   *  composer's. The browser's own action for that key is cancelled only for a key the composer
+   *  acts on or one that would type (`heldFromBrowser`). */
   const stopHeldComposerInput = (event: SyntheticEvent) => {
     if (!outgoing.sendingNow()) return;
     event.preventDefault();
     event.stopPropagation();
+  };
+  const stopHeldComposerKey = (event: KeyboardEvent) => {
+    if (MOVING_KEYS[event.key] === true || !outgoing.sendingNow()) return;
+    event.stopPropagation();
+    if (heldFromBrowser(event)) event.preventDefault();
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1858,13 +1894,18 @@ export function MentionComposer({
       ? (outline?.uploading ?? "Uploading file…")
       : undefined;
   // What both looks hand their held fieldset alike: the hold on every control of the draft while
-  // a send is out (`stopHeldComposerInput`).
+  // a send is out. The fieldset is held, never disabled: `aria-disabled` on it, each text field in
+  // it read-only (`heldField`) and each press refused by its capture (`stopHeldComposerInput`,
+  // `stopHeldComposerKey`). The browser takes the focus off a control that turns disabled, so a
+  // disabled fieldset would drop the reader who sent from the box or from Send onto the page.
   const heldFieldset = {
-    disabled: sending,
+    "aria-disabled": sending || undefined,
     onChangeCapture: stopHeldComposerInput,
     onClickCapture: stopHeldComposerInput,
+    onDropCapture: stopHeldComposerInput,
     onInputCapture: stopHeldComposerInput,
-    onKeyDownCapture: stopHeldComposerInput,
+    onKeyDownCapture: stopHeldComposerKey,
+    onPasteCapture: stopHeldComposerInput,
   };
   // The issue page's line reads each party its write is delivered to by its name, where its host
   // names the list (`OutlineNames.targets`): a role by its own name, and a session by its name as
@@ -1904,6 +1945,7 @@ export function MentionComposer({
           body={body}
           description={outline.names?.description}
           fieldRef={field}
+          held={sending}
           issueKey={pickerIssue}
           label={bodyLabel}
           labelHidden
@@ -2026,8 +2068,9 @@ export function MentionComposer({
               reply: the control would do nothing there, and the draft stays in the field. */}
           {standing ? null : (
             <button
+              aria-disabled={sending || undefined}
               aria-label="Cancel reply"
-              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
+              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none refused:cursor-not-allowed refused:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
               onClick={cancelReply}
               type="button"
             >
@@ -2080,6 +2123,7 @@ export function MentionComposer({
         <MentionField
           body={replacement}
           fieldRef={replacementField}
+          held={sending}
           issueKey={pickerIssue}
           label="Replacement"
           onChange={(change) => {
@@ -2096,6 +2140,7 @@ export function MentionComposer({
         body={body}
         fieldClassName={tones.field}
         fieldRef={field}
+        held={sending}
         hintClassName={tones.hint}
         inline={inline}
         issueKey={pickerIssue}
@@ -2138,9 +2183,13 @@ export function MentionComposer({
           <label
             className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
           >
+            {/* A held box is dimmed as the browser dims a disabled one. `aria-disabled:` reads the
+                send's hold alone: `refused:` also reads the native disable of the fieldset around
+                it while a draft is offered, where the browser dims the box already. */}
             <input
+              aria-disabled={sending || undefined}
               checked={multiple}
-              className={`size-4 rounded ${borderStrong} ${checkboxAccent} ${focusRing}`}
+              className={`size-4 rounded aria-disabled:opacity-50 ${borderStrong} ${checkboxAccent} ${focusRing}`}
               onChange={(event) => setMultiple(event.target.checked)}
               type="checkbox"
             />
@@ -2165,6 +2214,7 @@ export function MentionComposer({
                     fieldRef={(handle) => {
                       optionLabelFields.current[index] = handle;
                     }}
+                    held={sending}
                     inline
                     issueKey={pickerIssue}
                     label={`Option ${index + 1} label`}
@@ -2188,6 +2238,7 @@ export function MentionComposer({
                   />
                   <MentionField
                     body={option.description}
+                    held={sending}
                     inline
                     issueKey={pickerIssue}
                     label={`Option ${index + 1} description`}

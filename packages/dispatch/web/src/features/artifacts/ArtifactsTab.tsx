@@ -1,18 +1,20 @@
 import { graphNodeKey, issueReferenceSections } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { memo, type ReactNode, useId, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { memo, type ReactNode, useId, useMemo } from "react";
+import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
 import { QueryError } from "../../components/QueryError";
+import { SearchBox } from "../../components/SearchBox";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useCappedAddressParam, usePageAddress } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
   borderDefault,
   dangerText,
-  inputClasses,
   linkHoverText,
   linkText,
   textMutedOnSurface,
@@ -39,7 +41,12 @@ import { type TextSource, textSourceOf } from "../refs/text-references";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
-import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument, removalIsOffered } from "./DocumentWayBack";
+import {
+  ARTIFACTS_NOT_LOADED,
+  CLOSED_ISSUE_REMOVE_REFUSAL,
+  RemoveDocument,
+  removalIsOffered,
+} from "./DocumentWayBack";
 
 function kindIcon(kind: Artifact["kind"]): ReactNode {
   const common = {
@@ -461,10 +468,12 @@ function ArtifactRow({
 /** The issue's artifacts: a control that makes a document, an upload that a closed issue refuses
  *  before a file is picked, and every artifact the issue holds. */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
-  const { pathname } = useLocation();
+  const { pathname } = usePageAddress();
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
-  const [filter, setFilter] = useState("");
+  // The words that narrow the list live in the address (`?q=`), so a reader who reloads, shares
+  // the tab or comes back to it finds the list narrowed the way they left it.
+  const [filter, setFilter] = useCappedAddressParam("q");
   // One sentence covers every control of the strip: a closed issue takes neither a new document
   // nor an upload, and both controls are described by this line.
   const closedRefusalId = useId();
@@ -521,24 +530,23 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
     return <p className={`pt-3 text-sm ${textMutedOnSurface}`}>Loading artifacts…</p>;
   }
   if (artifacts.isError) {
-    return <p className={`pt-3 text-sm ${dangerText}`}>Could not load artifacts.</p>;
+    return <p className={`pt-3 text-sm ${dangerText}`}>{ARTIFACTS_NOT_LOADED}</p>;
   }
 
   return (
     <div className="space-y-3 pt-3">
-      {/* One control strip: what narrows the list on the left, what adds to it on the right. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="block min-w-48 flex-1">
-          <span className="sr-only">Filter artifacts</span>
-          <input
-            aria-label="Filter artifacts"
-            className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-            onChange={(event) => setFilter(event.target.value)}
+      {/* One control strip: what narrows the list at its head, what adds to it after. */}
+      <ControlRow
+        search={
+          <SearchBox
+            className="w-full"
+            label="Filter artifacts"
+            onChange={setFilter}
             placeholder="Filter artifacts"
-            type="search"
             value={filter}
           />
-        </label>
+        }
+      >
         <CreateDocument
           documents={orderedArtifacts}
           owner={{ issue: issueKey }}
@@ -551,7 +559,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
             {closedRefusal}
           </span>
         )}
-      </div>
+      </ControlRow>
       {/* A references read that fails - a read cut at the server's bound among them, which the
           shared retry policy leaves to this Retry - says so rather than hiding the section. */}
       {references.isError ? (

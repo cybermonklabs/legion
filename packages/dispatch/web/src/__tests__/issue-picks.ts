@@ -1,12 +1,14 @@
 /** What the unit rows of an issue's picks share (`issue-field-writes.test.tsx`,
  *  `assignee-repo-picks.test.tsx`): the issue picked and its detail, the page's query client
- *  signed in, what each save Dispatch received carried, and the repository box's suggestions
- *  and picks. */
+ *  signed in, what each save Dispatch received carried, and what the shared list's single picks
+ *  show, suggest and pick. */
 import type { QueryKey } from "@tanstack/react-query";
+import { within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { DispatchQueryClient } from "../api/query-client";
 import type { Issue, IssueDetails } from "../api/types";
+import { panelOf } from "./list-picks";
 
 /** CORE-1, the issue every row picks a field of, as Dispatch answers a save of it. */
 export const issue: Issue = {
@@ -75,21 +77,56 @@ export function bodies(patchIssue: { mock: { calls: unknown[][] } }): unknown[] 
   return patchIssue.mock.calls.map((call) => call[1]);
 }
 
-/** The repositories `box` suggests: its `<datalist>`'s option values, in the box's order. */
-export function repoSuggestions(box: HTMLInputElement): string[] {
-  return Array.from(box.list?.options ?? [], (option) => option.value);
+/** The words `element` holds that assistive technology reads: its text less what it hides, such
+ *  as a badge beside the words that read it or the mark of a picked row. A single pick's trigger
+ *  holds what it shows and not its label, so for a trigger these are what its name reads after
+ *  the label. */
+export function shownBy(element: Element): string {
+  const words = element.cloneNode(true) as Element;
+  for (const hidden of words.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+  return words.textContent ?? "";
 }
 
-/** Empties `box`, types `repo` and presses Enter, which writes it; `""` is an Inherit pick. */
-export async function typeRepo(
+/** The repositories the open Repository list in `panel` suggests: the labels of its options after
+ *  Inherit, in the list's order, without the mark of the picked one. */
+export function repoSuggestions(panel: HTMLElement): string[] {
+  return within(panel)
+    .getAllByRole("option")
+    .map((option) => shownBy(option))
+    .filter((label) => label !== "Inherit");
+}
+
+/** Picks the row named `name` of the single pick `trigger` opens, which writes it, opening its
+ *  list unless it stands open. The list is portalled out of the control's container, so the row
+ *  is found in the panel the trigger names. */
+export async function pickIn(
   user: UserEvent,
-  box: () => HTMLInputElement,
+  trigger: () => HTMLElement,
+  name: string
+): Promise<void> {
+  if (trigger().getAttribute("aria-expanded") !== "true") await user.click(trigger());
+  await user.click(await within(panelOf(trigger())).findByRole("option", { name }));
+}
+
+/** Picks `repo` from the Repository list `trigger` opens, which writes it, opening the list
+ *  unless it stands open. Where the list offers `repo` as a row, that row is picked; `""` is an
+ *  Inherit pick, the list's Inherit row. The list suggests only the project's default repository
+ *  and the issue's own, so any other `repo` is typed into the list's text box and given by the row
+ *  that takes it, `Use "<repo>"`, as a reader gives it. A row whose suggestion arrives with a read
+ *  waits for that read before it calls this. */
+export async function pickRepo(
+  user: UserEvent,
+  trigger: () => HTMLElement,
   repo: string
 ): Promise<void> {
-  await user.clear(box());
-  if (repo !== "") {
-    await user.click(box());
-    await user.paste(repo);
+  if (trigger().getAttribute("aria-expanded") !== "true") await user.click(trigger());
+  const panel = within(panelOf(trigger()));
+  const row = panel.queryByRole("option", { name: repo === "" ? "Inherit" : repo });
+  if (row !== null) {
+    await user.click(row);
+    return;
   }
-  await user.keyboard("{Enter}");
+  await user.click(panel.getByRole("combobox"));
+  await user.paste(repo);
+  await user.click(panel.getByRole("option", { name: `Use "${repo}"` }));
 }

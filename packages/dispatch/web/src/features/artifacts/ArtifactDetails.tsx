@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
+import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
   dangerText,
@@ -62,7 +63,9 @@ function BlobVersionComparison({ after, before }: { after: Version; before: Vers
   );
 }
 
-/** One side of the From/To compare: a labelled picker over every version, newest first. */
+/** One side of the From/To compare: a list of every version, newest first, whose text box
+ *  narrows them. The word over it is for the eye: the trigger is named for the whole side
+ *  (`Compare <name> from`), which is what a screen reader hears. */
 function CompareVersionSelect({
   ariaLabel,
   label,
@@ -76,22 +79,27 @@ function CompareVersionSelect({
   value: number | undefined;
   versions: readonly Version[];
 }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const labels = new Map(
+    versions.map((version) => [String(version.number), versionLabel(version)])
+  );
   return (
-    <label className={`text-xs font-medium ${textSecondaryOnSurface}`}>
-      {label}
-      <select
-        aria-label={ariaLabel}
-        className={`mt-1 block min-h-11 w-full rounded border px-2 py-2 text-sm ${inputClasses(true)}`}
-        onChange={(event) => onChange(Number(event.target.value))}
-        value={value}
-      >
-        {versions.map((version) => (
-          <option key={version.number} value={version.number}>
-            {versionLabel(version)}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className={`text-xs font-medium ${textSecondaryOnSurface}`}>
+      <span aria-hidden="true">{label}</span>
+      <MultiSelect
+        emptyMessage="No version matches that."
+        label={ariaLabel}
+        mode="single"
+        onOpenChange={setOpen}
+        onPick={(number) => onChange(Number(number))}
+        open={open}
+        optionLabel={(number) => labels.get(number) ?? `Version ${number}`}
+        options={versions.map((version) => String(version.number))}
+        searchLabel="Search versions"
+        triggerClassName={`mt-1 block min-h-11 w-full rounded border px-2 py-2 text-left text-sm ${inputClasses(true)}`}
+        value={value === undefined ? undefined : String(value)}
+      />
+    </div>
   );
 }
 

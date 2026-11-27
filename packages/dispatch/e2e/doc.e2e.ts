@@ -24,6 +24,8 @@ import {
   documentTransport,
   openDocumentSockets,
   openSpecAndAwaitHeadingIds,
+  openVersions,
+  pickVersion,
   placeCaret,
   selectEditorText,
   typeAtEnd,
@@ -305,9 +307,10 @@ test("named versions, the version picker, and the diff stay current across users
       )
       .toMatchObject({ named: true, number: 3, summary: "Decided Postgres" });
 
-    const versionPicker = page.getByRole("combobox", { name: "Version" });
-    await expect(versionPicker).toContainText("Version 3 — Decided Postgres");
-    await versionPicker.selectOption("1");
+    // The picker's list names the version just named, with its summary.
+    await expect(await openVersions(page)).toContainText("Version 3 — Decided Postgres");
+    await page.keyboard.press("Escape");
+    await pickVersion(page, 1);
     const versionView = page.getByTestId("version-view");
     await expect(versionView).toContainText("Use SQLite");
     await expect(versionView.getByRole("textbox", { name: "Document editor" })).toHaveAttribute(
@@ -320,7 +323,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect(page.getByTestId("change-view").locator("del")).toHaveText("SQLite");
     await expect(page.getByTestId("change-view").locator("ins")).toHaveText("Postgres");
 
-    await versionPicker.selectOption("");
+    await pickVersion(page, null);
     await expect(documentEditor(page)).toBeVisible();
     await expect.poll(sockets).toBe(1);
   } finally {
@@ -396,7 +399,7 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
     await expect(documentEditor(alicePage)).toBeAttached();
     await expect(documentEditor(alicePage)).toContainText("Use SQLite");
     await expect(documentEditor(alicePage)).toContainText("before reload");
-    await expect(alicePage.getByRole("combobox", { name: "Version" })).toContainText("Version 1");
+    await expect(await openVersions(alicePage)).toContainText("Version 1");
   } finally {
     await bob.close();
     await alice.close();
@@ -592,7 +595,9 @@ for (const row of [
     try {
       const page = await alice.newPage();
       // The half-minute below is the provider's own, measured on the page's timers, so the page's
-      // clock spends it rather than the run (`artifacts.e2e.ts:478` drives the same connection).
+      // clock spends it rather than the run (`artifacts.e2e.ts`'s row "a mounted editor does not
+      // reconnect into a document made unreadable while its socket was down" drives the same
+      // connection).
       await page.clock.install();
       const sockets = countDocumentSockets(page, issue.primary_artifact_id);
       await page.goto(`/issues/${issue.key}/spec`);
