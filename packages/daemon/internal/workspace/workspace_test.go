@@ -21,11 +21,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testparallel"
 )
 
 const testTimeout = 30 * time.Second
 
 // workspaceTestParallelism bounds concurrent tests independently of the host's CPU count.
+// Every default-build test calls t.Parallel first or states why not on its first line
+// (TestEveryTestCallsParallelOrSaysWhyNot, testparallel.Require).
 // They mostly wait for git and jj children; eight lets those waits overlap on a four-CPU runner.
 // m.Run parses flags afterwards, so an explicit -parallel still wins.
 const workspaceTestParallelism = 8
@@ -49,6 +52,11 @@ func TestMain(m *testing.M) {
 	}
 	fixtureenv.MustGuard()
 	os.Exit(runUnderAHomeOfThePackagesOwn(m))
+}
+
+func TestEveryTestCallsParallelOrSaysWhyNot(t *testing.T) {
+	t.Parallel()
+	testparallel.Require(t, ".")
 }
 
 // runUnderAHomeOfThePackagesOwn does the setup the comment above describes, makes the directory the
@@ -139,13 +147,6 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	// A Jujutsu clone reaches the fixture remote directly through the runner's rewritten argument.
 	if isClone(actual.Argv) {
 		actual.Argv[3] = r.remote
-	}
-	if actual.Argv[0] == "git" && slices.Contains(actual.Argv, "clone") {
-		for i, arg := range actual.Argv {
-			if arg == "https://github.com/acme/widgets" {
-				actual.Argv[i] = "file://" + r.remote
-			}
-		}
 	}
 	// A fetch into the repository cache's bare clone or an issue pod's clone, and its read of
 	// GitHub's HEAD, name GitHub in their argv, too.
@@ -326,33 +327,28 @@ func provisionRequest(t *testing.T) Request {
 // the workspace's parent is its head and nothing names main.
 func TestProvisionStartsAtADefaultBranchWithASlash(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"github"} {
-		t.Run(source, func(t *testing.T) {
-			t.Parallel()
-			run := newLocalRunnerOnBranch(t, "release/v7.1")
-			req := provisionRequest(t)
-			req.DefaultBranch = "release/v7.1"
-			working, err := Provision(context.Background(), run, req)
-			if err != nil {
-				t.Fatalf("Provision: %v", err)
+	run := newLocalRunnerOnBranch(t, "release/v7.1")
+	req := provisionRequest(t)
+	req.DefaultBranch = "release/v7.1"
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if working.DefaultBranch != "release/v7.1" {
+		t.Errorf("the workspace's default branch is %q, want release/v7.1", working.DefaultBranch)
+	}
+	if parent, head := commitOf(t, working.Dir, "@-"), commitOf(t, working.Clone, "release/v7.1@origin"); parent != head {
+		t.Errorf("the workspace's @- is %s, want release/v7.1's %s", parent, head)
+	}
+	if bookmark, at := commitOf(t, working.Clone, working.Bookmark), commitOf(t, working.Dir, "@"); bookmark != at {
+		t.Errorf("the issue's bookmark is on %s, want the fresh working copy %s", bookmark, at)
+	}
+	for _, call := range run.Calls() {
+		for _, arg := range call.Argv {
+			if arg == "main" || strings.Contains(arg, jjString("main")) || strings.HasPrefix(arg, "main@") || strings.HasSuffix(arg, ":main") {
+				t.Errorf("a command named main: %q", call.Argv)
 			}
-			if working.DefaultBranch != "release/v7.1" {
-				t.Errorf("the workspace's default branch is %q, want release/v7.1", working.DefaultBranch)
-			}
-			if parent, head := commitOf(t, working.Dir, "@-"), commitOf(t, working.Clone, "release/v7.1@origin"); parent != head {
-				t.Errorf("the workspace's @- is %s, want release/v7.1's %s", parent, head)
-			}
-			if bookmark, at := commitOf(t, working.Clone, working.Bookmark), commitOf(t, working.Dir, "@"); bookmark != at {
-				t.Errorf("the issue's bookmark is on %s, want the fresh working copy %s", bookmark, at)
-			}
-			for _, call := range run.Calls() {
-				for _, arg := range call.Argv {
-					if arg == "main" || strings.Contains(arg, jjString("main")) || strings.HasPrefix(arg, "main@") || strings.HasSuffix(arg, ":main") {
-						t.Errorf("a command named main: %q", call.Argv)
-					}
-				}
-			}
-		})
+		}
 	}
 }
 
@@ -369,38 +365,36 @@ func TestProvisionStartsAtADefaultBranchWhoseNameJJWouldParse(t *testing.T) {
 		{"release|stable", "release"},
 		{`say"hi`, "say"},
 	} {
-		for _, source := range []string{"github"} {
-			t.Run(tc.branch+"/"+source, func(t *testing.T) {
-				t.Parallel()
-				run := newLocalRunnerOnBranch(t, tc.branch)
-				decoy := pushRemoteBranch(t, run.remote, tc.decoy, "decoy.txt")
-				provision := func(what string) Workspace {
-					t.Helper()
-					req := provisionRequest(t)
-					req.StateDir = filepath.Join(filepath.Dir(run.remote), "legion state")
-					req.Source = FromGitHub(staticToken("test-installation-token"), req.StateDir)
-					req.DefaultBranch = tc.branch
-					working, err := Provision(context.Background(), run, req)
-					if err != nil {
-						t.Fatalf("%s: Provision at %q: %v", what, tc.branch, err)
-					}
-					head := strings.TrimSpace(runSetup(t, filepath.Dir(run.remote), "git", "--git-dir="+run.remote, "rev-parse", "refs/heads/"+tc.branch))
-					if parent := commitOf(t, working.Dir, "@-"); parent != head {
-						t.Fatalf("%s: the workspace's @- is %s, want %q's head %s (the decoy %q is %s)", what, parent, tc.branch, head, tc.decoy, decoy)
-					}
-					return working
+		t.Run(tc.branch, func(t *testing.T) {
+			t.Parallel()
+			run := newLocalRunnerOnBranch(t, tc.branch)
+			decoy := pushRemoteBranch(t, run.remote, tc.decoy, "decoy.txt")
+			provision := func(what string) Workspace {
+				t.Helper()
+				req := provisionRequest(t)
+				req.StateDir = filepath.Join(filepath.Dir(run.remote), "legion state")
+				req.Source = FromGitHub(staticToken("test-installation-token"), req.StateDir)
+				req.DefaultBranch = tc.branch
+				working, err := Provision(context.Background(), run, req)
+				if err != nil {
+					t.Fatalf("%s: Provision at %q: %v", what, tc.branch, err)
 				}
+				head := strings.TrimSpace(runSetup(t, filepath.Dir(run.remote), "git", "--git-dir="+run.remote, "rev-parse", "refs/heads/"+tc.branch))
+				if parent := commitOf(t, working.Dir, "@-"); parent != head {
+					t.Fatalf("%s: the workspace's @- is %s, want %q's head %s (the decoy %q is %s)", what, parent, tc.branch, head, tc.decoy, decoy)
+				}
+				return working
+			}
 
-				first := provision("first provisioning")
-				runSetup(t, first.Clone, "jj", "bookmark", "delete", "exact:"+jjString(first.Bookmark), "--ignore-working-copy", "-R", first.Clone)
-				runSetup(t, first.Clone, "jj", "workspace", "forget", filepath.Base(first.Dir), "--ignore-working-copy", "-R", first.Clone)
-				if err := os.RemoveAll(first.Dir); err != nil {
-					t.Fatal(err)
-				}
-				pushRemoteBranch(t, run.remote, tc.branch, "moved.txt")
-				provision("provisioning after the workspace was lost")
-			})
-		}
+			first := provision("first provisioning")
+			runSetup(t, first.Clone, "jj", "bookmark", "delete", "exact:"+jjString(first.Bookmark), "--ignore-working-copy", "-R", first.Clone)
+			runSetup(t, first.Clone, "jj", "workspace", "forget", filepath.Base(first.Dir), "--ignore-working-copy", "-R", first.Clone)
+			if err := os.RemoveAll(first.Dir); err != nil {
+				t.Fatal(err)
+			}
+			pushRemoteBranch(t, run.remote, tc.branch, "moved.txt")
+			provision("provisioning after the workspace was lost")
+		})
 	}
 }
 

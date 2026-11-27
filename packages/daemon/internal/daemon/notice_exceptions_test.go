@@ -408,7 +408,7 @@ func confirmedAnswer(reason, holder string) error {
 func noticeRowID(t *testing.T, pool *store.Pool) int64 {
 	t.Helper()
 	var id int64
-	if err := pool.QueryRow(context.Background(), "select id from outbox").Scan(&id); err != nil {
+	if err := pool.QueryRow(context.Background(), "select id from outbox where "+notStateRows).Scan(&id); err != nil {
 		t.Fatalf("read the notice row: %v", err)
 	}
 	return id
@@ -927,7 +927,7 @@ func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 	if err := runner.releaseWaiting(context.Background(), architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9")); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	rows, err := pool.Query(context.Background(), "select issue, next_at <= $1 from outbox order by id", now)
+	rows, err := pool.Query(context.Background(), "select issue, next_at <= $1 from outbox where "+notStateRows+" order by id", now)
 	if err != nil {
 		t.Fatalf("read the copies: %v", err)
 	}
@@ -961,7 +961,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 	due := func() bool {
 		t.Helper()
 		var due bool
-		if err := pool.QueryRow(context.Background(), "select next_at <= $1 from outbox", time.Now()).Scan(&due); err != nil {
+		if err := pool.QueryRow(context.Background(), "select next_at <= $1 from outbox where "+notStateRows, time.Now()).Scan(&due); err != nil {
 			t.Fatalf("read the waiting notice: %v", err)
 		}
 		return due
@@ -1210,9 +1210,11 @@ func TestACatchUpCopyCommittedAfterTheFreshOneIsNotPublished(t *testing.T) {
 		}
 	}
 	_, delivered := publisher.snapshot()
+	// The delivery states the tree again, its reason with it (deliverNotice), so each catch-up is
+	// told apart by the launch it was written for, which the row keeps.
 	var got []string
 	for _, published := range delivered {
-		got = append(got, published.payload.(record.Notice).Reason)
+		got = append(got, fmt.Sprintf("launch %d", published.payload.(record.Notice).CatchUp.Launch))
 	}
 	if fmt.Sprint(got) != "[launch 3]" || outboxRows(t, pool) != 0 || !strings.Contains(logged.String(), `msg="outbox catch-up finished without publishing: a newer catch-up supersedes it"`) {
 		t.Fatalf("delivered %v with %d rows left, logged:\n%s\nwant the fresh catch-up alone and the stale copy finished", got, outboxRows(t, pool), logged.String())

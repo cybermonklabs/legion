@@ -613,51 +613,54 @@ const testWindow = window as unknown as {
 test.each([
   ["a card, below the reading column's width", undefined],
   ["a short row, beside the reading column", 1440],
-] as const)("a thread row drawn as %s reads a deleted root as deleted and marks an edited one", async (_layout, width) => {
-  const was = testWindow.innerWidth;
-  if (width !== undefined) testWindow.happyDOM.setViewport({ width });
-  try {
-    renderInbox(
-      seeded([
-        // The deleted root was edited first, so ` · edited` can be drawn, and only the row's own
-        // reading of the delete keeps it off.
-        replyRow("c1", {
-          deleted_at: "2026-10-12T00:40:00Z",
-          deleted_by: { id: "alice", kind: "user" },
-          edited_at: "2026-10-12T00:10:00Z",
-          subject: "",
-        }),
-        replyRow("c2", { edited_at: "2026-10-12T00:20:00Z", subject: "Edited root" }),
-        replyRow("c9", { subject: "Standing root" }),
-      ])
-    );
-    await waitFor(() => expect(rowIds().sort()).toEqual(["reply:c1", "reply:c2", "reply:c9"]));
-    const row = (id: string) =>
-      document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`) as HTMLElement;
+] as const)(
+  "a thread row drawn as %s reads a deleted root as deleted and marks an edited one",
+  async (_layout, width) => {
+    const was = testWindow.innerWidth;
+    if (width !== undefined) testWindow.happyDOM.setViewport({ width });
+    try {
+      renderInbox(
+        seeded([
+          // The deleted root was edited first, so ` · edited` can be drawn, and only the row's own
+          // reading of the delete keeps it off.
+          replyRow("c1", {
+            deleted_at: "2026-10-12T00:40:00Z",
+            deleted_by: { id: "alice", kind: "user" },
+            edited_at: "2026-10-12T00:10:00Z",
+            subject: "",
+          }),
+          replyRow("c2", { edited_at: "2026-10-12T00:20:00Z", subject: "Edited root" }),
+          replyRow("c9", { subject: "Standing root" }),
+        ])
+      );
+      await waitFor(() => expect(rowIds().sort()).toEqual(["reply:c1", "reply:c2", "reply:c9"]));
+      const row = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`) as HTMLElement;
 
-    const deleted = row("reply:c1");
-    await waitFor(() =>
-      expect(deleted.querySelector("[data-post-deleted]")?.textContent).toContain(
-        "Deleted by alice"
-      )
-    );
-    expect(deleted.querySelector('[title="Deleted by alice"]')).not.toBeNull();
-    expect(deleted.querySelector('[aria-label="Select Deleted by alice"]')).not.toBeNull();
-    expect(deleted.querySelector('[aria-label="Dismiss: Deleted by alice"]')).not.toBeNull();
-    expect(deleted.textContent).not.toContain("edited");
+      const deleted = row("reply:c1");
+      await waitFor(() =>
+        expect(deleted.querySelector("[data-post-deleted]")?.textContent).toContain(
+          "Deleted by alice"
+        )
+      );
+      expect(deleted.querySelector('[title="Deleted by alice"]')).not.toBeNull();
+      expect(deleted.querySelector('[aria-label="Select Deleted by alice"]')).not.toBeNull();
+      expect(deleted.querySelector('[aria-label="Dismiss: Deleted by alice"]')).not.toBeNull();
+      expect(deleted.textContent).not.toContain("edited");
 
-    const edited = row("reply:c2");
-    expect(edited.textContent).toContain("Edited root · edited");
-    expect(edited.querySelector('[aria-label="Select Edited root"]')).not.toBeNull();
+      const edited = row("reply:c2");
+      expect(edited.textContent).toContain("Edited root · edited");
+      expect(edited.querySelector('[aria-label="Select Edited root"]')).not.toBeNull();
 
-    const standing = row("reply:c9");
-    expect(standing.textContent).toContain("Standing root");
-    expect(standing.textContent).not.toContain("edited");
-    expect(standing.querySelector("[data-post-deleted]")).toBeNull();
-  } finally {
-    testWindow.happyDOM.setViewport({ width: was });
+      const standing = row("reply:c9");
+      expect(standing.textContent).toContain("Standing root");
+      expect(standing.textContent).not.toContain("edited");
+      expect(standing.querySelector("[data-post-deleted]")).toBeNull();
+    } finally {
+      testWindow.happyDOM.setViewport({ width: was });
+    }
   }
-});
+);
 
 // A dismissal the reader stopped may have been made: the rows come back as after a refusal, but
 // the page says Dispatch may have made it and that the next press is one of its own, rather

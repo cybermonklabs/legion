@@ -187,7 +187,8 @@ func awaitStreamLeader(ctx context.Context, logger *slog.Logger, js nats.JetStre
 // as sentAgain sends a request again. Each read is waited for up to the read limit of ctx's run of
 // reads (limitedRead), so one lost read costs the start a fraction of a second rather than the
 // caller's whole ten second wait after the fact it waits for is true; a read in flight when ctx
-// ends is abandoned too.
+// ends is abandoned too. A read nats.go refuses while the bus reconnects is returned at once too,
+// named ErrReconnecting, as every request through js is (namedRequests).
 func awaitStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, step streamStep, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
 	limits := readLimitOf(ctx)
@@ -287,7 +288,9 @@ func sentAgain[T any](ctx context.Context, logger *slog.Logger, request string, 
 	var last T
 	var lastErr error
 	for sends := 1; ; sends++ {
-		answer, answered, err := Bounded(ctx, send)
+		// No connection is waited for (Bounded's nil conn): a send nats.go refuses while it
+		// reconnects fails at once as ErrReconnecting (namedRequests), and that is an answer.
+		answer, answered, err := Bounded(ctx, nil, send)
 		if !answered {
 			return last, unansweredUntil(sends-1, lastErr, context.Cause(ctx))
 		}
@@ -404,7 +407,7 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 	readCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	sent := time.Now()
-	value, answered, err = Bounded(readCtx, read)
+	value, answered, err = Bounded(readCtx, nil, read)
 	if !answered || unanswered(err) {
 		limit.lost()
 	} else {

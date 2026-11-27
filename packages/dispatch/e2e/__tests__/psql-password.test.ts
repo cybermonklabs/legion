@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
-import { realHostTool } from "@legion/test-fixtures/host-tools";
+import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { handOverMessage } from "../local-instance-support";
@@ -20,8 +20,8 @@ const record = join(standIn, "record");
  *  stand-in directory goes first on PATH: never a mise shim, and never a directory at or below
  *  `standIn`. A mise shim with no version of the tool active falls back to the next `name` on
  *  PATH, which, once the row's stand-in directory is first, is the stand-in itself, and mise stops
- *  with "shim fallback recursion detected" (`realHostTool`). */
-const realTools = { env: realHostTool("env", standIn), python3: realHostTool("python3", standIn) };
+ *  with "shim fallback recursion detected" (`hostTool`). */
+const realTools = { env: hostTool("env", standIn), python3: hostTool("python3", standIn) };
 
 /** What the stand-in psql was last handed. */
 function handed(): { args: string[]; pgpassword: string } {
@@ -214,13 +214,12 @@ test("the shared corpus has accepted and refused cases", () => {
   expect([corpus.accepted.length > 0, corpus.refused.length > 0]).toEqual([true, true]);
 });
 
-test.each(corpus.accepted)("the shared corpus: splits $url as libpq does", ({
-  url,
-  password,
-  bare,
-}) => {
-  expect(splitDatabaseUrl(url)).toEqual({ url: bare, password: password ?? undefined });
-});
+test.each(corpus.accepted)(
+  "the shared corpus: splits $url as libpq does",
+  ({ url, password, bare }) => {
+    expect(splitDatabaseUrl(url)).toEqual({ url: bare, password: password ?? undefined });
+  }
+);
 
 test.each(corpus.refused)("the shared corpus: refuses $url, naming $fault", ({ url, fault }) => {
   expect(() => splitDatabaseUrl(url)).toThrow(

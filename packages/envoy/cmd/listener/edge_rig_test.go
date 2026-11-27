@@ -518,6 +518,14 @@ func edgeLogLines(output, level, prefix string) []map[string]any {
 	return lines
 }
 
+// edgeSessionLogLines is each line of edgeLogLines(output, level, prefix) whose session_id is
+// sessionID.
+func edgeSessionLogLines(output, level, prefix, sessionID string) []map[string]any {
+	return slices.DeleteFunc(edgeLogLines(output, level, prefix), func(line map[string]any) bool {
+		return line["session_id"] != sessionID
+	})
+}
+
 // requireLoggedTime fails the test unless the attribute key of line, a decoded log line
 // (edgeLogLines), is the time want.
 func requireLoggedTime(t *testing.T, line map[string]any, key string, want time.Time) {

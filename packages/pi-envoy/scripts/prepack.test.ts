@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { chmod, readdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import { stageSkills } from "@legion/pi-shared/test/skills-guard";
@@ -100,24 +100,18 @@ describe("the dispatch CLI the package ships", () => {
     for (const metafile of metafiles) expect(notices).toContain(`"${metafile}"`);
   });
 
-  // One pack for both rows below: each `bun pm pack` runs the prepack's two bundles, which take
-  // about two minutes, and holds the tracked package.json rewritten while it runs. The tarball
-  // and the tree it unpacks to are the same for both.
+  // One pack for both rows below: each `bun pm pack` runs the prepack's two bundles, in a staged
+  // copy of the package (pack-plugin.sh), never in this checkout. The tarball and the tree it
+  // unpacks to are the same for both.
   describe("the packed tarball", () => {
     // Packed the way the release packs (scripts/e2e/lib/pack-plugin.sh), so this is the tarball an
     // installed plugin unpacks.
-    const dist = path.join(PACKAGE_ROOT, "dist");
-    let distWasBuilt = false;
     const work = temporaryDirectory("pi-envoy-pack");
     let tarball = "";
     let unpacked = "";
     const plantedModes = new Map<string, number>();
 
     beforeAll(async () => {
-      // The pack builds `dist/`, which .gitignore hides, so `git status` would never report it
-      // left behind: a checkout that had none must have none again. A developer who had already
-      // run `bun run build` keeps theirs.
-      distWasBuilt = existsSync(dist);
       // A checkout made under umask 0002, the one a systemd user unit runs with, leaves group write
       // on every file it writes. The row makes that checkout itself, whatever umask checked this
       // one out: each file of the package root and of bin/ gets group write until the pack is done
@@ -166,7 +160,6 @@ describe("the dispatch CLI the package ships", () => {
 
     afterAll(async () => {
       for (const [file, mode] of plantedModes) await chmod(file, mode);
-      if (!distWasBuilt) rmSync(dist, { recursive: true, force: true });
     });
 
     test("carries an executable bin/dispatch that runs the bundled CLI", async () => {

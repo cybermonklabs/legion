@@ -26,6 +26,7 @@ import (
 // is the bot-user read and the reading's listing and workflows read, and globex's, whose App read
 // its bot user on acme, the reading's two.
 func TestADaemonBootLogsARateReadingOfEachInstallationWithItsOwnCalls(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport, in the boot's countingTokens).
 	// The boot puts the process's REST client on its counter's transport; the next test of the
 	// binary starts from the default.
 	t.Cleanup(func() { githubrest.SetTransport(nil) })
@@ -80,6 +81,7 @@ func TestADaemonBootLogsARateReadingOfEachInstallationWithItsOwnCalls(t *testing
 // another test never inherits the failed workflow's counter. The initial nondefault transport is
 // the control: a refusal before workflow construction cannot satisfy this check accidentally.
 func TestARefusedWorkflowBootReleasesItsRateTransport(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport).
 	counter := githubrate.NewCounter()
 	githubrest.SetTransport(counter.Transport(nil))
 	t.Cleanup(func() { githubrest.SetTransport(nil) })
@@ -102,6 +104,7 @@ func TestARefusedWorkflowBootReleasesItsRateTransport(t *testing.T) {
 // A normal workflow stop releases only the transport it owns. A supplied token source owns no
 // counter, so stopping that workflow cannot reset a transport installed by another caller.
 func TestWorkflowStopReleasesOnlyItsOwnedRateTransport(t *testing.T) {
+	// Not parallel: it sets the REST client transport of the whole process (githubrest.SetTransport).
 	t.Cleanup(func() { githubrest.SetTransport(nil) })
 	for _, owns := range []bool{false, true} {
 		githubrest.SetTransport(githubrate.NewCounter().Transport(nil))

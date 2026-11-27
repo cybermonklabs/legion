@@ -21,6 +21,7 @@ const basisSeedsVersion = 20261122154643
 // A kind that is none is still refused, and so is a merge-lane kind, which went with the merge the
 // daemon no longer submits.
 func TestTheOutboxTakesTheBasisSeedKindsWith20261122154643(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, basisSeedsVersion-1)

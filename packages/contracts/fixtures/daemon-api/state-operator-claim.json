@@ -4,7 +4,8 @@
     "schemaVersion": 0,
     "boots": 1,
     "firstBootAt": "2026-09-25T05:50:00Z",
-    "startedAt": "2026-09-25T05:50:00Z"
+    "startedAt": "2026-09-25T05:50:00Z",
+    "stateSeq": 0
   },
   "admission": {
     "cap": 4,

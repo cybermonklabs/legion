@@ -78,6 +78,7 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 // version 4 is recorded, so the news it is owed holds nothing back once the step opens
 // (mergerWaitsForTheDesignGate).
 func TestTheMergersStartRunsOnceItsStepOpensOnABasis(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

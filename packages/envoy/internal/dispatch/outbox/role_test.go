@@ -973,8 +973,8 @@ func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 // answered, and what it answered is that it stored nothing, so the holder's consumer has no copy
 // to deliver and the event is not published: its attempt is counted, its failure names the
 // refusal, and the next scan, once the stream has room, forwards it again and publishes it.
-// Counting that refusal as reached, which is what adding bus.ErrStreamFull to the ErrRefused case
-// of sendChains' settle would do, drops the event with no copy anywhere.
+// Taking that refusal for one no retry changes, which is what adding bus.ErrStreamFull to the
+// ErrRefused case of sendChains' settle would do, finishes the event with no copy anywhere.
 func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
 	t.Parallel()
 	const limit = 16 << 10
@@ -1010,7 +1010,7 @@ func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
 		t.Fatalf("/metrics body = %q, want both sends the full stream refused counted failures", body)
 	}
 	if strings.Contains(body, `reason="refused"`) {
-		t.Fatalf("/metrics body = %q counts a full stream's refusal as a destination's permanent refusal, which is counted reached and never sent again", body)
+		t.Fatalf("/metrics body = %q counts a full stream's refusal as a destination's permanent refusal, which is recorded refused and never sent again", body)
 	}
 
 	// With room on the stream again, the retry stores the copy the holder's consumer delivers and

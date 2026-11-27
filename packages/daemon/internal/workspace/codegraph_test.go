@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -56,7 +57,7 @@ init)
 esac
 `
 	path := filepath.Join(dir, "codegraph")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -139,7 +140,7 @@ status) echo '{"initialized":false}' ;;
 init) while [ ! -f '` + release + `' ] && [ -d '` + scratch + `' ]; do sleep 0.05; done ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The stub's held `codegraph init` exits once its scratch directory is removed, so no stub
@@ -270,7 +271,7 @@ case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -310,7 +311,7 @@ status) echo '{"initialized":false}' ;;
 index) echo 'CodeGraph not initialized' >&2; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -379,7 +380,7 @@ case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -387,7 +388,7 @@ esac
 	// A process actually named "codegraph" in its own argv, so codegraphLockHeldByLiveProcess's
 	// /proc/<pid>/cmdline check — the PID-reuse hardening — sees what a real builder's PID would.
 	builderScript := filepath.Join(binDir, "codegraph-builder")
-	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 86400\n"), 0o700); err != nil {
+	if err := execfile.Write(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 86400\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	builder := exec.Command(builderScript)
@@ -469,7 +470,7 @@ case "$1" in
 status)` + takeLock + ` echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-			if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -502,7 +503,7 @@ case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1070,7 +1071,7 @@ status) echo 'database disk image is malformed' >&2; exit 1 ;;
 index) echo 'CodeGraph not initialized' >&2; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1173,7 +1174,7 @@ status) echo '{"initialized":false}' ;;
 init) echo 'no database could be created' >&2; exit 1 ;;
 esac
 `
-		if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1204,7 +1205,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		t.Helper()
 		binDir := t.TempDir()
 		script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + callLog + "'\ncase \"$1\" in\n" + cases + "esac\n"
-		if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -3,23 +3,22 @@ package holdrecord
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
 // ---------------------------------------------------------------- invariants and classes
 
-// pendingAtCompletion lists the intents that may not be pending at completion: all but hold
+// pendingAtCompletion is the intents that may not be pending at completion: all but hold
 // release's own lock, hold abort's after a done prove while the row is held, and hold set's on a
 // row lost in prepare whose hold abort on the released row completed the record (PrepLost 'E'):
 // hold set can no longer move that row from prepare.
-func pendingAtCompletion(s modelState) []string {
-	var out []string
-	for _, c := range list(s.Intent) {
-		if c == CommandRelease || (c == CommandAbort && s.Proved && s.Row == 'H') || (c == cmdSet && s.PrepLost == 'E') {
+func pendingAtCompletion(s modelState) modelCmds {
+	var out modelCmds
+	for c := range s.Intent.all() {
+		if c == cmdRelease || (c == cmdAbort && s.Proved && s.Row == 'H') || (c == cmdSet && s.PrepLost == 'E') {
 			continue
 		}
-		out = append(out, c)
+		out = out.with(c)
 	}
 	return out
 }
@@ -123,7 +122,7 @@ func setRaced(trace []string) bool {
 			(strings.HasPrefix(tl, "hold set: ") && refusal(tl)):
 			in = false
 		case in && (strings.HasSuffix(tl, ": admitted") || strings.HasSuffix(tl, ": admitted, intent written")) &&
-			!strings.HasPrefix(tl, cmdSnapRestore):
+			!strings.HasPrefix(tl, cmdSnapRestore.String()):
 			return true
 		}
 	}
@@ -152,11 +151,11 @@ func classifyR28(r modelRules, sc modelScenario, kind string, s modelState, trac
 		return ""
 	case sc.Hub && !r.Step1Whole && s.Rec && (s.Step1[0].ID == 0 || s.Step1[1].ID == 0):
 		return classR28H // a target the map lacks: hold abort's disk check can never pass
-	case !r.SetCommand && inSet(s.Intent, cmdSnapRestore):
+	case !r.SetCommand && s.Intent.has(cmdSnapRestore):
 		return classR28ASet
-	case !r.ConvertStoppable && s.NoStart && inSet(s.Intent, "convert"):
+	case !r.ConvertStoppable && s.NoStart && s.Intent.has(cmdConvert):
 		return classR28AConv
-	case !r.PrepareMarksUnresolved && s.Unresolved && inSet(s.Intent, "restore --prepare"):
+	case !r.PrepareMarksUnresolved && s.Unresolved && s.Intent.has(cmdRestorePrepare):
 		return classR28APrep
 	case !r.CompletionSurvivesRowRestore && s.Complete && s.HoldGen != s.RowGen:
 		return classR28C
@@ -180,7 +179,7 @@ func classify(r modelRules, sc modelScenario, kind string, s modelState, trace [
 	// A command failed for good after its intent, and no command the table admits ends the hold:
 	// the class WayOut and EveryCommandStoppable fix. Only the profiles that model the failure
 	// (Fail) reach it.
-	if kind == "liveness" && sc.Fail && s.Doomed != "" {
+	if kind == "liveness" && sc.Fail && s.Doomed != noCmd {
 		return classWayOut
 	}
 	if kind == releasedOverAChange {
@@ -289,56 +288,62 @@ func classify(r modelRules, sc modelScenario, kind string, s modelState, trace [
 
 // disagreement checks, at a hub-restore state of the current rules, that the package's own
 // readings of the record the state stands for are the model's: Step1, Proven, Epoch, Expected and
-// Moved. It returns "" when they agree, else what differs.
-func disagreement(sc modelScenario, s modelState) string {
-	if !sc.Hub || !s.Rec {
+// Moved. It returns "" when they agree, else what differs. Within one walk's fixed scenario it
+// reads the state's journal j and disks cur, so that walk checks each pair it reaches once.
+func disagreement(sc modelScenario, j modelJournal, cur [2]modelDisk) string {
+	if !sc.Hub || !j.Rec {
 		return ""
 	}
-	d := toDone(sc, s)
-	full := s.Step1[0].ID != 0 && s.Step1[1].ID != 0
+	d := toDone(sc, j)
+	full := j.Step1[0].ID != 0 && j.Step1[1].ID != 0
 	step1, ok := Step1(d)
-	if ok != (s.Step1[0].ID != 0 || s.Step1[1].ID != 0) {
-		return fmt.Sprintf("Step1 answers %v for the step-1 disks %v", ok, s.Step1)
+	if ok != (j.Step1[0].ID != 0 || j.Step1[1].ID != 0) {
+		return fmt.Sprintf("Step1 answers %v for the step-1 disks %v", ok, j.Step1)
 	}
 	for tg, n := range targets {
 		want := ""
-		if s.Step1[tg].ID != 0 {
-			want = strconv.Itoa(s.Step1[tg].ID)
+		if j.Step1[tg].ID != 0 {
+			want = itoa(j.Step1[tg].ID)
 		}
 		if step1["step1_disk_id."+n] != want {
 			return fmt.Sprintf("Step1 holds %q for target %s, and the model %q", step1["step1_disk_id."+n], n, want)
 		}
 	}
 	proof, proved := Proven(d)
-	if proved != s.Proved {
-		return fmt.Sprintf("Proven answers %v, and the model's state proved %v", proved, s.Proved)
+	if proved != j.Proved {
+		return fmt.Sprintf("Proven answers %v, and the model's state proved %v", proved, j.Proved)
 	}
 	_, ents, epoch := Epoch(d)
-	if epoch != s.Proved {
-		return fmt.Sprintf("Epoch answers %v, and the model's state proved %v", epoch, s.Proved)
+	if epoch != j.Proved {
+		return fmt.Sprintf("Epoch answers %v, and the model's state proved %v", epoch, j.Proved)
 	}
-	if s.Proved {
+	if j.Proved {
 		for tg, n := range targets {
 			want := ""
-			if s.ProvenSet&(1<<tg) != 0 {
-				want = strconv.Itoa(s.Proven[tg])
+			if j.ProvenSet&(1<<tg) != 0 {
+				want = itoa(j.Proven[tg])
 			}
 			if proof.DiskIDs[n] != want {
 				return fmt.Sprintf("Proven's DiskIDs hold %q for target %s, and the model %q", proof.DiskIDs[n], n, want)
 			}
 		}
-		since := ""
+		var since modelCmds
 		for _, o := range ents {
-			if o.State == StateDone {
-				since = addSet(since, o.Command)
+			if o.State != StateDone {
+				continue
 			}
+			c, known := cmdByName[o.Command]
+			if !known {
+				return fmt.Sprintf("Epoch's done entries name %q, which the model does not run", o.Command)
+			}
+			since = since.with(c)
 		}
-		if since != s.Since {
-			return fmt.Sprintf("Epoch's done entries are %q, and the model's epoch %q", since, s.Since)
+		if since != j.Since {
+			return fmt.Sprintf("Epoch's done entries are %q, and the model's epoch %q", since, j.Since)
 		}
 	}
 	if !full {
-		read := map[string]string{"A": strconv.Itoa(s.Cur[0].ID), "B": strconv.Itoa(s.Cur[1].ID)}
+		read := map[string]string{"A": itoa(cur[0].ID), "B": itoa(cur[1].ID)}
 		if _, err := Moved(d, read); !errors.Is(err, ErrUnknown) {
 			return fmt.Sprintf("Moved answers %v for a step-1 map that lacks a target", err)
 		}
@@ -349,15 +354,15 @@ func disagreement(sc modelScenario, s modelState) string {
 		return "Expected answers false for a whole step-1 map"
 	}
 	for tg, n := range targets {
-		if want[n] != strconv.Itoa(expected(s, tg)) {
-			return fmt.Sprintf("Expected holds %q for target %s, and the model %d", want[n], n, expected(s, tg))
+		if want[n] != itoa(j.expected(tg)) {
+			return fmt.Sprintf("Expected holds %q for target %s, and the model %d", want[n], n, j.expected(tg))
 		}
 	}
-	if s.Proved {
-		read := map[string]string{"A": strconv.Itoa(s.Cur[0].ID), "B": strconv.Itoa(s.Cur[1].ID)}
+	if j.Proved {
+		read := map[string]string{"A": itoa(cur[0].ID), "B": itoa(cur[1].ID)}
 		moved, err := Moved(d, read)
-		if err != nil || moved != disksMoved(currentModel, s) {
-			return fmt.Sprintf("Moved answers %v, %v, and the model %v", moved, err, disksMoved(currentModel, s))
+		if err != nil || moved != disksMoved(currentModel, j, cur) {
+			return fmt.Sprintf("Moved answers %v, %v, and the model %v", moved, err, disksMoved(currentModel, j, cur))
 		}
 	}
 	return ""

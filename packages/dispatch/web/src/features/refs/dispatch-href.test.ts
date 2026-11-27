@@ -7,11 +7,14 @@ import { parseDispatchReference, referenceRouteFromHref } from "./routes";
 // same thing to the URL parser as its `dispatch://` reference does to the reference parser.
 // `envoy-client`'s `dispatch-execute.test.ts` walks the same table for the agent-side parser, so
 // a new href shape cannot reach one parser and not the other.
-test.each(
-  DISPATCH_HREF_REFERENCES.map((row) => [row.href, row.ref] as const)
-)("%s names the same reference as %s", (href, ref) => {
-  expect(referenceRouteFromHref(href, "http://dispatch.test")).toEqual(parseDispatchReference(ref));
-});
+test.each(DISPATCH_HREF_REFERENCES.map((row) => [row.href, row.ref] as const))(
+  "%s names the same reference as %s",
+  (href, ref) => {
+    expect(referenceRouteFromHref(href, "http://dispatch.test")).toEqual(
+      parseDispatchReference(ref)
+    );
+  }
+);
 
 test("an issue document href carrying both item parameters names nothing", () => {
   expect(

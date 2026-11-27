@@ -408,25 +408,28 @@ test("an ambiguous `?comment=` lists the matches instead of the document", async
 test.each([
   ["written short", SHORT_COMMENT, true],
   ["written whole", UNKNOWN_COMMENT, false],
-])("a `?comment=` %s that names nothing leaves the document as an unknown id does", async (_name, id, resolves) => {
-  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: `no comment at ${id}` })
-  );
-  const listComments = spyOn(api, "listComments").mockResolvedValue([
-    anchoredComment(OTHER_COMMENT),
-  ]);
-  const { view } = renderDocument({ path: `/issues/CORE-1/spec?comment=${id}` });
+])(
+  "a `?comment=` %s that names nothing leaves the document as an unknown id does",
+  async (_name, id, resolves) => {
+    const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+      new ApiError(404, { code: "NOT_FOUND", error: `no comment at ${id}` })
+    );
+    const listComments = spyOn(api, "listComments").mockResolvedValue([
+      anchoredComment(OTHER_COMMENT),
+    ]);
+    const { view } = renderDocument({ path: `/issues/CORE-1/spec?comment=${id}` });
 
-  try {
-    await screen.findByLabelText("Document editor");
-    await waitFor(() => expect(listComments).toHaveBeenCalled());
-    expect(screen.queryByText("Several items match that link")).not.toBeInTheDocument();
-    // The address is left as written: there is no whole id to replace it with.
-    expect(route()).toBe(`/issues/CORE-1/spec?comment=${id}`);
-    expect(getReferences.mock.calls.length > 0).toBe(resolves);
-  } finally {
-    view.unmount();
-    listComments.mockRestore();
-    getReferences.mockRestore();
+    try {
+      await screen.findByLabelText("Document editor");
+      await waitFor(() => expect(listComments).toHaveBeenCalled());
+      expect(screen.queryByText("Several items match that link")).not.toBeInTheDocument();
+      // The address is left as written: there is no whole id to replace it with.
+      expect(route()).toBe(`/issues/CORE-1/spec?comment=${id}`);
+      expect(getReferences.mock.calls.length > 0).toBe(resolves);
+    } finally {
+      view.unmount();
+      listComments.mockRestore();
+      getReferences.mockRestore();
+    }
   }
-});
+);
