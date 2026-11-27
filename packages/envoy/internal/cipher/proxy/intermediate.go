@@ -256,7 +256,8 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.Token != nil {
-		token, err := p.Token.Token()
+		// A token source's error can quote the credential it read (redact.OAuth2 reads it).
+		token, err := redact.OAuth2(p.Token.Token())
 		if err != nil {
 			return nil, nil, fmt.Errorf("the pod's own token for the pool: %w", err)
 		}

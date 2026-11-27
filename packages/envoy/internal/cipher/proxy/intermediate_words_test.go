@@ -338,6 +338,33 @@ func TestAPoolEndpointThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 	})
 }
 
+// refusingSource is a token source whose every Token is refused as x/oauth2 refuses one, with an
+// OAuth error answer whose description quotes the credential it was given.
+type refusingSource struct{}
+
+func (refusingSource) Token() (*oauth2.Token, error) {
+	return nil, &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest}, ErrorCode: "invalid_grant",
+		ErrorDescription: "the refresh token " + wordsBearer + " is revoked"}
+}
+
+// TestAPodTokenRefusalPrintsNoneOfItsWords: a token source whose refusal quotes the credential it
+// read prints through redact.OAuth2, which holds no record of a request for it and so prints its
+// class alone. The twin is the refusal's own text, which quotes the credential. Captures
+// proxy.intermediate-token/refused.
+func TestAPodTokenRefusalPrintsNoneOfItsWords(t *testing.T) {
+	t.Run("refused", func(t *testing.T) {
+		pool := bearerPool(credentialedEndpoint(t, newAbortingServer(t).URL))
+		pool.Token = refusingSource{}
+		line := firstFailure(t, pool)
+		redacttest.RequireNoPiece(t, "proxy.intermediate-token/refused", line, wordsCredentials...)
+		requireSays(t, line, "the pod's own token for the pool: ")
+	})
+	t.Run("refused-twin", func(t *testing.T) {
+		_, err := refusingSource{}.Token()
+		requireHolds(t, "x/oauth2's own text", err.Error(), wordsBearer)
+	})
+}
+
 // TestAPoolAnswerPrintsNoCredentialItEchoes: an answer that echoes the request - in its status
 // line, in a trailer of its body, in Google's error status or message, in a body of another shape
 // - prints its status by the standard phrase and its words as the rule reads them, with every
