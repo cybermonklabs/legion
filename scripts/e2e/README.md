@@ -4361,6 +4361,7 @@ The driver seeds the fake with the case's repositories alone before the start, a
 Every read of the results is the `dispatch` command's.
 
 - `head-no-settings` — in `acme/default` and in `acme/tools`, a repository an issue of `ACME` names as its own: a pass at C1, then the pull request opens at C1, and within 5 seconds of the event the check is compared with that head and the pass stands (S1); a late copy of an older push, which GitHub's answer no longer holds, leaves the head at C1, a push to C2 leaves the pass at none of the compared commits within 5 seconds, and a pass at C2 stands at the next read (S2); a pull request that opens before any result is named within 5 seconds, and a pass at its head stands at the next read (S3).
+  Each time runs from the event's publish to the route's answer of the read that shows it, which the server's log gives that read's GET, so the command's own start, seconds on a loaded machine, is no part of it.
   Each read waits 45 seconds before it says a head is missing, as the negative control does.
 
 - `head-from-github` — `#48` opens and closes, then gets a labeled and an edited event while GitHub holds it closed: 3 seconds after each it is still no basis (L); that the opening makes it a basis and the close takes it away are the case's self-checks, and a run where either fails stops, `UNKNOWN`.
@@ -4691,7 +4692,8 @@ DATABASE_URL=… DISPATCH_BIN=<old build> VERIFICATION_RESULTS_E2E_ONLY=read-com
 # → FAIL read-compares: R2 answers A pass stands: no; and the first dispatch results --issue <key>
 #   (R1) prints "… Compared with nothing: the issue has no pull request and no branch to compare
 #   with. A pass stands: no.", want Compared with #16101 and A pass stands: yes; a second read
-#   prints "… Compared with the head of pull request #16101 at … A pass stands: yes, from tester."
+#   prints "… Compared with the head of pull request #16101 at … A pass stands: yes. Newest at
+#   that commit: tester: pass (<id>)."
 # The head of 5ea6b2ffb2, for stores-agree and for limit-of-one:
 DATABASE_URL=… DISPATCH_BIN=<5ea6b2ffb2> VERIFICATION_RESULTS_E2E_ONLY=stores-agree \
   VERIFICATION_RESULTS_E2E_OLD_BUILD=1 bash scripts/e2e/verification-results.sh
@@ -4730,8 +4732,8 @@ DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RES
 # The build of 4b2d1e83f85c, about 16 minutes:
 DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=github-outage VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1 \
   bash scripts/e2e/verification-results.sh
-# → FAIL github-outage: #2001's head row is open a001… not within 600000 ms (it is absent) after
-#   GitHub answered again …
+# → FAIL github-outage: #2001 open at a001a001a001 is not stored within 600000 ms (the head rows of
+#   acme/default are #3001 open at c001c001c001) after GitHub answered again …
 ```
 
 ## child-adoption.sh
