@@ -3352,54 +3352,6 @@
               "type": "doc"
             },
             "visibility": "project"
-          },
-          {
-            "attributes": {
-              "placement": "text",
-              "project": "GOWED",
-              "state": "live",
-              "text_rank": "2U",
-              "visibility": "project"
-            },
-            "author": [
-              {
-                "id": "<person>",
-                "kind": "user",
-                "proven": true
-              }
-            ],
-            "block_id": "<owed-requirement/paragraph>",
-            "id": "<owed-requirement/paragraph>",
-            "kind": "block",
-            "made_at": "<time>",
-            "no_conversation": true,
-            "parent": {
-              "first_line": "The requirement or2.",
-              "id": "<owed-requirement>",
-              "kind": "block",
-              "supertag": "requirement"
-            },
-            "placement_seq": "<seq:owed-requirement/paragraph>",
-            "rank": "<rank:3>",
-            "role": "tree",
-            "state": "live",
-            "supertag": "block",
-            "text": "The requirement or2.",
-            "text_tree": {
-              "content": [
-                {
-                  "content": [
-                    {
-                      "text": "The requirement or2.",
-                      "type": "text"
-                    }
-                  ],
-                  "type": "paragraph"
-                }
-              ],
-              "type": "doc"
-            },
-            "visibility": "project"
           }
         ],
         "tree": "<owed-tree>",
@@ -3435,28 +3387,6 @@
             "to": {
               "id": "<owed-issue>",
               "kind": "issue"
-            }
-          },
-          {
-            "from": {
-              "id": "<owed-requirement/paragraph>",
-              "kind": "block"
-            },
-            "kind": "part_of",
-            "to": {
-              "id": "<owed-requirement>",
-              "kind": "block"
-            }
-          },
-          {
-            "from": {
-              "id": "<owed-requirement/paragraph>",
-              "kind": "block"
-            },
-            "kind": "text_parent",
-            "to": {
-              "id": "<owed-requirement>",
-              "kind": "block"
             }
           }
         ],
