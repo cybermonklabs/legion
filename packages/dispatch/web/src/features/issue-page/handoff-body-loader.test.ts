@@ -1,11 +1,11 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { HANDOFF_BODIES_MAX_IDS } from "@legion/contracts";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { jump, onFakeClock, settle, tick } from "../../__tests__/fake-clock";
 import { api } from "../../api/client";
 import type { HandoffBodies } from "../../api/types";
-import { HandoffBodyLoader, handoffBodyKey } from "./handoff-body-loader";
+import { HandoffBodyLoader, handoffBodyKey, handoffBodyQuery } from "./handoff-body-loader";
 
 // The bodies' loader of the issue's history (the plan's D13): told which handoff entries are in
 // the band (within one screen of Details' view), that the reader scrolled, that an answer was
@@ -259,7 +259,7 @@ describe("the loader asks as its table says", () => {
   });
 
   test("B10: an entry whose body is held is drawn again: nothing is sent", async () => {
-    await withLoader(async ({ asked, client, held, loader }) => {
+    await withLoader(async ({ asked, client, loader }) => {
       loader.band(["h1"]);
       loader.landed();
       await asked[0]?.answer();
@@ -276,9 +276,6 @@ describe("the loader asks as its table says", () => {
         again.band(["h1"]);
         again.landed();
         expect(asked, "a body held was asked for again by the next loader").toHaveLength(1);
-        // A body is held for the page's life, not for a read's default 5 minutes.
-        await jump(600_000);
-        expect(held("h1"), "the body held was let go").toBe(true);
       } finally {
         again.close();
       }
@@ -354,6 +351,38 @@ describe("the loader asks as its table says", () => {
       loader.band(["h2", "h1"]);
       expect(idsOf(1)).toEqual(["h2"]);
       expect(asked).toHaveLength(2);
+    });
+  });
+
+  // A body stays while an entry draws it, and the cache lets one go that no entry has drawn for
+  // its default 5 minutes, so the bodies held are those drawn lately and not every body the tab
+  // read; the loader asks for such a body again once its entry is drawn in the band again.
+  test("B15: a body no entry draws is let go after the cache's 5 minutes, and asked for again when its entry is drawn", async () => {
+    await withLoader(async ({ asked, client, held, idsOf, loader }) => {
+      loader.band(["h1", "h2"]);
+      loader.landed();
+      await asked[0]?.answer();
+      // The entry of h1 draws its body, as `HandoffFields` does; h2's is folded.
+      const drawing = new QueryObserver(client, handoffBodyQuery("h1"));
+      const stop = drawing.subscribe(() => {});
+      try {
+        loader.band(["h1"]);
+        await jump(299_000);
+        expect(held("h2"), "a body no entry draws was let go within 5 minutes").toBe(true);
+        await jump(2_000);
+        expect(held("h2"), "a body no entry draws was kept past 5 minutes").toBe(false);
+        expect(held("h1"), "a body an entry draws was let go").toBe(true);
+      } finally {
+        stop();
+      }
+      await jump(299_000);
+      expect(held("h1"), "a body was let go within 5 minutes of its entry going").toBe(true);
+      await jump(2_000);
+      expect(held("h1"), "a body was kept past 5 minutes after its entry went").toBe(false);
+      expect(asked, "a body let go was asked for again with no entry drawn").toHaveLength(1);
+      // Both entries are drawn in the band again: their bodies are asked for, in the order drawn.
+      loader.band(["h1", "h2"]);
+      expect(idsOf(1)).toEqual(["h1", "h2"]);
     });
   });
 });

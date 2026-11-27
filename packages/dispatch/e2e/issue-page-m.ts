@@ -407,8 +407,8 @@ export async function holdBodiesReads(
 }
 
 /** Where a handoff's open fields stand against the band the history reads bodies in: the view of
- *  the box Details scrolls in, and one screen of it above and below (`HistoryHandoff.tsx`'s
- *  `NEAR_BAND`). */
+ *  the box Details scrolls in, and one screen of it above and below (`clamp-measurer.ts`'s
+ *  `NEAR_BAND`, which `handoff-band.ts`'s band reads). */
 export interface BandPlace {
   /** Whether the place lies wholly above the view. */
   readonly above: boolean;

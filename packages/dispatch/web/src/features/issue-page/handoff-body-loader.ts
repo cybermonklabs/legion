@@ -8,7 +8,7 @@ import type { HandoffBodies, HandoffBody } from "../../api/types";
  *  `HANDOFF_BODIES_MAX_IDS`, are asked for where the reader has not scrolled (R6). */
 const LEFT_WAIT_MS = 2_000;
 
-/** The query key a handoff's body is held under for the page's life. */
+/** The query key a handoff's body is held under (`handoffBodyQuery`). */
 export function handoffBodyKey(id: string): readonly ["handoff-body", string] {
   return ["handoff-body", id];
 }
@@ -16,11 +16,12 @@ export function handoffBodyKey(id: string): readonly ["handoff-body", string] {
 /** A handoff's body as the page holds it: an entry of the bodies answer that holds a body. */
 export type HeldHandoffBody = HandoffBody & { readonly body: string };
 
-/** The query a handoff's body is held under for the page's life: no time limit, and no read of
- *  its own, as only the loader sets its data (`HandoffBodyLoader`). */
+/** The query a handoff's body is held under: no read of its own, as only the loader sets its
+ *  data (`HandoffBodyLoader`), and the cache's default time, 5 minutes after the last entry that
+ *  drew it stopped observing it. An entry draws its body through this query, so a body stays while
+ *  it is drawn, and the bodies held are those drawn lately, not every body the tab ever read. */
 export function handoffBodyQuery(id: string) {
   return queryOptions<HeldHandoffBody>({
-    gcTime: Number.POSITIVE_INFINITY,
     queryFn: skipToken,
     queryKey: handoffBodyKey(id),
   });
@@ -59,10 +60,13 @@ type Standing = "queued" | "out" | "waiting";
  * when it comes back. A failed request fails each id it asked for, and an answer's `null` fails
  * its id; a Retry asks again for every id of that failure still in the band, its own among them.
  *
- * A body is kept in the query cache under `handoffBodyKey` for the page's life, since a version
- * never changes once written, so a body held is never asked for again, by this loader or by the
- * next one. `close` ends it as Details shuts: it sends nothing more and clears its timer, and an
- * answer still out is kept when it comes.
+ * A body is kept in the query cache under `handoffBodyKey` while an entry draws it and for the
+ * cache's 5 minutes after (`handoffBodyQuery`), and a version never changes once written, so a
+ * body held is not asked for again, by this loader or by the next one. The loader keeps nothing
+ * of a body it has put there: whether one is held is read from the cache at each turn (`#held`),
+ * so a body the cache let go is asked for again, as one never read, once its entry is drawn in
+ * the band again. `close` ends it as Details shuts: it sends nothing more and clears its timer,
+ * and an answer still out is kept when it comes.
  */
 export class HandoffBodyLoader {
   readonly #issueKey: string;
@@ -274,9 +278,9 @@ export class HandoffBodyLoader {
     this.#failed.set(id, { count: (this.#failed.get(id)?.count ?? 0) + 1, failure });
   }
 
-  /** Holds `body` under its key for the page's life: the query is made with no time limit and no
-   *  read of its own before the data is set, since `setQueryData` alone would make it with the
-   *  default 5 minutes, after which a body no entry draws would go. */
+  /** Holds `body` under its key: the query is made as `handoffBodyQuery` makes it, with no read
+   *  of its own, before the data is set, since `setQueryData` alone would make one with no
+   *  `queryFn`, which a refetch of every query would run while no entry observes it. */
   #keep(body: HeldHandoffBody): void {
     const query = handoffBodyQuery(body.id);
     this.#client.getQueryCache().build<HeldHandoffBody>(this.#client, query);

@@ -694,7 +694,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     reach:
       "/issues/<ISSUE>/activity with the new issue page on, a handoff's field of data in Details' History, in its own entry or in the entry of the run that reports it",
     reason:
-      "A handoff field that holds a list, an object, a number, a boolean or null is the data its session wrote, not words: a list is drawn as one numbered entry for each item and an object as each key with its value, each value inside them by the same rule, and a string inside them, a number, a boolean or null as its plain text.",
+      "A handoff field that holds a list, an object, a number, a boolean or null is the data its session wrote, not words: a list is drawn as one numbered entry for each item and an object as each key with its value, each value inside them by the same rule, to 8 levels of lists and objects, past which the rest of the value is its JSON text in a box, and a string inside them, a number, a boolean or null as its plain text.",
     record: false,
     rendered: false,
     surface: "issue-page-history-handoff-data",

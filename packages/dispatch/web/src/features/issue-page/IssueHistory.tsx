@@ -26,7 +26,8 @@ import { type StepTaskRows, stepTasks, stepVariant } from "../steps/steps-model"
 import { issueAsks } from "./agents-only";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
-import { type HandoffFold, useHandoffBodies } from "./HistoryHandoff";
+import type { HandoffFold } from "./HistoryHandoff";
+import { useHandoffBodies } from "./handoff-band";
 import { Entry, PlannedSteps, runKeys } from "./history-entries";
 import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {

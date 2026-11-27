@@ -128,6 +128,16 @@ function items(scope: HTMLElement): string[] {
   return [...list.querySelectorAll(":scope > li")].map((item) => item.textContent ?? "");
 }
 
+/** `inner` inside `levels` levels of lists and objects, the outermost a list and each level
+ *  inside it the other of the two, an object's one key `deeper`. */
+function nestedIn(levels: number, inner: unknown): unknown {
+  let value = inner;
+  for (let level = levels; level >= 1; level -= 1) {
+    value = level % 2 === 1 ? [value] : { deeper: value };
+  }
+  return value;
+}
+
 describe("a handoff's values are drawn as lists and keys", () => {
   // A list is an ordered list with one entry for each item, in the box that bounds an entry's
   // open height, and never the JSON it was written as.
@@ -218,6 +228,65 @@ describe("a handoff's values are drawn as lists and keys", () => {
       const review = fieldValue(drawn.fields, "review");
       expect(memberValue(review, "findings").textContent).toBe(CONTROL_LABELS.none);
       expect(memberValue(review, "outcome").textContent).toBe(CONTROL_LABELS.none);
+    } finally {
+      drawn.unmount();
+    }
+  });
+
+  // A value nested deeper than the page draws as lists and keys: its first 8 levels are lists and
+  // keys, and the value below them is its JSON text, in the box that bounds an entry's open
+  // height, so no handoff's nesting sets how deep the page's elements go.
+  test("H10: a value nested past 8 levels draws 8 as lists and keys, and the rest as its JSON text in the box", async () => {
+    const rest = nestedIn(4, "The bottom of the value.");
+    const drawn = await drawBody({ nested: nestedIn(8, rest) });
+    try {
+      const value = fieldValue(drawn.fields, "nested");
+      expect(value.querySelectorAll("[data-handoff-list] > li")).toHaveLength(4);
+      const keys = [...value.querySelectorAll<HTMLElement>("[data-handoff-key]")];
+      expect(keys.map((key) => key.getAttribute("data-handoff-key"))).toEqual([
+        "deeper",
+        "deeper",
+        "deeper",
+        "deeper",
+      ]);
+      const texts = value.querySelectorAll("pre");
+      expect(texts, "the rest is not drawn as one JSON text").toHaveLength(1);
+      const text = texts[0];
+      expect(text?.textContent).toBe(JSON.stringify(rest));
+      // It is the value of the 8th level's key, and holds no list and no key of its own.
+      expect(keys.at(-1)?.querySelector(":scope > dd > pre")).toBe(text ?? null);
+      expect(text?.querySelector("ol, dl, [data-handoff-key]")).toBeNull();
+      // The box of a JSON text: at most 16 rem high, scrolling inside itself.
+      expect(text?.className).toContain("max-h-64");
+      expect(text?.className).toContain("overflow-auto");
+      expect(text?.className).toContain("whitespace-pre-wrap");
+    } finally {
+      drawn.unmount();
+    }
+  });
+
+  // Any session can record a handoff nested 3,000 deep, about 20 KB of JSON, far under what the
+  // server takes. Drawn as lists and keys to the bottom it throws out of React (the call stack's
+  // size) for every reader of Details; past 8 levels it is the JSON text in the box.
+  test("H11: a value nested 3,000 deep draws, with the levels past 8 as its JSON text in the box", async () => {
+    const rest = nestedIn(3_000 - 8, "The bottom of the value.");
+    const drawn = await drawBody({ nested: nestedIn(8, rest) });
+    try {
+      const value = fieldValue(drawn.fields, "nested");
+      expect(value.querySelectorAll("[data-handoff-list] > li")).toHaveLength(4);
+      expect(value.querySelectorAll("[data-handoff-key]")).toHaveLength(4);
+      const text = value.querySelector("pre");
+      expect(text?.className).toContain("max-h-64");
+      expect(text?.className).toContain("overflow-auto");
+      // The text has no indent, so it is no longer than the body it comes from, however deep the
+      // value nests: an indent a level would make it millions of characters.
+      expect(
+        text?.textContent === JSON.stringify(rest),
+        "the levels past 8 are not drawn as their JSON text"
+      ).toBe(true);
+      expect(text?.textContent?.length ?? 0).toBeLessThan(
+        JSON.stringify({ nested: nestedIn(8, rest) }).length
+      );
     } finally {
       drawn.unmount();
     }

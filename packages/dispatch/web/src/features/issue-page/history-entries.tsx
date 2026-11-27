@@ -28,7 +28,8 @@ import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { Identifier, plannedStepsName, Time } from "../steps/StepsTab";
 import type { PlannedStep, ShownState, StepRow } from "../steps/steps-model";
-import { type HandoffBodyReads, type HandoffFold, HistoryHandoff, NoValue } from "./HistoryHandoff";
+import { type HandoffFold, HistoryHandoff, NoValue } from "./HistoryHandoff";
+import type { HandoffBodyReads } from "./handoff-band";
 import {
   type HistoryBlock,
   type HistoryDay,
