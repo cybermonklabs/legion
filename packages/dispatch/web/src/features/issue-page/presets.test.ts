@@ -294,16 +294,53 @@ test("a block Conversation's read does not hold opens the filter whose view answ
       treeNode("t1", "plan_task", null, { document: placed("plan-md"), in: "plan-md" }),
     ]),
   };
-  expect(filterHolding(views, { id: "t1" })).toBe("plan");
-  expect(filterHolding(views, { document: "plan-md", id: "t1" })).toBe("plan");
-  expect(filterHolding(views, { document: "spec-md", id: "t1" })).toBeUndefined();
+  expect(filterHolding(views, { id: "t1" }, "CORE-1")).toBe("plan");
+  expect(filterHolding(views, { document: "plan-md", id: "t1" }, "CORE-1")).toBe("plan");
+  expect(filterHolding(views, { document: "spec-md", id: "t1" }, "CORE-1")).toBeUndefined();
   // A node the view holds as context of its own kinds is no node of that filter's.
-  expect(filterHolding(views, { id: "r1" })).toBeUndefined();
-  expect(filterHolding(undefined, { id: "t1" })).toBeUndefined();
+  expect(filterHolding(views, { id: "r1" }, "CORE-1")).toBeUndefined();
+  expect(filterHolding(undefined, { id: "t1" }, "CORE-1")).toBeUndefined();
   // Graph draws every node of its read, so a read the page holds answers a block of any kind.
-  expect(answerHolds(views.plan, { id: "r1" })).toBe(true);
-  expect(answerHolds(views.plan, { document: "plan-md", id: "r1" })).toBe(false);
-  expect(answerHolds(undefined, { id: "r1" })).toBe(false);
+  expect(answerHolds(views.plan, { id: "r1" }, "CORE-1")).toBe(true);
+  expect(answerHolds(views.plan, { document: "plan-md", id: "r1" }, "CORE-1")).toBe(false);
+  expect(answerHolds(undefined, { id: "r1" }, "CORE-1")).toBe(false);
+});
+
+// R9: an address of the issue names a block of the issue (`issue-address.ts`' block
+// `AddressTarget`). The Plan read answers the tasks of each issue under it beside the issue's own,
+// and a child's plan names its tasks `t1`, `t2` as the issue's does, so a child's task `t1` is no
+// block an address of the issue's `t1` names: where the issue holds no task `t1`, no filter opens
+// for it, and Graph's read holding that task answers none either. A task `t1` of the issue opens
+// Plan.
+test("a block of another issue a view answer holds is no block an address of the issue names", () => {
+  const placed = (artifact: string) => ({ artifact_id: artifact, position: 0, slug: "plan-md" });
+  const child = treeNode("t1", "plan_task", "CORE-2", {
+    document: placed("artifact-child-plan"),
+    issue: "CORE-2",
+    role: "context",
+  });
+  const childOnly = { plan: treeAnswer([child]) };
+  expect(filterHolding(childOnly, { id: "t1" }, "CORE-1")).toBeUndefined();
+  expect(filterHolding(childOnly, { document: "plan-md", id: "t1" }, "CORE-1")).toBeUndefined();
+  expect(answerHolds(childOnly.plan, { id: "t1" }, "CORE-1")).toBe(false);
+  // On Conversation's address, where the tree holds no node of it, the block opens no view.
+  const target = { id: "t1", kind: "block" } as const;
+  const on = { preset: "conversation", target } as const;
+  const rootOf = (views: TreeNode["views"]) => node("CORE-1", "issue", [], { views });
+  expect(
+    addressView(on, undefined, rootOf(childOnly), absent(target), childOnly.plan)
+  ).toBeUndefined();
+  const own = treeNode("t1", "plan_task", null, {
+    document: placed("artifact-plan"),
+    role: "query",
+  });
+  const both = { plan: treeAnswer([child, own]) };
+  expect(filterHolding(both, { id: "t1" }, "CORE-1")).toBe("plan");
+  expect(answerHolds(both.plan, { id: "t1" }, "CORE-1")).toBe(true);
+  expect(addressView(on, undefined, rootOf(both), absent(target), undefined)).toEqual({
+    keepsNode: true,
+    preset: "plan",
+  });
 });
 
 /** Where an address whose `target` the tree holds no node of lands once its reads are held. */

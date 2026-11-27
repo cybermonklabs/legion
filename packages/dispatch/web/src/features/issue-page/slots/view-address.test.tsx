@@ -857,6 +857,71 @@ test("an address naming an id no read holds, or a message the outline draws no r
   }
 });
 
+// R9, R20 and decision 553 (1): an address of the issue names a block of the issue
+// (`issue-address.ts`' block `AddressTarget`). The Plan read answers the tasks of each issue under
+// this one beside its own, and a child's plan names its tasks `t1`, `t2` as this issue's does, so
+// where the issue holds no task `t1` and only a child's plan does, `#b-t1` on Conversation's
+// address names a block no read of the issue holds: whether the Plan read the load sent holds the
+// child's task, or Graph's read, as the page holds it from an earlier visit, it opens as a block
+// no read holds does - on that address, with the outline's line that it has no row for the block
+// and the focus on that line - never on Plan or Graph, which hold no row of it.
+test("an address of a block only a child's plan holds opens as one no read holds, with the line saying so, never on Plan or Graph", async () => {
+  const child = "CORE-2";
+  const childNodes = [
+    treeNode(child, "issue", KEY, { role: "context", text: "The child" }),
+    treeNode(PLAN_TASK, "plan_task", child, {
+      ...inDocument(artifact("artifact-child-plan", PLAN_DOCUMENT.slug)),
+      issue: child,
+      role: "context",
+    }),
+  ];
+  // The issue's own nodes: the statement and its check, and its threads, and no plan task.
+  const own = verifiedTree().filter((node) => node.supertag !== "plan_task");
+  const checkServes = [treeTuple("serves", CHECK, STATEMENT)];
+  const from = `${presetPath(KEY, "conversation")}#b-${PLAN_TASK}`;
+  for (const held of ["the Plan read", "Graph's read"] as const) {
+    answerVerificationReads();
+    spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+      const asked = query as { readonly kind?: unknown; readonly view?: string };
+      if (asked.view === "plan") return treeOf(held === "the Plan read" ? childNodes : []);
+      if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+      if (asked.kind !== undefined) return treeOf(own, checkServes);
+      return treeOf([...own, ...childNodes], checkServes);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    if (held === "Graph's read") await client.prefetchQuery(outlineQuery(KEY, "graph"));
+    const view = render(
+      <MemoryRouter initialEntries={[from]}>
+        <AppProviders client={client}>
+          <SeenStage issue={verifiedIssue()} />
+        </AppProviders>
+      </MemoryRouter>
+    );
+    const what = `${from}, with ${held} holding the child's task`;
+    // The Plan read the load sends has answered, so the address is decided with it held.
+    await waitFor(() =>
+      expect(
+        client.getQueryData(viewQuery(KEY, "plan").queryKey),
+        `${what}: the Plan read did not answer`
+      ).toBeDefined()
+    );
+    const opened = () => {
+      expect(seen.address, `${what} opened at another address`).toBe(from);
+      expect(
+        view.queryByRole("heading", { name: "No row for this block" }),
+        `${what} left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
+      ).toHaveFocus();
+    };
+    await waitFor(opened);
+    // No later frame opens another view.
+    await waitInAct(100);
+    await nextFrame();
+    opened();
+    expect(view.container.querySelector("[data-plan-body]"), `${what} drew Plan`).toBeNull();
+    cleanup();
+  }
+});
+
 // R10: `/graph/<node id>` opens Graph zoomed to that node, with the breadcrumb above it and only
 // that branch's rows drawn. Where the issue holds an open question outside the branch, the
 // opening stays inside the branch on its first row instead of leaving the zoom for the question.

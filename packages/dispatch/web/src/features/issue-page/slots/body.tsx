@@ -292,7 +292,9 @@ interface AddressView {
  * asks this once it has answered or been refused. On Conversation's address, a node the tree
  * holds that Conversation draws no row of - a plan task, a result - opens the filter of its kind
  * (`filterOfUndrawn`), and a block Conversation's read holds no node of the filter whose view
- * answer holds it (`filterHolding`), else Graph where Graph's read answers it (`answerHolds`). A
+ * answer holds it (`filterHolding`), else Graph where Graph's read answers it (`answerHolds`),
+ * each as a node of the issue, the tree's root: a node of another issue is no block the address
+ * names, so where only such a node holds the block's id the address opens as one no read holds. A
  * node address (`?node=`) is read by the outline alone (`issueAddress`): one whose node
  * Conversation's tree holds and draws no row of opens Graph at that node, since Graph's read is
  * the whole read, which holds every node Conversation's does; one whose node Conversation's read
@@ -332,8 +334,8 @@ export function addressView(
   }
   if (fallback?.kind !== "absent" || fallback.target.kind !== "block") return undefined;
   const preset =
-    filterHolding(root.views, fallback.target) ??
-    (answerHolds(graphRead, fallback.target) ? "graph" : undefined);
+    filterHolding(root.views, fallback.target, root.id) ??
+    (answerHolds(graphRead, fallback.target, root.id) ? "graph" : undefined);
   return preset === undefined || preset === address.preset
     ? undefined
     : { keepsNode: true, preset };
