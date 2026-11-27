@@ -54,7 +54,9 @@ import {
  * the held read holds then. Where the body, or the node itself, stands on a page the page has not
  * loaded, that page is read first (`readNextTreePage`). No other read goes between two acts of a
  * chain: the next act goes out within the answer's own reaction, before the write store's hold on
- * the tree reads ends (`subscribeTreeFreshness`).
+ * the tree reads ends (`subscribeTreeFreshness`). Whether a node's chain holds an act is
+ * `NodeWrites.busy`: the editor's move keys ask it, so that a key pressed while an act is out
+ * waits its turn here rather than being judged on the read that act's answer is about to change.
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
@@ -188,6 +190,10 @@ export interface NodeWrites {
    *  of its rows (R4: at a grey edge a key writes nothing, and the row shows the entry's reason),
    *  until the node's next act. Nothing is sent or queued. */
   readonly grey: (node: string, reason: GreyReason) => void;
+  /** Whether an act of the node of read id `node` is out or waiting in its chain: until its last
+   *  act ends, the held read is one an answer of the chain is about to change, so a move pressed
+   *  then is judged at its turn (`move`), never on that read. */
+  readonly busy: (node: string) => boolean;
 }
 
 /** What a move carries from its press to its turn. */
@@ -866,7 +872,11 @@ export function useNodeActs({ key, status, zoomRoot }: NodeWritesIssue): NodeAct
       setLine(queryClient, key, node, { text: ANSWER_LINES[reason] }),
     [key, queryClient]
   );
-  return useMemo(() => ({ count, grey, move, remove }), [count, grey, move, remove]);
+  const busy = useCallback(
+    (node: string) => stateOf(queryClient).chains.has(hashKey([key, node])),
+    [key, queryClient]
+  );
+  return useMemo(() => ({ busy, count, grey, move, remove }), [busy, count, grey, move, remove]);
 }
 
 /**

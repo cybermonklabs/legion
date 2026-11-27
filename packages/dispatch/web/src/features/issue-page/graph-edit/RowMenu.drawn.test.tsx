@@ -1866,6 +1866,84 @@ test("a key at a grey edge writes nothing and shows the reason", async () => {
   expect(editorsFrom(live, SPEC_DOCUMENT.id)).toEqual([SPEC_DOCUMENT.id]);
 });
 
+// R4: a move key pressed while the move of the key before it is out waits for that move's answer
+// and is judged on it, as a menu pick is. With the caret at the end of the third statement, the
+// last block of its document under the criterion, Alt+Shift+Up and then Alt+Shift+Down, pressed
+// before the first PATCH is answered, send two PATCHes: the second once the first answer came,
+// under the placement_seq it answered. The row never says the statement is already the last, the
+// caret stays in its text, and the criterion's children stand as they stood before.
+test("a move key pressed before the answer of the key before it is judged on that answer", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  const out = Promise.withResolvers<void>();
+  // The second answer's placement_seq is one of its own, so the case can tell when it is taken.
+  const down = "<seq:statement-3@4>";
+  const sent = answerNodeRoutes({
+    patches: [
+      { ...moved.move_up, gate: out.promise },
+      { ...moved.move_down, body: { ...moved.move_down.body, placement_seq: down } },
+    ],
+  });
+  const live = drawLive();
+  const { editable } = await editRow(live, user, STATEMENT_3, SPEC_DOCUMENT.id);
+  const words = wordsOfNode(STATEMENT_3);
+  await caretAt(textIn(editable, "s3"), words.length);
+  const before = caretPlace();
+  expect(before).toEqual([`s3|${words}|${words.length}`, `s3|${words}|${words.length}`]);
+  const criterionKey = rowOf(live.view, CRITERION)?.dataset.rowKey ?? "";
+  const children = childKeys(live.view, criterionKey);
+  const alt = { altKey: true, shiftKey: true };
+
+  expect(pressIn(editable, "ArrowUp", alt), "Alt+Shift+Up was left to the editor").toBe(false);
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  expect(pressIn(editable, "ArrowDown", alt), "Alt+Shift+Down was left to the editor").toBe(false);
+  expect(
+    rowOf(live.view, STATEMENT_3)?.textContent,
+    "Alt+Shift+Down was judged on the read before the first answer"
+  ).not.toContain(ANSWER_LINES.grey_last);
+  await waitInAct(50);
+  expect(sent.patches, "Alt+Shift+Down went before Alt+Shift+Up's answer").toHaveLength(1);
+
+  out.resolve();
+  await waitFor(() => expect(sent.patches).toHaveLength(2));
+  expect(sent.patches).toEqual([
+    {
+      body: moved.move_up.request.body,
+      dryRun: false,
+      expected: null,
+      id: "<statement-3>",
+      ifMatch: `"${String(STATEMENT_3.placement_seq)}"`,
+    },
+    {
+      body: moved.move_down.request.body,
+      dryRun: false,
+      expected: null,
+      id: "<statement-3>",
+      ifMatch: `"${moved.move_up.body.placement_seq}"`,
+    },
+  ]);
+  await waitFor(() =>
+    expect(heldSeq(live, STATEMENT_3.id), "Alt+Shift+Down's answer was not taken").toBe(down)
+  );
+  await waitFor(() => expect(caretPlace(), "the caret moved").toEqual(before));
+  await waitInAct(50);
+  expect(caretPlace(), "the caret moved once the moves settled").toEqual(before);
+  expect(
+    rowOf(live.view, STATEMENT_3)?.contains(document.activeElement),
+    "the statement's row lost the focus"
+  ).toBe(true);
+  expect(
+    rowOf(live.view, STATEMENT_3)?.textContent,
+    "the row says the statement is already the last"
+  ).not.toContain(ANSWER_LINES.grey_last);
+  expect(childKeys(live.view, criterionKey), "Up and Down moved the statement elsewhere").toEqual(
+    children
+  );
+  expect(editorsFrom(live, SPEC_DOCUMENT.id), "the moves let the document's editor go").toEqual([
+    SPEC_DOCUMENT.id,
+  ]);
+});
+
 // ---------------------------------------------------------------------------------------------
 // A new row (R3, with a live room): drawn at once at its place, with the caret in the editor of
 // the tree artifact, the issue's own fragment; its block written on the reader's first character;

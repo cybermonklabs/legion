@@ -32,8 +32,12 @@ import { ownPathTo } from "./row-reveal";
  * row the caret is in (`row-edits.tsx`' `verdictsFor`, as `RowMenu.tsx` reads it): a move goes into
  * the node's queue (`node-writes.ts`' `move`), which makes its body again as its turn comes, as
  * the menu's entries do; at a grey edge the key writes nothing, the caret stays, and the row draws
- * the entry's reason (`NodeWrites.grey`). A block R2 does not admit - a kind it does not edit, a node
- * of another issue, a closed issue - takes none of the keys, which do there what they do today.
+ * the entry's reason (`NodeWrites.grey`). While an act of the node is out or waiting in that queue
+ * (`NodeWrites.busy`), the held read is one its answer is about to change, so a move key goes into
+ * the queue whatever that read says, and the queue judges it at its turn from the answer before
+ * it: where its entry is grey by then, it writes nothing and the row draws that entry's reason. A
+ * block R2 does not admit - a kind it does not edit, a node of another issue, a closed issue -
+ * takes none of the keys, which do there what they do today.
  *
  * A taken move draws the node under its new parent, which is a row of another key (`rowKeyOf`): the
  * editing follows the node there in the render that draws it (`MoveKeyBridge.follow`), with the
@@ -137,8 +141,12 @@ export function useMoveKeys({
           const verdict = now.verdicts[move];
           if (verdict.kind === "grey") {
             if (NOT_ADMITTED[verdict.reason] === true) return false;
-            writes.grey(readId, verdict.reason);
-            return true;
+            // A move pressed while an act of the node is out or waiting is judged at its turn, from
+            // the answer before it, as a menu pick is, never on this read (`NodeWrites.busy`).
+            if (move === "new_below" || !writes.busy(readId)) {
+              writes.grey(readId, verdict.reason);
+              return true;
+            }
           }
           if (move === "new_below") {
             if (editor === undefined) return false;

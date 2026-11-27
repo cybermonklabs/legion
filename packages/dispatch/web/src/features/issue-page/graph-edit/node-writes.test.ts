@@ -78,6 +78,8 @@ import { placementOf } from "./placement";
  *   - `lines: ReadonlyMap<string, { text: string }>`, the line of each row by read id, which a
  *     refusal and a drop write: `refusalLine`'s `text`, then, where moves were dropped, their
  *     count and `ANSWER_LINES.dropped_move` or `dropped_moves` ("2 moves were not sent");
+ *   - `busy(node)`, whether an act of the node of that read id is out or waiting in its queue: from
+ *     the press of its first act until its last act is taken, refused or dropped;
  *   - once a node's queue is empty after a taken answer, the hook reads each outline read the page
  *     holds again, its loaded pages included, once; after a 412, a `NODE_GONE` or a 404 it reads
  *     them once too; after any other refusal it reads nothing.
@@ -581,6 +583,47 @@ test("a queued move that turned grey is dropped with its reason", async () => {
   const line = writes().lines.get(STATEMENT)?.text ?? "";
   expect(line).toContain(ANSWER_LINES.grey_no_sibling_above);
   expect(line).toContain(`2 ${ANSWER_LINES.dropped_moves}`);
+});
+
+// R4: a node's chain is busy from the press of its first act until its last act ends, and a move
+// queued behind one that is out is judged on that move's answer. The third statement is the last
+// block of its document under the criterion, so Move down is grey on the read the page holds; behind
+// Move up it goes all the same, after the second statement, under the placement_seq Move up
+// answered.
+test("a node's chain is busy while an act is out, and a move queued behind it is judged on its answer", async () => {
+  const gate = Promise.withResolvers<void>();
+  const patches = answerPatches({ ...moved.move_up, gate: gate.promise }, moved.move_down);
+  const { writes } = mount();
+  expect(
+    placementOf({ held: converted, node: STATEMENT, status: "in_progress" }).move_down
+  ).toEqual({ kind: "grey", reason: "grey_last" });
+  expect(writes().busy(STATEMENT), "a node with no act is busy").toBe(false);
+  let both: Promise<unknown[]> | undefined;
+  await act(async () => {
+    both = Promise.all([
+      writes().move(STATEMENT, "move_up"),
+      writes().move(STATEMENT, "move_down"),
+    ]);
+  });
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  expect(writes().busy(STATEMENT), "the chain is not busy while its move is out").toBe(true);
+  expect(writes().busy("<statement-2>"), "another node's chain is busy").toBe(false);
+  let outcomes: unknown[] = [];
+  await act(async () => {
+    gate.resolve();
+    outcomes = (await both) ?? [];
+  });
+  expect(outcomes).toMatchObject([{ status: "taken" }, { status: "taken" }]);
+  expect(patches.calls).toEqual([
+    { body: moved.move_up.request.body, id: STATEMENT, ifMatch: '"<seq:statement-3>"' },
+    {
+      body: moved.move_down.request.body,
+      id: STATEMENT,
+      ifMatch: `"${moved.move_up.body.placement_seq}"`,
+    },
+  ]);
+  expect(writes().busy(STATEMENT), "the chain is busy once its last act ended").toBe(false);
+  expect(writes().lines.get(STATEMENT), "the row draws a line").toBeUndefined();
 });
 
 test("the page reads its outline reads once the queue is empty", async () => {
