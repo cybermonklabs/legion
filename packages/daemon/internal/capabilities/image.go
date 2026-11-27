@@ -639,7 +639,10 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
-	timedOut := errors.Is(cause, errCommandTimeout)
+	// CONTROL ONLY: a caller's end read as the row's own. Whether the budget ended the command is
+	// read with ctx.Err() once the command is gone, so a caller's context that ended while the
+	// budget's stop was under way takes the end for its own.
+	timedOut := errors.Is(cause, errCommandTimeout) && ctx.Err() == nil
 	r := ran{stdout: omplaunch.PrefixMasked(stdout.String(), img.Prefix), stderr: omplaunch.PrefixMasked(stderr.String(), img.Prefix),
 		cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
 	switch {
