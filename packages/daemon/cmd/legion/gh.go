@@ -327,7 +327,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
-			Curl: leakguardCurl,
+			Curl:           leakguardCurl,
+			LsRemoteOrigin: leakguardLsRemoteOrigin,
 		})
 		answer, err := guard.GhCall(beforeGh, leakguard.GhRequest{
 			Args:          args,

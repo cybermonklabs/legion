@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/clitest"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -28,17 +29,19 @@ var legionBuildDir string
 // legionBuild builds this package's `legion` once for the whole test binary and answers its
 // path: the binary a caller runs, with no test code linked in, which is what clitest and the
 // invocation table drive. Every test that runs it only runs it, so one build serves them all. It
-// links leakguardtest.NoCurl as its guards' curl (leakguardtest.NoCurlLinked), as TestMain gives
-// this binary's own: the built binary reads no LEGION_CMD_TEST_CURL, and without the link its
-// guards would run the system's /usr/bin/curl, with a token of the test's bundle, wherever their
-// REST read through a stand-in gh fails on its connection or is stopped by its bound (INFRA-3904).
-// It also links in this test binary's deadline (programbound's linkedDeadline, from
-// testDeadlineEnv), so each wait the built binary bounds on a program it starts takes what is left
-// of that deadline, as this binary's own runs as `legion` do; under -timeout 0 it links none, and
-// the product's bounds hold. The two go in one -ldflags, since go build takes only the last.
+// links leakguardtest.NoCurl as its guards' curl and leakguardtest.NoGitHub as the origin of their
+// read with no credential (leakguardtest.NoNetworkLinked), as TestMain gives this binary's own. The
+// built binary reads no LEGION_CMD_TEST_CURL. Without the link, wherever its guards' REST read
+// through a stand-in gh fails on its connection or is stopped by its bound, they would run the
+// system's /usr/bin/curl with a token of the test's bundle, and then ask github.com with
+// ls-remote (INFRA-3904). It also links in this test binary's deadline (programbound's
+// linkedDeadline, from testDeadlineEnv), so each wait the built binary bounds on a program it
+// starts takes what is left of that deadline, as this binary's own runs as `legion` do; under
+// -timeout 0 it links none, and the product's bounds hold. They all go in one -ldflags, since go
+// build takes only the last.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	ldflags := leakguardtest.NoCurlLinked
+	ldflags := leakguardtest.NoNetworkLinked
 	if deadline, ok := os.LookupEnv(testDeadlineEnv); ok {
 		ldflags += " -X github.com/sjawhar/legion/daemon/internal/programbound.linkedDeadline=" + deadline
 	}
@@ -305,6 +308,99 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 			}
 		}
 	})
+}
+
+// No guard in these tests reaches the network on its own (INFRA-3904). That holds for the test
+// binary run as `legion` (TestMain) and for the `legion` these tests build (legionBuild). Its read
+// through curl finds no curl (leakguardtest.NoCurl) and asks for no token. Its read with no
+// credential, `git ls-remote <origin>/<owner>/<name>.git HEAD`, runs the first git on PATH. Where
+// no test stands in for that git, it is the real one, and the origin is leakguardtest.NoGitHub,
+// which the real git refuses with no network. So a row that stands in for neither gets a refusal
+// that names them, and the network decides nothing.
+//
+// Each case answers the shared check's own visibility read, through a git on PATH that records
+// each call and runs the compiled git:
+//   - A repository of an owner the bundle holds no directory for, which the guard reads with
+//     ls-remote alone.
+//   - A repository the bundle serves, whose REST read the stand-in gh fails on its TLS handshake,
+//     so the guard reads through curl and then with ls-remote, whatever its bound.
+//
+// Normally the stand-in gh answers every read, so only these cases show that each link of the
+// built `legion` still names a variable the linker sets: a rename would make the linker drop the
+// -X without a word.
+func TestNoGuardOfTheseTestsReachesTheNetwork(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsTimeout := "case \" $* \" in *\" --include \"*) echo 'Get \"https://api.github.com/repos/acme/widgets\": net/http: TLS handshake timeout' >&2; exit 1;; esac\n"
+	for _, legion := range []struct {
+		name string
+		// path is the program the gh wrapper runs as `legion gh`, and env what it runs with
+		// beside each case's own.
+		path func(t *testing.T) string
+		env  []string
+	}{
+		{"the test binary as legion", func(*testing.T) string { return os.Args[0] }, append([]string{testMainEnv + "=1"}, testDeadlineEnviron()...)},
+		{"the built legion", buildLegion, nil},
+	} {
+		for _, tc := range []struct {
+			name, slug string
+			// stub is what the stand-in gh runs before the visibility answer every stand-in gh
+			// gives (ghStandInPrefix).
+			stub string
+			// says is what the refusal names beside ls-remote's.
+			says []string
+		}{
+			{name: "an unserved owner's repository", slug: "other-owner/invented-repo"},
+			{name: "gh fails its TLS handshake", slug: "acme/widgets", stub: tlsTimeout, says: []string{"there is no curl at " + leakguardtest.NoCurl}},
+		} {
+			t.Run(legion.name+": "+tc.name, func(t *testing.T) {
+				program := legion.path(t)
+				stub := filepath.Join(t.TempDir(), "gh")
+				if err := execfile.Write(stub, []byte(strings.Replace(ghStandInPrefix(help), "#!/bin/sh\n", "#!/bin/sh\n"+tc.stub, 1)), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				wrappers, calls := t.TempDir(), filepath.Join(t.TempDir(), "git-calls")
+				if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+program+"' gh \"$@\"\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				git := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>" + shellprefix.Literal(calls) + "\nexec " + shellprefix.Literal(fixturegit.CompiledGit(t)) + " \"$@\"\n"
+				if err := execfile.Write(filepath.Join(wrappers, "git"), []byte(git), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(program, append([]string{"gh"}, leakguard.VisibilityReadArgs(tc.slug)...)...)
+				cmd.Dir = t.TempDir()
+				cmd.Env = append([]string{
+					"PATH=" + wrappers + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull,
+					"LEGION_GH_PATH=" + stub, "GH_CONFIG_DIR=" + defaultDir, "LEGION_GH_OWNERS_DIR=" + root,
+					"XDG_STATE_HOME=" + t.TempDir(), leakguard.VisibilityReadVar + "=" + tc.slug,
+				}, legion.env...)
+				out, err := cmd.Output()
+				if cmd.ProcessState == nil {
+					t.Fatalf("legion gh did not start: %v", err)
+				}
+				stderr := stderrOf(err)
+				if code := cmd.ProcessState.ExitCode(); code != 1 || len(out) != 0 {
+					t.Errorf("legion gh's answer to the visibility read of %s = exit %d, stdout %q, stderr %q; want exit 1 and nothing on stdout", tc.slug, code, out, stderr)
+				}
+				for _, want := range append([]string{"git ls-remote of " + tc.slug + " exited 128"}, tc.says...) {
+					if !strings.Contains(stderr, want) {
+						t.Errorf("legion gh printed %q on stderr, which does not name %q", stderr, want)
+					}
+				}
+				asked := readRecord(t, calls)
+				if !strings.Contains(asked, " ls-remote "+leakguardtest.NoGitHub+"/"+tc.slug+".git HEAD") {
+					t.Errorf("the guard's git calls were %q; want its ls-remote of %s/%s.git", asked, leakguardtest.NoGitHub, tc.slug)
+				}
+				if strings.Contains(asked, "github.com") {
+					t.Errorf("the guard's git calls were %q, which ask github.com", asked)
+				}
+			})
+		}
+	}
 }
 
 // The legion these tests build links this test binary's deadline (legionBuild,

@@ -202,7 +202,7 @@ func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *trans
 		}
 		return visibility, source, nil
 	case errors.As(err, new(*transportError)), errors.Is(err, errNoCurlRead):
-		visibility, lsErr := g.lsRemote(ctx, githubOrigin, slug)
+		visibility, lsErr := g.lsRemote(ctx, g.lsRemoteOrigin(), slug)
 		if lsErr != nil {
 			return "", "", fmt.Errorf("%w, %w, and git ls-remote could not answer: %w", unreached, err, lsErr)
 		}

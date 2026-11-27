@@ -48,6 +48,13 @@ var ghReadsProvenCheck = struct{ tag, sha256 string }{
 // /usr/bin/curl; only tests set it, as they set ghReadsProvenCheck's sha256 (TestMain).
 var leakguardCurl string
 
+// leakguardLsRemoteOrigin is the origin that the read with no credential asks, in every guard this
+// binary builds (leakguard.Options.LsRemoteOrigin), at the same call sites as leakguardCurl. It is
+// empty in the binary, where that read asks github.com. Only tests set it: TestMain, and the -X of
+// leakguardtest.NoNetworkLinked in a `legion` they build. Then a read that no stand-in git answers
+// reaches no network.
+var leakguardLsRemoteOrigin string
+
 // ghRateLimitRead is the exact `gh api rate_limit`, a GitHub API call with no repository content,
 // which reaches gh before its command is read: it reads no help and no git remote, so a working
 // directory whose remotes name two owners does not refuse it. Any option changes the request's

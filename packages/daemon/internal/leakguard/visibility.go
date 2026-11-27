@@ -196,7 +196,7 @@ func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateL
 		}
 		also = "; GraphQL's rate limit is spent too"
 	}
-	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
+	visibility, err := g.lsRemote(ctx, g.lsRemoteOrigin(), slug)
 	if err != nil {
 		return "", "", fmt.Errorf("%w%s, and git ls-remote could not answer: %w", limited, also, err)
 	}
@@ -216,7 +216,7 @@ func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateL
 // an anonymous read of a private repository and of a name no repository has with included,
 // refuses the call, naming the refusal of `legion gh` and what git said.
 func (g *Guard) readUnservedOwner(ctx context.Context, slug string, unserved *unservedOwnerError) (Visibility, VisibilitySource, error) {
-	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
+	visibility, err := g.lsRemote(ctx, g.lsRemoteOrigin(), slug)
 	if err != nil {
 		return "", "", fmt.Errorf("%w, and git ls-remote with no credential could not answer: %w", unserved, err)
 	}
@@ -643,14 +643,23 @@ func gitHubResponse(status int, headers map[string]string) *http.Response {
 // begins with it.
 const githubOrigin = "https://github.com"
 
+// lsRemoteOrigin is the origin the guard's read with no credential asks: Options.LsRemoteOrigin
+// where a test set one, else githubOrigin.
+func (g *Guard) lsRemoteOrigin() string {
+	if g.opts.LsRemoteOrigin != "" {
+		return g.opts.LsRemoteOrigin
+	}
+	return githubOrigin
+}
+
 // lsRemote is what `git ls-remote <origin>/<slug>.git HEAD`, read with no credential, says of the
 // repository's visibility: public where git exits 0, listing the repository's HEAD (an empty
 // repository lists nothing and exits 0 all the same), and an error for anything else. origin is a
 // parameter so that a test can point the read at a server of its own; the guard's three callers
-// (readWithoutREST, readWithoutGh, readUnservedOwner) pass githubOrigin. That read goes through
-// git's smart HTTP protocol, which GitHub does not count against the REST rate limit: pushes
-// refused for that limit have met `git ls-remote origin` answering at the same moments. It uses no
-// Go TLS either: git's HTTPS is libcurl's.
+// (readWithoutREST, readWithoutGh, readUnservedOwner) pass lsRemoteOrigin, which is githubOrigin
+// outside a test. That read goes through git's smart HTTP protocol, which GitHub does not count
+// against the REST rate limit: pushes refused for that limit have met `git ls-remote origin`
+// answering at the same moments. It uses no Go TLS either: git's HTTPS is libcurl's.
 //
 // Public is the one answer because a refusal says nothing of the repository. GitHub answers an
 // anonymous read of a private repository, and of a name no repository has, with a 401; it also

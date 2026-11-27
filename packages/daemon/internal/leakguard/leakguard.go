@@ -104,6 +104,12 @@ type Options struct {
 	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
 	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
 	Curl string
+	// LsRemoteOrigin is the origin the read with no credential asks (Guard.lsRemote), the part of
+	// the repository's URL before `/<owner>/<name>.git`. Empty is the ordinary case, githubOrigin.
+	// A test fills it with an origin no network serves, so that a read its stand-in git does not
+	// answer cannot reach github.com: no shipped binary sets it, and cmd/legion's test binary sets
+	// leakguardtest.NoGitHub (its TestMain, and the -X its tests link into a `legion` they build).
+	LsRemoteOrigin string
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
