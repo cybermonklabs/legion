@@ -3,6 +3,7 @@ package access
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished: session_projects places every
@@ -348,7 +350,11 @@ func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 // runs, those a function runs included, and answers the plan of each statement whose query text
 // names reads: each call of session_clause_visible for route_roster_session_projects, which only a
 // clause's function reads. A connection that sent no plan of sql itself fails the test, since its
-// silence about the calls would then say nothing.
+// silence about the calls would then say nothing. Loading auto_explain and setting it are a
+// superuser's: a login that may not (SQLSTATE 42501, insufficient_privilege), such as the
+// NOSUPERUSER role of a Legion pod's test server (legion-testpg), skips the test naming the login
+// and the statement, and fails it on GitHub Actions, whose login is a superuser
+// (testdb.SkipOutsideCI).
 func functionCalls(t *testing.T, database *store.Store, reads, sql string, args ...any) []json.RawMessage {
 	t.Helper()
 	ctx := context.Background()
@@ -372,6 +378,11 @@ func functionCalls(t *testing.T, database *store.Store, reads, sql string, args 
 		`set enable_seqscan = off`,
 	} {
 		if _, err := connection.Exec(ctx, setting); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+				testdb.SkipOutsideCI(t, "%s: the test server's login %q may not (SQLSTATE 42501); the calls this test counts are the plans auto_explain reports, which only a superuser's session can turn on: %v",
+					setting, config.User, err)
+			}
 			t.Fatalf("%s: %v", setting, err)
 		}
 	}

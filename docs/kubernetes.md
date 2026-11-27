@@ -451,6 +451,8 @@ Then:
   Every role connects as the same login, so each already sees its siblings' backends in full in `pg_stat_activity`;
   what the grant adds is the detail of backends under other roles of the cluster, the superuser's connections from `ensure`'s steps and the login roles a suite creates and connects as, of background processes such as autovacuum, and the settings only a superuser reads.
   It reads no file, since it does not hold `pg_read_server_files`, and runs no program.
+  A test that loads `auto_explain` to read the plans its statements ran, which only a superuser may do, therefore cannot run in the pod:
+  the refusal (`SQLSTATE 42501`) skips it there, naming the login, and the same refusal fails it on GitHub Actions (`testdb.SkipOutsideCI`), where the login is a superuser and is never refused.
 
 - `ensure` is idempotent and cheap when the server is up:
   it returns after one connection through the DSN itself (`psql … select 1`, with a connect timeout), and otherwise initialises and starts under `flock -o`.

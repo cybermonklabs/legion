@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // priority_plans_test.go holds the priorities read to the work of the plans Postgres makes for
@@ -41,23 +43,26 @@ const planRuns = 10
 // planBuffersRatio is the most shared buffers a statement of the read may touch on the held
 // connection, against the same statement on the same data under plan_cache_mode =
 // force_custom_plan (INFRA-5362's R1). On this corpus the plans made for the statements'
-// arguments touch the same count on every run but a connection's first, which touches up to
-// three buffers more, and the generic plans of the seed read through unnest touched 6.7 to 45.8
-// times as many, so twice stands well between the two.
+// arguments touch the same count on every run but one whose backend's caches are cold, which
+// touches up to three buffers more, and the generic plans of the seed read through unnest touched
+// 6.7 to 45.8 times as many, so twice the larger of the two counts stands well between them.
 const planBuffersRatio = 2
 
 // TestPrioritiesReadKeepsItsPlans runs the priorities read, the whole body and the summary, ten
 // times on one held connection of the server's own pool, through the server's own read
 // (readPriorities), and holds every statement of every run to at most planBuffersRatio times the
-// shared buffers, hit plus read, that the same statement touches on a second connection set to
-// plan_cache_mode = force_custom_plan. It holds every run's answer, as the route encodes it, to be
-// the second connection's byte for byte.
+// shared buffers, hit plus read, that the same statement touches under plan_cache_mode =
+// force_custom_plan on a connection of the read's own, the larger of its counts there with the
+// backend's caches cold and warm (priorityPlanBaseline). It holds every run's answer, as the route
+// encodes it, to be the baseline's byte for byte.
 //
-// The plans are the ones the two connections ran, read from the notices auto_explain sends on
-// them (explainedStatements), so the reading adds no run of a statement and changes no plan
-// choice: the held connection's plan cache is the one a deployment's connections build. auto_explain
-// is loaded into each connection's session (LOAD), which the test database's superuser may do,
-// and reports each statement's top plan node, whose buffer counts cover the nodes below it.
+// The plans are the ones the connections ran, read from the notices auto_explain sends on them
+// (explainedStatements), so the reading adds no run of a statement and changes no plan choice: the
+// held connection's plan cache is the one a deployment's connections build. auto_explain is loaded
+// into each connection's session (LOAD) and set there, which only a superuser may do: a test server
+// whose login is not one skips the test, naming SQLSTATE 42501 and the login, and fails it on
+// GitHub Actions, whose login is one (explainingConnection). auto_explain reports each statement's
+// top plan node, whose buffer counts cover the nodes below it.
 //
 // A run that reports a statement the baseline did not, misses one, or reports from another
 // connection fails, so a run that read nothing cannot pass, and each run's counts are printed.
@@ -68,15 +73,11 @@ func TestPrioritiesReadKeepsItsPlans(t *testing.T) {
 	corpus := seedSpeedCorpus(t)
 	database := corpus.server.deps.Store
 
-	baselinePlans := &explainedStatements{}
-	baselineStore, baselineBackend := explainingConnection(t, database, baselinePlans,
-		"set plan_cache_mode = force_custom_plan")
 	heldPlans := &explainedStatements{}
 	heldStore, heldBackend := explainingConnection(t, database, heldPlans)
-
-	baselineDeps, heldDeps := corpus.server.deps, corpus.server.deps
-	baselineDeps.Store, heldDeps.Store = baselineStore, heldStore
-	baselineServer, heldServer := directServer(baselineDeps), directServer(heldDeps)
+	heldDeps := corpus.server.deps
+	heldDeps.Store = heldStore
+	heldServer := directServer(heldDeps)
 
 	reads := []struct {
 		name    string
@@ -87,7 +88,7 @@ func TestPrioritiesReadKeepsItsPlans(t *testing.T) {
 	}
 	baselines := make([]priorityPlanRun, len(reads))
 	for index, read := range reads {
-		baseline := readPriorityPlans(t, baselineServer, baselinePlans, baselineBackend, read.summary)
+		baseline := priorityPlanBaseline(t, corpus.server.deps, read.name, read.summary)
 		total := 0.0
 		for _, statement := range baseline.statements {
 			total += statement.buffers
@@ -97,7 +98,7 @@ func TestPrioritiesReadKeepsItsPlans(t *testing.T) {
 				read.name, len(baseline.statements), total)
 		}
 		baselines[index] = baseline
-		t.Logf("%s answers %d bytes, sha256 %x; under force_custom_plan its %d statements touch %s shared buffers",
+		t.Logf("%s answers %d bytes, sha256 %x; under force_custom_plan its %d statements touch at most %s shared buffers",
 			read.name, len(baseline.body), sha256.Sum256(baseline.body), len(baseline.statements), baseline.counts())
 		for number, statement := range baseline.statements {
 			t.Logf("  statement %d of %s: %.70s…", number+1, read.name, strings.Join(strings.Fields(statement.text), " "))
@@ -114,12 +115,12 @@ func TestPrioritiesReadKeepsItsPlans(t *testing.T) {
 					run, read.name, len(held.statements), len(baseline.statements), len(unmatched), unmatched)
 				continue
 			}
-			t.Logf("run %2d of %s: %s shared buffers, against %s under force_custom_plan",
+			t.Logf("run %2d of %s: %s shared buffers, against at most %s under force_custom_plan",
 				run, read.name, ordered.counts(), baseline.counts())
 			for number, statement := range ordered.statements {
 				allowed := planBuffersRatio * baseline.statements[number].buffers
 				if statement.buffers > allowed {
-					t.Errorf("run %d of %s: statement %d (%.60s…) touched %.0f shared buffers, %.1fx the %.0f it touches under force_custom_plan, want at most %dx (%.0f)",
+					t.Errorf("run %d of %s: statement %d (%.60s…) touched %.0f shared buffers, %.1fx the %.0f it touches at most under force_custom_plan, want at most %dx (%.0f)",
 						run, read.name, number+1, strings.Join(strings.Fields(statement.text), " "), statement.buffers,
 						statement.buffers/baseline.statements[number].buffers, baseline.statements[number].buffers, planBuffersRatio, allowed)
 				}
@@ -188,10 +189,41 @@ func readPriorityPlans(t *testing.T, served *server, plans *explainedStatements,
 	run := priorityPlanRun{body: response.Body.Bytes(), statements: plans.take(t)}
 	for _, statement := range run.statements {
 		if statement.backend != backend {
-			t.Fatalf("a plan of the read came from server process %d, want the held connection's %d", statement.backend, backend)
+			t.Fatalf("a plan of the read came from server process %d, want its connection's %d", statement.backend, backend)
 		}
 	}
 	return run
+}
+
+// priorityPlanBaseline is what one priorities read's statements touch under plan_cache_mode =
+// force_custom_plan: the read run twice on a connection of its own, first with the backend's caches
+// cold and then warm, and each statement's larger count of the two. A held run can meet either: a
+// busy server resets the caches of a backend that falls behind its shared invalidation queue, and
+// that backend's next statement runs as a connection's first does, up to three buffers more (the
+// summary's first statement touched 4 after a reset, against 1 warm, on PostgreSQL 18.6). The two
+// runs must report the same statements and answer the same bytes.
+func priorityPlanBaseline(t *testing.T, deps Deps, name string, summary bool) priorityPlanRun {
+	t.Helper()
+	plans := &explainedStatements{}
+	baselineStore, backend := explainingConnection(t, deps.Store, plans, "set plan_cache_mode = force_custom_plan")
+	deps.Store = baselineStore
+	served := directServer(deps)
+	cold := readPriorityPlans(t, served, plans, backend, summary)
+	warm := readPriorityPlans(t, served, plans, backend, summary)
+	ordered, unmatched := warm.inOrderOf(cold)
+	if len(unmatched) > 0 || len(warm.statements) != len(cold.statements) {
+		t.Fatalf("%s under force_custom_plan reported %d statements with its caches warm and %d with them cold; %d of them are not the cold run's: %q",
+			name, len(warm.statements), len(cold.statements), len(unmatched), unmatched)
+	}
+	if !bytes.Equal(warm.body, cold.body) {
+		t.Fatalf("%s under force_custom_plan answered %d bytes, sha256 %x, with its caches warm, and %d bytes, sha256 %x, with them cold",
+			name, len(warm.body), sha256.Sum256(warm.body), len(cold.body), sha256.Sum256(cold.body))
+	}
+	t.Logf("%s under force_custom_plan touches %s shared buffers with its caches cold and %s warm", name, cold.counts(), ordered.counts())
+	for index, statement := range ordered.statements {
+		cold.statements[index].buffers = max(cold.statements[index].buffers, statement.buffers)
+	}
+	return cold
 }
 
 // explainedStatements are the plans auto_explain sends as notices on the connections it is the
@@ -255,7 +287,11 @@ func (e *explainedStatements) take(t *testing.T) []explainedStatement {
 // so every read on it runs on that connection through the statement cache a request's does, with
 // plans as its notice handler; loads auto_explain into that connection's session with every
 // statement reported at notice level, analyzed with its buffers, as JSON; runs settings after; and
-// answers the store and the connection's server process.
+// answers the store and the connection's server process. Loading auto_explain and setting it are
+// a superuser's: a login that may not (SQLSTATE 42501, insufficient_privilege), such as the
+// NOSUPERUSER role of a Legion pod's test server (legion-testpg), skips the test naming the login
+// and the statement, and fails it on GitHub Actions, whose login is a superuser
+// (testdb.SkipOutsideCI).
 func explainingConnection(t *testing.T, database *store.Store, plans *explainedStatements, settings ...string) (*store.Store, uint32) {
 	t.Helper()
 	ctx := context.Background()
@@ -277,6 +313,11 @@ func explainingConnection(t *testing.T, database *store.Store, plans *explainedS
 		"set auto_explain.log_level = notice",
 	}, settings...) {
 		if _, err := connection.Exec(ctx, statement); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+				testdb.SkipOutsideCI(t, "%s on the connection the plans are read on: the test server's login %q may not (SQLSTATE 42501); the plans this test holds are the ones auto_explain reports, which only a superuser's session can turn on: %v",
+					statement, explaining.Pool.Config().ConnConfig.User, err)
+			}
 			t.Fatalf("%s on the connection the plans are read on: %v", statement, err)
 		}
 	}
