@@ -1769,12 +1769,13 @@ function expectClearBesideTrigger(reading: BarReading, at: string): void {
   ).toBe(true);
 }
 
-/** `k-bar`'s **Clear filters** on a fault tab's bar, with the flag and the column filter of
- *  `address` on (`expectFlagAndColumn`), read as the project List's: in the wide layout it is the
- *  control right after the trigger, in the trigger's group, and a press on it takes both off - the
- *  trigger counts nothing, the line draws no chip and no `+N more`, Clear filters goes, and the
- *  address holds neither narrowing's key; in the narrow layout none is drawn. `at` names the page,
- *  its width and the tab. */
+/** `k-bar`'s **Filters** and **Clear filters** on a fault tab's bar, with the flag and the column
+ *  filter of `address` on (`expectFlagAndColumn`), read as the project List's: at every width the
+ *  trigger is drawn on a fill; in the wide layout Clear filters is the control right after the
+ *  trigger, in the trigger's group, and a press on it takes both off - the trigger counts
+ *  nothing, the line draws no chip and no `+N more`, Clear filters goes, and the address holds
+ *  neither narrowing's key; in the narrow layout none is drawn. `at` names the page, its width
+ *  and the tab. */
 async function expectClearTakesBoth(
   page: Page,
   bar: Locator,
@@ -1785,6 +1786,10 @@ async function expectClearTakesBoth(
   // `expectFlagAndColumn` waited until the trigger counted the two, and two frames more, and shut
   // its panel, so the bar read here stands for them.
   const two = await readBar(bar);
+  expect(
+    two.controls.find((each) => each.control === CONTROL.panelTrigger)?.background,
+    `${on}: its trigger has no fill`
+  ).not.toMatch(NO_FILL);
   if (two.width < NARROW_BELOW) {
     expect(
       two.controls.filter((each) => each.control === "clear").length,
@@ -1927,6 +1932,9 @@ export async function expectBarDesign(
         ["Needs you", `Status: ${fault.word}`],
         at
       );
+      // Shutting the panel clicked the trigger, and a trigger under the pointer is drawn on its
+      // hover fill, so the pointer rests in the corner before Filters' fill is read.
+      await toRest();
       await expectClearTakesBoth(page, tab.row, flagAndColumn, at);
       const six = `${at}, six narrowings on`;
       await page.goto(faultAddress(fault, 6));

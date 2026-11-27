@@ -1734,8 +1734,11 @@ test("at 390 px a range action that takes the row the reading view shows hands t
     await frameAndTask(page);
 
     // No row is left: the view gives way to the list, and the list's empty message holds the
-    // focus. With no row the page draws no view at all, so the view is read closed where the
-    // hand-off closes it: the address goes back to the list's, which names no item.
+    // focus. The page draws no reading view, and the address, which the hand-off moves back to
+    // the list's, names no item.
+    await expect(readingView(page), "the page draws a reading view with no item left").toHaveCount(
+      0
+    );
     await expect(
       page,
       "the reading view stayed open with no item left: the address still names the item"
