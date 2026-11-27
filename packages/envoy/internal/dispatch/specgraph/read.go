@@ -409,7 +409,112 @@ func stringKeys(value any) bool {
 // node, from the first line after the last document read that starts the next one ("---" or
 // "..."). uncounted is why the reader cannot say for certain which documents the file holds, ""
 // when it can (splitFile).
+//
+// readFile is a function of name and data alone, and a process reads one file many times:
+// Approved.Current reads the newest document of each node on each call (versionText), print
+// reads its directory before and after its plan, and a test of a rule reads a scenario again for
+// each change it makes to one of its files. So the read of each file is kept (fileReads), and a
+// second read of the same name and bytes decodes, checks and prints nothing again. Each caller
+// gets a copy of what was kept, since a caller can change what it gets: Layout.Place inserts into
+// the documents of a file.
 func readFile(name string, data []byte) (documents []Document, problems []Problem, uncounted string) {
+	key := fileKey{name: name, data: string(data)}
+	if kept, found := fileReads.load(key); found {
+		return cloneDocuments(kept.documents), slices.Clone(kept.problems), kept.uncounted
+	}
+	documents, problems, uncounted = readFileOnce(name, data)
+	fileReads.store(key, fileRead{documents: cloneDocuments(documents), problems: slices.Clone(problems), uncounted: uncounted})
+	return documents, problems, uncounted
+}
+
+// fileKey is one file that readFile read: its name, which each position of its reading names, and
+// its bytes.
+type fileKey struct{ name, data string }
+
+// fileRead is what readFile answered for one file.
+type fileRead struct {
+	documents []Document
+	problems  []Problem
+	uncounted string
+}
+
+// fileReads is the read of each file readFile read, up to fileReadsBound bytes of files.
+var fileReads = fileReadCache{bound: fileReadsBound}
+
+// fileReadsBound is the bytes of files whose reads fileReads keeps: 32 times notes.MaxFileSize,
+// the bound of one spec file. Past it the cache starts again from empty, so a process that reads
+// file after file of new bytes, as a test of random trees does, holds the reads of at most this
+// many bytes of files and not the reads of every file it read.
+const fileReadsBound = 32 * notes.MaxFileSize
+
+// fileReadCache keeps the read of each file, up to bound bytes of files.
+type fileReadCache struct {
+	mu    sync.Mutex
+	bound int
+	bytes int
+	reads map[fileKey]fileRead
+}
+
+func (c *fileReadCache) load(key fileKey) (fileRead, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	read, found := c.reads[key]
+	return read, found
+}
+
+// store keeps read as the read of key. A file over the bound alone is not kept; one that would
+// take the cache past its bound empties it first.
+func (c *fileReadCache) store(key fileKey, read fileRead) {
+	size := len(key.name) + len(key.data)
+	if size > c.bound {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reads == nil || c.bytes+size > c.bound {
+		c.reads, c.bytes = map[fileKey]fileRead{}, 0
+	}
+	if _, found := c.reads[key]; !found {
+		c.reads[key] = read
+		c.bytes += size
+	}
+}
+
+// cloneDocuments is a copy of documents that shares no slice or pointer with it.
+func cloneDocuments(documents []Document) []Document {
+	c := slices.Clone(documents)
+	for i := range c {
+		c[i].Node = cloneNode(c[i].Node)
+	}
+	return c
+}
+
+// cloneNode is a copy of n that shares no slice or pointer with it, nil for nil.
+func cloneNode(n Node) Node {
+	switch v := n.(type) {
+	case nil:
+		return nil
+	case Statement:
+		v.Serves, v.About = slices.Clone(v.Serves), slices.Clone(v.About)
+		return v
+	case Check:
+		if v.Test != nil {
+			test := *v.Test
+			v.Test = &test
+		}
+		return v
+	case Component:
+		v.Joins = slices.Clone(v.Joins)
+		return v
+	case Term:
+		return v
+	default:
+		panic(fmt.Sprintf("specgraph: cloneNode has no case for the node type %T", n))
+	}
+}
+
+// readFileOnce is readFile's reading of one file, which fileReads keeps.
+func readFileOnce(name string, data []byte) (documents []Document, problems []Problem, uncounted string) {
 	read, problems, stopped := readDocuments(name, data)
 	stop, fault := 0, ""
 	if stopped != nil {
