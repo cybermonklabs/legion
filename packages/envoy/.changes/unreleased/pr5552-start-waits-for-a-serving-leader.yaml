@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+    A listener or Dispatch server whose start raises the `ENVOY_NOTIFICATIONS` stream or a KV bucket to more than one copy (`ENVOY_NATS_REPLICAS`), creates one, or finds one another program raised or created a moment before, now answers only once the stream's leader takes writes. nats-server names a new leader in a stream's read from its election on, and the leader stores a write only once it has applied its first entry as leader; a publish that reached it in between was dropped with no answer, so the first publish after such a start could fail after its 5 s bound (`the stream did not acknowledge the publish, so it may hold the message: context deadline exceeded`) and the stream did not hold it. The start now waits until the stream's read also reports when its leader took the lead (`leader_since`), which every nats-server Envoy admits reports at that moment. A start that waits logs `envoy nats stream has no leader yet, waiting` as before, and one its hang guard ends names the leader that took no write yet.
+time: 2026-11-25T19:11:01.331444678Z
+custom:
+    Issue: pr5552

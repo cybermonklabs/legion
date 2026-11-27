@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `gcp:ClusteredNatsHub`'s PodMonitoring drops every series whose name matches `nats_consumer_.+` at the scrape, so no JetStream consumer's name or description reaches Google Managed Prometheus, with `privateProjects` or without it.
+  The exporter keeps the chart's `-jsz=all`, so the stream series stay, `nats_stream_limit_bytes` and `nats_stream_limit_messages` among them: `-jsz=streams` would have served no consumer series, but no stream limits either.
+  A deployed hub's next apply updates the PodMonitoring alone. The chart's values do not change, so the hub's pods do not roll.
+time: 2026-11-21T01:36:54Z
+custom:
+    Issue: pr4714

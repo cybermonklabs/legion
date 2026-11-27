@@ -24,3 +24,9 @@ func NewSetWithGroups(secrets map[string]Secret, groups record.Directory) *Set {
 	set.groups = groups
 	return set
 }
+
+// GrantAndType is grantAndType, the one reader of a secret's max-grant, default-grant and type
+// tags, for a test of the reader itself.
+func GrantAndType(s *Secret, tags map[string]string, typeOf func() string) (secretType, reason string) {
+	return grantAndType(s, tags, typeOf)
+}

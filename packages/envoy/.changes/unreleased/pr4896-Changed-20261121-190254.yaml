@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  An issue's parent may be an issue of another project, on `POST /api/v1/issues` and on
+  `PATCH /api/v1/issues/{key}`; Dispatch answered `400 PARENT_INPUT` "parent must be in the same
+  project". The not-found, self, cycle and 32-link depth refusals still hold, counted across
+  projects. A result (`POST /api/v1/issues/{key}/results` and its dry run) and the retraction of a
+  result (`POST /api/v1/results/{id}/retract`) can be on a check of another project's issue: the
+  results routes find a check among the issues above the recording one, which a parent of another
+  project puts there. A parent of another project passes on no repository, components,
+  architecture owner, `legion` label or assignee: the walks that resolve `resolved_repo`, an
+  inherited component attachment, the architecture tree's owner, `legion_managed_status` and the
+  delivery views' ancestors read only ancestors of the issue's own project, so such an issue takes
+  its own project's default repository and is a root for each, and a create under it that names
+  no assignee and acts for no person lands on its own project's default assignee rather than the
+  parent's. The children list, progress, coverage and `advances` still read the tree across
+  projects.
+time: 2026-11-21T19:02:54Z
+custom:
+    Issue: pr4896

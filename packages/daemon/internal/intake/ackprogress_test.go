@@ -169,6 +169,7 @@ func issueConsumer(t *testing.T, stream jetstream.Stream, durable string, ackWai
 // reports it in progress for as long as it holds, and JetStream still delivers every event of
 // that backlog once and has every one of them prepared once.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *testing.T) {
+	// Not parallel: its counts hold only while the keeper's ticks, a third of its 2 s window apart, land inside that window: a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	// Watched before the daemon opens, so no signal of the held fact's can be made before the
@@ -314,6 +315,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 // design, so here the window alone says when the server makes the held message due again, and
 // this consumer's own open request takes it the moment the server does.
 func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	const ackWait = 2 * time.Second
 	publishHeldBacklog(t, js)
@@ -422,6 +424,7 @@ func (c *countedProgress) reported() int {
 // and the stop it hands back. The delivery is real, and fetched rather than consumed, so each
 // signal countedProgress passes on has a reply subject to go to.
 func TestTheProgressSignalStopsWhenItsHandlerEnds(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	publishIssueEvent(t, js, "CAPTURE-310", 1)
 	// A window far longer than the row runs: a redelivery would hand the row a second message and
@@ -589,6 +592,7 @@ func (h *heldNak) window() (time.Time, time.Time) {
 // looks, and the one thing between the two the row can hold is the line nakResolve writes there
 // (heldNak).
 func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
+	// Not parallel: it bounds the retry at a quarter of its 2 s window, 500 ms, a wall-clock bound the load of tests beside it can cross.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	progress := watchProgressSignals(t, js)
@@ -658,13 +662,15 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 // measures is the cut itself, the redelivery the nak after it brings, and the attributes of the
 // warn line that names the cut. It says nothing about the keeper.
 func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
+	// Not parallel: it bounds the cut at twice its 600 ms limit, a wall-clock bound the load of tests beside it can cross.
 	pool := migratedPool(t)
 	js, _ := testJetStream(t)
 	logs := &lockedBuffer{}
 	spec := consumerSpec(logs)
 	// Three times the acknowledgement window, so the redelivery this row measures cannot be read
-	// as the window's own, and a small fraction of the row's patience (testwait.Eventually waits a
-	// minute), so a limit that never cuts fails the row instead of holding it.
+	// as the window's own, and a small fraction of the row's patience (testwait.Eventually waits
+	// until 30 s before the test binary's deadline), so a limit that never cuts fails the row
+	// instead of holding it.
 	spec.HandlerLimit = 600 * time.Millisecond
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
@@ -675,14 +681,22 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	held := newHeldOnce()
 	var mu sync.Mutex
 	var entered []time.Time
+	var cutAt time.Time
+	var cutBy error
 	stop := runConsumers(t, consumers, handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
 		mu.Lock()
 		entered = append(entered, time.Now())
+		first := len(entered) == 1
 		mu.Unlock()
 		// The first delivery waits on the context consumeMessage passes and nothing releases it,
 		// so it ends when and only when the limit cuts it; a handler sleeping on the clock would
 		// ignore the cut and prove nothing. Every delivery after it returns at once.
 		held.hold(ctx)
+		if first {
+			mu.Lock()
+			cutAt, cutBy = time.Now(), ctx.Err()
+			mu.Unlock()
+		}
 		return Result{}, nil
 	}))
 	defer stop()
@@ -697,11 +711,20 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	stop()
 
 	mu.Lock()
-	cut := entered[1].Sub(entered[0])
+	cut, again, by := cutAt.Sub(entered[0]), entered[1].Sub(entered[0]), cutBy
 	mu.Unlock()
-	if cut < spec.HandlerLimit/2 || cut > 2*spec.HandlerLimit {
-		t.Errorf("the handler that never ends was cut and its fact delivered again %s after its first delivery, want about its %s handler limit plus the %s the nak after the cut asks for: the limit is the only thing that ends this handling",
-			cut, spec.HandlerLimit, spec.NakDelay)
+	// The cut is timed to the first handling's context end, which the limit alone brings. A bound
+	// on the redelivery also held what comes after the cut: the failure's record, written to
+	// Postgres, and the redelivery's own way back to the handler. A slow store crossed it, 1.227 s
+	// against 1.2 s (Job legion-ci-intakepar-ab-xnw6n, run poolfix-r2), so the redelivery is held
+	// from below alone.
+	if !errors.Is(by, context.DeadlineExceeded) || cut > 2*spec.HandlerLimit {
+		t.Errorf("the handler that never ends was cut %s after its first delivery began, by %v, want its %s handler limit's deadline within that limit: the limit is the only thing that ends this handling",
+			cut, by, spec.HandlerLimit)
+	}
+	if again < spec.HandlerLimit/2 {
+		t.Errorf("the cut fact was delivered again %s after its first delivery, want no sooner than about its %s handler limit plus the %s the nak after the cut asks for",
+			again, spec.HandlerLimit, spec.NakDelay)
 	}
 	line := logLine(logs.String(), "an intake handler outran its limit and was cut")
 	if line == "" {
@@ -730,6 +753,7 @@ const heldFactLine = "an intake fact outlived its acknowledgement window and was
 // after the first, so a redelivered copy is handled in milliseconds and outlives no window of
 // its own.
 func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *testing.T) {
+	// Not parallel: its one line holds only while the keeper ticks inside consumerSpec's 200 ms window and a redelivered copy is handled within it: a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}

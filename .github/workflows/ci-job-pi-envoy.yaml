@@ -1,6 +1,6 @@
 name: CI job pi-envoy
 
-# The steps of ci.yaml's `pi-envoy` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#pi-envoy` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,13 +9,13 @@ name: CI job pi-envoy
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -66,8 +66,12 @@ jobs:
       - name: Test pi-envoy
         run: bun run test
         working-directory: packages/pi-envoy
+        # LEGION_E2E runs the docker-backed reply-grant row of extensions/envoy.test.ts, which starts
+        # a NATS server with an authorization of its own from the image the nats service above
+        # pulled (packages/envoy-client/test/nats-server.ts, NATS_IMAGE).
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+          LEGION_E2E: "1"
       # The release's pack (release.yaml's pi_envoy_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose

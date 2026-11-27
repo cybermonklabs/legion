@@ -56,11 +56,9 @@ const headIssueRepoRead = issueRepoTerms + `
 // pair's new name in each field that held the old one, and still writes no row of the mapping and
 // appends no event.
 func TestTheDefaultRepositoryMigrationKeepsEveryResolvedRepositoryAndThePassWritesTheNewName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, projectsDefaultRepoVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", projectsDefaultRepoVersion-1, err)
-	}
+	store := openMigratedTestStore(t, projectsDefaultRepoVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values
 			('INFRA', 'Infra', 'alice'), ('BETA', 'Beta', 'alice'), ('GAMMA', 'Gamma', 'alice');

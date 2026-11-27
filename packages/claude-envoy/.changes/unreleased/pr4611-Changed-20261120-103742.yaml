@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 219, the number the daemon of the same release declares,
+  and its `legion` tool sends a tester's `return_to` to the daemon as `returnTo`.
+time: 2026-11-20T10:37:42Z
+custom:
+    Issue: pr4611

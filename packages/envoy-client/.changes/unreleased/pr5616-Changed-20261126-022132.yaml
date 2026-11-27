@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The help of `dispatch issue` and `dispatch issue-update` says that a `--priority` of 0 needs the
+  `p0` scope. A write of priority 0 that Dispatch refuses for want of that scope prints
+  `OAUTH_SCOPE_REQUIRED` and `p0` and exits 1.
+time: 2026-11-26T02:21:32Z
+custom:
+    Issue: pr5616

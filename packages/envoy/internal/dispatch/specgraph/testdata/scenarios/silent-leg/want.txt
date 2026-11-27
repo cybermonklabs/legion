@@ -1,0 +1,18 @@
+spec-check: subject m2, the head of main
+statement delivery-is-fast: met
+statement messages-reach-sessions: unknown (check a-restart-loses-no-message: ci_fault)
+statement a-stored-message-survives-a-restart: unknown (check a-restart-loses-no-message: ci_fault)
+  check a-restart-loses-no-message: unknown (ci_fault)
+wait of u-a on a-stored-message-survives-a-restart: holds (unknown)
+spec-check: subject c4, the head of listener-change
+statement delivery-is-fast: met
+statement messages-reach-sessions: unknown (check a-restart-loses-no-message: subject_moved)
+statement a-stored-message-survives-a-restart: unknown (check a-restart-loses-no-message: subject_moved)
+  check a-restart-loses-no-message: unknown (subject_moved)
+spec-check: subject m2, the commit that production runs at deploy d1
+statement delivery-is-fast: not met (check production-delivery-takes-under-a-second is false)
+  check production-delivery-takes-under-a-second: false (failed, counted from d1)
+statement messages-reach-sessions: unknown (check a-restart-loses-no-message: ci_fault)
+statement a-stored-message-survives-a-restart: unknown (check a-restart-loses-no-message: ci_fault)
+  check a-restart-loses-no-message: unknown (ci_fault)
+spec-check: cycle of waits: none

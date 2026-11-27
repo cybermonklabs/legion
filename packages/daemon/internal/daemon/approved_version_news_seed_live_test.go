@@ -10,12 +10,17 @@ package daemon
 // roles (startRoles), the rule a claim's entries are held to (claimEntries, entryRefusal), the read
 // of a told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint), and
 // the write of a told row by hand, checked against the row the start path writes (seedToldRow).
+// Part one's requests to Dispatch are here too (dispatchAs, dispatchAgent, setDefaultRepository),
+// which the boot's setup makes before the seed, and the seed and the steps after it, with the one
+// exchange with Dispatch both parts' requests make (dispatchExchange).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"slices"
@@ -26,9 +31,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -93,7 +98,7 @@ func (r *versionNewsLive) standingEntry(c *versionNewsClaimant) int64 {
 // claimEntries reads the entry role's phases row on issue names and the entry token's claim was
 // given, each 0 where its row does not exist: the two numbers whose comparison decides whether a
 // holder takes its news directly (newsClaimTakes).
-func claimEntries(ctx context.Context, db record.RowQuerier, issue string, role claim.Role, token claim.Token) (entry, given int64, err error) {
+func claimEntries(ctx context.Context, db *store.Pool, issue string, role claim.Role, token claim.Token) (entry, given int64, err error) {
 	err = db.QueryRow(ctx, `select coalesce((select entry from phases where issue = $1 and role = $2), 0),
 		coalesce((select given_entry from claims where token = $3), 0)`, issue, string(role), string(token)).Scan(&entry, &given)
 	return entry, given, err
@@ -112,18 +117,19 @@ func entryRefusal(name string, entry, given int64) string {
 }
 
 // seed records every member of every tree as the daemon holds it mid-run, and starts each claim
-// the fixture names through the daemon's own start path (seedTree), in one transaction under a
-// commit scope (intake.WithCommitHooks), as a fact the daemon applies writes them. Each member is
-// recorded in its tree, in its phase, holding an admission slot, on an open pull request unless it
-// stands in admitted, and its tree's lifecycle is opened under the workflow. Every role's prompt
-// is on disk, as the daemon's own launch writes it, so a launch the run makes later starts too.
+// the fixture names through the daemon's own start path (seedTree), in one transaction whose
+// commit runs the hooks its writes register (seedTransact), as a fact the daemon applies writes
+// them. Each member is recorded in its tree, in its phase, holding an admission slot, on an open
+// pull request unless it stands in admitted, and its tree's lifecycle is opened under the
+// workflow. Every role's prompt is on disk, as the daemon's own launch writes it, so a launch the
+// run makes later starts too.
 // Where the schema holds the told record, each member in a phase with work takes a holder row
 // written by hand and checked against the row the start path writes for it (seedHolderRow): a
 // difference fails the run in setup, and the FAIL line names the issue, the field and both values.
 func (r *versionNewsLive) seed() {
 	t := r.t
 	t.Helper()
-	ctx, committed := intake.WithCommitHooks(context.Background())
+	ctx := context.Background()
 	number, err := strconv.ParseInt(randomSuffix(t)[:5], 16, 64)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +143,7 @@ func (r *versionNewsLive) seed() {
 	engine := workflow.New(record.NewStore(), engineConfig(r.cfg, "", nil), quietLogger())
 	names := slices.Sorted(maps.Keys(r.trees))
 	var differences []string
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := seedTransact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		differences = nil
 		for _, name := range names {
 			differs, err := r.seedTree(ctx, tx, engine, r.trees[name], told, &number)
@@ -150,7 +156,6 @@ func (r *versionNewsLive) seed() {
 	}); err != nil {
 		t.Fatalf("seed the trees through the daemon's start path: %v", err)
 	}
-	committed()
 	if len(differences) > 0 {
 		r.fail("%s", strings.Join(differences, "; "))
 	}
@@ -241,7 +246,8 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 // start starts it (workflow.Engine.StartFirstPhase), on the child recorded at admitted, where the
 // waiting line finds it once the tree's gate is open: that start queues the child's plain architect
 // start, which hands the role no entry and no task, beside the rows of the child's move into
-// planning. The child is then recorded again in the phase it stands in. A member's phase worker is
+// planning. The child is then recorded again in the phase it stands in. Each is recorded there with
+// its task where that phase stands (recordTaskAt). A member's phase worker is
 // started as the promotion of a mid-phase member starts it (workflow.Engine.StartPromotedWorker),
 // which raises that role's entry on the phase the member stands in, with the phase's resume task
 // as the entry's work. Each start queues its role's start on the outbox, and each but the child
@@ -269,8 +275,11 @@ func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *wo
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
+			if err := recordTaskAt(ctx, tx, records, issue); err != nil {
+				return err
+			}
 		case role == phase.RoleFor(issue.Phase):
-			if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+			if _, err := engine.StartPromotedWorker(ctx, tx, issue, role, false); err != nil {
 				return fmt.Errorf("start the %s of %s: %w", role, issue.Key, err)
 			}
 		default:
@@ -415,7 +424,7 @@ func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine
 		planning := member
 		planning.Phase = phase.Planning
 		fact := engine.OpenFact(ctx)
-		if err := engine.StartPromotedWorker(fact, probe, planning, claim.RolePlanner); err != nil {
+		if _, err := engine.StartPromotedWorker(fact, probe, planning, claim.RolePlanner, false); err != nil {
 			return versionNewsTold{}, fmt.Errorf("raise the planner's entry on %s: %w", member.Key, err)
 		}
 		if err := engine.SettleFact(fact, probe); err != nil {
@@ -427,3 +436,120 @@ func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine
 
 // versionNewsHead is the head of key's pull request.
 func versionNewsHead(key string) string { return "head-" + strings.ToLower(key) }
+
+// dispatchAs sends one request to Dispatch as the person login (dispatchUser), requires a 2xx
+// answer and decodes it into into when it is not nil.
+func (r *versionNewsLive) dispatchAs(login, method, path string, body, into any) {
+	r.t.Helper()
+	r.dispatchCall(method, path, body, 0, into, dispatchUser(login))
+}
+
+// dispatchAgent sends one request to Dispatch with the agent bearer, as a session or the daemon
+// reaches it, requires want and decodes the answer into into when it is not nil.
+func (r *versionNewsLive) dispatchAgent(method, path string, body any, want int, into any) {
+	r.t.Helper()
+	r.dispatchCall(method, path, body, want, into, bearing(r.dispatch.token))
+}
+
+// setDefaultRepository makes repo, an owner/name, the default repository of the Dispatch project
+// project, as the person, and answers the route that set it. It asks PUT
+// /api/v1/projects/{key}/default-repository first. A Dispatch from before #4457, such as the one
+// of the base commit that part one's negative control runs against, serves no such route and
+// answers 404, so it then asks PUT /api/v1/settings/repo-projects/{owner}/{name} to make project
+// the repository's default one, the route that Dispatch serves. Any other answer that is not 2xx
+// fails the run, as dispatchCall fails it, and so does a second route's answer that is not 2xx,
+// whose FAIL line names the first route's 404 and its body after its own.
+func (r *versionNewsLive) setDefaultRepository(project, repo string) string {
+	r.t.Helper()
+	person := dispatchUser(versionNewsPerson)
+	path := "/api/v1/projects/" + project + "/default-repository"
+	status, answer := r.dispatchSend(http.MethodPut, path, map[string]any{"repo": repo}, person)
+	refused := dispatchRefused(http.MethodPut, path, 0, status, answer)
+	if status != http.StatusNotFound {
+		if refused != "" {
+			r.fail("%s", refused)
+		}
+		return http.MethodPut + " " + path
+	}
+	fallback := "/api/v1/settings/repo-projects/" + repo
+	status, answer = r.dispatchSend(http.MethodPut, fallback, map[string]any{"project": project, "default": true}, person)
+	if again := dispatchRefused(http.MethodPut, fallback, 0, status, answer); again != "" {
+		r.fail("%s, after %s", again, refused)
+	}
+	return http.MethodPut + " " + fallback
+}
+
+// dispatchCall is one request to Dispatch: want 0 takes any 2xx answer (dispatchRefused).
+func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, into any, identify func(*http.Request)) {
+	r.t.Helper()
+	status, answer := r.dispatchSend(method, path, body, identify)
+	if refused := dispatchRefused(method, path, want, status, answer); refused != "" {
+		r.fail("%s", refused)
+	}
+	if into != nil {
+		if err := json.Unmarshal(answer, into); err != nil {
+			r.fail("decode Dispatch's answer to %s %s (%s): %v", method, path, answer, err)
+		}
+	}
+}
+
+// dispatchSend sends one request to Dispatch, identified by identify, and answers its status and
+// its body, whatever the status (dispatchExchange). A failure before the answer fails the run.
+func (r *versionNewsLive) dispatchSend(method, path string, body any, identify func(*http.Request)) (int, []byte) {
+	r.t.Helper()
+	status, answer, err := dispatchExchange(r.client, r.dispatch.base, method, path, body, identify)
+	if err != nil {
+		r.fail("%s", err)
+	}
+	return status, answer
+}
+
+// dispatchExchange sends one request to Dispatch at base through client, identified by identify,
+// and answers its status and its body, whatever the status. Its error is a failure before the
+// answer, in the words each caller's failure line prints: the encoding of body, the request's
+// own, the send ("Dispatch <method> <path>: …") or the read of the answer ("read Dispatch's
+// answer to <method> <path>: …"). Part one's runs (dispatchSend) and part two's
+// (sessionsRun.dispatchCall) each fail their own way on it; it lives here, beside part one's
+// requests, since part one's control builds this file into its base commit.
+func dispatchExchange(client *http.Client, base, method, path string, body any, identify func(*http.Request)) (int, []byte, error) {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, base+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	identify(request)
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, nil, fmt.Errorf("Dispatch %s %s: %w", method, path, err)
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(response.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("read Dispatch's answer to %s %s: %w", method, path, err)
+	}
+	return response.StatusCode, answer, nil
+}
+
+// dispatchUser identifies a request to Dispatch as the person login, through the trusted identity
+// header the scratch server takes.
+func dispatchUser(login string) func(*http.Request) {
+	return func(request *http.Request) { request.Header.Set("X-Dispatch-User", login) }
+}
+
+// dispatchRefused is "" where Dispatch answered method path with want, or with any 2xx where want
+// is 0, and otherwise the words a FAIL line names that answer in: the request, its status and its
+// body.
+func dispatchRefused(method, path string, want, status int, answer []byte) string {
+	if (want != 0 && status == want) || (want == 0 && status/100 == 2) {
+		return ""
+	}
+	return fmt.Sprintf("Dispatch %s %s = %d %s", method, path, status, answer)
+}

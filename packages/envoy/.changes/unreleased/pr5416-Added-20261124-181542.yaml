@@ -1,0 +1,5 @@
+kind: Added
+body: 'A production or graph check counts only the results of the current deploy of the program it reads.'
+time: 2026-11-24T18:15:42Z
+custom:
+    Issue: pr5416

@@ -18,19 +18,20 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// clientTimeout bounds every request a Client makes. It sits past the broker's own request
-// deadline (cmd/cipherd's requestDeadline, 45 seconds) so a handler that takes its whole budget —
-// one waiting on a row another process holds, say — still answers this client rather than being
-// turned into a transport error that names nothing.
-const clientTimeout = 90 * time.Second
-
-// deviceTokenTimeout bounds a device-code exchange. x/oauth2's DeviceAccessToken polls until the
+// A Client's requests have one bound, the test binary's deadline less testwait's margin
+// (testwait.Context): a broker a loaded machine slows is waited for, and one that never answers
+// fails its test there, with the wait's own line. No span of its own stands between them, since
+// such a span says only how fast the machine was: the broker's own request deadline
+// (cmd/cipherd's requestDeadline, 45 s) is what bounds a handler, and a dial that cannot connect
+// fails at once whatever the deadline.
+//
+// A device-code exchange takes the same bound. x/oauth2's DeviceAccessToken polls until the
 // device code expires (fifteen minutes here) whenever the broker answers authorization_pending or
-// slow_down, so an exchange that goes wrong in that direction would otherwise hang a row for the
-// whole of it instead of failing with what the broker kept saying.
-const deviceTokenTimeout = 60 * time.Second
+// slow_down, so an exchange that goes wrong in that direction ends at the deadline with what the
+// broker kept saying, rather than hanging its test out to the binary's own alarm.
 
 // pollInterval is the interval a Client's device-code exchange polls on, overriding the one the
 // device authorization answered: every code a test exchanges has already been approved, so the
@@ -92,15 +93,17 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 		// the environment would send these requests somewhere other than the one process this
 		// client exists to be pinned to, and publicURL resolves nowhere, so the failure would be
 		// a DNS error naming a host no test chose.
+		// The dial takes the request's own context, and no span of its own: a connection refused
+		// fails at once, and one the machine is slow to make is waited for.
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
 		},
 	}
 	t.Cleanup(transport.CloseIdleConnections)
 	return &Client{
 		PublicURL: publicURL, Addr: addr,
 		transport: transport,
-		http:      &http.Client{Transport: transport, Timeout: clientTimeout},
+		http:      &http.Client{Transport: transport},
 	}
 }
 
@@ -109,7 +112,7 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 // asserts no status itself: a caller does that, so a mismatch names the actual body.
 func (c *Client) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")")
+	return request(t, testwait.Context(t), c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")")
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
@@ -155,11 +158,13 @@ func NewSigningKey(t *testing.T) *ecdsa.PrivateKey {
 // deviceClient is the OAuth client a machine logs in with: this broker's device authorization and
 // token endpoints under its public URL, over a transport that both pins the connection to this
 // client's process and signs a DPoP proof of key for every request, as the helper's own does.
+// Each request it sends is bounded by the test binary's deadline (onDeadline).
 func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Config, context.Context) {
 	t.Helper()
 	if c.DPoP == nil {
 		t.Fatal("this Client has no DPoP: set it to cipherclient.NewDPoPTransport before driving an OAuth step")
 	}
+	ctx := testwait.Context(t)
 	return &oauth2.Config{
 			ClientID: oauthwire.ClientID, Scopes: []string{oauthwire.Scope},
 			Endpoint: oauth2.Endpoint{
@@ -168,8 +173,26 @@ func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Conf
 				AuthStyle:     oauth2.AuthStyleInParams,
 			},
 		},
-		context.WithValue(context.Background(), oauth2.HTTPClient,
-			&http.Client{Transport: c.DPoP(key, c.transport), Timeout: clientTimeout})
+		context.WithValue(ctx, oauth2.HTTPClient,
+			&http.Client{Transport: onDeadline{ctx: ctx, next: c.DPoP(key, c.transport)}})
+}
+
+// onDeadline sends a request that carries no deadline of its own on ctx, the test binary's
+// deadline less testwait's margin. x/oauth2's device authorization builds its request without the
+// context it is handed and only reads the client out of that context (retrieveDeviceAuth, in
+// deviceauth.go of x/oauth2 v0.37.0), so without this a broker that never answers a login would
+// hold the test past its binary's deadline. The token exchange already sends on its context, and
+// keeps it.
+type onDeadline struct {
+	ctx  context.Context
+	next http.RoundTripper
+}
+
+func (d onDeadline) RoundTrip(r *http.Request) (*http.Response, error) {
+	if _, bounded := r.Context().Deadline(); !bounded {
+		r = r.WithContext(d.ctx)
+	}
+	return d.next.RoundTrip(r)
 }
 
 // DeviceLogin asks this broker for a device code for a machine of person on host, as the helper's
@@ -216,8 +239,6 @@ func (c *Client) ApproveMachineLogin(t *testing.T, person, code string) (credent
 func (c *Client) DeviceToken(t *testing.T, key *ecdsa.PrivateKey, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
 	t.Helper()
 	config, ctx := c.deviceClient(t, key)
-	ctx, cancel := context.WithTimeout(ctx, deviceTokenTimeout)
-	defer cancel()
 	// A copy, so polling faster than the broker asked for is this exchange's business and not a
 	// mutation of the device authorization its caller still holds and may exchange again.
 	poll := *da

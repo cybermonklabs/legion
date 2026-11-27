@@ -2,14 +2,16 @@ package launcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,8 +72,8 @@ func newGuardPod(t *testing.T) *guardPod {
 			t.Fatal(err)
 		}
 	}
-	p.writeFile(filepath.Join(p.cgroup, "memory.limit_in_bytes"), strconv.FormatUint(guardLimit, 10)+"\n")
-	p.writeFile(filepath.Join(p.cgroup, "memory.usage_in_bytes"), strconv.FormatUint(guardCounter, 10)+"\n")
+	p.setLimit(guardLimit)
+	p.setCounter(guardCounter)
 	p.setAnon(guardLow)
 	return p
 }
@@ -82,6 +84,18 @@ func (p *guardPod) setAnon(anon uint64) {
 		"MemTotal:       20971520 kB\nMemFree:        10485760 kB\nAnonPages:      %d kB\nMapped:          520372 kB\nShmem:              32 kB\n", anon>>10))
 }
 
+// setCounter writes the cgroup's memory counter, which counts the pages of the files a process
+// maps as well as its anonymous ones. It is written in place, as meminfo is: the guard holds it
+// open.
+func (p *guardPod) setCounter(counter uint64) {
+	p.writeFile(filepath.Join(p.cgroup, "memory.usage_in_bytes"), strconv.FormatUint(counter, 10)+"\n")
+}
+
+// setLimit writes the container's memory limit, in place.
+func (p *guardPod) setLimit(limit uint64) {
+	p.writeFile(filepath.Join(p.cgroup, "memory.limit_in_bytes"), strconv.FormatUint(limit, 10)+"\n")
+}
+
 func (p *guardPod) writeFile(path, content string) {
 	p.t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -90,17 +104,23 @@ func (p *guardPod) writeFile(path, content string) {
 }
 
 // guardProcess is one process of a guardPod: its place in the tree, its executable and arguments,
-// its PID namespace, its working directory when it matters, the anonymous memory its smaps
-// reads, and its resident size, which its stat's rss field holds in pages, the size the guest
-// watch reads of it.
+// its PID namespace, its working directory when it matters, the anonymous memory its smaps reads,
+// the resident pages of a file on disk it maps shared, a database's say, which raise the cgroup's
+// counter and not AnonPages, and which no size the guard ranks by counts, and its resident size,
+// which its stat's rss field holds in pages, the size the guest watch reads of it. unreadableExe
+// makes its exe a plain file, whose readlink fails as an unreadable link does, and unreadableSmaps
+// its smaps a directory, whose read fails as a smaps the guard may not read does.
 type guardProcess struct {
-	pid, ppid int
-	exe       string
-	args      []string
-	ns        string
-	cwd       string
-	anon      uint64
-	resident  uint64
+	pid, ppid       int
+	exe             string
+	args            []string
+	ns              string
+	cwd             string
+	anon            uint64
+	mapped          uint64
+	resident        uint64
+	unreadableExe   bool
+	unreadableSmaps bool
 }
 
 // add writes each process. The test process holds a pid of its own, which stands for the
@@ -137,9 +157,26 @@ func (p *guardPod) write(gp guardProcess) {
 	p.writeWhole(filepath.Join(dir, "stat"), fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 %d "+
 		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", gp.pid, name, gp.ppid, gp.pid, gp.pid, gp.pid*10, gp.resident/uint64(os.Getpagesize())))
 	p.writeWhole(filepath.Join(dir, "cmdline"), strings.Join(gp.args, "\x00")+"\x00")
-	p.writeWhole(filepath.Join(dir, "smaps"), fmt.Sprintf(
+	smaps := fmt.Sprintf(
 		"01a5c000-41a5c000 rw-p 00000000 00:00 0                                  [heap]\nSize:           %d kB\nRss:            %d kB\nAnonymous:      %d kB\n",
-		gp.anon>>10, gp.anon>>10, gp.anon>>10))
+		gp.anon>>10, gp.anon>>10, gp.anon>>10)
+	if gp.mapped > 0 {
+		smaps += fmt.Sprintf(
+			"7f3a00000000-7f3b00000000 rw-s 00000000 08:01 1310722                    /var/lib/legion/big.db\nSize:           %d kB\nRss:            %d kB\nAnonymous:      0 kB\n",
+			gp.mapped>>10, gp.mapped>>10)
+	}
+	if path := filepath.Join(dir, "smaps"); gp.unreadableSmaps {
+		_ = os.RemoveAll(path)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			p.t.Fatal(err)
+		}
+	} else {
+		// A smaps an earlier write made unreadable is a directory, which no file replaces.
+		if info, err := os.Lstat(path); err == nil && info.IsDir() {
+			_ = os.RemoveAll(path)
+		}
+		p.writeWhole(path, smaps)
+	}
 	links := []struct{ name, target string }{{"exe", gp.exe}, {filepath.Join("ns", "pid"), gp.ns}}
 	if gp.cwd != "" {
 		links = append(links, struct{ name, target string }{"cwd", gp.cwd})
@@ -147,6 +184,10 @@ func (p *guardPod) write(gp guardProcess) {
 	for _, link := range links {
 		path := filepath.Join(dir, link.name)
 		_ = os.Remove(path)
+		if link.name == "exe" && gp.unreadableExe {
+			p.writeWhole(path, "")
+			continue
+		}
 		if err := os.Symlink(link.target, path); err != nil {
 			p.t.Fatal(err)
 		}
@@ -252,11 +293,13 @@ func (c *guardClock) advance(d time.Duration) time.Time {
 // guardSignal is a kill that ends nothing of the machine's: it records each process the guard
 // killed, and the process leaves the fake /proc at once, as a killed process does. It runs on the
 // guard's loop, so it fails nothing itself: a process it cannot take out of the fake /proc is a
-// kill that failed, which the guard logs.
+// kill that failed, which the guard logs. afterKill, where a test sets it before the guard runs,
+// changes the pod after each kill, before the guard reads anything after it.
 type guardSignal struct {
-	proc   string
-	mu     sync.Mutex
-	killed []int
+	proc      string
+	mu        sync.Mutex
+	killed    []int
+	afterKill func(pid int)
 }
 
 type guardHandle struct {
@@ -283,6 +326,9 @@ func (h *guardHandle) Kill() error {
 	}
 	h.s.killed = append(h.s.killed, h.pid)
 	h.exited = true
+	if h.s.afterKill != nil {
+		h.s.afterKill(h.pid)
+	}
 	return nil
 }
 
@@ -295,17 +341,19 @@ func (h *guardHandle) Exited() bool {
 func (h *guardHandle) Close() error { return nil }
 
 // guardRig is the guard or the guest watch a launcher builds, pointed at a guardPod with a
-// guardClock and, for the guard, a guardSignal, one reading or scan at a time.
+// guardClock and, for the guard, a guardSignal, one reading or scan at a time. classified counts,
+// for each pid, the scans the guard asked its classifier about that read that pid.
 type guardRig struct {
-	t       *testing.T
-	pod     *guardPod
-	clock   *guardClock
-	signal  *guardSignal
-	mu      sync.Mutex
-	guard   *memoryguard.Guard
-	guest   *memoryguard.Guest
-	lines   []string
-	pending guardWait
+	t          *testing.T
+	pod        *guardPod
+	clock      *guardClock
+	signal     *guardSignal
+	mu         sync.Mutex
+	guard      *memoryguard.Guard
+	guest      *memoryguard.Guest
+	lines      []string
+	classified map[int]int
+	pending    guardWait
 }
 
 // useGuardPod has every launcher this test starts run a memory guard, as the container's first
@@ -325,15 +373,26 @@ type guardRig struct {
 // once a second.
 func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	t.Helper()
+	return useGuardPodKilling(t, pod, roles, &guardSignal{proc: pod.proc})
+}
+
+// useGuardPodKilling is useGuardPod whose guards end a process with signal, or with their own
+// pidfd kill where signal is nil: a pod whose /proc leads to real processes
+// (TestControllerPodMemoryGuardEndsEachKindOfCommand) has them ended for real.
+func useGuardPodKilling(t *testing.T, pod *guardPod, roles map[int]string, signal *guardSignal) *guardRig {
+	t.Helper()
 	useContainerInit(t, true)
 	previousTrimmer := podTrimmer
 	podTrimmer = func(ctx context.Context, _ *trimmer) { <-ctx.Done() }
 	t.Cleanup(func() { podTrimmer = previousTrimmer })
-	rig := &guardRig{t: t, pod: pod, clock: newGuardClock(), signal: &guardSignal{proc: pod.proc}}
+	rig := &guardRig{t: t, pod: pod, clock: newGuardClock(), signal: signal, classified: map[int]int{}}
 	previous := newMemoryGuard
 	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
-		cfg.Proc, cfg.Cgroup, cfg.Clock, cfg.Signal = pod.proc, pod.cgroup, rig.clock, rig.signal
-		cfg.Classify, cfg.Logf = withRoles(cfg.Classify, roles), rig.keep(cfg.Logf)
+		cfg.Proc, cfg.Cgroup, cfg.Clock = pod.proc, pod.cgroup, rig.clock
+		if signal != nil {
+			cfg.Signal = signal
+		}
+		cfg.Classify, cfg.Logf = rig.counting(withRoles(cfg.Classify, roles)), rig.keep(cfg.Logf)
 		guard := memoryguard.New(cfg)
 		rig.mu.Lock()
 		rig.guard = guard
@@ -342,6 +401,13 @@ func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	}
 	t.Cleanup(func() { newMemoryGuard = previous })
 	return rig
+}
+
+// classifiedWith is how many of the scans the guard asked its classifier about read pid.
+func (r *guardRig) classifiedWith(pid int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.classified[pid]
 }
 
 // useGuestPod is useGuardPod for a microVM pod's launcher: every guest watch a launcher builds from
@@ -381,6 +447,23 @@ func withRoles(classify memoryguard.Classifier, roles map[int]string) memoryguar
 			class := classes[pid]
 			class.Role = role
 			classes[pid] = class
+		}
+		return classes
+	}
+}
+
+// counting is classify, which also counts, for each pid of each scan it is asked about, that the
+// guard asked about it (classifiedWith), or nil for none.
+func (r *guardRig) counting(classify memoryguard.Classifier) memoryguard.Classifier {
+	if classify == nil {
+		return nil
+	}
+	return func(table *memoryguard.Table) map[int]memoryguard.Class {
+		classes := classify(table)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for _, p := range table.Processes() {
+			r.classified[p.PID]++
 		}
 		return classes
 	}
@@ -431,7 +514,7 @@ func (r *guardRig) nextWait() guardWait {
 	select {
 	case w := <-r.clock.waits:
 		return w
-	case <-time.After(testwait.Bounded(r.t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(r.t)):
 		r.t.Fatalf("the guard never waited for its next reading; its log:\n%s", r.log())
 	}
 	return guardWait{}
@@ -441,8 +524,15 @@ func (r *guardRig) nextWait() guardWait {
 // a kill and its report to the role's manager among them, are done.
 func (r *guardRig) tick() {
 	r.t.Helper()
+	r.tickAfter(0)
+}
+
+// tickAfter is tick with extra on the clock beyond the wait the guard asked for: a wait after a
+// kill that passes, a stop a minute after the last, an hour's end.
+func (r *guardRig) tickAfter(extra time.Duration) {
+	r.t.Helper()
 	w := r.pending
-	w.fire <- r.clock.advance(w.d)
+	w.fire <- r.clock.advance(w.d + extra)
 	r.pending = r.nextWait()
 }
 
@@ -498,7 +588,7 @@ func scanTable(t *testing.T, pod *guardPod) *memoryguard.Table {
 	select {
 	case table := <-tables:
 		return table
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the guard never scanned the fake pod")
 	}
 	return nil
@@ -625,6 +715,7 @@ func podTree(t *testing.T) (*guardPod, *podClassifier) {
 // bridge, no command or what a command runs, no orphan the role-init adopted, and none of the
 // launcher's own processes or the test database's.
 func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheTree(t *testing.T) {
+	t.Parallel()
 	pod, classifier := podTree(t)
 	classes := classifier.classify(scanTable(t, pod))
 	for _, tc := range []struct {
@@ -683,6 +774,7 @@ func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheT
 // the eval kernel wherever it runs, and a copy of a helper's name under the agent's command stay
 // endable.
 func TestMemoryGuardSparesAnOhMyPiHelperThatAnotherHelperStarted(t *testing.T) {
+	t.Parallel()
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	const omp = "/opt/omp/bin/omp"
@@ -721,11 +813,65 @@ func TestMemoryGuardSparesAnOhMyPiHelperThatAnotherHelperStarted(t *testing.T) {
 	}
 }
 
+// The shim starts the CodeGraph warm-up during its agent's session load, beside the agent, and its
+// end ends no session, so the guard may end it and all it starts. In INFRA-2709's pod after its
+// relaunch at 23:42Z on 2026-11-22 one Oh My Pi held 1.34 GB and the warm-up 523 MB, and the pod
+// was killed twice with the guard able to end nothing: the classifier then spared every direct
+// child of the shim. The warm-up is told by its command, the image's `codegraph` script under its
+// shell before the script's exec and its bundled node on codegraph.js after it, never by an
+// agent's argument that only names the CodeGraph plugin. It stays the role's, and a session
+// process like every direct child of the shim, for the naming of a kill.
+func TestMemoryGuardMayEndTheCodeGraphWarmUp(t *testing.T) {
+	t.Parallel()
+	exe := launcherExe(t)
+	launcher := os.Getpid()
+	const omp = "/opt/omp/bin/omp"
+	const node = "/opt/codegraph/node"
+	const script = "/opt/codegraph/bin/codegraph"
+	const (
+		testerInit, testerShim, testerAgent, testerHelper, warmUp, warmUpGit = 730, 731, 732, 733, 734, 735
+		reviewerInit, reviewerShim, reviewerAgent, warmUpShell               = 740, 741, 742, 743
+	)
+	pod := newGuardPod(t)
+	pod.addLauncher(exe, 0)
+	pod.add(
+		guardProcess{pid: testerInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "tester"}, ns: testerNamespace},
+		guardProcess{pid: testerShim, ppid: testerInit, exe: exe, args: []string{"legion", "worker-shim", "--connect", "tcp://daemon"}, ns: testerNamespace},
+		guardProcess{pid: testerAgent, ppid: testerShim, exe: omp, args: []string{omp, "--extension", "/opt/omp-plugins/node_modules/@bopstack/pi-codegraph"}, ns: testerNamespace, anon: 3 * guardGiB},
+		guardProcess{pid: testerHelper, ppid: testerAgent, exe: omp, args: []string{omp, "__omp_worker_daemon_broker"}, ns: testerNamespace},
+		guardProcess{pid: warmUp, ppid: testerShim, exe: node, args: []string{node, "--liftoff-only", "--disable-warning=ExperimentalWarning", "/opt/codegraph/lib/dist/bin/codegraph.js", "index"}, ns: testerNamespace, anon: 523 * guardMiB},
+		guardProcess{pid: warmUpGit, ppid: warmUp, exe: "/usr/bin/git", args: []string{"git", "ls-files"}, ns: testerNamespace},
+		guardProcess{pid: reviewerInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "reviewer"}, ns: reviewerNamespace},
+		guardProcess{pid: reviewerShim, ppid: reviewerInit, exe: exe, args: []string{"legion", "worker-shim", "--connect", "tcp://daemon"}, ns: reviewerNamespace},
+		guardProcess{pid: reviewerAgent, ppid: reviewerShim, exe: omp, args: []string{omp, "--mode", "rpc"}, ns: reviewerNamespace, anon: guardGiB},
+		guardProcess{pid: warmUpShell, ppid: reviewerShim, exe: "/usr/bin/dash", args: []string{"/bin/sh", script, "init", "-i"}, ns: reviewerNamespace},
+	)
+	managers := []*manager{{role: "tester", child: &child{pid: testerInit}}, {role: "reviewer", child: &child{pid: reviewerInit}}}
+	classes := newPodClassifier(t.TempDir(), managers, &pidGuard{}).classify(scanTable(t, pod))
+	for _, tc := range []struct {
+		pid  int
+		want memoryguard.Class
+		what string
+	}{
+		{testerAgent, memoryguard.Class{Role: "tester", Protected: true, Session: true}, "Oh My Pi, whose arguments name the CodeGraph plugin"},
+		{testerHelper, memoryguard.Class{Role: "tester", Protected: true}, "an Oh My Pi helper"},
+		{warmUp, memoryguard.Class{Role: "tester", Session: true}, "the warm-up, node on codegraph.js"},
+		{warmUpGit, memoryguard.Class{Role: "tester"}, "a process the warm-up started"},
+		{reviewerAgent, memoryguard.Class{Role: "reviewer", Protected: true, Session: true}, "the reviewer's Oh My Pi"},
+		{warmUpShell, memoryguard.Class{Role: "reviewer", Session: true}, "the warm-up, the codegraph script under its shell"},
+	} {
+		if got := classes[tc.pid]; got != tc.want {
+			t.Errorf("%s (pid %d): %+v, want %+v", tc.what, tc.pid, got, tc.want)
+		}
+	}
+}
+
 // Each process is the role's whose role-init is its ancestor, then the role's whose role-init
 // shares its PID namespace, and no role's otherwise: a process in a PID namespace of its own under
 // a role-init is that role's by its ancestor, and one reparented out of the role-init's subtree is
 // the role's by its namespace.
 func TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace(t *testing.T) {
+	t.Parallel()
 	pod, classifier := podTree(t)
 	classes := classifier.classify(scanTable(t, pod))
 	for _, tc := range []struct {
@@ -759,6 +905,8 @@ func TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace(t *testing.
 // the pod's guard ends the role's process its classifier lets it end, and gives the kill to that
 // role's manager. Without the rule that spares the shim's children, the guard would end the agent.
 func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	const roleInit, shim, agent, command, test = 300, 301, 302, 303, 304
@@ -782,7 +930,7 @@ func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the memory guard did not return after its context ended")
 		}
 	})
@@ -805,10 +953,17 @@ func memoryGuardAck(act, floor, wait, interval int) shimwire.LauncherHelloAck {
 	}}
 }
 
-// defaultsAck is an acknowledgement that carries the settings the guard starts with.
+// defaultsAck is an acknowledgement that carries the settings an issue pod's guard starts with.
 func defaultsAck() shimwire.LauncherHelloAck {
 	return memoryGuardAck(shimwire.MemoryGuardActDefault, shimwire.MemoryGuardFloorDefault,
 		shimwire.MemoryGuardWaitDefault, shimwire.MemoryGuardIntervalDefault)
+}
+
+// controllerDefaultsAck is an acknowledgement that carries the settings the controller pod's guard
+// starts with, which the daemon sends the controller's pod by default: a wait of 1 second.
+func controllerDefaultsAck() shimwire.LauncherHelloAck {
+	return memoryGuardAck(shimwire.MemoryGuardActDefault, shimwire.MemoryGuardFloorDefault,
+		shimwire.MemoryGuardControllerWaitDefault, shimwire.MemoryGuardIntervalDefault)
 }
 
 // guardLines are the guard's lines in a container's log that start with what: the launcher's own,
@@ -827,6 +982,8 @@ func guardLines(log *lockedBuffer, what string) []string {
 // hands it the daemon's settings through the wire's own encoder and decoder, and the newest one
 // is what it runs by, changed in place: one line for each change and no second start line.
 func TestMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleetDialedOf), which parallel
+	// tests read.
 	const early, held = 400, 401
 	pod := newGuardPod(t)
 	pod.add(
@@ -882,6 +1039,8 @@ func TestMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.
 // line saying so and builds no guard, and its managers hold none, so an acknowledgement's settings
 // reach no guard and no report is queued.
 func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	useContainerInit(t, false)
 	previous := newMemoryGuard
 	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
@@ -922,6 +1081,8 @@ func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 // removes before it serves any role (TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory),
 // stays where it is. Its managers hold no sweep, so a role start learns nothing.
 func TestMemoryGuardAndTheGitLockSweepRunOnlyInTheContainersFirstProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	useContainerInit(t, false)
 	previous := newMemoryGuard
 	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
@@ -1007,6 +1168,8 @@ func (g *roleConn) noMemoryKill(what string) {
 // saw and the process named by its executable's base name alone; another role's connection
 // carries none of it, and a kill of a process in no role is reported nowhere.
 func TestMemoryGuardReportsAKillOnTheConnectionOfTheProcesssRoleAlone(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleetDialedOf), which parallel
+	// tests read.
 	const none, testers, reviewers = 700, 701, 702
 	pod := newGuardPod(t)
 	pod.add(
@@ -1058,7 +1221,7 @@ func (f *fleet) dropConnection(role string) {
 	ended := func() int { return strings.Count(f.stderr.String(), role+": launcher: daemon connection: ") }
 	before := ended()
 	_ = f.role(role).conn.Close()
-	if !testwait.Holds(testwait.Bounded(f.t, time.Minute, time.Second), testwait.Poll, func() bool { return ended() > before }) {
+	if !testwait.Holds(testwait.Remaining(f.t), testwait.Poll, func() bool { return ended() > before }) {
 		f.t.Fatalf("the launcher never saw the %s's connection end; its log: %s", role, f.stderr.String())
 	}
 }
@@ -1068,6 +1231,8 @@ func (f *fleet) dropConnection(role string) {
 // acknowledgement without settings arrives is dropped with a line, since the daemon behind it may
 // not know the report and would close the connection on it.
 func TestMemoryGuardHoldsAReportWhileTheConnectionIsDown(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const sent, dropped = 800, 801
 	pod := newGuardPod(t)
 	pod.add(
@@ -1104,6 +1269,8 @@ func TestMemoryGuardHoldsAReportWhileTheConnectionIsDown(t *testing.T) {
 // A role keeps at most 32 reports while its connection is down: the 33rd drops the oldest, with a
 // line, and the next connection carries the 32 newest in the order the guard made them.
 func TestMemoryGuardKeepsThirtyTwoWaitingReportsAndDropsTheOldest(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const first = 900
 	kills := maxWaitingMemoryKills + 1
 	roles := map[int]string{}
@@ -1157,6 +1324,7 @@ func (c *heldConn) Write(p []byte) (int, error) {
 // and never the one being written: that write goes on to succeed, so a line saying it was dropped
 // would be false. The connection carries the oldest and then the 31 newest, in order.
 func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T) {
+	t.Parallel()
 	const first = 900
 	report := func(sequence int) shimwire.LauncherMemoryKill {
 		return shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: uint64(sequence), PID: first + sequence - 1,
@@ -1173,17 +1341,16 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 		defer close(sent)
 		m.openMemoryReports(shimwire.NewWriter(conn), true)
 	}()
-	bound := testwait.Bounded(t, time.Minute, time.Second)
 	select {
 	case <-conn.writing:
-	case <-time.After(bound):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the role's sender never began to write the oldest report")
 	}
 	m.queueMemoryKill(report(maxWaitingMemoryKills + 1))
 	close(conn.release)
 	select {
 	case <-sent:
-	case <-time.After(bound):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the role's sender never finished writing the waiting reports")
 	}
 
@@ -1219,6 +1386,2496 @@ func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T)
 	}
 }
 
+// The pids of controllerTree, the controller pod's processes besides the launcher, which is the
+// test process.
+const (
+	ctlHeld = 1500 + iota
+	ctlHeldChild
+	ctlShim
+	ctlOmp
+	ctlRenewer
+	ctlKeygen
+	ctlBroker
+	ctlMux
+	ctlEval
+	ctlKernel
+	ctlCommand
+	ctlCommandHelper
+	ctlOrphan
+	ctlExec
+	ctlOmpCopy
+	ctlStrayShim
+	ctlFakeHelper
+)
+
+// controllerOmp is the Oh My Pi executable of controllerTree's agent.
+const controllerOmp = "/opt/omp/bin/omp"
+
+// controllerSecrets is the agent-secrets executable of controllerTree's renewer and keygen, which
+// its shim names with --agent-secrets-bin.
+const controllerSecrets = "/usr/local/bin/agent-secrets"
+
+// controllerEndable are the processes of controllerTree the guard may end: Oh My Pi's JavaScript
+// eval kernel, its Python kernel and its shell command, an orphan under PID 1, a `kubectl exec`
+// shell, and each impostor.
+var controllerEndable = []int{ctlEval, ctlKernel, ctlCommand, ctlCommandHelper, ctlOrphan, ctlExec, ctlOmpCopy, ctlStrayShim, ctlFakeHelper}
+
+// controllerTree is the controller pod's processes in a fake /proc, each with the anonymous memory
+// sizes gives it, none where it names none. The launcher is the test process, which stands for PID
+// 1 of the controller's container: the guard and the classifier know the launcher by their own
+// pid. Its pid guard may hold a jj, which runs a git (ctlHeld). Its generation is the shim, its own
+// child, started by the argv the launcher gives it (reapingShim, so the shim reaps orphans and the
+// classifier reads its own children by shimOwnChildren's rule), which runs Oh My Pi, the secrets
+// renewer and a keygen. Oh My Pi runs its daemon broker,
+// which runs the LSP multiplexer, both of them helpers; its JavaScript eval kernel, the same
+// executable; a Python kernel; and a shell command, under which Oh My Pi's executable runs with a
+// helper's argument. Under PID 1 are an orphan a command left behind and a worker-shim of this
+// binary that is not the manager's generation, and beside them a `kubectl exec` shell, whose
+// parent is outside the container's PID namespace. Under Oh My Pi are an `omp` copied to a path of
+// its own and another executable, each run with a helper's argument.
+func controllerTree(t *testing.T, sizes map[int]uint64) *guardPod {
+	t.Helper()
+	exe := launcherExe(t)
+	launcher := os.Getpid()
+	pod := newGuardPod(t)
+	pod.addLauncher(exe, sizes[launcher])
+	for _, gp := range []guardProcess{
+		{pid: ctlHeld, ppid: launcher, exe: "/usr/local/bin/jj", args: []string{"jj", "workspace", "update-stale"}},
+		{pid: ctlHeldChild, ppid: ctlHeld, exe: "/usr/bin/git", args: []string{"git", "gc", "--auto"}},
+		{pid: ctlShim, ppid: launcher, exe: exe, args: reapingShim([]string{"legion", shimArgument, "--connect", "tcp://daemon", "--" + shimwire.AgentSecretsBinFlag, controllerSecrets, "--", controllerOmp})},
+		{pid: ctlOmp, ppid: ctlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}},
+		{pid: ctlRenewer, ppid: ctlShim, exe: controllerSecrets, args: []string{"agent-secrets", shimwire.AgentSecretsRenew}},
+		{pid: ctlKeygen, ppid: ctlShim, exe: controllerSecrets, args: []string{"agent-secrets", shimwire.AgentSecretsKeygen}},
+		{pid: ctlBroker, ppid: ctlOmp, exe: controllerOmp, args: []string{controllerOmp, "__omp_worker_daemon_broker"}},
+		{pid: ctlMux, ppid: ctlBroker, exe: controllerOmp, args: []string{controllerOmp, "__omp_worker_lsp_mux"}},
+		{pid: ctlEval, ppid: ctlOmp, exe: controllerOmp, args: []string{controllerOmp, ompEvalKernel}},
+		{pid: ctlKernel, ppid: ctlOmp, exe: "/usr/bin/python3.13", args: []string{"python3", "-u", "/tmp/omp-python-kernel.py"}},
+		{pid: ctlCommand, ppid: ctlOmp, exe: "/usr/bin/bash", args: []string{"bash", "-c", "make -j8"}},
+		{pid: ctlCommandHelper, ppid: ctlCommand, exe: controllerOmp, args: []string{controllerOmp, "__omp_worker_lsp_mux"}},
+		{pid: ctlOrphan, ppid: launcher, exe: "/usr/bin/node", args: []string{"node", "dev-server.js"}},
+		{pid: ctlExec, ppid: 0, exe: "/usr/bin/bash", args: []string{"bash"}},
+		{pid: ctlOmpCopy, ppid: ctlOmp, exe: "/home/legion/.cache/omp", args: []string{"omp", "__omp_worker_daemon_broker"}},
+		{pid: ctlStrayShim, ppid: launcher, exe: exe, args: []string{"legion", shimArgument, "--connect", "tcp://daemon"}},
+		{pid: ctlFakeHelper, ppid: ctlOmp, exe: "/usr/local/bin/bun", args: []string{"bun", "__omp_worker_daemon_broker"}},
+	} {
+		gp.anon = sizes[gp.pid]
+		pod.add(gp)
+	}
+	return pod
+}
+
+// controllerManager is the controller pod's one role as newManagers builds it, with its generation,
+// controllerTree's shim, running: it has no roles log, and its own lines, the guard's among them,
+// go to the log it answers.
+func controllerManager() (*manager, *lockedBuffer) {
+	log := &lockedBuffer{}
+	return &manager{role: "controller", stderr: log, child: &child{pid: ctlShim}}, log
+}
+
+// serveControllerGuard runs the controller pod's guard for m, with the pid guard pids, as Run's
+// single-role branch does, until the test's end: serveControllerGuardOf a gVisor pod's zero Config.
+func serveControllerGuard(t *testing.T, m *manager, pids *pidGuard) {
+	t.Helper()
+	serveControllerGuardOf(t, Config{}, m, pids)
+}
+
+// serveControllerGuardOf runs the controller pod's memory watch of cfg (serveMemoryGuard) for m,
+// with the pid guard pids, as Run's single-role branch does, until the test's end.
+func serveControllerGuardOf(t *testing.T, cfg Config, m *manager, pids *pidGuard) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := serveMemoryGuard(ctx, cfg, []*manager{m}, pids)
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(t, "the memory guard's return after its context ended", done)
+	})
+}
+
+// waitingReports are the guard's reports m holds for a connection, oldest first.
+func waitingReports(m *manager) []shimwire.LauncherMemoryKill {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.memoryKills)
+}
+
+// guestControllerTree is controllerTree, with no sizes, as a microVM controller pod's guest watch
+// reads it: the container's starting score of 0, and every process of the tree at it.
+func guestControllerTree(t *testing.T) *guardPod {
+	t.Helper()
+	pod := controllerTree(t, nil)
+	pod.setSelfScore(0)
+	pod.setScore(os.Getpid(), 0, 0)
+	for pid := ctlHeld; pid <= ctlFakeHelper; pid++ {
+		pod.setScore(pid, 0, 0)
+	}
+	return pod
+}
+
+// askedGuest has every guest watch a launcher builds from here to the test's end built as the
+// test's newGuest already builds it (useGuestPod), and answers a function that answers the
+// configuration the launcher asked for, its own classifier and SessionDrain, failing the test
+// where the launcher built none, or a second.
+func askedGuest(t *testing.T) func() memoryguard.GuestConfig {
+	t.Helper()
+	asked := make(chan memoryguard.GuestConfig, 1)
+	built := newGuest
+	newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest {
+		select {
+		case asked <- cfg:
+		default:
+			t.Error("the launcher built a second guest watch")
+		}
+		return built(cfg)
+	}
+	t.Cleanup(func() { newGuest = built })
+	return func() memoryguard.GuestConfig {
+		t.Helper()
+		select {
+		case cfg := <-asked:
+			return cfg
+		default:
+			t.Fatal("the launcher built no guest watch")
+			return memoryguard.GuestConfig{}
+		}
+	}
+}
+
+// runControllerLauncher runs the controller pod's launcher, Run's single-role form, for the role
+// "controller" until the test's end, when Run must return the end of its context and nothing else.
+// The test takes each of its connections itself (acceptController), since what it drives is the
+// acknowledgement.
+func runControllerLauncher(t *testing.T) *rig {
+	t.Helper()
+	return runControllerLauncherOf(t, Config{StopGrace: 2 * time.Second})
+}
+
+// runControllerLauncherOf is runControllerLauncher whose launcher carries cfg's fields besides the
+// ones every controller launcher of these tests is given.
+func runControllerLauncherOf(t *testing.T, cfg Config) *rig {
+	t.Helper()
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
+	ctx, cancel := context.WithCancel(context.Background())
+	g := &rig{t: t, listener: listener, private: shortTempDir(t), cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
+	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), token, "legion-legion-controller"
+	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "controller", "pod-1", g.private, g.stderr
+	go func() {
+		err := Run(ctx, cfg)
+		listener.codeReturned(err)
+		g.result <- err
+	}()
+	t.Cleanup(func() {
+		cancel()
+		if err := testwait.Receive(t, "the controller's launcher returning after its context ended", g.result); !errors.Is(err, context.Canceled) {
+			t.Errorf("the controller's launcher returned %v, want its context's end", err)
+		}
+	})
+	return g
+}
+
+// acceptController takes the controller launcher's next connection, admits its hello with ack,
+// whatever memory guard settings it carries, and reads the launcher's first state on it. The
+// daemon end takes only a hello under the rig's own token (listenForLauncher).
+func (g *rig) acceptController(ack shimwire.LauncherHelloAck) *roleConn {
+	g.t.Helper()
+	conn := acceptRole(g.t, g.listener)
+	if conn.hello.Role != "controller" {
+		g.t.Fatalf("hello = %#v, want the controller's", conn.hello)
+	}
+	g.roleConn = conn
+	conn.acknowledgeWith(ack)
+	return conn
+}
+
+// dropConnection ends the launcher's connection from the daemon's end, and returns once the
+// launcher has seen it go: it logs the reconnect only after the connection's end has taken it out
+// of use.
+func (g *rig) dropConnection() {
+	g.t.Helper()
+	ended := func() int { return strings.Count(g.stderr.String(), "launcher: daemon connection: ") }
+	before := ended()
+	_ = g.roleConn.conn.Close()
+	if !testwait.Holds(beforeDeadline(g.t), testwait.Poll, func() bool { return ended() > before }) {
+		g.t.Fatalf("the launcher never saw its connection end; its log: %s", g.stderr.String())
+	}
+}
+
+// The controller pod's classifier spares the launcher, the jj its pid guard holds with the git
+// under it, the shim, every direct child of the shim (Oh My Pi, the secrets renewer, its keygen)
+// and Oh My Pi's two helpers, one started by the other. It spares neither the JavaScript eval
+// kernel, the Python kernel or the shell command Oh My Pi started, nor an orphan under PID 1 or a
+// `kubectl exec` shell, nor an impostor: a helper's argument under a copy of Oh My Pi, under
+// another executable or under the shell command, and a worker-shim of this binary that is not the
+// manager's generation. Every process is the controller's, spared or not. The shim and each of its
+// direct children are its session's processes (memoryguard.Class.Session), as a role's are in an
+// issue pod, and nothing else is. A pid the manager holds is the shim only while it names this
+// binary run as worker-shim: with no generation, or with one whose pid now names another process,
+// the launcher and what its pid guard holds alone are spared.
+func TestControllerPodMemoryGuardSparesItsOwnProcessesByTheirPlaceInTheTree(t *testing.T) {
+	t.Parallel()
+	pod := controllerTree(t, nil)
+	pids := &pidGuard{pids: map[int]bool{ctlHeld: true}}
+	m, _ := controllerManager()
+	table := scanTable(t, pod)
+	classes := newControllerClassifier(m, pids).classify(table)
+	for _, tc := range []struct {
+		pid       int
+		protected bool
+		session   bool
+		what      string
+	}{
+		{os.Getpid(), true, false, "the launcher"},
+		{ctlHeld, true, false, "the jj the launcher's pid guard holds"},
+		{ctlHeldChild, true, false, "the git under that jj"},
+		{ctlShim, true, true, "the shim, the manager's generation"},
+		{ctlOmp, true, true, "Oh My Pi, the shim's child"},
+		{ctlRenewer, true, true, "the secrets renewer, the shim's child"},
+		{ctlKeygen, true, true, "the secrets keygen, the shim's child"},
+		{ctlBroker, true, false, "the daemon broker, a helper Oh My Pi started"},
+		{ctlMux, true, false, "the LSP multiplexer, a helper the broker started"},
+		{ctlEval, false, false, "Oh My Pi's JavaScript eval kernel"},
+		{ctlKernel, false, false, "a Python kernel"},
+		{ctlCommand, false, false, "a shell command Oh My Pi started"},
+		{ctlCommandHelper, false, false, "Oh My Pi's executable with a helper's argument under the shell command"},
+		{ctlOrphan, false, false, "an orphan under PID 1"},
+		{ctlExec, false, false, "a kubectl exec shell"},
+		{ctlOmpCopy, false, false, "a copy of omp with a helper's argument under Oh My Pi"},
+		{ctlStrayShim, false, false, "a worker-shim under PID 1 that is not the manager's generation"},
+		{ctlFakeHelper, false, false, "a helper's argument under another executable"},
+	} {
+		if got, want := classes[tc.pid], (memoryguard.Class{Role: "controller", Protected: tc.protected, Session: tc.session}); got != want {
+			t.Errorf("%s (pid %d): %+v, want %+v", tc.what, tc.pid, got, want)
+		}
+	}
+	if got, want := len(classes), len(table.Processes()); got != want {
+		t.Errorf("the classifier gives %d processes a class, want each of the scan's %d the controller's", got, want)
+	}
+
+	launcherAndHeld := []int{os.Getpid(), ctlHeld, ctlHeldChild}
+	slices.Sort(launcherAndHeld)
+	for _, tc := range []struct {
+		name       string
+		generation *child
+	}{
+		{"no generation", nil},
+		{"a generation whose pid names another process", &child{pid: ctlOrphan}},
+	} {
+		var spared []int
+		for pid, class := range newControllerClassifier(&manager{role: "controller", child: tc.generation}, pids).classify(table) {
+			if class.Protected {
+				spared = append(spared, pid)
+			}
+		}
+		slices.Sort(spared)
+		if !slices.Equal(spared, launcherAndHeld) {
+			t.Errorf("with %s the classifier spares %v, want the launcher and what its pid guard holds, %v", tc.name, spared, launcherAndHeld)
+		}
+	}
+}
+
+// The launcher, the shim, Oh My Pi, its two helpers, the secrets renewer and keygen and what the
+// launcher's pid guard holds are never ended, though each is larger than anything the guard may
+// end: the guard ends what it may, largest first, one rise at a time, the kernels, the shell
+// command, the orphan under PID 1, the kubectl exec shell and each impostor, and with only spared
+// processes left it ends nothing more and writes its stopped line. Every kill is the controller's:
+// each is reported to its one manager, and each ended line reads role=controller.
+func TestControllerPodMemoryGuardNeverEndsItsOwnProcessesEvenWhereOneIsTheLargest(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	sizes := map[int]uint64{
+		os.Getpid(): 2000 * guardMiB, ctlShim: 1950 * guardMiB, ctlOmp: 1900 * guardMiB, ctlRenewer: 1850 * guardMiB,
+		ctlKeygen: 1800 * guardMiB, ctlBroker: 1750 * guardMiB, ctlMux: 1700 * guardMiB, ctlHeld: 1650 * guardMiB,
+		ctlHeldChild: 1600 * guardMiB,
+	}
+	for i, pid := range controllerEndable {
+		sizes[pid] = uint64(900-50*i) * guardMiB
+	}
+	pod := controllerTree(t, sizes)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{pids: map[int]bool{ctlHeld: true}})
+	rig.started()
+	for _, pid := range controllerEndable {
+		rig.kill(pid)
+	}
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, controllerEndable) {
+		t.Fatalf("the guard killed %v, want %v and none of the controller's own; its log:\n%s", kills, controllerEndable, rig.log())
+	}
+	if stopped := guardLines(log, "stopped for this rise reason=nothing to end "); len(stopped) != 1 || !strings.Contains(stopped[0], " endable=0 ") {
+		t.Fatalf("the stopped lines are %q, want one with nothing it may end; its log:\n%s", stopped, rig.log())
+	}
+	reports, ended := waitingReports(m), guardLines(log, "ended ")
+	if len(reports) != len(controllerEndable) || len(ended) != len(controllerEndable) {
+		t.Fatalf("the controller's manager holds %d reports and its log %d ended lines, want %d of each; its log:\n%s",
+			len(reports), len(ended), len(controllerEndable), log.String())
+	}
+	for i, pid := range controllerEndable {
+		if r := reports[i]; r.PID != pid || r.Sequence != uint64(i+1) || r.Guard != rig.id() {
+			t.Errorf("report %d is %+v, want pid %d, sequence %d of guard %s", i, r, pid, i+1, rig.id())
+		}
+		if want := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller ", pid); !strings.HasPrefix(ended[i], want) {
+			t.Errorf("ended line %d is %q, want it to start %q", i, ended[i], want)
+		}
+	}
+}
+
+// The guard's reading is AnonPages, and a process's size is its anonymous memory. A database file
+// mapped shared raises the cgroup's counter past the mark while AnonPages stays low, and the guard
+// ends nothing; at the mark it ends the Python kernel and not the reader that maps the file, whose
+// resident pages are the file's; and at the next rise, where what is left to end is the reader's
+// few anonymous pages, it ends nothing more. The kill's report carries the counter it read beside
+// the reading it acted on.
+func TestControllerPodMemoryGuardReadsAnonPagesAndNotAMappedFile(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const reader = 1550
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB, ctlKernel: 600 * guardMiB})
+	pod.add(guardProcess{pid: reader, ppid: ctlCommand, exe: "/usr/bin/sqlite3", args: []string{"sqlite3", "/var/lib/legion/big.db"},
+		anon: 10 * guardMiB, mapped: 3 * guardGiB})
+	counter := 3900 * guardMiB
+	pod.setCounter(counter)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	rig.tick()
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("with the counter at %d and AnonPages at %d of a limit of %d the guard killed %v, want nothing; its log:\n%s",
+			counter, guardLow, guardLimit, kills, rig.log())
+	}
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
+		t.Fatalf("at the mark the guard killed %v, want the Python kernel %d and not the reader %d of a mapped file; its log:\n%s",
+			kills, ctlKernel, reader, rig.log())
+	}
+	if reports := waitingReports(m); len(reports) != 1 || reports[0].ReadingBytes != guardHigh || reports[0].CounterBytes != counter {
+		t.Fatalf("the controller's reports are %+v, want one at the reading %d with the counter %d", reports, guardHigh, counter)
+	}
+	pod.setAnon(guardLow)
+	rig.tick()
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
+		t.Fatalf("at the next rise the guard killed %v, want nothing more than %d; its log:\n%s", kills, ctlKernel, rig.log())
+	}
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d ", guardHigh, 10*guardMiB)
+	if stopped := guardLines(log, "stopped "); len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+		t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+	}
+}
+
+// Below the mark the guard ends nothing; at the mark, where what it may end holds at least the
+// floor between them and none of it grows, it ends the largest; after a fall that stays at the
+// mark it ends the next largest; a reading that has not fallen when the controller's wait of 1
+// second has passed, with nothing it may end growing, stops it for the rise; and it acts on no new
+// rise, however high, until the reading has been below the mark.
+func TestControllerPodMemoryGuardEndsTheLargestAtTheMarkAndTheNextAfterAFall(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 700 * guardMiB, ctlCommand: 500 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	step := func(what string, reading uint64, extra time.Duration, want ...int) {
+		t.Helper()
+		pod.setAnon(reading)
+		rig.tickAfter(extra)
+		if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+			t.Fatalf("%s (reading %d MiB): the guard killed %v, want %v; its log:\n%s", what, reading>>20, kills, want, rig.log())
+		}
+	}
+	step("below the mark", 3400*guardMiB, 0)
+	step("at the mark", guardHigh, 0, ctlEval)
+	step("after a fall that stays at the mark", 3550*guardMiB, 0, ctlEval, ctlKernel)
+	step("while the wait lasts with no fall", 3550*guardMiB, 0, ctlEval, ctlKernel)
+	step("once the wait has passed with no fall", 3550*guardMiB, memoryguard.ControllerDefaults().Wait, ctlEval, ctlKernel)
+	if stopped := guardLines(log, "stopped for this rise reason=not fallen "); len(stopped) != 1 {
+		t.Fatalf("the stopped lines for a reading that has not fallen are %q, want one; its log:\n%s", stopped, rig.log())
+	}
+	step("at a new high before the reading has been below the mark", 3800*guardMiB, 0, ctlEval, ctlKernel)
+	step("at the mark before the reading has been below it", guardHigh, 0, ctlEval, ctlKernel)
+	step("below the mark", guardLow, 0, ctlEval, ctlKernel)
+	step("at the mark after the reading has been below it", guardHigh, 0, ctlEval, ctlKernel, ctlCommand)
+}
+
+// The controller's launcher in a microVM pod keeps the memory rule of a microVM pod rather than
+// the gVisor guard (INFRA-4567). As the container's first process, the single-role form with
+// MicroVM logs the one off line through the role's own log, builds no guard, so its manager holds
+// none, and runs the guest watch over the controller's classifier (controllerClassifier): one scan
+// raises what the guard may end of the controller's tree and keeps the launcher, what its pid
+// guard holds, the shim and the agent's own processes at the container's starting score. The
+// watch's SessionDrain is that form's own drain of an exited generation, its StopGrace, and a
+// second (controllerSessionDrain), which through Run counts from Run's default of 30 seconds where
+// the configuration names none; an acknowledgement's guard settings reach no guard there, so no
+// settings line follows the off line. The kill reports of its one role go only on a connection
+// whose acknowledgement carried kernelKills, whatever it says of the guard, as the daemon's answer
+// to the controller does beside its guard settings; one of guard settings alone, an earlier
+// daemon's answer, or of neither drops them with the line a microVM issue pod's launcher writes.
+// Without MicroVM the controller's launcher runs the guard, as INFRA-3531 has it: the guard ends
+// the largest at the mark, its manager holds the guard, the guest watch is never built, and its
+// reports go where guard settings came and are dropped where kernelKills alone did.
+func TestTheControllersLauncherInAMicroVMRunsTheGuestWatch(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const off = "launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process"
+	t.Run("in a microVM", func(t *testing.T) {
+		pod := guestControllerTree(t)
+		noGuard(t, "a microVM controller pod's launcher built a memory guard")
+		rig := useGuestPod(t, pod, nil)
+		asked := askedGuest(t)
+		m, log := controllerManager()
+		pids := &pidGuard{pids: map[int]bool{ctlHeld: true}}
+		serveControllerGuardOf(t, Config{MicroVM: true, StopGrace: 5 * time.Second}, m, pids)
+		rig.started()
+		if got := guardLines(log, ""); !slices.Equal(got, []string{off}) {
+			t.Fatalf("the controller's memory guard lines are %q, want %q alone", got, off)
+		}
+		if !strings.Contains(log.String(), "\nlauncher: guest memory: start ") {
+			t.Fatalf("the controller's log holds no start line of the guest watch, behind no prefix: %s", log.String())
+		}
+		if m.memoryGuard != nil {
+			t.Fatalf("the controller's manager holds the guard %v in a microVM pod's launcher, want none", m.memoryGuard)
+		}
+		cfg := asked()
+		if want := 6 * time.Second; cfg.SessionDrain != want {
+			t.Errorf("the guest watch's SessionDrain is %s, want the controller's StopGrace of 5s and a second, %s", cfg.SessionDrain, want)
+		}
+		table := scanTable(t, pod)
+		if got, want := cfg.Classify(table), newControllerClassifier(m, pids).classify(table); !maps.Equal(got, want) {
+			t.Errorf("the guest watch classifies the controller's tree as %v, want the controller's classifier's %v", got, want)
+		}
+		for _, pid := range []int{os.Getpid(), ctlHeld, ctlHeldChild, ctlShim, ctlOmp, ctlRenewer, ctlKeygen, ctlBroker, ctlMux} {
+			if got := pod.score(pid); got != 0 {
+				t.Errorf("pid %d, which the controller's classifier spares, reads oom_score_adj %d after one scan, want the starting 0; the watch's log:\n%s", pid, got, rig.log())
+			}
+		}
+		for _, pid := range controllerEndable {
+			if got := pod.score(pid); got != 1000 {
+				t.Errorf("pid %d, which the guard may end, reads oom_score_adj %d after one scan, want 1000; the watch's log:\n%s", pid, got, rig.log())
+			}
+		}
+	})
+	t.Run("through Run", func(t *testing.T) {
+		pod := guestControllerTree(t)
+		noGuard(t, "a microVM controller pod's launcher built a memory guard")
+		rig := useGuestPod(t, pod, nil)
+		asked := askedGuest(t)
+		g := runControllerLauncherOf(t, Config{MicroVM: true})
+		rig.started()
+		if cfg := asked(); cfg.SessionDrain != 31*time.Second {
+			t.Errorf("the guest watch's SessionDrain is %s, want Run's default StopGrace of 30s and a second, 31s", cfg.SessionDrain)
+		}
+		ack := controllerDefaultsAck()
+		ack.KernelKills = true
+		g.acceptController(ack)
+		if got := guardLines(g.stderr, ""); !slices.Equal(got, []string{off}) {
+			t.Fatalf("the launcher's memory guard lines are %q, want %q alone", got, off)
+		}
+	})
+	t.Run("under gVisor", func(t *testing.T) {
+		pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 700 * guardMiB})
+		rig := useGuardPod(t, pod, nil)
+		previous := newGuest
+		newGuest = func(memoryguard.GuestConfig) *memoryguard.Guest {
+			panic("a gVisor controller pod's launcher built the guest watch")
+		}
+		t.Cleanup(func() { newGuest = previous })
+		m, _ := controllerManager()
+		serveControllerGuard(t, m, &pidGuard{})
+		rig.started()
+		pod.setAnon(3400 * guardMiB)
+		rig.tick()
+		pod.setAnon(guardHigh)
+		rig.tick()
+		if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
+			t.Fatalf("the guard killed %v at the mark, want %d alone; its log:\n%s", kills, ctlEval, rig.log())
+		}
+		if m.memoryGuard == nil {
+			t.Fatal("the controller's manager holds no guard under gVisor, want the guard the launcher built")
+		}
+		if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlEval || reports[0].Cause != shimwire.MemoryKillCauseGuard {
+			t.Fatalf("the controller's manager holds the reports %+v, want the guard's one report of pid %d", reports, ctlEval)
+		}
+	})
+	t.Run("its reports", func(t *testing.T) {
+		const noKernelKills = "reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
+		const noSettings = "reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
+		both := controllerDefaultsAck()
+		both.KernelKills = true
+		for _, tc := range []struct {
+			name    string
+			microVM bool
+			ack     shimwire.LauncherHelloAck
+			dropped string
+		}{
+			{"a microVM controller on kernelKills and guard settings", true, both, ""},
+			{"a microVM controller on kernelKills and no guard settings", true, shimwire.LauncherHelloAck{KernelKills: true}, ""},
+			{"a microVM controller on guard settings and no kernelKills", true, controllerDefaultsAck(), noKernelKills},
+			{"a microVM controller on an older daemon's acknowledgement", true, shimwire.LauncherHelloAck{}, noKernelKills},
+			{"a gVisor controller on kernelKills and guard settings", false, both, ""},
+			{"a gVisor controller on kernelKills and no guard settings", false, shimwire.LauncherHelloAck{KernelKills: true}, noSettings},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				report := shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: 1, PID: 900, Executable: "python3",
+					SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, CounterBytes: 3900 * guardMiB, LimitBytes: 4096 * guardMiB,
+					At: time.Date(2026, 11, 19, 6, 0, 0, 0, time.UTC)}
+				if tc.microVM {
+					report.Cause = shimwire.MemoryKillCauseKernel
+				}
+				conn, stderr := waitingControllerKillReport(t, tc.microVM, report)
+				conn.acknowledgeWith(tc.ack)
+				if tc.dropped == "" {
+					if got := conn.nextMemoryKill(); got != report {
+						t.Fatalf("the connection carries the report %+v, want the one that waited for it, %+v", got, report)
+					}
+					conn.noMemoryKill("after the report that waited for it, the connection")
+					if strings.Contains(stderr.String(), "report dropped") {
+						t.Fatalf("the launcher logged %s, want no report dropped", stderr.String())
+					}
+					return
+				}
+				conn.noMemoryKill("a connection whose acknowledgement does not say the daemon knows the report")
+				line := "launcher: memory guard: report dropped sequence=1 pid=900 " + tc.dropped
+				if !slices.Contains(strings.Split(stderr.String(), "\n"), line) {
+					t.Fatalf("the launcher logged %s, want the line %q, behind no prefix", stderr.String(), line)
+				}
+			})
+		}
+	})
+}
+
+// When the guard stops for a rise in the controller's pod, its line names each process it could not
+// read, the pid, and the size where its memory map reads, and it ends neither (INFRA-3531 R3 of
+// spec version 29). The shell command Oh My Pi ran has started pid 1760, whose executable and smaps
+// do not read, and pid 1761, whose executable does not read and whose smaps reads 500 MiB; what the
+// guard may end of the controller's tree holds 200 MiB, under the floor. At the mark it gives the
+// rise up with reason nothing to end, ends no process, and its line ends with
+// unread_processes=1760,1761:524288000.
+func TestControllerPodMemoryGuardNamesInItsStoppedLineEachProcessItCouldNotReadAndEndsNone(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const private, threads = 1760, 1761
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 3 * guardGiB, ctlEval: 100 * guardMiB, ctlKernel: 100 * guardMiB})
+	pod.add(
+		guardProcess{pid: private, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "private.py"}, anon: guardGiB,
+			unreadableExe: true, unreadableSmaps: true},
+		guardProcess{pid: threads, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "threads.py"}, anon: 500 * guardMiB,
+			unreadableExe: true},
+	)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("the guard killed %v, want none; its log:\n%s", kills, rig.log())
+	}
+	stopped := guardLines(log, "stopped for this rise reason=nothing to end ")
+	want := fmt.Sprintf(" unread=%d ", 500*guardMiB)
+	named := fmt.Sprintf(" left_out=0 unread_processes=%d,%d:%d", private, threads, 500*guardMiB)
+	if len(stopped) != 1 || !strings.Contains(stopped[0], want) || !strings.HasSuffix(stopped[0], named) {
+		t.Fatalf("the stopped lines are %q, want one with%sending%q; its log:\n%s", stopped, want, named, rig.log())
+	}
+	if reports := waitingReports(m); len(reports) != 0 {
+		t.Fatalf("the controller's manager holds the reports %+v, want none", reports)
+	}
+}
+
+// The guard ends nothing more for a rise, and writes its stopped line, where the reading has not
+// fallen when the wait after a kill has passed, where what it may end holds less than the floor
+// between them, and where it may end nothing at all. A stop writes its line at most once a minute,
+// so each rise here comes a minute after the one before.
+func TestControllerPodMemoryGuardStopsWhereNothingFallsOrNothingMayBeEnded(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 300 * guardMiB, ctlCommand: 100 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+
+	pod.setAnon(guardHigh)
+	rig.tick()
+	rig.tick()
+	rig.tickAfter(memoryguard.ControllerDefaults().Wait)
+	pod.setAnon(guardLow)
+	rig.tick()
+
+	// What is left to end, the Python kernel and the shell command, is 400 MiB, under the floor of
+	// 409.6 MiB.
+	pod.setAnon(guardHigh)
+	rig.tickAfter(time.Minute)
+	pod.setAnon(guardLow)
+	rig.tick()
+
+	for _, pid := range controllerEndable {
+		if err := os.RemoveAll(filepath.Join(pod.proc, strconv.Itoa(pid))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pod.setAnon(guardHigh)
+	rig.tickAfter(time.Minute)
+
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
+		t.Fatalf("the guard killed %v, want the eval kernel %d alone; its log:\n%s", kills, ctlEval, rig.log())
+	}
+	want := []string{
+		"launcher: memory guard: stopped for this rise reason=not fallen ",
+		fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d ", guardHigh, 400*guardMiB),
+		fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=0 ", guardHigh),
+	}
+	stopped := guardLines(log, "stopped ")
+	if len(stopped) != len(want) {
+		t.Fatalf("the stopped lines are %q, want %d starting %q", stopped, len(want), want)
+	}
+	for i := range want {
+		if !strings.HasPrefix(stopped[i], want[i]) {
+			t.Errorf("stopped line %d is %q, want it to start %q", i, stopped[i], want[i])
+		}
+	}
+}
+
+// Ten programs of 395 MiB, each under the floor of 409.6 MiB in a 4 GiB pod, fill it from a make
+// the agent ran: what the guard may end holds far more than the floor between them, so it ends
+// them one at a time, the newest of equal sizes first, one at each reading that has fallen and
+// stays at the mark, as the pages one kill of a forked pool frees are few. A guard with a floor on
+// each process ends none of them. Once the make is all there is left to end, under the floor, it
+// ends nothing more.
+func TestControllerPodMemoryGuardEndsTenProgramsUnderTheFloorOneAtATime(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const firstProgram, programs = 1600, 10
+	const program = 395 * guardMiB
+	if floor := guardLimit / 100 * uint64(memoryguard.ControllerDefaults().FloorPercent); program >= floor {
+		t.Fatalf("a program of %d bytes is not under the floor of %d", program, floor)
+	}
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 300 * guardMiB, ctlCommand: 20 * guardMiB})
+	for i := range programs {
+		pod.add(guardProcess{pid: firstProgram + i, ppid: ctlCommand, exe: "/usr/libexec/gcc/x86_64-linux-gnu/14/cc1plus",
+			args: []string{"cc1plus", "-quiet", fmt.Sprintf("unit%d.cc", i)}, anon: program})
+	}
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	var want []int
+	reading := 4000 * guardMiB
+	for i := range programs {
+		pod.setAnon(reading)
+		rig.tick()
+		want = append(want, firstProgram+programs-1-i)
+		if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+			t.Fatalf("at the reading %d MiB the guard has killed %v, want %v, one program at each reading; its log:\n%s",
+				reading>>20, kills, want, rig.log())
+		}
+		reading -= 10 * guardMiB
+	}
+	pod.setAnon(reading)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+		t.Fatalf("with the make alone left the guard has killed %v, want %v; its log:\n%s", kills, want, rig.log())
+	}
+	stopped := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d ", reading, 20*guardMiB)
+	if got := guardLines(log, "stopped "); len(got) != 1 || !strings.HasPrefix(got[0], stopped) {
+		t.Fatalf("the stopped lines are %q, want one starting %q", got, stopped)
+	}
+}
+
+// A rise that is Oh My Pi's own ends nothing: its memory grows past the mark while what the guard
+// may end, its kernels and its command, holds less than the floor between them, so at every
+// reading of the rise the guard ends nothing, and it writes one stopped line, which counts Oh My
+// Pi's memory as protected.
+func TestControllerPodMemoryGuardEndsNothingForARiseThatIsOhMyPisOwn(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB, ctlEval: 120 * guardMiB, ctlKernel: 100 * guardMiB, ctlCommand: 80 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	grown := guardProcess{pid: ctlOmp, ppid: ctlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}, anon: 3300 * guardMiB}
+	pod.add(grown)
+	for _, reading := range []uint64{3500 * guardMiB, 3700 * guardMiB, 3900 * guardMiB} {
+		pod.setAnon(reading)
+		rig.tick()
+		if kills := rig.signal.kills(); len(kills) != 0 {
+			t.Fatalf("at the reading %d MiB of Oh My Pi's own rise the guard killed %v, want nothing; its log:\n%s", reading>>20, kills, rig.log())
+		}
+	}
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=nothing to end reading=%d endable=%d ", 3500*guardMiB, 300*guardMiB)
+	stopped := guardLines(log, "stopped ")
+	if len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+		t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+	}
+	_, rest, _ := strings.Cut(stopped[0], " protected=")
+	value, _, _ := strings.Cut(rest, " ")
+	if protected, err := strconv.ParseUint(value, 10, 64); err != nil || protected < grown.anon {
+		t.Fatalf("the stopped line %q counts %q protected, want at least Oh My Pi's %d", stopped[0], value, grown.anon)
+	}
+}
+
+// The shared-page probe in the controller's tree: the shell command Oh My Pi ran has started a
+// Python pool, whose parent holds a block of 800 MiB and whose three forked workers only sleep,
+// each reporting the block as its own, as a forked process does under gVisor; beside them the
+// Python kernel grows, and stays smaller than the block. By size the newest worker would end
+// first, and its end would free nothing; the guard ends the kernel, the one process that grew, at
+// the first reading at the mark on its reads in the band, at the 500 MiB the band's last reading
+// read of it.
+func TestControllerPodMemoryGuardEndsTheGrowerBeforeForksThatReportTheirParentsSharedBlock(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const pool, block = 1700, 800 * guardMiB
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	for i := range 4 {
+		parent := ctlCommand
+		if i > 0 {
+			parent = pool
+		}
+		pod.add(guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: block})
+	}
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	kernel := guardProcess{pid: ctlKernel, ppid: ctlOmp, exe: "/usr/bin/python3.13", args: []string{"python3", "-u", "/tmp/omp-python-kernel.py"}}
+	// Oh My Pi, the block once and the kernel: 3148 MiB in the band, then 3248 and 3348, and
+	// 3488 MiB at the mark.
+	for _, size := range []uint64{300, 400, 500, 640} {
+		kernel.anon = size * guardMiB
+		pod.add(kernel)
+		pod.setAnon(2*guardGiB + block + kernel.anon)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
+		t.Fatalf("the guard killed %v, want the growing Python kernel %d before the pool's workers; its log:\n%s", kills, ctlKernel, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", ctlKernel, 500*guardMiB, 3488*guardMiB)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
+// The first kill comes at the first reading at the mark on the reads the band holds, before the
+// guard reads any smaps at that reading (INFRA-3531 T16). In the band the Python kernel grows 100
+// MiB at each reading beside the shell command, which holds at 400 MiB, so by the band's reads the
+// kernel has grown and the guard decides on the held reads alone: where none of them had grown, it
+// would read the held processes' smaps again at the mark (memoryguard's rereadHeld), which this
+// test does not reach. As the reading reaches the mark the rig rewrites both smaps so that a read
+// there would name the command: the kernel back at 300 MiB, no growth over the window, and the
+// command 900 MiB larger, the most grown and the largest. The guard still ends the kernel, which
+// the band's reads name, and reports it at its size at the band's last reading and at the reading
+// at the mark. It reads the command's 1300 MiB only after the kill, and the command's size as of
+// the kill is the one the decision held, 400 MiB (INFRA-3531 R1: its size at the reading the kill
+// was sent at), so at the next reading, which has not fallen, the command has grown 900 MiB since
+// the kill and the guard ends it there.
+func TestControllerPodMemoryGuardEndsAtTheMarkTheProcessTheBandsReadsNameThoughAReadThereWouldNameAnother(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlCommand: 400 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	kernel := guardProcess{pid: ctlKernel, ppid: ctlOmp, exe: "/usr/bin/python3.13", args: []string{"python3", "-u", "/tmp/omp-python-kernel.py"}}
+	for i, reading := range []uint64{3100, 3200, 3300} {
+		kernel.anon = (300 + 100*uint64(i)) * guardMiB
+		pod.add(kernel)
+		pod.setAnon(reading * guardMiB)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	kernel.anon = 300 * guardMiB
+	pod.add(kernel, guardProcess{pid: ctlCommand, ppid: ctlOmp, exe: "/usr/bin/bash", args: []string{"bash", "-c", "make -j8"}, anon: 1300 * guardMiB})
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel}) {
+		t.Fatalf("at the mark the guard killed %v, want the Python kernel %d the band's reads name, and not the command %d a read at the mark names; its log:\n%s",
+			kills, ctlKernel, ctlCommand, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", ctlKernel, 500*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+	if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlKernel || reports[0].SizeBytes != 500*guardMiB || reports[0].ReadingBytes != guardHigh {
+		t.Fatalf("the controller's manager holds the reports %+v, want the kernel's alone, at 500 MiB and the reading at the mark", reports)
+	}
+
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlKernel, ctlCommand}) {
+		t.Fatalf("at the reading after the kill, not fallen and with the command 900 MiB above the size the decision held, the guard killed %v, want the kernel and then the command %d; its log:\n%s",
+			kills, ctlCommand, rig.log())
+	}
+	ended = fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", ctlCommand, 1300*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 2 || !strings.HasPrefix(got[1], ended) {
+		t.Fatalf("the ended lines are %q, want the second starting %q", got, ended)
+	}
+}
+
+// Where no held process grew over the window at the mark, the guard reads again there the smaps of
+// the held processes that grew in the band or have a single band read, and of no other (INFRA-3531
+// T17): the shell command Oh My Pi ran has started a Python pool before the band, whose parent holds
+// a block of 1.5 GiB and whose three forked workers sleep through every band reading, each reporting
+// the block as its own. As the reading reaches the mark the rig rewrites the newest worker's smaps
+// 200 MiB larger, which a read there would rank first; the guard does not read the workers again,
+// and ends the grower at the size it reads there. The grower is a command that grew 64 MiB between
+// the band's first two readings and steps again only as the reading reaches the mark, its step
+// before that 400 ms old, so the window at the mark shows no growth; or one that started at the
+// band's last reading, with that one band read.
+func TestControllerPodMemoryGuardReadsAgainAtTheMarkTheGrowersTheBandSawAndNotTheSleepingWorkers(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const pool, block, grower = 1700, 1536 * guardMiB, 1710
+	for _, tc := range []struct {
+		name string
+		// band is the grower's size at each band reading, 0 before it starts, and mark its size
+		// at the reading at the mark, in MiB.
+		band []uint64
+		mark uint64
+	}{
+		{"a grower whose crossing step comes after the band's last reading", []uint64{736, 800, 800, 800, 800}, 864},
+		{"a grower with one band read", []uint64{0, 0, 0, 700}, 764},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+			worker := func(i int, anon uint64) guardProcess {
+				parent := ctlCommand
+				if i > 0 {
+					parent = pool
+				}
+				return guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: anon}
+			}
+			for i := range 4 {
+				pod.add(worker(i, block))
+			}
+			rig := useGuardPod(t, pod, nil)
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			command := guardProcess{pid: grower, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}}
+			for i, size := range tc.band {
+				if size > 0 {
+					command.anon = size * guardMiB
+					pod.add(command)
+				}
+				pod.setAnon((3300 + 20*uint64(i)) * guardMiB)
+				rig.tick()
+			}
+			if kills := rig.signal.kills(); len(kills) != 0 {
+				t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+			}
+
+			command.anon = tc.mark * guardMiB
+			pod.add(command, worker(3, block+200*guardMiB))
+			pod.setAnon(guardHigh)
+			rig.tick()
+			if kills := rig.signal.kills(); !slices.Equal(kills, []int{grower}) {
+				t.Fatalf("at the mark the guard killed %v, want the grower %d and not the worker %d it does not read again; its log:\n%s",
+					kills, grower, pool+3, rig.log())
+			}
+			ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower, tc.mark*guardMiB, guardHigh)
+			if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+				t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+			}
+		})
+	}
+}
+
+// With the band's readings 200 ms apart, as a throttled pod's come, the window at the reading at
+// the mark, 200 ms after the band's last, holds one read of each process and shows no growth, and
+// the guard orders the held processes over the band's own last window (INFRA-3531 T17): the grower
+// a command started grew 64 MiB between the band's two readings, beside a Python pool's three
+// sleeping workers, each reporting a block of 1.5 GiB as its own. As the reading reaches the mark
+// the rig rewrites the grower's smaps 24 MiB smaller and the newest worker's 200 MiB larger, so
+// that a read there would name the worker. The guard ends the grower on its held reads, at the 764
+// MiB the band's last reading read.
+func TestControllerPodMemoryGuardOrdersByTheBandsLastWindowWhereItsReadingsCome200MillisecondsApart(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const pool, block, grower = 1700, 1536 * guardMiB, 1710
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+	worker := func(i int, anon uint64) guardProcess {
+		parent := ctlCommand
+		if i > 0 {
+			parent = pool
+		}
+		return guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: anon}
+	}
+	for i := range 4 {
+		pod.add(worker(i, block))
+	}
+	command := guardProcess{pid: grower, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 700 * guardMiB}
+	pod.add(command)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	pod.setAnon(3300 * guardMiB)
+	rig.tick()
+	command.anon = 764 * guardMiB
+	pod.add(command)
+	pod.setAnon(3400 * guardMiB)
+	interval := memoryguard.ControllerDefaults().Interval
+	rig.tickAfter(200*time.Millisecond - interval)
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	command.anon = 740 * guardMiB
+	pod.add(command, worker(3, block+200*guardMiB))
+	pod.setAnon(guardHigh)
+	rig.tickAfter(200*time.Millisecond - interval)
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{grower}) {
+		t.Fatalf("at the mark the guard killed %v, want the grower %d the band's last window names; its log:\n%s", kills, grower, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower, 764*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
+// The latepool shape in the controller's tree (INFRA-3531 R1 of spec version 27): the shell
+// command Oh My Pi ran has started a Python pool before the band, whose parent holds a block of 1.5
+// GiB and whose three forked workers sleep through the band's three readings, each reporting the
+// block as its own. A grower the command starts between the band's last reading and the mark is in
+// no held read, and nothing held grew: the guard finds it as started since the band's last reading,
+// and ends it at the first reading at the mark, at its 64 MiB, and not a worker.
+func TestControllerPodMemoryGuardEndsAGrowerStartedSinceTheBandsLastReadingBeforeTheSleepingWorkers(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const pool, block, grower = 1700, 1536 * guardMiB, 1710
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+	for i := range 4 {
+		parent := ctlCommand
+		if i > 0 {
+			parent = pool
+		}
+		pod.add(guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: block})
+	}
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	for _, reading := range []uint64{3300, 3320, 3340} {
+		pod.setAnon(reading * guardMiB)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	pod.add(guardProcess{pid: grower, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 64 * guardMiB})
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{grower}) {
+		t.Fatalf("at the mark the guard killed %v, want the grower %d started since the band's last reading and no worker; its log:\n%s",
+			kills, grower, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower, 64*guardMiB, guardHigh)
+	if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+		t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+	}
+}
+
+// guardEnded is one of the guard's ended lines as a test reads it: the process it ended, the rule
+// that put it first, where the sizes it was chosen by came from, and how much of its size its rank
+// did not count (INFRA-3531 R3 of spec version 31, R1 of spec version 33).
+type guardEnded struct {
+	pid         int
+	rule, sizes string
+	lessParent  uint64
+}
+
+// guardEndedLines are the guard's ended lines in log, read as guardEndeds, in order.
+func guardEndedLines(log *lockedBuffer) []guardEnded {
+	var out []guardEnded
+	for _, line := range guardLines(log, "ended ") {
+		var e guardEnded
+		for _, field := range strings.Fields(strings.TrimPrefix(line, "launcher: memory guard: ended ")) {
+			key, value, _ := strings.Cut(field, "=")
+			switch key {
+			case "pid":
+				e.pid, _ = strconv.Atoi(value)
+			case "rule":
+				e.rule = value
+			case "sizes":
+				e.sizes = value
+			case "less_parent":
+				e.lessParent, _ = strconv.ParseUint(value, 10, 64)
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// guardReplayReading is one reading of a recorded run, in hundredths of a percent of the limit,
+// and how long after the reading before it the guard took it, by the run's trace.
+type guardReplayReading struct {
+	hundredths uint64
+	after      time.Duration
+}
+
+// The latepool probe's command lines in the controller's tree: the parent's, which its forks keep,
+// and each grower's, a program of its own under the same executable.
+var (
+	guardLatepoolArgs = []string{"/usr/bin/python3", "-c", "import os, signal, subprocess, sys, time; latepool", "pids", "held", "go", "2405181686", "0", "0", "0"}
+	guardGrowArgs     = []string{"/usr/bin/python3", "-c", "import time; b=[]; [(b.append(bytearray(64<<20)), time.sleep(0.25)) for _ in iter(int, 1)]"}
+)
+
+// The tester's latepool runs at 4 GiB in the controller's tree, replayed with their traces'
+// readings and times: `4g-latepool-6gd5t` and `4g-latepool-v5s8l` at 23fdd92f,
+// `4g-latepool-54nzl`, `4g-latepool-kxv5k` and `4g-latepool-zxhnw` at d22d8da3, and
+// `4g-latepool-djcvt` and `4g-latepool-rjm8m` at 18c3c5bb (INFRA-3531 R1 of spec versions 33 and
+// 34, verification version 24). The shell command Oh My Pi ran starts the probe, a python3 parent
+// that fills a block of 2.4 GB over the band's first readings, beside Oh My Pi at a quarter of the
+// limit.
+// It forks three sleepers, each running its program and reporting its block as its own: between
+// the band's last two readings, so the band reads each once (v5s8l, 54nzl, zxhnw), after the
+// band's last reading, so the reading at the mark finds them started since (6gd5t), or before the
+// band's last two, so the band reads each twice (kxv5k). Six growers, python3 children of the
+// parent that run a program of their own, start after the band's last reading, read at the mark at
+// a few MiB each, 1 MiB apart, and step every 250 ms together. At 23fdd92f the guard ended a
+// sleeping fork first in both runs, and a second one at the reading after two growers' kills that
+// fell but stayed above the mark with no grower's step inside the window. At d22d8da3, where each
+// fork reported its parent's whole size and ranked at nothing, the reads at the mark of 54nzl and
+// zxhnw had reached one fork when the half interval had passed, and it ended first; and kxv5k and
+// zxhnw ended the parent and a sleeping fork after a fall while the growers lived. In djcvt and
+// rjm8m the growers start just before the band's last reading, which reads each between its fork
+// and its exec with its parent's executable and arguments, in djcvt at a few MiB and in rjm8m at
+// its parent's 2.4 GB; at 18c3c5bb the fork discount took them for forks, and rjm8m's reading at
+// the mark, stalled 115.1 ms, ended the parent.
+//
+// Each fork ranks by its size less its parent's: 1 MiB at 23fdd92f and nothing at d22d8da3, where
+// it is not in the tier of the processes new to the stay. In 54nzl and zxhnw the time from the
+// reading at the mark to the kill at d22d8da3, 58.9 and 84.8 ms, passes at that reading (the
+// guard's Observe, the one seam of its loop a launcher test reaches), before the guard reads
+// anything, as a stall of the pod's CPU throttle; having read no process new to the stay with
+// memory of its own, the guard reads on, up to one interval from the reading at the mark. At the
+// mark it ends the largest grower, found by the search, new to the stay, its line taking nothing
+// off. It ends a grower at each reading, where one grew over the window, as new to the stay, or by
+// its growth since the stay's first kill, at a reading with no grower's step inside the window;
+// the parent and its forks show no growth. At a reading at or above the urgent share, 92.5% of the
+// limit, it ends every grower that grew over the window and, since the parent and its forks are not
+// new to the stay, every grower new to it, the first by its tier and each other by the urgent rule
+// (INFRA-3531 R1 of spec versions 39, 41 and 42). With the six growers ended, at the readings
+// left, which fall, it ends the largest: the probe's parent, at its whole 2.4 GB, its own program
+// not its parent's, the shell's; then, no read parent discounting the forks any longer, the forks,
+// the newest first, each at its whole size. Neither the parent nor a fork ends while a grower
+// lives. The reading at the mark reads again the executable and arguments of a held process whose
+// smaps it reads where the band read it running its parent's program, so in djcvt and rjm8m the
+// grower it reads ranks by its whole size; a grower the band read before its exec that the mark did
+// not read again has its first read after the kill as its size as of the kill, so in rjm8m the
+// guard goes on while the growers grow and after a fall ends one by its growth since the first
+// kill. In `4g-t4latepool-r2` (8023d298) the band's last reading read the six growers at about
+// 1.5 MiB each, as djcvt's before their exec, and a reading 148 ms late let each one's first 64 MiB
+// step land before the first reading at the mark, 93.88%: the guard ends all six there. Each first
+// kill's line says what the reads at the mark read of the processes new to the stay (new_read).
+func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const parent = 1700
+	for _, run := range []guardLatepoolRun{
+		{
+			name: "the forks started between the band's last two readings, read once by the band (v5s8l)",
+			band: []guardReplayReading{{7601, 0}, {7727, 105 * time.Millisecond}, {7855, 105 * time.Millisecond},
+				{7979, 104 * time.Millisecond}, {8114, 103 * time.Millisecond}, {8260, 104 * time.Millisecond},
+				{8381, 113 * time.Millisecond}, {8381, 103 * time.Millisecond}, {8381, 102 * time.Millisecond},
+				{8381, 102 * time.Millisecond}, {8381, 106 * time.Millisecond}, {8381, 103 * time.Millisecond},
+				{8381, 103 * time.Millisecond}, {8381, 103 * time.Millisecond}, {8424, 151 * time.Millisecond}},
+			forksAt: 14,
+			mark:    guardReplayReading{8520, 123 * time.Millisecond},
+			after: []guardReplayReading{{9024, 315 * time.Millisecond}, {9227, 317 * time.Millisecond}, {9063, 110 * time.Millisecond},
+				{9476, 107 * time.Millisecond}, {9360, 117 * time.Millisecond}, {9197, 108 * time.Millisecond},
+				{8765, 110 * time.Millisecond}},
+			own:     guardMiB,
+			grown:   []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			newRead: "9:9",
+			want: []guardEnded{
+				{1715, "new", "search", 0}, {1714, "new", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
+			},
+		},
+		{
+			name: "the forks started after the band's last reading, found by the search (6gd5t)",
+			band: []guardReplayReading{{7661, 0}, {7891, 103 * time.Millisecond}, {8108, 103 * time.Millisecond},
+				{8329, 102 * time.Millisecond}, {8385, 102 * time.Millisecond}, {8385, 101 * time.Millisecond},
+				{8385, 101 * time.Millisecond}, {8385, 101 * time.Millisecond}, {8385, 101 * time.Millisecond},
+				{8385, 101 * time.Millisecond}},
+			forksAt: 10,
+			mark:    guardReplayReading{8533, 156 * time.Millisecond},
+			after: []guardReplayReading{{9024, 242 * time.Millisecond}, {9232, 202 * time.Millisecond}, {9073, 106 * time.Millisecond},
+				{9370, 105 * time.Millisecond}, {9365, 105 * time.Millisecond}, {9201, 104 * time.Millisecond},
+				{8882, 105 * time.Millisecond}},
+			own:     guardMiB,
+			grown:   []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			newRead: "9:9",
+			want: []guardEnded{
+				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
+			},
+		},
+		{
+			name: "the forks ranking at nothing and the reading at the mark stalled 58.9 ms (54nzl)",
+			band: []guardReplayReading{{7590, 0}, {7751, 103 * time.Millisecond}, {7929, 104 * time.Millisecond},
+				{8100, 106 * time.Millisecond}, {8260, 104 * time.Millisecond}, {8366, 104 * time.Millisecond},
+				{8366, 111 * time.Millisecond}, {8366, 103 * time.Millisecond}, {8366, 102 * time.Millisecond},
+				{8366, 101 * time.Millisecond}, {8366, 101 * time.Millisecond}, {8366, 102 * time.Millisecond},
+				{8366, 102 * time.Millisecond}, {8366, 101 * time.Millisecond}, {8407, 154 * time.Millisecond}},
+			forksAt: 14,
+			mark:    guardReplayReading{8590, 108 * time.Millisecond},
+			after: []guardReplayReading{{8904, 193 * time.Millisecond}, {9211, 267 * time.Millisecond}, {9048, 108 * time.Millisecond},
+				{9282, 106 * time.Millisecond}, {9039, 111 * time.Millisecond}, {8719, 105 * time.Millisecond}},
+			stall:   58900 * time.Microsecond,
+			grown:   []uint64{4, 56, 70, 128, 133, 134, 134},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
+				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0},
+			},
+		},
+		{
+			name: "the forks read twice by the band and the growers stepping in step after a fall (kxv5k)",
+			band: []guardReplayReading{{7693, 0}, {7932, 102 * time.Millisecond}, {8138, 104 * time.Millisecond},
+				{8364, 103 * time.Millisecond}, {8371, 103 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8401, 102 * time.Millisecond}, {8412, 105 * time.Millisecond}},
+			forksAt: 9,
+			mark:    guardReplayReading{8707, 141 * time.Millisecond},
+			after: []guardReplayReading{{9222, 231 * time.Millisecond}, {9070, 105 * time.Millisecond}, {9057, 104 * time.Millisecond},
+				{9594, 104 * time.Millisecond}, {9349, 214 * time.Millisecond}, {9249, 106 * time.Millisecond},
+				{8866, 106 * time.Millisecond}},
+			grown:   []uint64{45, 70, 70, 70, 134, 134, 197, 197},
+			newRead: "6:6",
+			want: []guardEnded{
+				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
+			},
+		},
+		{
+			name: "the reading at the mark stalled 84.8 ms and the growers stepping in step after a fall (zxhnw)",
+			band: []guardReplayReading{{7606, 0}, {7799, 102 * time.Millisecond}, {7990, 102 * time.Millisecond},
+				{8185, 103 * time.Millisecond}, {8342, 102 * time.Millisecond}, {8371, 106 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 101 * time.Millisecond}, {8371, 103 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8414, 173 * time.Millisecond}},
+			forksAt: 13,
+			mark:    guardReplayReading{8563, 103 * time.Millisecond},
+			after: []guardReplayReading{{8974, 206 * time.Millisecond}, {9209, 201 * time.Millisecond}, {9053, 108 * time.Millisecond},
+				{9040, 106 * time.Millisecond}, {9548, 104 * time.Millisecond}, {9331, 182 * time.Millisecond},
+				{9168, 103 * time.Millisecond}, {8848, 103 * time.Millisecond}},
+			stall:   84800 * time.Microsecond,
+			grown:   []uint64{4, 53, 68, 68, 68, 133, 133, 197, 197},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew-since-kill", "reading", 0}, {1710, "grew", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
+			},
+		},
+		{
+			name: "the growers read by the band's last reading before their exec at a few MiB (djcvt)",
+			band: []guardReplayReading{{7531, 0}, {7695, 102 * time.Millisecond}, {7891, 105 * time.Millisecond},
+				{8080, 102 * time.Millisecond}, {8271, 104 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8414, 101 * time.Millisecond}, {8428, 111 * time.Millisecond}},
+			forksAt: 12,
+			mark:    guardReplayReading{8648, 137 * time.Millisecond},
+			after: []guardReplayReading{{8909, 192 * time.Millisecond}, {9067, 194 * time.Millisecond}, {9060, 109 * time.Millisecond},
+				{9053, 109 * time.Millisecond}, {8734, 109 * time.Millisecond}},
+			stall:   72400 * time.Microsecond,
+			preExec: 2 * guardMiB,
+			grown:   []uint64{30, 52, 68, 134, 134, 134},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "grew", "reread", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
+				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew-since-kill", "reading", 0},
+			},
+		},
+		{
+			name: "the growers read by the band's last reading before their exec at the parent's size and the reading at the mark stalled 115.1 ms (rjm8m)",
+			band: []guardReplayReading{{7565, 0}, {7736, 105 * time.Millisecond}, {7893, 103 * time.Millisecond},
+				{8053, 104 * time.Millisecond}, {8232, 103 * time.Millisecond}, {8371, 102 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8376, 106 * time.Millisecond},
+				{8376, 102 * time.Millisecond}, {8376, 102 * time.Millisecond}, {8376, 102 * time.Millisecond},
+				{8376, 102 * time.Millisecond}, {8419, 155 * time.Millisecond}},
+			forksAt: 13,
+			mark:    guardReplayReading{8664, 137 * time.Millisecond},
+			after: []guardReplayReading{{9099, 306 * time.Millisecond}, {9222, 195 * time.Millisecond}, {9058, 111 * time.Millisecond},
+				{9364, 104 * time.Millisecond}, {9044, 105 * time.Millisecond}, {8877, 106 * time.Millisecond}},
+			stall:   115100 * time.Microsecond,
+			preExec: guardLatepoolBlock,
+			grown:   []uint64{30, 60, 70, 70, 134, 134, 197},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "new", "reread", 0}, {1714, "grew-since-kill", "reading", 0}, {1713, "grew", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0},
+			},
+		},
+		{
+			// rnr56's three forks start between the band's last two readings, which read each once
+			// at its parent's size, so each ranked at nothing at that read; the growers start after
+			// the band's last reading. At 43213c99 the reads of the parent and the three forks
+			// spent the interval, the search read nothing, and the parent ended 120.1 ms after the
+			// reading at the mark (new_read=3:0). A launcher test reaches no read of the guard's but
+			// Observe, so the interval the reads took passes there: the guard reads the parent, the
+			// first of its reads always, and then a grower, which the search takes before the forks
+			// (INFRA-3531 R1 of spec version 38), and ends it.
+			name: "the forks ranking at nothing at their band read and the reads at the mark taking the interval (rnr56)",
+			band: []guardReplayReading{{7754, 0}, {8129, 102 * time.Millisecond}, {8368, 103 * time.Millisecond},
+				{8368, 101 * time.Millisecond}, {8368, 102 * time.Millisecond}, {8368, 104 * time.Millisecond},
+				{8411, 102 * time.Millisecond}},
+			forksAt: 6,
+			mark:    guardReplayReading{8643, 121 * time.Millisecond},
+			after: []guardReplayReading{{9378, 266 * time.Millisecond}, {9219, 108 * time.Millisecond}, {9456, 104 * time.Millisecond},
+				{9361, 106 * time.Millisecond}, {9198, 103 * time.Millisecond}, {8878, 104 * time.Millisecond}},
+			block:   2412277760,
+			stall:   memoryguard.ControllerDefaults().Interval,
+			grown:   []uint64{4, 70, 70, 134, 134, 198, 198},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "urgent", "reading", 0},
+				{1712, "urgent", "reading", 0}, {1711, "urgent", "reading", 0}, {1710, "urgent", "reading", 0},
+				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
+			},
+		},
+		{
+			// t4latepool-r2's band reads the growers once, at its last reading, 142 ms after the
+			// one before; the reading at the mark comes 148 ms after it, past the growers' first
+			// step.
+			name: "six growers' first steps in one late gap and the first reading at the mark at 93.88% (4g-t4latepool-r2)",
+			band: []guardReplayReading{{7887, 0}, {8174, 102 * time.Millisecond}, {8368, 111 * time.Millisecond},
+				{8368, 103 * time.Millisecond}, {8368, 103 * time.Millisecond}, {8368, 101 * time.Millisecond},
+				{8408, 135 * time.Millisecond}, {8408, 102 * time.Millisecond}, {8408, 102 * time.Millisecond},
+				{8408, 101 * time.Millisecond}, {8408, 103 * time.Millisecond}, {8408, 101 * time.Millisecond},
+				{8408, 102 * time.Millisecond}, {8408, 101 * time.Millisecond}, {8408, 103 * time.Millisecond},
+				{8408, 101 * time.Millisecond}, {8408, 102 * time.Millisecond}, {8408, 101 * time.Millisecond},
+				{8408, 103 * time.Millisecond}, {8408, 101 * time.Millisecond}, {8408, 102 * time.Millisecond},
+				{8408, 102 * time.Millisecond}, {8408, 101 * time.Millisecond}, {8408, 101 * time.Millisecond},
+				{8408, 102 * time.Millisecond}, {8408, 102 * time.Millisecond}, {8429, 142 * time.Millisecond}},
+			forksAt: 7,
+			mark:    guardReplayReading{9388, 148 * time.Millisecond},
+			preExec: 3 * guardMiB / 2,
+			grown:   []uint64{64},
+			newRead: "6:6",
+			atMark:  6,
+			want: []guardEnded{
+				{1715, "grew", "reread", 0}, {1714, "urgent", "reread", 0}, {1713, "urgent", "reread", 0},
+				{1712, "urgent", "reread", 0}, {1711, "urgent", "reread", 0}, {1710, "urgent", "reread", 0},
+			},
+		},
+	} {
+		t.Run(run.name, func(t *testing.T) { replayGuardLatepool(t, run) })
+	}
+}
+
+// guardLatepoolBlock is the size each sleeping fork of the latepool probe reported at 4 GiB, its
+// parent's block.
+const guardLatepoolBlock = 2412785664
+
+// guardLatepoolRun is one of the tester's latepool runs as replayGuardLatepool replays it in the
+// controller's tree.
+type guardLatepoolRun struct {
+	name    string
+	band    []guardReplayReading
+	forksAt int
+	mark    guardReplayReading
+	after   []guardReplayReading
+	// limit is the pod's limit, guardLimit where it is 0, and block the size each sleeping fork
+	// reports, guardLatepoolBlock where it is 0; own is what each fork holds that its parent does
+	// not, and stall how long the reading at the mark takes before the guard reads anything.
+	limit, block, own uint64
+	stall             time.Duration
+	// preExec, where set, has the growers start before the band's last reading, which reads each
+	// before its exec, with its parent's executable and arguments, at preExec bytes.
+	preExec uint64
+	// forkGrowers has the growers be forks that run their parent's program and grow, each holding
+	// the block besides what it grows (latefork2); lateForks has three more sleeping forks start
+	// with the growers, after the band's last reading.
+	forkGrowers, lateForks bool
+	// grown is each grower's size, less its 1 MiB offset and any block, in MiB, at the reading at
+	// the mark and at each reading after it.
+	grown []uint64
+	// newRead is the first kill's new_read, and lastNewRead, where set, the last kill's; atMark is
+	// how many kills the reading at the mark sends, one where it is 0: at or above the urgent share,
+	// every process that grew over the window and, where the decision holds a process that is not
+	// new to the stay, every one new to it with memory of its own (INFRA-3531 R1 of spec versions
+	// 39, 41 and 42).
+	newRead, lastNewRead string
+	atMark               int
+	want                 []guardEnded
+}
+
+// replayGuardLatepool replays run in the controller's tree: Oh My Pi holds a quarter of the limit,
+// the shell command it ran starts the probe's parent, pid 1700, which fills its block over the
+// band's readings, three sleeping forks, pids 1701 to 1703, start as forksAt says, and six growers,
+// pids 1710 to 1715, start after the band's last reading (or before it, read before their exec,
+// where preExec is set), each 1 MiB apart. The reading at the mark takes run.stall at the guard's
+// Observe, the one seam of its loop a launcher test reaches. It asserts the first kill and every
+// kill to the run's last reading, and that the guard gave no rise up.
+func replayGuardLatepool(t *testing.T, run guardLatepoolRun) {
+	t.Helper()
+	const parent = 1700
+	limit, block := run.limit, run.block
+	if limit == 0 {
+		limit = guardLimit
+	}
+	if block == 0 {
+		block = guardLatepoolBlock
+	}
+	at := func(hundredths uint64) uint64 { return limit / 10000 * hundredths >> 10 << 10 }
+	interval := memoryguard.ControllerDefaults().Interval
+	plateau := run.band[len(run.band)-1].hundredths
+	if run.forksAt < len(run.band) {
+		plateau = run.band[run.forksAt-1].hundredths
+	}
+	probe := func(hundredths uint64) guardProcess {
+		anon := block - run.own - (at(plateau) - min(at(hundredths), at(plateau)))
+		return guardProcess{pid: parent, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: guardLatepoolArgs, anon: anon}
+	}
+	pod := controllerTree(t, map[int]uint64{ctlOmp: limit / 4})
+	pod.setLimit(limit)
+	pod.add(probe(run.band[0].hundredths))
+	pod.setAnon(at(run.band[0].hundredths))
+	rig := useGuardPod(t, pod, nil)
+	var stall atomic.Int64
+	built := newMemoryGuard
+	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+		cfg.Observe = func(time.Time, uint64, uint64) { rig.clock.advance(time.Duration(stall.Load())) }
+		return built(cfg)
+	}
+	t.Cleanup(func() { newMemoryGuard = built })
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	fork := func(first int) {
+		for i := range 3 {
+			pod.add(guardProcess{pid: first + i, ppid: parent, exe: "/usr/bin/python3.13", args: guardLatepoolArgs, anon: block})
+		}
+	}
+	growArgs := guardGrowArgs
+	if run.forkGrowers {
+		growArgs = guardLatepoolArgs
+	}
+	for i, r := range run.band[1:] {
+		if i+1 == run.forksAt {
+			fork(parent + 1)
+		}
+		if run.preExec > 0 && i+2 == len(run.band) {
+			// The growers start, and the band's last reading reads each before its exec.
+			for j := range 6 {
+				pod.add(guardProcess{pid: parent + 10 + j, ppid: parent, exe: "/usr/bin/python3.13", args: guardLatepoolArgs, anon: run.preExec})
+			}
+		}
+		pod.add(probe(r.hundredths))
+		pod.setAnon(at(r.hundredths))
+		rig.tickAfter(r.after - interval)
+	}
+	if run.forksAt == len(run.band) {
+		fork(parent + 1)
+	}
+	if run.lateForks {
+		fork(parent + 4)
+	}
+	// grow sets each grower that lives to its size at the reading of index i, 0 the mark's.
+	grow := func(i int) {
+		killed := rig.signal.kills()
+		for j := range 6 {
+			if pid := parent + 10 + j; !slices.Contains(killed, pid) {
+				size := (run.grown[i] + uint64(j)) * guardMiB
+				if run.forkGrowers {
+					size += block
+				}
+				pod.add(guardProcess{pid: pid, ppid: parent, exe: "/usr/bin/python3.13", args: growArgs, anon: size})
+			}
+		}
+	}
+	grow(0)
+	pod.setAnon(at(run.mark.hundredths))
+	stall.Store(int64(run.stall))
+	rig.tickAfter(run.mark.after - interval)
+	stall.Store(0)
+	if got, want := guardEndedLines(log), run.want[:max(run.atMark, 1)]; !slices.Equal(got, want) {
+		t.Fatalf("at the first reading at the mark the guard ended %+v, want %+v; its log:\n%s", got, want, rig.log())
+	}
+	// The kills of the reading at the mark are one decision's, and each line carries its new_read.
+	for _, e := range run.want[:max(run.atMark, 1)] {
+		if got := guardNewRead(log, e.pid); got != run.newRead {
+			t.Fatalf("the line of pid %d, killed at the reading at the mark, says new_read=%s, want %s", e.pid, got, run.newRead)
+		}
+	}
+	for i, r := range run.after {
+		grow(i + 1)
+		pod.setAnon(at(r.hundredths))
+		// The guard waits its interval from the end of its tick, so the stall at the mark comes
+		// off the time to the reading after it.
+		extra := r.after - interval
+		if i == 0 {
+			extra -= run.stall
+		}
+		rig.tickAfter(extra)
+	}
+	if got := guardEndedLines(log); !slices.Equal(got, run.want) {
+		t.Fatalf("the guard ended %+v, want %+v; its log:\n%s", got, run.want, rig.log())
+	}
+	if last := run.want[len(run.want)-1].pid; run.lastNewRead != "" {
+		if got := guardNewRead(log, last); got != run.lastNewRead {
+			t.Fatalf("the last kill's line, of pid %d, says new_read=%s, want %s", last, got, run.lastNewRead)
+		}
+	}
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+}
+
+// In the controller's tree, after a kill, a dip below the mark that stays in the band ends the rise
+// and not the stay, and the order's third tier counts growth since the stay's first kill across it
+// (INFRA-3531 R1 of spec version 37). The tester's runs `8g-latepool-r2`, `8g-latepool-r3` and
+// `8g-latefork2-r1` at 15bdbd3c under gVisor at 8 GiB, replayed with their traces' readings and
+// times through the first kill after the dip, as the guard's core replays them
+// (TestMemoryGuardEndsTheGrowerLeftAfterADipBelowTheMarkByItsGrowthSinceTheStaysFirstKill): the
+// shell command Oh My Pi ran starts the probe, a python3 parent of a 4.8 GB block, beside Oh My Pi
+// at 2 GiB, with three sleeping forks and six growers that step together (in latefork2 forks of the
+// parent that run its program and grow, beside three more sleeping forks). The guard ends five
+// growers, the reading sits below the mark in the band and comes back, and no read since the dip
+// shows the grower left growing. At 15bdbd3c the guard ended the parent there by its whole size
+// (`rule=largest sizes=reread new_read=0:0`), which freed about 6 MB; the guard ends the grower,
+// by its growth since the stay's first kill.
+func TestControllerPodMemoryGuardEndsTheGrowerLeftAfterADipBelowTheMarkByItsGrowthSinceTheStaysFirstKill(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const limit = 8 * guardGiB
+	latepool := []guardEnded{
+		{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
+		{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew-since-kill", "reread", 0},
+	}
+	for _, run := range []guardLatepoolRun{
+		{
+			name: "three readings 2.6 MB below the mark (8g-latepool-r2)",
+			band: []guardReplayReading{{7562, 0}, {7738, 101 * time.Millisecond}, {7945, 101 * time.Millisecond},
+				{8137, 102 * time.Millisecond}, {8235, 101 * time.Millisecond}, {8235, 101 * time.Millisecond},
+				{8257, 102 * time.Millisecond}},
+			forksAt: 6,
+			mark:    guardReplayReading{8571, 156 * time.Millisecond},
+			after: []guardReplayReading{{8665, 129 * time.Millisecond}, {8584, 103 * time.Millisecond}, {8739, 105 * time.Millisecond},
+				{8579, 102 * time.Millisecond}, {8466, 103 * time.Millisecond}, {8497, 103 * time.Millisecond},
+				{8497, 103 * time.Millisecond}, {8575, 103 * time.Millisecond}},
+			limit:       limit,
+			block:       4817903616,
+			grown:       []uint64{30, 70, 70, 134, 134, 198, 198, 198, 262},
+			newRead:     "9:6",
+			want:        latepool,
+			lastNewRead: "0:0",
+		},
+		{
+			name: "the forks read twice by the band, three readings 1.7 MB below the mark (8g-latepool-r3)",
+			band: []guardReplayReading{{7521, 0}, {7693, 102 * time.Millisecond}, {7873, 101 * time.Millisecond},
+				{8059, 102 * time.Millisecond}, {8238, 102 * time.Millisecond}, {8238, 101 * time.Millisecond},
+				{8248, 103 * time.Millisecond}, {8259, 106 * time.Millisecond}},
+			forksAt: 6,
+			mark:    guardReplayReading{8648, 179 * time.Millisecond},
+			after: []guardReplayReading{{8668, 119 * time.Millisecond}, {8586, 106 * time.Millisecond}, {8739, 104 * time.Millisecond},
+				{8579, 103 * time.Millisecond}, {8498, 102 * time.Millisecond}, {8498, 103 * time.Millisecond},
+				{8498, 102 * time.Millisecond}, {8576, 102 * time.Millisecond}},
+			limit:       limit,
+			block:       4818214912,
+			grown:       []uint64{30, 70, 70, 134, 134, 198, 198, 198, 262},
+			newRead:     "6:6",
+			want:        latepool,
+			lastNewRead: "0:0",
+		},
+		{
+			name: "the growers forks of the parent, one reading 52 MB below the mark (8g-latefork2-r1)",
+			band: []guardReplayReading{{7568, 0}, {7842, 101 * time.Millisecond}, {8109, 102 * time.Millisecond},
+				{8237, 101 * time.Millisecond}, {8237, 101 * time.Millisecond}, {8256, 101 * time.Millisecond},
+				{8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond}, {8256, 101 * time.Millisecond},
+				{8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond},
+				{8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond},
+				{8256, 101 * time.Millisecond}, {8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond},
+				{8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond},
+				{8256, 101 * time.Millisecond}, {8256, 102 * time.Millisecond}, {8256, 102 * time.Millisecond},
+				{8256, 101 * time.Millisecond}},
+			forksAt: 5,
+			mark:    guardReplayReading{8551, 102 * time.Millisecond},
+			after: []guardReplayReading{{8697, 117 * time.Millisecond}, {8613, 106 * time.Millisecond}, {8687, 105 * time.Millisecond},
+				{8602, 103 * time.Millisecond}, {8440, 104 * time.Millisecond}, {8518, 102 * time.Millisecond}},
+			limit:       limit,
+			block:       4817117184,
+			forkGrowers: true,
+			lateForks:   true,
+			grown:       []uint64{30, 64, 64, 128, 128, 128, 192},
+			newRead:     "9:6",
+			want: []guardEnded{
+				{1715, "new", "search", 4817117184}, {1714, "grew", "reading", 4817117184}, {1713, "grew", "reading", 4817117184},
+				{1712, "grew", "reading", 4817117184}, {1711, "grew", "reading", 4817117184},
+				{1710, "grew-since-kill", "reread", 4817117184},
+			},
+			lastNewRead: "0:0",
+		},
+	} {
+		t.Run(run.name, func(t *testing.T) { replayGuardLatepool(t, run) })
+	}
+}
+
+// guardHeldBeside is the controller's tree with Oh My Pi at 2 GiB and a python3 program the shell
+// command Oh My Pi ran started, pid 1700, python3 pool.py, of 1 GiB, which sleeps through the
+// band's readings; started start before the band's last reading, which reads each of them once,
+// and the reading after is at the mark, where nothing has grown. It answers the guard's rig and
+// log.
+func guardHeldBeside(t *testing.T, started ...guardProcess) (*guardRig, *lockedBuffer) {
+	t.Helper()
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	pod.add(guardProcess{pid: 1700, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	for _, reading := range []uint64{3300, 3350} {
+		pod.setAnon(reading * guardMiB)
+		rig.tick()
+	}
+	pod.add(started...)
+	pod.setAnon(3400 * guardMiB)
+	rig.tick()
+	pod.setAnon(3500 * guardMiB)
+	rig.tick()
+	return rig, log
+}
+
+// In the controller's tree, at the reading at the mark, where none of the held processes grew, the
+// guard reads the processes new to the stay in three groups (INFRA-3531 R1 of spec version 38):
+// those with one band read that held memory of their own at it, then those started since the
+// band's last reading, then those with one band read that ranked at nothing at it, forks whose
+// parent's size covered their own. The python3 program pid 1700, pool.py of 1 GiB, runs through
+// the band; before the band's last reading pid 1710, python3 worker.py of 100 MiB, starts, and
+// pid 1700 forks pid 1701, which runs its program and reports its 1 GiB as its own; after it pid
+// 1730, python3 grow.py of 50 MiB, starts. A launcher test reaches no read of the guard's but
+// Observe, so in the cases where the reading at the mark takes one interval there, before the guard
+// reads anything, the first group a case holds is the one read: the guard reads one process new to
+// the stay and no more where it holds memory of its own. Pid 1710 ends where it is held; without
+// it pid 1730 ends, found by the search, before pid 1701 is read; with pid 1701 alone the guard
+// reads it, it ranks at nothing, and the largest, pid 1700, ends. Where the reading takes no time
+// the guard reads all three and ends pid 1710. Each line says what the reads at the mark read
+// (new_read).
+func TestControllerPodMemoryGuardReadsAtTheMarkTheNewWithMemoryOfTheirOwnThenTheStartedSinceThenTheForks(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	withOwn := guardProcess{pid: 1710, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "worker.py"}, anon: 100 * guardMiB}
+	fork := guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB}
+	started := guardProcess{pid: 1730, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 50 * guardMiB}
+	interval := memoryguard.ControllerDefaults().Interval
+	for _, tc := range []struct {
+		name    string
+		held    []guardProcess
+		started []guardProcess
+		stall   time.Duration
+		want    guardEnded
+		newRead string
+	}{
+		{"each group, the reads taking no time", []guardProcess{withOwn, fork}, []guardProcess{started}, 0,
+			guardEnded{1710, "new", "search", 0}, "3:2"},
+		{"each group, the reading at the mark one interval", []guardProcess{withOwn, fork}, []guardProcess{started}, interval,
+			guardEnded{1710, "new", "reread", 0}, "1:1"},
+		{"no held process with memory of its own, the reading at the mark one interval", []guardProcess{fork}, []guardProcess{started}, interval,
+			guardEnded{1730, "new", "search", 0}, "1:1"},
+		{"a fork alone, the reading at the mark one interval", []guardProcess{fork}, nil, interval,
+			guardEnded{1700, "largest", "reread", 0}, "1:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+			pod.add(guardProcess{pid: 1700, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB})
+			rig := useGuardPod(t, pod, nil)
+			var stall atomic.Int64
+			built := newMemoryGuard
+			newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+				cfg.Observe = func(time.Time, uint64, uint64) { rig.clock.advance(time.Duration(stall.Load())) }
+				return built(cfg)
+			}
+			t.Cleanup(func() { newMemoryGuard = built })
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			for _, reading := range []uint64{3300, 3350} {
+				pod.setAnon(reading * guardMiB)
+				rig.tick()
+			}
+			pod.add(tc.held...)
+			pod.setAnon(3400 * guardMiB)
+			rig.tick()
+			pod.add(tc.started...)
+			pod.setAnon(3500 * guardMiB)
+			stall.Store(int64(tc.stall))
+			rig.tick()
+			if got := guardEndedLines(log); !slices.Equal(got, []guardEnded{tc.want}) {
+				t.Fatalf("at the mark the guard ended %+v, want %+v; its log:\n%s", got, tc.want, rig.log())
+			}
+			if got := guardNewRead(log, tc.want.pid); got != tc.newRead {
+				t.Fatalf("the ended line of pid %d says new_read=%s, want %s", tc.want.pid, got, tc.newRead)
+			}
+		})
+	}
+}
+
+// In the controller's tree, a new process that runs its parent's executable with other arguments,
+// or another executable, has run a program of its own, and ranks by its whole size (INFRA-3531 R1
+// of spec version 33). The python3 program pid 1700, of 1 GiB, forks before the band's last reading
+// pid 1701, which runs its program and reports 1 GiB and 2 MiB, and starts pid 1702, of 300 MiB,
+// with each case's executable and arguments; the shell command starts pid 1720, of 250 MiB. At the
+// mark nothing has grown, and of the three new to the stay the guard ends pid 1702, at its whole
+// size, before pid 1720 and before the fork, which ranks at 2 MiB, its line taking nothing off.
+func TestControllerPodMemoryGuardRanksANewProcessThatRunsAProgramOfItsOwnByItsWholeSize(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	for _, tc := range []struct {
+		name string
+		exe  string
+		args []string
+	}{
+		{"its parent's executable with other arguments", "/usr/bin/python3.13", []string{"python3", "worker.py"}},
+		{"another executable with its parent's arguments", "/usr/bin/node", []string{"python3", "pool.py"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, log := guardHeldBeside(t,
+				guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB + 2*guardMiB},
+				guardProcess{pid: 1702, ppid: 1700, exe: tc.exe, args: tc.args, anon: 300 * guardMiB},
+				guardProcess{pid: 1720, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "idle.py"}, anon: 250 * guardMiB},
+			)
+			if kills := rig.signal.kills(); !slices.Equal(kills, []int{1702}) {
+				t.Fatalf("at the mark the guard killed %v, want pid 1702 at its whole size; its log:\n%s", kills, rig.log())
+			}
+			if got, want := guardEndedLines(log), []guardEnded{{1702, "new", "reread", 0}}; !slices.Equal(got, want) {
+				t.Fatalf("the guard ended %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// guardNewRead is the new_read of the guard's ended line for pid in log, what the reads at the mark
+// read of the processes new to the stay, "" where it wrote no such line.
+func guardNewRead(log *lockedBuffer, pid int) string {
+	for _, line := range guardLines(log, fmt.Sprintf("ended pid=%d ", pid)) {
+		for _, field := range strings.Fields(line) {
+			if value, ok := strings.CutPrefix(field, "new_read="); ok {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+// In the controller's tree, the reading at the mark reads again the executable and arguments of a
+// held process whose smaps it reads where the band read it running its parent's program
+// (INFRA-3531 R1 of spec version 34, verification version 24): a process the band read between its
+// fork and its exec carries its parent's identity there. The python3 program pid 1700, of 1 GiB,
+// starts pid 1701 before the band's last reading, which reads it with pid 1700's executable and
+// arguments, reporting pid 1700's 1 GiB as its own. By the reading at the mark pid 1701 runs
+// python3 grow.py at 300 MiB, or still runs pool.py, a fork; nothing has grown. Running grow.py it
+// ends at its whole size, new to the stay, its line saying the mark read one process new to the
+// stay with memory of its own (new_read=1:1); a fork ranks at nothing, and the guard ends the
+// largest, pid 1700 (new_read=1:0).
+func TestControllerPodMemoryGuardRanksAHeldProcessThatHasRunAnotherProgramSinceTheBandReadItByItsWholeSize(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		anon    uint64
+		want    guardEnded
+		newRead string
+	}{
+		{"one that runs grow.py since", []string{"python3", "grow.py"}, 300 * guardMiB, guardEnded{1701, "new", "reread", 0}, "1:1"},
+		{"a fork that still runs pool.py", []string{"python3", "pool.py"}, guardGiB, guardEnded{1700, "largest", "reread", 0}, "1:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+			pod.add(guardProcess{pid: 1700, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB})
+			rig := useGuardPod(t, pod, nil)
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			for _, reading := range []uint64{3300, 3350} {
+				pod.setAnon(reading * guardMiB)
+				rig.tick()
+			}
+			pod.add(guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB})
+			pod.setAnon(3400 * guardMiB)
+			rig.tick()
+			if kills := rig.signal.kills(); len(kills) != 0 {
+				t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+			}
+
+			pod.add(guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: tc.args, anon: tc.anon})
+			pod.setAnon(3500 * guardMiB)
+			rig.tick()
+			if got := guardEndedLines(log); !slices.Equal(got, []guardEnded{tc.want}) {
+				t.Fatalf("at the mark the guard ended %+v, want %+v; its log:\n%s", got, tc.want, rig.log())
+			}
+			if got := guardNewRead(log, tc.want.pid); got != tc.newRead {
+				t.Fatalf("the ended line of pid %d says new_read=%s, want %s", tc.want.pid, got, tc.newRead)
+			}
+		})
+	}
+}
+
+// The zrr4d shape in the controller's tree (INFRA-3531 R1 of spec version 31, the tester's run
+// `4g-latepool-zrr4d` at 778c42de): the probe's parent holds a block of 1.5 GiB and has forked three
+// sleepers that run its program before the band, each reporting the block as its own; six growers,
+// its children that run a program of their own, start before the band's last reading, which reads
+// each once at a few MiB, and have not stepped by the mark. Nothing grew, and the growers are new
+// to the stay beside an older, larger sleeper, the parent: the guard ends the largest grower, its
+// line naming the new tier and taking nothing off.
+func TestControllerPodMemoryGuardEndsAGrowerReadOnceAtTheBandsLastReadingBeforeAnOlderLargerSleeper(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const parent, block = 1700, 1536 * guardMiB
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+	pod.add(guardProcess{pid: parent, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: guardLatepoolArgs, anon: block})
+	for i := range 3 {
+		pod.add(guardProcess{pid: parent + 1 + i, ppid: parent, exe: "/usr/bin/python3.13", args: guardLatepoolArgs, anon: block + guardMiB})
+	}
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	for _, reading := range []uint64{3300, 3350} {
+		pod.setAnon(reading * guardMiB)
+		rig.tick()
+	}
+	for j := range 6 {
+		pod.add(guardProcess{pid: parent + 10 + j, ppid: parent, exe: "/usr/bin/python3.13", args: guardGrowArgs, anon: uint64(4+j) * guardMiB})
+	}
+	pod.setAnon(3400 * guardMiB)
+	rig.tick()
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+	pod.setAnon(guardHigh)
+	rig.tick()
+	if got, want := guardEndedLines(log), []guardEnded{{parent + 15, "new", "reread", 0}}; !slices.Equal(got, want) {
+		t.Fatalf("at the mark the guard ended %+v, want the largest grower %+v and no sleeper; its log:\n%s", got, want, rig.log())
+	}
+}
+
+// At the first reading at the mark, the guard reads the processes started since the band's last
+// reading the newest first, within half an interval of the reading at the mark by its clock, one at
+// least, and ends the largest of those it read (INFRA-3531 R1 of spec version 28). A Python pool's
+// workers sleep through the band beside Oh My Pi; as the reading reaches the mark the shell command
+// starts pid 1710, of 300 MiB, and then pid 1711, of 100 MiB. Where the reading at the mark itself
+// takes 80 ms by the guard's clock, past the budget of 50 ms, as on a pod whose CPU the host
+// throttles, the guard reads pid 1711 alone and ends it, passing over the larger, older pid 1710;
+// where it takes no time, the guard reads both and ends pid 1710. The rig moves the clock on at the
+// reading (the guard's Observe), the one seam of the guard's loop a launcher test reaches.
+func TestControllerPodMemoryGuardReadsTheNewestStartedSinceTheBandWithinHalfAnIntervalAndEndsTheLargestItRead(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const pool, block, older, newer = 1700, 1536 * guardMiB, 1710, 1711
+	for _, tc := range []struct {
+		name string
+		mark time.Duration
+		want int
+		size uint64
+	}{
+		{"the reading at the mark past the budget", 80 * time.Millisecond, newer, 100 * guardMiB},
+		{"no time at the reading at the mark", 0, older, 300 * guardMiB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+			for i := range 4 {
+				parent := ctlCommand
+				if i > 0 {
+					parent = pool
+				}
+				pod.add(guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: block})
+			}
+			rig := useGuardPod(t, pod, nil)
+			var atMark atomic.Int64
+			built := newMemoryGuard
+			newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+				cfg.Observe = func(time.Time, uint64, uint64) { rig.clock.advance(time.Duration(atMark.Load())) }
+				return built(cfg)
+			}
+			t.Cleanup(func() { newMemoryGuard = built })
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			for _, reading := range []uint64{3300, 3320} {
+				pod.setAnon(reading * guardMiB)
+				rig.tick()
+			}
+
+			command := func(pid int, anon uint64) guardProcess {
+				return guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: anon}
+			}
+			pod.add(command(older, 300*guardMiB), command(newer, 100*guardMiB))
+			pod.setAnon(guardHigh)
+			atMark.Store(int64(tc.mark))
+			rig.tick()
+			if kills := rig.signal.kills(); !slices.Equal(kills, []int{tc.want}) {
+				t.Fatalf("at the mark the guard killed %v, want %d; its log:\n%s", kills, tc.want, rig.log())
+			}
+			ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", tc.want, tc.size, guardHigh)
+			if got := guardLines(log, "ended "); len(got) != 1 || !strings.HasPrefix(got[0], ended) {
+				t.Fatalf("the ended lines are %q, want one starting %q", got, ended)
+			}
+		})
+	}
+}
+
+// After a kill in the controller's tree, the next in the order is the one that grew the most since
+// that kill where nothing grew over the window and no process is new to the stay (INFRA-3531 R1 of
+// spec version 31): readings more than the window apart, as a throttled pod's come, leave one read
+// of each process in the window. The shell command Oh My Pi ran has started a Python pool, whose
+// parent holds a block of 1.5 GiB and whose three forked workers sleep, each reporting the block
+// as its own, and a grower smaller than the block; the band reads each of them twice. At the first
+// reading at the mark nothing has grown and none is new, and the guard ends the largest: the
+// parent, since each worker runs its program and ranks by what it holds over the parent's size
+// (INFRA-3531 R1 of spec version 33); its end frees nothing, its workers keeping its pages. The
+// next reading comes 400 ms later with the grower 64 MiB larger and the reading not fallen: over
+// the window nothing grew, but the grower grew since the kill, and the guard ends it, not a worker.
+func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWiderApartThanTheWindow(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const pool, block = 1700, 1536 * guardMiB
+	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
+	for i := range 4 {
+		parent := ctlCommand
+		if i > 0 {
+			parent = pool
+		}
+		pod.add(guardProcess{pid: pool + i, ppid: parent, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: block})
+	}
+	grower := guardProcess{pid: pool + 10, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 1000 * guardMiB}
+	pod.add(grower)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	for _, inTheBand := range []uint64{3300, 3400} {
+		pod.setAnon(inTheBand * guardMiB)
+		rig.tick()
+	}
+	// Oh My Pi, the block once and the grower: 3560 MiB, at the mark.
+	reading := func() uint64 { return guardGiB + block + grower.anon }
+	pod.setAnon(reading())
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{pool}) {
+		t.Fatalf("at the mark the guard killed %v, want the pool's parent %d, the largest where nothing grew; its log:\n%s", kills, pool, rig.log())
+	}
+
+	grower.anon += 64 * guardMiB
+	pod.add(grower)
+	pod.setAnon(reading())
+	rig.tickAfter(300 * time.Millisecond)
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{pool, grower.pid}) {
+		t.Fatalf("400 ms after the kill the guard killed %v, want the grower %d next and not another worker; its log:\n%s",
+			kills, grower.pid, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller size=%d reading=%d ", grower.pid, 1064*guardMiB, reading())
+	if got := guardLines(log, "ended "); len(got) != 2 || !strings.HasPrefix(got[1], ended) {
+		t.Fatalf("the ended lines are %q, want the second starting %q", got, ended)
+	}
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up while the grower grew: %q", stopped)
+	}
+	if reports := waitingReports(m); len(reports) != 2 || reports[1].PID != grower.pid {
+		t.Fatalf("the controller's manager holds the reports %+v, want the parent's and then the grower's", reports)
+	}
+}
+
+// A kill on the band's held reads in the controller's tree has as each process's size as of it the
+// size the decision read, and not a read made after the kill (INFRA-3531 R1), in the shape of
+// `8g-latepool-q56hm` at 7356e0f6. The shell command Oh My Pi ran has started three growers, pids
+// 1710 to 1712, which step 64 MiB at each reading of the band; at the first reading at the mark,
+// 3500 MiB, the guard ends pid 1712, the largest of equal growth, on the band's held sizes. The two
+// left step 64 MiB between that reading and the guard's read after the kill, and then not again;
+// at the next reading, 3528 MiB and not fallen, each has grown 64 MiB since the kill, and the guard
+// ends pid 1711 there, where a guard that kept the read after the kill waited.
+func TestControllerPodMemoryGuardMeasuresGrowthSinceAKillOnHeldSizesFromTheSizesTheDecisionRead(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	sizes := map[int]uint64{1710: 200 * guardMiB, 1711: 210 * guardMiB, 1712: 220 * guardMiB}
+	// put writes each grower at its size.
+	put := func() {
+		for pid, size := range sizes {
+			pod.add(guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: size})
+		}
+	}
+	// step has each grower step 64 MiB.
+	step := func() {
+		for pid := range sizes {
+			sizes[pid] += 64 * guardMiB
+		}
+		put()
+	}
+	put()
+	pod.setAnon(3200 * guardMiB)
+	rig := useGuardPod(t, pod, nil)
+	// The growers left step between the reading at the mark and the guard's read after its kill.
+	rig.signal.afterKill = func(pid int) {
+		delete(sizes, pid)
+		if pid == 1712 {
+			step()
+		}
+	}
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	for _, inTheBand := range []uint64{3300, 3400} {
+		step()
+		pod.setAnon(inTheBand * guardMiB)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+	}
+
+	pod.setAnon(3500 * guardMiB)
+	rig.tick()
+	if got, want := guardEndedLines(log), []guardEnded{{1712, "grew", "band", 0}}; !slices.Equal(got, want) {
+		t.Fatalf("at the first reading at the mark the guard ended %+v, want %+v; its log:\n%s", got, want, rig.log())
+	}
+
+	pod.setAnon(3528 * guardMiB)
+	rig.tick()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1712, 1711}) {
+		t.Fatalf("at the first reading after the exit the guard killed %v, want [1712 1711]; its log:\n%s", kills, rig.log())
+	}
+	ended := fmt.Sprintf("launcher: memory guard: ended pid=1711 role=controller size=%d reading=%d ", 402*guardMiB, 3528*guardMiB)
+	if got := guardLines(log, "ended "); len(got) != 2 || !strings.HasPrefix(got[1], ended) {
+		t.Fatalf("the ended lines are %q, want the second starting %q", got, ended)
+	}
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+}
+
+// In the controller's tree, a process the reading's table lists but whose smaps the reading could
+// not read keeps its size as of the kill (INFRA-3531 R1): its growth since the kill counts once it
+// is read again. The shell command Oh My Pi ran runs three Python programs; at the first reading,
+// at the mark, the guard ends the largest, pid 1700, of 900 MiB, which exits and frees nothing.
+// Pid 1701, python3 grow.py of 300 MiB, grows 64 MiB at the next reading, 400 ms later, which
+// cannot read its smaps, and the reading has not fallen: nothing the guard read has grown, and it
+// ends nothing. At the reading after, 400 ms later, pid 1701 reads 364 MiB, grown since the kill,
+// and the guard goes on and ends it, before pid 1702, python3 idle.py of 600 MiB, which never grew.
+// A guard that dropped its size as of the kill at the reading that did not read it took 364 MiB as
+// that size, saw nothing grown, and gave the rise up once the wait had passed.
+func TestControllerPodMemoryGuardGoesOnForAGrowerItCouldNotReadAtAReadingAfterTheKill(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	command := func(pid int, program string, anon uint64) guardProcess {
+		return guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", program}, anon: anon}
+	}
+	grower := command(1701, "grow.py", 300*guardMiB)
+	pod.add(command(1700, "big.py", 900*guardMiB), grower, command(1702, "idle.py", 600*guardMiB))
+	pod.setAnon(guardHigh)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1700}) {
+		t.Fatalf("at the first reading, at the mark, the guard killed %v, want the largest, 1700; its log:\n%s", kills, rig.log())
+	}
+
+	grower.anon, grower.unreadableSmaps = 364*guardMiB, true
+	pod.add(grower)
+	rig.tickAfter(300 * time.Millisecond)
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1700}) {
+		t.Fatalf("at the reading that could not read pid 1701 the guard killed %v, want nothing more; its log:\n%s", kills, rig.log())
+	}
+	grower.unreadableSmaps = false
+	pod.add(grower)
+	rig.tickAfter(300 * time.Millisecond)
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1700, 1701}) {
+		t.Fatalf("at the reading after, the guard killed %v, want pid 1701, grown since the kill, next; its log:\n%s", kills, rig.log())
+	}
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up while pid 1701 grew: %q", stopped)
+	}
+}
+
+// After a kill of the rise, the largest process new to the stay is ended before a larger process
+// that is not and did not grow, and before one that grew only since the stay's first kill; then
+// the one that grew since that kill before the largest; and where nothing grew and nothing is new,
+// the largest is ended (INFRA-3531 R1 of spec versions 31 and 34). The shell command Oh My Pi ran
+// runs three Python processes, which the band reads twice. At the first reading at the mark none is
+// new and none grew, and the guard ends the largest, pid 1700. 400 ms later, the reading not
+// fallen, pid 1710 has grown 64 MiB since that kill, which has the guard go on, and two processes
+// have started, pids 1720 and 1721, of 200 and 100 MiB; pid 1701 sleeps at 900 MiB. Over the
+// window nothing grew, and the guard ends pid 1720, the larger of the two new ones. At the next
+// reading, fallen but still at the mark, pid 1721 has one read before it and is new still, and
+// ends. At the reading after, fallen again, nothing grew over the window or since the previous
+// kill and nothing is new, and the guard ends pid 1710, which grew since the stay's first kill,
+// before pid 1701, the largest; at the one after, fallen again, it ends pid 1701. Each ended line
+// names its rule.
+func TestControllerPodMemoryGuardEndsTheLargestNewProcessAfterAKillBeforeALargerIdleOneOrAGrowerAndTheLargestWhereNoneApplies(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const first, idle, grower, newer, newest = 1700, 1701, 1710, 1720, 1721
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	command := func(pid int, anon uint64) guardProcess {
+		return guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "work.py"}, anon: anon}
+	}
+	pod.add(command(first, 1000*guardMiB), command(idle, 900*guardMiB), command(grower, 300*guardMiB))
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	step := func(what string, reading uint64, extra time.Duration, want ...int) {
+		t.Helper()
+		pod.setAnon(reading)
+		rig.tickAfter(extra)
+		if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+			t.Fatalf("%s: the guard killed %v, want %v; its log:\n%s", what, kills, want, rig.log())
+		}
+	}
+	step("at the band's first reading", 3300*guardMiB, 0)
+	step("at the band's second reading", 3400*guardMiB, 0)
+	step("at the first reading at the mark", guardHigh, 0, first)
+
+	pod.add(command(grower, 364*guardMiB), command(newer, 200*guardMiB), command(newest, 100*guardMiB))
+	step("400 ms after the kill", guardHigh, 300*time.Millisecond, first, newer)
+	step("at the next reading, fallen, with one read of the newest before it", 3550*guardMiB, 0, first, newer, newest)
+	step("at the reading after, fallen, with pid 1710 grown since the stay's first kill", 3540*guardMiB, 0, first, newer, newest, grower)
+	step("at the reading after, fallen and with nothing grown or new", 3530*guardMiB, 0, first, newer, newest, grower, idle)
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+	ended := guardLines(log, "ended ")
+	rules := []string{" rule=largest sizes=band ", " rule=new sizes=reading ", " rule=new sizes=reading ", " rule=grew-since-kill sizes=reading ",
+		" rule=largest sizes=reading "}
+	if len(ended) != len(rules) {
+		t.Fatalf("the ended lines are %q, want %d", ended, len(rules))
+	}
+	for i, rule := range rules {
+		if !strings.Contains(ended[i], rule) {
+			t.Errorf("ended line %d is %q, want it to hold %q", i, ended[i], rule)
+		}
+	}
+}
+
+// Oh My Pi growing past the mark beside an idle Python kernel and an idle JavaScript kernel, which
+// hold more than the floor between them and each on its own, costs one kernel: at the mark nothing
+// the guard may end has grown, so it ends the larger, the JavaScript kernel. That kill lowers
+// nothing Oh My Pi's growth does not make up, and once the controller's wait of 1 second passes
+// with no fall and no kernel growing, the guard writes its stopped line with reason not fallen
+// and never ends the Python kernel, however far Oh My Pi grows.
+func TestControllerPodMemoryGuardEndsOneKernelForARiseThatIsOhMyPisOwn(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2000 * guardMiB, ctlEval: 600 * guardMiB, ctlKernel: 500 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	omp := guardProcess{pid: ctlOmp, ppid: ctlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}, anon: 2000 * guardMiB}
+	grow := func(reading uint64) {
+		omp.anon += 100 * guardMiB
+		pod.add(omp)
+		pod.setAnon(reading * guardMiB)
+	}
+	for _, reading := range []uint64{3200, 3300, 3400, 3500} {
+		grow(reading)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
+		t.Fatalf("at the mark the guard killed %v, want the larger idle kernel %d; its log:\n%s", kills, ctlEval, rig.log())
+	}
+	// The reading 100 ms before the wait passes, and the one at which it has passed.
+	settings := memoryguard.ControllerDefaults()
+	grow(3600)
+	rig.tickAfter(settings.Wait - 2*settings.Interval)
+	grow(3700)
+	rig.tick()
+	for _, reading := range []uint64{3800, 3900, 4000} {
+		grow(reading)
+		rig.tick()
+	}
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
+		t.Fatalf("the guard killed %v, want the JavaScript kernel %d alone and not the Python kernel %d; its log:\n%s",
+			kills, ctlEval, ctlKernel, rig.log())
+	}
+	want := fmt.Sprintf("launcher: memory guard: stopped for this rise reason=not fallen reading=%d endable=%d ", 3700*guardMiB, 500*guardMiB)
+	if stopped := guardLines(log, "stopped "); len(stopped) != 1 || !strings.HasPrefix(stopped[0], want) {
+		t.Fatalf("the stopped lines are %q, want one starting %q", stopped, want)
+	}
+	if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlEval {
+		t.Fatalf("the controller's manager holds the reports %+v, want the JavaScript kernel's alone", reports)
+	}
+}
+
+// A guard that cannot read the pod turns off for good with one off line and ends nothing: with no
+// readable AnonPages, no readable limit, or a limit that reads as no limit, though the pod is at the
+// mark with a process the guard may end above the floor.
+func TestControllerPodMemoryGuardTurnsOffWhereItCannotReadThePod(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	for _, tc := range []struct {
+		name   string
+		spoil  func(pod *guardPod) error
+		reason string
+	}{
+		{"no meminfo", func(pod *guardPod) error { return os.Remove(filepath.Join(pod.proc, "meminfo")) },
+			"off reason=no readable AnonPages in "},
+		{"a meminfo with no AnonPages", func(pod *guardPod) error {
+			return os.WriteFile(filepath.Join(pod.proc, "meminfo"), []byte("MemTotal:       20971520 kB\nShmem:              32 kB\n"), 0o644)
+		}, "off reason=no AnonPages line in "},
+		{"no limit", func(pod *guardPod) error { return os.Remove(filepath.Join(pod.cgroup, "memory.limit_in_bytes")) },
+			"off reason=no readable limit in "},
+		{"a limit that reads as no limit", func(pod *guardPod) error { pod.setLimit(9223372036854771712); return nil },
+			"off reason=the limit 9223372036854771712 in "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlKernel: 900 * guardMiB})
+			pod.setAnon(guardHigh)
+			if err := tc.spoil(pod); err != nil {
+				t.Fatal(err)
+			}
+			rig := useGuardPod(t, pod, nil)
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool { return len(guardLines(log, "off ")) > 0 }) {
+				t.Fatalf("the guard wrote no off line; its log:\n%s", log.String())
+			}
+			if lines := guardLines(log, ""); len(lines) != 1 || !strings.HasPrefix(lines[0], "launcher: memory guard: "+tc.reason) {
+				t.Fatalf("the guard's lines are %q, want one off line starting %q", lines, tc.reason)
+			}
+			if kills, reports := rig.signal.kills(), waitingReports(m); len(kills) != 0 || len(reports) != 0 {
+				t.Fatalf("a guard that is off killed %v and reported %+v, want nothing", kills, reports)
+			}
+		})
+	}
+}
+
+// A single-role launcher that is not its container's first process, a controller's launcher run
+// by hand or by a test, runs no memory guard: Run writes one off line through the role's own log
+// and builds no guard, though its manager has no roles log, and serves on: an acknowledgement's
+// settings reach no guard, a stop is answered, and Run returns at its context's end with no panic.
+// serveMemoryGuard's single-role form answers at once and leaves the manager holding no guard.
+func TestControllerPodMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	useContainerInit(t, false)
+	previous := newMemoryGuard
+	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
+		panic("a launcher that is not the container's first process built a memory guard")
+	}
+	t.Cleanup(func() { newMemoryGuard = previous })
+	g := runControllerLauncher(t)
+	g.acceptController(memoryGuardAck(70, 10, 5, 100))
+	g.stop(1)
+	want := fmt.Sprintf("launcher: memory guard: off reason=the launcher is pid %d, not the container's first process, so it neither sees nor owns every process of the container",
+		os.Getpid())
+	if got := guardLines(g.stderr, ""); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the launcher's memory guard lines are %q, want %q alone", got, want)
+	}
+
+	log := &lockedBuffer{}
+	m := &manager{role: "controller", stderr: log}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	select {
+	case <-serveMemoryGuard(ctx, Config{}, []*manager{m}, &pidGuard{}):
+	default:
+		t.Fatal("serveMemoryGuard left something running in a launcher that runs no guard")
+	}
+	if m.memoryGuard != nil || m.memoryWake != nil {
+		t.Fatalf("the controller's manager holds the guard %v and the wake %v, want neither", m.memoryGuard, m.memoryWake)
+	}
+	if got := guardLines(log, ""); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the controller's memory guard lines are %q, want %q alone", got, want)
+	}
+}
+
+// Before any acknowledgement the controller pod's guard runs at its own defaults, those of an issue
+// pod's but a wait of 1 second after a kill (memoryguard.ControllerDefaults), which its start line
+// says. An acknowledgement at 70% with the controller pod's other defaults, through the wire's own
+// encoder and decoder, is taken in place: one settings line and no second start line, and the
+// report of the kill made before it goes on its connection. After the connection drops, the next
+// acknowledgement's other numbers are taken in place too, with no second start line, and the
+// hour's window keeps the start it took at the guard's first reading.
+func TestControllerPodMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const first, second, third = 1650, 1651, 1652
+	pod := newGuardPod(t)
+	pod.add(
+		guardProcess{pid: first, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "first.py"}, anon: 900 * guardMiB},
+		guardProcess{pid: second, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "second.py"}, anon: 800 * guardMiB},
+		guardProcess{pid: third, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "third.py"}, anon: 700 * guardMiB},
+	)
+	rig := useGuardPod(t, pod, nil)
+	g := runControllerLauncher(t)
+	rig.started()
+	started := fmt.Sprintf("launcher: memory guard: started act_percent=85 floor_percent=10 wait=1s interval=100ms limit=%d reading=%d", guardLimit, guardLow)
+	if got := guardLines(g.stderr, "started "); !slices.Equal(got, []string{started}) {
+		t.Fatalf("the guard's start lines are %q, want %q", got, started)
+	}
+	controller := memoryguard.Defaults()
+	controller.Wait = time.Second
+	if got := memoryguard.ControllerDefaults(); got != controller {
+		t.Fatalf("the controller pod's defaults are %+v, want an issue pod's with a wait of 1s, %+v", got, controller)
+	}
+	kill := func(what string, reading uint64, want ...int) {
+		t.Helper()
+		pod.setAnon(reading)
+		rig.tick()
+		if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+			t.Fatalf("%s the guard killed %v at %d%% of the limit, want %v; its log:\n%s", what, kills, reading*100/guardLimit, want, rig.log())
+		}
+		pod.setAnon(guardLow)
+		rig.tick()
+	}
+	report := func(conn *roleConn, pid int, sequence uint64) {
+		t.Helper()
+		if r := conn.nextMemoryKill(); r.PID != pid || r.Sequence != sequence || r.Guard != rig.id() {
+			t.Fatalf("the controller's connection carries %+v, want the report of pid %d, sequence %d of guard %s", r, pid, sequence, rig.id())
+		}
+	}
+	kill("before any acknowledgement, at the default act share of 85%,", guardLimit/100*86, first)
+
+	conn := g.acceptController(memoryGuardAck(70, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardControllerWaitDefault, shimwire.MemoryGuardIntervalDefault))
+	at70 := "launcher: memory guard: settings act_percent=70 floor_percent=10 wait=1s interval=100ms"
+	if got := guardLines(g.stderr, "settings "); !slices.Equal(got, []string{at70}) {
+		t.Fatalf("after the acknowledgement the guard's settings lines are %q, want %q", got, at70)
+	}
+	report(conn, first, 1)
+	kill("at an act share of 70%", guardLimit/100*75, first, second)
+	report(conn, second, 2)
+
+	g.dropConnection()
+	again := g.acceptController(memoryGuardAck(60, 5, 3, 500))
+	at60 := "launcher: memory guard: settings act_percent=60 floor_percent=5 wait=3s interval=500ms"
+	if got := guardLines(g.stderr, "settings "); !slices.Equal(got, []string{at70, at60}) {
+		t.Fatalf("after the next connection's acknowledgement the guard's settings lines are %q, want %q", got, []string{at70, at60})
+	}
+	kill("at an act share of 60%", guardLimit/100*65, first, second, third)
+	report(again, third, 3)
+	if got := guardLines(g.stderr, "started "); !slices.Equal(got, []string{started}) {
+		t.Fatalf("the guard's start lines are %q, want its one start line %q", got, started)
+	}
+
+	rig.tickAfter(time.Hour)
+	hours := guardLines(g.stderr, "hour ")
+	if len(hours) != 1 || !strings.HasPrefix(hours[0], "launcher: memory guard: hour start=2026-11-14T03:00:00Z end=2026-11-14T04:00:00Z ") {
+		t.Fatalf("the hourly lines are %q, want one for the hour from the guard's first reading", hours)
+	}
+}
+
+// An acknowledgement that carries no settings, a daemon's that does not know the guard or a
+// deployment's that turned it off, turns the controller pod's guard off with its line, and the
+// guard ends nothing at the mark.
+func TestControllerPodMemoryGuardTurnsOffOnAnAcknowledgementWithNoSettings(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const grower = 1660
+	pod := newGuardPod(t)
+	pod.add(guardProcess{pid: grower, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 900 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	g := runControllerLauncher(t)
+	rig.started()
+	g.acceptController(shimwire.LauncherHelloAck{})
+	want := "launcher: memory guard: off: the daemon's acknowledgement carries no settings"
+	if got := guardLines(g.stderr, "off"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the guard's off lines are %q, want %q", got, want)
+	}
+	pod.setAnon(guardHigh)
+	rig.tick()
+	rig.tick()
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("a guard the acknowledgement turned off killed %v at the mark, want nothing; its log:\n%s", kills, rig.log())
+	}
+}
+
+// The pids of TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSettings: the
+// controller's generation under a role-init of its own, in the roles-dir form.
+const (
+	rolesDirCtlInit = 1680 + iota
+	rolesDirCtlShim
+	rolesDirCtlOmp
+	rolesDirCtlKernel
+	rolesDirCtlCommand
+)
+
+// Where the session database names a writer audience the controller's pod runs the launcher's
+// roles-dir form, and the controller's generation runs under a role-init of its own. In gVisor
+// that launcher, the container's first process, runs that form's guard over the controller's
+// role-init (podClassifier), and the daemon's first answer to the controller's hello hands it the
+// settings of runtime.kubernetes.memory_guard.controller_pod, here an act share of 70% with that
+// block's other defaults, its wait of 1 second among them. The guard takes them in place, with one
+// settings line, and acts at 75% of the limit, below the 85% it starts at. It ends, largest first,
+// the Python kernel and then the shell command the controller's Oh My Pi started, and never the
+// role-init, the shim or Oh My Pi, though each is larger than both; with only those three left it
+// ends nothing more and writes its stopped line. Each kill is the controller's: its ended line
+// reads role=controller, and its report goes on the controller's connection, in the guard's order.
+func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSettings(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	exe := launcherExe(t)
+	launcher := os.Getpid()
+	pod := newGuardPod(t)
+	pod.addLauncher(exe, 0)
+	pod.add(
+		guardProcess{pid: rolesDirCtlInit, ppid: launcher, exe: exe, args: []string{"legion", "launcher", "role-init", "--role", "controller"}, anon: 1900 * guardMiB},
+		guardProcess{pid: rolesDirCtlShim, ppid: rolesDirCtlInit, exe: exe, args: []string{"legion", shimArgument, "--connect", "tcp://daemon", "--", controllerOmp}, anon: 1800 * guardMiB},
+		guardProcess{pid: rolesDirCtlOmp, ppid: rolesDirCtlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}, anon: 1700 * guardMiB},
+		guardProcess{pid: rolesDirCtlKernel, ppid: rolesDirCtlOmp, exe: "/usr/bin/python3.13", args: []string{"python3", "-u", "/tmp/omp-python-kernel.py"}, anon: 900 * guardMiB},
+		guardProcess{pid: rolesDirCtlCommand, ppid: rolesDirCtlOmp, exe: "/usr/bin/bash", args: []string{"bash", "-c", "make -j8"}, anon: 800 * guardMiB},
+	)
+	rig := useGuardPod(t, pod, nil)
+
+	// The roles-dir form for the controller alone, built as Run builds it (newManagers), with the
+	// controller's generation running: its role-init is the manager's child.
+	rolesDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rolesDir, "controller", RoleLauncherDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	token := ownToken("launcher-token-controller")
+	if err := os.WriteFile(filepath.Join(rolesDir, "controller", RoleLauncherDir, LauncherTokenFile), []byte(token+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	listener := listenForLauncher(t, token)
+	stderr := &lockedBuffer{}
+	cfg := Config{
+		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-controller", PodUID: "pod-1",
+		RolesDir: rolesDir, Roles: []string{"controller"}, Stdout: stderr, Stderr: stderr, StopGrace: 2 * time.Second,
+	}
+	pids := &pidGuard{}
+	managers, err := newManagers(cfg, pids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := managers[0]
+	m.mu.Lock()
+	m.child = &child{generation: 1, pid: rolesDirCtlInit}
+	m.mu.Unlock()
+	// The guard and the controller's connection, as Run's roles-dir branch serves them. The
+	// connection is served once (serve, not serveUntil), so its end stops no generation: this one
+	// is no process of the test's.
+	ctx, cancel := context.WithCancel(context.Background())
+	guarded := serveMemoryGuard(ctx, cfg, managers, pids)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		listener.codeReturned(m.serve(ctx, listener.Addr().String()))
+	}()
+	t.Cleanup(func() {
+		cancel()
+		for what, done := range map[string]<-chan struct{}{"the controller's connection": served, "the memory guard": guarded} {
+			select {
+			case <-done:
+			case <-time.After(cleanupBeforeDeadline(t)):
+				t.Errorf("%s did not return after its context ended; the launcher's log: %s", what, stderr.String())
+			}
+		}
+	})
+	rig.started()
+	conn := acceptRole(t, listener)
+	if conn.hello.Role != "controller" || conn.hello.Token != token {
+		t.Fatalf("hello = %#v, want the controller's from its roles directory", conn.hello)
+	}
+	conn.acknowledgeWith(memoryGuardAck(70, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardControllerWaitDefault, shimwire.MemoryGuardIntervalDefault))
+	at70 := "launcher: memory guard: settings act_percent=70 floor_percent=10 wait=1s interval=100ms"
+	if got := guardLines(stderr, "settings "); !slices.Equal(got, []string{at70}) {
+		t.Fatalf("after the controller's first acknowledgement the guard's settings lines are %q, want %q; the launcher's log:\n%s", got, at70, stderr.String())
+	}
+
+	rise := func(want ...int) {
+		t.Helper()
+		pod.setAnon(guardLimit / 100 * 75)
+		rig.tick()
+		if kills := rig.signal.kills(); !slices.Equal(kills, want) {
+			t.Fatalf("at 75%% of the limit the guard killed %v, want %v and never the role-init, the shim or Oh My Pi; its log:\n%s", kills, want, rig.log())
+		}
+		pod.setAnon(guardLow)
+		rig.tick()
+	}
+	rise(rolesDirCtlKernel)
+	rise(rolesDirCtlKernel, rolesDirCtlCommand)
+	rise(rolesDirCtlKernel, rolesDirCtlCommand)
+	if stopped := guardLines(stderr, "stopped for this rise reason=nothing to end "); len(stopped) != 1 || !strings.Contains(stopped[0], " endable=0 ") {
+		t.Fatalf("the stopped lines are %q, want one with nothing it may end; its log:\n%s", stopped, rig.log())
+	}
+	ended := guardLines(stderr, "ended ")
+	for i, pid := range []int{rolesDirCtlKernel, rolesDirCtlCommand} {
+		if r := conn.nextMemoryKill(); r.PID != pid || r.Sequence != uint64(i+1) || r.Guard != rig.id() {
+			t.Errorf("the controller's connection carries %+v as its report %d, want pid %d, sequence %d of guard %s", r, i+1, pid, i+1, rig.id())
+		}
+		if want := fmt.Sprintf("launcher: memory guard: ended pid=%d role=controller ", pid); i >= len(ended) || !strings.HasPrefix(ended[i], want) {
+			t.Errorf("the guard's ended lines are %q, want line %d to start %q", ended, i, want)
+		}
+	}
+}
+
+// A panic on the controller pod's guard's loop, here in its Config.Observe at a reading at the
+// mark, turns the guard off for good with one off line that names the panic and where it was
+// raised, and the launcher, its container's first process, serves on: the guard ends nothing and
+// asks for no next reading, the launcher takes its next connection, whose acknowledgement's
+// settings reach no guard, and Run returns at its context's end (runControllerLauncher). A panic
+// that left the guard's goroutine would end this test's process, as it ends a pod's PID 1.
+func TestControllerPodMemoryGuardTurnsOffOnAPanicInItsLoopAndTheLauncherServesOn(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
+	const grower = 1670
+	pod := newGuardPod(t)
+	pod.add(guardProcess{pid: grower, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 900 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	var panicking atomic.Bool
+	built := newMemoryGuard
+	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+		cfg.Observe = func(time.Time, uint64, uint64) {
+			if panicking.Load() {
+				panic("a test's Observe panics")
+			}
+		}
+		return built(cfg)
+	}
+	t.Cleanup(func() { newMemoryGuard = built })
+	g := runControllerLauncher(t)
+	rig.started()
+	g.acceptController(controllerDefaultsAck())
+	panicking.Store(true)
+	pod.setAnon(guardHigh)
+	// The guard takes the reading and turns off; it asks the clock for no next reading, which
+	// rig.tick waits for, so the test lets it take this one reading alone.
+	w := rig.pending
+	w.fire <- rig.clock.advance(w.d)
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool { return len(guardLines(g.stderr, "off ")) > 0 }) {
+		t.Fatalf("the guard wrote no off line after its Observe panicked; the launcher's log:\n%s", g.stderr.String())
+	}
+	want := "launcher: memory guard: off reason=panic: a test's Observe panics at "
+	if off := guardLines(g.stderr, "off "); len(off) != 1 || !strings.HasPrefix(off[0], want) || !strings.Contains(off[0], "memoryguard_test.go:") {
+		t.Fatalf("the guard's off lines are %q, want one starting %q that names this test's file", off, want)
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("a guard whose loop panicked killed %v at the mark, want nothing; its log:\n%s", kills, rig.log())
+	}
+	g.dropConnection()
+	g.acceptController(memoryGuardAck(70, 10, 1, 100))
+	if got := guardLines(g.stderr, "settings "); len(got) != 0 {
+		t.Fatalf("after the panic the next acknowledgement logged the settings lines %q, want none: the guard is off for good", got)
+	}
+	select {
+	case next := <-rig.clock.waits:
+		t.Fatalf("the guard asked for its next reading in %s after its loop panicked, want none", next.d)
+	default:
+	}
+}
+
 // waitingKillReport builds the tester's manager of an issue pod's launcher as Run builds it
 // (newManagers), from a configuration that says whether the pod is a microVM's, and queues report
 // on it as the pod's watch does while no connection is up (queueMemoryKill). The manager then
@@ -1230,36 +3887,49 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	if err := os.MkdirAll(filepath.Join(rolesDir, "tester", RoleLauncherDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
+	token := ownToken("launcher-token-tester")
+	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(token+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	return servedKillReport(t, token, Config{Sandbox: "legion-legion-legion-208", RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM}, report)
+}
+
+// waitingControllerKillReport is waitingKillReport for the controller pod's one role: the
+// single-role form's manager as Run builds it, whose lines carry no role's prefix.
+func waitingControllerKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
+	t.Helper()
+	token := ownToken("launcher-token")
+	return servedKillReport(t, token, Config{
+		Sandbox: "legion-legion-controller", Token: token, Role: "controller", PrivateDir: shortTempDir(t), MicroVM: microVM,
+	}, report)
+}
+
+// servedKillReport is the rest of waitingKillReport and waitingControllerKillReport: it builds
+// cfg's first manager, with a daemon end that takes its hello under token, the pod, the log and the
+// stop grace every such test's is given, queues report on it and serves it until the test's end.
+func servedKillReport(t *testing.T, token string, cfg Config, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
+	t.Helper()
+	listener := listenForLauncher(t, token)
 	stderr := &lockedBuffer{}
-	managers, err := newManagers(Config{
-		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
-		RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM, Stdout: stderr, Stderr: stderr, StopGrace: 2 * time.Second,
-	}, &pidGuard{})
+	cfg.Connect, cfg.PodUID, cfg.Stdout, cfg.Stderr, cfg.StopGrace = "tcp://"+listener.Addr().String(), "pod-1", stderr, stderr, 2*time.Second
+	managers, err := newManagers(cfg, &pidGuard{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tester := managers[0]
-	tester.queueMemoryKill(report)
+	m := managers[0]
+	m.queueMemoryKill(report)
 	ctx, cancel := context.WithCancel(context.Background())
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		_ = tester.serveUntil(ctx, listener.Addr().String())
+		listener.codeReturned(m.serveUntil(ctx, listener.Addr().String()))
 	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
 		case <-served:
-		case <-time.After(30 * time.Second):
-			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
+		case <-time.After(cleanupBeforeDeadline(t)):
+			t.Errorf("the %s's manager did not return after its context ended; its log: %s", m.role, stderr.String())
 		}
 	})
 	return acceptRole(t, listener), stderr
@@ -1273,6 +3943,7 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 // acknowledgements: it sends its report where guard settings came and drops it where only
 // kernelKills did, with the line it always wrote.
 func TestAMicroVMLauncherSendsItsKillReportsOnKernelKillsAndAGVisorLauncherOnGuardSettings(t *testing.T) {
+	t.Parallel()
 	const noKernelKills = "reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
 	const noSettings = "reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
 	both := defaultsAck()
@@ -1333,6 +4004,8 @@ func noGuard(t *testing.T, why string) {
 // helpers keep the container's starting score. The launcher builds no guard, and its manager holds
 // none.
 func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStartingScore(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	const omp = "/opt/omp/bin/omp"
@@ -1366,7 +4039,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the guest watch did not return after its context ended")
 		}
 	})
@@ -1404,6 +4077,8 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 // same rise, which the watch hands the launcher's sink with no role, has its line and reaches no
 // connection.
 func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const testers, reviewers, outside = 750, 751, 752
 	pod := newGuardPod(t)
 	pod.add(
@@ -1457,9 +4132,9 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process and one of no role, the reviewer's connection")
 	f.role("tester").noMemoryKill("after its one report, the tester's connection")
 	ended := []string{off,
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3.13"`,
 			testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3.13"`,
 			outside, 200*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
 	}
 	if got := guardLines(f.stderr, ""); !slices.Equal(got, ended) {

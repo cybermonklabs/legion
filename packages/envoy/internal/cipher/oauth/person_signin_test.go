@@ -3,21 +3,27 @@ package oauth_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -45,27 +51,50 @@ type signInFixture struct {
 	*exchangeFixture
 	google    *oidctest.Issuer
 	googleKey *oidctest.Key
+	// issuer is the `iss` the fixture's tokens carry and the exchange is configured to take: the
+	// stand-in issuer's own URL unless a test names another spelling (newSignInFixtureAt).
+	issuer string
 
 	mu sync.Mutex
 	// recorded is every sign-in the exchange asked to record, in order.
 	recorded []oauth.PersonSignIn
 	// revoked is the box key thumbprints the recorder answers ErrSignInRevoked for, as the
-	// broker's own table answers a sign-in the person has revoked, and moved those it answers
-	// ErrSignInMachineChanged for, as it answers a sign-in's key presented from elsewhere.
-	revoked map[string]bool
-	moved   map[string]bool
+	// broker's own table answers a sign-in the person has revoked, moved those it answers
+	// ErrSignInMachineChanged for, as it answers a sign-in's key presented from elsewhere,
+	// otherAccount those it answers ErrSignInSubjectChanged for, as it answers a key another
+	// account signed in with, and replaced the `sub`s it answers ErrSignInSubjectReplaced for, as
+	// it answers an account that no longer holds the person's address.
+	revoked      map[string]bool
+	moved        map[string]bool
+	otherAccount map[string]bool
+	replaced     map[string]bool
 }
 
 // newSignInFixture starts the Google issuer and builds a provider that takes a person's sign-in
 // on a machine of the one listed fleet.
 func newSignInFixture(t *testing.T) *signInFixture {
 	t.Helper()
-	return newSignInFixtureWith(t, func(*oauth.Config) {})
+	return newSignInFixtureAt(t, "")
+}
+
+// newSignInFixtureAt is newSignInFixture with the exchange taking, and the fixture's tokens
+// carrying, issuer as their `iss` in place of the stand-in issuer's URL (empty keeps the URL); the
+// tokens are still signed by the stand-in's key, which is all the exchange checks a signature by.
+func newSignInFixtureAt(t *testing.T, issuer string) *signInFixture {
+	t.Helper()
+	return newSignInFixtureAtWith(t, issuer, func(*oauth.Config) {})
 }
 
 // newSignInFixtureWith is newSignInFixture with adjust applied to the configuration last, so a
 // test can give the exchange a project-access check or entries of its own.
 func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
+	t.Helper()
+	return newSignInFixtureAtWith(t, "", adjust)
+}
+
+// newSignInFixtureAtWith is the fixture both of those build: its tokens carrying issuer
+// (newSignInFixtureAt), and adjust applied to the configuration last (newSignInFixtureWith).
+func newSignInFixtureAtWith(t *testing.T, issuer string, adjust func(*oauth.Config)) *signInFixture {
 	t.Helper()
 	google := oidctest.New(t)
 	googleKey := google.PublishKey(t, "google-key")
@@ -73,10 +102,14 @@ func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config)) *signInFixtu
 	if err != nil {
 		t.Fatalf("Google keys: %v", err)
 	}
-	f := &signInFixture{google: google, googleKey: googleKey, revoked: map[string]bool{}, moved: map[string]bool{}}
+	if issuer == "" {
+		issuer = google.URL()
+	}
+	f := &signInFixture{google: google, googleKey: googleKey, issuer: issuer, revoked: map[string]bool{}, moved: map[string]bool{},
+		otherAccount: map[string]bool{}, replaced: map[string]bool{}}
 	f.exchangeFixture = newExchangeFixture(t, func(c *oauth.Config) {
 		c.Exchange.Policy = newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet})
-		c.Exchange.Google = oauth.IssuerConfig{Issuer: google.URL(), Audience: machineAudience, Keys: googleKeys}
+		c.Exchange.Google = oauth.IssuerConfig{Issuer: issuer, Audience: machineAudience, Keys: googleKeys}
 		c.Exchange.PersonAudience = deviceAudience
 		// The credential a trade mints, written in the exchange's own transaction as
 		// cmd/cipherd writes it, so the access token's row may name it.
@@ -93,10 +126,14 @@ func (f *signInFixture) record(_ context.Context, in oauth.PersonSignIn) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
+	case f.replaced[in.Subject]:
+		return fmt.Errorf("%w: another account holds the address", oauth.ErrSignInSubjectReplaced)
 	case f.revoked[in.Thumbprint]:
 		return fmt.Errorf("%w: the person revoked it", oauth.ErrSignInRevoked)
 	case f.moved[in.Thumbprint]:
 		return fmt.Errorf("%w: it was made on another machine", oauth.ErrSignInMachineChanged)
+	case f.otherAccount[in.Thumbprint]:
+		return fmt.Errorf("%w: another account made it", oauth.ErrSignInSubjectChanged)
 	}
 	f.recorded = append(f.recorded, in)
 	return nil
@@ -134,7 +171,7 @@ func (f *signInFixture) personToken(t *testing.T, login, audience string, verifi
 	t.Helper()
 	now := time.Now()
 	claims := map[string]any{
-		"iss":            f.google.URL(),
+		"iss":            f.issuer,
 		"sub":            "109" + login,
 		"aud":            audience,
 		"iat":            now.Add(-time.Minute).Unix(),
@@ -154,7 +191,7 @@ func (f *signInFixture) machineToken(t *testing.T, account, audience string, ver
 	t.Helper()
 	now := time.Now()
 	return f.google.Mint(t, f.googleKey, map[string]any{
-		"iss":            f.google.URL(),
+		"iss":            f.issuer,
 		"sub":            "110" + account,
 		"aud":            audience,
 		"iat":            now.Add(-time.Minute).Unix(),
@@ -209,9 +246,28 @@ func TestAPersonSignedInOnAMachineExchangesForATokenNamingBoth(t *testing.T) {
 		}
 	}
 
-	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine}}
+	want := []oauth.PersonSignIn{{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person}}
 	if got := f.signIns(); len(got) != 1 || got[0] != want[0] {
-		t.Fatalf("the exchange recorded %+v, want %+v: the first trade of a person and a box key is the sign-in", got, want)
+		t.Fatalf("the exchange recorded %+v, want %+v: the first trade of a person and a box key is the sign-in, made by the account the person's token names", got, want)
+	}
+}
+
+// A person's token whose `iss` is Google's scheme-less spelling, accounts.google.com, which Google
+// documents beside https://accounts.google.com and a broker configured with that spelling takes,
+// records its sign-in under the one spelling Dispatch names a replaced account by
+// (oidc.CanonicalIssuer): a revoke naming https://accounts.google.com must find it, and a sign-in
+// recorded under the raw spelling would be found by no revoke and refused by no record of a
+// replaced account.
+func TestASignInUnderGooglesSchemelessIssuerIsRecordedUnderTheCanonicalOne(t *testing.T) {
+	f := newSignInFixtureAt(t, "accounts.google.com")
+	key := newKey(t)
+	f.exchanged(t, signInForm(
+		f.personToken(t, person, deviceAudience, true, signInDomain),
+		f.machineToken(t, signInMachine, machineAudience, true),
+		"ada-box-1"), key)
+	want := oauth.PersonSignIn{Person: person, Thumbprint: thumbprint(t, key), Machine: signInMachine, Issuer: oidc.GoogleIssuer, Subject: "109" + person}
+	if got := f.signIns(); len(got) != 1 || got[0] != want {
+		t.Fatalf("a trade of a token issued by accounts.google.com recorded %+v, want %+v: the issuer as oidc.CanonicalIssuer spells it", got, want)
 	}
 }
 
@@ -232,9 +288,9 @@ func TestEachTradeOfOneSignInRecordsTheSameKeyAndASecondBoxIsItsOwn(t *testing.T
 	}
 	got := f.signIns()
 	want := []oauth.PersonSignIn{
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine},
-		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine},
-		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine},
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
+		{Person: person, Thumbprint: thumbprint(t, first), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
+		{Person: person, Thumbprint: thumbprint(t, second), Machine: signInMachine, Issuer: f.google.URL(), Subject: "109" + person},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("the exchange recorded %d sign-ins, want %d: every trade names the key it proved", len(got), len(want))
@@ -305,6 +361,55 @@ func TestASignInsKeyPresentedFromAnotherMachineIsRefusedAndNamesTheSignInCommand
 		if !strings.Contains(description, names) {
 			t.Errorf("the refusal reads %q, which does not name %q", description, names)
 		}
+	}
+}
+
+// TestATradeByAnotherOrAReplacedAccountIsRefusedSayingWhich: the two refusals the account a
+// sign-in records makes are invalid_grant, each with its own words. A box key another account
+// signed in with names the sign-in command, which makes a key of its own; an account that no
+// longer holds the person's address says so and names the address, since signing in again as
+// that account fixes nothing. Neither mints anything.
+func TestATradeByAnotherOrAReplacedAccountIsRefusedSayingWhich(t *testing.T) {
+	f := newSignInFixture(t)
+	key := newKey(t)
+	trade := func() (int, map[string]any) {
+		return f.exchange(t, signInForm(
+			f.personToken(t, person, deviceAudience, true, signInDomain),
+			f.machineToken(t, signInMachine, machineAudience, true),
+			"ada-box-1"), key)
+	}
+	f.mu.Lock()
+	f.otherAccount[thumbprint(t, key)] = true
+	f.mu.Unlock()
+	status, body := trade()
+	changed, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+		t.Fatalf("a box key another account signed in with = %d %v, want 400 invalid_grant and no access token", status, body)
+	}
+	for _, names := range []string{"agent-secrets login", "another Google account"} {
+		if !strings.Contains(changed, names) {
+			t.Errorf("the refusal reads %q, which does not name %q", changed, names)
+		}
+	}
+
+	f.mu.Lock()
+	f.replaced["109"+person] = true
+	f.mu.Unlock()
+	status, body = trade()
+	replaced, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+		t.Fatalf("a replaced account's trade = %d %v, want 400 invalid_grant and no access token", status, body)
+	}
+	for _, names := range []string{person, "no longer holds", "another account holds that address now"} {
+		if !strings.Contains(replaced, names) {
+			t.Errorf("the refusal reads %q, which does not name %q", replaced, names)
+		}
+	}
+	if strings.Contains(replaced, "agent-secrets login") {
+		t.Errorf("the refusal reads %q, which sends the person to sign in again, and that account's sign-in fixes nothing", replaced)
+	}
+	if got := f.signIns(); len(got) != 0 {
+		t.Errorf("the refused trades recorded %+v, want nothing", got)
 	}
 }
 
@@ -428,26 +533,338 @@ func newExchangeFixtureWithoutPerson(t *testing.T, f *signInFixture) *exchangeFi
 
 // recordCredential is oauth.ExchangeConfig.MachineCredentials over the fixture's own database:
 // the launcher credential a trade mints, written in the exchange's transaction exactly as
-// cmd/cipherd writes it (enroll.Service.IssueTokenLoginTx), so the token row that names it has a
-// row to name.
+// cmd/cipherd writes it (its machineCredentials: enroll.Service.IssueTokenLoginTx, with a key
+// another live credential holds answered oauth.ErrMachineKeyTaken, and a key a live read token is
+// bound to answered oauth.ErrMachineKeyBindsReadToken), so the token row that names it has a row
+// to name and the trade meets the same refusals. IssueTokenLoginTx reads nothing of its service's
+// fields.
 func recordCredential(ctx context.Context, cred oauth.MachineCredential) (string, error) {
 	tx, ok := oauthstore.TxFrom(ctx)
 	if !ok {
 		return "", errors.New("the credential is minted in the exchange's transaction")
 	}
-	var operator *string
-	if cred.Operator != "" {
-		operator = &cred.Operator
+	id, err := (&enroll.Service{}).IssueTokenLoginTx(ctx, tx, enroll.TokenLogin{
+		Subject: cred.Subject, Service: cred.Service, Host: cred.Host, Operator: cred.Operator,
+		TokenExpires: cred.Expires, Thumbprint: cred.Thumbprint, JWK: cred.JWK, Expires: cred.Expires,
+	})
+	if enroll.KeyHeld(err) {
+		return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
 	}
-	var id string
-	err := tx.QueryRow(ctx, `insert into launcher_credentials
-		(id, operator, service, host, key_thumbprint, public_jwk, subject, expires_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
-		on conflict (subject) where subject is not null and pod_uid is null and revoked_at is null
-		do update set key_thumbprint = excluded.key_thumbprint, expires_at = excluded.expires_at
-		returning id`,
-		uuid.NewString(), operator, cred.Service, cred.Host, cred.Thumbprint, []byte(cred.JWK), cred.Subject, cred.Expires).Scan(&id)
-	return id, err
+	if errors.Is(err, enroll.ErrKeyBindsReadToken) {
+		return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyBindsReadToken, err)
+	}
+	if err != nil {
+		return "", err
+	}
+	return id.String(), nil
+}
+
+// realSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's own person_signins table, as
+// cmd/cipherd wires it where BROKER_PROJECT_ACCESS_URL is set (enroll.PersonSignIns(true)): the
+// sign-in recorded in the exchange's transaction, which holds the sign-in's row locked until the
+// trade commits.
+var realSignIns = enroll.PersonSignIns(true)
+
+// enrollments is the enrollment service over f's database, which ends a sign-in and a credential
+// as the broker's routes do.
+func (f *fixture) enrollments() *enroll.Service {
+	return &enroll.Service{Store: &store.Store{Pool: f.pool}}
+}
+
+// revokeSignIn revokes the sign-in of person on box as the sign-ins route does
+// (enroll.Service.RevokePersonSignIn): its row, written here where the trade's own recorder stood
+// in for it, its tokens bound to the box key, and the credential it holds.
+func (f *signInFixture) revokeSignIn(t *testing.T, box *ecdsa.PrivateKey) {
+	t.Helper()
+	id := recordSignIn(t, f, person, thumbprint(t, box), signInMachine)
+	if _, err := f.enrollments().RevokePersonSignIn(context.Background(), id, person, person); err != nil {
+		t.Fatalf("RevokePersonSignIn: %v", err)
+	}
+}
+
+// signedProof is an RFC 9449 proof of key for htm on htu, as a DPoP-Holder header carries one.
+func signedProof(t *testing.T, key *ecdsa.PrivateKey, htm, htu string) string {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key},
+		(&jose.SignerOptions{EmbedJWK: true}).WithType("dpop+jwt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"jti": uuid.NewString(), "htm": htm, "htu": htu, "iat": time.Now().Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := signed.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return compact
+}
+
+// TestAReadTradeBindsItsTokenToTheHoldersKey: a person's read trade proves its sign-in with the
+// box key's DPoP proof and sends a DPoP-Holder proof by a key made for the token's holder; the
+// token it mints is the holder's, in its introspection's jkt and in its stored row, names the
+// person and the sign-in's credential. Each of these is refused and mints nothing, each with its
+// own refusal: no DPoP-Holder; the DPoP proof signed by the holder key and no proof by the box
+// key, which names a sign-in of another key, one that holds no launcher credential; a holder
+// proof signed by the box key; a holder proof of another method, and of another URL; and the
+// holder proof already spent, replayed. A machine login's read trade proved with machine.json's
+// key, which holds a launcher credential, binds a holder key it proves, and without one is
+// refused; a DPoP-Holder on a trade that asks for no scope is refused. Once the sign-in is
+// revoked, its read token introspects not live.
+func TestAReadTradeBindsItsTokenToTheHoldersKey(t *testing.T) {
+	f := newNarrowingFixture(t, func(*oauth.Config) {})
+	ctx := context.Background()
+	tokenURL := f.url + "/token"
+	box, holder := newKey(t), newKey(t)
+	status, body := f.exchange(t, f.personTrade(t, narrowedBoxSession), box)
+	accessTokenOf(t, status, body)
+	credential, _ := body[oauthwire.ExtraCredentialID].(string)
+	readTrade := func(headers http.Header) (int, map[string]any) {
+		form := f.personTrade(t, narrowedBoxSession)
+		form.Set("scope", oauthwire.ScopeRead)
+		return f.postWithHeaders(t, form, headers)
+	}
+	spent := dpopProof(t, holder, tokenURL)
+	status, body = readTrade(http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {spent}})
+	token := accessTokenOf(t, status, body)
+	answer := f.introspected(t, token)
+	if answer.Thumbprint != thumbprint(t, holder) || answer.Person != person {
+		t.Errorf("the read token introspects with jkt %q for %q, want the holder's key %q and %s", answer.Thumbprint, answer.Person, thumbprint(t, holder), person)
+	}
+	var stored, session, named string
+	if err := f.pool.QueryRow(ctx, `select jwk_thumbprint, request #>> '{session,jwk_thumbprint}', coalesce(credential_id::text, '')
+		from oauth_narrowed_access_tokens`).Scan(&stored, &session, &named); err != nil {
+		t.Fatalf("read the read token's row: %v", err)
+	}
+	if stored != thumbprint(t, holder) || session != stored || named != credential {
+		t.Errorf("the read token's row is bound to %q (its session to %q) and names the credential %q, want the holder's key %q and the sign-in's credential %q",
+			stored, session, named, thumbprint(t, holder), credential)
+	}
+
+	for _, c := range []struct {
+		name    string
+		headers http.Header
+		// code and says are the refusal: its error code, and what its description holds.
+		code, says string
+	}{
+		{"with no DPoP-Holder", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}},
+			"invalid_request", "A person's read trade sends a DPoP-Holder proof"},
+		{"with its DPoP proof signed by the holder key and no proof by the box key",
+			http.Header{"DPoP": {dpopProof(t, holder, tokenURL)}, oauthwire.HeaderDPoPHolder: {dpopProof(t, newKey(t), tokenURL)}},
+			"invalid_grant", "holds no launcher credential yet"},
+		{"with a holder proof signed by the box key", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {dpopProof(t, box, tokenURL)}},
+			"invalid_request", "The DPoP-Holder proof is signed with the key the DPoP proof is signed with"},
+		{"with a holder proof of another method", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {signedProof(t, newKey(t), http.MethodGet, tokenURL)}},
+			"invalid_request", "The DPoP-Holder proof was refused"},
+		{"with a holder proof of another URL", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {signedProof(t, newKey(t), http.MethodPost, f.url+"/other")}},
+			"invalid_request", "The DPoP-Holder proof was refused"},
+		{"with a holder proof replayed", http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {spent}},
+			"invalid_request", "The DPoP-Holder proof was refused"},
+	} {
+		t.Run("a person's read trade "+c.name, func(t *testing.T) {
+			before := f.tokenRows(t)
+			status, body := readTrade(c.headers)
+			refusedSaying(t, status, body, http.StatusBadRequest, c.code, c.says)
+			if after := f.tokenRows(t); after != before {
+				t.Errorf("the refused trade left %d access tokens, want the %d there were", after, before)
+			}
+		})
+	}
+
+	t.Run("a machine login's read trade binds the holder's key, and without one is refused", func(t *testing.T) {
+		machine := newKey(t)
+		subject := f.devBoxTokenOf(t, machine, person, f.credentialOn(t, machine))
+		trade := narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeAccessToken, narrowedDevBoxSession), key: machine}
+		before := f.tokenRows(t)
+		status, body := f.send(t, trade, oauthwire.ScopeRead, "")
+		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "signs launcher proofs")
+		if after := f.tokenRows(t); after != before {
+			t.Errorf("the refused trade left %d access tokens, want the %d there were", after, before)
+		}
+		trade.holder = newKey(t)
+		status, body = f.send(t, trade, oauthwire.ScopeRead, "")
+		if answer := f.introspected(t, accessTokenOf(t, status, body)); answer.Thumbprint != thumbprint(t, trade.holder) {
+			t.Errorf("the machine login's read token is bound to %q, want the holder's key %q", answer.Thumbprint, thumbprint(t, trade.holder))
+		}
+	})
+
+	t.Run("a DPoP-Holder on a trade that asks for no scope is refused", func(t *testing.T) {
+		before := f.tokenRows(t)
+		status, body := f.postWithHeaders(t, f.personTrade(t, narrowedBoxSession),
+			http.Header{"DPoP": {dpopProof(t, box, tokenURL)}, oauthwire.HeaderDPoPHolder: {dpopProof(t, newKey(t), tokenURL)}})
+		refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", oauthwire.HeaderDPoPHolder)
+		if after := f.tokenRows(t); after != before {
+			t.Errorf("the refused trade left %d access tokens, want the %d there were", after, before)
+		}
+	})
+
+	f.revokeSignIn(t, box)
+	if answer := f.introspected(t, token); answer.Active {
+		t.Errorf("the read token introspects live after its sign-in was revoked: %+v", answer)
+	}
+}
+
+// postTokenWith posts form to the token endpoint at tokenURL with headers, for a goroutine to run:
+// it fails nothing itself and answers what came back.
+func postTokenWith(tokenURL string, form url.Values, headers http.Header) tokenAnswer {
+	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return tokenAnswer{err: err}
+	}
+	req.Header = headers.Clone()
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return tokenAnswer{err: err}
+	}
+	defer resp.Body.Close()
+	answer := tokenAnswer{status: resp.StatusCode}
+	answer.err = json.NewDecoder(resp.Body).Decode(&answer.body)
+	return answer
+}
+
+// blockedPID is the backend running a statement matching like that waits on a lock blocker
+// holds, which waitForBlocked has already seen.
+func blockedPID(t *testing.T, f *fixture, blocker uint32, like string) uint32 {
+	t.Helper()
+	var pid int32
+	if err := f.pool.QueryRow(context.Background(), `select pid from pg_stat_activity
+		where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid)) and query like $2 limit 1`, int32(blocker), like).Scan(&pid); err != nil {
+		t.Fatalf("find the backend waiting on %d: %v", blocker, err)
+	}
+	return uint32(pid)
+}
+
+// TestANarrowedTokenEndsWithWhatItWasTradedFrom: a narrowed token never outlives what it was
+// traded from. A machine login's narrowed token introspects not live once its subject token is
+// revoked (POST /v1/oauth/revoke), once its launcher credential is ended (an enroll revoke), once
+// its subject expires, and once its credential is ended by the one statement a broker build
+// before the narrowed table runs (oauthstore.EndCredential alone, as an older replica does). A
+// person's narrowed token introspects not live once the sign-in is revoked, and so does one whose
+// trade commits while the revoke waits on the sign-in's row lock, once the revoke commits.
+func TestANarrowedTokenEndsWithWhatItWasTradedFrom(t *testing.T) {
+	f := newNarrowingFixture(t, func(*oauth.Config) {})
+	ctx := context.Background()
+	machineRead := func(t *testing.T) (token, credential, subject string) {
+		t.Helper()
+		machine := newKey(t)
+		credential = f.newCredential(t)
+		subject = f.devBoxTokenOf(t, machine, person, credential)
+		status, body := f.send(t, narrowingTrade{form: exchangeForm(subject, oauthwire.SubjectTokenTypeAccessToken, narrowedDevBoxSession), key: machine, holder: newKey(t)},
+			oauthwire.ScopeRead, "")
+		token = accessTokenOf(t, status, body)
+		if !f.introspected(t, token).Active {
+			t.Fatal("the narrowed token is not live as it is minted")
+		}
+		return token, credential, subject
+	}
+	inTx := func(t *testing.T, write func(pgx.Tx) error) {
+		t.Helper()
+		tx, err := f.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if err := write(tx); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notLive := func(t *testing.T, token, after string) {
+		t.Helper()
+		if answer := f.introspected(t, token); answer.Active {
+			t.Fatalf("the narrowed token introspects live after %s: %+v", after, answer)
+		}
+	}
+	t.Run("a machine login's, once its subject token is revoked", func(t *testing.T) {
+		token, _, subject := machineRead(t)
+		req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(url.Values{
+			"token": {subject}, "token_type_hint": {"access_token"}, "client_id": {oauthwire.ClientID},
+		}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		recorder := httptest.NewRecorder()
+		f.provider.Revoke(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("revoking the machine login's token = %d %s", recorder.Code, recorder.Body)
+		}
+		notLive(t, token, "its subject token was revoked")
+	})
+	t.Run("a machine login's, once its credential is ended", func(t *testing.T) {
+		token, credential, _ := machineRead(t)
+		inTx(t, func(tx pgx.Tx) error { return enroll.RevokeReusedCredential(ctx, tx, credential) })
+		notLive(t, token, "its credential was revoked")
+	})
+	t.Run("a machine login's, once its subject expires", func(t *testing.T) {
+		token, credential, _ := machineRead(t)
+		if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set expires_at = now() - interval '1 second' where credential_id = $1`, credential); err != nil {
+			t.Fatal(err)
+		}
+		notLive(t, token, "its subject expired")
+	})
+	t.Run("a machine login's, once an older build ends its credential", func(t *testing.T) {
+		token, credential, _ := machineRead(t)
+		inTx(t, func(tx pgx.Tx) error { _, err := oauthstore.EndCredential(ctx, tx, credential); return err })
+		notLive(t, token, "the statement an older replica runs ended its credential's tokens")
+	})
+	t.Run("a person's, once the sign-in is revoked", func(t *testing.T) {
+		tr := narrowingRows["person-sign-in"].trade(t, f)
+		status, body := f.send(t, tr, oauthwire.ScopeRead, "")
+		token := accessTokenOf(t, status, body)
+		f.revokeSignIn(t, tr.key)
+		notLive(t, token, "its sign-in was revoked")
+	})
+	t.Run("a person's, whose trade commits while the revoke waits on the sign-in's row", func(t *testing.T) {
+		g := newNarrowingFixture(t, func(c *oauth.Config) { c.Exchange.PersonSignIns = realSignIns })
+		box := newKey(t)
+		g.exchanged(t, g.personTrade(t, narrowedBoxSession), box)
+		var signIn string
+		if err := g.pool.QueryRow(ctx, `select id::text from person_signins where thumbprint = $1`, thumbprint(t, box)).Scan(&signIn); err != nil {
+			t.Fatalf("read the sign-in's row: %v", err)
+		}
+		holder, err := g.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer holder.Rollback(ctx)
+		if _, err := holder.Exec(ctx, `lock table oauth_narrowed_access_tokens in share mode`); err != nil {
+			t.Fatalf("hold oauth_narrowed_access_tokens: %v", err)
+		}
+		form := g.personTrade(t, narrowedBoxSession)
+		form.Set("scope", oauthwire.ScopeRead)
+		headers := http.Header{"DPoP": {dpopProof(t, box, g.url+"/token")}, oauthwire.HeaderDPoPHolder: {dpopProof(t, newKey(t), g.url+"/token")}}
+		traded := make(chan tokenAnswer, 1)
+		go func() { traded <- postTokenWith(g.url+"/token", form, headers) }()
+		const insert = "insert into oauth_narrowed_access_tokens%"
+		waitForBlocked(t, g.pool, holder.Conn().PgConn().PID(), insert)
+		trade := blockedPID(t, g.fixture, holder.Conn().PgConn().PID(), insert)
+		revoked := make(chan error, 1)
+		go func() {
+			_, err := g.enrollments().RevokePersonSignIn(ctx, signIn, person, person)
+			revoked <- err
+		}()
+		waitForBlocked(t, g.pool, trade, "%person_signins%")
+		if err := holder.Rollback(ctx); err != nil {
+			t.Fatalf("release oauth_narrowed_access_tokens: %v", err)
+		}
+		answer := <-traded
+		if answer.err != nil {
+			t.Fatalf("the read trade: %v", answer.err)
+		}
+		token := accessTokenOf(t, answer.status, answer.body)
+		if err := <-revoked; err != nil {
+			t.Fatalf("the revoke: %v", err)
+		}
+		if got := g.introspected(t, token); got.Active {
+			t.Fatalf("the read token whose trade committed while the revoke waited introspects live: %+v", got)
+		}
+	})
 }
 
 // TestAProviderNeedsItsSignInRecorder: a configuration that takes a person's token and has

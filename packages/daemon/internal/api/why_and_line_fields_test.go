@@ -204,9 +204,9 @@ func TestWhyAndLineFieldsContractIsTheContractThatAddedThem(t *testing.T) {
 		t.Fatalf("whyAndLineFieldsContract = %d, want %d, the contract whose entry in version.go added each issue's answer and the waiting line's own fields",
 			whyAndLineFieldsContract, addedWhyAndLineFields)
 	}
-	if whyAndLineFieldsContract > DaemonAPIVersion {
+	if whyAndLineFieldsContract > DaemonAPIVersion() {
 		t.Fatalf("whyAndLineFieldsContract = %d, above DaemonAPIVersion %d: no caller could be served either half",
-			whyAndLineFieldsContract, DaemonAPIVersion)
+			whyAndLineFieldsContract, DaemonAPIVersion())
 	}
 	if whyAndLineFieldsContract <= waitingLineContract {
 		t.Fatalf("whyAndLineFieldsContract = %d, not above waitingLineContract %d: the band served place and length alone would be empty",

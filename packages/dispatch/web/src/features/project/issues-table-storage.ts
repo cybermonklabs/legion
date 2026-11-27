@@ -33,6 +33,9 @@ export interface TableAction {
   /** The merge reason exactly as it was sent, so a resume knows the sentence it is looking for
    *  even if the target has been renamed, or closed, since. */
   reasonBody?: string;
+  /** The name a New epic was given, as the reader typed it: what Finish's question calls an epic
+   *  whose create has not landed, which has no key yet. */
+  title?: string;
   writes: Record<string, string>;
 }
 /** How long a stored action is still the reader's to finish: a day. Past that the banner goes
@@ -133,6 +136,7 @@ export function readTableAction(project: string): TableAction | undefined {
       (typeof action.startedAt === "number" &&
         Date.now() - action.startedAt < ACTION_LIFETIME_MS)) &&
     (action.reasonBody === undefined || typeof action.reasonBody === "string") &&
+    (action.title === undefined || typeof action.title === "string") &&
     (action.kind !== "merge" ||
       (typeof action.source === "string" && typeof action.target === "string"))
   )

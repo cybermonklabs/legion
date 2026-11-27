@@ -35,6 +35,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # The digests the fixtures use. Made up: nothing fetches them, and what each case reads is the
 # row and the pin they match.
 TOOL=0a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f60710a1b2c3d4e5f6071
@@ -319,8 +324,8 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
-check "names the row and the five words the helper serves" \
-  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves github-release, ghcr-mirror, npm, pypi and pulumi-releases.")"
+check "names the row and the six words the helper serves" \
+  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases.")"
 
 echo "case: rule 1 — a primary that does not hold the row's version"
 root=$(fixture shape-primary-version)
@@ -504,6 +509,77 @@ check "names both values and both files" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the pulumi-docker row's version is 4.4.4 and packages/envoy/infra/internal/pulumitest/pulumitest.go pins const DockerPluginVersion = \"5.5.5\".")"
 check "and says which of the two to move" \
   "$(contains "$out" "move this row to the constant's version, or the constant to the row's.")"
+
+# helm_row <root> <version>: appends a helm row at that version, in the shape the manifest's helm
+# row takes: the tarball get.helm.sh serves as the primary, and a copy of it as the second source.
+helm_row() {
+  cat >> "$1/.github/ci-tools.yaml" <<YAML
+
+  - name: helm
+    version: $2
+    digest: $SOLO
+    digest_of: the release tarball, whole
+    primary_source: helm-releases
+    primary: https://get.helm.sh/helm-v$2-linux-amd64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://get.helm.sh/helm-v$2-linux-amd64.tar.gz
+    mirror_member: ""
+YAML
+}
+
+# render_nats <root> [line]: writes packages/envoy/loadtest/cluster/render-nats.sh holding that
+# line, by default the HELM= line a helm row at 3.3.3 agrees with. The green fixture writes no
+# such file and holds no helm row, which is the tree in which the gate does not read it.
+render_nats() {
+  mkdir -p "$1/packages/envoy/loadtest/cluster"
+  printf '#!/usr/bin/env bash\n%s\n' "${2:-HELM=helm.sh/helm/v3/cmd/helm@v3.3.3}" \
+    > "$1/packages/envoy/loadtest/cluster/render-nats.sh"
+}
+
+echo "case: rule 2 — the helm row at the version render-nats.sh's HELM= line pins"
+root=$(fixture pin-helm-agrees)
+helm_row "$root" 3.3.3
+render_nats "$root"
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and counts the helm row with the rest" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds 7 row(s), each agreeing with the pin that installs it')"
+
+echo "case: rule 2 — the helm row and render-nats.sh's HELM= line disagree"
+# The render runs an installed helm only where it answers the version that line names, so a row
+# at another version installs a helm the render passes over for one it builds itself.
+root=$(fixture pin-helm-version)
+helm_row "$root" 3.3.3
+render_nats "$root" HELM=helm.sh/helm/v3/cmd/helm@v3.4.0
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both values and both files" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the helm row's version is 3.3.3 and packages/envoy/loadtest/cluster/render-nats.sh pins HELM=helm.sh/helm/v3/cmd/helm@v3.4.0, whose version is 3.4.0.")"
+check "and says which of the two to move" \
+  "$(contains "$out" "move this row to the HELM= line's version, or that line to the row's.$")"
+
+echo "case: rule 2 — a helm row and no render-nats.sh"
+root=$(fixture pin-helm-no-render)
+helm_row "$root" 3.3.3
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the row that answers to it" \
+  "$(contains "$out" "^packages/envoy/loadtest/cluster/render-nats.sh${colon}1: this file is missing or is not readable as text, and the helm row of .github/ci-tools.yaml carries the version its HELM= line pins\$")"
+
+echo "case: rule 2 — a helm row and a render-nats.sh with no HELM= line"
+# A comment that names the pin is no pin: the line the gate reads is the assignment the script
+# runs.
+root=$(fixture pin-helm-no-line)
+helm_row "$root" 3.3.3
+render_nats "$root" '# HELM=helm.sh/helm/v3/cmd/helm@v3.3.3'
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the line it lacks" \
+  "$(contains "$out" "^packages/envoy/loadtest/cluster/render-nats.sh${colon}1: this file declares no HELM=helm.sh/helm/v<major>/cmd/helm@v<version> line, and the helm row of .github/ci-tools.yaml carries what it pins\$")"
 
 echo "case: rule 1 — a second_url that does not hold its row's version"
 # The rule that holds a URL to the row's version reads every URL the row writes, so a second
@@ -815,8 +891,8 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
-check "names the row and the three words a primary is written in" \
-  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the copied row's primary_source is ghcr-mirror, and .github/scripts/ci-tools.sh reads github-release, pypi and pulumi-releases as a primary.")"
+check "names the row and the four words a primary is written in" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the copied row's primary_source is ghcr-mirror, and .github/scripts/ci-tools.sh reads github-release, pypi, pulumi-releases and helm-releases as a primary.")"
 check "and says why those two words are second sources" \
   "$(contains "$out" 'are no origin of the bytes, so ghcr-mirror and npm are written on the second side alone.')"
 
@@ -843,7 +919,7 @@ YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the row, the word and the side it was written on" \
-  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the elsewhere-primary row's primary_source is s3, and .github/scripts/ci-tools.sh reads github-release, pypi and pulumi-releases as a primary.")"
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the elsewhere-primary row's primary_source is s3, and .github/scripts/ci-tools.sh reads github-release, pypi, pulumi-releases and helm-releases as a primary.")"
 
 echo "case: rule 3 — an action that fetches a covered release asset no row names"
 root=$(fixture reach-unnamed-asset)
@@ -1814,7 +1890,7 @@ YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the line the earlier entry is on" \
-  "$(contains "$out" '^.github/ci-tools.yaml:94: this URL is also declined by the no_second_source entry on line 89, and two entries for one URL carry two reasons a reader must choose between. Keep one.$')"
+  "$(contains "$out" "^.github/ci-tools.yaml${colon}94: this URL is also declined by the no_second_source entry on line 89, and two entries for one URL carry two reasons a reader must choose between. Keep one.\$")"
 
 echo "case: rule 4 — a short reference to a tool blob"
 root=$(fixture short-reference)

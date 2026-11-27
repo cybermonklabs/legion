@@ -63,8 +63,9 @@ const (
 // inside the 107 bytes Linux holds.
 const InboxLongestPath = inboxDirPrefix + "0123456789" + "/" + inboxSocketName
 
-// listenInbox opens the inbox and serves it until close, handing each delivery to the loop.
-func listenInbox(events chan<- event, stop <-chan struct{}, logger *log.Logger) (*inbox, error) {
+// listenInbox opens the inbox and serves it until close, handing each delivery to the loop; clock
+// is the bridge's (Config.Clock), which the flush of what a client is owed runs on.
+func listenInbox(events chan<- event, stop <-chan struct{}, clock Clock, logger *log.Logger) (*inbox, error) {
 	dir, err := os.MkdirTemp("", inboxDirPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("make the inbox directory: %w", err)
@@ -90,7 +91,7 @@ func listenInbox(events chan<- event, stop <-chan struct{}, logger *log.Logger) 
 			in.wg.Add(1)
 			go func() {
 				defer in.wg.Done()
-				serveInbox(conn, events, stop, logger)
+				serveInbox(conn, events, stop, clock, logger)
 			}()
 		}
 	}()
@@ -115,13 +116,24 @@ type owed struct {
 
 // serveInbox reads one client's deliveries, handing each to the loop as it arrives, and answers
 // them in the order they came, each once the loop has answered it. The loop answers every delivery
-// it took before the inbox closes, so those answers are written then too, within inboxFlushTimeout.
-func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, logger *log.Logger) {
+// it took before the inbox closes, so those answers are written then too, within inboxFlushTimeout
+// on clock: once that has passed, a write the client has not taken fails at once.
+func serveInbox(conn net.Conn, events chan<- event, stop <-chan struct{}, clock Clock, logger *log.Logger) {
 	defer conn.Close()
+	served := make(chan struct{})
+	defer close(served)
 	go func() {
-		<-stop
+		select {
+		case <-stop:
+		case <-served:
+			return
+		}
 		_ = conn.SetReadDeadline(time.Now())
-		_ = conn.SetWriteDeadline(time.Now().Add(inboxFlushTimeout))
+		select {
+		case <-clock.After(inboxFlushTimeout):
+			_ = conn.SetWriteDeadline(time.Now())
+		case <-served:
+		}
 	}()
 	pending := make(chan owed, inboxPending)
 	go func() {

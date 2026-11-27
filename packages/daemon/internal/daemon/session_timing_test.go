@@ -118,6 +118,7 @@ func millis(d time.Duration) string {
 //     deployment a live window of its own, which no test of the source can see. Only the
 //     declared window is weighed here.
 func TestDAEMONTESTTheSessionTimingRuleHoldsAtTheValuesTheBuildUses(t *testing.T) {
+	t.Parallel()
 	build := sessionTiming{
 		interval:   sessiontiming.Heartbeat,
 		liveWindow: sessiontiming.LiveWindow,

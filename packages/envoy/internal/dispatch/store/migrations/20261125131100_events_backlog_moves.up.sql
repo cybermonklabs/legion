@@ -1,0 +1,24 @@
+-- pgmigrate:non-transactional
+-- The second fault of the priorities read (api.priorityBacklogQuery) and the listing's ?moved=true
+-- (api.issueMovedJoin) read when an issue in backlog or icebox was moved there through one
+-- lateral, api.backlogMoveLateral: the issue's newest issue.updated event whose payload names
+-- status in changed and whose status is one of the two. This index serves that lateral. It holds
+-- those events alone, by (issue_key, seq).
+--
+-- Postgres uses a partial index only where the query's conditions imply its predicate. So the
+-- predicate is written as the lateral writes its conditions, with the same expressions, operators,
+-- cast and list, and the lateral's text does not change. The lateral then scans this index
+-- backwards from the issue's newest such event and stops at the first row, which its
+-- `order by e.seq desc limit 1` asks for, and reads none of the issue's other events. The list is
+-- model.IssueStatusesParked, which the lateral writes in that order: a change to it needs a new
+-- index whose predicate holds the new list, or the lateral no longer reads through one.
+--
+-- It is built `concurrently`, outside the runner's transaction, for the reason 20261111002444's
+-- header gives: events is the largest table a Dispatch deployment holds, a plain build holds SHARE
+-- on it, which blocks every write to it, for as long as the build reads the table, and a
+-- concurrent build takes no lock that blocks a write. It comes after 20261125125703, which creates
+-- an extension, in a later deploy, so the census keeps its concurrent index exemption
+-- (20261125131000's header says why). A failed concurrent build leaves an INVALID index of this
+-- name on events, which the runner drops with DROP INDEX CONCURRENTLY and builds again on the next
+-- attempt.
+create index concurrently if not exists events_backlog_moves on events (issue_key, seq) where type = 'issue.updated' and payload->'changed' @> '"status"'::jsonb and payload->>'status' in ('icebox', 'backlog');

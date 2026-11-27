@@ -13,6 +13,7 @@ import (
 // begins with the old name is no name of the pair. The pair is seeded by SQL before the server
 // is built, since a server reads the pairs once, as it is built.
 func TestAnExternalReferenceResolvesUnderEitherNameOfARenamePair(t *testing.T) {
+	t.Parallel()
 	database, renames := renamedRepositoryStore(t, "LEGN", "sjawhar/legion", "cybermonklabs/legion")
 	handler, _, _ := newTestServer(t, testServerOptions{store: database, renames: renames})
 	linked := func(url string) string {

@@ -441,7 +441,7 @@ func embeddedMigration(t *testing.T, version int) string {
 // the reviewed commit's (20261116234034_phase_reviewed_head.up.sql) — and internal/daemon's
 // upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
 const (
-	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackHeredoc    = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
 )
 
@@ -712,9 +712,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					t.Fatalf("the arms %s is marked told for at generation %d = %v, want the first and the third the second run wrote",
 						root.key, root.generation, marks)
 				}
-				if row := architectRow(t, pool, root.key); row.Entry != 1 || row.EntryVerbatim {
-					t.Fatalf("the architect row of %s after the roll-forward = entry %d, sent again as written %t; want the 1 the second run "+
-						"wrote, which the derivation's send reads", root.key, row.Entry, row.EntryVerbatim)
+				if row := architectRow(t, pool, root.key); row.Entry != 1 || row.EntryAwaiting != nil {
+					t.Fatalf("the architect row of %s after the roll-forward = entry %d, keeping the wait %+v; want the 1 the second run "+
+						"wrote and no wait, which the derivation's send reads", root.key, row.Entry, row.EntryAwaiting)
 				}
 				var given, served, handshakeEntry int64
 				var handshakeQueued *time.Time

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/spf13/cobra"
 )
@@ -62,6 +63,7 @@ func answerOf(t *testing.T, what string, args []string) claimsAnswer {
 // Each subcommand takes a --wait that bounds the whole call, and a call that reaches it is
 // refused with a reason naming the bound rather than hanging.
 func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
+	t.Parallel()
 	port := slowDaemon(t)
 	for name, args := range map[string][]string{
 		"suspend": {"suspend", "--claim", string(architectClaim)},
@@ -89,21 +91,29 @@ func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
 	}
 }
 
-// --wait defaults to one minute, which is the bound a command with no flag of its own runs under.
+// --wait defaults to one minute, and a command with no flag of its own runs under that default as
+// the call reads it (programbound: in this binary, what is left of its deadline). The bound the
+// call took (operatorCall.waited, the fact the call records) is read against programbound's value
+// read just before the call and just after it: what is left of the deadline only shrinks, so the
+// call's own read lies between the two, and a call that took any other value, a fixed minute
+// among them, falls outside. No wall-clock span is read.
 func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
+	t.Parallel()
 	cmd := &cobra.Command{Use: "suspend"}
 	c := newClaimsCall(cmd, &bytes.Buffer{}, &bytes.Buffer{})
 	if err := cmd.ParseFlags([]string{"--operator-token-file", operatorTokenFile(t)}); err != nil {
 		t.Fatalf("the flags were refused: %v", err)
 	}
+	if *c.wait != time.Minute || defaultWait != time.Minute {
+		t.Fatalf("--wait defaults to %s (defaultWait %s), want one minute", *c.wait, defaultWait)
+	}
+	most := programbound.Of(&defaultWait)
 	if code, ok := c.check(); !ok {
 		t.Fatalf("check exited %d, want it to accept a command with no --wait", code)
 	}
-	if *c.wait != time.Minute {
-		t.Fatalf("--wait defaults to %s, want one minute", *c.wait)
-	}
-	if until := time.Until(c.until); until <= 0 || until > time.Minute {
-		t.Fatalf("the call's bound is %s away, want it within the minute it was given", until)
+	least := programbound.Of(&defaultWait)
+	if until := time.Until(c.until); c.waited > most || c.waited < least || until <= 0 || until > most {
+		t.Fatalf("the call took a bound of %s, %s away, want the default as programbound gives it, from %s to %s", c.waited, until, least, most)
 	}
 }
 
@@ -114,6 +124,7 @@ func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 // and the two at its ends, and a slow machine makes fewer, never more; a call held to a later
 // bound, such as the one-minute default, makes more.
 func TestTheWaitBoundsTheWholeSuspendCall(t *testing.T) {
+	// Not parallel: its call has 400 ms to list the claims and be refused as still working, time the load of tests running beside it could use up, which ends the call as unanswered instead.
 	port, lists := heldSuspendDaemon(t, heldWorking)
 
 	answer := answerOf(t, "legion claims suspend with --wait 400ms while its suspension stays held", []string{"legion", "claims", "suspend",

@@ -17,18 +17,20 @@ import (
 // phase added to the mapping and not to this list fails too, so the value a new phase shows is
 // decided here as well.
 func TestEachPhaseShowsItsOwnDispatchStatus(t *testing.T) {
+	t.Parallel()
 	want := map[phase.Phase]string{
-		phase.Admitted:       "",
-		phase.AwaitingPerson: "",
-		phase.Planning:       "in_progress",
-		phase.Implementing:   "in_progress",
-		phase.Testing:        "testing",
-		phase.Reviewing:      "needs_review",
-		phase.Accepting:      "needs_review",
-		phase.Retro:          "retro",
-		phase.Merging:        "retro",
-		phase.Done:           "done",
-		phase.Held:           "",
+		phase.Admitted:         "",
+		phase.AwaitingPerson:   "",
+		phase.AwaitingChildren: "in_progress",
+		phase.Planning:         "in_progress",
+		phase.Implementing:     "in_progress",
+		phase.Testing:          "testing",
+		phase.Reviewing:        "needs_review",
+		phase.Accepting:        "needs_review",
+		phase.Retro:            "retro",
+		phase.Merging:          "retro",
+		phase.Done:             "done",
+		phase.Held:             "",
 	}
 	for at, status := range want {
 		if got := PhaseStatus(at); got != status {
@@ -47,6 +49,7 @@ func TestEachPhaseShowsItsOwnDispatchStatus(t *testing.T) {
 // entry reads as the empty status, which is no write at all, so the two-value lookup is what tells
 // it from the four phases that mean the empty status.
 func TestEveryPhaseHasAStatusEntry(t *testing.T) {
+	t.Parallel()
 	for _, at := range phase.All {
 		if _, ok := phaseStatus[at]; !ok {
 			t.Errorf("phase %s has no entry in phaseStatus; an issue standing in it would keep whatever status it arrived with", at)
@@ -65,6 +68,7 @@ func TestEveryPhaseHasAStatusEntry(t *testing.T) {
 // into planning and writes its in_progress (dispatch://INFRA-980, acceptance A3 and A4). Before
 // this release the one fact did both, which is what this test asserted when main wrote it.
 func TestATransitionWritesTheStatusOfThePhaseItEnters(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",

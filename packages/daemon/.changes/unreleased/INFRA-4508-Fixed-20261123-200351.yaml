@@ -1,0 +1,34 @@
+kind: Fixed
+body: |-
+  A run of turns the provider refused no longer fails the claim, however long it is. The daemon
+  failed a claim once its plugin had reported `launch_failure_limit` refused turns in a row (3 by
+  default), with `the provider refused <n> turns in a row: <message>`, before the controller's
+  notice at six such turns. That ended the provider-error ladder, which sends the task to the same
+  session again with no attempt limit. Each refused turn is now judged once, by the HTTP status the
+  provider answered: an error that cannot clear, a 4xx other than 401, 403, 408 and 429, fails the
+  claim at once with cause `provider_error` and holds the issue for its architect; any other
+  error, or one with no status, fails nothing, and the project's controller is told once when the
+  claim's turns that ended in a provider error reach six in a row, and not again until a turn ends
+  with none. A turn the daemon's prompt ran is judged by that prompt's result, and its task goes to
+  the same session again on the ladder. A turn that ran no prompt of the daemon's, such as a phase
+  reminder the plugin starts itself, has no prompt result, so the daemon judges it from its report
+  to `POST /legion/v1/claims/turn-outcome`, which now carries the provider's `httpStatus` and
+  marks such a turn `unprompted` (daemon API contract 232; the Claude bridge sends both fields
+  too): a refusal that cannot clear fails the claim, which ends the plugin's reminders; one that
+  can clear, or whose report carries no status, fails nothing, and the reminders keep their pace
+  of one every 5 minutes. The answer's `failed` is true only for the report that failed the claim.
+  A retry, whoever makes it (the architect's `retry_or_escalate`, the next start of the role, an
+  operator), now resumes the recorded session with fresh budgets, whatever the claim's run of
+  refused turns, and starts a new session only when it asks for one (`legion claims retry
+  --fresh-session`, the controller's `fresh_session`). A claim whose provider had refused its
+  last `launch_failure_limit` turns in a row used to take a new session at any retry, though most
+  such runs are refusals that can clear, such as a team limit's 429, which refuses every session
+  alike. The run of refused turns is now only what the daemon answers each report with. One retry
+  asks for a new session on its own: the daemon's controller keeper, when it retries a failed
+  controller whose resume is refused because a name of its recorded session is held for another
+  claim or for none. Before, such a controller kept its session and the keeper logged the refused
+  retry at Error at every try; now it drops the session once the hold lets it (`mayForget`, which
+  waits while the Envoy listener still names that session as the role's holder).
+time: 2026-11-23T20:03:51.993913529Z
+custom:
+  Issue: INFRA-4508

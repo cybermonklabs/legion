@@ -1,21 +1,22 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { CutWords } from "./CutWords";
 import { measureNearWords } from "./clamp-fixtures";
 import type { NodeFact } from "./issue-tree";
 import { NodeFacts } from "./NodeFacts";
 import { NoTooltips } from "./NoTooltips";
 import { CONTROL_LABELS } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { RowText, useOutOfTabOrder } from "./RowText";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { overflowing, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -203,21 +204,15 @@ test("NodeFacts keeps its copy controls out of the tab order, and in it with tab
   }
 });
 
-/** The names the page's one batched read brought, published as the page publishes them. */
-function Named({ children }: { children: ReactNode }): ReactNode {
-  const names = useMemo(() => new Map([["dispatch://CORE-2", "Draw the children"]]), []);
-  usePublishReferenceNames(names);
-  return children;
-}
-
 test("RowText keeps its links out of the tab order, and in it with tabStops, a late link included", async () => {
   const text = "Read [the notes](https://example.com/notes) before CORE-2.";
+  // The names the page's one batched read brought, published as the page publishes them.
+  const names = publishedNames(new Map([["dispatch://CORE-2", "Draw the children"]]));
   for (const tabStops of [false, true]) {
     const view = draw(
       <ReferenceNamesProvider>
-        <Named>
-          <RowText markdown={text} tabStops={tabStops} tree={displayTree(text)} />
-        </Named>
+        <Publisher published={names} />
+        <RowText markdown={text} tabStops={tabStops} tree={displayTree(text)} />
       </ReferenceNamesProvider>
     );
     try {

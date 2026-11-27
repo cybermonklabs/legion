@@ -60,8 +60,8 @@ type version struct {
 	// title, as for an artifact.version of an issue with no version yet, whose title
 	// decideVersions reads from the issue's rows.
 	Body string
-	// BodyFrom is where Body came from: bodyFromEvent, bodyFromRow, bodyFromBlocks or
-	// bodyFromCut, the values of the row's body_from.
+	// BodyFrom is where Body came from: bodyFromEvent, bodyFromRow, bodyFromHistory,
+	// bodyFromBlocks or bodyFromCut, the values of the row's body_from.
 	BodyFrom string
 	// BodyTruncated is whether the event cut the post's body, which is then read whole from
 	// another source.

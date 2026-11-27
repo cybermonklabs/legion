@@ -27,6 +27,7 @@ func sha256Hex(text string) string {
 // middle of a line is the literal's text and declares nothing. The control is a file with no
 // replaces line, which declares none.
 func TestLoadReadsEachFilesIdentityAndItsReplacesLines(t *testing.T) {
+	t.Parallel()
 	a, b := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	text := "-- replaces: 0002_second.up.sql sha256:" + a + "\n" +
 		"create table second (id integer);\n" +
@@ -59,6 +60,7 @@ func TestLoadReadsEachFilesIdentityAndItsReplacesLines(t *testing.T) {
 // carriage return ends the line and is not part of the checksum's hex. The control is a line with
 // a stray character after the checksum, which is still refused.
 func TestLoadReadsAReplacesLineOfAFileWithCRLFLineEndings(t *testing.T) {
+	t.Parallel()
 	a := strings.Repeat("a", 64)
 	text := "create table second (id integer);\r\n-- replaces: 0002_second.up.sql sha256:" + a + "\r\nselect 1;\r\n"
 	got, err := Load(fstest.MapFS{"migrations/0002_second.up.sql": file(text)}, "migrations")
@@ -81,6 +83,7 @@ func TestLoadReadsAReplacesLineOfAFileWithCRLFLineEndings(t *testing.T) {
 // when malformed. The control is the same line on a line of its own outside the literal, which
 // loads and declares the identity.
 func TestLoadRefusesAReplacesLinePostgresReadsAsPartOfALiteral(t *testing.T) {
+	t.Parallel()
 	line := "-- replaces: 0002_second.up.sql sha256:" + strings.Repeat("0", 64)
 	for name, text := range map[string]string{
 		"inside a string":             "select '\n" + line + "\n';\n",
@@ -116,6 +119,7 @@ func TestLoadRefusesAReplacesLinePostgresReadsAsPartOfALiteral(t *testing.T) {
 // since a runner judges the row of a version against the file of that version alone. The control
 // is the same file with the well-formed line, which loads.
 func TestLoadRefusesAMalformedReplacesLine(t *testing.T) {
+	t.Parallel()
 	good := "-- replaces: 0002_second.up.sql sha256:" + strings.Repeat("0", 64)
 	for name, line := range map[string]string{
 		"upper-case hex":               "-- replaces: 0002_second.up.sql sha256:" + strings.Repeat("A", 64),
@@ -152,6 +156,7 @@ func TestLoadRefusesAMalformedReplacesLine(t *testing.T) {
 // Reconcile's rule, row by row, without a database; the stores' tests hold each runner to it
 // against one (pgmigratetest.RunIdentityChecks).
 func TestReconcileJudgesEachRecordedRowAgainstItsFile(t *testing.T) {
+	t.Parallel()
 	own := Identity{Name: "0002_second.up.sql", Checksum: strings.Repeat("1", 64)}
 	earlier := Identity{Name: "0002_second.up.sql", Checksum: strings.Repeat("2", 64)}
 	other := Identity{Name: "0002_other.up.sql", Checksum: strings.Repeat("1", 64)}
@@ -170,12 +175,14 @@ func TestReconcileJudgesEachRecordedRowAgainstItsFile(t *testing.T) {
 		"a name and a null checksum":                                    {row: Recorded{Version: 2, Identity: Identity{Name: own.Name}}, refused: []string{`version 2 is recorded as "0002_second.up.sql" sha256 ""`, "no replaces line can name what this row records, so a reset is the one remedy"}},
 		"a replaced identity":                                           {row: Recorded{Version: 2, Identity: earlier}},
 		"a version with no file":                                        {row: Recorded{Version: 7, Identity: other}},
-		"another name":                                                  {row: Recorded{Version: 2, Identity: other}, refused: []string{"version 2 is recorded as " + other.String(), "file of version 2 is " + own.String(), "after the replaces lines it has", "-- replaces: " + other.String()}},
+		"another name": {row: Recorded{Version: 2, Identity: other}, refused: []string{"version 2 is recorded as " + other.String(), "file of version 2 is " + own.String(), "after the replaces lines it has", "-- replaces: " + other.String(),
+			"or an edited schema migration, reset it", "safe only when the edit changes no schema", "a database that ran an edited schema migration is reset instead"}},
 		"the replaced name, other text":                                 {row: Recorded{Version: 2, Identity: Identity{Name: own.Name, Checksum: strings.Repeat("3", 64)}}, refused: []string{"whose replaces lines name only " + earlier.String()}},
 		"the first identity, applied from the file's own text":          {row: Recorded{Version: 2, Identity: earlier, Applied: own.Checksum}},
 		"the first identity, applied from a text a replaces line names": {row: Recorded{Version: 2, Identity: earlier, Applied: earlier.Checksum}},
 		"the first identity, applied from a text the file does not name": {row: Recorded{Version: 2, Identity: earlier, Applied: another},
-			refused: []string{"the text applied under it has sha256 " + another + ", which neither that file nor its replaces lines name", "a later release created this database from empty", "add this line to 0002_second.up.sql, after its replaces lines: -- replaces: 0002_second.up.sql sha256:" + another}},
+			refused: []string{"the text applied under it has sha256 " + another + ", which neither that file nor its replaces lines name", "a later release created this database from empty", "add this line to 0002_second.up.sql, after its replaces lines: -- replaces: 0002_second.up.sql sha256:" + another,
+				"safe only when the edit changes no schema"}},
 		"an original file, applied from a later edit's text": {set: original, row: Recorded{Version: 2, Identity: earlier, Applied: own.Checksum},
 			refused: []string{"the text applied under it has sha256 " + own.Checksum, "add these two lines to 0002_second.up.sql, in this order: -- replaces: " + earlier.String() + " and -- replaces: 0002_second.up.sql sha256:" + own.Checksum}},
 		"an original file, applied from its own text": {set: original, row: Recorded{Version: 2, Identity: earlier, Applied: earlier.Checksum}},
@@ -229,6 +236,7 @@ var offeredLines = regexp.MustCompile(`-- replaces: \S+\.up\.sql sha256:[0-9a-f]
 // it, and so does the original file. The controls: X's own file, and a later edit of X that
 // declares X's text, accept the same row.
 func TestReconcileRefusesAnotherEditsTextUnderTheSameFirstIdentity(t *testing.T) {
+	t.Parallel()
 	const original = "create table a (id int)"
 	first := Identity{Name: "0002_a.up.sql", Checksum: sha256Hex(original)}
 	line := "\n-- replaces: " + first.String() + "\n"
@@ -277,6 +285,7 @@ func TestReconcileRefusesAnotherEditsTextUnderTheSameFirstIdentity(t *testing.T)
 // fault each, which must turn the verdict by itself. An absent table and an empty one each read as
 // nothing checked, not as a clean audit, so a check pointed at the wrong database cannot pass.
 func TestCheckVersionsSaysNotOKForEachFaultAloneAndForNothingChecked(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	set := []Migration{
 		{Version: 1, Name: "0001_a.up.sql", Checksum: sha256Hex("a")},

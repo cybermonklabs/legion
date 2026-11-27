@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The live proof of the daemon's Dispatch writes under the secrets broker
+    (`scripts/e2e/dispatch-broker.sh`) now calls `PutStepExperiment` with the daemon's broker token.
+    Its check K4 requires a call of each method of the daemon's Dispatch client. #5014 added this
+    method, and until this change the proof failed on each run.
+time: 2026-11-25T20:09:35Z
+custom:
+    Issue: pr5556

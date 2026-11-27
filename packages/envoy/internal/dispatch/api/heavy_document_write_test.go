@@ -33,7 +33,7 @@ func heavyWrites() []heavyWrite {
 	return writes
 }
 
-// A document write of each heavy body gets the verdict the reader gives it: the nine shapes of
+// A document write of each heavy body gets the verdict the reader gives it: the eleven shapes of
 // heavybodies.Shapes are stored or refused 400 INVALID_MARKDOWN, and both deeply nested
 // bare-directive bodies are refused the same way. The mapping from the reader's refusal to that
 // code lives in one place (writeHandlerError, server.go), and until this test no API test
@@ -43,10 +43,12 @@ func heavyWrites() []heavyWrite {
 // holding each to a second of wall clock as well (heavy-document-writes.e2e.ts,
 // nested-directive.e2e.ts). Nothing here reads a clock: two wall times a shared CI runner took
 // cannot separate a regression from the runner's own noise (INFRA-1013, INFRA-985). What the
-// bodies cost is measured in pmdoc's own CPU time
-// (TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime) and by BenchmarkHeavyDocumentWrite
-// beside this file; what a writer is answered is gated here.
+// bodies cost is counted in the statements pmdoc's parse executes and the bytes it allocates
+// (TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter) and
+// measured by BenchmarkHeavyDocumentWrite beside this file; what a writer is answered is gated
+// here.
 func TestHeavyDocumentWriteVerdicts(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	write := func(t *testing.T, name, body string, stored bool) {

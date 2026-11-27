@@ -2,6 +2,8 @@
 
 package core_test
 
+//ci:builds packages/envoy ./cmd/dispatch ./cmd/listener buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)
+
 import (
 	"context"
 	"encoding/json"
@@ -26,6 +28,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The live tests of the host grant: one nkey user holding HostPermissions, on the 2.10 image and on
 // the hub's, each run with the hub's own server arguments. This branch's listener connects as that

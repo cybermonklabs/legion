@@ -54,13 +54,22 @@ and `instanceGroup`, the group's name.
 | `listener` | unset | The hub's own Envoy listener: `image`, the listener's image pinned as the images above are; `seedSecret`, the id of a Secret Manager secret in the hub's project holding its NATS user's seed; `nkey`, that seed's public key; `allowedHosts`, any further address a client dials this hub by, beyond the hub's own `<h>.<tailnetDnsName>`, which it always serves; and the listener's broker check, `agentSecretsUrl`, `agentSecretsAudience` and `publicUrl`, set together or not at all. Each `allowedHosts` entry is a plain host name or IP address, rendered as written into the listener's `ENVOY_ALLOWED_HOSTS`. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends. See [The hub's listener](#the-hubs-listener), [The listener's broker check](#the-listeners-broker-check) and [The listener's sender limit](#the-listeners-sender-limit). |
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
 | `authCallout` | unset | The auth service's callout, a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private, as its own requirement for private projects asks. Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private, as its own requirement for private projects asks. Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, beside the hub's own `listener`, whose user connects by a stored seed, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
 naming the input. So the cloud-config is known at preview.
 
-The hub refuses these before it registers anything, with an error naming the input:
+The hub refuses these before it registers anything. Each refusal of an input is a
+`core.InputError` naming it: an entry of a list of strings by the list's own name, with its index
+in the message (`tags` for `tags[1] "…" must match …`); a user of `users` as `users`, or by the
+field's own path for its machine id (`users[0].machineId`) and for its `githubWebhook`
+(`users[0].githubWebhook`); and the authorization's refusals of
+the listener's user as `listener`, with an empty `listener.nkey` as `listener.nkey` and a user of
+`users` named after `hostname` as `users`, and of the session user as `sessionUser`. A seed in the
+hub's own name and a missing provider refuse no input, so neither is one.
+
+It refuses:
 
 - an nkey seed, found as `envoy-infra seed` finds one (`bus.HoldsSeed`: any type, either case,
   whole, inside a longer value, split by `.`, `-`, `_` or whitespace, or percent-encoded), in the
@@ -142,7 +151,12 @@ The hub refuses these before it registers anything, with an error naming the inp
   listener's `machineId`. Use it where the listener's process is the only one holding the seed,
   so it keeps its sessions' consumers; a host whose sessions connect as the same user takes
   `machineId` instead, since a session holding this set could create, pull and delete any
-  session's consumer.
+  session's consumer. Set `githubWebhook: true` beside it on the user of the one listener that
+  receives GitHub's webhook (its `ENVOY_WEBHOOKS` names `github`). That user is granted
+  `WebhookListenerHostPermissions(listenerMachineId)`: the same set, which may also publish
+  GitHub's lane, `notifications.github.>`. Every other set denies that lane, so the server
+  refuses every GitHub event a webhook listener publishes as a user without the flag, its webhook
+  deliveries and its CI settlements alike.
 - `dispatchMachineId`: the user shared by `envoy-dispatch` and the listener beside it, granted
   `DispatchPermissions(dispatchMachineId)`. Give it that listener's `machineId`, since the set
   names its durable consumer and queue group.
@@ -151,9 +165,9 @@ The hub refuses these before it registers anything, with an error naming the inp
 - `permissions`: `{publish, subscribe}`, each a `nats:Rules`, an `allow` list and an optional
   `deny` list of subject patterns, for any other client.
 
-`daemon: false` selects no permission set. `nats:Rules` is the one rules type every NATS component
-takes, whatever its cloud, and `nkey` is named as `aws:NatsService`'s users name it, so the two
-components spell a user's key and rules alike.
+`daemon: false` and `githubWebhook: false` select no permission set. `nats:Rules` is the one
+rules type every NATS component takes, whatever its cloud, and `nkey` is named as
+`aws:NatsService`'s users name it, so the two components spell a user's key and rules alike.
 
 `ListenerPermissions`, and through it `ListenerHostPermissions`, `HostPermissions` and
 `DispatchPermissions`, holds the notification stream's stored-message get,
@@ -228,22 +242,29 @@ more ([The hub's listener](#the-hubs-listener)).
 A user is refused when it names more than one of `machineId`, `listenerMachineId`,
 `dispatchMachineId`, `daemon: true` and `permissions`, or none, or when its `nkey` is empty, named
 by its index alone, as `users[1]: nkey is required`, since these come before the authorization has
-checked the names. A `machineId`, `listenerMachineId` or `dispatchMachineId` names the durable
-consumer `listener-<id>` and queue group `envoy-listener-<id>`. The shared machine-ID rule refuses
-an empty id; leading or trailing whitespace; `.`, `*`, `>`, `/` or `\`; a control character; and
-any whitespace other than an ordinary space; and any id over 246 bytes, so `listener-<id>` fits
-NATS's 255-byte consumer-name limit. An ordinary space is accepted only inside the id and becomes a hyphen in both names. The refusal names the field itself, as
-`users[1].dispatchMachineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry`. Two ids that give one durable name, of any kind
+checked the names. `githubWebhook: true` beside any kind but `listenerMachineId` is refused,
+naming it, as
+`users[0].githubWebhook is set beside machineId; it names the listener that receives GitHub's webhook, so only a listenerMachineId user takes it`.
+A `machineId`, `listenerMachineId` or `dispatchMachineId` names the durable consumer
+`listener-<id>` and queue group `envoy-listener-<id>`, spelled as the listener spells them: an
+ordinary space, accepted only inside the id, becomes a hyphen, and each `.`, `*`, `>`, `/` or `\`
+becomes `%` and two hex digits, so `host.example.internal` names
+`listener-host%2Eexample%2Einternal`. The shared machine-ID rule refuses an empty id; leading or
+trailing whitespace; a control character; any whitespace other than an ordinary space; an id
+holding `%`, which starts every escape and so could give another id's names; and an id whose
+durable is over NATS's 255-byte consumer-name limit, each escape counted as three bytes. The
+listener refuses the same `%` and length at start. The refusal names the field itself, as
+`users[1].dispatchMachineId holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names`. Two ids that give one durable name, of any kind
 (`a b` and `a-b` collide), or one giving the hub's own listener's (the `hostname`'s), would put
 two listeners on one durable and queue group, so the later one is refused, as
 `users[2]: dispatchMachineId gives the same durable name as users[0].machineId` or
 `… as the hub's own listener`. Every `dispatchMachineId` user also binds Dispatch's fixed durables
-`delivery-events` and `delivery-jobs`, so a second one is refused the same way, as
-`users[3]: dispatchMachineId gives the same durable name as users[2].dispatchMachineId`. So a
-machine's credential is rotated in its single entry, never beside it: the consumer declares a new
-secret, empty (see [Making a seed](../README.md#making-a-seed)); `envoy-infra seed generate` writes
-the new seed into it (it refuses a secret that does not exist or already holds a version); the
-entry's `nkey` becomes the key it printed; and the client is pointed at the new secret and
+`delivery-events`, `delivery-jobs` and `legion-state-events`, so a second one is refused the same
+way, as `users[3]: dispatchMachineId gives the same durable name as users[2].dispatchMachineId`.
+So a machine's credential is rotated in its single entry, never beside it: the consumer declares
+a new secret, empty (see [Making a seed](../README.md#making-a-seed)); `envoy-infra seed generate`
+writes the new seed into it (it refuses a secret that does not exist or already holds a version);
+the entry's `nkey` becomes the key it printed; and the client is pointed at the new secret and
 restarted. A change to the hub's users rewrites its user data, which replaces the VM, and from the
 `nkey` change until its own restart the client is refused. A user is refused too for each of the
 authorization's own refusals under [NATS authorization](../README.md#nats-authorization), named as
@@ -255,7 +276,8 @@ user's name or a rule entry before any of those, naming the path and not the val
 user and the session user are named by their inputs in the same refusals, as
 `listener "<h>": nkey repeats users[0] "example-host-a"` or
 `sessionUser "<name>": nkey is not a user public key …`; a user of `users` named `<h>` is refused
-as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`.
+as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`, naming
+`users`, since that entry is the one to rename.
 
 ### The auth service
 
@@ -263,7 +285,7 @@ With `authCallout`, the server admits every client that is not one of its users 
 service, which reads the client's token and answers with that connection's
 grant, as [NATS authorization](../README.md#nats-authorization) renders it: one `auth_callout`
 block inside the authorization block, whose `auth_users` is the key of every user above, the
-session user's included (a hub with `authCallout` has no listener user, below). After the
+hub's own listener's and the session user's included. After the
 authorization block come the ping lines, `ping_interval: "20s"` and `ping_max: 2`, so a hung
 replica of the auth service leaves the callout's queue group within 80 s. A static user
 connects by its seed and the session user's client with no credential, and neither reaches the
@@ -280,10 +302,23 @@ with `privateProjects` the hub enforces it, refusing a service user of any other
 granted more (below). There is no `accounts` block: the service places each client in the global
 account, beside the static users, so turning the callout on moves no stream.
 
-A hub with `authCallout` runs no `listener` of its own yet: the listener connects as a user whose
-seed the hub stores, and its service identity, with which it would connect through the auth
-service instead, arrives in a later change. Until then `listener` beside
-`authCallout` is refused naming both, as `listener and authCallout: …`, before anything registers.
+A hub with `authCallout` keeps its own session listener (`listener`, or `gcp:ClusteredNatsHub`'s
+`tailnet.listener`). The listener connects as a user whose seed the hub stores, so its key is in
+`auth_users` beside every other static user's, and it is admitted by its nkey with its listener
+grant and never reaches the auth service (`gcp/clusteredhub_callout_live_test.go`,
+`TestAClusteredHubsSeededListenerSkipsTheCallout`). Its move to a service identity, with which it
+would connect through the auth service instead, is a later change. `privateProjects` refuses that
+seeded listener, as it refuses every user but the service's (below).
+
+**What the callout alone does not change.** While the hub has a `sessionUser`, a client presenting
+no credential still becomes it without reaching the auth service, with the session user's grant:
+publish to every `_INBOX.` subject and subscribe to every session's relay subject
+(`core.SessionPermissions`). nats-server gives a client that presents no user name, password,
+token or nkey the `no_auth_user`'s key, and skips the callout for a key in `auth_users`
+(nats-server v2.15.1 `server/auth.go:919-922` and `:756`); the same test measures it. So turning
+the callout on gives a client that presents a token its own grant, and narrows no client that
+presents none. That needs the `sessionUser` removed, which refuses every client that presents no
+credential: do it only once every client presents one.
 
 `privateProjects` says the deployment may make a Dispatch project private, which the deployment's
 requirement for private projects allows only while every client connects through the auth service. So it is
@@ -292,7 +327,10 @@ refused, as a `core.InputError` naming `privateProjects`, without `authCallout`
 auth service, and the authorization has no callout`); beside a `sessionUser`
 (`privateProjects: sessionUser "<name>" is noAuthUser: a client presenting no credential would
 become it while a project is private`); beside any entry of `users` but the service's
-(`privateProjects: users[<i>] "<name>": a stored client seed while a project is private`); with an
+(`privateProjects: users[<i>] "<name>": a stored client seed while a project is private`); beside
+the hub's own session listener (`listener`, or `gcp:ClusteredNatsHub`'s `tailnet.listener`),
+whose user connects by a stored seed (`privateProjects: listener "<machine id>": a stored client
+seed while a project is private; …`, the machine id being `gcp:NatsHub`'s `hostname`); with an
 `authCallout.serviceUser` that names an entry of `users` other than a `permissions` entry
 (`privateProjects: authCallout.serviceUser "<name>" names users[<i>], a
 <machineId|listenerMachineId|dispatchMachineId|daemon> user, whose seed its client stores; the auth
@@ -324,14 +362,39 @@ exporter's port, 7777. `gcp:NatsHub` opens 8222 only to Google Cloud's health-ch
 rule), from which its group's health check reads `/healthz`; no input widens that, so it has
 nothing to refuse.
 
-`privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
-(the callout, no session user, no client user beside the auth service's) reaches a running server
-only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes it as the pod roll
-restarts that pod (below), and until then it keeps its old `no_auth_user` and seeded users. On
-`gcp:NatsHub` the VM takes it when the group replaces the VM. So the order holds both ways. Turn
-on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's update has completed on every server:
-every pod of the clustered hub has restarted, or the VM hub's new VM is up. Turn the hub's
-`privateProjects` off only after no project is private.
+`privateProjects` is checked when the hub is planned, and renders one thing itself: the server tag
+`server_tags: ["envoy-private-projects"]` after the ping lines (the README's
+[NATS authorization](../README.md#nats-authorization)). nats-server copies it into every
+authorization request. The auth service does not read it yet: its private-hub admission, later
+work, is to admit Dispatch's hub-admission proof only on a request that carries it, and there to
+admit a listener only in required privacy mode. A change that brings
+the hub to what `privateProjects` demands (the callout, no session user, no client user beside the
+auth service's) reaches a running server only when that server restarts: it changes `auth_callout`,
+its `auth_users` or `no_auth_user`, and nats-server 2.15.1 refuses that whole reload, the tag that
+comes with it included. On `gcp:ClusteredNatsHub` each pod takes such a change as the pod roll
+restarts that pod (below), and until then it keeps its old `no_auth_user`, seeded users and tags.
+The tag alone arrives sooner. When it is the only change in `auth.conf`, as when `privateProjects`
+is set or removed on a hub that already has the callout and the auth service's user alone, the
+reloader's reload adds it to (or removes it from) a pod before the roll restarts that pod, and that
+reload closes each client the auth service named, which reconnects through the callout
+([A reload, not a replacement](#a-reload-not-a-replacement)). Beside `privateProjects` the chart
+waits on the hub pods' NetworkPolicy, so no pod takes the tag, by reload or by restart, before the
+policy that closes 8222 is applied. On `gcp:NatsHub` the VM takes the demands and the tag when the
+group replaces the VM. Turn on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's
+update has completed on every server: every pod of the clustered hub has restarted, or the VM hub's
+new VM is up.
+
+Turn the hub's `privateProjects` off only after every project is public again; a project switched
+back to public releases what was written while it was private. Nothing orders the apply that
+removes it: without `privateProjects` the chart does not wait on the NetworkPolicy, so a policy
+that opens 8222 in the same apply can do so before a pod drops the tag, and a pod keeps the tag
+until its reload or its restart. With every project public, an open 8222 names no private
+project's subjects or connections, and a pod that still carries the tag has no private project to
+admit anyone to. On `gcp:ClusteredNatsHub`, give `monitorNamespaces` back only in a later apply
+than the one that removes `privateProjects`, after that apply has restarted every hub pod on the
+untagged lines (each pod's `envoy-infra.sjawhar.dev/auth-callout` annotation is the untagged
+hash), so that no pod carries the tag while 8222 is open, the order the chart keeps when the tag
+comes.
 
 ## The hub's listener
 
@@ -751,6 +814,23 @@ The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds tha
 `DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
 `machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
 replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+The release that limits Dispatch's lane and GitHub's lane adds a publish deny to every set built
+on the listener grant: `notifications.dispatch.>` and `notifications.github.>` to
+`ListenerPermissions`, `ListenerHostPermissions` and `HostPermissions`, and
+`notifications.github.>` with the listener's resume lane, `notifications.envoy.resume.>`, to
+`DispatchPermissions` (see [Permission sets](../README.md#permission-sets)). That changes the
+rendered users of every hub with a `listener`, a `machineId`, a `listenerMachineId` or a
+`dispatchMachineId` user: upgrading such a hub to it replaces its VM once, with the outage below,
+and a hub with none of them keeps its VM. A clustered hub reloads its users instead
+([A reload, not a replacement](#a-reload-not-a-replacement)). The same release adds
+`githubWebhook`. A deployment whose `listenerMachineId` user is the user of the listener that
+receives GitHub's webhook sets `githubWebhook: true` on that user in the same change that moves
+the pin. If the pin moves without it, the user is rendered with GitHub's lane denied, and the
+server refuses every GitHub event that listener publishes, its webhook deliveries and its CI
+settlements alike, until the input is set. The auth service answers a connection with the same
+sets, deny included, since it and the hub's renderer both read `natsgrant`. It denies GitHub's
+lane to a `listener` entry of `BROKER_NATS_SERVICES`, so list a listener that receives GitHub's
+webhook through it as a `webhook-listener` entry, whose grant publishes that lane.
 The release that adds `listener.senderMessagesPerMinute` and `listener.senderMessageBurst` renders
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it
@@ -1000,11 +1080,18 @@ A users change replaces the VM of a `gcp:NatsHub` (see [Updating a hub](#updatin
 clustered hub it rewrites `auth.conf` in place, since the hub's own provider updates ConfigMaps
 rather than replacing them, and the chart's config reloader beside each server, which watches
 `nats.conf` and `auth.conf`, signals nats-server to reload once the kubelet has updated the mounted
-file. No server restarts and no client reconnects: on three local nats-server 2.15.1 processes with
-the real reloader 0.24.0, a client kept its connection id with zero reconnects while a user was
-added (it could then connect) and removed (it was then refused), and every server's PID stayed the
-same. The chart's own checksum annotation, which would restart the pods on any change to the
-ConfigMap, is off.
+file. No server restarts: on three local nats-server 2.15.1 processes with the real reloader
+0.24.0, a client kept its connection id with zero reconnects while a user was added (it could then
+connect) and removed (it was then refused), and every server's PID stayed the same. That client
+was a static user. Beside a callout, every reload, whatever it changes, also decides each callout
+connection again (`server/reload.go:1651-1654`, `:1706-1707`, `:2091-2093`): a client the auth
+service named, which Envoy's auth service does for every client it admits, names no configured
+user, so the reload closes it and it reconnects through the callout
+(`server/auth_callout.go:326-333`; `server/reload.go:2291-2299`, `:2349-2352`, `:2398-2432`), and
+an unnamed client that presented no user name or nkey goes through the callout again on its live
+connection (`server/reload.go:2354-2358`). Static users, the auth service's own among them, keep
+their connections. The chart's own checksum annotation, which would restart the pods on any change
+to the ConfigMap, is off.
 
 The session user is the exception. nats-server 2.15.1 refuses a whole reload that changes
 `no_auth_user`, logging `config reload not supported for NoAuthUser`, and keeps the users it had,
@@ -1050,12 +1137,17 @@ reload of them the server would take is an edit of their value (`server/reload.g
 interval when it re-arms (`client.go:6037-6050`), so each connection would take such an edit at
 its timer's next re-arm, within one interval of 20 s. The hub writes the SHA-256 of `auth.conf`'s
 callout lines, `core.Authorization.CalloutLines()` (the `auth_callout` block, which has no
-`timeout` line, and the ping lines), into the hub pods' annotation
-`envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the pods, by the
-same depends-on order as the session user's roll, on a change of either: a pod restarted on the old
-`auth.conf` would keep the old callout, and the reload that later brings the new one would be
-refused. The ping lines are in the digest so that every server applies an edit of them at one known
-moment, its pod's restart, with every connection's timer started fresh. The routes' own ping in
+`timeout` line, the ping lines and, beside `privateProjects`, the server tag), into the hub pods'
+annotation `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the
+pods, by the same depends-on order as the session user's roll, on a change of any of them: a pod
+restarted on the old `auth.conf` would keep the old callout, and the reload that later brings the
+new one would be refused. nats-server also reloads `server_tags` (`server/reload.go:360-366`,
+`:1698-1699`), so a change of the tag alone reaches a pod by its reloader before the roll restarts
+it, and that reload, like every reload, decides each callout connection again (above). The roll
+is there so that every server takes a change of these lines at one known moment, its pod's restart,
+after the ConfigMap is applied; a reload comes when the kubelet updates the mounted file, which
+nothing orders. The ping lines are in the digest so that every server applies an edit of them at
+that moment, with every connection's timer started fresh. The routes' own ping in
 `nats.conf`'s `cluster` block
 ([below](#two-ports-guarded-by-the-networkpolicy-alone)) appears and goes with the callout, so it
 always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods
@@ -1281,10 +1373,11 @@ log as `kubectl logs --timestamps` gives it, then reads the pods again. It exits
 rule below holds; 1 when one shows the password may be read; and 2 when it could not read all it
 needs, when the log carries no time of the container runtime's, when authorization is not yet in
 force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when the
-mesh is not whole or the servers do not hold one password, when a route connection from another
-address named no server or was still open when the log was read, when the log holds no hangup
-that began the reload that loaded authorization, when the log holds a line the server did not
-write, or when a pod changed during the check. It refuses, exit 2, a record whose namespace,
+mesh is not whole or the servers do not hold one password, when a pod's `/routez` still lists a
+closing route, with no address, to another hub server after the check's reads, when a route
+connection from another address named no server or was still open when the log was read, when the
+log holds no hangup that began the reload that loaded authorization, when the log holds a line the
+server did not write, or when a pod changed during the check. It refuses, exit 2, a record whose namespace,
 StatefulSet or pod name is not a DNS label, whose pod uid is not a UUID, or whose CA entry is not a
 64-hex SHA-256, naming the field and not its value, since a record file can be edited and the
 check prints those fields unquoted. It prints no password,
@@ -1363,7 +1456,21 @@ reads with `--timestamps`.
   `isDuplicateServerName` runs for gateways alone, `gateway.go:1090`, `:1166`), so the process
   this check looks for can join as `<n>-1` and pass a check of names. Nor is the route's `port`
   6222: `/routez` gives the TCP peer's port, and a route a peer opened comes from an ephemeral
-  one, so one server's four routes to another showed four ports.
+  one, so one server's four routes to another showed four ports. A route with no `ip` is one the
+  server is closing: `/routez` gives the address from the route's socket as it is read
+  (`server/monitor.go:916-921`), and closing a route clears its socket
+  (`server/client.go:6153-6165`) while the server goes on to remove the route
+  (`server/client.go:6335`, `server/server.go:3795-3796`). Such a route had passed the route
+  login, since `/routez` lists a route only after `addRoute` (`server/route.go:894`). When the
+  check knows every server's id, it judges such a route's `remote_id` in each read that lists it:
+  one that is none of the hub's other servers' is exit 1. One that is another hub server's, or any
+  when an id is unknown, needs its address, so the check reads that `/routez` again, up to six
+  reads with waits of 20 to 320 ms between them. It judges every read's routes by the rules above,
+  so a later read never drops what an earlier one showed, takes the routes to the pod's peers from
+  the last read, and gives exit 2 for a route with no `ip` still in it. Run 45052294482 of
+  cybermonklabs/legion#4049 read envoy-nats-1's own route to an impostor, which the impostor was
+  refusing for its duplicate name, and named it a route "from an address that is no pod of the
+  hub: ip ".
 - **No peer that left had the password.** `/routez` shows only who still holds a route, so a
   process that read the password and then left passes it. The log keeps it: every
   `Route connection created` line (`server/route.go:2104`) names the connection's peer. The rule's
@@ -1672,7 +1779,13 @@ pod and its container.
 Each hub pod's `prom-exporter` container runs prometheus-nats-exporter 0.20.2 with the chart's
 arguments (`-connz -routez -subz -varz -prefix=nats -use_internal_server_id -jsz=all` and the
 server's monitoring URL), and Google Managed Prometheus scrapes it through the PodMonitoring `<n>`
-every 30 seconds. Its stream metrics, as the local cluster test logged them, are:
+every 30 seconds. The PodMonitoring's one metric relabeling rule drops each series whose name
+matches `nats_consumer_.+` before Managed Prometheus stores it, since each carries a consumer's
+`consumer_name` and `consumer_desc`, which every holder of `monitoring.timeSeries.list` in the
+project could read; `-jsz=streams` would have the exporter serve none of them, but it reads
+`/jsz?streams=true`, which carries no stream configuration, so the exporter would serve no
+`nats_stream_limit_bytes` or `nats_stream_limit_messages` either. Its stream metrics, as the
+local cluster test logged them, are:
 
 - `nats_stream_consumer_count`
 - `nats_stream_first_seq`

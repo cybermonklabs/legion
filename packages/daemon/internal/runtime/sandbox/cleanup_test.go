@@ -118,6 +118,7 @@ func (c *cleanupRig) disk(sandbox string) *corev1.PersistentVolumeClaim {
 // the listed object's UID and resourceVersion, so a stale cleanup cannot delete a replacement.
 // Another tree's Sandbox and the image probe's are left alone.
 func TestATreeCleanupForegroundDeletesEveryIssueSandboxAndItsVolume(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	if err := c.r.CleanupTree(c.ctx, testTree); err != nil {
 		t.Fatalf("cleanup: %v", err)
@@ -156,6 +157,7 @@ func TestATreeCleanupForegroundDeletesEveryIssueSandboxAndItsVolume(t *testing.T
 // The API's listing is read again after the Sandboxes it named are gone: an issue Sandbox it did
 // not name the first time is deleted too.
 func TestATreeCleanupListsAgainUntilNoSandboxRemains(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	late := "legion-legion-legion-210"
 	created := false
@@ -187,6 +189,7 @@ func TestATreeCleanupListsAgainUntilNoSandboxRemains(t *testing.T) {
 // resourceVersion) is no failure: the listing is read again and the delete fenced to what it now
 // names.
 func TestATreeCleanupListsAgainAfterAConflict(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	conflicted := false
 	c.dyn.PrependReactor("delete", "sandboxes", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -207,6 +210,7 @@ func TestATreeCleanupListsAgainAfterAConflict(t *testing.T) {
 // A failed delete fails the cleanup, leaving that Sandbox and its pod's disk, and the same cleanup
 // run again finishes it: the Sandboxes already gone are not asked for again.
 func TestATreeCleanupThatFailedFinishesOnItsRetry(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	failed := false
 	c.dyn.PrependReactor("delete", "sandboxes", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -246,6 +250,7 @@ func TestATreeCleanupThatFailedFinishesOnItsRetry(t *testing.T) {
 // A tree the API lists no Sandbox of, as one closed before its first launch, is released at once:
 // nothing is written.
 func TestATreeCleanupOfATreeWithNoSandboxWritesNothing(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withoutController())
 	g.clearActions()
 	if err := g.r.CleanupTree(g.ctx, testTree); err != nil {
@@ -262,6 +267,7 @@ func TestATreeCleanupOfATreeWithNoSandboxWritesNothing(t *testing.T) {
 // carry and its next launch creates a Sandbox of its own. The orphan sweep then has nothing of
 // the old tree left to judge.
 func TestATreeCleanupDeletesACarriedIssuesSandboxToo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		opened bool
@@ -303,6 +309,7 @@ func TestATreeCleanupDeletesACarriedIssuesSandboxToo(t *testing.T) {
 // tree (Store.IssueSandboxHome). Once the child belongs nowhere — it left the line before
 // admission, or its tree closed — the Sandbox is deleted, as every other orphan is.
 func TestTheSweepKeepsTheSandboxOfAnIssueWhoseHomeIsTheTreeItIsLabelledWith(t *testing.T) {
+	t.Parallel()
 	name := "legion-legion-legion-209"
 	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-child", modeSuspended,
 		map[string]string{labelProject: testProject, labelTree: childIssue, labelIssue: childIssue})}, withoutController())
@@ -327,6 +334,7 @@ func TestTheSweepKeepsTheSandboxOfAnIssueWhoseHomeIsTheTreeItIsLabelledWith(t *t
 // that tree: the delete is fenced to the uid and resourceVersion the census read, which the API
 // refuses with 409 once the launch has written it, and the listing read again no longer names it.
 func TestATreeCleanupLeavesASandboxTheNewTreeRelabelledFirst(t *testing.T) {
+	t.Parallel()
 	c := newCleanupRig(t)
 	var mu sync.Mutex
 	var childDeletes int // the reactor answers ahead of the rig's recorder, so it keeps its own count

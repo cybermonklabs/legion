@@ -19,15 +19,10 @@ import (
 // The pod's own paths. The issue's disk is the pod's own generic ephemeral volume, created with the
 // pod and deleted with it; it is mounted whole at TreeRoot in workspace-init and the pod's one
 // launcher container, and no session is on it — every session is a row in the session database the
-// deployment names (Options.SessionStore). The pod's feed is the volume's feedSubPath directory,
-// mounted at FeedDir: read-write in workspace-fetch, which mounts nothing else of the volume, and
-// read-only over the whole volume's mount in every other container. The clone owns its object-store
-// entries, and no agent writes what the token-holding container reads. No volume is ever carried
-// over from an earlier release: an issue pod's disk is created with the pod and deleted with it
-// (INFRA-80), so every feed is one this pod's own workspace-fetch wrote, and the fetch's own check
-// of it (workspace.Fetch takes a feed only in the shape it writes), run before any git and in an
-// init container no agent runs beside, is what keeps the token-holding container from running what
-// an agent of this pod wrote.
+// deployment names (Options.SessionStore). Workspace-init fills the clone directly on that volume
+// from the repository cache and GitHub. An ephemeral issue volume is created with its pod and
+// deleted with it (INFRA-80); a kept volume (runtime.kubernetes.sandbox.microvm.keep_volume) is
+// carried to the issue's next pod as the last pod left it.
 // LauncherDir, LauncherPrivateDir, StateDir, GHConfigDir and AgentSecretsKeyDir are where a
 // launcher role's process finds its own launcher token projection, memory-backed private directory
 // (where its launcher writes each generation's boot token and launch credentials), state directory,
@@ -59,16 +54,14 @@ import (
 // `/legion/scratch/state/<role>` (roleStateHome), which keeps one role's browser broker lock from
 // blocking its siblings'. The go command's two caches are the issue's too, one pair every role of
 // it is told, `/legion/go/build` and `/legion/go/mod` (goBuildCache, goModCache) under
-// `/legion/go`, a top-level directory of the volume beside the workspaces, the repositories,
-// feedSubPath and uv's own (uvPythonRoot, uvCacheDir). The pod's ephemeral storage bounds none of
-// them.
+// `/legion/go`, a top-level directory of the volume beside the workspaces, the repositories and
+// uv's own (uvPythonRoot, uvCacheDir). The pod's ephemeral storage bounds none of them.
 const (
 	TreeRoot = "/legion"
 	// SessionsSubPath is the sessions directory of a legion-v10.0.0 tree volume, which no pod
 	// mounts any more: its one reader is `legion sessions import --tree-volume`, the copy of such
 	// a deployment's session files into the session table (SessionOnVolume).
 	SessionsSubPath    = "sessions"
-	FeedDir            = TreeRoot + "/" + feedSubPath
 	CacheRoot          = "/legion/cache"
 	LauncherDir        = launcher.FixedRoot + "/" + launcher.RoleLauncherDir
 	LauncherPrivateDir = launcher.FixedRoot + "/" + launcher.RolePrivateDir
@@ -110,7 +103,18 @@ const (
 	// at launcher.WorkloadIdentityTokenFile in it, the file the launcher reads under its roles
 	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
 	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
+	// The controller's pod mounts the token at ControllerWorkloadIdentityDir instead where its
+	// launcher runs the single-role form, which has no roles directory.
 	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
+	// ControllerWorkloadIdentityDir is where the project controller's pod, run in a microVM whose
+	// deployment names the metadata endpoint, mounts that same projected token, read-only, at
+	// launcher.WorkloadIdentityTokenFile in it, where its launcher runs the single-role form: that
+	// launcher's fixed path under launcher.FixedRoot, as WorkloadIdentityDir is the roles
+	// launcher's under its roles directory (controllerPod.launcherContainer). That form has no
+	// role namespaces, so its agent can read the token. That gives the agent no identity it lacks:
+	// the endpoint its launcher serves it hands it access tokens of the same Workload Identity
+	// principal.
+	ControllerWorkloadIdentityDir = launcher.FixedRoot + "/" + launcher.WorkloadIdentityDirName
 	// SessionWriterDir is where a pod whose session database names a writer audience
 	// (ompsessions.Database.WriterAudience) mounts, read-only, the projected ServiceAccount token
 	// of that audience (sessionWriterTokenVolume), at launcher.SessionWriterTokenFile in it: the
@@ -161,10 +165,6 @@ func containerHomePath(path string) string {
 	}
 	return path
 }
-
-// feedSubPath is the issue volume's directory that holds the pod's feed (FeedDir). The kubelet
-// makes it on first use.
-const feedSubPath = "feed"
 
 // AgentSecretsKeyDir is the memory-backed directory a role's agent-secrets key and enrollment id
 // live in, and AgentSecretsTokenDir where the pod's projected token for the broker's audience is
@@ -217,9 +217,8 @@ const (
 	// legionPlugin is the packed pi-legion the image carries, whose package.json names its
 	// extension, skills and the daemon API contract it speaks.
 	legionPlugin = "/opt/legion/pi-legion"
-	// initTempDir is the workspace-fetch container's TMPDIR, an in-memory volume of its own:
-	// `workspace-init fetch` keeps its one-shot credential there, off every volume another
-	// container mounts.
+	// initTempDir is workspace-init's TMPDIR, an in-memory volume that keeps its one-shot
+	// credential off every volume another container mounts.
 	initTempDir = "/tmp"
 )
 
@@ -357,11 +356,11 @@ const (
 	labelRole    = "legion.dev/role"
 )
 
-// labelSandbox marks a microVM issue pod, with the value SandboxMicroVM; a gVisor pod carries
-// none. It is the label a NetworkPolicy selects a microVM pod by. It is on the pod template alone
-// (podTemplate), and so on the pod, never on the Sandbox or its Secrets: a Sandbox is kept across
-// the pods it runs, which may run in either sandbox, while the template is rebuilt for every pod
-// from the sandbox the launch that builds it decided.
+// labelSandbox marks a microVM pod, an issue's or the project controller's, with the value
+// SandboxMicroVM; a gVisor pod carries none. It is the label a NetworkPolicy selects a microVM pod
+// by. It is on the pod template alone (podTemplate), and so on the pod, never on the Sandbox or its
+// Secrets: a Sandbox is kept across the pods it runs, which may run in either sandbox, while the
+// template is rebuilt for every pod from the sandbox the launch that builds it decided.
 const labelSandbox = "legion.dev/sandbox"
 
 // labelVolume marks the claim template of an issue's kept volume with the one value volumeKept:

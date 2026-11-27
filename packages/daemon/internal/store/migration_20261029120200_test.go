@@ -12,6 +12,7 @@ import (
 // migration would have to invent, and empty reads as "never read", which the daemon's next read
 // of the pull request fills.
 func TestAPullRequestRecordedBefore20261029120200HasNoMergeState(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029120100)

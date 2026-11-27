@@ -1,0 +1,19 @@
+{
+  "answers": [
+    {
+      "answer": "register",
+      "addKeyPaths": [
+        "replaces"
+      ]
+    },
+    {
+      "answer": "register-controller",
+      "addKeyPaths": [
+        "replaces"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

@@ -176,7 +176,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 		renamed := identity("0002_renamed.up.sql", identitySecond)
 		refused(t, db, migrate(ctx, withThird("0002_renamed.up.sql", identitySecond)),
 			"version 2 is recorded as "+second.String(), "this build's file of version 2 is "+renamed.String(),
-			"if the edit is intended, add this line to", "-- replaces: "+second.String())
+			"if the edit is intended (a replaces line accepts this database as it is, so it is safe only when the edit changes no schema", "), add this line to", "-- replaces: "+second.String())
 		want(t, db, preparedRows...)
 	})
 
@@ -184,7 +184,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 		db, migrate := prepared(t)
 		refused(t, db, migrate(ctx, withThird("0002_second.up.sql", identitySecondEdited)),
 			"version 2 is recorded as "+second.String(), "this build's file of version 2 is "+edited.String(),
-			"if the edit is intended, add this line to", "-- replaces: "+second.String())
+			"if the edit is intended (a replaces line accepts this database as it is, so it is safe only when the edit changes no schema", "), add this line to", "-- replaces: "+second.String())
 		want(t, db, preparedRows...)
 	})
 

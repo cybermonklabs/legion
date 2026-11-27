@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -69,7 +71,7 @@ const dequeueRetry = 20 * time.Millisecond
 // woken session holds the merger's role. Nothing else tells a merger of the removal: its pull
 // request would wait out of the queue with nobody to enqueue it again or send the issue back.
 //
-// The daemon is the whole daemon (run, through startDaemonWithin) on a database of its own and on
+// The daemon is the whole daemon (run, through startDaemonLogging) on a database of its own and on
 // the NATS server testnats names (LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL, in a pod
 // with no Docker). The event enters as production's does: an Envoy envelope of GitHub's
 // pull_request action `dequeued` on notifications.github.acme.widgets.pr.<number>, with the keys
@@ -175,6 +177,7 @@ const dequeueRetry = 20 * time.Millisecond
 //     (mergerWaitsForTheDesignGate): it neither wakes the merger nor publishes while the change set
 //     is not recorded, and once the test records it, the merger is woken and told once.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
+	t.Parallel()
 	rig := newDequeueRig(t)
 	woken := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	merged := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -200,6 +203,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		issue := woken
 		slots := rig.slots(t, issue.key)
 		reads := rig.publish(t, issue, issue.head)
+		rig.registerWoken(t, issue)
 		rig.await(t, "the listener's refusal of the merger's topic at the message's second try", func() bool {
 			return rig.listener.refused(issue.topic) >= 1
 		})
@@ -256,6 +260,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once the fifth read failed", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
+		rig.registerWoken(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
@@ -270,6 +275,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	t.Run("an issue that leaves merging while the message waits is not told", func(t *testing.T) {
 		issue := leaves
 		reads := rig.publish(t, issue, issue.head)
+		rig.registerWoken(t, issue)
 		rig.await(t, "the message to wait for the woken merger's session", func() bool {
 			return rig.listener.refused(issue.topic) >= 1
 		})
@@ -342,6 +348,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once the gate opened", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
+		rig.registerWoken(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
@@ -399,6 +406,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the merger woken for the message once what changed is recorded", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
+		rig.registerWoken(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
@@ -426,6 +434,33 @@ type dequeueRig struct {
 	// the one fact a case applies of its own (startedAgainEngine).
 	engine *workflow.Engine
 	issues []dequeueIssue
+	// d is the booted daemon, whose claims route registers the session of a woken merger's launch
+	// (registerWoken), as the merger's plugin does once its agent has booted.
+	d *daemon
+}
+
+// registerWoken registers the session of the woken merger's launch of issue with the daemon, as
+// the merger's plugin does once its agent has booted: a removal is published only once the
+// merger's launch has registered its session (deliverHeld), and the fake runtime boots no agent of
+// its own. The woken launch resumes the session the merger's claim records, so that session is the
+// one it registers; the daemon refuses any other (claim.SameAgentRefusal), and refuses a launch
+// that records no process yet (launchRecordsNoProcess), so the registration waits until the
+// launch's process is recorded. The removal still waits for the listener to name a holder (holds).
+func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	r.await(t, "the runtime's resume of the woken merger", func() bool { return len(resumesOf(r.rt, issue.merger)) >= 1 })
+	resumes := resumesOf(r.rt, issue.merger)
+	launch := resumes[len(resumes)-1].Spec
+	var held api.OperatorClaim
+	r.await(t, "the woken merger's launch to record its process", func() bool {
+		held = r.d.claim(issue.merger)
+		return held.Generation == launch.Generation && held.Locator != nil
+	})
+	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{BootToken: launch.BootToken,
+		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion()}, false)
+	if status != http.StatusOK {
+		t.Fatalf("register the session %s of %s's woken merger = %d; body %s", held.Session, issue.key, status, body)
+	}
 }
 
 // dequeueIssue is one case's issue: its key, its pull request's number and the head the record
@@ -472,7 +507,7 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 
 // seed records one case's issue before the boot: a tree root of its own standing in stands, with
 // the slot row seedWorkflowTree writes for every root (which admission's first pass releases for
-// an issue past its review, merging among them: record.KeepsSlot), its lifecycle open under the
+// an issue in accepting, retro or merging: record.KeepsSlot), its lifecycle open under the
 // workflow, on an open pull request GitHub last read mergeable and clean at the issue's head on
 // main, so the boot's start read applies nothing. Its merger's claim stands in merger, where a
 // suspended claim is one the idle release suspended: released, its session kept. An issue in
@@ -493,8 +528,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 		claims = append(claims, r.claim(t, key, claim.RoleImplementer, supervise.StateSuspended))
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, startedAgainIssue(r.cfg, key, key, stands), claims...)
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutPullRequest(ctx, tx, openPullRequest(issue)); err != nil {
 			return err
 		}
@@ -535,7 +569,7 @@ func (r *dequeueRig) seedUnderSecondRoot(t *testing.T, lingering bool) dequeueIs
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, root, merger)
 	putOutboxIssue(t, r.pool, r.records, startedAgainIssue(r.cfg, key, rootKey, phase.Merging))
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(context.Background(), tx, openPullRequest(issue))
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
@@ -589,7 +623,7 @@ func (r *dequeueRig) track(issue dequeueIssue) dequeueIssue {
 // between a person's approval and the reconcile's read of what changed.
 func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		ctx := context.Background()
 		approved := 2
 		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
@@ -606,7 +640,7 @@ func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
 // reconcile records a change set it read from Dispatch (the outbox's designChanges).
 func (r *dequeueRig) recordChanges(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutDesignChanges(context.Background(), tx, record.DesignChanges{
 			VersionPair: record.VersionPair{ArtifactID: "spec-" + issue.key, From: 1, To: 2}, State: record.DesignChangesRead,
 			Sections: []record.SectionChange{{Heading: "Scope", Change: "changed"}}, ReadAt: time.Now().UTC()})
@@ -628,7 +662,7 @@ func (r *dequeueRig) closePullRequest(t *testing.T, issue dequeueIssue) {
 func (r *dequeueRig) recordPullRequest(t *testing.T, issue dequeueIssue, change func(*record.PullRequest)) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := r.records.PullRequest(ctx, tx, issue.key)
 		if err != nil {
 			return err
@@ -683,7 +717,7 @@ func dequeueHead(number int) string {
 // daemon's log, which is where a row that never finished says why.
 func (r *dequeueRig) boot(t *testing.T) {
 	t.Helper()
-	startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)), dequeueWait)
+	r.d = startDaemonLogging(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)))
 	t.Cleanup(func() {
 		if t.Failed() {
 			log := r.logs.String()

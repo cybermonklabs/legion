@@ -1,5 +1,8 @@
 package textcheck
 
+//ci:reads packages/envoy/**/*.go TestTheStepAndPlanRefusalCodesAreWrittenOnlyWhereContractsGeneratesThem calls refusalCodeCopies on ../.. (refusalCodeRoots,), whose walk reads every .go file under packages/envoy, infra included
+//ci:reads packages/daemon/**/*.go TestTheStepAndPlanRefusalCodesAreWrittenOnlyWhereContractsGeneratesThem calls refusalCodeCopies on ../../../daemon (refusalCodeRoots,), whose walk reads every .go file under packages/daemon
+
 import (
 	"go/scanner"
 	"go/token"
@@ -39,6 +42,7 @@ const generatedContracts = "../contracts/generated.go"
 // Dispatch refuses for good, or a stand-in answers a code no Dispatch sends. Name the generated
 // constant instead (contracts.* in the envoy module, steprecord.* in the daemon's).
 func TestTheStepAndPlanRefusalCodesAreWrittenOnlyWhereContractsGeneratesThem(t *testing.T) {
+	t.Parallel()
 	var offences []string
 	for _, root := range refusalCodeRoots {
 		found, read := refusalCodeCopies(t, root, generatedContracts, refusalCodes)
@@ -59,6 +63,7 @@ func TestTheStepAndPlanRefusalCodesAreWrittenOnlyWhereContractsGeneratesThem(t *
 // that holds the code, and the generated file. The planted source is built from the generated
 // constants, so this file holds no literal of a code of its own.
 func TestTheRefusalCodeCheckSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	planted := strings.Join([]string{
 		"package planted",

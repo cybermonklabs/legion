@@ -1,5 +1,7 @@
 package main
 
+//ci:reads-set refgen_api TestTheApprovalPagesRoutesAreReadInTheirOwnPackage and TestAVerbatimJSONFieldIsNamedAsTheJSONItIs and TestTheSignInClassRefusesPastTheRateLimit readAPI(repo root) and apiPage of what it read parse it
+
 import (
 	"net/http"
 	"path/filepath"

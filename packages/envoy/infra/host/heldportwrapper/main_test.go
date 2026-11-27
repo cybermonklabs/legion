@@ -1,5 +1,7 @@
 package main
 
+//ci:builds packages/envoy ./cmd/listener buildListener builds . in ../../../cmd/listener (root go.work)
+
 import (
 	"bufio"
 	"fmt"
@@ -14,11 +16,14 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Run(func() int { return testnats.Main(m) })) }
 
 // The wrapper's real-process tests: the wrapper this directory builds, run as the held-port image
 // runs it, against the socket server the live tests use (pulumitest.HoldPort) and the real
@@ -113,21 +118,19 @@ func buildListener(t *testing.T) string {
 }
 
 // startWrapper runs the wrapper as the held-port image runs it on the container's PORT, executing
-// target, with a NATS URL that nothing serves: the listener serves before it connects, so its
-// /healthz answers "starting" while its connect waits on a socket that never answers.
+// target, with the package's shared NATS: the listener the wrapper executes serves before it
+// connects, and once it has connected it stays up, so /healthz answers for as long as the row
+// reads it. A NATS that never answers ends the listener's start 60 s after its listening line
+// ("connect to NATS and reconcile the ENVOY_NOTIFICATIONS stream: ... i/o timeout"), which made
+// that 60 s the row's real bound (INFRA-3904, found by TesterHeldportLoadtest).
 func startWrapper(t *testing.T, wrapper string, port int, target string) *cmdtest.Process {
 	t.Helper()
-	nats, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("hold a NATS address nothing serves: %v", err)
-	}
-	t.Cleanup(func() { _ = nats.Close() })
 	cmd := exec.Command(wrapper)
 	cmd.Env = []string{
 		"PORT=" + strconv.Itoa(port),
 		"HELDPORT_WRAPPER_EXEC=" + target,
 		"ENVOY_MACHINE_ID=heldport-wrapper-test",
-		"NATS_URLS=nats://" + nats.Addr().String(),
+		"NATS_URLS=" + testnats.URL(t),
 	}
 	return cmdtest.Start(t, "the wrapper", cmd)
 }
@@ -146,38 +149,39 @@ func listeningAddr(t *testing.T, process *cmdtest.Process) string {
 	return match[1]
 }
 
-// requireAnswers waits up to 30 s for /healthz on port to answer at all, and fails the test when
-// the process exits first or it never does.
+// requireAnswers waits for /healthz on port to answer at all, and fails the test when the process
+// exits first or it never does. Each request carries the shared wait's context (testwait.Context),
+// so no request has a bound of its own: a 5 s client timeout here cut every request of an answer
+// that took longer, and the row then failed at the listener's own start bound rather than on its
+// fact (INFRA-3904, found by TesterHeldportLoadtest).
 func requireAnswers(t *testing.T, process *cmdtest.Process, port int) {
 	t.Helper()
-	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	ctx := testwait.Context(t)
 	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/healthz"
-	deadline := time.Now().Add(30 * time.Second)
-	var err error
-	for time.Now().Before(deadline) {
-		var response *http.Response
-		if response, err = client.Get(url); err == nil {
-			_ = response.Body.Close()
-			return
-		}
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	testwait.Until(t, fmt.Sprintf("an answer of any kind from /healthz on %d", port), func() (error, bool) {
 		select {
 		case <-process.Exited:
 			t.Fatalf("the process exited before /healthz answered on %d:\n%s", port, process.Output.String())
-		case <-time.After(200 * time.Millisecond):
+		default:
 		}
-	}
-	t.Fatalf("/healthz never answered on %d: %v\n%s", port, err, process.Output.String())
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("build the /healthz request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		return err, err == nil
+	})
 }
 
-// requireFailedNaming waits up to 10 s for the wrapper to exit, and fails the test unless it exited
-// 1 naming socket.
+// requireFailedNaming waits for the wrapper to exit, and fails the test unless it exited 1 naming
+// socket.
 func requireFailedNaming(t *testing.T, process *cmdtest.Process, socket string) {
 	t.Helper()
-	select {
-	case <-process.Exited:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the wrapper was still running 10s after it started:\n%s", process.Output.String())
-	}
+	testwait.Receive(t, "the wrapper to exit", process.Exited)
 	output := process.Output.String()
 	if code := process.Cmd.ProcessState.ExitCode(); code != 1 {
 		t.Errorf("the wrapper exited %d, want 1:\n%s", code, output)

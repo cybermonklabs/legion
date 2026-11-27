@@ -20,7 +20,7 @@ func leakCheckRefused(h *harness) error {
 		h.token, runtime.LeakCheckRefusal{Cause: leakCheckSentence})
 }
 
-// launchingWrites is every write of the claim that recorded a launch try: the write launchNow
+// launchingWrites is every write of the claim that recorded a launch try: the write launchTries
 // makes before it asks the runtime for the process, in order.
 func launchingWrites(h *harness) []Claim {
 	var tries []Claim
@@ -145,7 +145,7 @@ func TestALaunchTheLeakCheckRefusedCarriesItsCause(t *testing.T) {
 
 	// A death relaunches the same session through relaunchAfterFailure, which records the death
 	// as the cause the claim fails under. A relaunch whose every try the leak check refuses runs
-	// out in launchNow, under that cause, with the sentence beside it.
+	// out in launchTries, under that cause, with the sentence beside it.
 	t.Run("a relaunch after a death whose refused tries run out", func(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateReady)

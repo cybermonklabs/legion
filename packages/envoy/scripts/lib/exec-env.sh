@@ -7,8 +7,9 @@
 # never through env's arguments, /proc/<pid>/cmdline, which every user of the machine reads (ps
 # prints them) for as long as the process runs.
 #
-# Sourced, never run. dev-stack.sh (start_with_only), airlock-check.sh and judge-check.sh
-# (start_extra_broker and the brokers of their checks) call it. Three functions:
+# Sourced, never run. dev-stack.sh (start_with_only), airlock-check.sh (its start_extra_broker and
+# the brokers of its checks) and lib/check-stack.sh (the start_extra_broker judge-check.sh and
+# proxy-chain-check.sh run) call it. Three functions:
 #
 #   exec_with_env NAME=value... -- COMMAND [ARG...]
 #       Execs COMMAND, in place of the shell that runs it, with exactly the NAME=value entries as

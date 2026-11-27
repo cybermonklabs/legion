@@ -145,7 +145,7 @@ func TestASkippedRunDecidesAsASucceededOne(t *testing.T) {
 			green := GreenContexts(pr)
 			rules := &record.BaseRules{Required: []string{"ci", "deploy", "pr-title"}}
 			return greenView{Green: green,
-				Why: ConflictNeedsMerge(record.Issue{Key: "LEGION-208", Phase: phase.Testing}, rules, green)}
+				Why: ConflictNeedsMerge(record.Issue{Key: "LEGION-208", Phase: phase.Testing}, phase.Order, rules, green)}
 		}},
 	} {
 		t.Run(tc.reader, func(t *testing.T) {

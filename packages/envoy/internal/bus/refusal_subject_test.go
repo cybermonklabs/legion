@@ -11,15 +11,19 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// seedLookup is a connect's environment (WithEnvironment) that names seed as the nkey seed and
-// nothing else, so rows that each connect as the user of a server of their own run in parallel,
-// which t.Setenv forbids.
-func seedLookup(seed string) func(string) (string, bool) {
-	return func(name string) (string, bool) {
-		if name == NkeySeedEnvVar && seed != "" {
-			return seed, true
-		}
-		return "", false
+// testnats.SeedOnly, the one seed lookup of the module's tests, names the seed by a string of its
+// own, because testnats cannot import this package. It must answer under the variable a connect
+// reads (NkeySeedEnvVar), and an empty seed is none, as an unset variable is.
+func TestTheTestsSeedLookupAnswersTheBusSeedVariable(t *testing.T) {
+	t.Parallel()
+	if seed, ok := testnats.SeedOnly("SUAEXAMPLE")(NkeySeedEnvVar); !ok || seed != "SUAEXAMPLE" {
+		t.Fatalf("testnats.SeedOnly answered %q, %v under %s, want the seed it holds", seed, ok, NkeySeedEnvVar)
+	}
+	if _, ok := testnats.SeedOnly("")(NkeySeedEnvVar); ok {
+		t.Fatalf("testnats.SeedOnly answered an empty seed under %s, want none", NkeySeedEnvVar)
+	}
+	if _, ok := testnats.SeedOnly("SUAEXAMPLE")(nkeySeedFileVariable); ok {
+		t.Fatalf("testnats.SeedOnly answered under %s, want the seed variable alone", nkeySeedFileVariable)
 	}
 }
 
@@ -29,6 +33,13 @@ func seedLookup(seed string) func(string) (string, bool) {
 // (unansweredRelay). The client is a bus client, so the server's refusals are recorded for it.
 func deniedRelayedClient(t *testing.T, dropped string, deny ...string) (*nats.Conn, *Client, *unansweredRelay) {
 	t.Helper()
+	return deniedRelayedClientWith(t, nil, dropped, deny...)
+}
+
+// deniedRelayedClientWith is deniedRelayedClient whose client connects with options too, such as
+// the stream message reads an edge listener's client takes (WithStreamMessageReads).
+func deniedRelayedClientWith(t *testing.T, options []ConnectOption, dropped string, deny ...string) (*nats.Conn, *Client, *unansweredRelay) {
+	t.Helper()
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyDenied(t, public, deny...)
 	admin, err := nats.Connect(uri)
@@ -37,7 +48,7 @@ func deniedRelayedClient(t *testing.T, dropped string, deny ...string) (*nats.Co
 	}
 	t.Cleanup(admin.Close)
 	relay := startUnansweredRelayOn(t, uri, dropped)
-	client, err := Connect([]string{relay.url}, WithEnvironment(seedLookup(seed)))
+	client, err := Connect([]string{relay.url}, append([]ConnectOption{WithEnvironment(testnats.SeedOnly(seed))}, options...)...)
 	if err != nil {
 		t.Fatalf("connect as the denied user through the relay: %v", err)
 	}
@@ -53,11 +64,12 @@ type refusalSeen struct {
 
 // besideRefusal runs call while the connection earns two refusals of subject, a request call does
 // not send at that moment, once call's own request is on the wire (refusalOfAnotherSubject), and
-// then closes release, when it is not nil, so a request the relay holds goes on (holdNext). It
-// returns call's error, and requireLeft, which the row runs once it has judged that error, named
-// what: it fails the row unless the refusal was recorded before call ended, since one recorded
-// after the call had read the record could not have answered it and the row would hold nothing,
-// and unless the refusal is still in the record for the request that earned it.
+// then closes release, when it is not nil, so a request the relay holds goes on (holdNext). The
+// waits for those refusals end when call returns, so a call that took a refusal it did not earn is
+// judged at once. It returns call's error, and requireLeft, which the row runs once it has judged
+// that error, named what: it fails the row unless the refusal was recorded before call ended,
+// since one recorded after the call had read the record could not have answered it and the row
+// would hold nothing, and unless the refusal is still in the record for the request that earned it.
 func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject string, release chan struct{}, call func() error) (requireLeft func(what string), err error) {
 	t.Helper()
 	owner := clientOwning(client.Conn)
@@ -65,8 +77,9 @@ func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject
 		t.Fatal("no client owns the connection, so nothing records the server's refusals")
 	}
 	seen := make(chan refusalSeen, 1)
+	callEnded := make(chan struct{})
 	go func() {
-		denial := refusalOfAnotherSubject(t, relay, owner, client.Conn, subject)
+		denial := refusalOfAnotherSubject(t, relay, owner, client.Conn, subject, callEnded)
 		seen <- refusalSeen{denial: denial, at: time.Now()}
 		if release != nil {
 			close(release)
@@ -75,6 +88,7 @@ func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject
 	sentAt := time.Now()
 	err = call()
 	ended := time.Now()
+	close(callEnded)
 	got := <-seen
 	return func(what string) {
 		t.Helper()
@@ -152,9 +166,12 @@ func readModeBucket(t *testing.T, admin *nats.Conn, client *Client, bucket, key 
 // A read of a key or of a revision takes only the refusal of the request its handle sends. nats.go
 // sends a read through a handle on a stream that allows direct gets as a direct get, and through
 // one on a stream that does not as a get from the stream's leader, never the other (readsDirect).
-// So a read whose own request lost its answer, while the connection earned the refusal of the
-// request the other kind of handle sends, reports its own silence and leaves that refusal in the
-// record; and a read whose own request the grant refuses names that refusal.
+// A handle of a client that reads with stream message gets (WithStreamMessageReads), an edge
+// listener's, sends every read as a get from the stream's leader, on a stream that allows direct
+// gets too (streamMessageReads). So a read whose own request lost its answer, while the connection
+// earned the refusal of the request the other kind of handle sends, reports its own silence and
+// leaves that refusal in the record; and a read whose own request the grant refuses names that
+// refusal.
 //
 // Each row starts a server of its own, whose user may publish to anything but the one subject the
 // row refuses, and the server's admin makes the bucket there. The handle under test is the user's,
@@ -168,20 +185,24 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 	fromLeader := jsAPI("STREAM.MSG.GET", stream)
 	get := func(kv KeyValue, _ uint64) (nats.KeyValueEntry, error) { return kv.Get(key) }
 	getRevision := func(kv KeyValue, revision uint64) (nats.KeyValueEntry, error) { return kv.GetRevision(key, revision) }
+	messageReads := []ConnectOption{WithStreamMessageReads()}
 	for _, read := range []struct {
 		name       string
 		direct     bool
 		own, other string
 		call       func(KeyValue, uint64) (nats.KeyValueEntry, error)
+		client     []ConnectOption
 	}{
-		{"direct Get", true, directByKey, fromLeader, get},
-		{"direct GetRevision", true, directBySequence, fromLeader, getRevision},
-		{"leader Get", false, fromLeader, directByKey, get},
-		{"leader GetRevision", false, fromLeader, directBySequence, getRevision},
+		{"direct Get", true, directByKey, fromLeader, get, nil},
+		{"direct GetRevision", true, directBySequence, fromLeader, getRevision, nil},
+		{"leader Get", false, fromLeader, directByKey, get, nil},
+		{"leader GetRevision", false, fromLeader, directBySequence, getRevision, nil},
+		{"stream message Get", true, fromLeader, directByKey, get, messageReads},
+		{"stream message GetRevision", true, fromLeader, directBySequence, getRevision, messageReads},
 	} {
 		t.Run(read.name+" lost beside a refusal of a request it does not send", func(t *testing.T) {
 			t.Parallel()
-			admin, client, relay := deniedRelayedClient(t, read.own, read.other)
+			admin, client, relay := deniedRelayedClientWith(t, read.client, read.own, read.other)
 			kv, revision := readModeBucket(t, admin, client, bucket, key, read.direct)
 			// The grant covers the handle's own request, so a read the relay lets through is answered.
 			if entry, err := read.call(kv, revision); err != nil || string(entry.Value()) != "value" {
@@ -199,7 +220,7 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 		})
 		t.Run(read.name+" whose own request is refused", func(t *testing.T) {
 			t.Parallel()
-			admin, client, relay := deniedRelayedClient(t, read.own, read.own)
+			admin, client, relay := deniedRelayedClientWith(t, read.client, read.own, read.own)
 			kv, revision := readModeBucket(t, admin, client, bucket, key, read.direct)
 
 			relay.arm(0)
@@ -306,7 +327,7 @@ func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
 // nothing until it is connected, so nats.go fails the create at once with its own error, and the
 // create neither waits for an answer nor takes a refusal.
 func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
-	client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(seedLookup("")), WithConnectInBackground())
+	client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(testnats.SeedOnly("")), WithConnectInBackground())
 	if err != nil {
 		t.Fatalf("connect in the background: %v", err)
 	}
@@ -340,6 +361,7 @@ func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
 // lost, which the call answers with its own silence, and once with the read held and then
 // answered over a consumer the server's admin made, which the call answers with that consumer.
 func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
+	t.Parallel()
 	const stream, name = "ENVOY_ADD_CONSUMER_STEP", "step"
 	read := jsAPI("CONSUMER.INFO", stream, name)
 	create := jsAPI("CONSUMER.CREATE", stream, name)
@@ -395,6 +417,7 @@ func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
 // lost its answer. The start sends its create again, as it sends any request the server left
 // unanswered, and goes on.
 func TestABucketCreateTakesOnlyTheRefusalOfTheStepItIsOn(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, bucket string
 		lost         func(bucket string) string
