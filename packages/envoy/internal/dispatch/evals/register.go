@@ -274,9 +274,10 @@ type Registered struct {
 // that would then hold more than MaxEvalSeries series is refused (CodeSeriesLimit), counted under
 // the eval's lock, so two writes cannot pass the bound together; one that adds none is never
 // refused for the series the eval holds. A write that would store a version of the definition, or
-// of a series, past MaxVersionBytes as JSON is refused (CodeVersionTooLarge), judged once the
-// fields it leaves out are copied forward, under the eval's lock, so two writes each within the
-// bound cannot leave a version past it, and before it does its document work or stores anything.
+// of a series, past MaxVersionBytes as JSON, a definition's charts counted with it, is refused
+// (CodeVersionTooLarge), judged once the fields it leaves out are copied forward, under the eval's
+// lock, so two writes each within the bound cannot leave a version past it, and before it does
+// its document work or stores anything.
 // A version that lists or unlists a logged eval's series lists or unlists that series' stored day
 // rows in the same transaction (relistDays), and one that moves a logged eval's fold key (foldKeyOf:
 // a listing, or the fold or the role of a listed series) marks stale, in it too, each cut that holds
@@ -398,12 +399,19 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 	// write stores nothing. The definition's version is stored where the eval holds none, where
 	// the write changes a field of it, and where doc_text is a method the eval's section does not
 	// hold yet, which gives it block, the id of the method's new block: it is judged holding the
-	// longer of block and the block it holds now.
+	// longer of block and the block it holds now. It is judged with the charts it stores: the
+	// write's, or, where it sets none, the newest version's, which its insert carries forward
+	// (definitionInsert) and which are read here for that alone (newestCharts).
 	block := uuid.NewString()
 	if !found || change.DocText.Set || !sameDefinition(current, next) {
 		judged := next
 		if (change.DocText.Set || (!found && next.DocBlock == "")) && len(judged.DocBlock) < len(block) {
 			judged.DocBlock = block
+		}
+		if judged.Charts == nil && found {
+			if judged.Charts, err = newestCharts(ctx, w.Tx, evalID); err != nil {
+				return Registered{}, err
+			}
 		}
 		if err := definitionTooLarge(judged); err != nil {
 			return Registered{}, err
@@ -522,48 +530,64 @@ type seriesWrite struct {
 }
 
 // versionField is one field of a version whose value grows with what a write sends, by the name a
-// body spells it with, and its value.
+// body spells it with, and its value: a json.RawMessage is JSON as the store spells it, and counts
+// at its own length.
 type versionField struct {
 	name  string
 	value any
 }
 
 // versionSize is the bytes version, a Definition or a Series, takes as JSON encodes it, as an
-// answer that holds it writes it, and where that is past MaxVersionBytes the field of fields whose
-// value takes the most bytes as JSON; "" where the version fits.
-func versionSize(version any, fields []versionField) (int, string, error) {
+// answer that holds it writes it, together with beside, JSON as the store spells it that every
+// answer holding the version holds beside it (a definition's charts, nil for a series), and where
+// that is past MaxVersionBytes the field of fields whose value takes the most bytes as JSON; ""
+// where the version fits.
+func versionSize(version any, beside json.RawMessage, fields []versionField) (int, string, error) {
 	encoded, err := json.Marshal(version)
 	if err != nil {
 		return 0, "", fmt.Errorf("encode a version: %w", err)
 	}
-	if len(encoded) <= MaxVersionBytes {
-		return len(encoded), "", nil
+	size := len(encoded) + len(beside)
+	if size <= MaxVersionBytes {
+		return size, "", nil
 	}
 	largest, most := "", -1
 	for _, field := range fields {
-		value, err := json.Marshal(field.value)
-		if err != nil {
-			return 0, "", fmt.Errorf("encode the field %s of a version: %w", field.name, err)
+		taken := 0
+		if stored, ok := field.value.(json.RawMessage); ok {
+			taken = len(stored)
+		} else {
+			value, err := json.Marshal(field.value)
+			if err != nil {
+				return 0, "", fmt.Errorf("encode the field %s of a version: %w", field.name, err)
+			}
+			taken = len(value)
 		}
-		if len(value) > most {
-			largest, most = field.name, len(value)
+		if taken > most {
+			largest, most = field.name, taken
 		}
 	}
-	return len(encoded), largest, nil
+	return size, largest, nil
 }
 
 // definitionTooLarge refuses definition, a version of an eval's definition a write would store,
-// as it would be stored (its version number and the transaction's time set), where it takes more
-// than MaxVersionBytes as JSON (CodeVersionTooLarge): naming its largest field as a body spells it,
-// of every text and list a body sets and `actor`, the writer the version records (written_by),
-// which a bearer caller names in its body. nil where it fits.
+// as it would be stored (its version number and the transaction's time set, and its Charts the
+// charts it stores, nil read as `[]`, a first version's that sets none), where its JSON together
+// with its charts, which the detail route answers beside it, takes more than MaxVersionBytes
+// (CodeVersionTooLarge): naming its largest field as a body spells it, of every text and list a
+// body sets, `charts`, and `actor`, the writer the version records (written_by), which a bearer
+// caller names in its body. nil where it fits.
 func definitionTooLarge(definition Definition) error {
-	size, field, err := versionSize(definition, []versionField{
+	charts := definition.Charts
+	if charts == nil {
+		charts = json.RawMessage(`[]`)
+	}
+	size, field, err := versionSize(definition, charts, []versionField{
 		{"name", definition.Name}, {"question", definition.Question}, {"number_rule", definition.NumberRule},
 		{"decision", definition.Decision}, {"failure_modes", definition.FailureModes}, {"unit", definition.Unit},
 		{"doc_block", definition.DocBlock}, {"target_judges", definition.TargetJudges}, {"owner_role", definition.OwnerRole},
 		{"person", definition.Person}, {"issue_key", definition.IssueKey}, {"replaced_by", definition.ReplacedBy},
-		{"links", definition.Links}, {"answer", definition.Answer}, {"actor", definition.WrittenBy},
+		{"links", definition.Links}, {fieldCharts, charts}, {"answer", definition.Answer}, {"actor", definition.WrittenBy},
 	})
 	if err != nil || field == "" {
 		return err
@@ -585,7 +609,7 @@ func seriesTooLarge(series Series, at string) error {
 // seriesVersionSize is versionSize of series, each of its fields named as the body spells it after
 // at: its name, its unit and its links.
 func seriesVersionSize(series Series, at string) (int, string, error) {
-	return versionSize(series, []versionField{{at + "series", series.Series}, {at + "unit", series.Unit}, {at + "links", series.Links}})
+	return versionSize(series, nil, []versionField{{at + "series", series.Series}, {at + "unit", series.Unit}, {at + "links", series.Links}})
 }
 
 // seriesVersionName names series' version in a refusal.
@@ -774,6 +798,18 @@ func chartsAsStored(ctx context.Context, tx pgx.Tx, evalID string, declared json
 		return nil, nil, fmt.Errorf("read the charts of %s as the store holds them: %w", evalID, err)
 	}
 	return storedText, newestText, nil
+}
+
+// newestCharts is the charts of evalID's newest version as the store spells them, `[]` where it
+// has none: the charts a version written with none of its own carries forward (definitionInsert).
+func newestCharts(ctx context.Context, tx pgx.Tx, evalID string) (json.RawMessage, error) {
+	var newest []byte
+	if err := tx.QueryRow(ctx, `
+		select coalesce((select charts from eval_versions where eval_id = $1 order by version desc limit 1), '[]'::jsonb)
+	`, evalID).Scan(&newest); err != nil {
+		return nil, fmt.Errorf("read the charts of %s as the store holds them: %w", evalID, err)
+	}
+	return newest, nil
 }
 
 // sameSeries reports whether two versions of a series are the same but for the version's own

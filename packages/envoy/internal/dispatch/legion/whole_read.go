@@ -322,6 +322,12 @@ func (in *Intake) finishWhole(ctx context.Context, owed owedRead, read *wholeRea
 // read of the daemon the cursor follows keeps them: the read holds none of the events, and a part
 // held is applied whole when its transaction's last part arrives.
 //
+// A good read whose admission block serves either record of the daemon (Admission.ServesRecord)
+// first registers the project's admission eval where no row holds it (Admissions.Registered,
+// Admissions.Register), in the register write's own transaction, before this one opens; a failed
+// read registers nothing. A registration that fails for a reason a retry may fix fails the record
+// as a readings write does, and finishWhole records the read as failed.
+//
 // recorded is false when the project has no setting any more, and when its setting names another
 // URL than the daemon read. Where it has no setting, nothing is written here. Where the setting
 // names another URL, nothing of the read is written but its start (last_read_started_at), which
@@ -330,12 +336,23 @@ func (in *Intake) finishWhole(ctx context.Context, owed owedRead, read *wholeRea
 // ReadRetryAfter after it.
 func (in *Intake) recordWhole(ctx context.Context, owed owedRead, read *wholeRead) (recorded bool, written int64, err error) {
 	project := owed.setting.Project
+	good := read.failure == nil
+	if good && read.admission != nil && read.admission.ServesRecord() {
+		registered, err := in.admissions.Registered(ctx, project)
+		if err != nil {
+			return false, 0, err
+		}
+		if !registered {
+			if err := in.admissions.Register(ctx, project); err != nil {
+				return false, 0, err
+			}
+		}
+	}
 	tx, err := in.pool.Begin(ctx)
 	if err != nil {
 		return false, 0, fmt.Errorf("open the transaction of the Legion state read of %s: %w", project, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	good := read.failure == nil
 	if good {
 		if err := in.admissions.Lock(ctx, tx, project); err != nil {
 			return false, 0, fmt.Errorf("lock the admission eval of %s: %w", project, err)

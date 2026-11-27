@@ -17,6 +17,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -74,22 +75,33 @@ var admissionActor = model.Actor{Kind: "system", ID: "legion-intake"}
 // AdmissionSkippedLine is the log line, at WARN, of each reading of a project's admission eval the
 // writer cannot write and skips, writing the state's other readings, so one bad entry does not stop
 // the project's intake: a reading R29's rules refuse, one the database refuses for good, and one
-// of an eval no row holds, each with its code, its row kind and its row key.
+// of an eval no row holds, each with its code, its row kind and its row key. The entry stays in
+// the daemon's record, which every later state carries whole, so the writer logs it once in each
+// process (loggedEntries).
 const AdmissionSkippedLine = "legion intake: an admission reading cannot be written, so it is skipped and the state's other readings are written"
 
 // AdmissionUnknownLine is the log line, at WARN, of each entry of a state's `signalChanges` whose
-// signal, part or what the writer does not know (signalSeries), which is skipped, with its row key.
+// signal, part or what the writer does not know (signalSeries), which is skipped, with its row key,
+// once in each process as AdmissionSkippedLine is.
 const AdmissionUnknownLine = "legion intake: an admission signal entry is of a signal, part or what this build does not know, so it is skipped"
+
+// AdmissionRefusedLine is the log line, at WARN, of a registration of a project's admission eval
+// that the register write refuses (*Error), with its code: no row then holds the eval, so the
+// writer skips the state's readings and logs each as a reading of an eval no row holds
+// (AdmissionSkippedLine), and the intake registers it again at the next state that serves either
+// record.
+const AdmissionRefusedLine = "legion intake: the register write refused the admission eval, so the state's admission readings are skipped"
 
 // AdmissionWriter is the operations of each project's admission eval the Legion intake runs
 // (legion.Admissions), on store, every readings write recording builtBy as the build that kept its
 // day rows (Batch.BuiltBy): the eval's lock (lockEval), which the intake takes first in each of its
 // transactions that may write the eval's readings; whether a project holds a row of the eval
-// (admissionWriter.registered); and the write of the readings of a state the intake applies
-// (admissionWriter.write).
+// (admissionWriter.registered); its registration (admissionWriter.register); and the write of the
+// readings of a state the intake applies (admissionWriter.write). The server builds one for its
+// process, so its set of the entries it logged (loggedEntries) is the process's.
 func AdmissionWriter(store *Store, builtBy string) legion.Admissions {
-	writer := admissionWriter{store: store, builtBy: builtBy}
-	return legion.Admissions{Lock: lockAdmission, Registered: writer.registered, Write: writer.write}
+	writer := admissionWriter{store: store, builtBy: builtBy, logged: newLoggedEntries()}
+	return legion.Admissions{Lock: lockAdmission, Registered: writer.registered, Register: writer.register, Write: writer.write}
 }
 
 // lockAdmission takes the lock of project's admission eval for the rest of tx (lockEval): a hash of
@@ -98,10 +110,12 @@ func lockAdmission(ctx context.Context, tx pgx.Tx, project string) error {
 	return lockEval(ctx, tx, EvalID(project, slugAdmission))
 }
 
-// admissionWriter writes the admission eval's readings over store, as the build builtBy.
+// admissionWriter writes the admission eval's readings over store, as the build builtBy, and logs
+// each entry it skips once (logged).
 type admissionWriter struct {
 	store   *Store
 	builtBy string
+	logged  *loggedEntries
 }
 
 // registered answers whether a row of project's admission eval exists: a version of it.
@@ -112,6 +126,105 @@ func (w admissionWriter) registered(ctx context.Context, project string) (bool, 
 		return false, fmt.Errorf("read whether %s holds its admission eval: %w", project, err)
 	}
 	return held, nil
+}
+
+// register registers project's admission eval through the register write (Store.Register), in that
+// write's own transaction, with the root's definition (admissionEval, admissionRegistration), its
+// person the project's default assignee. A registration the register write refuses (*Error) is
+// logged with its code (AdmissionRefusedLine) and answers nil, since a retry would be refused for
+// ever; any other error is one a retry may fix, and is answered.
+func (w admissionWriter) register(ctx context.Context, project string) error {
+	// A project no row holds reads no person, and the register write refuses it PROJECT_NOT_FOUND.
+	var person string
+	if err := w.store.database.Pool.QueryRow(ctx, `select default_assignee from projects where key = $1`, project).Scan(&person); err != nil &&
+		!errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("read the default assignee of %s: %w", project, err)
+	}
+	_, err := w.store.Register(ctx, admissionRegistration(project, person))
+	var refusal *Error
+	if errors.As(err, &refusal) {
+		slog.Warn(AdmissionRefusedLine, "project", project, "code", refusal.Code, "field", refusal.Field, "error", refusal.Message)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("register the admission eval of %s: %w", project, err)
+	}
+	return nil
+}
+
+// admissionRegistration is the register write of project's admission eval: every field of its
+// definition (admissionEval) and of each of its series, written by the Legion intake
+// (admissionActor), person its person, and its section of the project's `evals-md` the method a
+// seeded eval's section holds (catalogueEntry.method). It names no target and no direction, which
+// an eval registered for the first time holds none of (firstDefinition).
+func admissionRegistration(project, person string) Registration {
+	definition := admissionEval.definition
+	series := make([]SeriesChange, len(admissionEval.series))
+	for index, one := range admissionEval.series {
+		series[index] = SeriesChange{Series: one.Series, SeriesComputationChange: SeriesComputationChange{
+			Unit: Set(one.Unit), Role: Set(one.Role), IsPrimary: Set(one.IsPrimary), Listed: Set(one.Listed), Agg: Set(one.Agg),
+		}}
+	}
+	return Registration{
+		Project: project, Slug: slugAdmission, Caller: admissionActor,
+		ComputationChange: ComputationChange{
+			Name: Set(definition.Name), Question: Set(definition.Question), NumberRule: Set(definition.NumberRule),
+			Decision: Set(definition.Decision), FailureModes: Set(definition.FailureModes), Unit: Set(definition.Unit),
+			Kind: Set(definition.Kind), Source: Set(definition.Source),
+		},
+		OwnerRole: Set(definition.OwnerRole), Person: Set(person), DocText: Set(admissionEval.method()), Charts: Set(definition.Charts),
+		Series: series,
+	}
+}
+
+// loggedEntryBound is the most keys a writer's loggedEntries holds: 4,096, some 80 times the
+// newest 50 entries of the cap that the daemon's state holds for one project. A key is a project,
+// a row kind, a row key and a code: 4,096 keys whose row key is a store id and an entry id took
+// 852,304 bytes of heap in the map and the order together, about 208 bytes a key (measured with
+// Go 1.27, 2026-11-27), so the set holds under a megabyte. A key past the bound first drops the
+// older half of the keys, so an entry whose key was dropped and that the daemon's record still
+// holds is logged once more.
+const loggedEntryBound = 4096
+
+// loggedEntry is the key of one skipped or unknown entry of a project's admission eval: its row
+// kind and row key, and the code it was skipped for, "" for an entry of a signal, part or what the
+// writer does not know, which has none.
+type loggedEntry struct {
+	project, rowKind, rowKey, code string
+}
+
+// loggedEntries is the set of the entries a writer has logged as skipped or unknown, each by its
+// key, in the order it logged them, at most loggedEntryBound of them. Every state the intake
+// applies carries the daemon's whole record, so without it each state would log every entry it
+// skips again. Its runners write concurrently, so a lock guards it.
+type loggedEntries struct {
+	mu    sync.Mutex
+	keys  map[loggedEntry]struct{}
+	order []loggedEntry
+}
+
+func newLoggedEntries() *loggedEntries {
+	return &loggedEntries{keys: map[loggedEntry]struct{}{}}
+}
+
+// first reports whether key is logged for the first time, and records it where it is: a set that
+// holds loggedEntryBound keys first drops the older half of them.
+func (l *loggedEntries) first(key loggedEntry) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, logged := l.keys[key]; logged {
+		return false
+	}
+	if len(l.order) == loggedEntryBound {
+		half := loggedEntryBound / 2
+		for _, old := range l.order[:half] {
+			delete(l.keys, old)
+		}
+		l.order = append(l.order[:0], l.order[half:]...)
+	}
+	l.keys[key] = struct{}{}
+	l.order = append(l.order, key)
+	return true
 }
 
 // write writes, in tx and under the eval's lock tx holds, the readings of state: one for each entry
@@ -131,12 +244,12 @@ func (w admissionWriter) write(ctx context.Context, tx pgx.Tx, state legion.Admi
 		return nil, nil
 	}
 	evalID := EvalID(state.Project, slugAdmission)
-	entries := admissionEntries(state)
+	entries := admissionEntries(state, w.logged)
 	reported := state.Blocks[len(state.Blocks)-1].Cap
 	if len(entries) == 0 && reported == nil {
 		return nil, nil
 	}
-	if !servesRecord(state.Blocks) {
+	if !state.ServesRecord() {
 		held, err := evalHeld(ctx, tx, evalID)
 		if err != nil || !held {
 			return nil, err
@@ -171,9 +284,10 @@ func (w admissionWriter) write(ctx context.Context, tx pgx.Tx, state legion.Admi
 }
 
 // writeEntries writes entries as readings of project's admission eval in tx (WriteReadingsIn), and
-// logs each it skips (AdmissionSkippedLine): each row WriteReadingsIn skips, and every row of a
-// batch it refuses whole (*Error), which a retry of the intake's transaction would refuse again for
-// ever. It answers WriteReadingsIn's drain, nil where it wrote no reading.
+// logs each it skips (AdmissionSkippedLine), once in the writer's process for its row kind, row key
+// and code (loggedEntries): each row WriteReadingsIn skips, and every row of a batch it refuses
+// whole (*Error), which a retry of the intake's transaction would refuse again for ever. It answers
+// WriteReadingsIn's drain, nil where it wrote no reading.
 func (w admissionWriter) writeEntries(ctx context.Context, tx pgx.Tx, project string, entries []admissionEntry) (func(context.Context), error) {
 	if len(entries) == 0 {
 		return nil, nil
@@ -198,6 +312,9 @@ func (w admissionWriter) writeEntries(ctx context.Context, tx pgx.Tx, project st
 	}
 	for _, skipped := range written.Skipped {
 		entry := entries[skipped.Index]
+		if !w.logged.first(loggedEntry{project: project, rowKind: entry.RowKind, rowKey: entry.RowKey, code: skipped.Code}) {
+			continue
+		}
 		slog.Warn(AdmissionSkippedLine, "project", project, "series", entry.Series, "row_kind", entry.RowKind, "row_key", entry.RowKey,
 			"code", skipped.Code, "field", skipped.Field, "error", skipped.Message)
 	}
@@ -237,8 +354,9 @@ func admissionRowKey(stateID string, id int64) string {
 // `capChanges` (capEntry), and a signal_change entry for each entry of `signalChanges`
 // (signalEntry), each taken once by its id, so by its row key, from the first block that carries
 // it; the cap's in the order of their ids, then the signals'. An entry of a signal, part or what
-// this build does not know is logged (AdmissionUnknownLine) and left out.
-func admissionEntries(state legion.AdmissionState) []admissionEntry {
+// this build does not know is logged (AdmissionUnknownLine), once in logged's process for its row
+// key (loggedEntries), and left out.
+func admissionEntries(state legion.AdmissionState, logged *loggedEntries) []admissionEntry {
 	caps, signals := map[int64]legion.CapChange{}, map[int64]legion.SignalChange{}
 	for _, block := range state.Blocks {
 		for _, change := range block.CapChanges.Entries {
@@ -260,20 +378,15 @@ func admissionEntries(state legion.AdmissionState) []admissionEntry {
 		change := signals[id]
 		entry, known := signalEntry(state.StateID, change)
 		if !known {
-			slog.Warn(AdmissionUnknownLine, "project", state.Project, "row_key", entry.RowKey,
-				"signal", textOrNone(change.Signal), "part", textOrNone(change.Part), "what", change.What)
+			if logged.first(loggedEntry{project: state.Project, rowKind: entry.RowKind, rowKey: entry.RowKey}) {
+				slog.Warn(AdmissionUnknownLine, "project", state.Project, "row_key", entry.RowKey,
+					"signal", textOrNone(change.Signal), "part", textOrNone(change.Part), "what", change.What)
+			}
 			continue
 		}
 		entries = append(entries, entry)
 	}
 	return entries
-}
-
-// servesRecord reports whether any of blocks serves either record of changes, empty or not.
-func servesRecord(blocks []*legion.Admission) bool {
-	return slices.ContainsFunc(blocks, func(block *legion.Admission) bool {
-		return block.CapChanges.Served || block.SignalChanges.Served
-	})
 }
 
 // capEntry is the cap_change reading of change, an entry of the daemon's store stateID: the cap the

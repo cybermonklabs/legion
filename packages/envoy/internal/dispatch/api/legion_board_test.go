@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -511,7 +512,10 @@ func (d *fakeLegionDaemon) read(t *testing.T, database *store.Store, body string
 // project (legion.GetSettings), with the Legion intake's own whole read (legion.ReadWhole), which
 // records what it observes, or the read's failure, and the readings of the project's admission eval,
 // as the intake records them. The admission writer writes no document, so its registry is built
-// with no document service, broker or attributor.
+// with no document service, broker or attributor. A registration of the eval writes the eval's
+// section of `evals-md` through the document service, and no state these tests serve carries
+// `capChanges` or `signalChanges`, so the helper registers nothing: a read that would register the
+// eval fails the test, and is recorded as a failed read.
 func readLegionWhole(t *testing.T, database *store.Store, project string) {
 	t.Helper()
 	setting, err := legion.GetSettings(t.Context(), database.Pool, project)
@@ -519,6 +523,10 @@ func readLegionWhole(t *testing.T, database *store.Store, project string) {
 		t.Fatalf("read the Legion setting of %s: %v", project, err)
 	}
 	admissions := evals.AdmissionWriter(evals.New(database, nil, nil, nil), testServerBuild)
+	admissions.Register = func(_ context.Context, project string) error {
+		t.Errorf("a whole read of %s registers its admission eval, which readLegionWhole's registry, built with no document service, cannot write", project)
+		return fmt.Errorf("register the admission eval of %s: readLegionWhole's registry has no document service", project)
+	}
 	if err := legion.ReadWhole(t.Context(), database.Pool, admissions, setting, legion.ReadReasonStart); err != nil {
 		t.Fatalf("read the daemon of %s whole: %v", project, err)
 	}

@@ -79,6 +79,14 @@ func (r *IntakeRig) PublishIn(project, run, stateID string, at time.Time, events
 	r.rig.publishIn(project, run, stateID, at, false, events...)
 }
 
+// PublishPart publishes events as one part of a transaction the daemon split, with more of it to
+// come (`more: true`), on project's state lane under the rig's run and store, at the wall clock's
+// moment (intakeRig.publishIn).
+func (r *IntakeRig) PublishPart(project string, events ...map[string]any) {
+	r.rig.t.Helper()
+	r.rig.publishIn(project, r.rig.run, rigStateID, time.Now().UTC().Truncate(time.Microsecond), true, events...)
+}
+
 // Settled waits for the intake to have acknowledged every message the stream holds.
 func (r *IntakeRig) Settled() {
 	r.rig.t.Helper()
@@ -98,6 +106,12 @@ func (r *IntakeRig) WaitFor(within time.Duration, done func() bool, failure func
 func (r *IntakeRig) LastSeq(project string) *int64 {
 	r.rig.t.Helper()
 	return cursorOf(r.rig.t, r.rig.database, project).lastSeq
+}
+
+// ReadOwed reports whether project's cursor owes a whole read.
+func (r *IntakeRig) ReadOwed(project string) bool {
+	r.rig.t.Helper()
+	return cursorOf(r.rig.t, r.rig.database, project).readOwed
 }
 
 // Current is project's legion_current, "<issue>/<field>" to the value's text.

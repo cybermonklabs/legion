@@ -345,7 +345,35 @@ func ownRead(reason string, readMade bool) string {
 // rows move into the delivery change log once the commit succeeds, and never after a rollback.
 // A readings write that fails for a reason a retry may fix fails the batch, which rolls back and
 // is tried again in place (untilDone).
+//
+// The gate of the eval's registration (Admissions): where the message applies, its admission
+// events and its held parts' serve either record of the daemon (AdmissionState.ServesRecord), and
+// no row holds the project's admission eval (Admissions.Registered), the transaction is rolled back
+// before it writes anything (errUnregistered), the eval is registered in a transaction of its own
+// (Admissions.Register), and the message is applied again from the start, once: the second pass
+// writes the readings of the eval the registration left, or, where the register write refused it,
+// skips them as readings of an eval no row holds. A message that does not apply registers nothing.
+// A registration that fails for a reason a retry may fix fails the batch, as a readings write does.
 func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outcome, *owedRead, error) {
+	result, read, err := in.applyBatchOnce(ctx, attempt, true)
+	if !errors.Is(err, errUnregistered) {
+		return result, read, err
+	}
+	if err := in.admissions.Register(ctx, attempt.message.Project); err != nil {
+		return outcomeDone, nil, err
+	}
+	return in.applyBatchOnce(ctx, attempt, false)
+}
+
+// errUnregistered is applyBatchOnce's answer, its transaction rolled back, for a message that
+// applies and whose admission events serve either record of the daemon while no row holds the
+// project's admission eval: applyBatch registers the eval and applies the message again.
+var errUnregistered = errors.New("legion intake: no row holds the project's admission eval")
+
+// applyBatchOnce is one pass of applyBatch over the attempt's message, in a transaction of its
+// own. gate is whether the pass answers errUnregistered where the eval is to be registered first;
+// the pass that follows a registration runs without it.
+func (in *Intake) applyBatchOnce(ctx context.Context, attempt *messageAttempt, gate bool) (outcome, *owedRead, error) {
 	message := attempt.message
 	project := message.Project
 	tx, err := in.pool.Begin(ctx)
@@ -428,10 +456,20 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 		}
 		return finish(outcomeDone)
 	}
+	admission := admissionOf(message, events)
+	if gate && admission.ServesRecord() {
+		registered, err := in.admissions.Registered(ctx, project)
+		if err != nil {
+			return outcomeDone, nil, err
+		}
+		if !registered {
+			return outcomeDone, nil, errUnregistered
+		}
+	}
 	if _, err := recordEvents(ctx, tx, project, message.At, lastValues(events)); err != nil {
 		return outcomeDone, nil, err
 	}
-	if admission := admissionOf(message, events); len(admission.Blocks) > 0 {
+	if len(admission.Blocks) > 0 {
 		if drain, err = in.admissions.Write(ctx, tx, admission); err != nil {
 			return outcomeDone, nil, fmt.Errorf("write the admission readings of %s: %w", project, err)
 		}

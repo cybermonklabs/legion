@@ -1651,16 +1651,18 @@ const figureRowReserve = 4*(8+2) + arrayHeaderBytes*8 + maxProjectKeyBytes + max
 
 // MaxVersionBytes is the most bytes one version of an eval's definition (Definition), or of one of
 // its series (Series), takes as JSON encodes it, as every answer that holds the version writes it
-// (CodeVersionTooLarge). A write's version is judged once the fields the write leaves out are
-// copied forward, under the eval's lock and before the write sends any statement that stores it
-// (definitionTooLarge, seriesTooLarge), so no run of writes each within the bound leaves a version
-// past it. It is what keeps a version beside the rest of a write's answer within MaxAnswerBytes: a
-// register write answers its eval's definition beside the eval's series, and a readings write the
-// definition beside its readings. A definition and six series at this bound take 229,376 of the
-// answer's 258,048 bytes, so the register write's answer lists at least one series however many
-// the eval holds, and the readings write's leaves about 225,000 bytes to its readings. The
-// statement that stores a version sends the same texts and lists, unescaped, within a few hundred
-// bytes of the version's JSON, far within statementBytes.
+// (CodeVersionTooLarge): a definition's together with its declared charts (Definition.Charts, as
+// the store spells them), which the detail route answers beside it. A write's version is judged
+// once the fields the write leaves out are copied forward, its charts among them, under the eval's
+// lock and before the write sends any statement that stores it (definitionTooLarge,
+// seriesTooLarge), so no run of writes each within the bound leaves a version past it. It is what
+// keeps a version beside the rest of a write's answer within MaxAnswerBytes: a register write
+// answers its eval's definition beside the eval's series, and a readings write the definition
+// beside its readings. A definition and six series at this bound take 229,376 of the answer's
+// 258,048 bytes, so the register write's answer lists at least one series however many the eval
+// holds, and the readings write's leaves about 225,000 bytes to its readings. The statement that
+// stores a version sends the same texts and lists, unescaped, within a few hundred bytes of the
+// version's JSON, far within statementBytes.
 const MaxVersionBytes = 32 << 10
 
 // statementChunks is rows cut into the chunks one statement each sends, in their order: each chunk

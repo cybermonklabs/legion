@@ -133,6 +133,13 @@ func (a *Admission) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ServesRecord reports whether the block carries either record of changes, empty or not: a daemon
+// that keeps the record serves it, and a project whose daemon does has its admission eval
+// registered (dispatch://INFRA-2918, D18; Admissions.Register).
+func (a *Admission) ServesRecord() bool {
+	return a.CapChanges.Served || a.SignalChanges.Served
+}
+
 // BlockedIssue is one entry of `admission.blocked`: the issue, and the issues nobody has finished
 // that hold it (record.BlockedIssue on the daemon's side).
 type BlockedIssue struct {

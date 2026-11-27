@@ -4,7 +4,9 @@ package legion_test
 // (dispatch://INFRA-2918, R22, checks k26 and k29): each feeds the intake as the intake's own tests
 // do, a daemon stand-in's state documents and messages on the state lane, with the writer
 // dispatch/evals builds (evals.AdmissionWriter), which is why they are outside package legion
-// (export_test.go). The eval is registered in each test's setup through the register write.
+// (export_test.go). The intake registers the eval at the first state that serves either record of
+// the daemon (admission_registration_test.go); a test whose states serve neither registers it by
+// hand, through the register write, in its setup.
 
 import (
 	"cmp"
@@ -53,8 +55,8 @@ const retryLine = "legion intake: a database step failed; trying it again"
 var alice = model.Actor{Kind: "user", ID: "alice"}
 
 // newRegistry is the eval registry over database, with the document service and broker a server
-// hands it.
-func newRegistry(t *testing.T, database *store.Store) *evals.Store {
+// hands it, and that document service.
+func newRegistry(t *testing.T, database *store.Store) (*evals.Store, *docs.Service) {
 	t.Helper()
 	broker := events.NewBroker()
 	// Settlement is an hour away, so no background settlement writes while a test reads.
@@ -64,7 +66,7 @@ func newRegistry(t *testing.T, database *store.Store) *evals.Store {
 			t.Errorf("shut down the document service: %v", err)
 		}
 	})
-	return evals.New(database, documents, broker, delivery.NewAttributor(refs.Renames{}))
+	return evals.New(database, documents, broker, delivery.NewAttributor(refs.Renames{})), documents
 }
 
 // registerAdmission registers project's admission eval through the register write: a logged eval
@@ -81,20 +83,22 @@ func registerAdmission(t *testing.T, registry *evals.Store, project string) {
 }
 
 // admissionRig is one test's intake (legion.IntakeRig), whose intakes run the admission writer
-// over the registry of its database.
+// over the registry of its database, and the document service that registry writes `evals-md`
+// through.
 type admissionRig struct {
 	*legion.IntakeRig
 	t          *testing.T
 	registry   *evals.Store
+	documents  *docs.Service
 	admissions legion.Admissions
 }
 
 // newAdmissionRig is a rig whose intakes run the admission writer, with INFRA named to a daemon
-// that serves state, and INFRA's admission eval registered where register is set.
+// that serves state, and INFRA's admission eval registered by hand where register is set.
 func newAdmissionRig(t *testing.T, state string, register bool) (*admissionRig, *legion.FakeDaemon) {
 	t.Helper()
 	rig := legion.NewIntakeRig(t)
-	registry := newRegistry(t, rig.Database())
+	registry, documents := newRegistry(t, rig.Database())
 	admissions := evals.AdmissionWriter(registry, testBuild)
 	rig.Admit(admissions)
 	daemon := legion.NewFakeDaemon(t, state)
@@ -102,7 +106,7 @@ func newAdmissionRig(t *testing.T, state string, register bool) (*admissionRig, 
 	if register {
 		registerAdmission(t, registry, infra)
 	}
-	return &admissionRig{IntakeRig: rig, t: t, registry: registry, admissions: admissions}, daemon
+	return &admissionRig{IntakeRig: rig, t: t, registry: registry, documents: documents, admissions: admissions}, daemon
 }
 
 // readWhole reads INFRA's daemon at url whole for reason, with the rig's admission writer
@@ -357,7 +361,7 @@ func (r *admissionRig) skippedLines() []string {
 // reading, and an event that carries a third entry beside them adds that one alone: three
 // readings. Each state's cap is its newest entry's, so no cap is observed.
 func TestAnAdmissionEventWritesOneReadingForEachCapEntry(t *testing.T) {
-	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), true)
+	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	rig.requireReadings("a starting state with no cap and no record")
@@ -389,7 +393,7 @@ func TestAnAdmissionEventWritesOneReadingForEachCapEntry(t *testing.T) {
 // TestAWholeReadOfAWrittenStateAddsNoReading: a whole read of the state whose entries a batch
 // wrote, its cap the newest entry's, adds no reading: every row kind and row key it gives is held.
 func TestAWholeReadOfAWrittenStateAddsNoReading(t *testing.T) {
-	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), true)
+	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	block := map[string]any{"cap": 5, "capChanges": goldenCaps(t)}
@@ -409,7 +413,7 @@ func TestAWholeReadOfAWrittenStateAddsNoReading(t *testing.T) {
 // that cap, set by the daemon, keyed `<stateId>:<stateSeq>`, at the time Dispatch read the state,
 // though its record of changes is empty.
 func TestTheFirstStateOfAProjectWritesTheCapItObserves(t *testing.T) {
-	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 2, "capChanges": []any{}}), true)
+	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 2, "capChanges": []any{}}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	rig.requireReadings("the starting read", observedReading(10, 2, newestReadAt(t, rig.Database())))
@@ -421,7 +425,7 @@ func TestTheFirstStateOfAProjectWritesTheCapItObserves(t *testing.T) {
 func TestACapNoEntryExplainsIsObserved(t *testing.T) {
 	set := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
 	entries := []map[string]any{capChange(1, 2, 4, set, "the provider recovered")}
-	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 4, "capChanges": entries}), true)
+	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 4, "capChanges": entries}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	entry := reading{RowKind: "cap_change", RowKey: key(1), Series: "admission-cap", Unit: "issues", Value: new(4.0), MeasuredAt: set,
@@ -440,7 +444,7 @@ func TestACapNoEntryExplainsIsObserved(t *testing.T) {
 // its row kind and its row key are the other's. The next state, whose cap the newest reading holds,
 // adds neither again.
 func TestAnObservedSeqAndAnEntryIdOfOneNumberEachHaveAReading(t *testing.T) {
-	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), true)
+	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	set := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
@@ -465,7 +469,7 @@ func TestAnObservedSeqAndAnEntryIdOfOneNumberEachHaveAReading(t *testing.T) {
 // calls for the read, writes a reading of each of its cap and signal entries keyed by the new
 // store's id, beside the old store's readings of the same ids.
 func TestAReplacedStoresEntriesEachHaveAReading(t *testing.T) {
-	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 5, "capChanges": goldenCaps(t), "signalChanges": goldenSignals(t)}), true)
+	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 5, "capChanges": goldenCaps(t), "signalChanges": goldenSignals(t)}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	before := append(goldenCapReadings(t), goldenSignalReadings(t)...)
@@ -506,7 +510,7 @@ func TestAReplacedStoresEntriesEachHaveAReading(t *testing.T) {
 // write goes through, the retry applies the batch once: its phase, its readings and one legion_reads
 // row of kind `events`.
 func TestAFailedReadingsWriteRollsTheBatchBackAndTheRetryAppliesItOnce(t *testing.T) {
-	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), true)
+	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), false)
 	rig.Retry(20*time.Millisecond, 100*time.Millisecond)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
@@ -582,11 +586,18 @@ func TestARefusedEntryIsLoggedAndSkipped(t *testing.T) {
 }
 
 // TestAReadingOfAnEvalNoRowHoldsIsLoggedAndSkipped: a project that holds no row of its admission
-// eval, whose state carries `capChanges`, has each reading logged at WARN as one of an eval no row
+// eval, since the register write refuses it (its `evals-md` is a file,
+// evals.CodeDocumentNotDocument), and whose state carries `capChanges`, has the refusal logged with
+// its code (evals.AdmissionRefusedLine) and each reading logged at WARN as one of an eval no row
 // holds (evals.CodeEvalNotFound), with its row key, and skipped; the writer registers no eval, and
 // the batch applies.
 func TestAReadingOfAnEvalNoRowHoldsIsLoggedAndSkipped(t *testing.T) {
 	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), false)
+	if _, err := rig.Database().Pool.Exec(t.Context(), `
+		insert into artifacts (project_key, slug, name, kind, created_by) values ($1, 'evals-md', 'evals.md', 'file', '{"kind":"user","id":"alice"}')
+	`, infra); err != nil {
+		t.Fatalf("make INFRA's evals-md a file: %v", err)
+	}
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	rig.Publish(infra, legion.AdmissionEvent(11, map[string]any{"cap": 5, "capChanges": goldenCaps(t), "active": []string{"INFRA-1"}}))
@@ -599,6 +610,15 @@ func TestAReadingOfAnEvalNoRowHoldsIsLoggedAndSkipped(t *testing.T) {
 	}
 	if skipped := rig.skippedLines(); !slices.Equal(skipped, want) {
 		t.Errorf("the writer logged the skipped readings %v, want %v", skipped, want)
+	}
+	var refused []string
+	for _, record := range rig.LogRecords(evals.AdmissionRefusedLine) {
+		if record["level"] == "WARN" && record["project"] == infra {
+			refused = append(refused, fmt.Sprint(record["code"]))
+		}
+	}
+	if want := []string{evals.CodeDocumentNotDocument}; !slices.Equal(refused, want) {
+		t.Errorf("the writer logged the refused registrations %v, want %v", refused, want)
 	}
 	var versions int
 	if err := rig.Database().Pool.QueryRow(t.Context(), `select count(*) from eval_versions where eval_id = $1`, admissionID).Scan(&versions); err != nil {
@@ -616,9 +636,10 @@ func TestAReadingOfAnEvalNoRowHoldsIsLoggedAndSkipped(t *testing.T) {
 // TestAFailedWholeReadWritesNoReading: a whole read that fails, here of the project's own state
 // with a stateId and a stateSeq whose settings carry no dispatch_url (legion.ErrNoDispatchURL), with
 // a cap no reading holds and the golden's entries, writes no reading, though it records the state's
-// observations.
+// observations. The starting read, whose record of the cap is empty, registers the eval and writes
+// the cap it observes.
 func TestAFailedWholeReadWritesNoReading(t *testing.T) {
-	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 3}), true)
+	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 3, "capChanges": []any{}}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	want := observedReading(10, 3, newestReadAt(t, rig.Database()))
@@ -656,7 +677,7 @@ func TestAFailedWholeReadWritesNoReading(t *testing.T) {
 func TestEachSignalEntryWritesOneSignalReading(t *testing.T) {
 	cleared := map[string]any{"id": 6, "at": "2026-11-26T08:00:00Z", "signal": "queue", "part": nil, "what": "limit", "value": nil,
 		"absent": nil, "setBy": map[string]any{"kind": "operator"}, "reason": "the owner cleared the queue's limit"}
-	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"signalChanges": append([]map[string]any{cleared}, goldenSignals(t)...)}), true)
+	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"signalChanges": append([]map[string]any{cleared}, goldenSignals(t)...)}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	rig.requireReadings("a state with every what", append(goldenSignalReadings(t),
@@ -668,7 +689,7 @@ func TestEachSignalEntryWritesOneSignalReading(t *testing.T) {
 // TestARepeatedSignalEventAddsNoReading: the same signal entries again, in a later event and in a
 // whole read of the state that carries them, add no reading.
 func TestARepeatedSignalEventAddsNoReading(t *testing.T) {
-	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), true)
+	rig, daemon := newAdmissionRig(t, stateAt(t, 10, map[string]any{}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	block := map[string]any{"signalChanges": goldenSignals(t)}
@@ -690,7 +711,7 @@ func TestARepeatedSignalEventAddsNoReading(t *testing.T) {
 // admission event whose block carries no `signalChanges`, and whose cap is the newest admission-cap
 // reading's, adds no reading and skips none, and the batch applies.
 func TestABlockWithNoSignalChangesAddsNoneAndFailsNothing(t *testing.T) {
-	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 5, "signalChanges": goldenSignals(t)}), true)
+	rig, _ := newAdmissionRig(t, stateAt(t, 10, map[string]any{"cap": 5, "signalChanges": goldenSignals(t)}), false)
 	rig.Start()
 	rig.AwaitStartingRead(infra)
 	want := append(goldenSignalReadings(t), observedReading(10, 5, newestReadAt(t, rig.Database())))
@@ -819,18 +840,18 @@ func legionLock(statement string) bool {
 // applyBatch for a held part, recordWhole for a failed read, judgeCrowded and a write of the
 // setting that resets the cursor (writeSetting, resetCursor) take none. The observations' lock
 // (legion.ObservationsLockKey, an advisory lock of no eval, which no eval write takes) is not an
-// eval's lock, and follows the cursor's in every batch and read by design. Then an admission batch,
-// a readings write and a register write of one eval run at once, 50 times, and none of them is
-// refused with a deadlock (40P01).
+// eval's lock, and follows the cursor's in every batch and read by design. Each project's admission
+// eval is registered by its first whole read, whose state serves capChanges, through the intake's
+// gate. Then an admission batch, a readings write and a register write of one eval run at once, 50
+// times, and none of them is refused with a deadlock (40P01).
 func TestEveryIntakeTransactionTakesTheEvalLockFirst(t *testing.T) {
 	trace := &lockTrace{open: map[*pgx.Conn][]string{}}
 	database := storetest.Open(t)
 	traced := storetest.TracedStore(t, database, trace)
-	registry := newRegistry(t, database)
+	registry, _ := newRegistry(t, database)
 	admissions := evals.AdmissionWriter(registry, testBuild)
 	daemon := legion.NewFakeDaemon(t, stateAt(t, 10, map[string]any{"cap": 5, "capChanges": goldenCaps(t)}))
 	legion.SeedLegionProject(t, database, infra, daemon.URL)
-	registerAdmission(t, registry, infra)
 	other := legion.NewFakeDaemon(t, stateAt(t, 10, map[string]any{}))
 	setting := legion.Settings{Project: infra, StateURL: daemon.URL}
 	ctx, pool := t.Context(), traced.Pool
@@ -910,7 +931,6 @@ func TestEveryIntakeTransactionTakesTheEvalLockFirst(t *testing.T) {
 	// An admission batch, a readings write and a register write of LINUX's admission eval, at once.
 	linux := legion.NewFakeDaemon(t, stateIn(t, "LINUX", 20, legion.RigStateID, legion.RigRun, map[string]any{"cap": 3, "capChanges": []any{}}))
 	legion.SeedLegionProject(t, database, "LINUX", linux.URL)
-	registerAdmission(t, registry, "LINUX")
 	if err := legion.ReadWhole(ctx, database.Pool, admissions, legion.Settings{Project: "LINUX", StateURL: linux.URL}, legion.ReadReasonStart); err != nil {
 		t.Fatalf("read LINUX's daemon whole: %v", err)
 	}

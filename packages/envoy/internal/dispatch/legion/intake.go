@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -255,13 +256,21 @@ type Intake struct {
 // known only once the held parts are read, and recordWhole for a good read. A held part, a failed
 // read and every other transaction of the intake take none, and no eval write locks either table,
 // so the two orders never cross.
+//
+// The intake registers a project's eval (Register) once, before the transaction of the first state
+// it applies that serves either record of the daemon (AdmissionState.ServesRecord) where no row
+// holds the eval (Registered): applyBatch rolls its transaction back, registers it and applies the
+// message again from the start, once (applyBatch); recordWhole registers it for a good read, before
+// its transaction. A message that does not apply and a failed read register nothing.
 type Admissions struct {
 	// Lock takes the lock of project's admission eval for the rest of tx.
 	Lock func(ctx context.Context, tx pgx.Tx, project string) error
 	// Registered answers whether a row of project's admission eval exists.
 	Registered func(ctx context.Context, project string) (bool, error)
 	// Register registers project's admission eval through the register write, in a transaction of
-	// its own.
+	// its own. A registration the register write refuses is logged and answered nil, the state's
+	// readings then skipped as readings of an eval no row holds (Write); an error is one a retry
+	// may fix, and fails the state as an error of Write does.
 	Register func(ctx context.Context, project string) error
 	// Write writes, inside tx and under the eval's lock tx holds (Lock), the readings state gives,
 	// and answers the move of their change rows into the delivery change log, which the caller
@@ -282,6 +291,12 @@ type AdmissionState struct {
 	Seq     int64
 	At      time.Time
 	Blocks  []*Admission
+}
+
+// ServesRecord reports whether any block of the state serves either record of changes
+// (Admission.ServesRecord).
+func (s AdmissionState) ServesRecord() bool {
+	return slices.ContainsFunc(s.Blocks, (*Admission).ServesRecord)
 }
 
 // reportKey is one line of reportEvery for one project.

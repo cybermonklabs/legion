@@ -836,6 +836,73 @@ func TestAVersionPastItsBoundIsRefusedNamingItsLargestField(t *testing.T) {
 	}
 }
 
+// TestChartsCountTowardAVersionsBound: a version of an eval's definition is judged against
+// MaxVersionBytes as it is stored, its JSON together with its declared charts, which the detail
+// route answers beside it (dispatch://INFRA-2918, D10):
+//   - a register write whose definition, a question of half the bound, fits alone, and whose ten
+//     charts, each titled with 2,000 characters, fit alone too, is refused EVAL_VERSION_TOO_LARGE
+//     naming charts, its largest field, and stores nothing;
+//   - the same write with the list cut to six charts fits, and is stored with them;
+//   - a write that sets a decision of 4,000 bytes and no charts, whose version holds the question
+//     and the six charts copied forward, is refused naming question, and stores nothing.
+func TestChartsCountTowardAVersionsBound(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	const slug = "charted"
+	text := func(bytes int) string { return strings.Repeat("w", bytes) }
+	declared := func(n int) json.RawMessage {
+		list := make([]map[string]any, n)
+		for index := range list {
+			list[index] = map[string]any{"id": fmt.Sprintf("c%d", index), "title": text(2000), "kind": "xy", "y": map[string]any{"series": "count"}}
+		}
+		encoded, err := json.Marshal(list)
+		if err != nil {
+			t.Fatalf("encode %d charts: %v", n, err)
+		}
+		return encoded
+	}
+	versions := func() int {
+		return r.count(t, `select count(*) from eval_versions where eval_id = $1`, EvalID(r.project, slug))
+	}
+	register := func(change Registration) error {
+		change.Project, change.Slug, change.Caller = r.project, slug, alice
+		_, err := r.registry.Register(ctx, change)
+		return err
+	}
+	refusedNaming := func(what string, err error, field string) {
+		t.Helper()
+		var refusal *Error
+		if !errors.As(err, &refusal) || refusal.Code != CodeVersionTooLarge || refusal.Field != field {
+			t.Fatalf("%s was answered %v, want %s naming %s", what, err, CodeVersionTooLarge, field)
+		}
+		t.Logf("%s: %s %s: %s", what, refusal.Code, refusal.Field, refusal.Message)
+	}
+	question := Set(text(MaxVersionBytes / 2))
+	if ten := declared(10); len(ten) >= MaxVersionBytes || len(ten) <= MaxVersionBytes/2 {
+		t.Fatalf("ten charts take %d bytes, want more than the question's %d and fewer than the bound's %d", len(ten), MaxVersionBytes/2, MaxVersionBytes)
+	}
+
+	refusedNaming("a question of half the bound beside ten charts",
+		register(Registration{ComputationChange: ComputationChange{Question: question}, Charts: Set(declared(10))}), "charts")
+	if n := versions(); n != 0 {
+		t.Fatalf("the refused write stored %d versions, want none", n)
+	}
+	if err := register(Registration{ComputationChange: ComputationChange{Question: question}, Charts: Set(declared(6))}); err != nil {
+		t.Fatalf("a question of half the bound beside six charts: %v", err)
+	}
+	var stored int
+	if err := r.database.Pool.QueryRow(ctx, `select jsonb_array_length(charts) from eval_versions where eval_id = $1 and version = 1`,
+		EvalID(r.project, slug)).Scan(&stored); err != nil || stored != 6 {
+		t.Fatalf("version 1 holds %d charts (%v), want the six the write sent", stored, err)
+	}
+	refusedNaming("a decision of 4,000 bytes beside the question and the six charts copied forward",
+		register(Registration{ComputationChange: ComputationChange{Decision: Set(text(4000))}}), "question")
+	if n := versions(); n != 1 {
+		t.Errorf("the refused write left %d versions, want version 1 alone", n)
+	}
+}
+
 // TestARegisterWriteNamingASeriesTwiceIsRefused: a register write naming one series twice is
 // refused EVAL_SERIES_INVALID naming the second entry's series field, and stores nothing: no
 // version of the eval and no version of any series. Before, each entry stored a version, relisted

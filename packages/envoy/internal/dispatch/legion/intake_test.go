@@ -61,12 +61,14 @@ type intakeRig struct {
 }
 
 // noAdmissions is the admission eval's operations of every intake this package's own tests run
-// (intakeRig, ReadWhole): each takes no lock and writes nothing. dispatch/evals builds the real
-// ones (evals.AdmissionWriter) and imports this package, so the tests that run them are
-// admission_test.go's, outside the package (export_test.go).
+// (intakeRig, ReadWhole): each takes no lock and writes nothing, and every project holds its eval,
+// so the intake registers none. dispatch/evals builds the real ones (evals.AdmissionWriter) and
+// imports this package, so the tests that run them are admission_test.go's and
+// admission_registration_test.go's, outside the package (export_test.go).
 var noAdmissions = Admissions{
-	Lock:  func(context.Context, pgx.Tx, string) error { return nil },
-	Write: func(context.Context, pgx.Tx, AdmissionState) (func(context.Context), error) { return nil, nil },
+	Lock:       func(context.Context, pgx.Tx, string) error { return nil },
+	Registered: func(context.Context, string) (bool, error) { return true, nil },
+	Write:      func(context.Context, pgx.Tx, AdmissionState) (func(context.Context), error) { return nil, nil },
 }
 
 // intakeClock is the intake's clock (Intake.now): the wall clock, moved forward by what the test

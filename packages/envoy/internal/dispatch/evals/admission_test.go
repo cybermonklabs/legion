@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,7 +87,7 @@ func TestEverySignalEntryHasItsSeriesColAndUnit(t *testing.T) {
 	if err := json.Unmarshal(record, &block); err != nil {
 		t.Fatalf("decode the admission block: %v", err)
 	}
-	entries := admissionEntries(legion.AdmissionState{Project: "EVAL", StateID: "store", Seq: 9, At: at, Blocks: []*legion.Admission{&block, &block}})
+	entries := admissionEntries(legion.AdmissionState{Project: "EVAL", StateID: "store", Seq: 9, At: at, Blocks: []*legion.Admission{&block, &block}}, newLoggedEntries())
 	if len(entries) != len(kinds) {
 		t.Fatalf("the writer's list holds %d entries %v, want the %d known kinds once each", len(entries), entries, len(kinds))
 	}
@@ -110,5 +112,59 @@ func TestEverySignalEntryHasItsSeriesColAndUnit(t *testing.T) {
 	}
 	if len(logged) != len(unknown) {
 		t.Errorf("the log names the unknown entries %v, want the %d unknown entries alone", logged, len(unknown))
+	}
+}
+
+// TestTheLoggedEntriesHoldTheNewerHalfPastTheirBound: the set of the entries a writer has logged as
+// skipped or unknown (loggedEntries) answers first once for a key, of eight goroutines asking at
+// once, and again for the same row under another code. Once it holds loggedEntryBound keys, the
+// next key drops the older half: a key of that half is logged again, and a key of the newer half,
+// and the key that passed the bound, are not.
+func TestTheLoggedEntriesHoldTheNewerHalfPastTheirBound(t *testing.T) {
+	t.Parallel()
+	logged := newLoggedEntries()
+	key := func(id int) loggedEntry {
+		return loggedEntry{project: "EVAL", rowKind: rowKindCapChange, rowKey: admissionRowKey("store", int64(id)), code: CodeMeasuredAtOutOfRange}
+	}
+	var firsts atomic.Int64
+	var all sync.WaitGroup
+	for range 8 {
+		all.Go(func() {
+			if logged.first(key(0)) {
+				firsts.Add(1)
+			}
+		})
+	}
+	all.Wait()
+	if n := firsts.Load(); n != 1 {
+		t.Fatalf("eight goroutines asking for one key were answered first %d times, want once", n)
+	}
+	otherCode := key(0)
+	otherCode.code = CodeEvalNotFound
+	if !logged.first(otherCode) || logged.first(otherCode) {
+		t.Fatal("the same row under another code is not logged once")
+	}
+	for id := 1; id < loggedEntryBound-1; id++ {
+		if !logged.first(key(id)) {
+			t.Fatalf("key %d is answered logged before, want its first time", id)
+		}
+	}
+	if logged.first(key(0)) || logged.first(key(loggedEntryBound-2)) {
+		t.Fatal("a key the set holds is answered first again before the bound")
+	}
+	if !logged.first(key(loggedEntryBound)) {
+		t.Fatalf("the key past the bound is answered logged before, want its first time")
+	}
+	// The set held key 0, its other code and keys 1 to loggedEntryBound-2: the older half is key 0,
+	// its other code and keys 1 to loggedEntryBound/2-2.
+	for _, id := range []int{0, loggedEntryBound/2 - 2} {
+		if !logged.first(key(id)) {
+			t.Errorf("key %d of the older half is answered logged before, want it dropped and logged again", id)
+		}
+	}
+	for _, id := range []int{loggedEntryBound/2 - 1, loggedEntryBound - 2, loggedEntryBound} {
+		if logged.first(key(id)) {
+			t.Errorf("key %d of the newer half is answered first again, want it held", id)
+		}
 	}
 }
