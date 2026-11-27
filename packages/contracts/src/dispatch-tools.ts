@@ -241,12 +241,16 @@ const ASK_QUESTION_CONTRACT =
   '("Ship Friday and risk signing out 1,240 users, or hold to Monday?"), never "How should we ' +
   'proceed?" or "Which option?", because a reader cannot work back from a general question to ' +
   "the case. It carries every fact the reader needs to decide and nothing " +
-  "that does not change the decision. Generalize only after the specifics, if at all. Then give " +
-  "your recommendation and its reason.";
+  "that does not change the decision. Generalize only after the specifics, if at all. A question " +
+  "between two or more real choices gives one recommendation and its reason. A request for one " +
+  "act only the person can do (an approval, a credential, a grant, a setting of their own " +
+  "account) says what the act is, what it changes and how to do it, and gives no recommendation.";
 
 const ASK_OPTIONS_CONTRACT =
-  "Options carry the genuinely different approaches. Each option has a label, and its description " +
-  "says what that approach costs.";
+  "Options carry only the real choices: each is within your rules, and a person could choose " +
+  "it. Add no option that breaks your rules or that no one would choose. Each option has a " +
+  "label, and its description says what that approach costs. A request for one act only the " +
+  "person can do has the two options Done and Can't.";
 
 /** Who an ask is for, written once so every text an agent reads says it the same way: the two
  *  tool descriptions that open or edit one, and `skills/dispatch/SKILL.md`. An agent cannot
@@ -1767,7 +1771,9 @@ export const dispatchToolSpecs = [
     description:
       `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
-      "live in. A question about the design an issue's document records is not this tool: write " +
+      "live in. Ask for a decision only when two or more choices are real. Where only one is " +
+      "real, make it, and tell the person what you did and why. A question about the design an " +
+      "issue's document records is not this tool: write " +
       "it into that document as a decision block (dispatch doc-edit inserting an ask block at the " +
       "end of the section it concerns), at every phase, approved spec or not; the block reaches " +
       "the Inbox and its answer lands next to its context. Never give an ask an Approve option: a " +
@@ -1777,11 +1783,13 @@ export const dispatchToolSpecs = [
       ASK_QUESTION_CONTRACT +
       " " +
       ASK_OPTIONS_CONTRACT +
-      " For an action only a human can perform, state what it changes and risks as constraints. " +
+      " For an action only a human can perform, state what it changes and risks as constraints, " +
+      "and a safer alternative as a fact, never as an option. " +
       "Anything that requires a human to do, including a credential or grant renewal, is an ask, " +
       "never a message. Measure what you can first, and put the measurement and the size of the " +
       "population it covers in the question; drop an option that cannot fix most of that " +
-      "population, never offer it cut down, and keep an option not to act (Hold). Set urgency high " +
+      "population, and never offer it cut down. Offer an option not to act (Hold) only where not " +
+      "acting is a real choice and the question names its cost. Set urgency high " +
       "when your work halts on the answer, and keep working on everything else. " +
       "Anchor a to-do about a document passage, thread reply_to/reply_to_ask, or cite a dispatch:// " +
       `reference — it must be answerable from its own text and anchor alone, never "see above". ` +

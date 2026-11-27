@@ -402,6 +402,7 @@ func TestUploadRefusesAMalformedMultipartBodyAsBadInput(t *testing.T) {
 // that file, the failure is the server's, not the caller's: 500, logged, never a 400 that tells the
 // caller its upload was malformed.
 func TestAnUploadTheServerCannotSpoolIsItsOwnFailure(t *testing.T) {
+	// Not parallel: it sets the environment variable TMPDIR of the whole process (t.Setenv).
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
@@ -417,6 +418,7 @@ func TestAnUploadTheServerCannotSpoolIsItsOwnFailure(t *testing.T) {
 // until the pod's ephemeral storage ran out and the kubelet evicted it. The upload removes the
 // files itself, whether it stores the file or refuses the request after parsing it.
 func TestAnUploadLeavesNoSpooledFileBehind(t *testing.T) {
+	// Not parallel: it sets the environment variable TMPDIR of the whole process (t.Setenv).
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	spool := t.TempDir()
@@ -1119,6 +1121,8 @@ func issueArtifactCount(t *testing.T, database *store.Store, issueKey string) in
 // connection and discarded before the refusal (drainBeforeAnswer). Nothing is stored and no key is
 // claimed.
 func TestAnUploadToAClosedIssueIsRefusedBeforeItsBodyIsSpooled(t *testing.T) {
+	// Not parallel: it sets the environment variable TMPDIR of the whole process (t.Setenv in
+	// unspooled).
 	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createArtifactIssue(t, handler)
 	closeArtifactIssue(t, handler, issue.Key)
@@ -1187,6 +1191,8 @@ func (s *heldFileStore) Put(ctx context.Context, sha, mime string, body []byte) 
 // given that answer. Here the first request reaches the issue after the close, so its answer, and
 // the repeat's, is its own 409 ISSUE_CLOSED.
 func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *testing.T) {
+	// Not parallel: it sets the environment variable TMPDIR of the whole process (t.Setenv in
+	// unspooled).
 	held := &heldFileStore{Memory: filestest.NewMemory(), reached: make(chan struct{})}
 	handler, database, _ := newTestServer(t, testServerOptions{files: held})
 	release, releaseOnce := heldUntilReleased(t)
@@ -1235,6 +1241,8 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 // lands an upload, closes the issue, and rewrites the key's row into the state it names; the stored
 // artifact is beside the point, since a repeat reads only the row.
 func TestAClosedIssueRefusesAnUploadOnlyWhereItsHandlerWouldRun(t *testing.T) {
+	// Not parallel: it sets the environment variable TMPDIR of the whole process (t.Setenv in
+	// unspooled).
 	unanswered := `status = null, headers = null, response = null`
 	for _, state := range []struct {
 		name      string

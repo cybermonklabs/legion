@@ -49,6 +49,7 @@ func republishSessionRecordListingPRIV(t *testing.T, rig *edgeRig, sessionID str
 // is the server's: the edge still hides it from the listing, and its session read answers 404. This
 // is census M4 reopened by a RePublished record, which be248e69cc closed for a chosen entry alone.
 func TestAnEdgeConfirmsALegionAgentByItsStoredRecord(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, inHouse, issue, roleToken = "ses_la_conf_outside", "ses_la_conf_in_house", "PRIV-8", "legion-priv-priv-8-tester"
 	token := rig.personToken(outside, "PRIV")

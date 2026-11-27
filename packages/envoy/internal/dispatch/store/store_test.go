@@ -1136,6 +1136,7 @@ func migratedTemplate(t *testing.T, admin url.URL, version int) string {
 	}
 	adminExec(t, admin, statement)
 	migratedTemplates.made = append(migratedTemplates.made, name)
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	ctx := context.Background()
 	database, err := Open(ctx, databaseOn(admin, name))
 	if err != nil {
@@ -1160,6 +1161,7 @@ func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store
 	adminExec(t, admin, "create database "+name+" template "+template+" strategy file_copy")
 	// `with (force)` ends any backend still attached, as testdb.DatabaseOn's drop does.
 	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	store, err := Open(context.Background(), databaseOn(admin, name))
 	if err != nil {
 		t.Fatalf("open the copy of %s: %v", template, err)
