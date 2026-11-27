@@ -7,9 +7,27 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
     script_run("packages/pi-legion/scripts/skill-scenarios/label-texts.sh",
                'go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
-               "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh); "
-               f"in {at('pi-legion', 'Test pi-legion')}, label-texts.test.ts runs this line with a planted go, and no row compiles the three packages",
+               "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh), "
+               f"and in {at('pi-legion', 'Test pi-legion')} for each of the two batches of "
+               "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice`; label-texts.test.ts runs this line with a planted go",
                DAEMON, ["./internal/workflow", "./internal/daemon", "./internal/api"], mode="test"),
+    # The kept-notice row runs a child owner's whole run through rig.sh: each batch builds the
+    # Envoy listener and runs the connections program, and each run starts its own Dispatch
+    # server through run-server.sh, all three of the envoy module.
+    script_run("packages/pi-legion/scripts/skill-scenarios/rig.sh",
+               '(cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)',
+               "rig.sh's listener_up, which each batch's services_up runs: "
+               f"`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice` runs two batches in {at('pi-legion', 'Test pi-legion')}",
+               ENVOY, ["./cmd/listener"], mode="build"),
+    script_run("packages/pi-legion/scripts/skill-scenarios/rig.sh",
+               'per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&',
+               "rig.sh's connections_needed, which each batch's services_up runs: "
+               f"`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice` runs two batches in {at('pi-legion', 'Test pi-legion')}",
+               ENVOY, ["./internal/dispatch/store/cmd/connections"], mode="build"),
+    script_run(RUN_SERVER, DISPATCH_SERVER_BUILD,
+               "started by rig.sh's start_dispatch for each run's own Dispatch, each run of "
+               f"`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#a kept notice` in {at('pi-legion', 'Test pi-legion')}",
+               ENVOY, ["./cmd/dispatch"], mode="build"),
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "`packages/pi-legion/extensions/legion.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion.test.ts#envoyEntry` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntry` import ../../pi-envoy/extensions/envoy; `packages/pi-shared/test/omp-harness.ts#runLegionPane` loads it"),

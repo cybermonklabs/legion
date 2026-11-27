@@ -15,28 +15,35 @@ import (
 )
 
 // FreshSessionResponse confirms the claim left the session it recorded behind: the daemon
-// started it again here, or the phase's restart it queued will, and where neither of those ran
-// the sentence in PhaseNotRestarted says so. The controller is told nothing else, since what it
-// does next it reads in the state.
+// started it again here, its start ended or under way, or the phase's restart it queued will,
+// and where none of those ran the sentence in PhaseNotRestarted says so. The controller is told
+// nothing else, since what it does next it reads in the state.
 type FreshSessionResponse struct {
 	// PhaseNotRestarted is what this request did to the claim that no reader of the claim can
-	// tell, which is one of two things and never both (freshSession):
+	// tell, which is one of four things and never two (freshSession):
 	//
 	//   - the claim is back in a new session owing no task, and the workflow refused the
 	//     restart that would have handed it one, or moved the issue to awaiting_children in its
 	//     place, which the sentence names with the open children (restartWorkedPhase); or it is
 	//     back holding the task of a production check look, and the read of whether that look
 	//     still holds failed, so nothing restarted its phase, which the sentence names (owesTask);
+	//   - the claim is back in a new session, and its phase's task waits for its issue's
+	//     admission slot, which the issue does not hold (slotWait.runs);
+	//   - the claim runs nothing, failed or retired with its session left behind, and its start
+	//     waits for that slot (slotWait.stays), or, failed, retired or suspended with no session,
+	//     its start was refused after the session was left behind (refusedAfterTheForget);
 	//   - this request stopped the claim, and the machine refused a step that would have
 	//     brought it back — the forget of the session it recorded, or the start of it in a
 	//     new session — and the sentence names that refusal and the state the claim stands in
 	//     after it (notStartedAgain).
 	//
-	// It is absent wherever the claim came back started and holding whatever it owes, and
-	// wherever no phase restart was due — a claim that still owes a task, and an architect,
-	// work no phase start. The answer carries it because the state records neither: a reader of
+	// It is absent wherever the claim came back started, or with its start under way, and
+	// holding whatever it owes, and wherever no phase restart was due — a claim that still owes
+	// a task, and an architect, work no phase start. `read_state` shows how a start under way
+	// ended. The answer carries the sentence because the state records none of it: a reader of
 	// the claim sees the state it is in, and nothing of what this request asked for and did not
-	// get.
+	// get. A caller below claimStartContract reads the second and third as the daemon answered
+	// them before (answersAsBefore).
 	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 }
 
@@ -114,26 +121,56 @@ var freshSessionOp = agentAction{
 // claimFreshSession is the agent door's fresh session (freshSession). The effect is the
 // operator's own, and so are its refusals; only the authentication differs (agentDoor), and the
 // suspension and the resume it runs are the controller's, so it is refused an agent the
-// operator's own suspension holds (SUSPENDED_BY_OPERATOR). Its log line says which of the two
-// successes the effect reported: the agent started again, or stopped by this request and not
-// started, whose sentence rides the answer (notStartedAgain).
+// operator's own suspension holds (SUSPENDED_BY_OPERATOR). Its log line says which of the three
+// successes the effect reported: the agent started again; stopped by this request and not
+// started, whose sentence rides the answer (notStartedAgain); or running nothing before and after,
+// its start waiting for its issue's admission slot or refused after the forget (freshLeft).
 func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.agentDoor(w, r, freshSessionOp)
 	if !ok {
 		return
 	}
-	_, notRestarted, started, ok := s.freshSession(w, r, target.machine, target.token, target.by)
+	_, notRestarted, effect, ok := s.freshSession(w, r, target.machine, target.token, target.by)
 	if !ok {
 		return
 	}
-	if started {
+	switch effect {
+	case freshStarted:
 		s.log.Info("api: "+callerName(target.by)+" started an agent in a fresh session",
 			"claim", target.token, "issue", target.issue, "role", target.role, "phaseNotRestarted", notRestarted)
-	} else {
+	case freshStopped:
 		s.log.Info("api: "+callerName(target.by)+"'s fresh session stopped an agent and did not start it again",
+			"claim", target.token, "issue", target.issue, "role", target.role, "phaseNotRestarted", notRestarted)
+	default:
+		s.log.Info("api: "+callerName(target.by)+"'s fresh session did not start an agent that runs nothing",
 			"claim", target.token, "issue", target.issue, "role", target.role, "phaseNotRestarted", notRestarted)
 	}
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
+}
+
+// freshOutcome is what a fresh session that succeeded did to the claim, which the agent door
+// logs (claimFreshSession) and the answer alone cannot say: a phase that was not restarted is
+// named in phaseNotRestarted for a claim that did start.
+type freshOutcome int
+
+const (
+	// freshStarted: the claim started again in a new session, its start ended or under way.
+	freshStarted freshOutcome = iota
+	// freshStopped: this request stopped the claim, and the machine refused a step that would
+	// have brought it back (notStartedAgain).
+	freshStopped
+	// freshLeft: the claim ran nothing before the request and runs nothing after it — failed,
+	// retired, or suspended before the request — because its start waits for its issue's
+	// admission slot (slotWait.stays) or was refused after the forget (refusedAfterTheForget).
+	freshLeft
+)
+
+// outcomeOf is the outcome of a fresh session that stopped nothing, from whether its start ran.
+func outcomeOf(started bool) freshOutcome {
+	if started {
+		return freshStarted
+	}
+	return freshLeft
 }
 
 // freshSession is the one fresh-session effect, which `legion claims retry --fresh-session`
@@ -141,10 +178,11 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 // the session it recorded behind and starts again in a new one. It answers every refusal itself
 // and reports the status its caller's success answer takes, with the sentence that answer
 // carries when the claim came back short of what this operation promises
-// (FreshSessionResponse.PhaseNotRestarted), and whether it started the claim again: started is
-// false on one success alone, the claim this request stopped and then could not bring back
-// (notStartedAgain), so a caller's log says what the request did rather than reading it off
-// the sentence, which a phase that was not restarted carries for a claim that did start.
+// (FreshSessionResponse.PhaseNotRestarted), and what it did to the claim (freshOutcome): started
+// again, stopped by this request and not brought back (notStartedAgain), or left running nothing,
+// as it was, with its start waiting for its issue's admission slot or refused after the forget.
+// A caller's log says what the request did from that rather than reading it off the sentence,
+// which a phase that was not restarted carries for a claim that did start.
 //
 // It reaches a claim whose agent is registered, ready or idle (agentRunning), one that is
 // suspended, failed or retired (startsAgain), and one stored working that the read of its
@@ -183,7 +221,13 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 // spawns a fresh agent rather than resuming the one it had. Only the claim's record of the
 // session goes: the session and its file stand, and this logs the id it dropped, so an operator
 // who wanted that session can read it there. A forget that loses the race to the lane, by
-// contrast, leaves no way at all to drop the session the request was for.
+// contrast, leaves no way at all to drop the session the request was for. Since the forget has
+// changed the claim, a start refused after it — the workflow's refusal of the restart, the
+// machine's of its retry, the machine's or a hold's of the resume of a claim suspended before the
+// request — is answered 200 with the refusal and the state it leaves the claim in, failed, retired
+// or suspended with no session (refusedAfterTheForget, dispatch://INFRA-5649 R2): an error would
+// tell the caller nothing of the claim changed. A failure of the daemon's own after the forget
+// stays an error, and says the session was left behind (failedAfterTheForget).
 //
 // The resume goes before the phase's restart, so the agent is back in its new session before
 // anything the workflow may refuse is asked for. Only a suspension that holds, the operator's or
@@ -234,8 +278,24 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 // request stopped. So that refusal goes into the answer too, in the machine's own words, with the
 // state the claim stands in after it (notStartedAgain, FreshSessionResponse.PhaseNotRestarted),
 // and the caller reads what became of the claim rather than an error that names none. A refusal
-// met before anything was stopped stays the caller's answer: nothing of the claim changed, and a
-// 200 would say something did.
+// met before anything was stopped or forgotten stays the caller's answer: nothing of the claim
+// changed, and a 200 would say something did.
+//
+// The start is answered once it is under way, never once it has ended: the resume of a suspended
+// claim, and the machine's retry of a failed or retired one that no phase start reaches, answer
+// once the machine has written the claim launching, while the start goes on under a context of
+// its own (startUnderWay, dispatch://INFRA-5649 R4). So the claim the answer reads is the
+// machine's published view (supervise.Machine.View), never Machine.Claim, which waits out the
+// start. What that gives up is a start that runs out of its launch budget after the stop: it is
+// no longer named in phaseNotRestarted (resumeAfterTheStop), the phase's restart is applied all
+// the same, and the claim's state carries the failure.
+//
+// A start the restart of the phase queued can wait for the issue's admission slot, where the
+// issue's phase keeps one and the issue holds none (restartWorkedPhase): such a start runs when
+// the slot comes, so the sentence names the wait, and the issues the issue waits on, for a failed
+// or retired claim, which runs nothing until then (slotWait.stays), and for a suspended one,
+// which runs again at once while its phase's task waits (slotWait.runs). A caller below
+// claimStartContract reads neither sentence (waitNamed).
 //
 // Two states, one hold and one claim are refused, and the first of those states more than one
 // way. A claim stored working whose process the read at the request finds running is refused
@@ -286,7 +346,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 // first (agentDoor), so an agent that suspension holds is refused in that hold's code whether or
 // not the project is paused.
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
-	by supervise.SuspendSource) (status int, notRestarted string, started, ok bool) {
+	by supervise.SuspendSource) (status int, notRestarted string, effect freshOutcome, ok bool) {
 	c := m.Claim()
 	if c.KeeperRetries() {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the
@@ -297,10 +357,10 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		s.writeFailure(w, r, http.StatusConflict, "NOT_THE_CONTROLLER", fmt.Sprintf(
 			"%s is the project's controller: %s is what starts it — it launches a queued controller, resumes one the daemon suspended, and retries one that failed or retired — so the controller is left to that keeper, whatever state it is in, and no fresh session is run on it here",
 			token, controllerKeeperName))
-		return 0, "", false, false
+		return 0, "", freshStarted, false
 	}
 	if s.refusedWhilePaused(w, r, "fresh session", c) {
-		return 0, "", false, false
+		return 0, "", freshStarted, false
 	}
 	view := m.View()
 	// stopped is whether the suspension below ran, which decides how a forget or a start the
@@ -319,10 +379,10 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	hold := c.HeldAgainst(by)
 	switch {
 	case view.SuspensionHeld:
-		return 0, "", false, s.refuseHeldSuspension(w, r, token, c.State, c.Role, freshSessionOp, hold)
+		return 0, "", freshStarted, s.refuseHeldSuspension(w, r, token, c.State, c.Role, freshSessionOp, hold)
 	case hold != nil:
 		s.refuseHold(w, r, token, freshSessionOp, by, hold, nothingChanged)
-		return 0, "", false, false
+		return 0, "", freshStarted, false
 	case storedWorking(c.State):
 		// Every claim stored working comes here, and the read is what tells them apart: the
 		// one no process stands behind falls through to the suspension below, as an agent that
@@ -332,19 +392,19 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		// next, and nothing but a verdict that finds the process running or the process let go
 		// clears it in between (supervise's reportedProcess, letGo, holdSuspension).
 		if s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp) {
-			return 0, "", false, false
+			return 0, "", freshStarted, false
 		}
 		fallthrough
 	case agentRunning(c.State):
 		if !s.suspendForFreshSession(w, r, m, token, by) {
-			return 0, "", false, false
+			return 0, "", freshStarted, false
 		}
 		stopped, outcome = true, itsSuspensionTakenOver
 	case startsAgain(c.State):
 	default:
 		s.writeFailure(w, r, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 			"%s is %s. %s. %s", token, c.State, freshSessionOp.reaches, askAgainLater))
-		return 0, "", false, false
+		return 0, "", freshStarted, false
 	}
 	// The recorded session is dropped before the retry, never after it: the lane the restart's
 	// fact wakes starts the claim, and a start that found the session still recorded would resume
@@ -352,6 +412,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied). The ask rides
 	// the retry as well (RequestAskedRetry.FreshSession, intake.RestartPhase.FreshSession), so
 	// the start the workflow raises spawns rather than resumes whatever the claim still records.
+	forgot := ""
 	if session := m.Claim().Session; session != "" {
 		switch err := s.forgetRecordedSession(r, m, token, session, by); {
 		case holdRefusal(err):
@@ -361,39 +422,59 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			s.log.Warn("api: a suspension above the caller took the agent over before the fresh session's forget, which kept its session",
 				"claim", token, "session", session, "stopped", stopped, "error", err)
 			s.refuseHold(w, r, token, freshSessionOp, by, err, outcome)
-			return 0, "", false, false
+			return 0, "", freshStarted, false
 		case err != nil && stopped:
 			return s.refusedAfterTheStop(w, r, m, token, by, forgetAfterTheStop, err, "session", session)
 		case err != nil:
 			s.operationFailure(w, r, by, "forget-session", token, err)
-			return 0, "", false, false
+			return 0, "", freshStarted, false
 		}
-		outcome = sessionLeftBehind
+		outcome, forgot = sessionLeftBehind, session
 	}
 	if s.beforeFreshSessionResume != nil {
 		s.beforeFreshSessionResume()
 	}
 	if m.Claim().State != supervise.StateSuspended {
-		status, ok := s.retryStart(w, r, m, token, true, by)
-		return status, "", ok, ok
+		status, notRestarted, started, ok := s.retryStart(w, r, m, token, true, forgot, by)
+		return status, notRestarted, outcomeOf(started), ok
 	}
+	// The resume is answered once its start is under way (startUnderWay), and every read of the
+	// claim from here on is its published view, which the launch publishes launching, never
+	// Machine.Claim, which waits out the start (dispatch://INFRA-5649 R4).
 	resume := supervise.RequestResume{Claim: token, By: by}
-	switch posted, err := s.postClaimEvent(w, r, m, token, "resume", resume); {
-	case !posted:
-		return 0, "", false, false
+	underWay, stopping, err := s.startUnderWay(r, m, token, "resume", resume)
+	switch {
+	case stopping != "" && stopped:
+		s.refuse(w, r, http.StatusServiceUnavailable, stopping)
+		return 0, "", freshStarted, false
+	case stopping != "":
+		// A claim suspended before the request has only lost its session, and a refusal now is
+		// what the request did to it (refusedAfterTheForget, dispatch://INFRA-5649 R2).
+		status, notRestarted, _, ok := s.refusedAfterTheForget(w, r, m, token, forgot, stopping,
+			func() { s.refuse(w, r, http.StatusServiceUnavailable, stopping) })
+		return status, notRestarted, freshLeft, ok
 	case err != nil && stopped:
 		// The machine's own words for the refusal go in the answer, which is why the resume is
-		// posted rather than run through claimEvent (postClaimEvent, notStartedAgain).
-		return s.refusedAfterTheStop(w, r, m, token, by, resumeAfterTheStop, err, "state", m.Claim().State)
+		// posted rather than run through claimEvent (startUnderWay, notStartedAgain).
+		return s.refusedAfterTheStop(w, r, m, token, by, resumeAfterTheStop, err, "state", m.View().State)
 	case holdRefusal(err):
 		// Only an agent this request found suspended comes here (a refusal after this request's
 		// own suspension is answered above), so the hold took over a suspension that was already
-		// there, and the forget, when there was one, has dropped the session.
-		s.refuseHold(w, r, token, freshSessionOp, by, err, outcome)
-		return 0, "", false, false
+		// there. Where the forget has dropped the session, the claim changed, and the hold is
+		// answered as every refusal after the forget is, 200 with it in the sentence, in the words
+		// that name who lifts it (refusedAfterTheForget, dispatch://INFRA-5649 R2); with no forget,
+		// or to a caller below claimStartContract, it is the hold's own refusal (refuseHold).
+		_, heldBy, lifts, _ := holdSentences(token, err)
+		status, notRestarted, _, ok := s.refusedAfterTheForget(w, r, m, token, forgot, "it is "+heldBy+". "+lifts,
+			func() { s.refuseHold(w, r, token, freshSessionOp, by, err, outcome) })
+		return status, notRestarted, freshLeft, ok
+	case err != nil && !refusedByTheMachine(err):
+		s.operationFailure(w, r, by, "resume", token, failedAfterTheForget(err, token, forgot))
+		return 0, "", freshLeft, false
 	case err != nil:
-		s.operationFailure(w, r, by, "resume", token, err)
-		return 0, "", false, false
+		status, notRestarted, _, ok := s.refusedAfterTheForget(w, r, m, token, forgot, err.Error(),
+			func() { s.operationFailure(w, r, by, "resume", token, err) })
+		return status, notRestarted, freshLeft, ok
 	}
 	// A phase worker that owes no task is handed one by its issue's phase, through the same
 	// restart the start of a stopped claim runs (restartWorkedPhase): the resume above starts
@@ -407,25 +488,34 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// it until a turn has taken it. Nor is the task of a production check look whose look no longer
 	// holds (owesTask): a tester or implementer whose issue runs again can come back holding only
 	// that task, which its send drops, so its phase is restarted as for a claim holding nothing.
+	// A phase's task that waits for the issue's admission slot is named, since the claim runs and
+	// the work does not reach it until then (slotWait.runs).
 	status = http.StatusOK
-	switch owes, err := s.owesTask(r.Context(), m.Claim()); {
+	if underWay {
+		status = http.StatusAccepted
+	}
+	back := m.View().Claim
+	switch owes, err := s.owesTask(r.Context(), back); {
 	case err != nil:
 		s.logRequestFailure(r, err, "api: read whether a fresh session's task is of a production check look that still holds", "claim", token)
-		notRestarted = fmt.Sprintf("%s is back in a new session, and nothing restarted its phase: could not read the production check of %s: %v",
-			token, c.Issue, err)
+		status, notRestarted = http.StatusOK, fmt.Sprintf("%s is back in a new session, and nothing restarted its phase: could not read the production check of %s: %v",
+			token, back.Issue, err)
 	case !owes:
-		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
+		if phaseStatus, refusal, waits, restarted := s.restartWorkedPhase(r, token, back, false); restarted {
 			status = phaseStatus
-			if refusal != "" {
+			switch {
+			case refusal != "":
 				status, notRestarted = http.StatusOK, fmt.Sprintf(
 					"%s is back in a new session owing no task, and nothing restarted its phase: %s", token, refusal)
 				s.log.Info("api: a fresh session started a claim whose phase was not restarted",
 					"claim", token, "refusal", refusal)
+			case waits != nil:
+				notRestarted = s.waitNamed(r, token, waits.runs(token))
 			}
 		}
 	}
-	s.log.Info("api: a fresh session was started for a claim that was suspended", "claim", token)
-	return status, notRestarted, true, true
+	s.log.Info("api: a fresh session was started for a claim that was suspended", "claim", token, "underWay", underWay)
+	return status, notRestarted, freshStarted, true
 }
 
 // owesTask says whether c's pending task is one c owes, which the fresh session's resume sends and
@@ -894,17 +984,17 @@ var (
 // no RefusedError, on every door, and that line names by and does not say that the caller was
 // served down.
 func (s *server) refusedAfterTheStop(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
-	by supervise.SuspendSource, step refusedStep, err error, detail ...any) (status int, notRestarted string, started, ok bool) {
+	by supervise.SuspendSource, step refusedStep, err error, detail ...any) (status int, notRestarted string, effect freshOutcome, ok bool) {
 	s.log.Warn(step.warning, append(append([]any{"claim", token}, detail...), "error", err)...)
 	at, servedDown := s.readsTheStopAsAFailure(r)
 	if !servedDown {
-		return http.StatusOK, notStartedAgain(token, m.Claim().State, step.step, err), false, true
+		return http.StatusOK, notStartedAgain(token, m.View().State, step.step, err), freshStopped, true
 	}
 	s.operationFailure(w, r, by, step.request, token, err)
 	s.log.Info(servedTheStopAsAFailure, "caller", r.RemoteAddr, "pod", at.pod,
 		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion(), "follows", followsRestore,
 		"claim", token, "request", step.request, "served", servedTheRefusedStep)
-	return 0, "", false, false
+	return 0, "", freshStopped, false
 }
 
 // servedTheStopAsAFailure is the message of the line that refusedAfterTheStop writes for a
@@ -936,3 +1026,46 @@ func (s *server) readsTheStopAsAFailure(r *http.Request) (placement, bool) {
 	at := s.contractsFor(r, s.placingClaims(r))
 	return at, at.restore < processReadContract
 }
+
+// answersAsBefore is where the caller of r is placed (contractsFor), and whether that placement
+// is below claimStartContract. Such a caller is answered as the daemon answered before that
+// contract (dispatch://INFRA-5649 R3): no phaseNotRestarted for a start that waits for its
+// issue's admission slot (waitNamed), and the refusal itself, as the error it was, for a start
+// refused after a fresh session left the claim's session behind (refusedAfterTheForget). The
+// `legion` tool description of a plugin below claimStartContract says that an empty answer means
+// the start ran and that phaseNotRestarted names a claim that runs, so a controller reading
+// either new answer would read a start that has not happened. The decision follows restore, as
+// readsTheStopAsAFailure's does and for its reason: what moved is what an answer means, and no
+// key of it (followsRestore).
+func (s *server) answersAsBefore(r *http.Request) (placement, bool) {
+	at := s.contractsFor(r, s.placingClaims(r))
+	return at, at.restore < entryNumber(claimStartContract)
+}
+
+// waitNamed is sentence, the start that waits for its issue's admission slot in words
+// (slotWait), for a caller at claimStartContract or above, and "" for one below it, which reads
+// no sentence there, as before (answersAsBefore); the line servedAsBefore writes says so.
+func (s *server) waitNamed(r *http.Request, token claim.Token, sentence string) string {
+	if at, below := s.answersAsBefore(r); below {
+		s.servedAsBefore(r, at, token, servedNoWait)
+		return ""
+	}
+	return sentence
+}
+
+// servedAsBefore writes the one Info line of a claim's start answered to a caller below
+// claimStartContract as the daemon answered before it, naming what that caller was served in
+// place of the newer answer, with the fields refusedAfterTheStop's line names.
+func (s *server) servedAsBefore(r *http.Request, at placement, token claim.Token, served string) {
+	s.log.Info(servedAClaimStartAsBefore, "caller", r.RemoteAddr, "pod", at.pod,
+		"pluginContract", at.restore, "daemonApiVersion", DaemonAPIVersion(), "follows", followsRestore,
+		"claim", token, "served", served)
+}
+
+// servedAClaimStartAsBefore is the message of servedAsBefore's line, and servedNoWait and
+// servedTheRefusal what it says the caller was served.
+const (
+	servedAClaimStartAsBefore = "api: answered a claim's start to the caller's plugin contract"
+	servedNoWait              = "no phaseNotRestarted for a start that waits for its issue's admission slot, as before claimStartContract"
+	servedTheRefusal          = "the refusal of a start after the fresh session's forget, as before claimStartContract, in place of the 200 with phaseNotRestarted"
+)
