@@ -86,7 +86,7 @@ test("pruning removes handoff directories whose Claude process is gone and keeps
   const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-prune-"))
   try {
     const live = sessionHandoffDirectory(stateDirectory, process.pid)
-    const dead = sessionHandoffDirectory(stateDirectory, 2 ** 22 - 1)
+    const dead = sessionHandoffDirectory(stateDirectory, process.ppid) // CONTROL ONLY: an id a live process holds, as 2 ** 22 - 1 was held on the box that failed
     const junk = join(stateDirectory, "sessions", "not-a-pid")
     for (const directory of [live, dead, junk]) await mkdir(directory, { recursive: true })
     await writeFile(join(dead, "session-id"), "ses_dead")
