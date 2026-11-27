@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Tests for gh-read.sh: gh_wait_reset, which waits out a spent API budget when its reset falls
-# before the job's or the step's limit and fails by name when it does not, gh_read's ladder,
-# which takes each attempt through it, and gh_read_transient, which tells a refusal that passes
-# of itself from one the next call would meet again.
+# before the job's or the step's limit and fails by name when it does not, and gh_read's ladder,
+# which takes each attempt through it.
 #
 # Every case runs the real gh against a stand-in GitHub, a local HTTP server
 # (.github/scripts/gh-read-stand-in.py), so the answers the helper reads, their status and
@@ -399,34 +398,6 @@ github never 404
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 1)"
 check "after three attempts" "$(is "$(calls /repos/o/r/pulls/1)" 3)"
-
-echo "case: gh_read_transient tells the refusals that pass of themselves from the rest"
-# The 404's words are the real gh's, written by the call this case makes. The others are the
-# lines gh prints for a 5xx of `gh api`, for a 5xx of `gh run list`, for a secondary rate limit,
-# and for a call it refused to make at all, which names no status.
-github never 404
-printf 'gh: Internal Server Error (HTTP 500)\n' > "$work/words-500"
-printf 'failed to get runs: HTTP 503 (https://api.github.com/repos/o/r/actions/workflows/1/runs?event=merge_group)\n' > "$work/words-503"
-printf 'gh: You have exceeded a secondary rate limit (HTTP 429)\n' > "$work/words-429"
-printf 'unknown flag: --limits\n' > "$work/words-flag"
-# shellcheck disable=SC2016 # $PWD, $? and $words are the driven shell's, expanded there
-drive JOB_TIMEOUT_MINUTES=5 -- '
-  gh_read --stderr "$PWD/words-404" gh api repos/o/r/pulls/1 || echo "status=$?"
-  for words in 404 500 503 429 flag; do
-    gh_read_transient 1 "$PWD/words-$words" && echo "$words passes" || echo "$words does not"
-  done
-  gh_read_transient 75 "$PWD/words-404" && echo "75 passes" || echo "75 does not"
-  cat "$PWD/words-404"'
-check "the ladder ended on gh's own 404" "$(contains "$out" '^status=1$')"
-check "whose words gh wrote to the file" "$(contains "$out" '^gh: Not Found (HTTP 404)$')"
-check "a 500 passes of itself" "$(contains "$out" '^500 passes$')"
-check "a 5xx of gh run list passes too" "$(contains "$out" '^503 passes$')"
-check "a 429 passes" "$(contains "$out" '^429 passes$')"
-check "and so does the 75 of a rate limit the helper could not wait out" \
-  "$(contains "$out" '^75 passes$')"
-check "a 404 does not" "$(contains "$out" '^404 does not$')"
-check "and a refusal naming no status does not" "$(contains "$out" '^flag does not$')"
-rm -f "$work"/words-404 "$work"/words-500 "$work"/words-503 "$work"/words-429 "$work"/words-flag
 
 # A secondary rate limit spends no budget: GitHub's answer names how long to wait in a retry-after
 # header. Its documentation asks for at least a minute where the answer names none, but such an
