@@ -560,7 +560,8 @@ html:has([data-issue-page]) {
    give it, which the floor's `inline-flex`, in no layer, would outrank: a kind's chip is hidden at
    760 px and below until the box holds the caret (`pageComposer.chip`). A menu or a dialog the
    box opens, and the reference picker's list, keep the floor, as every box's do. */
-html:has([data-issue-page]) [data-issue-composer]
+html:has([data-issue-page])
+  [data-issue-composer]
   button:not([role="menu"] *):not([role="dialog"] *):not([role="listbox"] *) {
   min-width: 24px;
   min-height: 24px;
