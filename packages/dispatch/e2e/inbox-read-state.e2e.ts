@@ -1,3 +1,5 @@
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies, markThreadRead } from "./api";
 import { drawer, peekTrigger } from "./inbox-drawer";
@@ -276,6 +278,21 @@ test("a Mark read in the Peek drawer whose Inbox read the bound ended still says
     unreadLine,
     step("at the 30 s bound the card says why the Inbox is not read.")
   ).toHaveText([unreadWords]);
+
+  // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+  // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+  // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+  // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+  // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+  const askedAtBound = listReads.out();
+  await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+  await expect
+    .poll(() => listReads.out(), {
+      message: step(
+        "the Inbox read is asked again after its first attempt's 30 s deadline, and held."
+      ),
+    })
+    .toBeGreaterThan(askedAtBound);
 
   await drawer(page).getByRole("button", { exact: true, name: "Close" }).click();
   await expect(drawer(page), step("the drawer's Close closes the drawer.")).toHaveCount(0);

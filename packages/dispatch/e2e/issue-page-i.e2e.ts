@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { Browser, BrowserContext, Locator, Page, Route } from "@playwright/test";
-
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
   FOOT_HEIGHT_PROPERTY,
   IDENTITY_HEIGHT_PROPERTY,
@@ -5167,6 +5167,21 @@ test("a rebuild in a row's editor whose re-read the bound ended still says why o
         unreadLine,
         step("at the 30 s bound the row's editor says why the rebuilt document is not read.")
       ).toHaveText([unreadWords]);
+
+      // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+      // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+      // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+      // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+      // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+      const askedAtBound = held.length;
+      await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+      await expect
+        .poll(() => held.length, {
+          message: step(
+            "the reads are asked again after their first attempts' 30 s deadline, and held."
+          ),
+        })
+        .toBeGreaterThan(askedAtBound);
 
       await rebuild.focus();
       await page.keyboard.press("Escape");

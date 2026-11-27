@@ -1001,6 +1001,21 @@ test("a Remove on the Artifacts tab whose list read the bound ended still says w
     step("at the 30 s bound the document's row says why the list is not read.")
   ).toHaveText([unreadWords]);
 
+  // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+  // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+  // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+  // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+  // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+  const askedAtBound = listReads.out();
+  await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+  await expect
+    .poll(() => listReads.out(), {
+      message: step(
+        "the list read is asked again after its first attempt's 30 s deadline, and held."
+      ),
+    })
+    .toBeGreaterThan(askedAtBound);
+
   const spec = page.getByRole("tab", { name: "Spec" });
   const artifacts = page.getByRole("tab", { name: /^Artifacts\b/ });
   await spec.click();

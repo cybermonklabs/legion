@@ -8,6 +8,7 @@
 import { IDEMPOTENCY_KEY_COMMITTED, ISSUE_STATUSES } from "@legion/contracts";
 import type { APIResponse, Locator, Request, Route } from "@playwright/test";
 import { AGENT_LIST_REFILLING, REQUEST_DEADLINE_MS } from "../web/src/api/client";
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { CONTROL } from "../web/src/components/control-names";
 import * as theme from "../web/src/theme/classes";
 import {
@@ -13840,6 +13841,21 @@ test("a Take out of epic whose List read the bound ended still says why once the
     unreadLine,
     step("at the 30 s bound the List says why its read has not settled.")
   ).toHaveText([unreadWords]);
+
+  // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+  // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+  // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+  // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+  // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+  const askedAtBound = held.length;
+  await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+  await expect
+    .poll(() => held.length, {
+      message: step(
+        "the List read is asked again after its first attempt's 30 s deadline, and held."
+      ),
+    })
+    .toBeGreaterThan(askedAtBound);
 
   const listView = page.getByRole("button", { exact: true, name: "List" });
   const boardView = page.getByRole("button", { exact: true, name: "Board" });

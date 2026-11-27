@@ -1,3 +1,4 @@
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
@@ -321,6 +322,21 @@ test("an Unfollow in the reading view whose read the bound ended still says why 
     step("at the 30 s bound the card says why the recipients are not read.")
   ).toHaveText([RECIPIENTS_UNREAD]);
 
+  // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+  // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+  // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+  // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+  // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+  const askedAtBound = askReads.out();
+  await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+  await expect
+    .poll(() => askReads.out(), {
+      message: step(
+        "the read of the ask is asked again after its first attempt's 30 s deadline, and held."
+      ),
+    })
+    .toBeGreaterThan(askedAtBound);
+
   await backToList(page);
   await selectRow(page, ask);
   await expect(
@@ -373,6 +389,21 @@ test("an Unfollow whose read the bound ended still says why once the window narr
     unreadLine,
     step("at the 30 s bound the card in the reading column says why the recipients are not read.")
   ).toHaveText([RECIPIENTS_UNREAD]);
+
+  // The bound's 30 s also end the read's first attempt at its own deadline, and the page asks
+  // again `QUERY_RETRY_DELAY_MS` later. A caller drawn away inside that wait takes the read's last
+  // observer with it, which cancels the retry (query-core's `Query.removeObserver`), so the read
+  // ends failed and the caller drawn again shows that failure, whatever a correct hold keeps: the
+  // row lets the wait run out, and the read be asked again, before the caller is drawn away.
+  const askedAtBound = askReads.out();
+  await page.clock.runFor(QUERY_RETRY_DELAY_MS);
+  await expect
+    .poll(() => askReads.out(), {
+      message: step(
+        "the read of the ask is asked again after its first attempt's 30 s deadline, and held."
+      ),
+    })
+    .toBeGreaterThan(askedAtBound);
 
   await page.setViewportSize({ height: 900, width: 1024 });
   await askCard(page, ask);
