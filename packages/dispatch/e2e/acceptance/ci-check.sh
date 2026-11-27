@@ -557,14 +557,25 @@ refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1
 
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
 # Version 4 is the version that knows `ci_check`; the schema rises as later blocks land (6 at the
-# head this was last run at), so the check is that it is at least 4. The two socket rows below
-# drive the version this route reports, whatever it is.
+# head this was last run at), so the check is that it is at least 4.
 get "/api/v1/schema/blocks"
 want_status 200 k1 "the block schema answers"
 schema_version="$(jq -r '.version' <"$work/body")"
 [[ "$schema_version" =~ ^[0-9]+$ ]] && [ "$schema_version" -ge 4 ] ||
   fail k1 "the block schema is at least version 4, which knows ci_check" "it is $schema_version"
 pass k1 "the block schema is version $schema_version, at least the 4 that knows ci_check"
+# The version a socket must declare to write k1's verification.md is not the server's own: it is
+# the highest since among the elements the server creates (R, pmdoc.SchemaCreatable) and the
+# elements the document holds (D, its ci_check), whichever is higher (schemaFleet.admits,
+# packages/envoy/internal/dispatch/docs/schema_admission.go). An element the server reads but does
+# not create yet, one whose creatable_since is above the version, raises the version and not R.
+# Both are read from the manifest this route serves.
+creatable="$(jq -r '.version as $v | [.. | objects | select(has("since") and (.creatable_since // .since) <= $v) | .since] | max' <"$work/body")"
+ci_since="$(jq -r '[.. | objects | select(has("ci_check")) | .ci_check.since] | first' <"$work/body")"
+[[ "$creatable" =~ ^[0-9]+$ && "$ci_since" =~ ^[0-9]+$ ]] ||
+  fail k1 "the block schema names what this server creates and since when it knows ci_check" \
+    "it reads creatable $creatable and ci_check since $ci_since"
+writable_from=$((creatable > ci_since ? creatable : ci_since))
 curl -sS -o /dev/null -D "$work/signin" "$base/auth/_dev/signin?login=$(q "$dev_login")" \
   2>"$work/curl" || fail k1 "sign $dev_login in" "$(<"$work/curl")"
 sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\).*/\1/p' "$work/signin" | paste -sd ';' >"$work/cookie"
@@ -580,19 +591,17 @@ socket_scope() {
     exec "$bun_bin" "$socket_entry" "$base" "$k1_artifact" "$1" "$work/cookie" 2>"$work/socket"
   )" || fail k1 "open a document socket at schema version $1" "$(<"$work/socket")"
 }
-# The rule the two rows prove is about the schema a socket declares against the schema the server
-# serves: one that declares an older version is admitted read-only, and one that declares the
-# server's own writes. They drove 3 and 4 while 4 was the server's; the schema rises as later
-# blocks land, so they drive one below the version read above and that version itself. The
-# version that knows `ci_check`, 4, is held above.
-socket_scope $((schema_version - 1))
+# The rule the two rows prove: a socket that declares a version below the one the document's
+# writers need is admitted read-only, and one that declares that version writes. They drove 3 and 4
+# while 4 was both the server's version and that bound; now each is read above.
+socket_scope $((writable_from - 1))
 [[ "$scope" == readonly ]] ||
-  fail k1 "the socket on schema version $((schema_version - 1)), one below the server's, is read-only" "its scope is $scope"
-pass k1 "the socket on schema version $((schema_version - 1)), one below the server's, is admitted with scope readonly"
-socket_scope "$schema_version"
+  fail k1 "the socket on schema version $((writable_from - 1)), one below the $writable_from a writer needs, is read-only" "its scope is $scope"
+pass k1 "the socket on schema version $((writable_from - 1)), one below the $writable_from a writer needs, is admitted with scope readonly"
+socket_scope "$writable_from"
 [[ "$scope" == read-write ]] ||
-  fail k1 "the socket on schema version $schema_version, the server's own, writes" "its scope is $scope"
-pass k1 "the socket on schema version $schema_version, the server's own, is admitted with scope read-write"
+  fail k1 "the socket on schema version $writable_from, the version a writer needs, writes" "its scope is $scope"
+pass k1 "the socket on schema version $writable_from, the version a writer needs, is admitted with scope read-write"
 
 # --- k2: the derived result, the merge, one read for three checks, the newest head --------------
 
