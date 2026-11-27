@@ -538,6 +538,9 @@ func parseWait(markdown string) (waitVersion, error) {
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		if heading, ok := strings.CutPrefix(line, "## "); ok {
+			if !slices.Contains(knownHeadings, heading) {
+				return waitVersion{}, fmt.Errorf("it has the section %q, which the daemon's renderer does not write", heading)
+			}
 			section = heading
 			seen[section] = true
 			continue
