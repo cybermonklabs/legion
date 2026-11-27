@@ -323,19 +323,39 @@ func (r cmResult) String() string {
 }
 
 // cmVisit is what one run came to: the SHA-256 of its state's key, the checks its last step broke,
-// the steps it may take next, the model's own fault, if any, and, from a run with its trace on, the
-// run's trace.
+// the steps it may take next and their digest (cmStepsDigest), the model's own fault, if any, and,
+// from a run with its trace on, the run's trace.
 type cmVisit struct {
 	key          [sha256.Size]byte
 	fault        string
 	fresh, trace []string
 	enabled      []cmStep
+	digest       uint64
 }
 
 // visit reads the run's key before its fault, since the key can fail the model.
 func (r *cmRun) visit() cmVisit {
 	key := sha256.Sum256(r.key())
-	return cmVisit{key: key, fault: r.fault, fresh: r.fresh, enabled: r.enabled(), trace: r.trace}
+	enabled := r.enabled()
+	return cmVisit{key: key, fault: r.fault, fresh: r.fresh, enabled: enabled, digest: cmStepsDigest(enabled), trace: r.trace}
+}
+
+// cmStepsDigest is a 64-bit FNV-1a digest of steps, each step's kind, comment and goroutine in
+// turn. A state's node keeps it, so that every run at the state is held to the steps the first run
+// there had, not only to as many: the search keeps a state's edges by their place in its list of
+// steps, and two lists of one length with other steps in them would have one step taken twice
+// and another never, with every edge filled and nothing failing.
+func cmStepsDigest(steps []cmStep) uint64 {
+	digest := uint64(14695981039346656037)
+	for _, step := range steps {
+		for _, field := range [3]uint64{uint64(step.kind), uint64(step.comment), uint64(step.g)} {
+			for range 8 {
+				digest = (digest ^ field&0xff) * 1099511628211
+				field >>= 8
+			}
+		}
+	}
+	return digest
 }
 
 // cmVisitOf replays steps in a bubble of its own, writing the run's trace when tracing.
@@ -352,14 +372,20 @@ func cmVisitOf(t *testing.T, v cmVariant, periods int, steps []cmStep, tracing b
 }
 
 // cmKinds is every check a step may break, each one bit of cmEdge.fresh: cmChecks, and the order
-// after a lapsed claim that the table counts apart (deliver).
+// after a lapsed claim that the table counts apart (deliver). cmExplore refuses more kinds than
+// the bits hold.
 var cmKinds = append(slices.Clip(cmChecks), "lapsed")
 
+// cmKindBits is kinds as their bits in cmKinds. A kind cmKinds does not name panics, naming it,
+// rather than count nothing.
 func cmKindBits(kinds []string) uint8 {
 	var bits uint8
 	for _, kind := range kinds {
-		// A kind missing from cmKinds shifts by -1, which panics rather than count nothing.
-		bits |= 1 << slices.Index(cmKinds, kind)
+		at := slices.Index(cmKinds, kind)
+		if at < 0 {
+			panic("the claim model: a step broke the check " + kind + ", which cmKinds does not name")
+		}
+		bits |= 1 << at
 	}
 	return bits
 }
@@ -367,12 +393,14 @@ func cmKindBits(kinds []string) uint8 {
 // cmNode is one state the search reached: the state and its step that the shortest road a run has
 // taken to it so far ends with, which every replay of this state retraces, and that road's length
 // when it was taken, always more than its parent's, so the road ends at the start; where its steps'
-// edges begin in cmSearch.edges, how many it has, and how many of them runs have taken.
+// edges begin in cmSearch.edges, how many it has, how many of them runs have taken, and their
+// digest (cmStepsDigest).
 type cmNode struct {
 	parent       int32
 	step         cmStep
 	edges        int32
 	road         int32
+	digest       uint64
 	steps, taken uint8
 }
 
@@ -430,22 +458,23 @@ func (s *cmSearch) path(id int32) []cmStep {
 }
 
 // reach is the state of visit, which a run reached from parent by step, by the steps of road: a
-// state reached before must have the same steps, and takes this road when it is shorter than the
-// one it had; a new one joins the queue. Every replay of a state takes its road, and every road to
-// a state reaches it, since the key is all that a run's future depends on (walk), so a shorter road
-// is a shorter replay: a state a walk reached first is often far deeper on that walk's road than
-// on another. A run that breaks either rule stops the search, with road for its traced replay.
+// state reached before must have the same steps (its digest, cmStepsDigest), and takes this road
+// when it is shorter than the one it had; a new one joins the queue. Every replay of a state takes
+// its road, and every road to a state reaches it, since the key is all that a run's future depends
+// on (walk), so a shorter road is a shorter replay: a state a walk reached first is often far
+// deeper on that walk's road than on another. A run that breaks either rule stops the search, with
+// road for its traced replay, and reach records nothing of it.
 func (s *cmSearch) reach(parent int32, step cmStep, visit cmVisit, road []cmStep) int32 {
 	var length int32
 	if parent >= 0 {
 		length = s.nodes[parent].road + 1
 	}
 	if id, ok := s.ids[visit.key]; ok {
-		if int(s.nodes[id].steps) != len(visit.enabled) {
+		switch node := &s.nodes[id]; {
+		case int(node.steps) != len(visit.enabled) || node.digest != visit.digest:
 			s.stop("the model is not deterministic: two runs at one state may take different steps", false,
 				road, visit.key)
-		}
-		if node := &s.nodes[id]; length < node.road {
+		case length < node.road:
 			node.parent, node.step, node.road = parent, step, length
 		}
 		return id
@@ -453,11 +482,12 @@ func (s *cmSearch) reach(parent int32, step cmStep, visit cmVisit, road []cmStep
 	if len(visit.enabled) > 255 {
 		s.stop(fmt.Sprintf("a state has %d steps, more than the search counts", len(visit.enabled)), false,
 			road, visit.key)
+		return -1
 	}
 	id := int32(len(s.nodes))
 	s.ids[visit.key] = id
 	s.nodes = append(s.nodes, cmNode{parent: parent, step: step, edges: int32(len(s.edges)), road: length,
-		steps: uint8(len(visit.enabled))})
+		digest: visit.digest, steps: uint8(len(visit.enabled))})
 	for range visit.enabled {
 		s.edges = append(s.edges, cmEdge{to: -1})
 	}
@@ -548,7 +578,8 @@ func (s *cmSearch) walk(from int32, steps []cmStep, j int) {
 		}
 		at := r.visit()
 		s.mu.Lock()
-		if id, ok := s.ids[at.key]; !ok || id != from || len(at.enabled) != int(s.nodes[from].steps) {
+		if id, ok := s.ids[at.key]; !ok || id != from || len(at.enabled) != int(s.nodes[from].steps) ||
+			at.digest != s.nodes[from].digest {
 			s.stop("the model is not deterministic: a replay of a road a run took to a state reached another", false,
 				road, at.key)
 			s.mu.Unlock()
@@ -622,6 +653,9 @@ func cmTracedPicks(t *testing.T, v cmVariant, periods int, picks []int) (visit c
 // the model; the replay must reach the same state.
 func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 	began := time.Now()
+	if len(cmKinds) > 8 {
+		t.Fatalf("the model has %d kinds of check, and a step's edge keeps them in 8 bits (cmEdge.fresh)", len(cmKinds))
+	}
 	result := cmResult{variant: v, periods: periods, found: map[string]int{}, first: map[string][]string{}}
 	root := cmVisitOf(t, v, periods, nil, false)
 	if root.fault != "" {
@@ -693,8 +727,11 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 		}
 		visit := cmTracedPicks(t, v, periods, picks)
 		if reached, ok := s.ids[visit.key]; !ok || reached != id || visit.fault != "" {
-			t.Fatalf("the model is not deterministic: a replay with its trace on reached another state, after:\n\t%s",
-				strings.Join(visit.trace, "\n\t"))
+			message := "the model is not deterministic: a replay with its trace on reached another state"
+			if visit.fault != "" {
+				message = visit.fault
+			}
+			t.Fatalf("%s, after:\n\t%s", message, strings.Join(visit.trace, "\n\t"))
 		}
 		result.first[kind] = visit.trace
 	}
