@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -679,8 +678,8 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	}
 }
 
-// TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof: the list read is a read (readClasses,
-// readWritesNothing), so it is held to what every read is held to: for a read-only token it
+// TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof: the list read is a read (its declaration's
+// Read, readWritesNothing), so it is held to what every read is held to: for a read-only token it
 // writes nothing but the row that spends its DPoP proof. The positive controls are that insert and
 // the handler's own read of production_events.
 func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
@@ -744,27 +743,19 @@ func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
 	for _, route := range routes {
 		want[route.method+" "+route.pattern] = true
 	}
-	index, err := os.ReadFile(routeIndexGolden)
-	if err != nil {
-		t.Fatalf("read the route index: %v", err)
-	}
-	for line := range strings.SplitSeq(string(index), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			continue
-		}
-		path := fields[1]
+	for _, route := range (&server{}).routes() {
+		path := route.Pattern
 		if path != settings && !strings.HasPrefix(path, settings+"/") && path != events && !strings.HasPrefix(path, events+"/") {
 			continue
 		}
-		key := fields[0] + " " + path
+		key := route.Method + " " + path
 		if !want[key] {
-			t.Errorf("%s lists %s but no test row exercises it", routeIndexGolden, key)
+			t.Errorf("the route table declares %s but no test row exercises it", key)
 		}
 		delete(want, key)
 	}
 	if len(want) != 0 {
-		t.Errorf("%s lacks the inventory routes %v", routeIndexGolden, want)
+		t.Errorf("the route table lacks the inventory routes %v", want)
 	}
 
 	// The fixture actually has a figure that a route could accidentally include.

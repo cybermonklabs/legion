@@ -75,11 +75,11 @@ const (
 )
 
 // evalQueryKeys is the query keys one eval read takes, read from the query struct its route shape
-// names (routeShapes' Params): every key it declares, the struct's `query` tags (queryKeysOf),
-// any other of which the read refuses (undeclaredQueryKey), and those it takes one value of, in
-// name order, each of which it refuses named twice (repeatedQueryKey): the fields that are no
-// list (oneValueQueryKeys) and the global session parameter, which every route reads one value of
-// (actingPerson). A list field there is a key the read takes any number of values of.
+// names (routeShape.Params, in the route's file): every key it declares, the struct's `query`
+// tags (queryKeysOf), any other of which the read refuses (undeclaredQueryKey), and those it takes
+// one value of, in name order, each of which it refuses named twice (repeatedQueryKey): the fields
+// that are no list (oneValueQueryKeys) and the global session parameter, which every route reads
+// one value of (actingPerson). A list field there is a key the read takes any number of values of.
 type evalQueryKeys struct {
 	declared, oneValue []string
 }

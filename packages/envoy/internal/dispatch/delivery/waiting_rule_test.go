@@ -327,11 +327,8 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	if err != nil {
 		t.Fatalf("listRuns: %v", err)
 	}
-	ids := make([]int64, len(deployRuns))
-	for i, run := range deployRuns {
-		ids[i] = run.RunID
-	}
-	// The timeline reads every job of these runs and every other reader their production jobs
+	ids := runIDsOf(deployRuns)
+	// every is the reference read of every job of these runs, and judged is their production jobs
 	// alone; containment must answer the same deploys from either.
 	every, err := listEveryRunJobForRuns(ctx, pool, waitingRepo, ids)
 	if err != nil {

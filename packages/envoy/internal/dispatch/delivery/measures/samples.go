@@ -74,7 +74,34 @@ func (s SortedSamples) Quantile(p float64) float64 {
 		return s.At(s.n - 1)
 	}
 	low, high := s.adjacent(lo)
-	return low + float64((high-low)*(i-float64(lo)))
+	return interpolateQuantile(low, high, i-float64(lo))
+}
+
+// interpolateQuantile is the point frac of the way from low to high, frac in [0, 1). Where
+// high-low is a finite number it is Quantile's arithmetic and no other: the step is converted to
+// float64 before the sum it feeds, so a build that fuses them answers what one that does not
+// answers. Where high-low is not finite the plain step is wrong: it overflows to ±Inf for finite
+// samples of opposite sign near the float64 limit, and it is NaN for two equal infinities or, with
+// frac 0, for an infinity beside any other sample (±Inf × 0). There the rank itself decides:
+// frac 0 or two equal samples read low, an infinity beside a finite sample reads that infinity,
+// two opposite infinities read NaN, and finite samples whose difference overflowed are weighed
+// one by one.
+func interpolateQuantile(low, high, frac float64) float64 {
+	diff := high - low
+	if !math.IsInf(diff, 0) && !math.IsNaN(diff) {
+		return low + float64(diff*frac)
+	}
+	switch {
+	case frac == 0 || low == high:
+		return low
+	case math.IsInf(low, 0) && math.IsInf(high, 0):
+		return math.NaN()
+	case math.IsInf(low, 0):
+		return low
+	case math.IsInf(high, 0):
+		return high
+	}
+	return float64(low*(1-frac)) + float64(high*frac)
 }
 
 // MergedSamples is every sample of series among parts in ascending order: the one list a quantile
@@ -102,10 +129,7 @@ func MergedSamples(parts []DayPart, series string) SortedSamples {
 	case ascending:
 		return SortedSamples{lists: lists, n: n}
 	}
-	merged := make([]float64, 0, n)
-	for _, list := range lists {
-		merged = append(merged, list...)
-	}
+	merged := slices.Concat(lists...)
 	slices.Sort(merged)
 	return SortedSamples{merged: merged, n: n}
 }

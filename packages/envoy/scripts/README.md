@@ -370,14 +370,7 @@ required inputs, fake broker rules, store names, the name and reason each nested
 broker start on its own, k6's login steps (the login, the command's exit status and
 the removal of their directory, after a TERM too), k6's az wrapper with an az shim
 first on PATH (a shim that looks az up on PATH again must reach the real az, not the
-wrapper), and `approve_record` against a `python3` stand-in of the broker's approval
-page: it must post back every `printed` and every `profile_digest` field of a page that
-prints two records, and the same helper without either is refused 403. It also runs
-`k47`'s readers (the kind, the broker's lines, the Admin API stand's and the
-exchange's records, the token search, the `--secrets-json` list and the two control
-edits) and `k8`'s copies on fixtures, each with a control the reader must catch, and
-holds the verdict to exit 3 for a run with an `UNKNOWN:` or `DEFERRED:` property or
-none judged.
+wrapper), `approve_record` against a `python3` stand-in of the broker's approval page: it must post back every `printed` and every `profile_digest` field of a page that prints two records, and the same helper without either is refused 403; the file's own EXIT trap, run in a shell of its own under `set -euo pipefail` with a stand-in that is still running and one that has already exited: the shell must end with its own status, 0 or 1, must have stopped the stand-in, and must remove its work directory. It also runs `k47`'s readers (the kind, the broker's lines, the Admin API stand's and the exchange's records, the token search, the `--secrets-json` list and the two control edits) and `k8`'s copies on fixtures, each with a control the reader must catch, and holds the verdict to exit 3 for a run with an `UNKNOWN:` or `DEFERRED:` property or none judged.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -699,7 +692,7 @@ limit of its own (`timeout-minutes: 30`) that its time budget counts; one go tes
 broker's packages share its `-p` slots with the rest of the leg.
 `envoy-go-race-api` runs the Dispatch API through it in three legs, each piping its group's
 `-run=^(…)$` and `./internal/dispatch/api/` into the second line above's options.
-`database-skips.test.sh` holds it to seven controls, which `envoy-go-skips` runs as "Test the
+`database-skips.test.sh` holds it to eight controls, which `envoy-go-skips` runs as "Test the
 database skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`,
 `./cmd/cipherd/` and `./internal/dispatch/api/` is counted; either variable unset or empty is
 UNKNOWN; a report that shows no run (no test ran, only expected skips ran, or one package ran
@@ -712,8 +705,13 @@ table's package among them is, a failure planted outside the table fails the cou
 with no package of the table prints `database_skips=NONE`; and with `-run`, a run that leaves most
 expected tests out passes, a line for a test the package does not have reads UNKNOWN and is the
 one named, a name with a non-ASCII letter is taken, and three shapes that are no list of whole
-names are refused, as is `-run` beside `--report`. It needs a scratch Postgres named by both
-`BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
+names are refused, as is `-run` beside `--report`. The eighth holds the test's own output: a
+control that passes prints no line that a reader or a grep of the CI log takes for a test failure
+(`--- FAIL:`, a `FAIL` or `UNFINISHED` line, a panic, a race report), since its planted tests'
+output is printed only beside a control that failed; and each test the script plants is named
+`TestPlanted…`, which it checks against every failed or unfinished test its controls' runs
+printed, so a grep tells a planted failure from a real one. It needs a scratch Postgres named by
+both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## forced-order.sh
 

@@ -117,6 +117,8 @@ packages/daemon:
       - internal/testkernel
       - internal/wait
       - internal/wakepace
+      - internal/testgolden
+      - internal/apifixture
       - internal/capabilities/capabilitiestest
       - internal/clock
       - internal/fixturegit
@@ -243,6 +245,7 @@ packages/envoy:
       - internal/cipher/netaddr
       - cipherclient
       - internal/cipher/ciphertest/requestseed
+      - internal/cipher/ciphertest/podclient
       - internal/cipher/dispatchread
       - internal/cipher/groups/groupstest
       - internal/cipher/placeholder
@@ -303,6 +306,7 @@ packages/envoy:
       - internal/dispatch/files                 # 40 s
       - internal/dispatch/graphstore            # 37 s
       - internal/dispatch/routes                # 25 s
+      - internal/dispatch/routefile
       - internal/dispatch/graphcensus           # 24 s
       - internal/dispatch/redeliver             # 22 s
       - internal/dispatch/identity              # 14 s
@@ -436,6 +440,7 @@ packages/envoy:
       - internal/clock
       - internal/clock/clocktest
       - internal/shapetest
+      - testpool
   # envoy-go-race (.github/workflows/ci-job-envoy-go-race.yaml, job envoy-go-race-legs): under the
   # race detector, the packages of ci_job_reads.py's ENVOY_RACE_LANE entry for envoy-go-race.
   envoy-go-race:
@@ -509,5 +514,6 @@ packages/envoy:
     cmd/spec-check: envoy-go-build
     listenerwire: envoy-go-build
     internal/wirecheck: envoy-go-build
+    cmd/dispatch-route-adopt: envoy-go-skips
   # The leg that runs a package no place names: envoy-go's last, the rest of the module.
   unlisted: envoy-go

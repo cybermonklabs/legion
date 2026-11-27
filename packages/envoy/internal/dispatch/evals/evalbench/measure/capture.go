@@ -306,7 +306,7 @@ var jobNameCondition = regexp.MustCompile(`\bname = (?:ANY \(|')`)
 var failedJobsCondition = regexp.MustCompile(`\bconclusion = 'failure'`)
 
 // failedJobsPredicate is the predicate, as pg_get_expr writes it, of an index of
-// delivery_run_jobs that holds the failed jobs alone (migration 20261117100022's
+// delivery_run_jobs that holds the failed jobs alone (migration 20261126203311's
 // delivery_run_jobs_failed). Postgres plans no condition its index's predicate implies, so a scan
 // through such an index states no failure in its index condition, and the index says it.
 const failedJobsPredicate = `(conclusion = 'failure'::text)`

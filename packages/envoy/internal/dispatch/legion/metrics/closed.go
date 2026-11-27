@@ -79,6 +79,7 @@ func ProjectFactsClosed(population *Population, wanted map[string]bool) map[stri
 	for at, issues := range byMoment {
 		first := newComputation(population.at(at))
 		later := newComputation(population.at(at.Add(growthSpan)))
+		first.roots, later.roots = base.roots, base.roots
 		for _, issue := range issues {
 			facts := first.factsOf(issue)
 			growth := growthBetween(facts, later.factsOf(issue))

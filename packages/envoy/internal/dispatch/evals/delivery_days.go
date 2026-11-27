@@ -109,12 +109,15 @@ import (
 // its deploy runs, its PR-checks runs, its deploy push runs), the all-repositories row (repo '')
 // of every series of that family's evals, built from every row of the family counted for the
 // project, and one row of each such series per repository the family's rows are in, built from
-// that repository's rows alone: the pull request's repository, the run's. So every row counted is
-// in one repository's rows, and the repositories' rows of a series partition its all-repositories
-// row: their n, sum, num, den, counts and via_repository add up to its own, and their samples
-// are its samples. A family a project holds no row of that day writes no row: the explicit zero
-// rows of a series from its first input day on are the refresher's (ZeroDeliveryDay,
-// ProjectDay.WithZeros).
+// that repository's rows alone (the pull request's repository, the run's), where it counts
+// something: a repository's part that is empty, such as a lead time of the day's pull requests
+// when no deploy has shipped any of them yet, is no row (repositoryRows), since R12 writes no zero
+// row for a repository, and that repository's day reads "no data" for the series. So every row
+// counted is in one repository's rows, and the repositories' rows of a series partition its
+// all-repositories row, an empty part adding nothing: their n, sum, num, den, counts and
+// via_repository add up to its own, and their samples are its samples. A family a project holds no
+// row of that day writes no row: the explicit zero rows of a series from its first input day on
+// are the refresher's, in the all-repositories row alone (ZeroDeliveryDay, ProjectDay.WithZeros).
 //
 // The evals that read the deploy repository are kept once for every source repository that holds
 // a delivery run, each under its own source's rule, and once for each project's events repository
@@ -1017,11 +1020,13 @@ func (f familyRows) empty() bool {
 }
 
 // Rows is project's rows of the day, built by the measures package's day builders, and the items
-// they count; no row and no item for a project no row of the day counts for. A read with a deploy
-// repository builds the rows of the evals that read it alone, each and each item keyed by it; the
-// read of the pull requests alone builds those of the evals no deploy repository moves, and its
-// pull requests under none. A day before the start of the deploy repository's history (since)
-// holds no row and no item of it.
+// they count; no row and no item for a project no row of the day counts for. A repository's row
+// stands only where its part counts something (repositoryRows), and every item the day counts is
+// recorded whether or not its repository's rows stand. A read with a deploy repository builds the
+// rows of the evals that read it alone, each and each item keyed by it; the read of the pull
+// requests alone builds those of the evals no deploy repository moves, and its pull requests under
+// none. A day before the start of the deploy repository's history (since) holds no row and no item
+// of it.
 func (d DeliveryDay) Rows(project string) ProjectDay {
 	result := ProjectDay{Project: project, Day: d.Day}
 	if d.deployRepo != "" && d.Day.Before(d.since) {
@@ -1089,7 +1094,7 @@ func (d DeliveryDay) Rows(project string) ProjectDay {
 	}
 	result.Rows = d.build(project, "", all)
 	for _, repo := range slices.Sorted(maps.Keys(byRepo)) {
-		result.Rows = append(result.Rows, d.build(project, repo, *byRepo[repo])...)
+		result.Rows = append(result.Rows, repositoryRows(d.build(project, repo, *byRepo[repo]))...)
 	}
 	result.Members = slices.SortedFunc(maps.Keys(members), func(a, b Member) int {
 		return cmp.Or(cmp.Compare(a.Family, b.Family), cmp.Compare(a.RowKey, b.RowKey))
@@ -1104,9 +1109,9 @@ func (d DeliveryDay) Rows(project string) ProjectDay {
 // are one row each, and those of the evals that read it one row for each of rules, keyed by its
 // DeployRepo (deploy_repos.go), under that rule, whose deploy cards decide which CI evals have one;
 // an events repository's are deploy-frequency's and merge-to-production's alone (postedDayAs).
-// pr-ci's job series have none: a job with no result that day has no part.
-// These are project totals even when keyed by deploy repository. A repository cut gets no
-// placeholder row; a day without a row in that cut has no data.
+// pr-ci's job series have none: a job with no result that day has no part. These are project
+// totals even when keyed by deploy repository: a repository's cut gets no zero row, built or
+// explicit (repositoryRows, R12), so its day with no row of a series reads "no data".
 func ZeroDeliveryDay(project string, day time.Time, rules []delivery.DeliverySettings) ProjectDay {
 	zero := ProjectDay{Project: project, Day: measures.Midnight(day)}
 	zero.Rows = DeliveryDay{Day: zero.Day}.buildFamilies(project, "", familyRows{}, true)

@@ -96,6 +96,7 @@ type deliveryOracleFixture struct {
 // the base head's answer must not hold (takeSlowestMinResults). Those fields are then left out of
 // the value-for-value comparison, and every other field it reads must be the base head's.
 func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join("testdata", "golden_delivery")
 	var recorded deliveryOracleFixture
 	readDeliveryOracleFile(t, filepath.Join(dir, "fixture.json"), &recorded)

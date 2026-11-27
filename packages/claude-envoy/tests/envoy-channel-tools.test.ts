@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { chmodSync, writeFileSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { EnvelopeSchema } from "@legion/contracts"
@@ -17,6 +17,7 @@ import {
   type ChannelToolRuntime,
   channelToolDefinitions,
   executeEnvoyTool,
+  mcpResult,
 } from "../src/envoy-channel-server"
 import { SessionIdentity } from "../src/session-identity"
 import { isolatePaneEnvironment } from "./pane-environment"
@@ -50,10 +51,13 @@ const identity = new SessionIdentity("ses_claude", process.cwd())
 /** The client instance of the channel-server process the tools act for. */
 const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 
-test("declares exactly the shared Envoy tools, the bounded inbox included", () => {
+test("declares exactly the shared Envoy tools, each with its shared description, the bounded inbox included", () => {
   const definitions = channelToolDefinitions()
 
   expect(definitions.map(({ name }) => name)).toEqual(envoyToolSpecs.map(({ name }) => name))
+  expect(definitions.map(({ description }) => description)).toEqual(
+    envoyToolSpecs.map(({ description }) => description),
+  )
   expect(definitions.map(({ name }) => name)).toContain("envoy_inbox")
 })
 
@@ -255,16 +259,6 @@ test("a kept publish says until when it is kept", async () => {
   const publish = (topic: string) =>
     executeEnvoyTool(runtime, "envoy_publish", { topic, message: "the worker is stalled" })
 
-  // The tool's description names the hour, kept_until and the message that follows it.
-  const description = channelToolDefinitions().find(
-    ({ name }) => name === "envoy_publish",
-  )?.description
-  expect(description).toContain("The listener then keeps the message for one hour.")
-  expect(description).toContain("its kept_until is the time that hour ends")
-  expect(description).toContain(
-    "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late.",
-  )
-
   expect(await publish("notifications.role.legion-architect")).toEqual({
     message: `published evt-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`,
     event_id: "evt-kept",
@@ -337,6 +331,57 @@ test("the role a tool claims names the process claiming it on the wire", async (
     role: "reviewer",
     client_instance_id: INSTANCE,
   })
+})
+
+// A claim can land and still hand over none of the messages of the session it replaces, and the
+// listener says so in the answer's warnings. The agent reads each beside the interest row in the
+// tool's result, and the server's log, its stderr, holds each with the role and the session.
+test("envoy_role_set logs each of the listener's warnings about the claim and returns them to the agent", async () => {
+  const handover =
+    "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals"
+  const legacy = "reviewer is the old form of ACME.reviewer; claim ACME.reviewer"
+  const interest = {
+    session_id: "ses_claude",
+    machine_id: "devbox",
+    dir: "/work",
+    topics: ["notifications.role.reviewer"],
+  }
+  let warnings: string[] = [legacy, handover]
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async () => Response.json({ ...interest, warnings }),
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  try {
+    const result = await executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })
+    expect(result).toEqual({ ...interest, warnings: [legacy, handover] })
+    expect(mcpResult(result).content[0]?.text).toContain(JSON.stringify([legacy, handover]))
+    expect(written).toEqual([
+      `envoy-channel: the Envoy listener warned about the claim of role reviewer for session ses_claude: ${legacy}\n`,
+      `envoy-channel: the Envoy listener warned about the claim of role reviewer for session ses_claude: ${handover}\n`,
+    ])
+
+    // A claim the listener answered no warnings for, as every listener before the field answers,
+    // gives the interest row as it always did, and logs nothing.
+    warnings = []
+    written.length = 0
+    expect(await executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })).toEqual(
+      interest,
+    )
+    expect(written).toEqual([])
+  } finally {
+    stderr.mockRestore()
+  }
 })
 
 test("a send that is not confirmed names its key, and a resend under that key sends it again", async () => {

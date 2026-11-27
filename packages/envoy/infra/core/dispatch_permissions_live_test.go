@@ -575,6 +575,19 @@ func newDispatchGitHub(t *testing.T) *dispatchGitHub {
 				_, _ = fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
 			case path == "POST /graphql":
 				_, _ = fmt.Fprint(w, `{"data":{"search":{"issueCount":0,"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}`)
+			// The GitHub rate reading's two counter reads (cmd/dispatch/ratereading.go), which
+			// Dispatch makes for each installation at start: the core counter from the headers of
+			// a workflows read, and the GraphQL counter from GET /rate_limit.
+			case path == "GET /repos/acme/widgets/actions/workflows":
+				header := w.Header()
+				header.Set("X-RateLimit-Resource", "core")
+				header.Set("X-RateLimit-Used", "1")
+				header.Set("X-RateLimit-Limit", "5000")
+				header.Set("X-RateLimit-Remaining", "4999")
+				header.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+				_, _ = fmt.Fprint(w, `{"total_count":0,"workflows":[]}`)
+			case path == "GET /rate_limit":
+				_, _ = fmt.Fprintf(w, `{"resources":{"graphql":{"limit":5000,"used":0,"remaining":5000,"reset":%d}}}`, time.Now().Add(time.Hour).Unix())
 			case strings.HasPrefix(path, "GET /repos/acme/widgets/actions/workflows/"):
 				_, _ = fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
 			case path == "GET /app/hook/deliveries":

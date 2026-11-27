@@ -645,10 +645,11 @@ func scanRun(row pgx.Row, extra ...any) (DeliveryRun, error) {
 	var run DeliveryRun
 	var kind string
 	var conclusion *string
-	dest := []any{
+	dest := make([]any, 0, 14+len(extra))
+	dest = append(dest,
 		&run.Repo, &run.RunID, &kind, &run.PRNumber, &run.HeadSHA, &run.HeadCommitAt,
 		&run.StartedAt, &run.CreatedAt, &run.CompletedAt, &conclusion, &run.URL, &run.HeadBranch, &run.Event, &run.RunAttempt,
-	}
+	)
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return DeliveryRun{}, err
 	}
@@ -974,7 +975,7 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
 // runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named
-// $3, through delivery_run_jobs_failed (migration 20261117100022), the partial index of the failed
+// $3, through delivery_run_jobs_failed (migration 20261126203311), the partial index of the failed
 // jobs alone, keyed by the run. `name <> all($3)` leaves a named job that failed to the read by
 // name (runJobsNamedForRunsQuery), so the two answer no job in common. The failure is written
 // into the statement, not bound, so the planner proves the index's predicate from the statement
@@ -1298,6 +1299,15 @@ func collectRuns(rows pgx.Rows) ([]DeliveryRun, error) {
 	return runs, rows.Err()
 }
 
+// runIDsOf is the ids of runs, in order.
+func runIDsOf(runs []DeliveryRun) []int64 {
+	ids := make([]int64, len(runs))
+	for i, run := range runs {
+		ids[i] = run.RunID
+	}
+	return ids
+}
+
 // RunsWithJobs is a list of runs and the jobs read of each, keyed by run id.
 type RunsWithJobs struct {
 	Runs []DeliveryRun
@@ -1329,11 +1339,7 @@ func runsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind Del
 	if err != nil {
 		return RunsWithJobs{}, err
 	}
-	runIDs := make([]int64, len(runs))
-	for i, run := range runs {
-		runIDs[i] = run.RunID
-	}
-	byRun, err := jobs(runIDs)
+	byRun, err := jobs(runIDsOf(runs))
 	if err != nil {
 		return RunsWithJobs{}, err
 	}
@@ -1361,6 +1367,25 @@ func ListPullRequestsInWindow(ctx context.Context, q Querier, from, to time.Time
 		order by merged_at, (repo || '#' || number) collate "C"
 		limit $3
 	`, from, to, maxPullRequestsPerWindow)
+	return scanPullRequests(rows, err)
+}
+
+// listRepoPullRequestsInWindow lists every population pull request of repo merged in [from, to),
+// in ListPullRequestsInWindow's order, up to maxPullRequestsPerWindow: deploysOf's read of
+// Deploys.Earlier, which Containment restricts to the deploy repository so pull requests of other
+// repositories neither enter Earlier nor consume its row limit before a repository's first deploy.
+func listRepoPullRequestsInWindow(ctx context.Context, q Querier, repo string, from, to time.Time) ([]DeliveryPullRequest, error) {
+	rows, err := q.Query(ctx, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where repo = $1 and merged_at >= $2 and merged_at < $3
+		order by merged_at, (repo || '#' || number) collate "C"
+		limit $4
+	`, repo, from, to, maxPullRequestsPerWindow)
+	return scanPullRequests(rows, err)
+}
+
+func scanPullRequests(rows pgx.Rows, err error) ([]DeliveryPullRequest, error) {
 	if err != nil {
 		return nil, err
 	}

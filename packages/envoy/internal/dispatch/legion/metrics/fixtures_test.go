@@ -265,18 +265,23 @@ type splitWeek struct {
 	fold  SplittingFold
 }
 
-// weeks is legion-splitting over the window in its cut week by week, the UTC weeks metric 4 has
-// always counted by: the window's parts grouped by the UTC Monday their day's week begins on
-// (mondayOf), each group folded (FoldSplitting), oldest first, a week kept where it holds a
-// filing or a finished issue.
+// weeks is legion-splitting over the window in its cut week by week (splittingWeeks).
 func (w window) weeks() []splitWeek {
+	return splittingWeeks(w.splittingParts, w.cut)
+}
+
+// splittingWeeks is legion-splitting over parts in cut week by week, the UTC weeks metric 4 has
+// always counted by: the parts grouped by the UTC Monday their day's week begins on (mondayOf),
+// each group folded (FoldSplitting), oldest first, a week kept where it holds a filing or a
+// finished issue.
+func splittingWeeks(parts []measures.DayPart, cut Scope) []splitWeek {
 	byWeek := map[time.Time][]measures.DayPart{}
-	for _, part := range w.splittingParts {
+	for _, part := range parts {
 		byWeek[mondayOf(part.Day)] = append(byWeek[mondayOf(part.Day)], part)
 	}
 	var weeks []splitWeek
 	for _, start := range slices.SortedFunc(maps.Keys(byWeek), time.Time.Compare) {
-		fold := FoldSplitting(byWeek[start], w.cut)
+		fold := FoldSplitting(byWeek[start], cut)
 		if fold == nil {
 			continue
 		}

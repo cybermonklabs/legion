@@ -11,17 +11,17 @@
 // filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
 // prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
 // or run and measured (AnalyzedGenericPlan), and runs a statement with sequential scans off and
-// measures the plan it read its rows by (AnalyzedPlan). For a statement over a batch of rows
-// (batch.go) it runs the statement a writer sent, after the statements it sent first, under each
-// plan-cache mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each
-// named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a
-// control that must fail it (RequireTheCheckFails), and it runs any statement under a plan-cache
-// mode with the planner's own settings and explains it with the shared buffers each node hit and
-// read (ExplainBuffered).
+// measures the plan it read its rows by (AnalyzedPlan), and writes a plan's shape for a test's log
+// (Outline). For a statement over a batch of rows (batch.go) it runs the statement a writer sent,
+// after the statements it sent first, under each plan-cache mode (ExplainAfter), and holds the
+// analyzed plan to reading the batch once and each named table by a probe of one row's key
+// (UnprobedReads, RequireEachRowProbedOnce), with a control that must fail it
+// (RequireTheCheckFails), and it runs any statement under a plan-cache mode with the planner's own
+// settings and explains it with the shared buffers each node hit and read (ExplainBuffered).
 // RequireListReadOnce holds a plan to reading once the list a statement is given,
 // RequireStatementReadsListOnce holds a statement's two plans to it, RequireJoinedOn holds a plan
-// to matching rows by a key, RequireJoinedOnAll holds one subplan of a plan to matching rows by
-// several columns at once, and Outline writes a plan's shape for a test's log.
+// to matching rows by a key, and RequireJoinedOnAll holds one subplan of a plan to matching rows
+// by several columns at once.
 // dispatch/api, dispatch/refs, dispatch/graphstore and cipher/requests each pin a plan with these
 // checks, so they live here once rather than as a second (or third) hand copy of the same
 // recursive walk; it is an ordinary package rather than a _test.go file because Go cannot share
@@ -55,8 +55,8 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // index-only scan fetched from the heap, and the rows its Filter and a join's Join Filter removed
 // each time it ran, all 0 in a plan explained without ANALYZE), the shared buffers it and the
 // nodes under it hit and read (0 in a plan explained without BUFFERS), the CTE it scans, the
-// function a function scan reads, the alias the statement gives the relation it reads, the set
-// operation a SetOp node makes, and its children.
+// function a function scan reads, the alias the statement gives what it reads, the set operation a
+// SetOp node makes, and its children.
 type planNode struct {
 	NodeType                string            `json:"Node Type"`
 	RelationName            string            `json:"Relation Name"`

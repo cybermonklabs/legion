@@ -2,12 +2,14 @@
 # authorization. Caught by the comparison fuzz test: the model's rewrite leaves that
 # header as it came in. Applied with patch -p1 from a copy of the repository.
 
+diff --git a/packages/envoy/internal/cipher/proxyrules/airlock.go b/packages/envoy/internal/cipher/proxyrules/airlock.go
+index 8ac665b5234..065fa177cab 100644
 --- a/packages/envoy/internal/cipher/proxyrules/airlock.go
 +++ b/packages/envoy/internal/cipher/proxyrules/airlock.go
-@@ -738,7 +738,8 @@
- 	if k == nil {
- 		return nil
- 	}
+@@ -770,7 +770,8 @@ func SwapForScan(kind *Kind, placeholder string, r *Request) *Request {
+ // Lean model's rewriteReq is check and then the same filter and map over the headers (keepHeader,
+ // swapHeader), so the contract with that model is the contract of check and Rewrite as before.
+ func swap(k *Kind, placeholder, value string, r *Request) *Request {
 -	names := k.HeaderNames()
 +	// MUTANT: authorization is swapped too, even when the kind does not name it.
 +	names := append([]string{"authorization"}, k.HeaderNames()...)
