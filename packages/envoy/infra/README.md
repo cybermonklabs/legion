@@ -5042,7 +5042,10 @@ R16's grant door exists. No such secret passes, and only once `gcloud secrets li
 with the prefix: a mistyped prefix answers `NOT_FOUND` for a secret that exists, so a project that
 lists none under the prefix is `UNKNOWN`, since it cannot be told from a wrong prefix. The reads need
 `secretmanager.secrets.get` on the secret and `secretmanager.secrets.list` on the prefix's project,
-and no broker. A refused describe or list, and a run with no `--secrets-prefix`, are `UNKNOWN`.
+and no broker. A refused describe or list, and a run with no `--secrets-prefix`, are `UNKNOWN`. The
+step does not read who can change the secret's annotations or create it
+(`secretmanager.secrets.update` on it, `secretmanager.secrets.create` on its project), either of
+which changes how it is released, and its `PASS` and its release finding each say so.
 
 The entrypoint does not check at run time that an object's `commit` is on a branch. The writers
 step is the provenance: each accepted writer applies its program from that program's main only.

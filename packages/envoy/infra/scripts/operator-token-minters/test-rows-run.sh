@@ -319,7 +319,9 @@ fi
 # (INFRA-840's c-operator-grant-door). The base world holds no ENVOY_OPERATOR, so each item that
 # reads one stores it here. ---
 readonly secret_id="projects/$number/secrets/agent-secrets-envoy-operator"
-readonly no_route="PASS admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists 1 secret(s) whose id starts agent-secrets-, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker"
+# What the step says it does not read, beside its PASS and its release finding.
+readonly not_read="who can change the secret's annotations or create it (secretmanager.secrets.update on it, secretmanager.secrets.create on its project) is not read"
+readonly no_route="PASS admin tag of ENVOY_OPERATOR: no such secret $secret_id, and project $number lists 1 secret(s) whose id starts agent-secrets-, so --secrets-prefix names where the broker keeps its secrets: nothing releases the operator's credential through the broker; $not_read"
 admin_tag_row() {
   local args script="$check"
   base_world
@@ -341,7 +343,7 @@ admin_tag_row() {
     present)
       run
       want_status 1 "ENVOY_OPERATOR at human tier with --admin"
-      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"true\" and tier is \"human\": each release waits on one person's approval and no second person's, so whoever may ask for it holds the operator identity standing (INFRA-840's R16), an open route until R16's grant door exists" \
+      want_line "FINDING secret:ENVOY_OPERATOR: admin is \"true\" and tier is \"human\": each release waits on one person's approval and no second person's, so whoever may ask for it holds the operator identity standing (INFRA-840's R16), an open route until R16's grant door exists; $not_read" \
         "ENVOY_OPERATOR with both annotations"
       ! has_prefix "PASS admin tag of ENVOY_OPERATOR: " || fail "ENVOY_OPERATOR with both annotations: the step passed"
       ;;
