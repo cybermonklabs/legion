@@ -1,39 +1,27 @@
 package ghroute
 
 import (
-	"maps"
 	"os"
-	"slices"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 )
 
-// canaryRun is one row of a refusal path as TestNoRefusalPathPrintsACanary runs it: run makes the
-// refusal, with ghroutetest.Canary in every slot of its call, and names is what the refusal must
-// say, the place the path names the value by, which shows the row reached that path.
-type canaryRun struct {
-	run   func() error
-	names string
-}
-
 // canaryRuns are the rows of this package's refusal paths that TargetOf does not reach, which need
 // code of this package to run, keyed as ghroutetest.ShownPaths keys a call of Shown: the function
 // that makes it and the source of the place it names the value by. Every other path's rows are
 // ghroutetest.CanaryRows, which `legion gh`'s test of this name also runs as `legion gh` itself.
-var canaryRuns = map[string][]canaryRun{
+var canaryRuns = map[string][]ghroutetest.CanaryRun{
 	`ForkDir: "the repository the request names"`: {
-		{run: func() error {
+		{Run: func() error {
 			repo, err := ghrepo.Parse("the canary's repository", ghroutetest.Canary+"/app")
 			if err != nil {
 				return err
 			}
 			_, _, err = ForkDir(os.TempDir(), repo, "", "")
 			return err
-		}, names: "the repository the request names is a fork"},
+		}, Names: "the repository the request names is a fork"},
 	},
 }
 
@@ -42,53 +30,27 @@ var canaryRuns = map[string][]canaryRun{
 // or canaryRuns, and every row's path is one the source holds: a new path fails this until it
 // joins a table, and so does a function holding one that is renamed, under its new name. Each row
 // puts ghroutetest.Canary in every slot of its call and reaches its path, which names the value by
-// its place (the row's names), and the refusal printed as `legion gh` prints it (PrintRefusal)
+// its place (the row's Names), and the refusal printed as `legion gh` prints it (PrintRefusal)
 // holds no part of the canary: TargetOf's of a CanaryRows row, read under savedGhHelp with no git
 // remotes, or a canaryRuns row's own. A source holding no path at all is refused: the tables would
-// test nothing. cmd/legion's test of this name runs every CanaryRows row as `legion gh` itself.
+// test nothing. ghroutetest.RequireCanaryRows makes this check, as it does for cmd/legion's test
+// of this name, which also runs every CanaryRows row as `legion gh` itself.
 func TestNoRefusalPathPrintsACanary(t *testing.T) {
 	t.Parallel()
-	paths := ghroutetest.ShownPaths(t, "*.go")
-	rows := map[string][]canaryRun{}
+	rows := map[string][]ghroutetest.CanaryRun{}
 	for key, calls := range ghroutetest.CanaryRows {
 		for _, call := range calls {
-			rows[key] = append(rows[key], canaryRun{run: func() error {
+			rows[key] = append(rows[key], ghroutetest.CanaryRun{Run: func() error {
 				_, err := TargetOf(call.Argv, call.Env, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 				return err
-			}, names: call.Names})
+			}, Names: call.Names})
 		}
 	}
 	for key, runs := range canaryRuns {
 		rows[key] = append(rows[key], runs...)
 	}
-	for _, key := range slices.Sorted(maps.Keys(paths)) {
-		if len(rows[key]) == 0 {
-			t.Errorf("the refusal path %s (%s) has no row in ghroutetest.CanaryRows or canaryRuns: a new path joins one of them", key, paths[key])
-		}
-	}
-	count := 0
-	for _, key := range slices.Sorted(maps.Keys(rows)) {
-		if _, ok := paths[key]; !ok {
-			t.Errorf("ghroutetest.CanaryRows or canaryRuns names the refusal path %s, which no call of Shown in the source has", key)
-		}
-		for i, row := range rows[key] {
-			count++
-			t.Run(key+"/"+strconv.Itoa(i), func(t *testing.T) {
-				err := row.run()
-				if err == nil {
-					t.Fatalf("the row naming %q = nil error, want a refusal by the path %s", row.names, key)
-				}
-				printed := ghPrinted(err)
-				if strings.Contains(printed, ghroutetest.Canary) {
-					t.Errorf("the path %s: legion gh printed %q, which holds the canary", key, printed)
-				}
-				if !strings.Contains(printed, row.names) {
-					t.Errorf("the path %s: legion gh printed %q, want it to name %q", key, printed, row.names)
-				}
-			})
-		}
-	}
-	t.Logf("%d refusal paths, %d rows", len(paths), count)
+	paths, count := ghroutetest.RequireCanaryRows(t, "*.go", rows, ghPrinted, "ghroutetest.CanaryRows or canaryRuns")
+	t.Logf("%d refusal paths, %d rows", paths, count)
 }
 
 // formattedValues are the places in this package's non-test files that quote or format a value

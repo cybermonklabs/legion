@@ -1,5 +1,13 @@
 package ghroutetest
 
+import (
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+)
+
 // Canary is the made-up value the canary rows (CanaryRows) put in every slot of the call they
 // make — each argument, each option's value, each selector, each environment value and each
 // search query — shaped as the slot reads it (a token in a URL's user info, an owner's place, a
@@ -22,9 +30,10 @@ type CanaryRow struct {
 // reaches, keyed as ShownPaths keys a call of ghroute.Shown in ghroute's own source: the function
 // that makes it (a method by its receiver's type) and the source of the place it names the value
 // by. ghroute's TestNoRefusalPathPrintsACanary holds this table to its source and prints each
-// row's refusal as legion gh prints it (ghroute.PrintRefusal); cmd/legion's test of that name runs
-// each row as `legion gh` itself. A path TargetOf does not reach, whose row needs code of ghroute
-// to run, has its rows in ghroute's own test (its canaryRuns).
+// row's refusal as legion gh prints it (ghroute.PrintRefusal), through RequireCanaryRows;
+// cmd/legion's test of that name runs each row as `legion gh` itself. A path TargetOf does not
+// reach, whose row needs code of ghroute to run, has its rows in ghroute's own test (its
+// canaryRuns).
 var CanaryRows = map[string][]CanaryRow{
 	`TargetOf: "another host than github.com"`: {
 		{Argv: []string{"pr", "list", "--search", Canary}, Env: map[string]string{"GH_HOST": "x-access-token:" + Canary + "@ghe.example.com"}, Names: "GH_HOST names another host than github.com"},
@@ -111,4 +120,55 @@ var CanaryRows = map[string][]CanaryRow{
 		{Argv: []string{"pr", "list", "-R", "github.com/" + Canary + ".x/app"}, Names: "a -R value names an owner that is not a GitHub login"},
 		{Argv: []string{"api", "orgs/" + Canary + ".x/repos"}, Names: "the endpoint names an owner that is not a GitHub login"},
 	},
+}
+
+// CanaryRun is one row of a refusal path as RequireCanaryRows runs it: Run makes the refusal, with
+// Canary in every slot of its call, and Names is what the refusal must say, the place the path
+// names the value by, which shows the row reached that path. ghroute's test makes one of each
+// CanaryRows row, a ghroute.TargetOf call, and holds its own for a path TargetOf does not reach
+// (its canaryRuns); cmd/legion's test holds one for each path of its gh*.go (its ghCanaryRows).
+type CanaryRun struct {
+	Run   func() error
+	Names string
+}
+
+// RequireCanaryRows fails t unless every refusal path of the non-test files glob matches
+// (ShownPaths) has rows in rows, the table named table, and every path rows names is one the
+// source holds: a new path fails this until it joins the table, and so does a function holding
+// one that is renamed, under its new name. Each row runs as a subtest of t named by its path and
+// its index (`<path>/<i>`) and must make a refusal that, printed as legion gh prints it
+// (printRefusal), holds no part of Canary and says the row's Names. It returns how many paths the
+// source holds and how many rows ran. A source holding no path at all is refused (ShownPaths): the
+// table would test nothing. ghroute's TestNoRefusalPathPrintsACanary and cmd/legion's test of
+// that name each hold their own source to their own rows through this one check.
+func RequireCanaryRows(t *testing.T, glob string, rows map[string][]CanaryRun, printRefusal func(error) string, table string) (pathCount, rowCount int) {
+	t.Helper()
+	paths := ShownPaths(t, glob)
+	for _, key := range slices.Sorted(maps.Keys(paths)) {
+		if len(rows[key]) == 0 {
+			t.Errorf("the refusal path %s (%s) has no row in %s: give a new path its rows there", key, paths[key], table)
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(rows)) {
+		if _, ok := paths[key]; !ok {
+			t.Errorf("%s names the refusal path %s, which no call of ghroute.Shown in the source has", table, key)
+		}
+		for i, row := range rows[key] {
+			rowCount++
+			t.Run(key+"/"+strconv.Itoa(i), func(t *testing.T) {
+				err := row.Run()
+				if err == nil {
+					t.Fatalf("the row naming %q = nil error, want a refusal by the path %s", row.Names, key)
+				}
+				printed := printRefusal(err)
+				if strings.Contains(printed, Canary) {
+					t.Errorf("the path %s: legion gh printed %q, which holds the canary", key, printed)
+				}
+				if !strings.Contains(printed, row.Names) {
+					t.Errorf("the path %s: legion gh printed %q, want it to name %q", key, printed, row.Names)
+				}
+			})
+		}
+	}
+	return len(paths), rowCount
 }
