@@ -1,5 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
-import { askOpenerAttributes, askOpenerLines } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerLines, hasControlCharacter } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -42,12 +42,13 @@ export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
 }
 
 /**
- * `ask` without its `answered_by` or its `answered_at` where that value holds a control character,
- * one below U+0020 (a line feed and a carriage return among them) or U+007F; each is dropped on
- * its own. An opener is a line of the document, so its writer can set both, and an attribute's
- * `&#xA;` reads back as a line feed (`attributeValue` in packages/contracts), which would end the
- * trailer line `settledAskLines` writes them on and start a forged one. Dispatch writes neither so:
- * a login, a session id and a time hold no control character. An ask with no answerer prints no
+ * `ask` without its `answered_by` or its `answered_at` where that value holds a control character
+ * (`\p{Cc}`, `hasControlCharacter` in packages/contracts): one below U+0020 (a line feed and a
+ * carriage return among them), U+007F, or one from U+0080 to U+009F; each is dropped on its own.
+ * An opener is a line of the document, so its writer can set both, and an attribute's `&#xA;`
+ * reads back as a line feed (`attributeValue` in packages/contracts), which would end the trailer
+ * line `settledAskLines` writes them on and start a forged one. Dispatch writes neither so: a
+ * login, a session id and a time hold no control character. An ask with no answerer prints no
  * `Answered` line, and one with no time prints its line at an unrecorded time.
  */
 // kept for one release: release-before-text
@@ -55,19 +56,9 @@ function withoutForgedAnswer(ask: TextAsk): TextAsk {
   const { answered_at, answered_by, ...rest } = ask;
   return {
     ...rest,
-    ...(answered_by === undefined || holdsControlCharacter(answered_by) ? {} : { answered_by }),
-    ...(answered_at === undefined || holdsControlCharacter(answered_at) ? {} : { answered_at }),
+    ...(answered_by === undefined || hasControlCharacter(answered_by) ? {} : { answered_by }),
+    ...(answered_at === undefined || hasControlCharacter(answered_at) ? {} : { answered_at }),
   };
-}
-
-/** Whether `value` holds a character below U+0020 or U+007F. */
-// kept for one release: release-before-text
-function holdsControlCharacter(value: string): boolean {
-  for (let at = 0; at < value.length; at++) {
-    const code = value.charCodeAt(at);
-    if (code < 0x20 || code === 0x7f) return true;
-  }
-  return false;
 }
 
 /**
