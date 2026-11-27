@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -45,9 +46,13 @@ const (
 // The error is nil only for ClientCheckReady. For the other two it says what happened, for the
 // caller's log; it never carries the client secret, and a caller publishing the check publishes
 // the word alone.
-func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (ClientCheck, error) {
+//
+// Both requests go through one client bounded by TokenTimeout. WithWaitArm bounds each of them by
+// what the arm gives for TokenTimeout instead, as it does a code flow's calls: no deployment passes
+// it, and a test whose own issuer answers in the machine's time passes testwait.BoundArm.
+func CheckClient(ctx context.Context, issuer, clientID, clientSecret string, opts ...Option) (ClientCheck, error) {
 	// One bounded client for both requests: the issuer's discovery read and the token request.
-	client := tokenClient()
+	client := checkHTTPClient(opts)
 	flow, err := discoverCodeFlow(gooidc.ClientContext(ctx, client), issuer, clientID, clientSecret)
 	if err != nil {
 		return ClientCheckIssuerUnreachable, err
@@ -70,4 +75,13 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check with the OAuth error %q, which says nothing about the client: %w",
 		issuer, retrieve.ErrorCode, err)
+}
+
+// checkHTTPClient is CheckClient's client: tokenClient, armed when opts carry WithWaitArm.
+func checkHTTPClient(opts []Option) *http.Client {
+	client := tokenClient()
+	if arm := collectOptions(opts).waitArm; arm != nil {
+		armClient(client, arm)
+	}
+	return client
 }

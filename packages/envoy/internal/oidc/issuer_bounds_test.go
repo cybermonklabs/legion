@@ -263,3 +263,25 @@ func TestALazyVerifiersCallerWaitsWithinItsBoundOrTheArm(t *testing.T) {
 		}
 	}
 }
+
+// A client check waits for its issuer under TokenTimeout until it is given an arm (WithWaitArm).
+// Given one, its discovery read and its token request each run within what the arm gives for
+// TokenTimeout, through a client that keeps no Timeout of its own.
+func TestAClientCheckWaitsForItsIssuerUnderTokenTimeoutOrItsArm(t *testing.T) {
+	if got := checkHTTPClient(nil).Timeout; got != TokenTimeout {
+		t.Fatalf("a check with no arm bounds its requests by %s, want TokenTimeout (%s)", got, TokenTimeout)
+	}
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
+	var arms recordingArm
+	if got := checkHTTPClient([]Option{WithWaitArm(arms.arm)}).Timeout; got != 0 {
+		t.Fatalf("an armed check's client has a Timeout of %s, want none: the arm bounds each request", got)
+	}
+	if check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, checkClientSecret, WithWaitArm(arms.arm)); check != ClientCheckReady || err != nil {
+		t.Fatalf("an armed CheckClient = (%q, %v), want ready", check, err)
+	}
+	calls := arms.recorded()
+	if len(calls) != 2 || calls[0].bound != TokenTimeout || calls[1].bound != TokenTimeout {
+		t.Fatalf("the arm was given %+v, want TokenTimeout twice: the discovery read, then the token request", calls)
+	}
+}
