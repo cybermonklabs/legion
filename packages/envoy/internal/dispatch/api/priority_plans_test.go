@@ -196,21 +196,23 @@ func readPriorityPlans(t *testing.T, served *server, plans *explainedStatements,
 }
 
 // explainedStatements are the plans auto_explain sends as notices on the connections it is the
-// notice handler of: each statement's text, the server process that ran it, and the shared buffers
-// its top plan node touched, hit plus read. Its notice method is the pgconn.NoticeHandler; a plan
-// it cannot read is kept as a fault, which take fails the test on, since a notice handler runs
-// inside pgx's read of the connection and cannot stop the test itself.
+// notice handler of: each statement's text, the server process that ran it, the shared buffers
+// its top plan node touched, hit plus read, and the plan itself. Its notice method is the
+// pgconn.NoticeHandler; a plan it cannot read is kept as a fault, which take fails the test on,
+// since a notice handler runs inside pgx's read of the connection and cannot stop the test itself.
 type explainedStatements struct {
 	mu         sync.Mutex
 	statements []explainedStatement
 	faults     []string
 }
 
-// explainedStatement is one statement auto_explain reported.
+// explainedStatement is one statement auto_explain reported, with its whole plan, one "Plan"
+// node.
 type explainedStatement struct {
 	backend uint32
 	text    string
 	buffers float64
+	plan    json.RawMessage
 }
 
 // notice keeps the plan an auto_explain notice carries: `duration: <ms> ms  plan:` and, under
@@ -222,19 +224,25 @@ func (e *explainedStatements) notice(connection *pgconn.PgConn, notice *pgconn.N
 		return
 	}
 	var explained struct {
-		Text string       `json:"Query Text"`
-		Plan analyzedNode `json:"Plan"`
+		Text string          `json:"Query Text"`
+		Plan json.RawMessage `json:"Plan"`
 	}
+	var top analyzedNode
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := json.Unmarshal([]byte(plan), &explained); err != nil {
 		e.faults = append(e.faults, fmt.Sprintf("read the plan of a notice (%v): %.200s", err, notice.Message))
 		return
 	}
+	if err := json.Unmarshal(explained.Plan, &top); err != nil {
+		e.faults = append(e.faults, fmt.Sprintf("read the top node of a notice's plan (%v): %.200s", err, notice.Message))
+		return
+	}
 	e.statements = append(e.statements, explainedStatement{
 		backend: connection.PID(),
 		text:    explained.Text,
-		buffers: explained.Plan.SharedHitBlocks + explained.Plan.SharedReadBlocks,
+		buffers: top.SharedHitBlocks + top.SharedReadBlocks,
+		plan:    explained.Plan,
 	})
 }
 
