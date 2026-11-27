@@ -63,7 +63,6 @@ import {
   type DecisionsEntry,
   type DecisionsPart,
   headingCount,
-  isReadingEntry,
   type NamedEntry,
   type ReadingEntry,
   waitingOrder,
@@ -429,7 +428,7 @@ export function DecisionsFilterBody({
     const rows = parts.named.map(nodeRow);
     for (const part of footShown ? [...HEADED, "agents" as const] : HEADED) {
       const entries: readonly (DecisionsEntry | NamedEntry)[] = shown[part];
-      rows.push(...withReadings(entries).map(nodeRow));
+      rows.push(...withReadings(entries).map((entry) => drawnRowOf(entry, view.id)));
       const left = parts[part].length - entries.length;
       if (left <= 0) continue;
       const page = { kind: "page", left, level: 1, of: view, trail: [] } as const;
@@ -450,7 +449,7 @@ export function DecisionsFilterBody({
   // decision left the review list by their own review.
   const ownReview = useRef<string | undefined>(undefined);
   const takeFocus = useCallback(
-    (entry: DecisionsEntry | NamedEntry) => {
+    (entry: DecisionsEntry | NamedEntry | ReadingEntry) => {
       const node = entry.node;
       setFocused(node.id);
       setStop(node.id);
@@ -477,7 +476,7 @@ export function DecisionsFilterBody({
   // row is taken once the press is over, and only while that row still holds the focus, which
   // `usePressFocus` does for the outline and this list alike; a key's move takes it at once. The
   // press is marked on the whole list, since the foot's rows stand outside the tree element.
-  const press = usePressFocus<DecisionsEntry | NamedEntry>(
+  const press = usePressFocus<DecisionsEntry | NamedEntry | ReadingEntry>(
     takeFocus,
     (entry) => rowOf(body.current, entry.node.id)?.contains(document.activeElement) === true
   );
@@ -969,7 +968,10 @@ export function DecisionsFilterBody({
   const first = drawn[0]?.node.id;
   const tabStop =
     stop !== undefined && drawn.some((entry) => entry.node.id === stop) ? stop : first;
-  const rowFor = (entry: DecisionsEntry | NamedEntry, part: DecisionsPart): ReactNode => {
+  const rowFor = (
+    entry: DecisionsEntry | NamedEntry | ReadingEntry,
+    part: DecisionsPart
+  ): ReactNode => {
     // A decision's readings stand right after its row, each a level under it (R3).
     if (entry.kind === "decision" && entry.readings !== undefined) {
       const { readings, ...decision } = entry;
@@ -987,9 +989,8 @@ export function DecisionsFilterBody({
     const key = rowKeyOf(drawnRowOf(entry, view.id));
     // A reading stands a level under the decision it reads, and is no entry of the review list
     // that decision may stand in, so it draws no Keep and no Change.
-    const reading: { readonly level?: number; readonly review?: boolean } = isReadingEntry(entry)
-      ? { level: part === "agents" ? 3 : 2, review: false }
-      : {};
+    const reading: { readonly level?: number; readonly review?: boolean } =
+      entry.kind === "reading" ? { level: part === "agents" ? 3 : 2, review: false } : {};
     return (
       <DecisionsRow
         body={focused === id || pinned.has(id) || everything}
@@ -1335,7 +1336,7 @@ function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
 
 /** The row the outline's keys read for `entry`: at the list's one level, under the view, which is
  *  the key (`rowKeyOf`) the row's own `data-row-key` carries and the editing finds the row by. */
-function drawnRowOf(entry: DecisionsEntry | NamedEntry, viewId: string): DrawnRow {
+function drawnRowOf(entry: DecisionsEntry | NamedEntry | ReadingEntry, viewId: string): DrawnRow {
   return { kind: "node", level: 1, node: entry.node, trail: [viewId] };
 }
 
@@ -1348,7 +1349,7 @@ function readingsOf(entry: DecisionsEntry | NamedEntry): readonly ReadingEntry[]
 /** `entries`, each with its readings right after it (`readingsOf`), as the list draws them. */
 function withReadings(
   entries: readonly (DecisionsEntry | NamedEntry)[]
-): readonly (DecisionsEntry | NamedEntry)[] {
+): readonly (DecisionsEntry | NamedEntry | ReadingEntry)[] {
   return entries.flatMap((entry) => [entry, ...readingsOf(entry)]);
 }
 

@@ -351,8 +351,8 @@ test("an agent decision's reading stands under the decision's entry, and is no e
     const parts = partsOf(children, made, [], view);
     expect(Object.values(idsOf(parts)).flat()).not.toContain(reading.id);
     expect(idsOf(parts).review).toEqual([D("d1")]);
-    expect(parts.review[0]?.readings?.map((one) => [one.node.id, one.reads])).toEqual([
-      [reading.id, D("d1")],
+    expect(parts.review[0]?.readings?.map((one) => [one.node.id, one.kind])).toEqual([
+      [reading.id, "reading"],
     ]);
   }
 });

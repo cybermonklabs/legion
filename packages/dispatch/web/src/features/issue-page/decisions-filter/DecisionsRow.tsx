@@ -49,8 +49,13 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import { pressAsksCaret } from "../useNodeEditing";
-import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
-import { isReadingEntry } from "./decisions-parts";
+import type {
+  AskDeclined,
+  DecisionChange,
+  DecisionsEntry,
+  NamedEntry,
+  ReadingEntry,
+} from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
@@ -155,7 +160,7 @@ export function DecisionsRow({
   /** The document this row's own text is being edited in, while this is the row edited (the
    *  list's `editing`): its one editor is drawn on the row's stage in place of the words. */
   editing?: string;
-  entry: DecisionsEntry | NamedEntry;
+  entry: DecisionsEntry | NamedEntry | ReadingEntry;
   focused: boolean;
   /** Whether the issue is closed, which Keep and Change are refused on. */
   isClosed: boolean;
@@ -216,18 +221,12 @@ export function DecisionsRow({
     const name = statementNames.get(shape.id) ?? "";
     return name === "" ? [] : [{ name, shape }];
   });
-  // A reading under its decision is drawn for itself, and no node drawn for its context, as the
-  // node an address names is: its row takes that mark off.
-  const drawnFor: { readonly "data-node-context"?: undefined } = isReadingEntry(entry)
-    ? { "data-node-context": undefined }
-    : {};
   return (
     <div
       aria-labelledby={ids.labelledBy}
       aria-level={level}
       className="relative my-0.5 min-w-0 outline-none"
       data-node-context={entry.kind === "named" ? "" : undefined}
-      {...drawnFor}
       data-node-id={node.id}
       data-node-row=""
       data-node-state={standing?.token}
@@ -437,9 +436,7 @@ const KEEP = rowActionSelector("keep");
 
 /** A question's colour and a decision's; and for the node an address names, which is no entry
  *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */
-function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
-  // A reading is the agent's words, in the agents' grey (`NodeRow.tsx`'s `toneOf`).
-  if (isReadingEntry(entry)) return "agent";
+function toneOf(entry: DecisionsEntry | NamedEntry | ReadingEntry): Tone {
   switch (entry.kind) {
     case "ask":
       return "question";
@@ -447,6 +444,9 @@ function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
       return "decision";
     case "named":
       return "context";
+    // A reading is the agent's words, in the agents' grey (`NodeRow.tsx`'s `toneOf`).
+    case "reading":
+      return "agent";
   }
 }
 

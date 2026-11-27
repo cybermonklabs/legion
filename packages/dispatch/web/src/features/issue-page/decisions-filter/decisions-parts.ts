@@ -238,16 +238,9 @@ export interface NamedEntry extends EntryBase {
 
 /** A reading of an agent's decision, drawn as a row under the decision's entry (R3): the agent's
  *  account of what the decision means, in the agents' grey and by its author. It is no entry of
- *  any part, so it is drawn as a node of its own kind is (`NamedEntry`), with no parent line,
- *  since it stands under the node it hangs under. */
-export interface ReadingEntry extends NamedEntry {
-  /** The node id of the decision it reads. */
-  readonly reads: string;
-}
-
-/** Whether `entry` is a reading the list draws under its decision's entry (`ReadingEntry`). */
-export function isReadingEntry(entry: DecisionsEntry | NamedEntry): entry is ReadingEntry {
-  return "reads" in entry;
+ *  any part and draws no parent line, since it stands under the node it hangs under. */
+export interface ReadingEntry extends EntryBase {
+  readonly kind: "reading";
 }
 
 /** One entry of the filter. */
@@ -393,7 +386,7 @@ export function decisionsParts({
     if (node.type !== "reading" || parent?.type !== "decision") continue;
     if (kept !== undefined && (!kept.has(node.id) || !kept.has(parent.id))) continue;
     const held = readings.get(parent.id) ?? [];
-    held.push({ kind: "named", node, ...pathOf(node), reads: parent.id, shapes: [] });
+    held.push({ kind: "reading", node, ...pathOf(node), shapes: [] });
     readings.set(parent.id, held);
   }
   for (const { node, parent } of placed.values()) {
