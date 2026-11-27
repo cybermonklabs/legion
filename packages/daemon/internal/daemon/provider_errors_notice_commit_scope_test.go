@@ -102,6 +102,8 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 // failing turn, and the controller holds that work. A run of a child's own architect's claim
 // reaches the architect above that child, here the root's, and never the child's own architect,
 // which still holds its role, so the controller relays nothing for it either.
+// The controller's copy names the run's claim, which its compaction and fresh session take. The
+// architect's copy names none.
 func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testing.T) {
 	const reason = "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"
 	for _, tc := range []struct {
@@ -142,7 +144,8 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 			w := &workflowRuntime{pool: pool, records: projected, admission: admission, engine: engine,
 				handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", log: log}
 
-			w.providerErrorRunReached(supervise.Claim{Token: mustClaimToken(t, tc.issue, tc.role), Project: "legion", Tree: "LEGION-1",
+			run := mustClaimToken(t, tc.issue, tc.role)
+			w.providerErrorRunReached(supervise.Claim{Token: run, Project: "legion", Tree: "LEGION-1",
 				Issue: tc.issue, Role: tc.role, Generation: 1}, reason)
 			// The rows are one transaction, so once the controller's row is there every row is.
 			testwait.Eventually(t, "the provider-errors notices to commit", func() bool {
@@ -165,7 +168,11 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 			}
 
 			_, delivered := publisher.snapshot()
+			// The controller's copy names the run's claim (record.NoticePerClaim). The architect's copy
+			// names no claim (record.Notice.Claim).
 			want := record.Notice{Kind: record.ProviderErrorsNotice, Role: tc.role, Reason: reason}
+			wantController := want
+			wantController.Claim = run
 			byTopic := map[string]outboxPublish{}
 			for _, published := range delivered {
 				byTopic[published.topic] = published
@@ -186,8 +193,12 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 				if !ok {
 					t.Fatalf("delivered %+v, want a publish on %s", delivered, topic)
 				}
-				if message := "provider-errors on " + tc.issue; published.message != message || !reflect.DeepEqual(published.payload, want) {
-					t.Fatalf("the publish on %s = %q %+v, want %s carrying %+v", topic, published.message, published.payload, message, want)
+				payload := want
+				if topic == controller {
+					payload = wantController
+				}
+				if message := "provider-errors on " + tc.issue; published.message != message || !reflect.DeepEqual(published.payload, payload) {
+					t.Fatalf("the publish on %s = %q %+v, want %s carrying %+v", topic, published.message, published.payload, message, payload)
 				}
 			}
 			if architect != "" && byTopic[architect].key == byTopic[controller].key {

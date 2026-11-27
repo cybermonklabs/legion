@@ -3000,7 +3000,12 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	notice := record.Notice{Kind: record.ProviderErrorsNotice, Role: c.Role, Claim: c.Token, Reason: reason}
+	notice := record.Notice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	// Only the controller's notice names the claim (record.Notice.Claim). The claim is the key of
+	// admission's check for a waiting notice (record.NoticePerClaim). It is also the token that the
+	// controller gives to compact and fresh_session, since two claims can hold one role of an issue.
+	told := record.ControllerNotice(notice)
+	told.Claim = c.Token
 	// The tree root's architect's own run tells no architect. The architect copy would reach the
 	// failing claim itself, since no architect stands above the root (OwningIssue's walk from the
 	// root ends at the root). Waking a session whose provider keeps refusing it adds one more
@@ -3026,7 +3031,7 @@ func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason stri
 					return err
 				}
 			}
-			return w.admission.TellController(ctx, tx, record.ControllerNotice(notice), c.Issue)
+			return w.admission.TellController(ctx, tx, told, c.Issue)
 		}); err != nil {
 			w.log.Warn("queue the provider-errors notices of a run of provider errors", "claim", c.Token, "tellsArchitect", tellsArchitect, "error", err)
 		}
