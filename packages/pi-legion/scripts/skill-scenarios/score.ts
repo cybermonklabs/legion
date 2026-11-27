@@ -3786,9 +3786,7 @@ function ownPlaces(
   const profile = path.join(
     work,
     "profiles",
-    existsSync(link) && lstatSync(link).isSymbolicLink()
-      ? path.basename(realpathSync(link))
-      : label
+    existsSync(link) && lstatSync(link).isSymbolicLink() ? path.basename(realpathSync(link)) : label
   );
   return { work, own: [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`) };
 }
