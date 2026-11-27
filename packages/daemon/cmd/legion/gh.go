@@ -238,9 +238,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// Every repository the command names is routed through the bundle's own pick, and the
 		// command refused where they route to two directories (selectors.dir), before the guard
 		// reads anything of it. gh's help of each command on the way is read once per gh binary
-		// and kept for the calls after (ghHelpKeep).
+		// and kept for the calls after, in the role's own state volume (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, func() ([]ghRemote, error) { return readGitRemotes(beforeGh) },
+		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, ghRoleStateBase, env, helpEnv).read, func() ([]ghRemote, error) { return readGitRemotes(beforeGh) },
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
 			return status

@@ -173,12 +173,12 @@ func (d *passedDeadline) Err() error {
 // to the group, a pane that closes, is caught until gh would start (hangupCancels) and stops the
 // held work's group the same way, and `legion gh` ends with 129.
 //
-// Every row runs with the role's state directory set, so `legion gh` keeps the helps gh prints
-// (ghHelpKeep), and with the fixture's rule file named, since the guard reads the destination's
-// visibility only where the deployment names one. The help read's stand-in prints gh's whole
-// help before it holds the read, and the read the signal stopped leaves no copy: a stopped read
-// is an error, whatever gh printed before the stop, so it is never kept and no later call is
-// answered with it.
+// Every row runs with a role volume of its own (testRoleStateEnv), so `legion gh` keeps the helps
+// gh prints there (ghHelpKeep), and with the fixture's rule file named, since the guard reads the
+// destination's visibility only where the deployment names one. The help read's stand-in prints
+// gh's whole help before it holds the read, and the read the signal stopped leaves no copy: a
+// stopped read is an error, whatever gh printed before the stop, so it is never kept and no later
+// call is answered with it.
 //
 // On main the help read shared `legion gh`'s own process group, so the group's signal reached the
 // stand-in itself: a SIGINT ended it and `legion gh` refused the command with a help error, exit 2,
@@ -271,11 +271,12 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				if err := execfile.Write(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				state := t.TempDir()
+				state, roleState := t.TempDir(), t.TempDir()
 				env := map[string]string{
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 					"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), held.check(pidFile, held.seconds)),
 					"XDG_STATE_HOME":       state,
+					testRoleStateEnv:       roleState,
 					leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 				}
 				if held.git != nil {
@@ -291,7 +292,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				}
 				command := legionGhCommand(t, t.TempDir(), env, args...)
 				signalWhileHeld(t, command, "legion gh", pidFile, held.seconds, held.name, tc.signal)
-				kept, err := os.ReadDir(filepath.Join(state, "legion-gh", "help"))
+				kept, err := os.ReadDir(filepath.Join(roleState, "legion-gh", "help"))
 				if err != nil && !errors.Is(err, fs.ErrNotExist) {
 					t.Fatal(err)
 				}

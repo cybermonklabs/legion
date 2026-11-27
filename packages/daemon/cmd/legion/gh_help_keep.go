@@ -29,15 +29,20 @@ import (
 // refused is never kept: its refusal is read again on the next call, as it was before there were
 // copies.
 //
-// The copies are under the role's own state directory, $XDG_STATE_HOME/legion-gh/help, one for
+// The copies are in the role's own state volume, under ghRoleStateBase's legion-gh/help, one for
 // each command path and each set of the variables ghHelpEnvDigest reads. They are written as files
 // of mode 0600 in a directory of mode 0700 (ghStateDir, ghReplaceFile), and a copy is read only
 // where neither it nor its directory is a link and the user this process runs as owns both, with
 // no permission for their group or for others (ghOpenPrivate): another user that could write a
 // copy could change what this wrapper parses, and so which owner's token a command is run with.
-// In a pod every role runs as one user, so this keeps out another user and not another role. With
-// no XDG_STATE_HOME, no GH_CONFIG_DIR, or a gh path that is not absolute or whose links end at a
-// file not named gh, nothing is kept and every help is read from gh.
+// In an issue pod every role runs as one user, so those checks keep out no other role; the volume
+// does: role-init binds it back inside the role's own mount namespace alone
+// (leakguard.RoleStateBase), so no other role of the pod sees it. A tmux pane has no role volume
+// and keeps its copies in $XDG_STATE_HOME/legion-gh/help, as before there was one; one user runs
+// every role there, so there another role is not kept out. Where the volume is there, no copy
+// under $XDG_STATE_HOME is read. With no GH_CONFIG_DIR, a gh path that is not absolute or whose
+// links end at a file not named gh, or neither a role volume nor an XDG_STATE_HOME, nothing is
+// kept and every help is read from gh.
 type ghHelpKeep struct {
 	// fresh is gh's own answer for a path: readGhHelp of the gh the keep is for, under the context
 	// the keep was made with.
@@ -103,9 +108,16 @@ var ghPrintingVariables = map[string]bool{"CLICOLOR": true, "CLICOLOR_FORCE": tr
 // gh it runs on each run (from the working directory's mise.toml), so its own file says nothing
 // of the gh that prints the help, and nothing is kept for it. A multiplexer copied or hard-linked
 // under the name gh is not told apart.
-func newGhHelpKeep(ctx context.Context, gh string, env map[string]string, helpEnv []string) *ghHelpKeep {
+//
+// roleState is the role's own state volume, ghRoleStateBase (runGh): the copies are kept under it
+// where it is a directory this user can write, and under env's XDG_STATE_HOME where it is not, as
+// in a tmux pane, so a pane keeps them where it did before there was a volume.
+func newGhHelpKeep(ctx context.Context, gh, roleState string, env map[string]string, helpEnv []string) *ghHelpKeep {
 	keep := &ghHelpKeep{fresh: func(path []string) (string, error) { return readGhHelp(ctx, gh, helpEnv, path) }, uid: os.Getuid()}
 	state, config := env["XDG_STATE_HOME"], env["GH_CONFIG_DIR"]
+	if info, err := os.Stat(roleState); err == nil && info.IsDir() && unix.Access(roleState, unix.W_OK) == nil {
+		state = roleState
+	}
 	if state == "" || config == "" || !filepath.IsAbs(gh) {
 		return keep
 	}

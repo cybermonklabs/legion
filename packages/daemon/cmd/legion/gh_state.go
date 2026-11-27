@@ -9,11 +9,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The stores `legion gh` keeps under the role's $XDG_STATE_HOME/legion-gh, its call log
-// (appendGhCallLog) and its copies of gh's help (ghHelpKeep), make their directories, open their
-// files and write them through these helpers, so both hold one rule: a directory that is no link,
-// and a file that is no link, each owned by this process's user with no permission for its group
-// or for others (ghPrivate), and a file written whole or not at all (ghReplaceFile).
+// The stores `legion gh` keeps under a legion-gh directory, its call log (appendGhCallLog) in the
+// role's $XDG_STATE_HOME and its copies of gh's help (ghHelpKeep) in the role's own state volume
+// (or $XDG_STATE_HOME where there is none), make their directories, open their files and write
+// them through these helpers, so both hold one rule: a directory that is no link, and a file that
+// is no link, each owned by this process's user with no permission for its group or for others
+// (ghPrivate), and a file written whole or not at all (ghReplaceFile).
 
 // ghStateDir makes dir with mode 0700 where it is missing and says whether it is one this user may
 // write a store into: a directory, not a link to one, owned by uid, which it then sets to mode 0700.

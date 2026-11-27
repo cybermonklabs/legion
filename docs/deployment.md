@@ -295,9 +295,11 @@ gh runs later, after a checkout or in another worktree (`pr checkout --worktree`
 --delete-branch`), would read a configuration the check did not. With no `git` on `PATH` that
 check reads nothing, since gh then runs no git either.
 `legion gh` starts the real gh for a command's help only the first time:
-it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
+it keeps each help in the role's own state volume, under `/var/run/legion/state/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
+Where that volume is missing or the role's user cannot write it, as in a tmux pane, it keeps them in `$XDG_STATE_HOME/legion-gh/help` instead, and where the volume is there it never reads a copy in `$XDG_STATE_HOME/legion-gh/help`.
 It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.
-In a pod every role runs as one user, so this keeps out another user and not another role.
+In an issue pod every role runs as one user, but `legion launcher role-init` binds each role's state volume inside that role's own mount namespace alone, so no other role of the pod sees its copies or can change what its `legion gh` parses.
+Under tmux one user runs every role and the copies are in that user's `$XDG_STATE_HOME`, so there another role is not kept out.
 It reads the help from gh again when one of these changes: the gh binary, the file the `LEGION_GH_PATH` path's links end at (its path, device, inode, size, modification time, change time or mode); `config.yml` or `hosts.yml` in `GH_CONFIG_DIR` (gh lists its aliases in its help, and prints no help when either file does not parse); gh's extensions directory; or one of those variables.
 Where the links end at a file not named `gh`, such as the `mise` binary a mise shim links to, which picks the gh it runs on each run, it keeps nothing and reads every help from gh.
 The leak guard's own visibility reads and `gh api rate_limit` read no help at all.

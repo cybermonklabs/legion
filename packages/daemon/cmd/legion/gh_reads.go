@@ -51,9 +51,10 @@ var ghReadsProvenCheck = struct{ tag, sha256 string }{
 var leakguardCurl string
 
 // ghRoleStateBase is the role state volume base directory every leakguard of `legion gh` and
-// `legion leak-check` keeps private and internal visibility answers under (leakguard.Options.RoleState):
-// leakguard.RoleStateBase in the binary, and a temporary directory in this package's tests
-// (TestMain). No code of the `legion` binary reads an environment variable for it.
+// `legion leak-check` keeps private and internal visibility answers under (leakguard.Options.RoleState),
+// and `legion gh` its copies of gh's help (newGhHelpKeep): leakguard.RoleStateBase in the binary,
+// and a temporary directory in this package's tests (TestMain). No code of the `legion` binary
+// reads an environment variable for it.
 var ghRoleStateBase = leakguard.RoleStateBase
 
 // ghRateLimitRead is the exact `gh api rate_limit`, a GitHub API call with no repository content,

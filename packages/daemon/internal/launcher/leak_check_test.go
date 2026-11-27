@@ -267,6 +267,19 @@ func TestTheGuardsVisibilityKeepIsInTheRolesOwnStateDirectory(t *testing.T) {
 	}
 }
 
+// `legion gh` keeps its copies of gh's help under cmd/legion's ghRoleStateBase, which is set from
+// leakguard.RoleStateBase; this package cannot import cmd/legion, a main package, so it holds the
+// constant that variable is set from: the role's own state directory as role-init binds it back
+// inside the role's namespaces alone, where no other role of the pod can write a copy that
+// changes what this role's wrapper parses. A layout that moved the directory would send the help
+// keep back to $XDG_STATE_HOME, which every role of the pod can write, since all run as one user.
+func TestTheHelpKeepIsInTheRolesOwnStateDirectory(t *testing.T) {
+	t.Parallel()
+	if want := FixedRoot + "/" + RoleStateDir; leakguard.RoleStateBase != want {
+		t.Fatalf("leakguard.RoleStateBase, which the help keep's ghRoleStateBase is set from, = %s; want the state directory role-init binds for the role alone, %s", leakguard.RoleStateBase, want)
+	}
+}
+
 // The launcher names its own pin in every hello, so the daemon knows to push it the check; a
 // launcher whose environment names no pin says nothing of a check at all, and refuses a check
 // pushed to it anyway, writing nothing.
