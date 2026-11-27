@@ -15841,6 +15841,155 @@ check "passes zz-r74-unset.py, whose env option it reads" \
   "$(is "$(contains "$out" 'zz-r74-unset.py')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
 
+# R74 verbs. The verb reading steps past an option before a tool's subcommand only where
+# LEADING_OPTIONS reads it with its value, and refuses any other such option by name.
+# The gate reads `go -C <dir> mod download` and refuses it without a retry.
+# The same call under `retry_fetch` is charged 5 x 180 + 150 = 1050 s, so a one-minute key is
+# refused and a key of 18 minutes passes. Each option the table does not read is refused by name,
+# a real one of its tool each time: go's `-C=<dir>`, in a step and in a Dockerfile RUN; docker's
+# `--config <dir>`, whose value read as the subcommand until round 74, in a step and in a
+# `bash -c` text; and bunx's `--bun` before the program it runs, which read as the program.
+# `go -C <dir> env` in a RUN, `docker --version` and `gh --version` pass. Each refusal row fails
+# where the reading steps past the option as one taking no value again, and each row of
+# `go -C <dir>`, the RUN's among them, fails where the table loses `-C`.
+echo "case: r74 an option before a tool's subcommand is read only where LEADING_OPTIONS reads it, and refused by name otherwise"
+root=$(fixture r74-verb-options)
+printf '%s\n' 'RUN go -C=/src/packages/envoy mod download' \
+  'RUN go -C /src/packages/envoy env GOMOD' >> "$root/packages/daemon/docker/worker.Dockerfile"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the Go modules with no retry
+        run: go -C packages/envoy mod download
+      - name: Download the Go modules under a key that cannot hold them
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go modules" 180 -- go -C packages/envoy mod download
+      - name: Download the Go modules under a key that holds them
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the Go modules" 180 -- go -C packages/envoy mod download
+      - name: Download the Go modules with the directory joined to its option
+        run: go -C=packages/envoy mod download
+      - name: Pull an image after a global option that takes a value
+        run: docker --config "$RUNNER_TEMP/docker-config" pull postgres:16
+      - name: Pull an image after that option in a bash -c text
+        run: bash -c 'docker --config "$RUNNER_TEMP/docker-config" pull postgres:16'
+      - name: Install a browser after an option of the package runner
+        run: bunx --bun playwright install chromium
+      - name: Ask the tools for their versions
+        run: |
+          docker --version
+          gh --version
+      - name: A leading option can take an informational word as its value
+        run: docker --config --version pull postgres:16
+      - name: A Go directory can look like an informational flag
+        run: go -C --version mod download
+      - name: Ask Bun for its binary revision
+        run: bun --revision
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "reads the unretried go -C <dir> at line 8 through to go mod download, and refuses it for no retry" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' '`go mod download`' \
+    "'Download the Go modules with no retry'")"
+check "charges the retried go -C <dir> its 1050 s, so its one-minute key at line 10 is refused" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=10::' \
+    "'Download the Go modules under a key that cannot hold them'" '`timeout-minutes: 1`' '1050 s')"
+check "passes the same retried call under a key of 18 minutes, which holds its 1050 s" \
+  "$(is "$(contains "$out" 'Download the Go modules under a key that holds them')" false)"
+for refusal in "20	go	-C=packages/envoy" "22	docker	--config" "24	docker	--config" \
+  "26	bunx	--bun"; do
+  IFS=$'\t' read -r line tool option <<<"$refusal"
+  check "refuses the option $option before the subcommand of $tool at line $line by name" \
+    "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" "\`$tool\`" \
+      "\`$option\`")"
+done
+check "names at line 20 the supported Go option and the table that lists it" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=20::' '`go -C <dir>`' \
+    'LEADING_OPTIONS')"
+check "refuses the Dockerfile RUN's joined -C at its line 3 by name" \
+  "$(names_at "$out" '::error file=packages/daemon/docker/worker.Dockerfile,line=3::' '`go`' \
+    '`-C=/src/packages/envoy`')"
+check "passes the Dockerfile RUN that runs go env after -C <dir>" \
+  "$(is "$(contains "$out" 'worker.Dockerfile,line=4::')" false)"
+check "passes docker --version and gh --version, which answer about themselves" \
+  "$(is "$(contains "$out" 'case.yaml,line=29::\|case.yaml,line=30::')" false)"
+check "refuses the leading option even when its next argument looks like a version flag" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=32::' '`docker`' '`--config`')"
+check "reads the Go download after a directory that looks like a version flag" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=34::' '`go mod download`')"
+check "passes the revision read used by setup-bun" \
+  "$(is "$(contains "$out" 'case.yaml,line=36::')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
+
+# R74 verbs, the other two readings of a command's words. A call that hands its words to a loop
+# that runs them is read for the verb among those words (verb_in), and where none is read, a tool
+# among them that writes an option before its subcommand LEADING_OPTIONS does not read is refused
+# by name (unread_in): until round 74 the value of docker's `--config` read as its subcommand
+# there too, and the loop's pull as no fetch. The same pull with its option after the subcommand
+# is read, and the loop around it is refused as a copy of the helper. A command in the body of a
+# heredoc a shell runs is refused by name for such an option too, at its own line: the body's
+# reading reads no site past it, so the heredoc's own question would pass it. Each refusal row
+# fails where its reading drops the option again.
+echo "case: r74 an option before a tool's subcommand that a call hands a loop, or that a heredoc's body writes, is refused by name"
+root=$(fixture r74-verb-options-reach)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Hand the loop a pull after a global option that takes a value
+        run: |
+          attempts() {
+            local left=$1 what=$2 status
+            shift 2
+            while :; do
+              "$@" && return 0
+              status=$?
+              left=$((left - 1))
+              [ "$left" -gt 0 ] || return 1
+            done
+          }
+          attempts 2 "the image" docker --config "$RUNNER_TEMP/docker-config" pull postgres:16
+      - name: Hand the loop a pull with its option after the subcommand
+        run: |
+          attempts() {
+            local left=$1 what=$2 status
+            shift 2
+            while :; do
+              "$@" && return 0
+              status=$?
+              left=$((left - 1))
+              [ "$left" -gt 0 ] || return 1
+            done
+          }
+          attempts 2 "the image" docker pull --quiet postgres:16
+      - name: Pull an image after a global option in a heredoc a shell runs
+        run: |
+          bash <<'EOF'
+          docker --debug pull postgres:16
+          EOF
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses by name the option --config of docker that the call at line 19 hands the loop" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=19::' '`docker`' '`--config`')"
+check "reads the pull whose option follows the subcommand, and refuses the loop at line 25 as a copy of the helper" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=25::this loop retries .docker pull. itself')"
+check "refuses by name the option --debug of docker at line 36, in the body of a heredoc a shell runs" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=36::' '`docker`' '`--debug`')"
+
 # W17. Six glob shapes the Spec draft's review drove past the gate at bd06b2a2, each exit 0 under
 # a one-minute key (dispatch://INFRA-1545, round 38): a glob or a brace expansion in a run's
 # target names the file that runs from the names the file system holds as the step runs, as a

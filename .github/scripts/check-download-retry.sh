@@ -549,6 +549,16 @@
 #     (timeout_option, xargs_command, shell_operand, odd_command; dispatch://INFRA-1545, round
 #     74). The tree writes none: its `timeout` options are `-k <duration>`, `--kill-after=`,
 #     `--signal=` and `--foreground`, its `xargs` options `-r` and `-0`, and its shells' `-c`;
+#   - an option before the subcommand of a tool SUBCOMMAND_TOOLS names, or before the program a
+#     package runner runs, other than those LEADING_OPTIONS reads for that tool, `go -C=dir mod
+#     download`, `docker --config <dir> pull` and `bunx --bun playwright install` among them,
+#     wherever written and whatever the command holds, in the same places, in a call that hands
+#     its words to a loop, and in the body of a heredoc something may run (unread_heredocs): this
+#     check cannot tell the subcommand from the option's value after one. Until round 74 each
+#     verb took the first word that is no option as its subcommand, so `docker --config dir pull`
+#     read `dir` as the subcommand and its pull as no fetch, go stepped past `-C <dir>` alone,
+#     and a runner's option read as the program it runs (leading_options, unread_option,
+#     odd_command; round 74). The table reads `go -C <dir>` and the `bun --revision` query;
 #   - a setting that changes how bash expands a word, a `shopt`, a `set`, a shell's options, a
 #     variable such as GLOBIGNORE, BASH_ENV or ENV, an `env:` or a `shell:`, written in a step, a
 #     composite action, a script, or the text of a shell's `-c` or a `trap`'s action where that
@@ -703,8 +713,10 @@
 #     passes, because the rule asks whether the job holds a download and never where;
 #   - which module comes down: a download of `packages/envoy` answers for a
 #     `go -C packages/envoy/infra test` whose module `go.work` does not bind;
-#   - commands outside its pattern that fetch, among them `go list -deps`, `go -C=dir build`,
-#     `go mod tidy`, `go get` and `go list -m all`. `go generate` is not one: driven at this
+#   - commands outside its pattern that fetch, among them `go list -deps`, `go mod tidy`, `go get`
+#     and `go list -m all`. `go -C=dir build` was one until round 74, and is now refused by name
+#     wherever it is written, since LEADING_OPTIONS reads `-C` only as a word of its own
+#     (odd_command; dispatch://INFRA-1545, round 74). `go generate` is not one: driven at this
 #     head in packages/envoy with an empty module cache and GOPROXY=off, `go generate -n ./...`
 #     exits 0, while `go list -deps ./cmd/dispatch` fails `module lookup disabled by
 #     GOPROXY=off`. Only a command a `//go:generate` directive runs can fetch.
@@ -740,7 +752,10 @@
 # of BUN_SUBCOMMANDS, npm, pnpm or yarn with one of NPM_SUBCOMMANDS, playwright install, go mod
 # download, go install, mise with one of MISE_SUBCOMMANDS, crane with one of CRANE_SUBCOMMANDS,
 # docker pull, pulumi plugin install, and gh — every subcommand of it but the local ones named
-# next.
+# next. A subcommand is the first word after the options LEADING_OPTIONS reads for that tool
+# before it, each with the words it takes, and the program a package runner runs is read the same
+# way. Any other option there is refused by name, since this check cannot tell the subcommand from
+# that option's value (leading_options, odd_command; dispatch://INFRA-1545, round 74).
 #
 # gh is read the other way round from the rest, by what it is not. `gh api` and `gh release
 # download` were the whole of its table once, and an unretried `gh run list`, `gh pr view`, `gh
@@ -1897,6 +1912,27 @@ GH_AUTH_LOCAL = {"git-credential", "setup-git", "switch", "token"}
 GH_GROUPS = {"accessibility", "attestation", "auth", "cache", "codespace", "gist", "gpg-key",
              "issue", "label", "org", "preview", "project", "release", "repo", "ruleset", "run",
              "search", "secret", "ssh-key", "variable", "workflow"}
+# The tools whose subcommand THE VERBS reads, and the package runners RUNNERS names, whose program
+# is read the same way: verb_of and silent_verb_of read each from the first word after the options
+# LEADING_OPTIONS reads for it (leading_options).
+SUBCOMMAND_TOOLS = {"apt-get", "apt", "aptitude", "apk", "pip", "pip3", "uv", "bun", "npm", "pnpm",
+                    "yarn", "playwright", "go", "mise", "crane", "docker", "gh", "pulumi"} | RUNNERS
+# The options a tool of SUBCOMMAND_TOOLS may write before its subcommand, each with the words after
+# it that it takes, as LEADING_OPTION's refusal names them. Each entry is a form the tree writes,
+# and the comment above it says where. A tool with no entry reads none. Any other option before
+# the subcommand is refused by name wherever it is written (leading_options, odd_command), since
+# this check cannot tell the subcommand from that option's value. Until round 74 each verb took
+# the first word that is no option as its subcommand, so in `docker --config dir pull` the value
+# `dir` read as the subcommand and the pull as no fetch; go stepped past `-C <dir>` alone, and
+# read `go -C=dir mod download` as no fetch (dispatch://INFRA-1545, round 74). Informational
+# flags still work. An informational word after an unread option does not excuse that option.
+LEADING_OPTIONS: dict[str, dict[str, tuple[str, ...] | None]] = {
+    # `go -C <dir>`: retried module downloads in workflows, release commands, and the
+    # agent-secrets build in packages/daemon/docker/worker.Dockerfile.
+    "go": {"-C": ("<dir>",)},
+    # The setup-bun action and tool-fallback read the binary's revision, not a subcommand.
+    "bun": {"--revision": None},
+}
 # The write scopes check-release-credentials.sh counts as a credential (its WRITE_SCOPES), and the
 # deploy key it reads beside them.
 WRITE_SCOPES = ("contents", "id-token", "attestations", "actions")
@@ -3547,6 +3583,20 @@ SHELL_OPTION = (
     "is the file or the text the shell runs, so a fetch or a script there is held to no floor "
     "and charged to no budget. Write `-o` and `-O` each as a word of its own: `-e -o pipefail`, "
     "not `-eo pipefail`")
+# An option before the subcommand of a tool SUBCOMMAND_TOOLS names, or before the program a
+# package runner runs, that LEADING_OPTIONS does not read for that tool, refused by name whatever
+# the command holds (leading_options, odd_command; dispatch://INFRA-1545, round 74): this check
+# cannot tell the subcommand from that option's value. The tree writes none.
+LEADING_READ = [" ".join([tool, option, *(taken or ())]) for tool, options in LEADING_OPTIONS.items()
+                for option, taken in options.items()]
+LEADING_OPTION = (
+    "runs `{tool}` with `{option}` before its subcommand, an option this check does not read "
+    "there. Before a subcommand it reads "
+    + (ticked(LEADING_READ, "and") + " alone" if LEADING_READ else "no option")
+    + ". It also accepts informational flags " + ticked(sorted(INFORMATIONAL), "or")
+    + ". An unread option may take a value, so the gate does not guess the subcommand. "
+    "Where the tool takes the option after its subcommand, write it there. Otherwise add the "
+    "option under `{tool}` in LEADING_OPTIONS in this check, with the words it takes")
 BUSYBOX_RUN = (
     "runs `{program}`, a program named by an argument of `busybox`, a form this check does "
     "not read: it reads no fetch and no run of a script there, so a `busybox wget` or a `busybox "
@@ -3989,7 +4039,12 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
     command or the shell's operand: `xargs -rn 1 bash` passed, and so did `timeout --kill 5 60
     curl …`, its fetch read as none, while a `timeout` option cluster ending in `-k` or `-s`,
     such as `-vk`, was refused alone, and only where a fetch was written (dispatch://INFRA-1545,
-    round 74)."""
+    round 74). So is an option before the subcommand of a tool SUBCOMMAND_TOOLS names, or before
+    the program a package runner runs, that LEADING_OPTIONS does not read (unread_option): after
+    one this check cannot tell the subcommand from the option's value. Until round 74 the verb
+    reading took the first word that is no option as the subcommand, so `docker --config dir
+    pull` read `dir` as the subcommand and its pull as no fetch (dispatch://INFRA-1545, round
+    74)."""
     rest = list(words)
     wrapper: str | None = None
     # Every wrapper in front of the command, as written, `time` aside: the one that may stand
@@ -4054,6 +4109,9 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
             kind, option = shell_operand(rest)
             if kind == "option":
                 return SHELL_OPTION.format(shell=first, option=option), False, True
+        unread = unread_option(rest)
+        if unread is not None:
+            return LEADING_OPTION.format(tool=unread[0], option=unread[1]), False, True
         return None
     return None
 
@@ -4073,9 +4131,57 @@ def helper_bound_word(words: list[str]) -> str | None:
     return rest[2] if len(rest) > 2 and rest[0] == "retry_fetch" else None
 
 
-def subcommand(words: list[str]) -> str | None:
-    """The first word that is not an option."""
-    return next((word for word in words if not word.startswith("-")), None)
+def answers_itself(rest: list[str]) -> bool:
+    """Whether the remaining arguments include an informational flag before `--`.
+
+    Call this after removing known option values, which can look like flags.
+    """
+    own = rest[:rest.index("--")] if "--" in rest else rest
+    return any(word in INFORMATIONAL for word in own)
+
+
+def leading_options(name: str, rest: list[str]) -> tuple[list[str], str | None]:
+    """The words of a command of `name`, a tool SUBCOMMAND_TOOLS names, from its subcommand on,
+    `rest` being the words after the tool's own word; and the first option word before that
+    subcommand that LEADING_OPTIONS does not read for the tool, left in place, or None. Each
+    option it reads is taken off with the words it takes, so the word after them is the
+    subcommand, or the program a package runner runs. The one reading of these options: verb_of,
+    silent_verb_of, unread_option and dockerfile_builds share it, and rule 11's patterns are
+    built from the same table. Until round 74 each verb took the first word that is no option as
+    its subcommand, so the value of an option before it, `dir` in `docker --config dir pull`,
+    read as the subcommand and the pull as no fetch (dispatch://INFRA-1545, round 74)."""
+    read = LEADING_OPTIONS.get(name, {})
+    at = 0
+    while at < len(rest) and rest[at].startswith("-"):
+        if rest[at] not in read:
+            return rest[at:], rest[at]
+        taken = read[rest[at]]
+        if taken is None:
+            return [], None  # The option reports metadata instead of running a subcommand.
+        at += 1 + len(taken)
+    return rest[at:], None
+
+
+def unread_option(words: list[str]) -> tuple[str, str] | None:
+    """The tool and the option, where these words run a tool SUBCOMMAND_TOOLS names with an
+    option before its subcommand that leading_options does not read, read through each package
+    runner to the program it runs. An informational flag is accepted only if the reader reaches
+    it without passing an unread option.
+    odd_command refuses the option by name, as does the
+    reading of a call that hands such words to a loop (unread_in; dispatch://INFRA-1545, round
+    74)."""
+    while words:
+        name = program_name(words[0])
+        if name not in SUBCOMMAND_TOOLS:
+            return None
+        words, option = leading_options(name, words[1:])
+        if option is not None:
+            if option in INFORMATIONAL:
+                return None
+            return name, option
+        if name not in RUNNERS:
+            return None
+    return None
 
 
 def gh_verb_of(rest: list[str]) -> str | None:
@@ -4083,7 +4189,8 @@ def gh_verb_of(rest: list[str]) -> str | None:
     where that subcommand reads and writes nothing over the network. Every gh subcommand but
     GH_LOCAL's and the `gh auth` actions GH_AUTH_LOCAL names reaches api.github.com over HTTPS,
     which is the read `gh api` already makes, so the default here is that a gh call is a fetch:
-    a subcommand nobody listed is held to the floor rather than passing unseen."""
+    a subcommand nobody listed is held to the floor rather than passing unseen. `rest` is the
+    words from the subcommand on, as verb_of hands them over after leading_options."""
     words = [word for word in rest if not word.startswith("-")]
     sub = words[0] if words else None
     if sub is None or sub in GH_LOCAL:
@@ -4099,63 +4206,58 @@ def gh_verb_of(rest: list[str]) -> str | None:
 
 
 def verb_of(words: list[str]) -> str | None:
-    """The fetch verb these words run, named as the list and the messages name it, or None."""
+    """The fetch verb these words run, named as the list and the messages name it, or None. A
+    tool SUBCOMMAND_TOOLS names is read from the subcommand leading_options finds. After an
+    option before it that LEADING_OPTIONS does not read, no verb is read here, and odd_command
+    refuses that option by name (dispatch://INFRA-1545, round 74)."""
     if not words:
         return None
-    # Its own options, which stop at a `--`: past that separator the words belong to a command
-    # this one runs (`mise x "$pin" -- omp --version` resolves the tool and then asks it, and
-    # that trailing `--version` says nothing about this command).
-    own = words[1:words.index("--")] if "--" in words[1:] else words[1:]
-    if any(word in INFORMATIONAL for word in own):
-        return None
-    name = PROGRAM.sub("", words[0]).rsplit("/", 1)[-1]
+    name = program_name(words[0])
     rest = words[1:]
-    if name in RUNNERS:
-        return verb_of(rest)
-    if name in ("curl", "wget") and any(word in ("-V", "-h") for word in rest):
-        return None
+    if name in ("curl", "wget"):
+        if answers_itself(rest) or any(word in ("-V", "-h") for word in rest):
+            return None
     if name == "curl":
         return "curl"
     if name == "wget":
         return "wget"
+    if name not in SUBCOMMAND_TOOLS:
+        return None
+    rest, unread = leading_options(name, rest)
+    if unread is not None or not rest:
+        return None
+    sub = rest[0]
+    if name in RUNNERS:
+        return verb_of(rest)
+    if answers_itself(rest):
+        return None
     if name in ("apt-get", "apt", "aptitude"):
-        sub = subcommand(rest)
         if sub not in APT_SUBCOMMANDS or any(word in APT_SIMULATE for word in rest):
             return None
         return f"apt-get {sub}"
     if name == "apk":
-        sub = subcommand(rest)
         return f"apk {sub}" if sub in APK_SUBCOMMANDS else None
-    if name in ("pip", "pip3") and subcommand(rest) == "install":
-        return "pip install"
+    if name in ("pip", "pip3"):
+        return "pip install" if sub == "install" else None
     if name == "uv":
-        sub = subcommand(rest)
         return f"uv {sub}" if sub in UV_SUBCOMMANDS else None
     if name == "bun":
-        sub = subcommand(rest)
         return f"bun {sub}" if sub in BUN_SUBCOMMANDS else None
     if name in ("npm", "pnpm", "yarn"):
-        sub = subcommand(rest)
         return f"{name} {sub}" if sub in NPM_SUBCOMMANDS else None
     if name == "playwright":
         # `install-deps` is the apt phase, which dispatch://INFRA-1443 owns: it is not this one.
-        return "playwright install" if rest and rest[0] == "install" else None
+        return "playwright install" if sub == "install" else None
     if name == "go":
-        while len(rest) > 1 and rest[0] == "-C":
-            del rest[:2]
         if rest[:2] == ["mod", "download"]:
             return "go mod download"
-        if rest[:1] == ["install"]:
-            return "go install"
-        return None
+        return "go install" if sub == "install" else None
     if name == "mise":
-        sub = subcommand(rest)
         return f"mise {sub}" if sub in MISE_SUBCOMMANDS else None
     if name == "crane":
-        sub = subcommand(rest)
         return f"crane {sub}" if sub in CRANE_SUBCOMMANDS else None
     if name == "docker":
-        return "docker pull" if subcommand(rest) == "pull" else None
+        return "docker pull" if sub == "pull" else None
     if name == "gh":
         return gh_verb_of(rest)
     if name == "pulumi" and rest[:2] == ["plugin", "install"]:
@@ -4165,16 +4267,13 @@ def verb_of(words: list[str]) -> str | None:
 
 def silent_verb_of(words: list[str]) -> str | None:
     """The rule 7 mise subcommand these words run, or None. These are no fetch verbs: each exits
-    0 when it cannot resolve the tool, so what the check does with one is refuse a retry."""
-    if not words:
+    0 when it cannot resolve the tool, so what the check does with one is refuse a retry. The
+    subcommand is the one leading_options finds, as verb_of's is."""
+    if not words or program_name(words[0]) != "mise":
         return None
-    own = words[1:words.index("--")] if "--" in words[1:] else words[1:]
-    if any(word in INFORMATIONAL for word in own):
-        return None
-    if PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] != "mise":
-        return None
-    sub = subcommand(words[1:])
-    return f"mise {sub}" if sub in MISE_SILENT else None
+    rest, unread = leading_options("mise", words[1:])
+    return (f"mise {rest[0]}" if unread is None and rest and rest[0] in MISE_SILENT
+            and not answers_itself(rest) else None)
 
 
 def verb_in(words: list[str]) -> tuple[str, list[str]] | None:
@@ -4184,6 +4283,17 @@ def verb_in(words: list[str]) -> tuple[str, list[str]] | None:
         verb = verb_of(words[index:])
         if verb:
             return verb, words[index:]
+    return None
+
+
+def unread_in(words: list[str]) -> tuple[str, str] | None:
+    """The first tool and option unread_option names among these words, wherever the tool sits:
+    what a call hands a loop that runs `"$@"`, where verb_in reads no verb after such an option
+    (dispatch://INFRA-1545, round 74)."""
+    for index in range(len(words)):
+        unread = unread_option(words[index:])
+        if unread is not None:
+            return unread
     return None
 
 
@@ -5094,13 +5204,15 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
     it is what the passes of that loop wait; an unpriced sleep's is that of the outermost loop
     around it, whose waits hold it; a command's after a closing `}` is
     its own line's; a heredoc's is its body, read as shell for this question alone, where any
-    fetch counts, since no other rule reads that body; a text's is the fetches read in it, each
-    a site on the command's line; and a `retry_fetch` that fetches nothing, and a definition of
-    the helper's own name, are refused wherever they are written. A script path in such a text
-    is refused as an argument of the shell already. It keeps, on `loops`, each loop whose passes
-    this check reads and which no loop is around, with its reach and what that holds, for the
-    sleeps a call there runs in a function, a script or a library, refused once every script is
-    read (loop_reaches; dispatch://INFRA-1545, round 45)."""
+    fetch counts, since no other rule reads that body, and a command of that body that writes an
+    option before a tool's subcommand LEADING_OPTIONS does not read is refused by name at its own
+    line, as it is in a step (dispatch://INFRA-1545, round 74); a text's is the fetches read in
+    it, each a site on the command's line; and a `retry_fetch` that fetches nothing, and a
+    definition of the helper's own name, are refused wherever they are written. A script path in
+    such a text is refused as an argument of the shell already. It keeps, on `loops`, each loop
+    whose passes this check reads and which no loop is around, with its reach and what that
+    holds, for the sleeps a call there runs in a function, a script or a library, refused once
+    every script is read (loop_reaches; dispatch://INFRA-1545, round 45)."""
     end = first_line + text.count("\n")
     sources = {call.target for call in called if call.kind == CALL_SOURCED}
 
@@ -5182,10 +5294,20 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
         if not (helper and loops.defines_helper):
             shapes.append((line, sentence, waits, set(), set(), set()))
     for number, body, sentence, _program, _consumer in unread_heredocs(text):
-        held_sites = sites_of(path, body, first_line + number + 1, step)[0]
+        held_sites, body_loops = sites_of(path, body, first_line + number + 1, step)
         shapes.append((first_line + number, sentence, bool(held_sites),
                        {str(SCRIPTS / match.group(1)) for match in SCRIPT_CALL.finditer(body)}
                        & script_files, set(), set()))
+        # A command of the body that writes an option before a tool's subcommand LEADING_OPTIONS
+        # does not read is refused by name at its own line, as it is in a step. The body's
+        # reading reads no site past that option and keeps its own refusal of it, so the question
+        # above would pass a fetch there (dispatch://INFRA-1545, round 74).
+        for command in body_loops.commands:
+            unread = unread_option(reduce_words(command.words)[0])
+            if unread is not None:
+                shapes.append((command.line, LEADING_OPTION.format(tool=unread[0],
+                                                                   option=unread[1]),
+                               True, set(), set(), set()))
     for line, form, why in loops.shell_texts:
         # A fetch in the text is a site on the command's own line (sites_of_command).
         shapes.append((line, SHELL_TEXT_REFUSAL.format(form=form, why=why),
@@ -5432,8 +5554,16 @@ def sites_of_command(path: str, command: Command, loops: Loops,
         return found
     if name in loops.function_loop:
         # A loop that runs what it is handed: the verb among the call's words is that loop's fetch.
+        # Where none is read, a tool among those words that writes an option before its
+        # subcommand LEADING_OPTIONS does not read is refused by name, as odd_command refuses it
+        # in command position: until round 74 `dir` in `docker --config dir pull` read as the
+        # subcommand here too, and the loop's pull as no fetch (dispatch://INFRA-1545, round 74).
         held = verb_in(words[1:])
         if not held:
+            unread = unread_in(words[1:])
+            if unread is not None:
+                loops.odd_commands.append((command.line, LEADING_OPTION.format(
+                    tool=unread[0], option=unread[1]), True, False))
             return []
         verb, rest = held
         _, _, inner_bound, inner_seconds = reduce_words(rest)
@@ -6373,7 +6503,7 @@ def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mappin
 
 
 # Rule 10's two shapes of a build: the action, and the two `docker` subcommands, each written as
-# the words after `docker` that name it.
+# the words that name it from docker's subcommand on, which leading_options finds as verb_of does.
 BUILD_ACTION = "docker/build-push-action"
 DOCKER_BUILDS = (("build",), ("buildx", "build"))
 
@@ -6397,12 +6527,15 @@ def dockerfile_builds(step: Mapping,
         words = reduce_words(command.words)[0]
         if not words or PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] != "docker":
             continue
-        shape = next((shape for shape in DOCKER_BUILDS
-                      if tuple(words[1:1 + len(shape)]) == shape), None)
+        # After an option before the subcommand that LEADING_OPTIONS does not read, odd_command
+        # refuses the option by name and no build is read here (dispatch://INFRA-1545, round 74).
+        after, unread = leading_options("docker", words[1:])
+        shape = None if unread is not None else next(
+            (shape for shape in DOCKER_BUILDS if tuple(after[:len(shape)]) == shape), None)
         if shape is None:
             continue
         written = None
-        rest = words[1 + len(shape):]
+        rest = after[len(shape):]
         for at, word in enumerate(rest):
             if word in ("--file", "-f"):
                 written = rest[at + 1] if at + 1 < len(rest) else ""
@@ -6719,9 +6852,10 @@ for path in DOCKERFILES:
         found, run_loops = sites_of(path, rest, line, "-")
         # A form odd_command names hides a fetch from every rule here as it does in a step: an
         # option of a wrapper, of `timeout` or of `xargs` this check does not read, a shell's
-        # group of short options holding `o` or `O`, `busybox`. Until round 38 a Dockerfile's
-        # were read and dropped (dispatch://INFRA-1545, rounds 38 and 74). The four Dockerfiles
-        # write none.
+        # group of short options holding `o` or `O`, `busybox`, and an option before a tool's
+        # subcommand that LEADING_OPTIONS does not read. Until round 38 a Dockerfile's were read
+        # and dropped (dispatch://INFRA-1545, rounds 38 and 74). The Dockerfiles use only forms
+        # the gate reads, including the worker's Go build with `-C` as a separate word.
         for _at, sentence, waits, _helper in run_loops.odd_commands:
             if waits:
                 problem(path, line, f"this RUN {sentence} (dispatch://INFRA-1545, round 38).")
@@ -7009,8 +7143,15 @@ for site in exempted:
 # comment says so. An entry matching no job compiling Go here fails this check, as EXEMPTIONS
 # does, so a renamed or deleted job takes its exception with it rather than leaving one live for
 # the next job of that name.
-GO_BUILD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+(?:build|test|vet|run)\b")
-GO_MOD_DOWNLOAD = re.compile(r"\bgo\b(?:\s+-C\s+\S+)?\s+mod\s+download\b")
+# The options between `go` and its subcommand are those LEADING_OPTIONS reads for go, each with the
+# words it takes, so this text reading steps past what verb_of steps past and no more. Any other
+# option there is refused by name wherever it is written (odd_command; dispatch://INFRA-1545,
+# round 74).
+GO_LEADING = "(?:" + "|".join(r"\s+" + re.escape(option) + r"\s+\S+" * len(taken)
+                              for option, taken in LEADING_OPTIONS.get("go", {}).items()
+                              if taken is not None) + ")*"
+GO_BUILD = re.compile(r"\bgo\b" + GO_LEADING + r"\s+(?:build|test|vet|run)\b")
+GO_MOD_DOWNLOAD = re.compile(r"\bgo\b" + GO_LEADING + r"\s+mod\s+download\b")
 GO_BUILD_EXEMPT = {
     (".github/workflows/ci-job-airlock-lean.yaml", "airlock-lean"):
         "the airlock package imports the standard library alone, so this job downloads no module "
