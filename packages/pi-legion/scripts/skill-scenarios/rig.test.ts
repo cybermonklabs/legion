@@ -5517,8 +5517,26 @@ describe("a kept notice", () => {
           .sort()
           .flatMap((file) => jsonLines(path.join(run, "sessions", file)) as Entry[])
       : [];
+  /** Why a run with no out.txt failed: its rig-error.txt, and the last ten lines of each file the
+   * reason names (`see <file>`, the run's own logs) that still exists. */
+  const beforeLaunch = (run: string) => {
+    const errorFile = path.join(run, "rig-error.txt");
+    if (!existsSync(errorFile)) return "no out.txt and no rig-error.txt";
+    const reason = readFileSync(errorFile, "utf8").trim();
+    const logs = [...reason.matchAll(/see (\/\S+)/g)]
+      .map(([, file]) => file?.replace(/[.;,]$/, "") ?? "")
+      .filter((file) => existsSync(file))
+      .map(
+        (file) =>
+          `${file}:\n${readFileSync(file, "utf8").trimEnd().split("\n").slice(-10).join("\n")}`
+      );
+    return [`no out.txt: ${reason}`, ...logs].join("\n");
+  };
   /** What a run shows of a notice MESSAGE: its out.txt's last line, the notices its launch
-   * published, the index of the first Envoy card naming MESSAGE, and of the first answer. */
+   * published, the index of the first Envoy card naming MESSAGE, and of the first answer. A run
+   * with no out.txt failed before its launch (launch_rpc makes the file), and the row deletes its
+   * work directory, so its `out` is the rig's reason (rig-error.txt) and the last lines of the log
+   * that reason names: the one record of why it failed that outlives the row. */
   const seen = (run: string, message: string) => {
     const entries = entriesOf(run);
     const card = entries.findIndex(
@@ -5532,7 +5550,7 @@ describe("a kept notice", () => {
     );
     const out = existsSync(path.join(run, "out.txt"))
       ? readFileSync(path.join(run, "out.txt"), "utf8").trimEnd().split("\n").at(-1)
-      : undefined;
+      : beforeLaunch(run);
     const answerFile = path.join(run, "texts", "launch-answer.json");
     const published: { topic: string; message: string }[] = existsSync(answerFile)
       ? JSON.parse(readFileSync(answerFile, "utf8")).published
