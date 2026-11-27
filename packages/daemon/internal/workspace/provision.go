@@ -328,9 +328,6 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 // issue key and holds no dot, so no issue's own working copy, and none named for a part of an
 // issue (`<key>.<part>`), carries it.
 func FixDir(dir string) string {
-	if dir == "" {
-		return ""
-	}
 	return dir + "-fix"
 }
 
