@@ -87,6 +87,12 @@ test("below 1280 px the page lists short rows, and a row the reader opens is rea
     expect(
       screen.getByRole("searchbox", { hidden: true, name: "Search asks" }).closest("[hidden]")
     ).not.toBeNull();
+    expect(
+      screen.getByRole("heading", { hidden: true, level: 1, name: "Inbox" }).closest("[hidden]")
+    ).toBeNull();
+    expect(
+      screen.getByRole("link", { hidden: true, name: "Answered by you" }).closest("[hidden]")
+    ).toBeNull();
     // The row the reader picked went with the list, so the view takes the focus.
     expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
 
