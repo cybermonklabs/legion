@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/testkernel"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -509,31 +510,6 @@ func pidOf(t *testing.T, path string) int {
 	return pid
 }
 
-// processEnded is whether the process pid is gone, or has exited and waits only to be reaped: its
-// state, the third field of /proc/<pid>/stat after the command in parentheses, reads Z. A process a
-// row's leader left behind is reaped by whatever it was reparented to, not by the run, and
-// kill(pid, 0) answers nil for it until then. A process kill still finds is never read as ended
-// from a /proc entry that cannot be read: the row fails there, naming /proc, since it has no other
-// way to ask. kill is asked again after such a read, because a process that went between the two
-// leaves no entry, and has ended. It calls t.Fatalf, so it must be called from the goroutine
-// running the test.
-func processEnded(t *testing.T, pid int) bool {
-	t.Helper()
-	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
-		return true
-	}
-	stat := filepath.Join("/proc", strconv.Itoa(pid), "stat")
-	body, err := os.ReadFile(stat)
-	if err != nil {
-		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
-			return true
-		}
-		t.Fatalf("%s cannot be read (%v) for process %d, which kill still finds: this row reads from /proc whether a process that answers kill has exited", stat, err, pid)
-	}
-	_, after, ok := strings.Cut(string(body), ") ")
-	return ok && strings.HasPrefix(after, "Z")
-}
-
 // watchGroupGone watches the process group whose leader is pid, every testwait.Poll, until the
 // group answers kill with ESRCH, which it does once no member of it is left, its leader reaped (a
 // zombie still answers), or until the watch is stopped. stop ends the watch and answers when the
@@ -722,7 +698,7 @@ func TestAChildThatIgnoresSIGTERMIsKilledAfterTheGrace(t *testing.T) {
 			t.Errorf("run %d: killed() = false for a command the end of its context stopped (Run = %v)", runs, err)
 		}
 		bound := testwait.Bounded(t, answerBudget, time.Second)
-		if !testwait.Holds(bound, testwait.Poll, func() bool { return processEnded(t, grandchild) }) {
+		if !testwait.Holds(bound, testwait.Poll, func() bool { return testkernel.ProcessEnded(t, grandchild) }) {
 			t.Errorf("run %d: the grandchild the child started in its group (pid %d), which ignores SIGTERM too, still ran %s after the run ended: the stop's SIGKILL did not reach the group (Run = %v)", runs, grandchild, bound, err)
 		}
 		if t.Failed() || !child.endedInTime(t, runs, stopped, took, err, until, within) {

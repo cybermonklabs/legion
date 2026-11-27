@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A Child is the child a row's command starts in the background and leaves in the command's
 // process group (procgroup.Configure), holding the command's output pipe past the command's exit.
 // It tells whether a stop of that group reached it by the moment the run returned, and, where one
-// did, whether os/exec still read that pipe then (After).
+// did, whether os/exec still read that pipe then and when the stop's trap ran (After).
 //
 // The child ignores SIGPIPE, and its SIGTERM trap writes one byte to the pipe and records what the
 // write found, and when the trap ran (testexec.MarkNow). Wait closes the pipe's read end once
@@ -70,7 +71,23 @@ func NewChild(t testing.TB) *Child {
 // answer, a command of the row's, then starts the child in the background, in the command's process
 // group, and exits 0 once the child has set its traps, or once the test process is gone.
 func ChildCommand(answer string) string {
-	return answer + `; sh -c "$1" child "$2" "$3" & while [ ! -e "$2/ready" ] && kill -0 "$3" 2>/dev/null; do sleep 0.01; done; exit 0`
+	return answer + "; " + startLines(`"$1"`, `"$2"`, `"$3"`) + "; exit 0"
+}
+
+// Start is lines of shell for a command's own script that goes on past the child's start, as
+// ChildCommand's does not: they start the child in the background, in the process group of the
+// shell that runs them, and go on once the child has set its traps, or once the test process is
+// gone. The child's script, the directory of its records and the test process's pid are written
+// into the lines, each one quoted shell word, rather than read from the command's arguments.
+func (c *Child) Start() string {
+	args := c.Args()
+	return startLines(shellprefix.Literal(args[0]), shellprefix.Literal(args[1]), args[2])
+}
+
+// startLines starts the child whose script, records directory and test process are the shell
+// words script, dir and owner, and waits for its ready mark while the test process lives.
+func startLines(script, dir, owner string) string {
+	return `sh -c ` + script + ` child ` + dir + ` ` + owner + ` & while [ ! -e ` + dir + `/ready ] && kill -0 ` + owner + ` 2>/dev/null; do sleep 0.01; done`
 }
 
 // Args are the arguments, after its $0, of the command ChildCommand writes: the child's script, the
@@ -95,12 +112,15 @@ func (c *Child) Release(t testing.TB) {
 }
 
 // Stop is what a Child saw of a stop of its group by its run's return (Child.After): no SIGTERM
-// (None); one whose trap's write found the command's output pipe closed (AfterRun), with At the
-// time since boot the trap ran; or, for a run a row cannot judge, why (Unjudged).
+// (None); or one whose trap ran at At, a time since boot, and whose write found the command's
+// output pipe closed (AfterRun) or open (InWait); and, for a run After cannot judge, why
+// (Unjudged). A stop that found the pipe open came inside Wait, where the budget's own stop comes,
+// so After cannot judge it and names why. A row that knows the earliest moment its budget could
+// pass judges an InWait stop whose trap ran before that moment: it was no stop of the budget's.
 type Stop struct {
-	None, AfterRun bool
-	At             time.Duration
-	Unjudged       string
+	None, AfterRun, InWait bool
+	At                     time.Duration
+	Unjudged               string
 }
 
 // Why After cannot judge a run.
@@ -136,7 +156,7 @@ func (c *Child) After(t testing.TB, returned time.Duration, until time.Time) Sto
 		case "closed":
 			seen = Stop{AfterRun: true, At: at}
 		case "open":
-			seen = Stop{Unjudged: stoppedInWait}
+			seen = Stop{InWait: true, At: at, Unjudged: stoppedInWait}
 		default:
 			t.Fatalf("the child's SIGTERM trap recorded %q, want open or closed", found)
 		}

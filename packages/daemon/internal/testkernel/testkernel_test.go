@@ -53,19 +53,34 @@ func TestTheProbeHasTheMasksOnlyWhereTheyRecordItsShell(t *testing.T) {
 //   - a SIGTERM once the run has returned, when Wait has closed the pipe's read end: the trap's
 //     write meets EPIPE, a stop after the run, at a moment past the run's return.
 //   - a SIGTERM while Wait still reads the pipe, before a WaitDelay longer than the case: the write
-//     goes through, a stop After cannot judge.
+//     goes through, a stop inside Wait After cannot judge, at a moment between the SIGTERM and the
+//     run's return.
 //   - a SIGKILL once the run has returned: the child ends with no record, a stop it cannot judge.
 //
 // A command that never started the child leaves no ready mark, and a child whose beat never passes
-// the return After is given is, once After's bound has passed, a run After cannot tell.
+// the return After is given is, once After's bound has passed, a run After cannot tell. A command
+// whose own script starts the child with Start goes on past that start to its own exit, and its
+// child is read as ChildCommand's is.
 func TestAChildTellsWhatAStopOfItsGroupMetFromItsOwnRun(t *testing.T) {
 	until := time.Now().Add(testwait.Bounded(t, time.Minute, 5*time.Second))
 	// run runs the command once, does during to its group (its leader's pid) while Wait has not yet
-	// begun, and answers the child and the time since boot the run returned at.
-	run := func(t *testing.T, waitDelay time.Duration, during func(group int, c *Child)) (*Child, time.Duration, int) {
+	// begun, and answers the child, the time since boot the run returned at, the group, and the
+	// command's exit and output. The command is ChildCommand's, or, where script is given, the
+	// shell text script makes of the child.
+	type ran struct {
+		c        *Child
+		returned time.Duration
+		group    int
+		exit     int
+		out      string
+	}
+	run := func(t *testing.T, waitDelay time.Duration, during func(group int, c *Child), script func(c *Child) string) ran {
 		t.Helper()
 		c := NewChild(t)
 		cmd := exec.Command("sh", append([]string{"-c", ChildCommand("echo answered"), "sh"}, c.Args()...)...)
+		if script != nil {
+			cmd = exec.Command("sh", "-c", script(c))
+		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		var out bytes.Buffer
 		cmd.Stdout = &out
@@ -78,51 +93,55 @@ func TestAChildTellsWhatAStopOfItsGroupMetFromItsOwnRun(t *testing.T) {
 			during(group, c)
 		}
 		_ = cmd.Wait()
-		return c, testexec.SinceBoot(t), group
+		return ran{c: c, returned: testexec.SinceBoot(t), group: group, exit: cmd.ProcessState.ExitCode(), out: out.String()}
 	}
 	const short = 10 * time.Millisecond
 
 	t.Run("no stop", func(t *testing.T) {
-		c, returned, _ := run(t, short, nil)
-		if seen := c.After(t, returned, until); seen != (Stop{None: true}) {
+		r := run(t, short, nil, nil)
+		if seen := r.c.After(t, r.returned, until); seen != (Stop{None: true}) {
 			t.Fatalf("After = %+v, want no stop: nothing signalled the group", seen)
 		}
 	})
 	t.Run("a SIGTERM after the run", func(t *testing.T) {
-		c, returned, group := run(t, short, nil)
-		if err := syscall.Kill(-group, syscall.SIGTERM); err != nil {
+		r := run(t, short, nil, nil)
+		if err := syscall.Kill(-r.group, syscall.SIGTERM); err != nil {
 			t.Fatalf("stop the group: %v", err)
 		}
-		if seen := c.After(t, returned, until); !seen.AfterRun || seen.At < returned || seen.None || seen.Unjudged != "" {
-			t.Fatalf("After = %+v, want a stop after the run, its trap run at or past the run's return %s", seen, returned)
+		if seen := r.c.After(t, r.returned, until); !seen.AfterRun || seen.At < r.returned || seen.None || seen.InWait || seen.Unjudged != "" {
+			t.Fatalf("After = %+v, want a stop after the run, its trap run at or past the run's return %s", seen, r.returned)
 		}
 	})
 	t.Run("a SIGTERM while Wait reads the pipe", func(t *testing.T) {
-		c, returned, _ := run(t, time.Minute, func(group int, c *Child) {
+		var sent time.Duration
+		r := run(t, time.Minute, func(group int, c *Child) {
 			if !testwait.Holds(time.Until(until), testwait.Poll, func() bool {
 				_, err := os.Stat(c.path("ready"))
 				return err == nil
 			}) {
 				t.Fatalf("the child set no traps by the end of the row's bound")
 			}
+			sent = testexec.SinceBoot(t)
 			if err := syscall.Kill(-group, syscall.SIGTERM); err != nil {
 				t.Fatalf("stop the group: %v", err)
 			}
-		})
-		if seen := c.After(t, returned, until); seen != (Stop{Unjudged: stoppedInWait}) {
-			t.Fatalf("After = %+v, want the stop inside Wait: %s", seen, stoppedInWait)
+		}, nil)
+		seen := r.c.After(t, r.returned, until)
+		if !seen.InWait || seen.Unjudged != stoppedInWait || seen.None || seen.AfterRun ||
+			seen.At < sent-2*testexec.ClockTick || seen.At > r.returned+2*testexec.ClockTick {
+			t.Fatalf("After = %+v, want the stop inside Wait, its trap run between the SIGTERM at %s and the run's return at %s: %s", seen, sent, r.returned, stoppedInWait)
 		}
 	})
 	t.Run("a SIGKILL after the run", func(t *testing.T) {
-		c, returned, _ := run(t, short, nil)
-		pid := pidIn(c.path("pid"))
+		r := run(t, short, nil, nil)
+		pid := pidIn(r.c.path("pid"))
 		if pid <= 0 {
 			t.Fatalf("the child wrote no pid")
 		}
 		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 			t.Fatalf("kill the child: %v", err)
 		}
-		if seen := c.After(t, returned, until); seen != (Stop{Unjudged: killedFirst}) {
+		if seen := r.c.After(t, r.returned, until); seen != (Stop{Unjudged: killedFirst}) {
 			t.Fatalf("After = %+v, want the child ended with no record: %s", seen, killedFirst)
 		}
 	})
@@ -132,9 +151,24 @@ func TestAChildTellsWhatAStopOfItsGroupMetFromItsOwnRun(t *testing.T) {
 		}
 	})
 	t.Run("no beat past the return by the bound", func(t *testing.T) {
-		c, returned, _ := run(t, short, nil)
-		if seen := c.After(t, returned+time.Hour, time.Now()); seen != (Stop{Unjudged: notSeen}) {
+		r := run(t, short, nil, nil)
+		if seen := r.c.After(t, r.returned+time.Hour, time.Now()); seen != (Stop{Unjudged: notSeen}) {
 			t.Fatalf("After = %+v, want a run it cannot tell: %s", seen, notSeen)
+		}
+	})
+	t.Run("a child Start began in a script that goes on", func(t *testing.T) {
+		r := run(t, short, nil, func(c *Child) string { return "echo answered\n" + c.Start() + "\necho went on\nexit 3" })
+		if r.exit != 3 || r.out != "answered\nwent on\n" {
+			t.Fatalf("the script exited %d and printed %q, want exit 3 and %q: it goes on past the child's start", r.exit, r.out, "answered\nwent on\n")
+		}
+		if seen := r.c.After(t, r.returned, until); seen != (Stop{None: true}) {
+			t.Fatalf("After = %+v, want no stop: nothing signalled the group", seen)
+		}
+		if err := syscall.Kill(-r.group, syscall.SIGTERM); err != nil {
+			t.Fatalf("stop the group: %v", err)
+		}
+		if seen := r.c.After(t, r.returned, until); !seen.AfterRun || seen.At < r.returned {
+			t.Fatalf("After = %+v, want a stop after the run: the child Start began is in the script's group and holds its pipe", seen)
 		}
 	})
 }
