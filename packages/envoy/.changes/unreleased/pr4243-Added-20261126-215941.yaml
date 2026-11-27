@@ -1,0 +1,5 @@
+kind: Added
+body: 'GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events take an optional exclude_types query parameter: at most 50 comma-separated event types the page leaves out before limit counts it, with order, after, before and ids unchanged. A blank exclude_types leaves out none; an unknown type or an empty item in the list is 400 INVALID_QUERY, and the issue feed''s ETag covers the set.'
+time: 2026-11-26T21:59:41.868411556Z
+custom:
+    Issue: pr4243

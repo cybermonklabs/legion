@@ -556,6 +556,9 @@ test("the view row's controls are toggles with an address each, one line at ever
     }
     // Conversation turns every view off from an address of the issue that is no view's.
     await gotoIssue(page, `/issues/${key}/collaborators`);
+    // `/collaborators` opens Details, which then stands over the page until the reader closes it.
+    await expect(marginShell(page)).toBeVisible();
+    await closeDetails(page);
     await presetToggle(page, "conversation").click();
     await expect(page).toHaveURL(addressOf(key, "conversation"));
 
@@ -656,6 +659,8 @@ test("the view row's controls are toggles with an address each, one line at ever
       await expect(presetChooser(page), "a chosen item left the focus nowhere").toBeFocused();
       // Conversation, chosen from an address of the issue that is no view's, goes to the issue's.
       await gotoIssue(page, `/issues/${key}/collaborators`);
+      await expect(marginShell(page)).toBeVisible();
+      await closeDetails(page);
       await presetChooser(page).click();
       await presetMenuItem(page, "conversation").click();
       await expect(page).toHaveURL(addressOf(key, "conversation"));
