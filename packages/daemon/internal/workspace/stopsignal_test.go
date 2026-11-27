@@ -70,9 +70,12 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // lengthens and which no runner spends on its own work. A runner that sleeps or works, and a
 // command it stops or holds blocked on anything but a CPU, waits for no CPU, so that time stays
 // in the span. Of the wait it takes off, the row counts back against the runner as much CPU as
-// this test process used over the call, since the command could have waited behind it: a runner
-// that keeps the CPUs busy while its command starts is slow, not loaded. A kernel that keeps no
-// run-queue wait, as gVisor's, has nothing taken off, and the row is main's.
+// this test process's own threads used over the call (processCPU reads this process alone,
+// RUSAGE_SELF), since the command could have waited behind them: a runner whose own threads keep
+// the CPUs busy while its command starts is slow, not loaded. Work the runner has another process
+// do, and load from outside this process, are not in that figure, so a wait behind either is
+// taken off as the machine's. A kernel that keeps no run-queue wait, as gVisor's, has nothing
+// taken off, and the row is main's.
 func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	environment := []string{"PATH=" + os.Getenv("PATH")}
 
@@ -304,8 +307,8 @@ func calling(t *testing.T) aCall {
 
 // ownSpan is the runner's own time from a call to a moment of its command's run (own): the span
 // between the two, less held, the part of the command's run-queue wait on the way (waited) that
-// the CPU this test process used over the call (cpu) does not cover. A kernel that keeps no
-// run-queue wait (known false) has nothing taken off.
+// the CPU this test process's own threads used over the call (cpu, processCPU) does not cover. A
+// kernel that keeps no run-queue wait (known false) has nothing taken off.
 type ownSpan struct {
 	own, span, waited, cpu, held time.Duration
 	known                        bool
@@ -313,9 +316,9 @@ type ownSpan struct {
 
 // ownSince is the runner's own time from call to reached, a moment of the command's run as a time
 // since boot, where the kernel kept the command waiting for a CPU for waited on the way there, or
-// keeps no such record (known false). cpuAfter is this test process's CPU time once the call had
-// returned (processCPU), which covers every moment of the call's in which the command could have
-// waited behind this process.
+// keeps no such record (known false). cpuAfter is the CPU time this test process's own threads had
+// used once the call returned (processCPU), which covers every moment of the call's in which the
+// command could have waited behind those threads.
 func ownSince(call aCall, reached, waited time.Duration, known bool, cpuAfter time.Duration) ownSpan {
 	s := ownSpan{span: reached - call.at, cpu: cpuAfter - call.cpu, known: known}
 	if known {
@@ -331,11 +334,11 @@ func (s ownSpan) String() string {
 	if !s.known {
 		return fmt.Sprintf("%s from the call, with nothing taken off: this kernel keeps no run-queue wait (/proc/<pid>/schedstat)", s.span)
 	}
-	return fmt.Sprintf("%s from the call, less %s the kernel kept the command waiting for a CPU (its run-queue wait, %s, less the %s of CPU this test process used over the call)", s.span, s.held, s.waited, s.cpu)
+	return fmt.Sprintf("%s from the call, less %s the kernel kept the command waiting for a CPU (its run-queue wait, %s, less the %s of CPU this test process's own threads used over the call)", s.span, s.held, s.waited, s.cpu)
 }
 
-// processCPU is the CPU time this test process has used so far, user and system, every thread of
-// it (getrusage(2), RUSAGE_SELF).
+// processCPU is the CPU time this test process's own threads have used so far, user and system,
+// every thread of this process and no other process (getrusage(2), RUSAGE_SELF).
 func processCPU(t *testing.T) time.Duration {
 	t.Helper()
 	var usage syscall.Rusage
