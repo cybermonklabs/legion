@@ -59,11 +59,12 @@ type CommitPullsRead struct {
 }
 
 // CommitsPullsAnswer is what one batched read-through answers. Reads is what each commit learned,
-// by commit, and holds only a commit whose answer was stored in full. Asked is each commit that a
-// question the read sent to GitHub named, whatever GitHub answered it: a query GitHub failed
-// asked about each of its commits, a query whose answer was too large asked about none until its
-// halves are asked, and a commit read over REST was asked about by that read. A commit Asked does
-// not hold was asked nothing, so no answer of GitHub's stands behind a claim of it.
+// by commit, and holds only a commit whose answer was stored in full. Asked is each commit whose
+// claim an answer or a failure of GitHub's stands behind: each commit of a query GitHub failed,
+// each commit of an answered query up to and with the one the read stopped at, and a commit read
+// over REST. A query whose answer was too large asks about none until its halves are asked. A
+// commit Asked does not hold has no answer of GitHub's behind a claim of it: no question named it,
+// or GitHub answered it and the read stopped before storing that answer.
 type CommitsPullsAnswer struct {
 	Reads map[string]CommitPullsRead
 	Asked map[string]bool
@@ -74,11 +75,11 @@ type CommitsPullsAnswer struct {
 // answers what each commit learned, by commit (CommitsPullsAnswer.Reads). Only a commit whose
 // answer was stored in full is in Reads. A commit the read did not reach is absent, and so is the
 // commit whose answer it could not store in full, whatever rows it wrote for it first, as
-// ReadThroughCommitPulls answers that commit with its error. For a commit absent from Reads that a
-// sent question named (Asked), the error says why, and only ErrReadThroughNotStored gives its
-// claim back: a failure of GitHub's, its rate limit on a pull request's commit messages among
-// them, keeps it, as it keeps the claim of the read of one commit GitHub failed. A commit no sent
-// question named gives its claim back whatever the error, since GitHub was asked nothing about it.
+// ReadThroughCommitPulls answers that commit with its error. For a commit absent from Reads that
+// Asked holds, the error says why, and only ErrReadThroughNotStored gives its claim back: a failure
+// of GitHub's, its rate limit on a pull request's commit messages among them, keeps it, as it keeps
+// the claim of the read of one commit GitHub failed. A commit Asked does not hold gives its claim
+// back whatever the error, since no answer of GitHub's about it is stored or failed.
 //
 // The commits are asked in batches of CommitPullsBatch, each one query. A batch GitHub's answer
 // is too large for is split in two and asked again, and one commit whose answer alone is too
@@ -172,9 +173,12 @@ type commitPullsRead struct {
 }
 
 // query asks GitHub about shas in one request and stores what it answers through f, splitting the
-// batch where the answer is above the client's limit. Every commit of a query GitHub answered,
-// or failed, is asked (CommitsPullsAnswer.Asked); a query whose answer was too large asks about
-// its commits only through its halves.
+// batch where the answer is above the client's limit. A commit is asked (CommitsPullsAnswer.Asked)
+// once an answer or a failure of GitHub's stands behind it: each commit of a query GitHub failed,
+// and each commit of an answered query that the store loop reached, in order. A query whose answer
+// was too large asks about its commits only through its halves, and the commits after the one the
+// loop stopped at are not asked: GitHub answered them, but nothing of that answer was stored, so
+// no answer of GitHub's is behind their claims and the caller gives them back.
 func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) error {
 	if len(shas) == 0 {
 		return nil
@@ -196,21 +200,31 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 		}
 		return c.query(ctx, f, shas[half:])
 	}
-	for _, sha := range shas {
-		c.answer.Asked[sha] = true
+	failed := func() {
+		for _, sha := range shas {
+			c.answer.Asked[sha] = true
+		}
 	}
 	switch {
 	case err != nil:
+		failed()
 		return fmt.Errorf("query the pull requests of %d commits of %s: %w", len(shas), c.canonical, err)
 	case status != http.StatusOK:
+		failed()
 		return fmt.Errorf("query the pull requests of %d commits of %s: status %d: %s",
 			len(shas), c.canonical, status, githubapp.ShownBody(body))
 	}
 	answered, err := decodeCommitPulls(body, shas)
 	if err != nil {
+		// GitHub's answer could not be read: a failure of GitHub's behind every commit it named.
+		failed()
 		return err
 	}
 	for _, sha := range shas {
+		// GitHub answered sha: from here its claim stands on that answer, stored below or read
+		// over REST, or on GitHub's failure of that REST read. An exit below leaves every commit
+		// after sha unasked.
+		c.answer.Asked[sha] = true
 		pulls, found := answered[sha]
 		switch {
 		case !found:

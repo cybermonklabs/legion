@@ -129,11 +129,11 @@ func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, re
 			if c.readOnly {
 				continue
 			}
-			// No question of the read named this commit, since the read stopped at a failure
-			// before it, or its answer was not stored, or not in full: either way its claim
-			// protects no GitHub answer, so give it back, and the next read asks again at once
-			// rather than CommitPullReadStaleAfter later. A commit a query named that GitHub
-			// failed keeps its claim, as the read of one commit GitHub failed keeps it.
+			// No answer of GitHub's stands behind this commit's claim: the read stopped before it,
+			// in an earlier batch or earlier in its own query's answer, or its answer was not
+			// stored, or not in full. So give the claim back, and the next read asks again at once
+			// rather than CommitPullReadStaleAfter later. A commit GitHub failed, its query or its
+			// own REST read, keeps its claim, as the read of one commit GitHub failed keeps it.
 			if err := c.server.commitPulls.ReleaseAcrossProcesses(settling, c.server.deps.Store.Pool, repo, sha, now); err != nil {
 				slog.Info("dispatch: the claim of a read that stored nothing was not given back, so the next read waits it out",
 					"repo", repo, "commit", sha, "error", err)
