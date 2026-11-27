@@ -141,6 +141,8 @@ export interface NodeLine {
   readonly text: string;
   readonly container?: string;
   readonly again?: () => Promise<MoveOutcome | DeleteOutcome>;
+  /** Whether `again` moves the node, a move or a new row's placing, and not a delete. */
+  readonly moves?: boolean;
 }
 
 /** How a move ended: taken; refused, sent or with its page unread; or dropped unsent, with the
@@ -645,7 +647,7 @@ function refuse(client: QueryClient, chain: Chain, error: unknown): void {
         : () => pressDelete(client, chain.issue, chain.node, act.count);
   writeLine(client, chain, line.text, dropped.length, {
     ...(line.container === undefined ? {} : { container: line.container }),
-    ...(line.retry ? { again } : {}),
+    ...(line.retry ? { again, moves: act.kind !== "delete" } : {}),
   });
 }
 

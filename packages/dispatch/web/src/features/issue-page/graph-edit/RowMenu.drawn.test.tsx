@@ -1906,6 +1906,68 @@ test("a move from the menu that puts the node past a parent's drawn children dra
   });
 });
 
+// R4: Move up and Move down keep the node's parent, so the server answers the `placement_seq` the
+// move was sent under: it reads the sequence again only for a move that changes the parent. The
+// tree draws the row its tab stop rests on wherever it stands, so the case moves a row the stop
+// is not on. Move down from the menu, on the last of the 50 children the heading draws, is refused
+// with the fallback line; the reader goes to the row above, and a press on the moved row's line
+// makes the move again. It puts the node right after the first child past the 50 ("N more rows"):
+// the page draws the rows up to the node, at that place, and the moved row takes the focus.
+test("a move down from the menu made again from its line, keeping the placement_seq and putting the node past its parent's drawn children, draws and focuses its row", async () => {
+  const user = userEvent.setup();
+  const { read } = headingWithManyChildren(CHILD_PAGE + 5);
+  const children = (read.nodes ?? []).filter((each) => each.parent?.id === HEADING.id);
+  const above = children[CHILD_PAGE - 2];
+  const moving = children[CHILD_PAGE - 1];
+  const below = children[CHILD_PAGE];
+  if (above === undefined || moving === undefined || below === undefined) {
+    throw new Error("the heading holds no child past its first page");
+  }
+  answerTreeReads(read, NEVER);
+  const sent = answerNodeRoutes({
+    deletes: [deleted.dry_run],
+    patches: [
+      { body: { code: "TEAPOT", error: "short and stout" }, status: 418 },
+      {
+        body: { after: below.id, parent: HEADING.id, placement_seq: moving.placement_seq },
+        status: 200,
+      },
+    ],
+  });
+  const view = draw();
+  await openMenu(view, user, moving);
+  await user.click(entry(view, CONTROL_LABELS.edit_move_down));
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  expect(sent.patches[0]?.body).toEqual({ after: below.id, parent: HEADING.id });
+  const line = await waitFor(() => {
+    const buttons = rowOf(view, moving)?.querySelectorAll<HTMLElement>('[role="status"] button');
+    const found = [...(buttons ?? [])].find((each) =>
+      (each.textContent ?? "").includes(ANSWER_LINES.not_made)
+    );
+    if (found === undefined) throw new Error("the moved row draws no fallback line");
+    return found;
+  });
+  await user.keyboard("{ArrowUp}");
+  await waitFor(() =>
+    expect(focusedRow(), "the key left the focus off the row above").toBe(rowId(above))
+  );
+  await user.click(line);
+  await waitFor(() =>
+    expect(sent.patches, "the press did not make the move again").toHaveLength(2)
+  );
+  expect(sent.patches[1]?.body).toEqual(sent.patches[0]?.body);
+  await waitFor(() => {
+    const under = rowUnder(view, HEADING, moving);
+    expect(under, "the moved row is not drawn under its parent").not.toBeNull();
+    expect(document.activeElement, "the moved row did not take the focus").toBe(under);
+  });
+  const heading = rowOf(view, HEADING)?.dataset.rowKey ?? "";
+  expect(
+    childKeys(view, heading).slice(CHILD_PAGE - 1, CHILD_PAGE + 1),
+    "the moved row is not drawn right after the sibling it moved past"
+  ).toEqual([below.id, moving.id].map((id) => `${heading}>${id}`));
+});
+
 // R4: at a grey edge the key writes nothing, the caret stays where it was with the focus, and the
 // row shows the entry's reason: the first statement has no sibling above to indent under, and is
 // the first to move up.

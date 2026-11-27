@@ -29,7 +29,6 @@ import {
 } from "../lenses/LensMenu";
 import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, LENS_WORDS } from "../page-words";
-import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { abortOnReaderAct } from "../useNodeEditing";
 import {
   type DeleteCount,
@@ -172,11 +171,6 @@ function focusRowOf(inside: HTMLElement | null): void {
   inside?.closest<HTMLElement>("[data-node-row]")?.focus();
 }
 
-/** The node of read id `node` as Graph's held read of issue `key` holds it now. */
-function heldNode(client: QueryClient, key: string, node: string): TreeAnswerNode | undefined {
-  return heldRead(client, key)?.nodes?.find((each) => each.id === node);
-}
-
 /** Lens's entry of the menu of `node`: the act part W offers on it, where it offers one
  *  (`lensActFor`), on the node's address. */
 function lensOf(
@@ -204,27 +198,28 @@ function holdsEditing(client: QueryClient, outline: OutlineEdits, node: TreeNode
 
 /**
  * Keeps the row of a node an act moves in view and focused (R4, R8). Made as the act is pressed,
- * it notes the node's `placement_seq` as Graph's held read holds it; once the act is taken with a
- * new one - a move, whose answer `node-writes.ts` writes into the held read - and the reader has
- * not acted since, the outline unfolds every branch above the node's own row under its new
- * parent, a folded new parent among them, and gives that row the focus once it is drawn
- * (`RowReveal.moved`): under the row of the new parent, which can be read as another node that row
- * draws with it (`placement.ts`' `rowReadIds`). A taken delete leaves the sequence as it was: the
- * outline's drop rule moves the focus once a read draws the tree without the node. An act refused
- * with a refusal that reads the tree again (a 412, a gone node), and an act dropped unsent - a
- * move queued behind a refused one, whose own pick ended the earlier act's hold on the reader's
- * acts - keeps the focus on the node's row where that read draws it (`RowReveal.kept`), so a
- * `412 PRECONDITION_FAILED` whose read draws the node under the parent the server holds leaves
- * the reader on its row.
+ * with whether the act moves the node (`moves`): once a move is taken - whose answer
+ * `node-writes.ts` writes into the held read, under the node's old parent or a new one alike, so
+ * Move up and Move down, which keep the parent and its `placement_seq`, are taken moves too - and
+ * the reader has not acted since, the outline unfolds every branch above the node's own row under
+ * its parent, a folded new parent among them, and draws the rows up to it where its place is past
+ * the rows its parent draws, and gives that row the focus once it is drawn (`RowReveal.moved`):
+ * under the row of the parent, which can be read as another node that row draws with it
+ * (`placement.ts`' `rowReadIds`). A taken delete moves no focus here: the outline's drop rule
+ * moves it once a read draws the tree without the node. An act refused with a refusal that reads
+ * the tree again (a 412, a gone node), and an act dropped unsent - a move queued behind a refused
+ * one, whose own pick ended the earlier act's hold on the reader's acts - keeps the focus on the
+ * node's row where that read draws it (`RowReveal.kept`), so a `412 PRECONDITION_FAILED` whose
+ * read draws the node under the parent the server holds leaves the reader on its row.
  */
 function keepInView(
   client: QueryClient,
   edit: RowEdit,
   id: string,
-  node: string
+  node: string,
+  moves: boolean
 ): (outcome: MoveOutcome | DeleteOutcome) => void {
   const { key } = edit.outline.issue;
-  const before = heldNode(client, key, node)?.placement_seq;
   const acts = abortOnReaderAct();
   return (outcome) => {
     const acted = acts.signal.aborted;
@@ -234,11 +229,11 @@ function keepInView(
       edit.outline.reveal?.kept(node);
       return;
     }
+    if (!moves || outcome.status !== "taken") return;
     const held = heldRead(client, key);
-    const now = held?.nodes?.find((each) => each.id === node);
-    const parent = now?.parent?.id;
-    if (outcome.status !== "taken" || held === undefined || parent === undefined) return;
-    if (now?.placement_seq !== before) edit.outline.reveal?.moved(id, rowReadIds(held, parent));
+    const parent = held?.nodes?.find((each) => each.id === node)?.parent?.id;
+    if (held === undefined || parent === undefined) return;
+    edit.outline.reveal?.moved(id, rowReadIds(held, parent));
   };
 }
 
@@ -376,7 +371,7 @@ export function RowMenu({
   const pickMove = (entry: MoveEntry) => {
     if (readId === undefined) return;
     finish();
-    const kept = keepInView(client, edit, node.id, readId);
+    const kept = keepInView(client, edit, node.id, readId, true);
     void writes.move(readId, entry, edit.row).then(kept);
   };
 
@@ -777,11 +772,11 @@ export function RowEditLine({
   const own = editor?.lineOf?.(node);
   const line = written ?? (own === undefined ? undefined : { text: own });
   if (line === undefined) return null;
-  const { again, container } = line;
+  const { again, container, moves } = line;
   let press: (() => void) | undefined;
   if (again !== undefined && readId !== undefined) {
     press = () => {
-      const kept = keepInView(client, edit, node.id, readId);
+      const kept = keepInView(client, edit, node.id, readId, moves === true);
       void again().then((outcome) => {
         if (outcome.status === "count_moved") edit.outline.confirmDelete(readId, outcome.count);
         kept(outcome);

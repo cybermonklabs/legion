@@ -1358,6 +1358,193 @@ test("a move that puts the node past the drawn rows draws the rows up to it and 
   });
 });
 
+/** How many paragraphs c-move's fifth row writes under the issue: with the issue's other children,
+ *  more than the 50 of a node's children Graph draws (part T's `CHILD_PAGE`), so the last of them
+ *  stand past the drawn rows. */
+const PAST_PARAGRAPHS = 55;
+
+/** The read ids among `ids` that Graph draws a row of, in the order of `ids`. */
+function drawnAmong(page: Page, ids: readonly string[]): Promise<string[]> {
+  return issuePage(page).evaluate((root, wanted) => {
+    const drawn = new Set(
+      [...root.querySelectorAll("[data-node-row]")].map((row) =>
+        row.getAttribute("data-node-read-id")
+      )
+    );
+    return wanted.filter((id) => drawn.has(id));
+  }, ids);
+}
+
+/** Where Graph draws the first row of `readId`: the read id of the row drawn right before it, null
+ *  where no row of it is drawn or none stands before it; and the read id of the focused row. */
+async function drawnPlace(
+  page: Page,
+  readId: string
+): Promise<{ readonly focused: string | null; readonly follows: string | null }> {
+  const follows = await issuePage(page).evaluate((root, id) => {
+    const rows = [...root.querySelectorAll("[data-node-row]")];
+    const at = rows.findIndex((row) => row.getAttribute("data-node-read-id") === id);
+    return rows[at - 1]?.getAttribute("data-node-read-id") ?? null;
+  }, readId);
+  return { focused: await focusedRowReadId(page), follows };
+}
+
+// c-move, fifth row: Move up and Move down from the menu keep the node's parent, and so its
+// `placement_seq`, and each draws the row at its new place where that is past the 50 children the
+// outline draws of its parent ("N more rows"). The seed writes `PAST_PARAGRAPHS` paragraphs under
+// the issue, all on the tree read's one page, and the row moves the last one Graph draws. A plain
+// Move down puts it right after the first paragraph past the drawn rows, and Move up puts it back.
+// Both draw the row at its place under either rule: the tree draws the row its tab stop rests on,
+// the moved row here, wherever it stands among its parent's children (`IssueTree.tsx`'s `stop`,
+// `treeRows`' `placed`). So the case that needs the taken move to draw the row moves a row the
+// tab stop is not on: Move down is refused with the line whose press makes it again, the reader
+// goes to the row above, and a press on the moved row's line makes the move again, which draws the
+// row at its place with the focus on it. The refusal is a 418 of the row's own route: the write
+// store sends a move answered with a 5xx again under its key, so only a code it does not send
+// again draws that line. The address names the comment on the issue and not the paragraph, since
+// a node an address names stays drawn wherever it moves (`address-target.ts`, `treeRows`'
+// `named`). After a reload the node stands where the answer put it.
+// SLOW(>=2s): a seed grown by `PAST_PARAGRAPHS` paragraphs of the issue's own fragment, waited for
+// until the block index ranks each, a landing, four moves from the menu each answered, one of them
+// refused by the row's own route, and a reload.
+test("Move up and Move down from the menu draw the row at its place past the drawn rows", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await proseRowGate(page, seed.key));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    const words = Array.from(
+      { length: PAST_PARAGRAPHS },
+      (_, at) => `The issue's paragraph ${String(at + 1).padStart(2, "0")} past the drawn rows.`
+    );
+    await insertInto(seed.tree, "end", `${words.join("\n\n")}\n`);
+    const ranked = (read: IssueTreeRead): string[] =>
+      childIds(read, ids.issue).filter((id) => {
+        const node = nodeOf(read, id);
+        return (
+          node !== undefined &&
+          node.rank !== null &&
+          typeof node.placement_seq === "number" &&
+          words.some((one) => node.text.includes(one))
+        );
+      });
+    await expect
+      .poll(async () => ranked(await treeOf(key)).length, {
+        message: "the block index ranks every paragraph the row writes under the issue",
+        timeout: 120_000,
+      })
+      .toBe(PAST_PARAGRAPHS);
+    const read = await treeOf(key);
+    const paragraphs = ranked(read);
+    expect(
+      paragraphs.map((id) => words.findIndex((one) => nodeOf(read, id)?.text.includes(one))),
+      "the paragraphs stand under the issue in the order the row wrote them"
+    ).toEqual(words.map((_, at) => at));
+
+    await seedEventsLanded(page);
+    const sent = watchNodeRequests(page, key);
+    const traffic = watchApiRequests(page);
+    await landOn(page, key, ids.issueComment, "the comment on the issue");
+    await expectLoadSettled(traffic);
+    const drawn = await settledValue("the paragraphs Graph draws under the issue", () =>
+      drawnAmong(page, paragraphs)
+    );
+    expect(
+      drawn,
+      "Graph draws the paragraphs under the issue from the first, up to its drawn rows"
+    ).toEqual(paragraphs.slice(0, drawn.length));
+    expect(drawn.length, "Graph draws fewer than two of the paragraphs").toBeGreaterThanOrEqual(2);
+    expect(
+      drawn.length,
+      "Graph draws every paragraph: none stands past the drawn rows"
+    ).toBeLessThan(paragraphs.length);
+    const above = paragraphs[drawn.length - 2] ?? "";
+    const moving = paragraphs[drawn.length - 1] ?? "";
+    const below = paragraphs[drawn.length] ?? "";
+
+    // A plain Move down and Move up from the menu, the moved row holding the tab stop.
+    await focusOn(readRow(page, moving).first(), "the last paragraph Graph draws");
+    await openRowMenu(page, "press", "the last paragraph Graph draws");
+    await menuEntry(page, EDIT_LABELS.edit_move_down).click();
+    const down = await nthWrite(sent, 1, "Move down sends no PATCH");
+    expect((await down.answer)?.status, "the menu's Move down is refused").toBe(200);
+    expect(member(down.body, "after"), "Move down names the paragraph below as after").toBe(below);
+    await expect
+      .poll(() => drawnPlace(page, moving), {
+        message: "the menu's move draws the row at its place",
+      })
+      .toEqual({ focused: moving, follows: below });
+    await openRowMenu(page, "press", "the moved paragraph");
+    await menuEntry(page, EDIT_LABELS.edit_move_up).click();
+    const up = await nthWrite(sent, 2, "Move up sends no PATCH");
+    expect((await up.answer)?.status, "the menu's Move up is refused").toBe(200);
+    expect(member(up.body, "after"), "Move up names the paragraph above as after").toBe(above);
+    await expect
+      .poll(() => drawnPlace(page, moving), {
+        message: "the menu's move draws the row at its place",
+      })
+      .toEqual({ focused: moving, follows: above });
+
+    // Move down refused with the line whose press makes it again, the reader on the row above,
+    // and the move made again from that line: the tab stop is not on the moved row.
+    let refusing = true;
+    const nodes = `/api/v1/issues/${encodeURIComponent(key)}/nodes/`;
+    await page.route(
+      (url) => url.pathname.startsWith(nodes),
+      async (route) => {
+        if (refusing && isMoveOf(route.request(), key, moving)) {
+          refusing = false;
+          await route.fulfill({
+            json: { code: "TEAPOT", error: "the row's own refusal" },
+            status: 418,
+          });
+          return;
+        }
+        await route.fallback();
+      }
+    );
+    await openRowMenu(page, "press", "the moved paragraph");
+    await menuEntry(page, EDIT_LABELS.edit_move_down).click();
+    const refused = await nthWrite(sent, 3, "Move down sends no PATCH");
+    expect((await refused.answer)?.status, "the row's route does not refuse Move down").toBe(418);
+    const line = refusalLine(readRow(page, moving).first()).getByRole("button");
+    await expect(
+      line,
+      "the refused Move down draws no line whose press makes it again"
+    ).toContainText(EDIT_LINES.not_made);
+    await page.keyboard.press("ArrowUp");
+    await expect
+      .poll(() => focusedRowReadId(page), {
+        message: "ArrowUp does not take the focus to the paragraph above",
+      })
+      .toBe(above);
+    await line.click();
+    const retry = await nthWrite(sent, 4, "a press on the line sends no PATCH");
+    expect((await retry.answer)?.status, "the move made again from the line is refused").toBe(200);
+    expect(placeOf(retry), "the press on the line makes the same Move down again").toEqual(
+      placeOf(refused)
+    );
+    expect(
+      nextTag(await retry.answer),
+      "Move down keeps the node's parent, so its answer gives the placement_seq it was sent under"
+    ).toBe(retry.ifMatch);
+    await expect
+      .poll(() => drawnPlace(page, moving), {
+        message: "the menu's move draws the row at its place",
+      })
+      .toEqual({ focused: moving, follows: below });
+
+    const after = await treeAfterReload(page, key);
+    const top = childIds(after, ids.issue);
+    expect(
+      top[top.indexOf(moving) - 1],
+      "after a reload the moved paragraph stands right after the one it moved past"
+    ).toBe(below);
+  });
+});
+
 // ---------------------------------------------------------------------------------------------
 // c-retype
 // ---------------------------------------------------------------------------------------------
