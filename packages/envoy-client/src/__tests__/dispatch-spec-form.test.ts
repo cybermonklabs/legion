@@ -524,27 +524,30 @@ describe("dispatch spec-form", () => {
       "root",
       "spec.md belongs to a root of The Spec, so Dispatch refuses no approval request of it for its form.",
     ],
-  ])("a document of scope %s says why Dispatch refuses nothing for it, and still lists its findings", async (scope, line) => {
-    forms["ACME-2-spec"] = formRead(
-      "ACME-2-spec",
-      "spec.md",
-      2,
-      scope,
-      { statement: 1 },
-      [finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES)],
-      [`- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`]
-    );
+  ])(
+    "a document of scope %s says why Dispatch refuses nothing for it, and still lists its findings",
+    async (scope, line) => {
+      forms["ACME-2-spec"] = formRead(
+        "ACME-2-spec",
+        "spec.md",
+        2,
+        scope,
+        { statement: 1 },
+        [finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES)],
+        [`- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`]
+      );
 
-    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+      const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
 
-    expect(code).toBe(0);
-    expect(stdout.split("\n")).toEqual([
-      line,
-      "The findings below are for you to read.",
-      `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
-      "",
-    ]);
-  });
+      expect(code).toBe(0);
+      expect(stdout.split("\n")).toEqual([
+        line,
+        "The findings below are for you to read.",
+        `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
+        "",
+      ]);
+    }
+  );
 
   test("a document out of scope with no finding says why, then what Dispatch read", async () => {
     forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "no_root", { statement: 2 });

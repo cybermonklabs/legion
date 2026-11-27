@@ -154,16 +154,17 @@ test.each([
 // issueTabReferences): its reference's owner is the issue, the Conversation's and Activity's name
 // the issue's events, as `log` always has, and every other view tab is a `tab` of the issue, which
 // no tool that acts on a document takes as the issue's spec.
-test.each(
-  DISPATCH_DASHBOARD_PAGES.tabs.map(({ reference }) => reference)
-)("the tab reference dispatch://CORE-1/%s names the issue", (reference) => {
-  const read = parseDispatchRef(`dispatch://CORE-1/${reference}`);
-  expect(read?.owner).toEqual({ kind: "issue", issue: "CORE-1" });
-  expect(read?.kind).toBe(
-    reference === "log" || reference === "activity"
-      ? "log"
-      : reference === "children"
-        ? "children"
-        : "tab"
-  );
-});
+test.each(DISPATCH_DASHBOARD_PAGES.tabs.map(({ reference }) => reference))(
+  "the tab reference dispatch://CORE-1/%s names the issue",
+  (reference) => {
+    const read = parseDispatchRef(`dispatch://CORE-1/${reference}`);
+    expect(read?.owner).toEqual({ kind: "issue", issue: "CORE-1" });
+    expect(read?.kind).toBe(
+      reference === "log" || reference === "activity"
+        ? "log"
+        : reference === "children"
+          ? "children"
+          : "tab"
+    );
+  }
+);

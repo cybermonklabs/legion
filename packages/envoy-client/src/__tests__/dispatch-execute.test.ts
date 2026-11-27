@@ -6772,31 +6772,31 @@ describe("executeDispatchTool", () => {
         hint: string;
         input: (ref: string) => Record<string, unknown>;
       }[] = [
-          {
-            tool: "dispatch_doc_read",
-            named: "doc-read",
-            hint: " and artifact <the document's slug>",
-            input: (ref) => ({ ref }),
-          },
-          {
-            tool: "dispatch_doc_edit",
-            named: "doc-edit",
-            hint: " and artifact <the document's slug>",
-            input: (ref) => ({ ref, ops }),
-          },
-          {
-            tool: "dispatch_comment",
-            named: "comment",
-            hint: "",
-            input: (ref) => ({ ref, body: "Seen." }),
-          },
-          {
-            tool: "dispatch_suggest",
-            named: "suggest",
-            hint: " and artifact <the document's slug>",
-            input: (ref) => ({ ref, quote: "old line", replace_with: "new line" }),
-          },
-        ];
+        {
+          tool: "dispatch_doc_read",
+          named: "doc-read",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref }),
+        },
+        {
+          tool: "dispatch_doc_edit",
+          named: "doc-edit",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, ops }),
+        },
+        {
+          tool: "dispatch_comment",
+          named: "comment",
+          hint: "",
+          input: (ref) => ({ ref, body: "Seen." }),
+        },
+        {
+          tool: "dispatch_suggest",
+          named: "suggest",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, quote: "old line", replace_with: "new line" }),
+        },
+      ];
       for (const tab of ["verification", "plan", "steps", "artifacts", "collaborators"]) {
         for (const ref of [
           `dispatch://DSP-42/${tab}`,
