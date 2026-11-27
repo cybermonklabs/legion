@@ -39,7 +39,13 @@ func stubRoom(t *testing.T, act func(*gws.Conn)) string {
 // test that sees Ended must not read that as a connection that ended.
 func TestAReaderThatCannotApplyAFrameGivesUpWithItsSocketOpen(t *testing.T) {
 	t.Parallel()
-	received := make(chan []byte, 1)
+	// The stub room's read of the peer's next frame, whatever it ends in: a read that fails sends
+	// its error, so the wait below ends either way and the failure is named.
+	type read struct {
+		message []byte
+		err     error
+	}
+	received := make(chan read, 1)
 	url := stubRoom(t, func(connection *gws.Conn) {
 		frame := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 			encoder.WriteVarString("doc")
@@ -52,9 +58,8 @@ func TestAReaderThatCannotApplyAFrameGivesUpWithItsSocketOpen(t *testing.T) {
 		}
 		// No deadline of its own: the read ends on the peer's write, or on the peer's close at
 		// the test's end.
-		if _, message, err := connection.ReadMessage(); err == nil {
-			received <- message
-		}
+		_, message, err := connection.ReadMessage()
+		received <- read{message: message, err: err}
 	})
 	peer := Dial(t, url, nil, "doc", crdt.New())
 	testwait.Receive(t, "the peer's reader to stop on the frame it cannot apply", peer.Ended)
@@ -71,7 +76,13 @@ func TestAReaderThatCannotApplyAFrameGivesUpWithItsSocketOpen(t *testing.T) {
 	if err := peer.AskForDocument(); err != nil {
 		t.Fatalf("write on the socket the reader gave up on: %v", err)
 	}
-	testwait.Receive(t, "the room to receive the peer's write on the socket the reader gave up on", received)
+	got := testwait.Receive(t, "the room's read of the peer's write on the socket the reader gave up on", received)
+	if got.err != nil {
+		t.Fatalf("the room's read of the peer's write failed, so the socket was not open: %v", got.err)
+	}
+	if len(got.message) == 0 {
+		t.Fatal("the room read an empty frame where the peer's sync step 1 should be")
+	}
 }
 
 // A room that drops the connection ends it: the reader did not give up, and the drop is named.
