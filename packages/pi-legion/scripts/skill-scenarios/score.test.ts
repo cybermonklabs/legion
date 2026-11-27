@@ -1,9 +1,10 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -12,12 +13,20 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // then did nothing the scenario asks is a failure.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-const work = temporaryDirectory("skill-scenarios-score");
+// On the memory root (`memoryRoot`): the staging hook below makes 626 directories and writes
+// 3,726 files (1.35 MB), which took 47,248 ms on a dev box's shared disk alone in a 2-CPU cgroup
+// and 483 ms on /dev/shm, where Bun gives a hook 5 s.
+const work = temporaryDirectory("skill-scenarios-score", { root: memoryRoot() });
 const runs = path.join(work, "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
+// The git binary this host's `git` runs (`gitBinary`), linked here by the hook below: the
+// pushed-code run's repository is built with it, and `score.ts runs` finds it first on its PATH.
+// A git wrapper on the host's PATH may change what git does, as the dotfiles git shim gives an
+// agent session's commits in a repository with a remote a trailer.
+const bin = path.join(work, "bin");
 
 /**
  * Every run this file's body stages, as a function the `beforeAll` below calls rather than a
@@ -28,7 +37,9 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  */
 const stagings: (() => void)[] = [];
 
-beforeAll(() => {
+beforeAll(async () => {
+  mkdirSync(bin);
+  symlinkSync(await gitBinary(bin), path.join(bin, "git"));
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
     writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
@@ -294,8 +305,17 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 stagings.push(() => {
   const git = (...args: string[]) => {
     const result = Bun.spawnSync(
-      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      [
+        path.join(bin, "git"),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "-C",
+        pushWork,
+        ...args,
+      ],
+      { cwd: pushWork, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
@@ -3134,7 +3154,9 @@ for (const [n, faults] of [2, 4, 3].entries())
 let out = "";
 let scoredExitCode: number | null = null;
 beforeAll(() => {
-  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
+  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+  });
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
 }, 60_000);

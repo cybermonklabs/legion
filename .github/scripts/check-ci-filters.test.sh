@@ -45,7 +45,8 @@
 # under that caller alone and reads its other jobs under every caller whose filter is not
 # EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
 # workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
-# read the tree through git, and the header's run recipe runs the check, or says why it stops.
+# read the tree through git, and a bare run over a module cache that holds no toolchain runs the
+# check, or says why it stops.
 # The tie entry that go-test-reads.sh writes for each read (tie_entry) holds every path that the
 # read's glob selects.
 #
@@ -65,7 +66,9 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# proxy is the stalled proxy a case below runs while it runs, which the trap stops if the run ends.
+proxy=""
+trap 'if [ -n "$proxy" ]; then kill "$proxy" 2>/dev/null; fi; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -3854,6 +3857,149 @@ run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "the report names the go env write" "$(contains "$out" 'which this check does not reduce (.*go env')"
 
+# A caller can set any variable the go command reads, and the python3 that starts the engine can
+# be a version manager's shim that gives it a GOROOT and a PATH of its own: mise's gives it the
+# GOROOT of the Go it picks, go1.27.0 where go.work names go1.27.3, which under a caller's
+# GOTOOLCHAIN=local made every go command of the check refuse go.work. The check must answer under
+# all of that as it answers under none of it. The shim here starts the check's Python with a
+# stand-in GOROOT, whose go only refuses, and with that go first on its PATH. The caller sets one
+# variable of each other kind, and the fixture shows what each would do: GOFLAGS, and GOFLAGS
+# again in the default `go env -w` file under XDG_CONFIG_HOME, which an empty GOFLAGS does not
+# override, set the tag that compiles mod/lib/polluted.go, and GOOS compiles mod/lib/lib_plan9.go,
+# each of which imports mod/other, a package the clean closure leaves out, so the filter computed
+# from it would take it and the report count it; GO111MODULE=off lists in GOPATH mode, which cannot
+# find mod/dep, the package mod/lib/dep.go imports; GOWORK=off leaves go.work
+# out of the module files; GOEXPERIMENT names an experiment no go knows. CGO_ENABLED=0 and
+# GOTOOLCHAIN=local are set too with no file of their own: the next case holds cgo, and this
+# fixture's go line is below every go's. Both runs start from a go binary, not a version
+# manager's shim of it, which would put a GOROOT of its own in place of the caller's. The clean
+# answer is held to the green one first, so the two cannot agree by both failing.
+echo "case: a caller's Go variables and a python3 shim's GOROOT and PATH change nothing it reports"
+root=$(fixture caller-go-setup)
+printf '//go:build polluted\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/polluted.go"
+printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_plan9.go"
+mkdir -p "$root/mod/dep"
+printf 'package dep\n' > "$root/mod/dep/dep.go"
+printf 'package lib\n\nimport _ "example.com/m/dep"\n' > "$root/mod/lib/dep.go"
+go_bin="$(cd "$work" && go env GOROOT)/bin"
+python=$(python3 -c 'import sys; print(sys.executable)')
+standin="$work/standin-goroot"
+shim="$work/python3-shim"
+mkdir -p "$standin/bin" "$shim" "$work/caller-config/go"
+printf '#!/bin/sh\necho "the stand-in go ran" >&2\nexit 3\n' > "$standin/bin/go"
+# Each path goes in quoted for the shell that reads it (%q under bash), so a TMPDIR holding a space
+# or a quote names the same files. $PATH and "$@" are the shim's own, written into it unexpanded.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\ntouch %q\nGOROOT=%q PATH=%q:"$PATH" exec %q "$@"\n' \
+  "$shim/started" "$standin" "$standin/bin" "$python" > "$shim/python3"
+chmod +x "$standin/bin/go" "$shim/python3"
+printf 'GOFLAGS=-tags=polluted\n' > "$work/caller-config/go/env"
+check "the go env file sets GOFLAGS for a go command that reads it" \
+  "$(is "$(cd "$work" && env -u GOENV -u GOFLAGS XDG_CONFIG_HOME="$work/caller-config" "$go_bin/go" env GOFLAGS)" "-tags=polluted")"
+set +e
+clean=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u CGO_ENABLED -u GOEXPERIMENT \
+  -u GO111MODULE PATH="$go_bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+clean_status=$?
+polluted=$(env PATH="$shim:$go_bin:$PATH" XDG_CONFIG_HOME="$work/caller-config" GOTOOLCHAIN=local \
+  GOFLAGS=-tags=polluted GOWORK=off GOOS=plan9 CGO_ENABLED=0 GOEXPERIMENT=pollutedexperiment GO111MODULE=off \
+  "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+polluted_status=$?
+set -e
+answer() { grep -Ev '^::stop-commands::[0-9a-f]{32}$|^::[0-9a-f]{32}::$' <<<"$1" || true; }
+check "passes clean" "$(is "$clean_status" 0)"
+check "counts the job's files clean" "$(contains "$clean" '^report: app: [0-9]* files (filter app)$')"
+check "the polluted run's Python is the one the shim started" \
+  "$(is "$(test -e "$shim/started" && echo started || echo missing)" started)"
+check "gives the clean answer under the caller's variables and the shim's GOROOT and PATH" \
+  "$(is "$polluted_status:$(answer "$polluted")" "$clean_status:$(answer "$clean")")"
+
+# A machine whose go defaults to another platform than CI's runner - a darwin/arm64 laptop, or a
+# worker pod whose go.env turns cgo off - lists other files. Here mod/lib/lib_darwin.go,
+# mod/lib/lib_arm64.go and mod/lib/nocgo.go (//go:build !cgo) import mod/other, which the filter
+# leaves out, and only such a go compiles them. The stand-in toolchain is that machine's go: it
+# names its own root for `go env GOROOT`, so the check runs it for every listing, and it fills in
+# GOOS=darwin, GOARCH=arm64 and CGO_ENABLED=0 wherever its caller sets none before it runs the
+# real go. The check lists every go command for CI's platform (ci_filter_coverage.CI_PLATFORM),
+# so it must answer as it does on the real go of this machine.
+echo "case: a go whose defaults are another platform's, cgo off, gives CI's answer"
+root=$(fixture other-host)
+printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_darwin.go"
+printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_arm64.go"
+printf '//go:build !cgo\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/nocgo.go"
+host="$work/darwin-host-goroot"
+mkdir -p "$host/bin"
+# $#, $1, $2, $@ and the defaults are the stand-in's own, written unexpanded; each path goes in
+# quoted (%q under bash), as the shim's above.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nif [ "$#" = 2 ] && [ "$1 $2" = "env GOROOT" ]; then echo %q; exit 0; fi\nif [ "$1" = list ]; then touch %q; fi\nGOOS=${GOOS:-darwin} GOARCH=${GOARCH:-arm64} CGO_ENABLED=${CGO_ENABLED:-0} exec %q "$@"\n' \
+  "$host" "$host/listed" "$go_bin/go" > "$host/bin/go"
+chmod +x "$host/bin/go"
+check "the stand-in's go defaults to darwin/arm64 with cgo off" \
+  "$(is "$(cd "$work" && env -u GOOS -u GOARCH -u CGO_ENABLED "$host/bin/go" env GOOS GOARCH CGO_ENABLED | tr '\n' ' ')" "darwin arm64 0 ")"
+set +e
+clean=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u GOARCH -u CGO_ENABLED \
+  -u GOEXPERIMENT -u GO111MODULE PATH="$go_bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+clean_status=$?
+other=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u GOARCH -u CGO_ENABLED \
+  -u GOEXPERIMENT -u GO111MODULE PATH="$host/bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+other_status=$?
+set -e
+check "passes on this machine's go" "$(is "$clean_status" 0)"
+check "the stand-in's go ran the listings" "$(is "$(test -e "$host/listed" && echo listed || echo missing)" listed)"
+check "gives the same answer on the stand-in's go" \
+  "$(is "$other_status:$(answer "$other")" "$clean_status:$(answer "$clean")")"
+
+# The check starts from the go its own PATH resolves. A PATH holding no go - the bash and dirname
+# the script needs before it looks, and nothing else - is refused at once, naming it, rather than
+# failing in the engine on the first go command with a traceback.
+echo "case: no go on PATH"
+root=$(fixture no-go)
+mkdir -p "$work/no-go-path"
+ln -s "$(type -P bash)" "$work/no-go-path/bash"
+ln -s "$(type -P dirname)" "$work/no-go-path/dirname"
+set +e
+out=$(PATH="$work/no-go-path" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+status=$?
+set -e
+check "fails" "$(is "$status" 1)"
+check "says there is no go on PATH" \
+  "$(contains "$out" '^::error file=.github/scripts/check-ci-filters.sh::no go on PATH, so this check cannot list the closure of any go command')"
+
+# The engine's toolchain() asks go for the root of the toolchain go.work selects, under
+# go_environment() and this machine's own module cache and GOPROXY, and then runs every go
+# command with that toolchain under GOTOOLCHAIN=local. go_environment() drops setup-go's
+# GOTOOLCHAIN=local with the caller's Go variables, so where go.work asks for a go newer than the
+# one installed, by its go line or by its toolchain line, that `go env GOROOT` downloads the
+# toolchain, in the ci-filters job too, and a download that stalls must be named in the step's log
+# while it waits. The proxy here accepts every connection and answers none, as a stalled download
+# does; go1.999.0 is a version no module cache holds.
+echo "case: a toolchain download the check's go env GOROOT makes is on standard error while go waits"
+for what in toolchain go; do
+  root=$(fixture "asks-by-$what")
+  if [ "$what" = toolchain ]; then asked=$'go 1.21\ntoolchain go1.999.0'; else asked='go 1.999.0'; fi
+  printf '%s\n\nuse ./mod\n' "$asked" > "$root/go.work"
+  # Outside the fixture, whose files the check lists.
+  io=$work/asks-by-$what-io
+  mkdir -p "$io/modcache"
+  stalled_proxy "$io"
+  (GOPROXY="http://127.0.0.1:$port" GOMODCACHE="$io/modcache" \
+    exec "$root/.github/scripts/check-ci-filters.sh" >"$io/out" 2>"$io/err") &
+  checking=$!
+  # The wait ends on one of two facts: go has reached the proxy, which it does only once it has
+  # written its downloading line (cmd/go's modfetch.DownloadZip writes the line, then asks the
+  # proxy), or the check has ended without reaching it, so the line can no longer come while go
+  # waits. Reached, go waits on a proxy that never answers, so the check still runs.
+  await_file "$io/accepted" "$checking"
+  seen=$(grep -q '^go: downloading go1\.999\.0 (' "$io/err" && echo true || echo false)
+  running=$(kill -0 "$checking" 2>/dev/null && echo true || echo false)
+  kill "$proxy"
+  wait "$proxy" || true
+  proxy=""
+  wait "$checking" || true
+  check "go.work's $what line asks for go1.999.0: go reaches the proxy with its downloading line already on the check's standard error, while go waits" \
+    "$(is "$came/$seen/$running" file/true/true)"
+done
+
 echo "case: a claimed command that cds into another module of the workspace before it runs"
 root=$(fixture cd-other-module)
 mkdir -p "$root/mod2/cmd/app" "$root/mod2/lib"
@@ -5111,10 +5257,49 @@ printf '//go:build odatrace\n\npackage lib\n\nconst Hooked = true\n' > "$root/mo
 sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
 check "prints every tag, then the set without probe, each as a whole -tags= flag" \
   "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
+# Its go commands run under go_environment(), as the engine's do, so a caller's Go setting changes
+# no set: before, a GOFLAGS go list refuses stopped the script.
+check "prints the same sets under a caller's GOFLAGS" \
+  "$(is "$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)" "$sets")"
+# A go that fails fails the script, naming the go command, with go's own standard error above the
+# refusal, as go wrote it: a go first on PATH that refuses. The interpreter runs by its own path,
+# since a version manager's python3 shim puts its own go first.
+mkdir -p "$work/refusing-go"
+printf '#!/bin/sh\necho "this go refuses" >&2\nexit 1\n' > "$work/refusing-go/go"
+chmod +x "$work/refusing-go/go"
+interpreter=$(python3 -I -c 'import sys; print(sys.executable)')
 status=0
-sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
+sets=$(cd "$root" && PATH="$work/refusing-go:$PATH" "$interpreter" .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
 check "and fails when go list fails" "$(is "$status" 1)"
-check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
+check "naming the go command and its exit, with go's own standard error above it" \
+  "$(is "$sets" $'this go refuses\ngo_build_tags.py: in mod, go tool dist list ... exited 1; its standard error is above')"
+
+# go_build_tags.py's go commands run under go_environment(), which drops setup-go's
+# GOTOOLCHAIN=local, so where go.work asks for a go newer than the one installed, its first go
+# command downloads that toolchain: in the vet steps, and in the changes and ci-filters jobs, where
+# ci_job_reads.py runs it as it is imported, before the engine's own `go env GOROOT`. A download
+# that stalls must be named in the log while it waits. The proxy accepts every connection and
+# answers none (stalled_proxy); go1.999.0 is a version no module cache holds.
+echo "case: a toolchain download go_build_tags.py's go makes is on standard error while go waits"
+root=$(fixture vet-tags-stalled)
+printf 'go 1.999.0\n\nuse ./mod\n' > "$root/go.work"
+io=$work/vet-tags-stalled-io
+mkdir -p "$io/modcache"
+stalled_proxy "$io"
+(cd "$root" && GOPROXY="http://127.0.0.1:$port" GOMODCACHE="$io/modcache" \
+  exec "$interpreter" .github/scripts/go_build_tags.py mod darwin arm64 >"$io/out" 2>"$io/err") &
+listing=$!
+# The wait ends on go reaching the proxy, which it does only after it has written its downloading
+# line, or on the script's end without it, after which the line can no longer come while go waits.
+await_file "$io/accepted" "$listing"
+seen=$(grep -q '^go: downloading go1\.999\.0 (' "$io/err" && echo true || echo false)
+running=$(kill -0 "$listing" 2>/dev/null && echo true || echo false)
+kill "$proxy"
+wait "$proxy" || true
+proxy=""
+wait "$listing" || true
+check "go reaches the proxy with its downloading line already on the script's standard error, while go waits" \
+  "$(is "$came/$seen/$running" file/true/true)"
 
 # odatrace is the one name go_build_tags.py leaves out of every vet that the toolchain does not
 # set or that marks a file no build compiles: only forced-order.sh's build passes it, against a
@@ -5138,11 +5323,14 @@ check "and forced-order.sh passes -tags odatrace to go" \
 # file under its negation that does not compile: the script's last set is the one with no tag,
 # and a shell's command substitution drops a trailing empty line, so a transport of bare sets
 # would vet only -tags=feature and pass. The module sits two directories deep, as
-# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script.
+# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script, and
+# the fixture's go.work lists it, as the repository's lists packages/daemon: the script's go list
+# runs under go_environment(), which drops a caller's GOWORK, so `GOWORK=off` would not reach it.
 echo "case: the typecheck step's own loop vets the file under a negated tag"
 root=$(fixture vet-tags-loop)
 mkdir -p "$root/deep/module"
 printf 'module example.com/deep\n\ngo 1.21\n' > "$root/deep/module/go.mod"
+printf 'go 1.21\n\nuse ./mod\nuse ./deep/module\n' > "$root/go.work"
 printf '//go:build feature\n\npackage module\n\nvar On = 1\n' > "$root/deep/module/on.go"
 printf '//go:build !feature\n\npackage module\n\nvar _ = notDefined\n' > "$root/deep/module/off.go"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci-job-typecheck.yaml" "$root/step.sh" <<'PY'
@@ -5152,7 +5340,7 @@ step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith(
 open(sys.argv[2], "w").write(step["run"])
 PY
 status=0
-loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
+loop=$(cd "$root/deep/module" && bash -e "$root/step.sh" 2>&1) || status=$?
 check "fails" "$(is "$status" 1)"
 check "vets under both sets" \
   "$(is "$(grep -c '^Vetting for darwin with -tags=' <<<"$loop")" 2)"
@@ -6000,8 +6188,14 @@ check "and without the tree, the directory's own files" \
 # and in normal form, so the reads would go missing with nothing failing: each is refused.
 for spelling in ./pkg pkg/ "$root/pkg"; do
   refusal=$(ask refused "$root" "$spelling")
+  # The refusal names the spelling as Python's repr writes it ({directory!r}), which escapes a
+  # quote the path holds, and $root is under TMPDIR, which can hold one. So the text looked for
+  # names it the same way, and is matched as it is written, not as a regex: the path can hold a
+  # character a regex reads as an operator.
+  named=$(python3 -c 'import sys; print(repr(sys.argv[1]))' "$spelling")
+  wanted="files_but_tests is given $named, which is not a path relative to the repository root in normal form"
   check "refuses the directory spelled $spelling, naming the spelling" \
-    "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
+    "$([[ $refusal == *"$wanted"* ]] && echo true || echo false)"
 done
 
 # A run of any mode may change no file of the tree it checks but those its mode writes, and fails
@@ -6372,33 +6566,32 @@ check "is refused" "$(contains "$(alone_held '{"a": ["TestShared"]}')" "^RAISED:
 echo "case: the alone list names a package no unit leg runs"
 check "is refused" "$(contains "$(alone_held '{"c": ["TestOwn"]}')" '^RAISED: UNIT_ALONE_TESTS names c, which no envoy-go leg of .github/go-legs.yaml runs')"
 
-# The header's run recipe, run as the header writes it, from a fixture's root and over a module
-# cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH
+# A bare run, from a fixture's root and over a module cache that holds no toolchain, with
+# GOPROXY=off so that go can fetch none: the run a machine with no recipe makes. Where the go PATH
 # finds already is the version go.work names - the state setup-go or mise leaves when it installs
-# that version itself - the recipe runs the check on that go. Where go cannot have that version,
-# the recipe stops and go says why, rather than stopping without a word.
-recipe=$(sed -n '/^#   v=/,/check-ci-filters\.sh$/s/^#   //p' "$script_dir/check-ci-filters.sh")
-run_recipe() {
+# that version itself - the check runs on that go. Where go cannot have that version, the check
+# fails naming the version go.work requires and the go it ran instead (Session.toolchain), rather
+# than stopping without a word.
+run_bare() {
   set +e
-  out=$(cd "$1" && env -u GOROOT GOMODCACHE="$1.modcache" GOPROXY=off bash -c "$recipe" 2>&1)
+  out=$(cd "$1" && env GOMODCACHE="$1.modcache" GOPROXY=off "$1/.github/scripts/check-ci-filters.sh" 2>&1)
   status=$?
   set -e
 }
 
-echo "case: the header's recipe runs the check on the go PATH finds where that go is go.work's version"
-check "the header holds a recipe that runs the check" "$(contains "$recipe" 'check-ci-filters\.sh$')"
-root=$(fixture recipe-local-go)
+echo "case: a bare run runs the check on the go PATH finds where that go is go.work's version"
+root=$(fixture bare-local-go)
 version=$(cd "$root" && env -u GOROOT GOTOOLCHAIN=local go env GOVERSION)
 printf 'go %s\n\nuse ./mod\n' "${version#go}" > "$root/go.work"
-run_recipe "$root"
+run_bare "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it checked" "$(contains "$out" 'every ci.yaml filter is computed from what its job reads (1 gates)')"
 
-echo "case: the header's recipe says why it stops where go cannot have go.work's version"
-root=$(fixture recipe-missing-go)
+echo "case: a bare run says why it stops where go cannot have go.work's version"
+root=$(fixture bare-missing-go)
 printf 'go 1.999.0\n\nuse ./mod\n' > "$root/go.work"
-run_recipe "$root"
+run_bare "$root"
 check "fails" "$(is "$status" 1)"
-check "names the version it could not have" "$(contains "$out" 'go1\.999\.0')"
+check "names the version it could not have" "$(contains "$out" 'go\.work requires go >= 1\.999\.0 (running go ')"
 
 summary "check-ci-filters.sh computes each filter from its job's Go closure and reads, and holds its table to ci.yaml"

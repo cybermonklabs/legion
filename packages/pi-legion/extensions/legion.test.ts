@@ -12,7 +12,7 @@ import {
   test,
 } from "bun:test";
 import { readFileSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -69,10 +69,12 @@ import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
+  memoryRoot,
   temporaryDirectories,
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
+import { jjBinary, runTool } from "@legion/test-fixtures/version-control-tools";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ConnectionOptions, NatsConnection } from "nats";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
@@ -411,8 +413,24 @@ const jjHomeDirectory = temporaryDirectory("legion-jj-home");
 
 /** The repository every workspace in this file is a copy of: one `jj git init` before the tests.
  * A copy spawns no process, so a test's workspace costs none of bun's 5 s test timeout, which a
- * `jj` process, whose run time is the machine's load, would otherwise spend. */
+ * `jj` process, whose run time is the machine's load, would otherwise spend. The template and its
+ * copies are made on the memory root (`memoryRoot`): "a resumed worker restores its phase"
+ * copies it seven times, and run alone in a 2-CPU cgroup it took 7.7-9.8 s with TMPDIR on a dev
+ * box's shared disk, timing out 1 run of 3, and 2.0-2.3 s on /dev/shm. */
 let jjTemplate = "";
+const jjWorkspaceRoot = memoryRoot();
+
+/** The jj binary this host's `jj` runs (`jjBinary`), which every jj of this file's own runs: the
+ * first `jj` on PATH can be a wrapper that finds its jj from the HOME and PATH it is given, which
+ * here are the test's, and may change what jj does. */
+let jjProgram = "";
+
+/** A directory holding `jj` as a link to `jjProgram`, which each row puts first on this process's
+ * PATH (the `beforeEach` below; `restoreEnvironment` puts the caller's PATH back after each row):
+ * the code under test starts `jj` by name, from this process's PATH, under the HOME `createPi`
+ * sets, where a wrapper first on the caller's PATH finds no jj (a mise shim says "jj is not a
+ * valid shim") or runs another one. */
+const jjBinDirectory = temporaryDirectory("legion-jj-bin");
 
 // The template the beforeAll below builds is `jj git init`'s, and every workspace a row here runs
 // in is a copy of it, so a host with no jj builds nothing and runs none of them. Read once, at
@@ -423,22 +441,19 @@ const skip = skipWithout("jj");
 
 beforeAll(async () => {
   if (skip) return;
-  jjTemplate = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-template-"));
-  const child = Bun.spawn(["jj", "git", "init", jjTemplate], {
-    stdout: "ignore",
-    stderr: "pipe",
-    env: { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
-  });
-  const exitCode = await child.exited;
-  if (exitCode !== 0) {
-    // A spawn killed under the runner exits non-zero with nothing on stderr, so name the code and
-    // signal too: the empty stderr alone reads as jj refusing the command (LEGION-243).
-    const stderr = (await new Response(child.stderr as ReadableStream<Uint8Array>).text()).trim();
-    const signal = child.signalCode === null ? "" : `, signal ${child.signalCode}`;
-    throw new Error(
-      `jj git init exited ${exitCode}${signal}: ${stderr === "" ? "no stderr" : stderr}`
-    );
-  }
+  jjProgram = await jjBinary(jjHomeDirectory);
+  await symlink(jjProgram, path.join(jjBinDirectory, "jj"));
+  jjTemplate = await mkdtemp(path.join(jjWorkspaceRoot, "legion-omp-extension-template-"));
+  await runTool(
+    jjProgram,
+    jjHomeDirectory,
+    { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
+    ["git", "init", jjTemplate]
+  );
+});
+beforeEach(() => {
+  if (skip) return;
+  process.env.PATH = `${jjBinDirectory}:${process.env.PATH ?? ""}`;
 });
 
 afterAll(async () => {
@@ -783,7 +798,7 @@ async function createSubagentTranscriptPaths(): Promise<{
   return { parentFile, childFile };
 }
 async function createJjWorkspace(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-"));
+  const directory = await mkdtemp(path.join(jjWorkspaceRoot, "legion-omp-extension-"));
   temporaryPaths.push(directory);
   await cp(jjTemplate, directory, { recursive: true });
   return directory;
@@ -791,32 +806,34 @@ async function createJjWorkspace(): Promise<string> {
 
 /** `key` at repository scope for the repo `directory` belongs to, as `jj config list` prints it
  * (`user.name = "…"`), or `""` when the repository scope does not set it. `--repo` is the scope;
- * `-R` names the repo. `--include-overridden` (its `# ` marker stripped) keeps the answer the same
- * when the process running the tests — a Legion pane — carries `JJ_USER`/`JJ_EMAIL`, which would
- * otherwise hide the repository value. */
+ * `-R` names the repo, which is also where it runs. `--include-overridden` (its `# ` marker
+ * stripped) keeps the answer the same when the process running the tests — a Legion pane —
+ * carries `JJ_USER`/`JJ_EMAIL`, which would otherwise hide the repository value. It runs with the
+ * environment this process started with (`runTool` with no `env`), not `process.env`, whose HOME
+ * this file points at a directory that does not exist, where jj cannot read a repository's config. */
 async function jjRepoConfig(directory: string, key: string): Promise<string> {
-  const child = Bun.spawn(
-    ["jj", "config", "list", "--repo", "--include-overridden", "-R", directory, key],
-    { stdout: "pipe", stderr: "pipe" }
-  );
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout as ReadableStream<Uint8Array>).text(),
-    new Response(child.stderr as ReadableStream<Uint8Array>).text(),
+  const listed = await runTool(jjProgram, directory, undefined, [
+    "config",
+    "list",
+    "--repo",
+    "--include-overridden",
+    "-R",
+    directory,
+    key,
   ]);
-  if (exitCode !== 0) throw new Error(`jj config list failed: ${stderr}`);
-  return stdout.trim().replace(/^# /, "");
+  return listed.replace(/^# /, "");
 }
 
 async function setJjRepoConfig(directory: string, key: string, value: string): Promise<void> {
-  const child = Bun.spawn(
-    ["jj", "config", "set", "--repo", "-R", directory, key, JSON.stringify(value)],
-    { stdout: "ignore", stderr: "pipe" }
-  );
-  if ((await child.exited) !== 0) {
-    const stderr = await new Response(child.stderr as ReadableStream<Uint8Array>).text();
-    throw new Error(`jj config set failed: ${stderr}`);
-  }
+  await runTool(jjProgram, directory, undefined, [
+    "config",
+    "set",
+    "--repo",
+    "-R",
+    directory,
+    key,
+    JSON.stringify(value),
+  ]);
 }
 
 interface DaemonRequest {
@@ -825,8 +842,9 @@ interface DaemonRequest {
 }
 
 /** A capability host where every check passes: `oracle` and `deep-worker` resolve, the search
- * provider answers, no MCP server is configured, nothing is on disk to discover, and both commands
- * exit 0. `overrides` replace members. */
+ * provider answers, no MCP server is configured, the workspace holds nothing to discover, and both
+ * commands exit 0. Every member answers from memory, so no row of a measurement waits on the
+ * machine's disk. `overrides` replace members. */
 function fakeCapabilityHost(overrides: Partial<CapabilityHost> = {}): CapabilityHost {
   return {
     discoverAgents: async () => ({ agents: [{ name: "oracle" }, { name: "deep-worker" }] }),
@@ -841,6 +859,8 @@ function fakeCapabilityHost(overrides: Partial<CapabilityHost> = {}): Capability
     },
     discoverExtensionPaths: async () => [],
     loadSkills: async () => ({ skills: [] }),
+    namesIn: async () => [],
+    kindOf: async () => undefined,
     run: async (command) =>
       command === "gh"
         ? { code: 0, stdout: "legion-reviewer[bot]\n", stderr: "" }
@@ -3715,7 +3735,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         sessionId: "ses_capability_afresh",
         host: {
           // The first measurement's search never answers, so that row fails on its budget; the
-          // second's answers.
+          // second's answers. Every other row settles in microtasks, the host answering from
+          // memory, and they run before any timer can fire: on any machine, only this row meets
+          // the 20 ms.
           runSearchQuery: () => {
             searches += 1;
             return searches === 1

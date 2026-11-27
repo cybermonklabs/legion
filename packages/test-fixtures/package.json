@@ -41,6 +41,10 @@
       "types": "./src/loopback-host.ts",
       "bun": "./src/loopback-host.ts"
     },
+    "./mise-environment": {
+      "types": "./src/mise-environment.ts",
+      "bun": "./src/mise-environment.ts"
+    },
     "./names-whole": {
       "types": "./src/names-whole.ts",
       "bun": "./src/names-whole.ts"
@@ -64,6 +68,11 @@
     "./row-deadline": {
       "types": "./src/row-deadline.ts",
       "bun": "./src/row-deadline.ts"
+    },
+    "./socket-root": {
+      "types": "./src/socket-root.ts",
+      "bun": "./src/socket-root.ts",
+      "default": "./src/socket-root.ts"
     },
     "./standin-body": {
       "types": "./src/standin-body.ts",
@@ -92,6 +101,10 @@
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"
+    },
+    "./version-control-tools": {
+      "types": "./src/version-control-tools.ts",
+      "bun": "./src/version-control-tools.ts"
     },
     "./wait": {
       "types": "./src/wait.ts",

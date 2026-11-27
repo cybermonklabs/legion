@@ -163,6 +163,15 @@
 # own run-server.sh holds the same way and reports, and the kernel assigns each run's daemon
 # stand-in its port.
 #
+# What the rig pins, and what it takes from the caller: Oh My Pi is the release .omp-pin names, run
+# by its path (pinned_omp), and the Postgres, NATS and judge images are named by digest. Bun is the
+# caller's first `bun` on PATH, held to the release .bun-version pins before any command starts
+# anything, and resolved there once to the binary it runs (`$bun_bin`), which this script, seed.ts,
+# score.ts and every stand-in it writes run by its path. Every other tool is the caller's own, found
+# on PATH, and nothing checks its version: jq, jj, git, go (under the caller's GOTOOLCHAIN), python3
+# (scripts/e2e/lib/rig.sh's held-port.py), docker, tmux, curl, and mise, which runs the pinned Oh
+# My Pi.
+
 # A build pod has no docker: the runner's pod gives a Postgres and a NATS of its own, which
 # scored-job.sh gives the batch as SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL. The
 # runs' databases stay on that server; the pod's end removes them.
@@ -384,6 +393,28 @@ if found=$(omp_ancestor "$work"); then
   fail "SKILL_SCENARIOS_WORK $work is under $found: Oh My Pi reads that .omp as the configuration of every run's cwd, so a run would load its plugins and not its label's; give a work directory with no .omp in it or above it"
 fi
 
+# The Bun every command runs on, held to the release the repository pins, as
+# scripts/e2e/claude-backend-tmux.sh holds its own: a run on another release is no run of this
+# checkout, and a caller's version manager can name any release at all.
+#
+# The caller's first `bun` on PATH can be a version manager's shim, which runs a Bun only where it
+# finds its own configuration: mise's says "No version is set for shim: bun" under a HOME whose
+# ~/.config/mise names no version. So the bun is asked once, here, for the binary it runs
+# (`process.execPath`), and every command below starts that binary by its path (`$bun_bin`), never
+# `bun` by name: no later command reaches the shim, whatever its environment. A bun that cannot run
+# is refused with its own words, the `--version` check's and the resolve's, never read as a bun of
+# no version.
+[ -f "$root/.bun-version" ] || fail "$root holds no .bun-version, the Bun release the rig runs on"
+bun_pin=$(tr -d '[:space:]' <"$root/.bun-version")
+bun_found=$(command -v bun) || fail "no bun on PATH: the rig runs on the Bun $root/.bun-version pins, $bun_pin; put it first on PATH"
+bun_said=$(bun --version 2>&1) ||
+  fail "the bun first on PATH ($bun_found) could not run \`bun --version\`: $bun_said"
+bun_running=$(printf '%s' "$bun_said" | tr -d '[:space:]')
+[ "$bun_running" = "$bun_pin" ] ||
+  fail "refusing to run under Bun ${bun_running:-<no version>}: $root/.bun-version pins $bun_pin, and every command of the rig runs on the bun first on PATH. Put the pinned Bun first on PATH ($bun_found is the one found)"
+bun_bin=$(bun -e 'process.stdout.write(process.execPath)' 2>&1) ||
+  fail "the bun first on PATH ($bun_found) could not run to name the binary it runs: $bun_bin"
+
 # The judge's model and thinking level, the same for every judge session (cmd_judge_omp), recorded
 # in each session's judge-model.txt. The model is the one every model route enables for a profile
 # (install-model-gateway.sh, install-key-file-model-route.sh, install_provider_route), under the
@@ -468,7 +499,7 @@ load_label() {
   # where it is not: any other exit is a bun that could not run or could not read the settings,
   # refused with bun's own words and never as a missing key.
   local settings=$P/home/.omp/profiles/$profile/agent/config.yml said read=0
-  said=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 3)' "$settings" 2>&1) || read=$?
+  said=$("$bun_bin" -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 3)' "$settings" 2>&1) || read=$?
   case $read in
     0) ;;
     3) fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it" ;;
@@ -557,7 +588,7 @@ install_provider_route() {
   agent=$home/.omp/profiles/$profile/agent
   mkdir -p "$agent"
   # shellcheck disable=SC2016 # JavaScript for bun, not shell
-  bun -e '
+  "$bun_bin" -e '
     const { accessSync, constants, statSync } = await import("node:fs");
     const [file, name, model, out] = process.argv.slice(1);
     const fail = (why) => { console.error(`provider route: ${why}`); process.exit(1); };
@@ -881,20 +912,19 @@ base_env() {
 }
 
 # The run's stand-ins in $R/bin: `gh`, which records the call and answers from $R/fixtures.json,
-# and `bun`, which runs the bun this script runs on (a caller's `bun` may be a shim that resolves
-# nothing under the agent's HOME) and records the call to $R/calls.jsonl as gh-standin.ts records
-# its own. The score reads the tester's run of the CLI from that record. No `legion` stands in: an
-# agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
+# and `bun`, which runs the bun this script runs on by its path (`$bun_bin`: a caller's `bun` may
+# be a shim that resolves nothing under the agent's HOME) and records the call to $R/calls.jsonl
+# as gh-standin.ts records its own. The score reads the tester's run of the CLI from that record.
+# No `legion` stands in: an agent reaches the daemon stand-in through its `legion` tool alone,
+# never `legion` from bash.
 standins() {
-  local bun_real
-  bun_real=$(bun -e 'console.log(process.execPath)')
   mkdir -p "$R/bin"
-  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_real" "$here/gh-standin.ts" >"$R/bin/gh"
+  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_bin" "$here/gh-standin.ts" >"$R/bin/gh"
   cat >"$R/bin/bun" <<EOF
 #!/usr/bin/env bash
 at=\$(date -u +%FT%T.%3NZ)
 status=0
-$(printf %q "$bun_real") "\$@" || status=\$?
+$(printf %q "$bun_bin") "\$@" || status=\$?
 jq -cn --arg at "\$at" --argjson exit "\$status" '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit}' \\
   --args -- "\$@" >>$(printf %q "$R/calls.jsonl")
 exit "\$status"
@@ -1042,7 +1072,7 @@ cmd_live_read() {
   # No Dispatch, and an Envoy address nothing listens on: the session reads files and nothing else.
   echo "ENVOY_URL=http://127.0.0.1:1" >>"$R/pane.env"
   launch "live-read-${P##*/}"
-  bun "$here/score.ts" live-read "$R" "$co/skills" "$R/home/.omp/profiles/$profile/logs"
+  "$bun_bin" "$here/score.ts" live-read "$R" "$co/skills" "$R/home/.omp/profiles/$profile/logs"
 }
 
 services_env=$work/services/env
@@ -1356,7 +1386,7 @@ own_dispatch() {
   start_dispatch "$url" "${2:-}"
   jq -n --arg postgres "$postgres" --arg database "$database" --argjson port "$dispatch_port" \
     '{postgres:$postgres, database:$database, port:$port, url:("http://127.0.0.1:" + ($port|tostring))}' >"$R/dispatch.json"
-  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
+  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port "$bun_bin" "$here/seed.ts" "$seed") >>"$R/fixture.log" 2>&1 ||
     fail "seed.ts $seed failed; see $R/fixture.log"
 }
 
@@ -1364,7 +1394,7 @@ own_dispatch() {
 # one, with `seed.ts SCENARIO`, and sets the caller's issue and message (empty when the fixture
 # names none), which its prompt names.
 seed_dispatch() {
-  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$1" "$R/fixture.json") \
+  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port "$bun_bin" "$here/seed.ts" "$1" "$R/fixture.json") \
     >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
   issue=$(jq -r .issue "$R/fixture.json")
   message=$(jq -r '.message // empty' "$R/fixture.json")
@@ -1386,7 +1416,7 @@ dispatch_session() {
   } >>"$R/pane.env"
   [ $# = 0 ] || printf '%s\n' "$@" >>"$R/pane.env"
   launch "$name"
-  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$capture" "$R/fixture.json" "$R") \
+  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port "$bun_bin" "$here/seed.ts" "$capture" "$R/fixture.json" "$R") \
     >>"$R/fixture.log" 2>&1 || fail "the capture failed; see $R/fixture.log"
 }
 
@@ -1539,14 +1569,14 @@ MDEOF
 # seed_ts MODE ARG... runs `seed.ts MODE ARG...` against the run's own Dispatch (own_dispatch), its
 # output appended to $R/fixture.log. A failure is the rig's, never the run's.
 seed_ts() {
-  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$@") \
+  (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port "$bun_bin" "$here/seed.ts" "$@") \
     >>"$R/fixture.log" 2>&1 || fail "seed.ts $1 failed; see $R/fixture.log"
 }
 
 # judge_ts MODE ARG... runs `judge.ts MODE ARG...` with SKILL_SCENARIOS_WORK at this rig's work
 # directory, its output appended to $R/judge.log.
 judge_ts() {
-  SKILL_SCENARIOS_WORK=$work bun "$here/judge.ts" "$@" >>"$R/judge.log" 2>&1 ||
+  SKILL_SCENARIOS_WORK=$work "$bun_bin" "$here/judge.ts" "$@" >>"$R/judge.log" 2>&1 ||
     fail "judge.ts $1 failed; see $R/judge.log"
 }
 
@@ -1782,7 +1812,13 @@ judge_keys() {
 #     cannot resolve a tailnet name itself
 # The network is Docker's default bridge, for the model's endpoint. The container gets 2 CPUs and
 # 4 GiB, so the judges of a busy batch cannot take the machine. SKILL_SCENARIOS_JUDGE_ENV adds
-# `NAME=value` words to the container's environment, for tests.
+# `NAME=value` words to the container's environment, for tests. SKILL_SCENARIOS_JUDGE_PHASES names a
+# file to which each phase appends `<epoch seconds> <phase>` as it begins (judge_phase), and the
+# container's end `<epoch seconds> exited <status>`, so a caller can name the phase a slow judge was
+# in: profiles, keys, host, image (the inspect, and the pull of an image not there), container.
+judge_phase() {
+  [ -z "${SKILL_SCENARIOS_JUDGE_PHASES:-}" ] || printf '%s %s\n' "$EPOCHREALTIME" "$*" >>"$SKILL_SCENARIOS_JUDGE_PHASES"
+}
 cmd_judge_omp() {
   [ $# = 3 ] || fail "usage: rig.sh judge-omp <ste|bare> <dir> <output file name>"
   local kind=$1 dir output=$3 skills status=0 omp P agent keys key_file h=/home/judge
@@ -1795,6 +1831,7 @@ cmd_judge_omp() {
   case "$(omp_ancestor "$dir" || true)" in "") ;; *) fail "judge-omp: $dir is under $(omp_ancestor "$dir"), whose plugins Oh My Pi would load" ;; esac
   case ${LEGION_E2E_MODEL_ROUTE:-gateway} in gateway | key-file | provider) ;; *) fail "judge-omp: LEGION_E2E_MODEL_ROUTE is '$LEGION_E2E_MODEL_ROUTE': it is gateway, key-file or provider" ;; esac
   command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
+  judge_phase profiles
   judge_profiles
   P=$work/judge-profiles/$kind
   agent=$P/home/.omp/profiles/judge-$kind/agent
@@ -1802,6 +1839,7 @@ cmd_judge_omp() {
   keys=$dir.key
   rm -rf -- "$keys"
   on_exit "$(printf 'rm -rf -- %q' "$keys")"
+  judge_phase keys
   key_file=$(judge_keys "$P" "$agent" "$keys") || exit 1
   route=(-v "$keys:/opt/key:ro")
   [ -z "$key_file" ] || route+=(-v "$key_file:$key_file:ro")
@@ -1810,6 +1848,7 @@ cmd_judge_omp() {
   # once skipped the key-file route, which reached Anthropic's own public name and needed none;
   # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
   # route left out here would let the scenario agents reach it while its judges could not.
+  judge_phase host
   host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
   ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
   [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
@@ -1825,6 +1864,7 @@ cmd_judge_omp() {
   # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
   # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
   # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
+  judge_phase image
   if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
     local pulled='' pull_error='' attempt
     for attempt in 1 2 3; do
@@ -1836,6 +1876,7 @@ cmd_judge_omp() {
     done
     [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
   fi
+  judge_phase container
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
@@ -1851,6 +1892,7 @@ cmd_judge_omp() {
       exec timeout "$1" "$2" "${@:3}"' - "${SKILL_SCENARIOS_TIMEOUT:-1500}" "/opt/omp/$(basename "$omp")" \
     -p "$(<"$dir/prompt.txt")" --no-extensions "${skills[@]}" \
     --model "$judge_model" --thinking "$judge_thinking" --session-dir "$dir/sessions" </dev/null >"$dir/out.txt" 2>&1 || status=$?
+  judge_phase exited "$status"
   echo "exit=$status" >>"$dir/out.txt"
   rm -rf -- "$keys"
   return "$status"
@@ -1859,7 +1901,7 @@ cmd_judge_omp() {
 # cmd_judge RUN... runs judge.ts's prompts on each spec run.
 cmd_judge() {
   [ $# -ge 1 ] || fail "usage: rig.sh judge <run dir>..."
-  SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
+  SKILL_SCENARIOS_WORK=$work exec "$bun_bin" "$here/judge.ts" run "$@"
 }
 
 # worker_routes PR prints the routes the gh stand-in answers the tester's world from
@@ -2024,7 +2066,7 @@ run_tester_proof() {
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" tester \
+  start_process daemon "$bun_bin" "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" tester \
     "$worker_repo" "$worker_default_branch"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
@@ -2033,7 +2075,7 @@ run_tester_proof() {
   # The pane the label's checkout's daemon would give the tester, over the base every agent gets:
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh.
-  bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
+  "$bun_bin" "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
   tester_pane
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.

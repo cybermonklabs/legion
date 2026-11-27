@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {
   type EnvoyStack,
@@ -10,17 +10,12 @@ import {
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
 import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
 import type { Subprocess } from "bun"
-import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
+import type { ModCallArguments } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
+import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
-
-/** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
- *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
- *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, so the homes go under
- *  `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's do. */
-const SOCKET_ROOT = "/tmp"
 
 /** What one `session.message` the server made carries: the message's own words, which the mod
  *  writes into the session as the prompt of a new turn or as a row of the turn running
@@ -57,7 +52,7 @@ async function startChannelServer(
   sessionPrefix: string,
 ): Promise<ChannelServer> {
   const proxy = await startStallProxy(stack.natsHostPort)
-  const home = await mkdtemp(join(SOCKET_ROOT, "claude-envoy-stall-"))
+  const home = await modSocketScratch("claude-envoy-stall-")
   const configDirectory = join(home, "claude-config")
   await mkdir(configDirectory)
   await writeFile(
@@ -65,7 +60,9 @@ async function startChannelServer(
     JSON.stringify({ envoy: { enabled: true, url: stack.envoyUrl, natsUrls: [proxy.url] } }),
   )
   const sessionID = `${sessionPrefix}_${crypto.randomUUID().replaceAll("-", "")}`
-  const server = Bun.spawn(["bun", channelEntry], {
+  // This Bun by its path: under `home`, a `bun` looked up on PATH can be a version manager's shim
+  // with no version there ("bun is not a valid shim").
+  const server = Bun.spawn([process.execPath, channelEntry], {
     cwd: home,
     env: {
       PATH: process.env["PATH"] ?? "",
@@ -84,8 +81,7 @@ async function startChannelServer(
     stdout: "pipe",
     stderr: "pipe",
   })
-  const socketPath = modSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
-  if (socketPath === undefined) throw new Error("the session names no mod socket")
+  const socketPath = sessionModSocket(sessionID, { XDG_RUNTIME_DIR: home })
   // Every delivery reaches the model as the mod's own write - the row of a turn running, or the
   // prompt of a new turn while the session is idle, which this one is throughout (`show` in
   // `../src/mod-session`) - so the mod is this test's view of what the session was shown.

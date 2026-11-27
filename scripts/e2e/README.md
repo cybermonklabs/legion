@@ -3468,6 +3468,7 @@ The transcript records the duration of each wait.
   For each `broker.pid` there, each process of that broker's session is stopped when it carries that runtime directory in `OMP_DAEMON_RUNTIME_DIR` or is one of the run's processes.
   No process is stopped for its working directory alone.
   It reads each `broker.pid` with `jq`; on a PATH without `jq` it fails naming `jq` rather than stopping nothing (`lib/parked-decision-teardown.test.ts`).
+  `stop_agent_daemons` reads `${proc_root:-/proc}`: the host's `/proc`, unless a test points `proc_root` at a proc root of the processes it started (`lib/parked-decision-teardown.test.ts`).
   Every process of the run then ends within 600 s; a survivor fails the check, and the check first prints its `ps` line (pid, ppid, process group, session, start time and command line).
   The branch `legion/<tree>` of each tree is gone from `sjawhar/legion-smoke` (GitHub answers 404).
   The work directory is gone.
@@ -6593,7 +6594,7 @@ Every stage proof and rig takes its servers' ports this way, apart from the port
 Stage 2 and `verifiers-staging-token.sh` call it directly.
 A daemon always serves on a keeper's socket, since its `legion.yaml` must name the port before it starts.
 A process that binds port 0 itself and reports what it got
-— `nats-server -p -1`, a Bun fake, `kubectl port-forward :<port>` — needs no helper; the rig reads its report with `report_port`.
+— `nats-server -p -1`, a Bun fake, `kubectl port-forward :<port>` — needs no helper; the rig reads its report with [`lib/report-port.sh`](#libreport-portsh)'s `report_port`.
 A port a person sets explicitly is used as given, and an occupied one fails with `address already in use`.
 
 ## lib/port-file.sh
@@ -6609,6 +6610,22 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 `read_port_file FILE PID VAR` polls FILE every tenth of a second while PID lives and assigns VAR the port it names.
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
+
+## lib/report-port.sh
+
+The one reader of the port a process that bound port 0 itself logs once it listens, which `lib/rig.sh` and `envoy-session-delivery.sh` share.
+Sourced, never run; it needs nothing of its caller's.
+
+```sh
+. "$root/scripts/e2e/lib/report-port.sh"
+nats_port=$(report_port "$work/logs/natsd.log" 'Listening for client connections on [^ ]*:')
+poll_until 60 0.2 reported_port "$log" "$listener_line" listener_port
+```
+
+`report_port LOG PATTERN` prints the digits right after the first match of the extended regex PATTERN in LOG:
+the first match on the first line that holds one, however many that line holds.
+It fails while no line matches, so it is also the poll that waits for one.
+`reported_port LOG PATTERN VAR` assigns VAR what `report_port` prints, for a poll that runs in the caller's own shell, and fails as it does.
 
 ## lib/built-from.sh
 
@@ -7245,7 +7262,7 @@ It also drives the script, both parts and `--control`, from a branch merged forw
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
 Eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
-`envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
+`envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh`, [`lib/port-file.sh`](#libport-filesh) and [`lib/report-port.sh`](#libreport-portsh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) is the ninth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 `busy-relaunch-delivery.sh` is the tenth and `approved-version-news.sh` the eleventh: each has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
 `hook-prompt-two-builds.sh` is the thirteenth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
@@ -7296,9 +7313,8 @@ Each item below names a function, then what it does.
 
 - `report_port LOG PATTERN`
 
-  prints the port a process that bound port 0 itself reported:
-  the digits right after the first match of the extended regex PATTERN in LOG (`'Listening for client connections on [^ ]*:'` for `nats-server -p -1`).
-  It fails while no line matches, so it is also the poll that waits for one
+  prints the port a process that bound port 0 itself reported.
+  It is [`lib/report-port.sh`](#libreport-portsh)'s, which this file sources
 
 - `port_answers PORT`
 
@@ -7701,6 +7717,7 @@ A driver counts as alive only while its pid is a live, non-zombie process that s
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
+The Claude Code backend's prerequisites tests (`lib/claude-backend-app-secrets.test.ts`, `lib/claude-backend-bun-pin.test.ts`) point `proc_root` at a root of their own that holds one unreal pid, whose command line only this walk reads (`unrealReader`), so neither the host's process count nor a process an earlier run left on the host decides their result, and a walk of the host's `/proc` fails them.
 A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 

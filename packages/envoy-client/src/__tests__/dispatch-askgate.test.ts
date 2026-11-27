@@ -12,6 +12,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { nodeInterpreter, pythonInterpreter } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
@@ -827,11 +828,17 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const argv = '"message", "--issue", "DSP-1", "--body", "hi"';
     const forms: Array<[string, string[]]> = [
       ["xargs", ["bash", "-c", "printf '%s\\n' message --issue DSP-1 --body hi | xargs dispatch"]],
-      ["python3 -c", ["python3", "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
+      // Each interpreter by the path the caller's own resolves to: the forms run under this
+      // file's HOME, where a python3 or node looked up on PATH can be a version manager's shim
+      // with no version. The `dispatch` each form starts is still looked up on PATH.
+      [
+        "python3 -c",
+        [pythonInterpreter(), "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`],
+      ],
       [
         "node -e",
         [
-          "node",
+          nodeInterpreter(),
           "-e",
           `require("node:child_process").spawnSync("dispatch", [${argv}], { stdio: "inherit" })`,
         ],

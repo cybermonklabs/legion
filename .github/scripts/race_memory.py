@@ -28,8 +28,9 @@ Usage: race_memory.py <command> [args...], for example
 
 It has no options of its own: everything after the script name is the command. RACE_MEM_LIMIT_KB
 sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
-line by line, so a `go test -json` stream is unwrapped back into the test log it carries and the
-running tests are known; the command's stderr is not touched and goes straight to this script's.
+line by line as UTF-8, a byte that is not UTF-8 read as U+FFFD, so a `go test -json` stream is
+unwrapped back into the test log it carries and the running tests are known; the command's
+stderr is not touched and goes straight to this script's.
 """
 
 import json
@@ -38,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +49,11 @@ from pathlib import Path
 DEFAULT_LIMIT_KB = 8388608
 
 SAMPLE_SECONDS = 5.0
+
+# The bound on one `pgrep -P`, the walk's source of a process's children on a kernel that lists
+# none (pgrep_children): pgrep reads a file of every process of the machine, and one of them can
+# answer slowly or never.
+PGREP_SECONDS = 5.0
 
 # The -json actions after which a test is not running: "pass", "fail" and "skip" end it, and a
 # parallel test reports "pause" at its t.Parallel call and "cont" when go test lets it go on, running
@@ -69,9 +76,15 @@ NAMES_BYTES = 2048
 
 
 def status_field(text: str, field: str) -> str | None:
-    """The value of one `/proc/<pid>/status` field, or None when the kernel gives no such line."""
+    r"""The value of one `/proc/<pid>/status` field, or None when the kernel gives no such line.
+
+    The text is split at "\n" alone, the one character the kernel ends a line with and escapes
+    inside a process's name. str.splitlines() also breaks at "\r", "\v", "\f", "\x1c" to "\x1e",
+    "\x85", "\u2028" and "\u2029", which the kernel leaves in a name as they are, so a process
+    named "a\x1ePPid:\tz" would pass for a `PPid:` line of its own and stop the run.
+    """
     head = field + ":"
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if line.startswith(head):
             return line[len(head) :].strip()
     return None
@@ -98,43 +111,85 @@ def choose_peak(hwm_kb: int | None, rss_kb: int) -> tuple[int, str]:
     return rss_kb, "VmRSS"
 
 
-def tree_statuses(root_pid: int) -> list[str]:
-    """The `/proc/<pid>/status` text of the command's own process and of every descendant of it.
+def children_listed(pid: int) -> bool:
+    """Whether this kernel lists a process's children (/proc/<pid>/task/<tid>/children), which
+    kernel_children reads; a kernel built without CONFIG_PROC_CHILDREN gives no such file."""
+    return Path(f"/proc/{pid}/task/{pid}/children").exists()
 
-    One pass over /proc reads each process's status once: the text carries the parent pid the tree
-    is built from (`PPid:`) along with the sizes. A process that exits between the walk and the
-    read is skipped, which is the common case under `go test`: the compiler's children come and go
-    while the sampler walks. The walk reads every process on the machine, and a process's `Name:`
-    is whatever bytes it set (prctl PR_SET_NAME), so the text is decoded with replacement: a
-    strict decode ended the whole step on another process's name that was no UTF-8.
-    """
-    texts: dict[int, str] = {}
-    children: dict[int, list[int]] = {}
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
+
+class ChildrenUnread(Exception):
+    """A process's children could not be read, so a walk saw only part of the tree."""
+
+
+def kernel_children(pid: int) -> list[int]:
+    """pid's children by the kernel's own lists of each of its threads' children, as
+    scripts/e2e/lib/process-tree.sh's proc_children reads them: only pid's own files are read. A
+    process or thread that exits between the list and the read has none to give."""
+    try:
+        tasks = list(Path(f"/proc/{pid}/task").iterdir())
+    except OSError:
+        return []
+    found: list[int] = []
+    for task in tasks:
         try:
-            text = (entry / "status").read_text(errors="replace")
+            listed = (task / "children").read_text()
         except OSError:
             continue
-        parent = status_field(text, "PPid")
-        if parent is None:
-            continue
-        pid = int(entry.name)
-        texts[pid] = text
-        children.setdefault(int(parent), []).append(pid)
+        found.extend(int(child) for child in listed.split())
+    return found
 
+
+def pgrep_children(pid: int) -> list[int]:
+    """pid's children by `pgrep -P`, for a kernel that lists none (children_listed), as
+    process-tree.sh's proc_children asks it there. pgrep reads every process's stat, so it runs
+    under PGREP_SECONDS; a pgrep that does not end there, or fails (a status above 1, where 1 is no
+    child), raises ChildrenUnread, so no walk reads either as a process with no children."""
+    try:
+        done = subprocess.run(
+            ["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=PGREP_SECONDS
+        )
+    except subprocess.TimeoutExpired as late:
+        raise ChildrenUnread(f"pgrep -P {pid} did not end within {PGREP_SECONDS:g} s") from late
+    except OSError as error:
+        raise ChildrenUnread(f"pgrep -P {pid} could not run: {error}") from error
+    if done.returncode > 1:
+        raise ChildrenUnread(f"pgrep -P {pid} exited {done.returncode}: {done.stderr.strip()}")
+    return [int(child) for child in done.stdout.split()]
+
+
+def tree_statuses(root_pid: int, children=kernel_children) -> list[str]:
+    r"""The `/proc/<pid>/status` text of the command's own process and of every descendant of it.
+
+    The tree is walked from root_pid breadth first, each process's children by `children`: the
+    kernel's own lists (kernel_children) by default, so only the files of the command's own
+    processes are read. A walk of every process on the machine reads every one of their files, and
+    one that never answers its reader (a FIFO mounted over a stranger's status) held the sampler,
+    and the step, until the job's own timeout. Where the kernel lists no children
+    (children_listed), main passes pgrep_children instead, whose ChildrenUnread this lets through.
+    A process that exits between the list and the read is skipped, which is the common case under
+    `go test`: the compiler's children come and go while the sampler walks. Its files are then gone
+    before the open (FileNotFoundError) or gone under it (ProcessLookupError), and both are
+    OSErrors.
+
+    A process's name is whatever bytes it gave itself (prctl(PR_SET_NAME), /proc/self/comm, its
+    executable's file name): the kernel writes them as they are, escaping "\n" and "\\" only. So
+    the text is decoded with U+FFFD for a byte that is not UTF-8. A strict decode stopped a race
+    run with a traceback on a shared machine where a process's name began with the byte 0xff.
+    """
     found: list[str] = []
     seen: set[int] = set()
-    stack = [root_pid]
-    while stack:
-        pid = stack.pop()
+    queue = deque([root_pid])
+    while queue:
+        pid = queue.popleft()
         if pid in seen:
             continue
         seen.add(pid)
-        if pid in texts:
-            found.append(texts[pid])
-        stack.extend(children.get(pid, ()))
+        try:
+            raw = Path(f"/proc/{pid}/status").read_bytes()
+        except OSError:
+            continue
+        found.append(raw.decode("utf-8", errors="replace"))
+        queue.extend(children(pid))
     return found
 
 
@@ -150,10 +205,38 @@ class Sample:
     tests: str
 
     def line(self) -> str:
-        sizes = f"VmRSS {self.rss_kb} kB in {self.comm}"
+        sizes = f"VmRSS {self.rss_kb} kB in {printable(self.comm)}"
         if self.hwm_kb is not None:
             sizes += f", VmHWM {self.hwm_kb} kB"
         return f"race memory: at {self.seconds:.1f} s, {sizes}; tests running: {self.tests}"
+
+
+# The short escapes Python's own string literals use, for the controls a log most often meets.
+SHORT_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def printable(name: str) -> str:
+    r"""A process's name as it is printed: every character str.isprintable() refuses written as an
+    escape (\r, \x1b, \x85, \u202e), and every other character as it is.
+
+    The name is whatever its process gave itself, and the kernel escapes only "\n" and "\\" in it
+    (tree_statuses), so a carriage return, an escape sequence or a direction override reaches the
+    Actions log as it is unless it is escaped here. A backslash the name holds is already "\\\\" in
+    the kernel's text, so an escape written here cannot pass for one the name spelled out.
+    """
+    out = []
+    for char in name:
+        if char.isprintable():
+            out.append(char)
+        elif char in SHORT_ESCAPES:
+            out.append(SHORT_ESCAPES[char])
+        elif ord(char) < 0x100:
+            out.append(f"\\x{ord(char):02x}")
+        elif ord(char) < 0x10000:
+            out.append(f"\\u{ord(char):04x}")
+        else:
+            out.append(f"\\U{ord(char):08x}")
+    return "".join(out)
 
 
 def summarize(statuses: list[str], seconds: float, tests: str) -> Sample | None:
@@ -333,7 +416,9 @@ def main(argv: list[str]) -> int:
     log.line(f"race memory: the limit is {limit_kb} kB ({source})")
 
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, bufsize=1)
+        process = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, encoding="utf-8", errors="replace", bufsize=1
+        )
     except OSError as error:
         print(f"race memory: cannot run {argv[0]}: {error}", file=sys.stderr)
         return 127
@@ -351,8 +436,24 @@ def main(argv: list[str]) -> int:
     peak_rss_kb = 0
     highest: Sample | None = None
     started = time.monotonic()
+    children = kernel_children
+    if not children_listed(process.pid):
+        children = pgrep_children
+        log.line(
+            f"race memory: this kernel lists no process's children (/proc/{process.pid}/task/"
+            f"{process.pid}/children), so each sample finds the command's descendants with pgrep -P"
+        )
+    # Walks that could not read a process's children (ChildrenUnread): a step whose samples missed
+    # part of the tree has not been held to the limit, so it does not pass.
+    unread = 0
     while True:
-        walked = tree_statuses(process.pid)
+        try:
+            walked = tree_statuses(process.pid, children)
+        except ChildrenUnread as missed:
+            if unread == 0:
+                log.line(f"race memory: a sample saw only part of the tree: {missed}")
+            unread += 1
+            walked = []
         sample = summarize(walked, time.monotonic() - started, tests.names())
         if sample is not None:
             walk_kb, walk_field = choose_peak(sample.hwm_kb, sample.rss_kb)
@@ -384,11 +485,18 @@ def main(argv: list[str]) -> int:
     # The exit rule, decided here and not before, because the command has ended by now: a
     # command that failed on its own keeps its status, since the tests' own failure is what the
     # step must report; otherwise a peak past the limit fails the step, the line above naming
-    # the tests that were running at the highest sample; otherwise the step passes.
+    # the tests that were running at the highest sample; otherwise samples that could not read
+    # the whole tree fail it, since the limit was not checked; otherwise the step passes.
     if status != 0:
         # A signalled command has a negative returncode; report it as a shell does.
         return status if status > 0 else 128 - status
     if peak_kb > limit_kb:
+        return 1
+    if unread > 0:
+        log.line(
+            f"race memory: {unread} samples could not read the command's descendants, so the "
+            "limit was not checked against the whole tree"
+        )
         return 1
     return 0
 

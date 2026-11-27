@@ -3,6 +3,8 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { memoryRoot } from "@legion/test-fixtures/temporary-directories";
+import { jjBinary } from "@legion/test-fixtures/version-control-tools";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -17,8 +19,9 @@ const ROOT_TRANSCRIPT =
 const ROOT_ID = "01a050c7-b4a9-7000-a539-240e20271441";
 /** Another session's id, for a commit that already carries that session's pair. */
 const OTHER_ID = ROOT_ID.replace("b4a9", "dead");
-/** The real jj on PATH, if any, and whether this run is on GitHub Actions (`GITHUB_ACTIONS`, not
- * `CI`, which agent harnesses on the devbox export), as `ompNatsGuard` reads them. */
+/** The jj on PATH, if any, and whether this run is on GitHub Actions (`GITHUB_ACTIONS`, not
+ * `CI`, which agent harnesses on the devbox export), as `ompNatsGuard` reads them. The case that
+ * runs jj runs the binary that one runs (`jjBinary`), never a wrapper. */
 const JJ = Bun.which("jj");
 const ON_ACTIONS = process.env.GITHUB_ACTIONS === "true";
 
@@ -460,7 +463,11 @@ describe("exportJjSessionAttribution", () => {
     "the overlay's three templates give each jj command the running pair",
     async () => {
       if (JJ === null) throw new Error("no jj on PATH on GitHub Actions (install-jj installs one)");
-      const root = await stateDir("jj-attribution-jj-");
+      // On the memory root (`memoryRoot`): the repository below leaves about 230 entries, which
+      // the afterEach removes under Bun's 5 s for a hook, and on a dev box's shared disk at a load
+      // near 1,500 that removal timed out.
+      const root = await mkdtemp(path.join(memoryRoot(), "jj-attribution-jj-"));
+      dirs.push(root);
       // A base chain and a home of the test's own, so no jj or git configuration of the host
       // reaches the repository, and the identity jj needs comes from JJ_USER and JJ_EMAIL.
       const base = path.join(root, "base.toml");
@@ -481,6 +488,9 @@ describe("exportJjSessionAttribution", () => {
       expect(chain).toBe(`${base}:${path.join(state, `omp-attribution-${ROOT_ID}.toml`)}`);
       const repo = path.join(root, "repo");
       await mkdir(repo);
+      // The binary itself, not the first `jj` on PATH: a wrapper there may change what jj does,
+      // as the dotfiles jj shim drops the commit trailers in a repository under a temporary root.
+      const binary = await jjBinary(root);
       let ran = 0;
       const jj = async (...args: string[]): Promise<string> => {
         ran += 1;
@@ -489,7 +499,7 @@ describe("exportJjSessionAttribution", () => {
             `jj ${args.join(" ")} is past the ${TEMPLATE_ROW_JJ_COMMANDS} commands this row counts`
           );
         }
-        const child = Bun.spawn([JJ, ...args], {
+        const child = Bun.spawn([binary, ...args], {
           cwd: repo,
           env,
           stdin: "ignore",

@@ -38,6 +38,9 @@ GATE = gate("docs", "docs", runs=[
     ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds the server's port through it"),
     (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
                                        f"starts that script in a one-process run on the fake broker, which {at_docs('Take the screenshots')} is"),
+    ("packages/test-fixtures/src/socket-root.ts", "docs/site/media/harness.ts boots packages/dispatch/e2e/harness-start.ts, which imports "
+                                                 "@legion/test-fixtures/socket-root; the tsc program of docs/site/tsconfig.tools.json "
+                                                 f"compiles it ({at_docs('Typecheck the docs site')})"),
     # broker-refgen (`docs/site/generators/broker-reference.sh#broker-refgen "$repo_root"`) parses
     # these at run time, each directory's non-test .go files alone
     # (`packages/envoy/cmd/cipher-refgen/source.go#parseDir`), and the packages of REFGEN_API past

@@ -1,5 +1,5 @@
 // Package testtmp is a temporary directory for a test that binds a unix socket under it, short
-// enough that the socket's path fits what Linux holds. It is an ordinary package rather than a
+// enough that the socket's path fits what the system holds. It is an ordinary package rather than a
 // _test.go file because a command is package main and can import no other package's test helpers,
 // the reason packages/envoy/internal/cmdtest gives for itself; cmd/legion's own tests bind sockets
 // too.
@@ -16,13 +16,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-// MaxSocketPath is the longest unix socket path Linux takes. Its sun_path holds 108 bytes with the
-// terminating zero, so Go answers anything longer with `invalid argument` at bind, listen or dial,
-// and a tmux server socket with `Filename too long` (docs/testing.md).
-const MaxSocketPath = 107
+// maxSocketPath is the longest unix socket path goos takes: its sockaddr_un's sun_path less the
+// terminating zero, so Go answers anything longer with `invalid argument` at bind, listen or dial
+// (SockaddrUnix.sockaddr in the syscall package's syscall_linux.go and syscall_bsd.go), and a tmux
+// server socket with `Filename too long` (docs/testing.md). Linux's sun_path holds 108 bytes
+// (UNIX_PATH_MAX in the kernel's include/uapi/linux/un.h) and macOS's 104 (xnu's bsd/sys/un.h).
+// Any other system gets macOS's 103, the smaller of the two. Dir asks for runtime.GOOS's; the test
+// names each system itself, so it checks both limits on whatever machine runs it.
+func maxSocketPath(goos string) int {
+	if goos == "linux" {
+		return 107
+	}
+	return 103
+}
+
+// MaxSocketPath is maxSocketPath of the system running this, for a test elsewhere in the module
+// that holds a path of its own to the limit Dir holds its directories to.
+var MaxSocketPath = maxSocketPath(runtime.GOOS)
 
 // prefix names every directory this package makes. It is two bytes because each byte it spends is
 // one the caller's own path under the directory cannot have, and nothing has to recognise the
@@ -66,9 +80,10 @@ const fallbackBase = "/tmp"
 //     removal of their own.
 func Dir(t testing.TB, longest string) string {
 	t.Helper()
+	limit := maxSocketPath(runtime.GOOS)
 	base := os.TempDir()
 	dir, size, err := attempt(t, base, longest)
-	if err == nil && size <= MaxSocketPath {
+	if err == nil && size <= limit {
 		return dir
 	}
 	if err != nil {
@@ -76,12 +91,12 @@ func Dir(t testing.TB, longest string) string {
 	} else {
 		_ = os.RemoveAll(dir)
 		t.Logf("testtmp: %q under %s is %d bytes, past the %d a unix socket path holds; falling back to %s",
-			longest, base, size, MaxSocketPath, fallbackBase)
+			longest, base, size, limit, fallbackBase)
 	}
 	fallbackDir, fallbackSize, fallbackErr := attempt(t, fallbackBase, longest)
-	if fallbackErr != nil || fallbackSize > MaxSocketPath {
+	if fallbackErr != nil || fallbackSize > limit {
 		t.Fatalf("testtmp: no base leaves room for %q within the %d bytes a unix socket path holds: %s; %s",
-			longest, MaxSocketPath, outcome(base, size, err), outcome(fallbackBase, fallbackSize, fallbackErr))
+			longest, limit, outcome(base, size, err), outcome(fallbackBase, fallbackSize, fallbackErr))
 	}
 	return fallbackDir
 }

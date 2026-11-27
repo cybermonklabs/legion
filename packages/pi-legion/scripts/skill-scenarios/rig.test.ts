@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync,
@@ -11,13 +11,16 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
@@ -74,6 +77,9 @@ if (workRoot !== memory) {
 }
 const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
+/** The children's own mise state directory: seedMiseState fills it, in the hook below, with copies
+ *  of the caller's trust and ignore records, so whatever mise writes as they run stays in `work`. */
+const miseState = path.join(work, "mise-state");
 /** The cwd of each child process that childSpawn starts. The test runner's own cwd is in the
  * checkout, and every checkout on a devbox is in the developer's home. mise reads a config file
  * in the cwd and in each directory above it. Under a HOME that is not the developer's, it reads
@@ -93,44 +99,50 @@ beforeAll(() => {
   mkdirSync(operatorHome);
   mkdirSync(path.join(operatorHome, ".ssh"));
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
+  seedMiseState(miseState);
   mkdirSync(childCwd);
 });
 /** The caller's PATH, which a row puts its stand-ins ahead of. */
 const callerPath = process.env.PATH ?? "";
-const miseData =
-  process.env.MISE_DATA_DIR ??
-  (process.env.XDG_DATA_HOME === undefined
-    ? undefined
-    : path.join(process.env.XDG_DATA_HOME, "mise"));
-/** Runs ARGV, in childCwd, with the test's child environment and ENV over it: the caller's PATH,
- * a HOME of the test's own, and the caller's mise data and config directories when the caller
- * names them. A tool on PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME
- * such a shim finds neither its installs nor its global config, so it fails. make_omp_home keeps
- * the operator's two directories for the processes it starts for the same reason, and base_env
- * passes MISE_DATA_DIR to every agent. A caller that names neither variable gets neither: the
- * developer's own home decides nothing here. It is the one place this file builds that
- * environment, and its `cwd` is the only one in the file but the omp turn's and the kept-notice
- * row's below, so a child that gets the test's HOME gets childCwd with it. Every child of this
- * file starts through it but six, and none of those gets the test's HOME: the key command, the
- * libpq probe and the model stand-in pass no environment, so they run under the caller's own HOME,
- * where mise reads the caller's config as its global config. runProcess's child gets PATH and
- * SKILL_SCENARIO_RUN alone, and runs sleep, not a mise shim. The model stand-in row's omp turn gets
- * its profile's HOME and the system's PATH alone, in a workspace under this file's work directory.
- * The kept-notice row's rig.sh runs take the caller's whole environment, in this checkout's root,
- * since the label's build needs the caller's Go and Bun caches. */
-function childSpawn(argv: string[], env: Record<string, string> = {}) {
-  return Bun.spawnSync(argv, {
+/** The options of a child process of this file, in childCwd, with the test's child environment and
+ * ENV over it: the caller's PATH, a HOME of the test's own, and the caller's mise configuration:
+ * its data and config directories, the global config, system config and trusted paths it names,
+ * and `miseState`, as mise resolves them (`callerMiseEnvironment`). A tool on PATH can be a mise
+ * shim (bun, jq and jj are, on a devbox). Under a fresh HOME such a shim finds neither its installs
+ * nor its global config, so it fails, and a project config loads only where the caller's trust
+ * records or trusted paths reach. They are passed whatever the caller sets, since a caller that
+ * sets no XDG_CONFIG_HOME still has a config in its own ~/.config/mise. make_omp_home keeps the
+ * operator's mise data directory and XDG_CONFIG_HOME for the processes it starts for the same
+ * reason, and base_env passes MISE_DATA_DIR to every agent. XDG_CONFIG_HOME itself is not passed,
+ * so no other tool's configuration of the caller's reaches a child, whether the caller sets it or
+ * not. MISE_NO_ENV=1 keeps the caller's config's [env] out as well: a shim runs its tool with that
+ * env over the one it was given (src/cli/exec.rs:374-441 in mise 2026.10.11), and with it mise
+ * picks the tool version and loads no config env (src/config/mod.rs:1554-1557). It is the one
+ * place this file builds that environment, and its `cwd` is the only one in the file, so a child
+ * that gets the test's HOME gets childCwd with it. judge starts its child with these options, as
+ * it waits on that child while the row's guard runs; every other child that gets them starts
+ * through childSpawn. */
+function childOptions(env: Record<string, string> = {}) {
+  return {
     env: {
       PATH: callerPath,
       HOME: operatorHome,
-      ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-      ...(process.env.XDG_CONFIG_HOME === undefined
-        ? {}
-        : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+      ...callerMiseEnvironment(miseState),
+      MISE_NO_ENV: "1",
       ...env,
     },
     cwd: childCwd,
-  });
+  };
+}
+/** Runs ARGV with childOptions(ENV). Seven call sites start their children through it: route, bash
+ * (and every row that calls bash), checkout_commit's git, the score spawn, groupBash, the judge
+ * whose root is no checkout, and gh. Four children of this file start with no childOptions, and
+ * none of them gets the test's HOME: the key command, the libpq probe and judge-omp's docker image
+ * reads pass no environment, so they run under the caller's own HOME, where mise reads the caller's
+ * config as its global config. runProcess's child gets PATH and SKILL_SCENARIO_RUN alone, and runs
+ * sleep, not a mise shim. */
+function childSpawn(argv: string[], env: Record<string, string> = {}) {
+  return Bun.spawnSync(argv, childOptions(env));
 }
 
 let profiles = 0;
@@ -145,16 +157,19 @@ function keyFile(mode: number): string {
   writeFileSync(file, "sk-ant-rig-test-0000000000000000\n", { mode });
   return file;
 }
+/** install_model_route with install_provider_route, which starts the bun rig.sh resolves at its
+ *  top (`bun_bin`, the binary of the first bun on PATH): here the Bun that runs this file. */
 function route(dir: string, env: Record<string, string>, model = "") {
   const result = childSpawn(
     [
       "bash",
       "-c",
-      `route_model_id=claude-opus-4-8\n${fn("install_model_route")}\n${fn("install_provider_route")}\n${fn("route_config")}\ninstall_model_route "$1" skills-test "$2" "$3"`,
+      `route_model_id=claude-opus-4-8\nbun_bin=$4\n${fn("install_model_route")}\n${fn("install_provider_route")}\n${fn("route_config")}\ninstall_model_route "$1" skills-test "$2" "$3"`,
       "-",
       root,
       dir,
       model,
+      process.execPath,
     ],
     env
   );
@@ -524,21 +539,32 @@ test("a child of this file starts in childCwd, outside the developer's home", ()
 });
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
-// no .jj, and jj alone printed an empty commit line for it.
+// no .jj, and jj alone printed an empty commit line for it. The git these rows and checkout_commit
+// run is the binary this host's `git` runs (`gitBinary`), linked into a directory first on their
+// PATH: a git wrapper on the host's PATH may change what git does, as the dotfiles git shim gives
+// an agent session's commits a trailer.
 describe("checkout_commit", () => {
+  let bin = "";
+  beforeAll(async () => {
+    bin = freshDir("checkout-commit-bin");
+    symlinkSync(await gitBinary(bin), path.join(bin, "git"));
+  });
   const git = (dir: string, ...args: string[]) => {
-    const result = childSpawn([
-      "git",
-      "-C",
-      dir,
-      "-c",
-      "user.name=Rig Test",
-      "-c",
-      "user.email=rig@example.invalid",
-      "-c",
-      "commit.gpgsign=false",
-      ...args,
-    ]);
+    const result = childSpawn(
+      [
+        path.join(bin, "git"),
+        "-C",
+        dir,
+        "-c",
+        "user.name=Rig Test",
+        "-c",
+        "user.email=rig@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        ...args,
+      ],
+      { PATH: `${bin}:${callerPath}` }
+    );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
   };
@@ -554,7 +580,10 @@ describe("checkout_commit", () => {
     git(dir, "commit", "-qm", "second");
     return { dir, first, head: git(dir, "rev-parse", "HEAD") };
   }
-  const commit = (dir: string) => bash(`${fn("checkout_commit")}\ncheckout_commit "$1"`, [dir]);
+  const commit = (dir: string) =>
+    bash(`${fn("checkout_commit")}\ncheckout_commit "$1"`, [dir], {
+      PATH: `${bin}:${callerPath}`,
+    });
 
   // Catches: a checkout_commit that reads jj alone (an empty line for git), or names no parents.
   test("a clean git checkout prints its HEAD and HEAD's parents", () => {
@@ -1211,9 +1240,6 @@ echo done
 // environment. SKILL_SCENARIOS_JUDGE_OMP puts the stand-in where the pinned omp's binary is
 // mounted, so no test needs a model. The checkout's own skills/asd-ste100 is the ste skill.
 describe("judge-omp", () => {
-  // Each row starts one or two judge containers, and a container's start on a loaded host has
-  // taken longer than the file's 60 s bound, so these rows get a bound of their own.
-  const judgeBound = 180_000;
   // Every row that reaches the container needs Docker, so a machine without it (a Legion
   // worker's pod) skips those rows and the rest of the file still runs. GitHub Actions is the
   // exception, as in extensions/controller-start-omp.test.ts: its ubuntu-24.04 runners have
@@ -1222,6 +1248,16 @@ describe("judge-omp", () => {
   // Docker, so it runs anywhere.
   const onActions = process.env.GITHUB_ACTIONS === "true";
   const skip = withoutDocker && !onActions;
+  const rigSh = path.join(import.meta.dir, "rig.sh");
+  /**
+   * The bound on one judge row (judgeRow), a hang guard: a judge that never ends fails its row by
+   * name, with the phase it was in, inside the pi-legion job. So it is at most half the job's
+   * `timeout-minutes` (.github/workflows/ci-job-pi-legion.yaml), which the row "the judge rows'
+   * guard ends inside the pi-legion job's budget" holds: the other half is the job's setup and the
+   * rest of its test step, 71 s and 12 min in job 136638548606, the judge rows included. A correct
+   * judge took 206 s at most, on a runner whose disk-bound work had slowed 124 times.
+   */
+  const JUDGE_GUARD_MS = 10 * 60_000;
   // Staged in a hook: Bun runs this body even where the rows do not run, and a write here would
   // make the suite's work directory and leave it behind.
   let work = "";
@@ -1239,6 +1275,7 @@ describe("judge-omp", () => {
     writeFileSync(
       omp,
       `#!/bin/bash
+started=$EPOCHREALTIME
 probe() { if "\${@:2}" >/dev/null 2>&1; then echo "probe $1 allowed"; else echo "probe $1 denied"; fi; }
 # DROP: write a marker into every directory this judge can write outside its own directory.
 # SEEK: report any marker another judge left anywhere this judge can read.
@@ -1266,6 +1303,7 @@ fi
   printf 'mode %s\\n' "key-dir $(stat -c %a /opt/key 2>/dev/null || echo none)" \\
     "token $(stat -c %a /opt/key/token 2>/dev/null || echo none)"
   [ -z "\${SEEK:-}" ] || echo "seek $(find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name 'leak-*' -print 2>/dev/null | head -1)"
+  printf 'phase %s\\n' "$started omp-start" "$EPOCHREALTIME omp-end"
 } >"$PWD/answer.json"
 echo judged
 exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
@@ -1273,21 +1311,92 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
       { mode: 0o755 }
     );
   });
-  const judge = (
+  // The judge image, pulled once here when the machine has none, so no row's judge waits on it:
+  // rig.sh pulls it itself when it is not there, and a row would otherwise hold that pull.
+  beforeAll(async () => {
+    if (withoutDocker) return;
+    const image = /^judge_image=(\S+)$/m.exec(readFileSync(rigSh, "utf8"))?.[1];
+    if (image === undefined) throw new Error(`${rigSh} sets no judge_image`);
+    const docker = async (...args: string[]) => {
+      const child = Bun.spawn(["docker", ...args], { stdout: "ignore", stderr: "pipe" });
+      const stderr = await new Response(child.stderr).text();
+      return { code: await child.exited, stderr };
+    };
+    if ((await docker("image", "inspect", image)).code === 0) return;
+    const pulled = await docker("pull", "--quiet", image);
+    if ((await docker("image", "inspect", image)).code !== 0) {
+      throw new Error(`docker pull ${image} left no image (exit ${pulled.code}): ${pulled.stderr}`);
+    }
+  }, JUDGE_GUARD_MS);
+  // A judge row's own guard runs from the row's start (judge).
+  let rowDeadline = 0;
+  beforeEach(() => {
+    rowDeadline = Date.now() + JUDGE_GUARD_MS;
+  });
+  /**
+   * One rig.sh judge-omp run, as a row runs it, with its phases recorded beside DIR (rig.sh's
+   * judge_phase). It resolves with the judge's exit status and output whenever the judge ends, and
+   * throws, naming the phase the judge was in, only when the row's guard runs out (JUDGE_GUARD_MS).
+   */
+  async function judge(
     kind: string,
     dir: string,
     output = "answer.json",
     env: Record<string, string> = {}
-  ) =>
-    childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output], {
-      USER: "rig",
-      SKILL_SCENARIOS_WORK: work,
-      SKILL_SCENARIOS_JUDGE_OMP: omp,
-      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
-      LEGION_E2E_MODEL_ROUTE: "key-file",
-      LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-      ...env,
+  ): Promise<{ exitCode: number; stderr: Buffer; dir: string }> {
+    const child = Bun.spawn(["bash", rigSh, "judge-omp", kind, dir, output], {
+      ...childOptions({
+        USER: "rig",
+        SKILL_SCENARIOS_WORK: work,
+        SKILL_SCENARIOS_JUDGE_OMP: omp,
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
+        SKILL_SCENARIOS_JUDGE_PHASES: `${dir}.phases`,
+        LEGION_E2E_MODEL_ROUTE: "key-file",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+        ...env,
+      }),
+      stdout: "ignore",
+      stderr: "pipe",
+      // A session of its own, so the guard ends the judge's docker client with its bash.
+      detached: true,
     });
+    const stderr = new Response(child.stderr).arrayBuffer();
+    const { promise: guard, resolve } = Promise.withResolvers<"guard">();
+    const timer = setTimeout(() => resolve("guard"), Math.max(0, rowDeadline - Date.now()));
+    const ended = await Promise.race([child.exited, guard]);
+    clearTimeout(timer);
+    if (ended === "guard") {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {}
+      throw new Error(
+        `judge-omp ${kind} ${dir} had not ended when the row's guard of ${JUDGE_GUARD_MS / 1000} s ran out: ${judgePhases(dir)}`
+      );
+    }
+    return { exitCode: ended, stderr: Buffer.from(await stderr), dir };
+  }
+  /**
+   * The phases of the judge run in DIR, each with its start in seconds after the first: the rig's
+   * own (`${dir}.phases`) and the stand-in omp's start and end, from its answer file. The last one
+   * named, where no `exited` follows, is what the judge was waiting on.
+   */
+  function judgePhases(dir: string): string {
+    const lines = [
+      ...(existsSync(`${dir}.phases`) ? readFileSync(`${dir}.phases`, "utf8").split("\n") : []),
+      ...(existsSync(path.join(dir, "answer.json")) ? recorded(dir, "phase") : []),
+    ].filter(Boolean);
+    if (lines.length === 0) return "the rig recorded no phase";
+    const phases = lines
+      .map((line) => {
+        const [at = "0", ...name] = line.split(" ");
+        return { at: Number(at), name: name.join(" ") };
+      })
+      .sort((a, b) => a.at - b.at);
+    const first = phases[0]?.at ?? 0;
+    const last = phases.at(-1);
+    const listed = phases.map((p) => `${p.name} +${(p.at - first).toFixed(2)} s`).join(", ");
+    return last?.name.startsWith("exited") ? listed : `${listed}; still in ${last?.name}`;
+  }
   let jobs = 0;
   function judgeDir(): string {
     const dir = path.join(work, "judging", `job-${++jobs}`);
@@ -1306,25 +1415,41 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
    * `skill-scenarios: `, the prefix note() and fail() give every word of the rig's own. Equality
    * against the whole stderr string read a byte from docker, getent, mise or flock as a failed
    * row; what a row is about is that the judge ran and the rig refused nothing. A result that is
-   * not clean carries the stderr that was read, so a failing row still names what went wrong; a
-   * clean result reports no stderr.
+   * not clean carries the stderr that was read and the judge's phases (judgePhases), so a failing
+   * row still names what went wrong and where; a clean result reports neither.
    */
-  const judged = (result: { exitCode: number; stderr: Buffer }) => {
+  const judged = (result: { exitCode: number; stderr: Buffer; dir: string }) => {
     const stderr = result.stderr.toString();
     const refused = stderr.split("\n").some((line) => line.startsWith("skill-scenarios: "));
-    const clean = !refused && result.exitCode === 0;
-    return { code: result.exitCode, refused, stderr: clean ? "" : stderr };
+    if (!refused && result.exitCode === 0) return judgedCleanly;
+    return { code: result.exitCode, refused, stderr, phases: judgePhases(result.dir) };
   };
   /** What `judged` reads back from a judge that ran and a rig that refused nothing. */
   const judgedCleanly = { code: 0, refused: false, stderr: "" };
+  /**
+   * A row that runs a judge in its container. Its verdict is the judge's exit status and what the
+   * judge wrote, never the clock: a judge's time is a container's start, the stand-in's run and the
+   * container's exit, which a runner's disk can stretch from under a second to minutes while the
+   * judge does nothing wrong, so the file's 60 s would judge the runner. The row's bound is
+   * JUDGE_GUARD_MS, a guard against a judge that never ends, and judge() throws naming the phase it
+   * was in when the guard runs out; Bun's own timeout sits a minute above it, so that throw, not a
+   * bare "timed out", is what a hung row reports.
+   */
+  const judgeRow = (name: string, body: () => Promise<void>) =>
+    test.skipIf(skip)(name, body, JUDGE_GUARD_MS + 60_000);
+  /** A judge's exit code, with its phases when it is not WANT, for a row that expects WANT. */
+  const exitedWith = (result: { exitCode: number; dir: string }, want: number) =>
+    result.exitCode === want
+      ? { code: want }
+      : { code: result.exitCode, phases: judgePhases(result.dir) };
 
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
-  test.skipIf(skip)(
+  judgeRow(
     "ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model",
-    () => {
+    async () => {
       const dir = judgeDir();
-      const result = judge("ste", dir);
+      const result = await judge("ste", dir);
       expect(judged(result)).toEqual(judgedCleanly);
       expect(recorded(dir, "argv")).toEqual([
         "/opt/omp/omp",
@@ -1359,18 +1484,17 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
           "utf8"
         )
       ).toContain("https://api.anthropic.com");
-    },
-    judgeBound
+    }
   );
 
   // Catches: a judge that reads the run's transcript, other runs or the operator's files beside its
   // own directory (as a findings judge did, given no check), or that writes anything but its one
   // answer file and its sessions.
-  test.skipIf(skip)(
+  judgeRow(
     "a judge sees only its own directory, read-only, with its answer file and sessions writable",
-    () => {
+    async () => {
       const dir = judgeDir();
-      expect(judge("ste", dir).exitCode).toBe(0);
+      expect(judged(await judge("ste", dir))).toEqual(judgedCleanly);
       expect(Object.fromEntries(recorded(dir, "probe").map((line) => line.split(" ")))).toEqual({
         "read-outside": "denied",
         "read-home-ssh": "denied",
@@ -1386,68 +1510,55 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         "dbus-set": "denied",
       });
       expect(existsSync(path.join(dir, "new.txt"))).toBe(false);
-    },
-    judgeBound
+    }
   );
 
   // Catches: a bare judge that still loads skills, or a judge-omp that hides omp's failure.
-  test.skipIf(skip)(
-    "bare loads no skill, and judge-omp exits with omp's status",
-    () => {
-      const dir = judgeDir();
-      writeFileSync(path.join(dir, "exit-status"), "3\n");
-      const result = judge("bare", dir);
-      expect(result.exitCode).toBe(3);
-      expect(recorded(dir, "argv")).toContain("--no-skills");
-      expect(recorded(dir, "argv")).not.toContain("--skills");
-      expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
-      expect(recorded(dir, "probe")).toContain("read-skill denied");
-      expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
-      expect(
-        existsSync(
-          path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills")
-        )
-      ).toBe(false);
-    },
-    judgeBound
-  );
+  judgeRow("bare loads no skill, and judge-omp exits with omp's status", async () => {
+    const dir = judgeDir();
+    writeFileSync(path.join(dir, "exit-status"), "3\n");
+    const result = await judge("bare", dir);
+    expect(exitedWith(result, 3)).toEqual({ code: 3 });
+    expect(recorded(dir, "argv")).toContain("--no-skills");
+    expect(recorded(dir, "argv")).not.toContain("--skills");
+    expect(recorded(dir, "env")).toContain("OMP_PROFILE=judge-bare");
+    expect(recorded(dir, "probe")).toContain("read-skill denied");
+    expect(readFileSync(path.join(dir, "out.txt"), "utf8")).toBe("judged\nexit=3\n");
+    expect(
+      existsSync(path.join(work, "judge-profiles/bare/home/.omp/profiles/judge-bare/agent/skills"))
+    ).toBe(false);
+  });
 
   // Catches: a mount two judges share that one can write and the next can read, such as the key
   // command's call record, a path one judge could leave its private input in for another to read.
   // The first judge writes a marker into every directory it can write outside its own directory;
   // the second, of the same kind, looks for one anywhere it can read.
-  test.skipIf(skip)(
-    "one judge cannot leave a file that a second judge can read",
-    () => {
-      const first = judgeDir();
-      const env = (word: string) => ({
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
-      });
-      expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
-      const second = judgeDir();
-      expect(judge("ste", second, "answer.json", env("SEEK=1")).exitCode).toBe(0);
-      expect(recorded(second, "seek")).toEqual([""]);
-    },
-    judgeBound
-  );
+  judgeRow("one judge cannot leave a file that a second judge can read", async () => {
+    const first = judgeDir();
+    const env = (word: string) => ({
+      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
+    });
+    expect(judged(await judge("ste", first, "answer.json", env("DROP=one")))).toEqual(
+      judgedCleanly
+    );
+    const second = judgeDir();
+    expect(judged(await judge("ste", second, "answer.json", env("SEEK=1")))).toEqual(judgedCleanly);
+    expect(recorded(second, "seek")).toEqual([""]);
+  });
 
   // Catches: a judge kind the rig has no profile for, a directory with no prompt, and an answer
   // file name that escapes the judge's directory or names another of its files.
-  test(
-    "refuses another kind, a directory with no prompt.txt and a bad answer name",
-    () => {
-      expect(judge("plugins", judgeDir()).stderr.toString()).toContain("is ste or bare");
-      expect(judge("ste", freshDir("judging-empty")).stderr.toString()).toContain(
-        "has no prompt.txt"
-      );
-      for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
-        const result = judge("ste", judgeDir(), output);
-        expect(result.exitCode).not.toBe(0);
-        expect(result.stderr.toString()).toContain("is not the name of an answer file");
-      }
-    },
-    judgeBound
-  );
+  test("refuses another kind, a directory with no prompt.txt and a bad answer name", async () => {
+    expect((await judge("plugins", judgeDir())).stderr.toString()).toContain("is ste or bare");
+    expect((await judge("ste", freshDir("judging-empty"))).stderr.toString()).toContain(
+      "has no prompt.txt"
+    );
+    for (const output of ["../answer.json", "sessions", "prompt.txt", "a/b.json", ""]) {
+      const result = await judge("ste", judgeDir(), output);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr.toString()).toContain("is not the name of an answer file");
+    }
+  });
 
   // The gateway route with the real installer and key command, and a stand-in hawk-token first on
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
@@ -1496,15 +1607,15 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // home or session bus, one whose models.yml still names the host key command (which the
     // container cannot run), one that mints more than once per judge run, a token the judge can
     // read only by a path outside its mounts, and a token left on disk once the judge ends.
-    test.skipIf(skip)(
+    judgeRow(
       "a gateway judge starts in the container on a token the host minted once, and the token file is gone after",
-      () => {
+      async () => {
         // The first judge-omp call builds both profiles, and each install's preflight mints once.
         // Count only a later call's mints: one judge run is one call of the key command.
-        expect(gatewayJudge("bare", gatewayDir()).exitCode).toBe(0);
+        expect(judged(await gatewayJudge("bare", gatewayDir()))).toEqual(judgedCleanly);
         const dir = gatewayDir();
         const before = mintCount();
-        const result = gatewayJudge("ste", dir);
+        const result = await gatewayJudge("ste", dir);
         expect(judged(result)).toEqual(judgedCleanly);
         expect(mintCount() - before).toBeLessThanOrEqual(1);
         expect(recorded(dir, "env")).toEqual([
@@ -1528,8 +1639,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         });
         expect(existsSync(`${dir}.key`)).toBe(false);
         expect(readFileSync(path.join(dir, "answer.json"), "utf8")).not.toMatch(/eyJ[\w-]*\./);
-      },
-      judgeBound
+      }
     );
 
     // Catches: a token directory or file that others can read while the judge runs. The modes
@@ -1537,26 +1647,22 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
     // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
     // for nothing now, so there is no window for a watcher to look through, and a row that
     // waited for one would be waiting on a sleep.
-    test.skipIf(skip)(
-      "the token file is the owner's alone while the judge runs",
-      () => {
-        const dir = gatewayDir();
-        const result = gatewayJudge("bare", dir);
-        expect(judged(result)).toEqual(judgedCleanly);
-        expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
-        expect(existsSync(`${dir}.key`)).toBe(false);
-      },
-      judgeBound
-    );
+    judgeRow("the token file is the owner's alone while the judge runs", async () => {
+      const dir = gatewayDir();
+      const result = await gatewayJudge("bare", dir);
+      expect(judged(result)).toEqual(judgedCleanly);
+      expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
+      expect(existsSync(`${dir}.key`)).toBe(false);
+    });
 
     // Catches: a token file left behind when the judge fails, and a failed mint that starts the
     // judge anyway.
-    test.skipIf(skip)(
+    judgeRow(
       "removes the token file when the judge fails, and starts no judge when the key command fails",
-      () => {
+      async () => {
         const dir = gatewayDir();
         writeFileSync(path.join(dir, "exit-status"), "3\n");
-        expect(gatewayJudge("bare", dir).exitCode).toBe(3);
+        expect(exitedWith(await gatewayJudge("bare", dir), 3)).toEqual({ code: 3 });
         expect(existsSync(`${dir}.key`)).toBe(false);
         const refused = gatewayDir();
         const broken = freshDir("judge-gateway-broken");
@@ -1569,58 +1675,76 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
             recursive: true,
             force: true,
           });
-        const result = gatewayJudge("ste", refused, { PATH: `${broken}:${callerPath}` });
+        const result = await gatewayJudge("ste", refused, { PATH: `${broken}:${callerPath}` });
         expect(result.exitCode).toBe(1);
         expect(result.stderr.toString()).toContain(
           "judge-omp: the gateway's key command gave no key"
         );
         expect(existsSync(path.join(refused, "answer.json"))).toBe(false);
-      },
-      judgeBound
+      }
     );
   });
 
   // Catches: a judge profile whose built-from records an empty commit line when the rig's root is
   // no checkout, so a judge's model run cannot be traced to the code that built it.
-  test.skipIf(skip)(
-    "fails, naming the rig's root, when the root is no checkout",
-    () => {
-      const top = freshDir("judge-root");
-      const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
-      mkdirSync(scripts, { recursive: true });
-      // rig.sh sources rpc.sh beside it.
-      for (const file of ["rig.sh", "rpc.sh"])
-        writeFileSync(path.join(scripts, file), readFileSync(path.join(import.meta.dir, file)));
-      for (const file of [
-        ".omp-pin",
-        "skills/asd-ste100/SKILL.md",
-        "packages/envoy/scripts/lib/pg-url.sh",
-      ]) {
-        mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
-        writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
+  test.skipIf(skip)("fails, naming the rig's root, when the root is no checkout", () => {
+    const top = freshDir("judge-root");
+    const scripts = path.join(top, "packages/pi-legion/scripts/skill-scenarios");
+    mkdirSync(scripts, { recursive: true });
+    // rig.sh sources rpc.sh beside it.
+    for (const file of ["rig.sh", "rpc.sh"])
+      writeFileSync(path.join(scripts, file), readFileSync(path.join(import.meta.dir, file)));
+    // .bun-version with them: rig.sh resolves the pinned Bun from the root before it runs anything.
+    for (const file of [
+      ".omp-pin",
+      ".bun-version",
+      "skills/asd-ste100/SKILL.md",
+      "packages/envoy/scripts/lib/pg-url.sh",
+    ]) {
+      mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
+      writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
+    }
+    mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
+    cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
+      recursive: true,
+    });
+    const rootWork = freshDir("judge-root-work");
+    const result = childSpawn(
+      ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
+      {
+        USER: "rig",
+        SKILL_SCENARIOS_WORK: rootWork,
+        SKILL_SCENARIOS_JUDGE_OMP: omp,
+        LEGION_E2E_MODEL_ROUTE: "key-file",
+        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+        GIT_CEILING_DIRECTORIES: path.dirname(top),
       }
-      mkdirSync(path.join(top, "scripts/e2e"), { recursive: true });
-      cpSync(path.join(root, "scripts/e2e/lib"), path.join(top, "scripts/e2e/lib"), {
-        recursive: true,
-      });
-      const rootWork = freshDir("judge-root-work");
-      const result = childSpawn(
-        ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
-        {
-          USER: "rig",
-          SKILL_SCENARIOS_WORK: rootWork,
-          SKILL_SCENARIOS_JUDGE_OMP: omp,
-          LEGION_E2E_MODEL_ROUTE: "key-file",
-          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-          GIT_CEILING_DIRECTORIES: path.dirname(top),
-        }
-      );
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
-      expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
-    },
-    judgeBound
-  );
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain(`cannot read the commit of ${top} with jj or git`);
+    expect(existsSync(path.join(rootWork, "judge-profiles/ready"))).toBe(false);
+  });
+
+  // Catches: a judge rows' guard the job cannot wait out, so a hung judge shows as the job's own
+  // cancellation, with no line naming the judge or its phase.
+  test("the judge rows' guard ends inside the pi-legion job's budget", () => {
+    const workflow = readFileSync(
+      path.join(root, ".github/workflows/ci-job-pi-legion.yaml"),
+      "utf8"
+    );
+    // The pi-legion job's own timeout-minutes: the file holds the pi-legion-build job too, with a
+    // timeout of its own, so the job's block is read from its key to the next job's.
+    const lines = workflow.split("\n");
+    const start = lines.indexOf("  pi-legion:");
+    const end = lines.findIndex((line, i) => i > start && /^ {2}\S/.test(line));
+    const minutes = lines
+      .slice(start, end === -1 ? undefined : end)
+      .flatMap((line) => /^ {4}timeout-minutes: (\d+)$/.exec(line)?.slice(1) ?? [])
+      .map(Number);
+    expect(start).toBeGreaterThan(-1);
+    expect(minutes).toHaveLength(1);
+    expect(JUDGE_GUARD_MS).toBeLessThanOrEqual((minutes[0] ?? 0) * 30_000);
+  });
 });
 
 // A spec run's plan row reads skill://writing-plans, which only a label built with
@@ -2657,7 +2781,10 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       'nats_ready() { echo "nats_ready $1" >>"$calls"; }',
       "listener_up() { envoy_port=1; }",
       'start_dispatch() { echo "start_dispatch $1 | $2" >>"$calls"; dispatch_port=1; }',
-      "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls tag=t",
+      // own_dispatch runs seed.ts with `$bun_bin`, the Bun the rig resolves once at its top from the
+      // first `bun` on PATH; these functions run without that top, so the row resolves it the same
+      // way, to its own stand-in.
+      "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls tag=t bun_bin=$(command -v bun)",
       'mkdir -p "$S"',
       "services_env=$S/env services_postgres=$S/postgres-url",
       // The services file names the batch's NATS URL, which can hold a credential: an earlier

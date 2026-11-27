@@ -517,7 +517,7 @@ function runHook(
   const timingFile = join(timingDirectory, `hook-${hookCount}.json`)
   owner.timings.push(timingFile)
   const preload = options.preload === undefined ? [] : ["--preload", options.preload]
-  const run = Bun.spawn(["bun", ...preload, bundle, "answers"], {
+  const run = Bun.spawn([process.execPath, ...preload, bundle, "answers"], {
     env: {
       PATH: process.env["PATH"] ?? "",
       ...NO_TRANSPILER_CACHE,

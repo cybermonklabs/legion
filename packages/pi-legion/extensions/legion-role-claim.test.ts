@@ -118,6 +118,8 @@ beforeAll(async () => {
     },
     discoverExtensionPaths: async () => [],
     loadSkills: async () => ({ skills: [] }),
+    namesIn: async () => [],
+    kindOf: async () => undefined,
     run: async () => ({ code: 1, stdout: "", stderr: "no command runs in this test" }),
   }));
 });

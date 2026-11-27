@@ -55,7 +55,7 @@ func buildAgentSecrets(t *testing.T) string {
 // for the longest path these tests put there: the default helper socket a test's XDG_RUNTIME_DIR
 // holds, agent-secrets/helper.sock (hostmode_test.go). TMPDIR places it, and the helper falls
 // back to /tmp for that length alone, where t.TempDir()'s path carries the whole of the test's
-// name and passes the 107 bytes a unix socket path holds (docs/testing.md).
+// name and passes what a unix socket path holds (docs/testing.md).
 func shortTempDir(t *testing.T) string {
 	t.Helper()
 	return testtmp.Dir(t, filepath.Join("agent-secrets", "helper.sock"))

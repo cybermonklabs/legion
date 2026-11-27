@@ -11,6 +11,8 @@ import {
   type SubscribeInput,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root"
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { createInboxNotifier, INBOX_CAPABILITIES } from "../src/legion-inbox"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
@@ -30,6 +32,17 @@ import { isolatePaneEnvironment } from "./pane-environment"
 isolatePaneEnvironment()
 
 const scratchState = useScratchState()
+// The inbox's unix socket stands in for `legion claude-bridge`'s, which Go binds
+// (packages/daemon/internal/claudebridge/inbox.go) and so holds to the 107 bytes a socket path holds
+// on Linux (`socketPathRefusal`); Bun's own server binds past that. So it goes in a directory of its
+// own, made under TMPDIR when its path fits there and under /tmp otherwise, which says so
+// (`socketRoot`). The maker names a directory <prefix>-XXXXXX.
+const inboxPrefix = "claude-envoy-inbox"
+const inboxDirectory = temporaryDirectories(inboxPrefix, {
+  root: socketRoot("envoy-channel-consumer.test.ts's inbox", (root) =>
+    socketPathRefusal(join(root, `${inboxPrefix}-XXXXXX`, "inbox.sock")),
+  ),
+})
 
 const SESSION = "ses_claude"
 const DIRECT = legacyAgentSubject(SESSION)
@@ -112,10 +125,10 @@ test("a terminal session answers a relay frame received at once and done only on
 })
 
 /** `legion claude-bridge`'s inbox, which answers each line once the test lets it. */
-async function heldInbox(directory: string) {
+async function heldInbox() {
   const lines: { readonly id: string; answer(ok: boolean): void }[] = []
   const sockets = new Set<Socket>()
-  const path = join(directory, "inbox.sock")
+  const path = join(inboxDirectory(), "inbox.sock")
   const server = createServer((socket: Socket) => {
     sockets.add(socket)
     let buffered = ""
@@ -148,7 +161,7 @@ async function heldInbox(directory: string) {
 
 test("bridge mode answers done once the inbox says Claude Code took the message, and nak on an inbox error", async () => {
   const directory = scratchState()
-  const inbox = await heldInbox(directory)
+  const inbox = await heldInbox()
   const nats = new FakeNats()
   const { client } = listener(() => ({ ...noInterest(), delivery: CONSUMER }))
   const session = await startChannelSession(

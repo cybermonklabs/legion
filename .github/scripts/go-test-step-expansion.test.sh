@@ -7,8 +7,9 @@
 # Only the reader and the pins. What the script makes of a command - the packages a
 # `go test -list` names, the pairs two steps share, the exceptions - needs all three Go modules'
 # test binaries built, which is minutes of compile and why no CI job runs that script (its own
-# header says so). This harness needs no Go at all: every case is text, read as the script reads
-# it, or a file's hash.
+# header says so). This harness needs no Go at all: every case is one line of text or a file's
+# hash, but one, which runs a stand-in go that prints the environment the module's go commands and
+# step lines get.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
@@ -137,6 +138,54 @@ else:
   check "$form does not leave its pattern among the packages" "$(is "$in_packages" "no")"
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
+
+# go() and shell() run their command under go_build_tags.go_environment(): none of the
+# caller's Go variables but those naming where Go keeps or fetches files, and GOENV=off, so a
+# caller's GOFLAGS or GOOS, or the GOROOT a version manager's python3 shim hands the interpreter,
+# lists nothing a CI step would not. A stand-in go that prints its own environment shows what
+# reaches a go command, read here with a pattern of this harness's own for the variables the go
+# command reads. The caller below sets each kind of them, the kinds that changed
+# check-ci-filters.sh's answer (its test's case on a caller's Go variables). A -race command gets
+# cgo on whatever the caller says, since a race build needs it.
+echo "case: a go command and a step's line see none of the caller's Go variables"
+# The stand-in's directory goes when the case ends, not by a trap: the database-skips case below
+# sets its own EXIT trap, which would replace this one.
+work=$(mktemp -d)
+printf '#!/bin/sh\nenv\n' > "$work/go"
+chmod +x "$work/go"
+# go_seen <go|shell> <directory> <command> [argument ...]: the go command's variables, sorted, that
+# the command sees when go() or shell() runs it in the directory. shell() takes a line, so each
+# word goes into it quoted (shlex.join): the stand-in's path is under TMPDIR, which can hold a space
+# or a quote.
+go_seen() {
+  py 'import re, shlex
+from pathlib import Path
+how, directory, *command = sys.argv[1:]
+if how == "go":
+    out = ex.go(command, Path(directory), "the stand-in go")
+else:
+    out = ex.shell(shlex.join(command), Path(directory), "the stand-in go")
+names = re.compile(r"(C?GO[A-Z0-9_]*|CC|CXX|AR|FC|GCCGO|PKG_CONFIG)=")
+print("\n".join(sorted(line for line in out.splitlines() if names.match(line))))' "$@"
+}
+# polluted <command> [argument ...]: the command (a function of this harness too) under a caller who
+# sets one variable of each kind.
+polluted() {
+  GOROOT="$work" GOTOOLCHAIN=local GOFLAGS=-tags=polluted GOWORK=off GOOS=plan9 CGO_ENABLED=0 \
+    GOEXPERIMENT=pollutedexperiment GO111MODULE=off GOENV="$work/env" CC="$work/no-such-cc" "$@"
+}
+clean_go=$(go_seen go "$work" "$work/go")
+check "a go command runs with no go env file and no GOROOT" \
+  "$(is "$(contains "$clean_go" '^GOENV=off$'):$(contains "$clean_go" '^GOROOT=')" "true:false")"
+check "and sees the same variables under the caller's" \
+  "$(is "$(polluted go_seen go "$work" "$work/go")" "$clean_go")"
+clean_line=$(go_seen shell "$work" "$work/go")
+check "a step's line runs with no go env file" "$(contains "$clean_line" '^GOENV=off$')"
+check "and sees the same variables under the caller's" \
+  "$(is "$(polluted go_seen shell "$work" "$work/go")" "$clean_line")"
+check "a -race go command runs with cgo on under a caller's CGO_ENABLED=0" \
+  "$(contains "$(polluted go_seen go "$work" "$work/go" test -race)" '^CGO_ENABLED=1$')"
+rm -rf "$work"
 
 # Two steps run database-skips.sh, each through an xargs argument list its entry reads: envoy-go's
 # unit step, whose legs pipe go_legs.py's packages into it, and envoy-go-race-api's race step,

@@ -439,6 +439,29 @@ const BunWebSocket = WebSocket as unknown as new (
 ) => WebSocket;
 
 /**
+ * The refusal `agentViewRefusal` gives when its bound, `boundMs`, passes before Dispatch's first
+ * frame for subscription `sub`: it names what the socket did receive instead, `others` frames of
+ * other subscriptions and `lastOther`, the text of the last of them, or nothing. Pure, so the text
+ * for each count is tested without a socket or a clock.
+ */
+export function boundRefusalText(
+  sessionId: string,
+  sub: string,
+  boundMs: number,
+  others: number,
+  lastOther: string
+): string {
+  const received =
+    others === 0
+      ? "the socket received nothing"
+      : `the socket received ${plural(others, "other frame")}, the last ${lastOther}`;
+  return (
+    `Dispatch's first frame for the agent view of ${sessionId} (subscription ${sub}) had not ` +
+    `come after ${(boundMs / 1_000).toFixed(1)} s; ${received}`
+  );
+}
+
+/**
  * Why a seeded session's live view (`/agents/<id>/live`) would read "This session's conversation
  * is unavailable", or undefined when Dispatch carries it: it subscribes the agent view on the live
  * socket as the page does, under `headers` (a signed-in person's cookie), and reads Dispatch's
@@ -467,14 +490,7 @@ export async function agentViewRefusal(
   let others = 0;
   let lastOther = "";
   const timeout = setTimeout(() => {
-    const received =
-      others === 0
-        ? "the socket received nothing"
-        : `the socket received ${plural(others, "other frame")}, the last ${lastOther}`;
-    settle(
-      `Dispatch's first frame for the agent view of ${sessionId} (subscription ${sub}) had not ` +
-        `come after ${(boundMs / 1_000).toFixed(1)} s; ${received}`
-    );
+    settle(boundRefusalText(sessionId, sub, boundMs, others, lastOther));
   }, boundMs);
   socket.addEventListener("open", () => {
     socket.send(
@@ -500,7 +516,13 @@ export async function agentViewRefusal(
   socket.addEventListener("close", (event) =>
     settle(`the live socket closed first (${event.code} ${event.reason})`)
   );
-  socket.addEventListener("error", () => settle("the live socket could not be opened"));
+  // The runtime says why in the event: "Failed to connect" for a connection refused, "Expected 101
+  // status code: 404" for a server that answered the upgrade some other way. The refusal carries
+  // that, after Bun's "WebSocket connection to '<url>' failed: ", so the two are told apart.
+  socket.addEventListener("error", (event) => {
+    const said = event instanceof ErrorEvent ? event.message.replace(/^.* failed: /, "") : "";
+    settle(`the live socket could not be opened${said === "" ? "" : ` (${said})`}`);
+  });
   try {
     return await answered.promise;
   } finally {

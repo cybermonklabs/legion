@@ -8,6 +8,7 @@ import { signedIn, writeSignIn } from "@legion/cipher-client/test/sign-ins"
 import { RETRY_FIRST_WAIT_MS, TRADE_ATTEMPT_MS } from "@legion/cipher-client/token-client"
 import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { refusingOrigin } from "@legion/test-fixtures/refused-port"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
@@ -36,7 +37,7 @@ async function runHook(
   options: { readonly preload?: string | readonly string[] } = {},
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const preloading = [options.preload ?? []].flat().flatMap((file) => ["--preload", file])
-  const run = Bun.spawn(["bun", ...preloading, hookEntry, "open-asks"], {
+  const run = Bun.spawn([process.execPath, ...preloading, hookEntry, "open-asks"], {
     env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: new TextEncoder().encode(JSON.stringify({ cwd: env.HOME, ...input })),
     stdout: "pipe",
@@ -193,19 +194,20 @@ test("a summary larger than a pipe holds arrives whole before the hook ends its 
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
-  const closed = Bun.serve({ port: 0, fetch: () => new Response() })
-  const port = closed.port
-  closed.stop(true)
+  // A port this row holds bound and never listens on (`refusingOrigin`), so the hook's request is
+  // refused, and no other process can bind it to give an answer of its own.
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: `http://127.0.0.1:${port}`,
+      DISPATCH_URL: refusingOrigin(),
       DISPATCH_TOKEN,
     })
 
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary unavailable: ")
+    // The refusal itself, so any other failure to answer reads as a failure here.
+    expect(result.stdout).toContain("ECONNREFUSED")
     expect(
       await readFile(
         join(scratch, "plugin-data", "sessions", String(process.pid), "session-id"),

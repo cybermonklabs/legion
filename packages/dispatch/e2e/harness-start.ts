@@ -35,12 +35,13 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { text } from "node:stream/consumers";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
 
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
 import { harnessPorts, harnessVariables } from "./harness-ports";
@@ -54,6 +55,24 @@ const heldPortScript = fileURLToPath(
 const tailLines = 20;
 /** How long a port keeper may take to hold its port. */
 const keeperBootMs = 30_000;
+/** The name of the directory the port keepers serve their sockets in, before `mkdtemp`'s six
+ *  random characters. */
+const keeperPrefix = "dispatch-e2e-held-";
+
+/**
+ * Makes the directory the port keepers of `ids` serve their unix sockets in, `<id>.sock` each, and
+ * returns its path. It is made under TMPDIR when the longest of those socket paths fits there, and
+ * under /tmp otherwise, which says so on stderr (`socketRoot`): `held-port.py` is Python, which
+ * refuses a socket path past the 107 bytes Linux holds ("AF_UNIX path too long",
+ * `socketPathRefusal`), and a long TMPDIR passes it. The caller removes it.
+ */
+export function keeperDirectory(ids: readonly string[]): string {
+  const longest = ids.reduce((found, id) => (id.length > found.length ? id : found), "");
+  const root = socketRoot("the Dispatch e2e harness's port keepers", (root) =>
+    socketPathRefusal(join(root, `${keeperPrefix}XXXXXX`, `${longest}.sock`))
+  );
+  return mkdtempSync(join(root, keeperPrefix));
+}
 
 export interface HarnessProcess {
   readonly listener: HarnessListener;
@@ -268,7 +287,9 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   try {
     for (const listener of listeners) {
       if (listener.heldAhead === undefined || given[listener.key].port !== 0) continue;
-      keeperDir ??= mkdtempSync(join(tmpdir(), "dispatch-e2e-held-"));
+      keeperDir ??= keeperDirectory(
+        listeners.filter((each) => each.heldAhead !== undefined).map((each) => each.id)
+      );
       const held = await keepPort(listener, keeperDir, supervisor, environment);
       kept.set(listener, held);
       env[harnessVariables[listener.key]] = String(held.port);

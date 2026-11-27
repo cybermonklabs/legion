@@ -7,11 +7,11 @@ import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { modSocketPath } from "../hooks/mod-protocol"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
 import { connectedToServer } from "./mcp-connect"
+import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
 import { natsGate } from "./nats-gate"
 import { ROW_TIMEOUT_MS } from "./reopen-server"
 import { ROW_GUARD_MS, rowStarted, untilTheGuard } from "./row-deadline"
@@ -22,20 +22,11 @@ const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 beforeEach(rowStarted)
 setDefaultTimeout(ROW_GUARD_MS)
 
-/** Where each session's home is made. Its mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and
- *  that whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
- *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, and the session then names
- *  no socket. So the home goes under `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's
- *  does. */
-const SOCKET_ROOT = "/tmp"
-
-/** A session home of its own, under {@link SOCKET_ROOT}. */
-function sessionHome(prefix: string): Promise<string> {
-  return mkdtemp(join(SOCKET_ROOT, prefix))
-}
-
-// The rows below start each session in a home of its own and reach it at its mod socket; a home
-// under a deep TMPDIR named no socket, and two of them failed (the review of #4140's forward merge).
+// The rows below start each session in a home of its own, made by modSocketScratch, and reach it at
+// its mod socket. A mod socket is `<home>/claude-envoy/ce-<hash>.sock` and has 100 bytes to fit in
+// (`MOD_SOCKET_PATH_MAX_BYTES`); a home under a deep TMPDIR named no socket, and two of them failed
+// (the review of #4140's forward merge). modSocketScratch makes the home under TMPDIR when the
+// socket fits there and under /tmp otherwise, which this row holds.
 test("a session home's mod socket fits however deep TMPDIR is", async () => {
   const was = process.env["TMPDIR"]
   const deep = await mkdtemp(join("/tmp", `claude-envoy-depth-${"d".repeat(64)}-`))
@@ -44,8 +35,10 @@ test("a session home's mod socket fits however deep TMPDIR is", async () => {
   let home: string | undefined
   try {
     expect(tmpdir()).toBe(deep)
-    home = await sessionHome("claude-envoy-mcp-")
-    expect(modSocketPath("ses_depth", { XDG_RUNTIME_DIR: home })).toBeDefined()
+    home = await modSocketScratch("claude-envoy-mcp-")
+    expect(sessionModSocket("ses_depth", { XDG_RUNTIME_DIR: home }).startsWith(`${home}/`)).toBe(
+      true,
+    )
   } finally {
     if (was === undefined) delete process.env["TMPDIR"]
     else process.env["TMPDIR"] = was
@@ -105,11 +98,11 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
       return Response.json({ error: "not found" }, { status: 404 })
     },
   })
-  const stateDirectory = await sessionHome("claude-envoy-mcp-")
+  const stateDirectory = await modSocketScratch("claude-envoy-mcp-")
   const dispatchToken = fixtureSecret("dsp")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {
@@ -160,8 +153,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     expect(advertised.length).toBeGreaterThan(0)
     for (const modes of advertised) expect(modes).toEqual([])
 
-    const socketPath = modSocketPath("ses_mcp", { XDG_RUNTIME_DIR: stateDirectory })
-    if (socketPath === undefined) throw new Error("the session names no mod socket")
+    const socketPath = sessionModSocket("ses_mcp", { XDG_RUNTIME_DIR: stateDirectory })
     const mod = await startFakeMod(socketPath, { sessionId: "ses_mcp" })
     try {
       // The mod's hello makes the session register again, with what it can take now.
@@ -226,10 +218,10 @@ test("the session advertises its delivery modes for a mod that polls and never s
       return Response.json({ error: "not found" }, { status: 404 })
     },
   })
-  const stateDirectory = await sessionHome("claude-envoy-quiet-")
+  const stateDirectory = await modSocketScratch("claude-envoy-quiet-")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {
@@ -270,8 +262,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
     )
     expect(advertised.at(-1)).toEqual([])
 
-    const socketPath = modSocketPath("ses_quiet", { XDG_RUNTIME_DIR: stateDirectory })
-    if (socketPath === undefined) throw new Error("the session names no mod socket")
+    const socketPath = sessionModSocket("ses_quiet", { XDG_RUNTIME_DIR: stateDirectory })
     await waitFor(
       () =>
         stat(socketPath).then(
@@ -314,12 +305,12 @@ test("a tool call while the start waits for its broker token says what the start
       return new Response("the broker is away", { status: 503 })
     },
   })
-  const stateDirectory = await sessionHome("claude-envoy-broker-wait-")
+  const stateDirectory = await modSocketScratch("claude-envoy-broker-wait-")
   const tokenFile = join(stateDirectory, "projected-token")
   await writeFile(tokenFile, `${fixtureSecret("proj")}\n`)
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {
@@ -408,10 +399,10 @@ test(
         return Response.json({ error: "not found" }, { status: 404 })
       },
     })
-    const stateDirectory = await sessionHome("claude-envoy-dial-")
+    const stateDirectory = await modSocketScratch("claude-envoy-dial-")
     const client = new Client({ name: "test", version: "0" })
     const transport = new StdioClientTransport({
-      command: "bun",
+      command: process.execPath,
       args: [entry],
       cwd: stateDirectory,
       env: {
@@ -532,12 +523,12 @@ test("a broker token keeper's warning while the start registers leaves the tool 
       return Response.json({ error: "not found" }, { status: 404 })
     },
   })
-  const stateDirectory = await sessionHome("claude-envoy-keeper-")
+  const stateDirectory = await modSocketScratch("claude-envoy-keeper-")
   const tokenFile = join(stateDirectory, "projected-token")
   await writeFile(tokenFile, `${fixtureSecret("proj")}\n`)
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {

@@ -7,7 +7,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { BUN_START_MS } from "@legion/test-fixtures/process-bounds";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -18,6 +18,10 @@ import { operatorDispatch } from "./operator-dispatch";
 setDefaultTimeout(HANG_GUARD_MS);
 
 const dir = temporaryDirectory("operator-dispatch-test");
+// The PATH every child of this file gets: the caller's, behind this Bun's own directory.
+// lib/operator-dispatch.sh runs `bun` by name under a HOME of the test's own, where a `bun` that is
+// a mise shim has no version ("bun is not a valid shim").
+const childPath = `${dirname(process.execPath)}:${process.env.PATH ?? ""}`;
 
 const home = join(dir, "home");
 const profile = join(dir, "profile");
@@ -111,9 +115,9 @@ const startsBudget = (starts: number): number => starts * BUN_START_MS;
 // reads it from there.
 describe("bun lib/operator-dispatch.ts <bearer file>", () => {
   const cli = (args: readonly string[], env: Record<string, string>) =>
-    Bun.spawnSync(["bun", join(import.meta.dir, "operator-dispatch.ts"), ...args], {
+    Bun.spawnSync([process.execPath, join(import.meta.dir, "operator-dispatch.ts"), ...args], {
       cwd,
-      env: { PATH: process.env.PATH ?? "", ...env },
+      env: { PATH: childPath, ...env },
     });
 
   test(
@@ -194,7 +198,7 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
   ): Bun.SyncSubprocess<"pipe", "pipe"> =>
     Bun.spawnSync(["bash", "-c", script, "_", join(import.meta.dir, "operator-dispatch.sh")], {
       cwd: directory,
-      env: { HOME: home, PATH: process.env.PATH ?? "", ...extra },
+      env: { HOME: home, PATH: childPath, ...extra },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -285,7 +289,7 @@ printf '%s|%s|%s\\n' "$prod_dispatch_url" "$prod_baseline" "$(ls -A "$work")"`;
             cwd,
             env: {
               HOME: join(dir, "empty-home"),
-              PATH: process.env.PATH ?? "",
+              PATH: childPath,
               DISPATCH_URL: `http://127.0.0.1:${server.port}`,
               DISPATCH_TOKEN: "operator-bearer",
             },

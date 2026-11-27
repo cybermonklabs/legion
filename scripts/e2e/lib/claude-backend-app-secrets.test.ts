@@ -9,7 +9,9 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
+import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { unrealReader } from "./proc-root";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
 // (the devbox once its local copies of another deployment's keys were removed): the run must reach
@@ -25,6 +27,19 @@ const dir = temporaryDirectory("claude-backend-key-runner-test");
 
 const bin = join(dir, "bin");
 const scratch = join(dir, "tmp");
+// The run's own mise state, seeded with the caller's trust records (seedMiseState): a real tool
+// linked into the run's bin below can be a mise shim (jq is, on a devbox), which finds its version
+// through the caller's mise configuration, and the run's HOME is this directory.
+const miseState = join(dir, "mise-state");
+// The proc root refuse_leftovers reads in prerequisites (`${proc_root:-/proc}`). Over the host's
+// /proc refuse_leftovers runs three commands for each process the host has, so the row's time, held
+// to the run's 60 s, was the host's process
+// count, and a process an earlier run of the proof left anywhere on the host failed the row. The
+// run starts no process that walk is to find before it stops, and no earlier run's process is
+// the row's, so its root holds one entry alone: an unreal pid whose command line only
+// refuse_leftovers reads (unrealReader), so a refuse_leftovers that walked the host's /proc again
+// fails the row rather than only slowing it.
+const proc = join(dir, "proc");
 // Where the stand-in `secrets` records that it was asked.
 const asked = join(dir, "secrets-asked");
 const keyFile = join(dir, "anthropic-key");
@@ -109,6 +124,8 @@ beforeAll(() => {
   if (host.missing) return;
   mkdirSync(bin);
   mkdirSync(scratch);
+  mkdirSync(proc);
+  seedMiseState(miseState);
   // The stand-ins the prerequisites need only find: each prints nothing and exits 0.
   const quiet = ["go", "docker", "ss", "tmux", "mise", "gh", "jj", "pgrep", "claude", "python3"];
   for (const name of quiet) stub(name, "exit 0");
@@ -143,11 +160,17 @@ printf '{"implement":"example-implement[bot]","review":"example-review[bot]"}'`
 host.test(
   "the prerequisites reach both Apps' credentials and never ask the box's own secrets store",
   () => {
+    const walked = unrealReader(proc);
     const run = Bun.spawnSync(["bash", script], {
       env: {
         HOME: dir,
         PATH: bin,
         TMPDIR: scratch,
+        // The caller's mise configuration, for a linked tool that is a mise shim, and none of its
+        // [env] (MISE_NO_ENV): a shim applies that env over the run's own variables.
+        ...callerMiseEnvironment(miseState),
+        MISE_NO_ENV: "1",
+        proc_root: proc,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
         // The review App's key command, which prerequisites requires and has no default for
@@ -161,6 +184,10 @@ host.test(
       timeout: 60_000,
     });
     const output = run.stdout.toString() + run.stderr.toString();
+    expect(
+      walked(),
+      `refuse_leftovers read no entry of the proc root it was given:\n${output}`
+    ).toBe(true);
     // read_app_logins passed, so every assertion below is about a run that resolved both App
     // credentials rather than one a stand-in stopped before them.
     expect(output).toContain(

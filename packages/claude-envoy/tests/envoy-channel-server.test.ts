@@ -1065,7 +1065,7 @@ async function runChannelServer(
   readonly responses: ReadonlyMap<number, Record<string, unknown>>
   readonly stderr: string
 }> {
-  const server = Bun.spawn(["bun", channelEntry], {
+  const server = Bun.spawn([process.execPath, channelEntry], {
     cwd: env.HOME,
     env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: "pipe",
@@ -1282,7 +1282,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         },
       }),
     )
-    const running = Bun.spawn(["bun", channelEntry], {
+    const running = Bun.spawn([process.execPath, channelEntry], {
       cwd: home,
       env: {
         PATH: process.env["PATH"] ?? "",

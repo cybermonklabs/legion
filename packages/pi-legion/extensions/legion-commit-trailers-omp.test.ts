@@ -19,6 +19,7 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { jjBinary } from "@legion/test-fixtures/version-control-tools";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
 // commit carries the two trailers of the pane: `Omp-Session` with the session of the pane, and
@@ -163,8 +164,8 @@ async function startRolePane(role: Role): Promise<RolePane> {
   // The pane's PATH is the harness's fixed one and `bin`, and CI's jj is in ~/.local/bin
   // (.github/actions/install-jj). So the jj of this process goes in `bin`: the plugin finds it for
   // the base of the overlay chain (`userConfigChain`), and the subagent's shell commits with it.
-  const jj = Bun.which("jj");
-  if (jj === null) throw new Error("jj is not on PATH");
+  // It is the binary itself (`jjBinary`), not the first `jj` on this process's PATH.
+  const jj = await jjBinary(root);
   await symlink(jj, path.join(bin, "jj"));
 
   const held: Held[] = [];
@@ -319,7 +320,9 @@ function roleReply(turn: number): readonly Block[] {
  * The description of `@-` in `repo`, as this process's own jj reads it. `JJ_CONFIG` names an empty
  * file, so no config of the runner takes part in the read. `HOME` is the home of the pane, so jj
  * finds the config of the repository where the pane's jj put it, and writes nothing in the home of
- * the runner. `--ignore-working-copy` stops the read from making a snapshot of its own.
+ * the runner. It runs in `repo`, its `-R`, since jj reads the repository its working directory is
+ * in before it applies `-R` (docs/testing.md). `--ignore-working-copy` stops the read from making a
+ * snapshot of its own.
  */
 async function committedDescription(pane: RolePane, repo: string): Promise<string> {
   const emptyConfig = path.join(pane.root, "empty-jj-config.toml");
@@ -340,6 +343,7 @@ async function committedDescription(pane: RolePane, repo: string): Promise<strin
       "description",
     ],
     {
+      cwd: repo,
       env: { PATH: process.env.PATH ?? "", HOME: pane.home, JJ_CONFIG: emptyConfig },
       stdout: "pipe",
       stderr: "pipe",

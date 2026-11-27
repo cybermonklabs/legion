@@ -642,9 +642,13 @@ write_github_apps --key-dir "$work/app-key" implement review
 # that build refuses any other (assertPinnedBun, LEGION-568). Checked here, before the first bun this
 # run starts (lib/app-logins.ts, just below), so a devbox whose version manager defaults to another
 # release is refused by name rather than at the build line in the rig. After write_github_apps, so
-# the App inputs' own checks above run whatever the Bun.
+# the App inputs' own checks above run whatever the Bun. A bun that cannot run (a version
+# manager's shim with no version set, say) is refused with its own words, never read as a Bun of
+# no version.
 bun_pin=$(tr -d '[:space:]' <"$root/.bun-version")
-bun_running=$(bun --version 2>/dev/null | tr -d '[:space:]') || bun_running=
+bun_said=$(bun --version 2>&1) ||
+  fail "the bun first on PATH ($(command -v bun || echo 'no bun')) could not run \`bun --version\`: $bun_said"
+bun_running=$(printf '%s' "$bun_said" | tr -d '[:space:]')
 [ "$bun_running" = "$bun_pin" ] ||
   fail "refusing to run under Bun ${bun_running:-<no version>}: .bun-version pins $bun_pin, and the run builds claude-envoy with packages/claude-envoy/scripts/build.ts, whose bundler output depends on the exact Bun build (LEGION-568). Put the pinned Bun first on PATH ($(command -v bun) is the one found)"
 read_app_logins

@@ -292,6 +292,7 @@ on:
       - 'packages/pi-shared/package.json'
       - 'packages/proof-editor/package.json'
       - 'packages/test-fixtures/package.json'
+      - 'packages/test-fixtures/src/socket-root.ts'
       - 'scripts/third-party-notices.ts'
       - 'scripts/e2e/lib/held-port.py'
       - '!**/*_test.go'

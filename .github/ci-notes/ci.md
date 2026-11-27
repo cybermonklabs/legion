@@ -327,6 +327,11 @@ With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 liv
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
 
+## daemon_go_tests: report-port.sh: the rig sources it
+
+The Stage 1 proof sources `scripts/e2e/lib/rig.sh`, which sources
+`scripts/e2e/lib/report-port.sh` for `report_port`, so a change to it changes the proof's run.
+
 ## daemon_go_tests: The rule file internal/prompts/roles_test.go holds the role parts to
 
 The repository's own rule file, .github/private-names.toml, which
@@ -3689,3 +3694,31 @@ could replace those files (no such line in job 138205905583, run 45323050174). g
 fills in a job of its own, envoy-test, which restores first and then builds the listener and
 natsd as the envoy job does and the test binaries, so its entry still holds go-envoy's objects,
 built on its own entry, and the chmod step is gone. A run-time check would pass both jobs.
+
+## test_fixtures: install-jj inputs
+
+The test-fixtures job runs `./.github/actions/install-jj`. That action reads
+`packages/daemon/docker/worker.Dockerfile#ARG JJ_TOOL`, so both inputs select the job.
+
+## dispatch_browser: socket-root fixture
+
+`packages/dispatch/e2e/harness-start.ts` imports `@legion/test-fixtures/socket-root`, so the
+browser suite reads the shared fixture sources.
+
+## envoy_infra_go: sockettest
+
+The held-port wrapper's ordinary test, `packages/envoy/infra/host/heldportwrapper/main_test.go`,
+imports `packages/envoy/internal/sockettest`, and `packages/envoy/infra/scripts/race-unit.sh` runs
+every package of the module but `internal/textcheck`, that one among them.
+
+## dispatch_two_builds: socket-root fixture
+
+The two-build browser half starts the Dispatch e2e harness, and
+`packages/dispatch/e2e/harness-start.ts` imports `@legion/test-fixtures/socket-root`.
+
+## docs: socket-root fixture
+
+`docs/site/media/harness.ts` imports `packages/dispatch/e2e/harness-start.ts`, which imports
+`@legion/test-fixtures/socket-root`, so the docs site's tools program
+(`docs/site/tsconfig.tools.json`) compiles `packages/test-fixtures/src/socket-root.ts`.
+The push paths of docs-pages.yaml name it too, since that list equals this filter.

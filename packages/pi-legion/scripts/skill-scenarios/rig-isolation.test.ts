@@ -8,8 +8,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 
@@ -63,6 +65,8 @@ const stub = path.join(scratch, "stub");
 stagings.push(() => {
   mkdirSync(path.dirname(rig), { recursive: true });
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
+  // The Bun release the rig takes, which it reads from its checkout's root.
+  copyFileSync(path.join(root, ".bun-version"), path.join(co, ".bun-version"));
   copyFileSync(path.join(import.meta.dir, "rpc.sh"), path.join(path.dirname(rig), "rpc.sh"));
   for (const lib of [
     "rig.sh",
@@ -70,6 +74,7 @@ stagings.push(() => {
     "loopback-dsn.sh",
     "loopback-dsn.py",
     "port-file.sh",
+    "report-port.sh",
     "held-port.py",
   ]) {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
@@ -80,9 +85,15 @@ stagings.push(() => {
   copyFileSync(path.join(root, pgUrl), path.join(co, pgUrl));
   mkdirSync(stub);
 });
+// run-server.sh's stand-in starts this file's Bun by its path, as the rig starts its own: a `bun`
+// found on PATH is the caller's, maybe a shim (the "asks the first bun on PATH" row below).
 put(
   path.join(co, "packages/dispatch/e2e/run-server.sh"),
-  ["#!/usr/bin/env bash", 'exec bun "$STUB_DIR/server.ts"', ""].join("\n"),
+  [
+    "#!/usr/bin/env bash",
+    `exec ${JSON.stringify(process.execPath)} "$STUB_DIR/server.ts"`,
+    "",
+  ].join("\n"),
   0o755
 );
 // No DISPATCH_E2E_PORT: the server takes a port of the kernel's choosing and reports it as the Go
@@ -189,11 +200,56 @@ put(
 // the rig's bun is chosen.
 stagings.push(() => symlinkSync(process.execPath, path.join(bin, "bun")));
 // A bun that cannot run, as a mise shim with no version set answers: the stand-in the row below
-// puts ahead of the link above.
+// puts ahead of the link above. It answers `--version` with the pinned release, so the rig's check
+// of the release (rig.sh, "refusing to run under Bun") passes, and fails every other call as the
+// shim does: the rig's next call is the one that names the binary it runs on.
 const brokenBun = path.join(scratch, "broken-bun");
 put(
   path.join(brokenBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    `if [ "$*" = --version ]; then echo ${readFileSync(path.join(root, ".bun-version"), "utf8").trim()}; exit 0; fi`,
+    'echo "No version is set for shim: bun" >&2',
+    "exit 1",
+    "",
+  ].join("\n"),
+  0o755
+);
+// A mise shim with no version set, as it answers every call, `--version` among them.
+const failingShim = path.join(scratch, "failing-shim");
+put(
+  path.join(failingShim, "bun"),
   ["#!/usr/bin/env bash", 'echo "No version is set for shim: bun" >&2', "exit 1", ""].join("\n"),
+  0o755
+);
+// A bun on PATH that runs this file's Bun and records every call it is given: a rig that started
+// `bun` by name after resolving the binary it runs on would show here.
+const countingBun = path.join(scratch, "counting-bun");
+put(
+  path.join(countingBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    'printf \'%s\\n\' "$*" >>"$STUB_DIR/counting-bun.log"',
+    `exec ${JSON.stringify(process.execPath)} "$@"`,
+    "",
+  ].join("\n"),
+  0o755
+);
+
+// This Bun refuses to run unless the rig receives the caller's resolved mise config directory.
+// Its `-e` call still runs this test's Bun, so the rig resolves and runs a real binary.
+const configBun = path.join(scratch, "config-bun");
+put(
+  path.join(configBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    'if [ "$MISE_CONFIG_DIR" != "$EXPECTED_MISE_CONFIG_DIR" ]; then',
+    '  echo "wanted MISE_CONFIG_DIR=$EXPECTED_MISE_CONFIG_DIR, got $MISE_CONFIG_DIR" >&2',
+    "  exit 97",
+    "fi",
+    `exec ${JSON.stringify(process.execPath)} "$@"`,
+    "",
+  ].join("\n"),
   0o755
 );
 
@@ -220,33 +276,40 @@ label(
 );
 // A profile built before the installers raised the handler limit.
 label("stale", "modelRoles:\n  default: anthropic/m\n");
+// A profile whose settings are not YAML, which the rig's check cannot read.
+label("broken", "extensionHandlers: [unclosed\n  toolCallTimeoutMs: 120000\n");
 put(path.join(work, "services/env"), "ENVOY_URL=http://127.0.0.1:1\n");
 put(path.join(work, "services/dispatch-token"), "e2e-token\n");
 /** The tag rig.sh names the work directory's containers with. */
 const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
 
-/** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
- * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
- * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
- * developer's own home decides nothing here. */
-const miseData =
-  process.env.MISE_DATA_DIR ??
-  (process.env.XDG_DATA_HOME === undefined
-    ? undefined
-    : path.join(process.env.XDG_DATA_HOME, "mise"));
-const env = {
-  PATH: `${bin}:${process.env.PATH ?? ""}`,
-  HOME: path.join(scratch, "home"),
-  USER: process.env.USER ?? "rig",
-  TMPDIR: scratch,
-  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-  ...(process.env.XDG_CONFIG_HOME === undefined
-    ? {}
-    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
-  STUB_DIR: stub,
-  SKILL_SCENARIOS_WORK: work,
-  SKILL_SCENARIOS_ASKGATE_CASE: "facts",
-};
+/** The rig's own mise state directory: seedMiseState fills it with copies of the caller's trust
+ *  and ignore records, so whatever mise writes as the rig runs stays under `scratch`. */
+const miseState = path.join(scratch, "mise-state");
+stagings.push(() => seedMiseState(miseState));
+/**
+ * The child environment for one caller. The test HOME stays private, while mise receives every
+ * resolved caller path it needs to run a shim. `callerMiseEnvironment` must stay here rather than
+ * at one caller: the two rows below make a child Bun reject any other config directory.
+ */
+function rigEnvironment(
+  caller: Record<string, string | undefined> = process.env,
+  callerHome = homedir(),
+  state = miseState
+) {
+  return {
+    PATH: `${bin}:${caller.PATH ?? ""}`,
+    HOME: path.join(scratch, "home"),
+    USER: caller.USER ?? "rig",
+    TMPDIR: scratch,
+    ...callerMiseEnvironment(state, caller, callerHome),
+    MISE_NO_ENV: "1",
+    STUB_DIR: stub,
+    SKILL_SCENARIOS_WORK: work,
+    SKILL_SCENARIOS_ASKGATE_CASE: "facts",
+  };
+}
+const env = rigEnvironment();
 
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
  *
@@ -274,9 +337,13 @@ const env = {
  * redirected, and the signal dispositions and environment a plain start would give it. A python3 in
  * its place ignored SIGPIPE and SIGXFSZ and coerced LC_CTYPE, and its posix_spawnp handed all three
  * to the rig. The rig's own shell runs with job control off, as it always has. */
-async function runRig(args: string[], vars: Record<string, string> = {}) {
+async function runRig(
+  args: string[],
+  vars: Record<string, string> = {},
+  environment: Record<string, string> = env
+) {
   const child = Bun.spawn(ownGroup(["bash", rig, ...args]), {
-    env: { ...env, ...vars },
+    env: { ...environment, ...vars },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -399,12 +466,58 @@ test.skipIf(withoutPerl)(
   }
 );
 
-// The read of a profile's settings is bun's, and a bun that cannot run says nothing of the key: the
-// rig names bun's failure and its error, and never the key, for a profile that sets the limit and
-// for one that does not. The second is the control of the row above, whose refusal names the key
-// only where bun read the settings.
+// A check that cannot answer is refused as that, with the reader's own error: settings that are
+// not YAML are not read as settings that leave the limit at its default.
 test.skipIf(withoutPerl)(
-  "a run whose bun cannot read the profile settings is refused, naming bun's failure and not the key",
+  "a run on a profile whose settings cannot be read is refused with the reader's own error",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "broken", "1", "5", start]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("label broken: bun could not read the profile settings");
+    expect(stderr).toContain("YAML Parse error");
+    expect(stderr).not.toContain("do not set extensionHandlers.toolCallTimeoutMs");
+    expect(existsSync(path.join(work, "runs", "askgate-facts-broken-1"))).toBe(false);
+  }
+);
+
+// The rig runs on the caller's first bun on PATH, and a run on another release than the pinned
+// one is no run of this checkout: the rig refuses it by name before it starts anything. The
+// stand-in answers `--version` with another release, and fails any other call, so a rig that ran
+// it further would show here.
+const otherBun = path.join(scratch, "other-bun");
+put(
+  path.join(otherBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    'printf \'%s\\n\' "$*" >>"$STUB_DIR/other-bun.log"',
+    'if [ "$*" = --version ]; then echo 1.0.0; exit 0; fi',
+    'echo "the stand-in bun ran: $*" >&2',
+    "exit 97",
+    "",
+  ].join("\n"),
+  0o755
+);
+test.skipIf(withoutPerl)(
+  "a run on a bun other than the pinned release is refused, naming both releases and the bun",
+  async () => {
+    const pinned = readFileSync(path.join(root, ".bun-version"), "utf8").trim();
+    const { code, stderr } = await runRig(["run", "askgate", "on", "7", "6", start], {
+      PATH: `${otherBun}:${env.PATH}`,
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain(`refusing to run under Bun 1.0.0: ${co}/.bun-version pins ${pinned}`);
+    expect(stderr).toContain(`(${otherBun}/bun is the one found)`);
+    expect(lines(path.join(stub, "other-bun.log"))).toEqual(["--version"]);
+    expect(existsSync(path.join(work, "runs", "askgate-facts-on-7"))).toBe(false);
+  }
+);
+
+// A bun that cannot run says nothing of the key: the rig asks it for the binary it runs on before
+// any label's settings are read, and refuses it there with its own words, for a profile that sets
+// the limit and for one that does not. The second is the control of the "leave the handler limit at
+// its default" row above, whose refusal names the key only where bun read the settings.
+test.skipIf(withoutPerl)(
+  "a run whose first bun cannot run is refused with that bun's own error, naming neither the key nor a release",
   async () => {
     for (const [name, index] of [
       ["on", "4"],
@@ -414,13 +527,79 @@ test.skipIf(withoutPerl)(
         PATH: `${brokenBun}:${env.PATH}`,
       });
       expect(code).toBe(1);
-      expect(stderr).toContain(`label ${name}: bun could not read the profile settings`);
-      expect(stderr).toContain("No version is set for shim: bun");
+      expect(stderr).toContain(
+        `the bun first on PATH (${brokenBun}/bun) could not run to name the binary it runs: No version is set for shim: bun`
+      );
       expect(stderr).not.toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
+      expect(stderr).not.toContain("refusing to run under Bun");
       expect(existsSync(path.join(work, "runs", `askgate-facts-${name}-9`))).toBe(false);
     }
   }
 );
+
+// A shim that fails even `bun --version`, as mise's does under a HOME whose config names no
+// version: the rig's check of the release reports the shim's own words, not a Bun of no version.
+test.skipIf(withoutPerl)(
+  "a run whose first bun fails `bun --version` is refused with that bun's own error",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "on", "10", "4", start], {
+      PATH: `${failingShim}:${env.PATH}`,
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      `the bun first on PATH (${failingShim}/bun) could not run \`bun --version\`: No version is set for shim: bun`
+    );
+    expect(stderr).not.toContain("<no version>");
+    expect(existsSync(path.join(work, "runs", "askgate-facts-on-10"))).toBe(false);
+  }
+);
+
+// The rig asks the first bun on PATH twice, for its release and for the binary it runs, and every
+// command after that starts that binary by its path: a run with a recording bun first on PATH
+// finishes, and that bun saw those two calls and no other.
+test.skipIf(withoutPerl)(
+  "a run asks the first bun on PATH only for its release and its binary, then runs that binary",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "on", "11", "4", start], {
+      PATH: `${countingBun}:${env.PATH}`,
+    });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(lines(path.join(stub, "counting-bun.log"))).toEqual([
+      "--version",
+      "-e process.stdout.write(process.execPath)",
+    ]);
+  }
+);
+
+for (const [mode, callerXdgConfig, run] of [
+  ["unset", undefined, "12"],
+  ["set", path.join(scratch, "caller-xdg-config"), "13"],
+] as const) {
+  test.skipIf(withoutPerl)(
+    `a caller whose XDG_CONFIG_HOME is ${mode} passes mise's resolved config directory to Bun`,
+    async () => {
+      const callerHome = path.join(scratch, `caller-home-${mode}`);
+      const state = path.join(scratch, `caller-mise-state-${mode}`);
+      const caller = {
+        PATH: process.env.PATH,
+        ...(callerXdgConfig === undefined ? {} : { XDG_CONFIG_HOME: callerXdgConfig }),
+      };
+      mkdirSync(callerHome, { recursive: true });
+      seedMiseState(state, caller, callerHome);
+      const expected = path.join(callerXdgConfig ?? path.join(callerHome, ".config"), "mise");
+      const environment = rigEnvironment(caller, callerHome, state);
+      const { code, stderr } = await runRig(
+        ["run", "askgate", "on", run, "4", start],
+        {
+          PATH: `${configBun}:${environment.PATH}`,
+          EXPECTED_MISE_CONFIG_DIR: expected,
+        },
+        environment
+      );
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    }
+  );
+}
 
 // The link case's ask states the reindex time from a file, for AskGate's content 9 (an unsourced
 // claim about what we run today): the run's working directory must hold that file, with the line

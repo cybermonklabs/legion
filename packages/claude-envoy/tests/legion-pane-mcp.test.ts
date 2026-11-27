@@ -1,12 +1,12 @@
 import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { daemonContract } from "@legion/contracts/daemon-contract"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import pkg from "../package.json" with { type: "json" }
@@ -26,6 +26,15 @@ const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 beforeEach(rowStarted)
 setDefaultTimeout(ROW_GUARD_MS)
 
+// The run's root holds the inbox socket, which stands in for the bridge's: Go binds that one
+// (packages/daemon/internal/claudebridge/inbox.go), so it holds to the 107 bytes a socket path holds
+// on Linux (`socketPathRefusal`), where Bun's own server binds past them. So the root is made under
+// TMPDIR when the socket's path fits there and under /tmp otherwise, which says so (`socketRoot`).
+// mkdtemp adds six characters.
+const rootPrefix = "claude-envoy-legion-pane-"
+const rootParent = socketRoot("legion-pane-mcp.test.ts's inbox", (parent) =>
+  socketPathRefusal(join(parent, `${rootPrefix}XXXXXX`, "inbox.sock")),
+)
 async function daemonFixture(name: string): Promise<Record<string, unknown>> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
   return JSON.parse(await readFile(file, "utf8"))
@@ -42,7 +51,7 @@ async function daemonFixture(name: string): Promise<Record<string, unknown>> {
 // 5 s waits stood before: the start that writes that cache into an empty HOME first is what failed
 // the other server rows (`envoy-channel-mcp.test.ts`).
 test("a Legion pane's server registers on its transcript, claims its role, serves the legion tool and delivers through the inbox", async () => {
-  const root = await mkdtemp(join(tmpdir(), "claude-envoy-legion-pane-"))
+  const root = await mkdtemp(join(rootParent, rootPrefix))
   const configDir = join(root, "claude")
   const registered = await daemonFixture("register.json")
   const claimToken = String(registered["claimToken"])
@@ -129,7 +138,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
 
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: root,
     env: {

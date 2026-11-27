@@ -6,6 +6,7 @@ import type { LegionRole } from "@legion/contracts";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { refusingOrigin } from "@legion/test-fixtures/refused-port";
 import { z } from "zod";
 import { createLegionTool } from "./tools";
 
@@ -90,14 +91,6 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
   return { url: `http://127.0.0.1:${server.port}`, answered };
 }
 
-/** A port nothing listens on: a connection to it is refused, as it is while a daemon restarts. */
-function refusingOrigin(): string {
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
-  const origin = `http://127.0.0.1:${server.port}`;
-  server.stop(true);
-  return origin;
-}
-
 /** A listener that accepts each connection and closes it once the request arrives, before any
  * response: the daemon going down mid-request. */
 async function closingOrigin(): Promise<string> {
@@ -114,7 +107,10 @@ async function closingOrigin(): Promise<string> {
 }
 
 /** The real daemon client over a fetch that sends its first `outage` requests to `down` (each
- * failing there with the real fetch error) and every later one to the live daemon. */
+ * failing there with the real fetch error) and every later one to the live daemon. A row whose
+ * daemon is restarting passes `refusingOrigin()` as `down`: a port the row holds bound and never
+ * listens on, so a connection to it is refused, as it is while a daemon restarts, and no other
+ * process can bind it and answer in the daemon's place. */
 function restartingClient(live: string, down: string, outage: number) {
   let sent = 0;
   const fetchFn = ((input: string | URL | Request, init?: RequestInit) => {

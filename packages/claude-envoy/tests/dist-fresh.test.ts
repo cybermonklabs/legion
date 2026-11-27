@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { cp, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { isAbsolute, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import ts from "typescript"
 import { assertPinnedBun, BUNDLE_ENTRYPOINTS, buildBundles } from "../scripts/build"
@@ -91,7 +91,7 @@ test("the fresh bundle starts without node_modules and, with no envoy.json, says
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
-    const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
+    const run = Bun.spawn([process.execPath, join(scratch, "dist", "envoy-channel.js")], {
       cwd: scratch,
       env: {
         PATH: process.env["PATH"] ?? "",
@@ -119,7 +119,7 @@ test("with Envoy off the bundle still writes the session title the dispatch comm
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
-    const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
+    const run = Bun.spawn([process.execPath, join(scratch, "dist", "envoy-channel.js")], {
       cwd: scratch,
       env: {
         PATH: process.env["PATH"] ?? "",
@@ -151,7 +151,7 @@ test("the bundle stamps nothing with Dispatch off, or under the QA override ENVO
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
     const start = (env: Record<string, string>) =>
-      Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
+      Bun.spawn([process.execPath, join(scratch, "dist", "envoy-channel.js")], {
         cwd: scratch,
         env: {
           PATH: process.env["PATH"] ?? "",
@@ -186,7 +186,7 @@ test("with Envoy off and no session id the bundle still serves the Envoy-off ser
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-dist-"))
   try {
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
-    const run = Bun.spawn(["bun", join(scratch, "dist", "envoy-channel.js")], {
+    const run = Bun.spawn([process.execPath, join(scratch, "dist", "envoy-channel.js")], {
       cwd: scratch,
       env: {
         PATH: process.env["PATH"] ?? "",
@@ -316,9 +316,15 @@ test("bin/dispatch is executable and runs a fresh dist/dispatch.js without node_
     await cp(distDirectory, join(scratch, "dist"), { recursive: true })
     const shim = join(scratch, "bin", "dispatch")
     expect((await stat(join(packageRoot, "bin", "dispatch"))).mode & 0o111).toBe(0o111)
+    // bin/dispatch runs the `bun` on its PATH, so this Bun's own directory goes first: under the
+    // row's HOME a `bun` mise shim has no version ("bun is not a valid shim").
     const run = Bun.spawn([shim, "--help"], {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ...NO_TRANSPILER_CACHE },
+      env: {
+        PATH: `${dirname(process.execPath)}:${process.env["PATH"] ?? ""}`,
+        HOME: scratch,
+        ...NO_TRANSPILER_CACHE,
+      },
       stdout: "pipe",
       stderr: "pipe",
     })

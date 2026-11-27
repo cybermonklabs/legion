@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { baseUrl, e2eAgentToken } from "./api";
@@ -12,6 +13,23 @@ export const dispatchEntry = fileURLToPath(
 /** The session the command acts as: the server records it as each write's actor, and a personal
  *  token's act names it (`actingPerson` in `packages/envoy/internal/dispatch/api/server.go`). */
 export const cliSession = "e2e-dispatch-cli";
+
+/** The bun the caller's own environment runs, by its path, read once: the command runs under the
+ *  row's own HOME, where a `bun` looked up on PATH can be a version manager's shim with no version
+ *  ("bun is not a valid shim"). This module runs under Playwright's Node, so the bun is asked for
+ *  its own `process.execPath` rather than read from this process's. */
+let bun: string | undefined;
+function bunExecutable(): string {
+  if (bun === undefined) {
+    const found = execFileSync("bun", ["-e", "console.log(process.execPath)"], {
+      encoding: "utf8",
+    }).trim();
+    if (!isAbsolute(found))
+      throw new Error(`bun named no executable of its own: ${JSON.stringify(found)}`);
+    bun = found;
+  }
+  return bun;
+}
 
 export interface CliRun {
   readonly code: number;
@@ -57,8 +75,8 @@ export function runDispatch(
   };
   const child =
     stdin === undefined
-      ? spawn("bun", argv, { ...options, stdio: ["ignore", "pipe", "pipe"] })
-      : spawn("bun", argv, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+      ? spawn(bunExecutable(), argv, { ...options, stdio: ["ignore", "pipe", "pipe"] })
+      : spawn(bunExecutable(), argv, { ...options, stdio: ["pipe", "pipe", "pipe"] });
   const finished = Promise.withResolvers<CliRun>();
   if (child.stdin !== null) {
     // A command that exits before it has read the whole input fails the row here rather than

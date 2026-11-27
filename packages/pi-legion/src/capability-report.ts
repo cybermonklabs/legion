@@ -82,9 +82,10 @@ export interface CommandResult {
 
 /**
  * Every collaborator a check needs: Oh My Pi's own discovery and search functions, its settings,
- * and the two child commands. The production host (`ompCapabilityHost`) reaches each lazily; a
- * test fakes the whole object. Every member answers a promise, since the production ones load
- * their module first.
+ * the two child commands, and the reads of the workspace the repository-extensions check walks.
+ * The production host (`ompCapabilityHost`) reaches each lazily; a test fakes the whole object, so
+ * no check of a faked host waits on the machine's disk. Every member answers a promise, since the
+ * production ones load their module or read the disk first.
  */
 export interface CapabilityHost {
   /** `discoverAgents(cwd)`: the task agents the `task` tool resolves in this workspace. */
@@ -115,6 +116,10 @@ export interface CapabilityHost {
   readonly loadSkills: (
     cwd: string
   ) => Promise<{ readonly skills: readonly { readonly filePath: string }[] }>;
+  /** The names in `directory`, or none where there is no such directory. */
+  readonly namesIn: (directory: string) => Promise<readonly string[]>;
+  /** What `file` is: a file, a directory, or neither (absent, or another kind). */
+  readonly kindOf: (file: string) => Promise<"file" | "directory" | undefined>;
   /** One child command resolved on PATH, run in `cwd`, ended by `signal`. */
   readonly run: (
     command: string,
@@ -287,7 +292,8 @@ const EXTENSION_MODULE = /\.(?:ts|js|mjs|cjs)$/;
 const EXTENSION_INDEXES = ["index.ts", "index.js", "index.mjs", "index.cjs"];
 const SKILL_DIRECTORIES = [path.join(".omp", "skills"), path.join(".claude", "skills")];
 
-/** The names in `directory`, or none where there is no such directory. */
+/** The production host's `namesIn`: the names `readdir` gives for `directory`, or none where there
+ * is no such directory. */
 async function namesIn(directory: string): Promise<readonly string[]> {
   try {
     return await readdir(directory);
@@ -297,6 +303,7 @@ async function namesIn(directory: string): Promise<readonly string[]> {
   }
 }
 
+/** The production host's `kindOf`: what `stat` (following a link) says `file` is. */
 async function kindOf(file: string): Promise<"file" | "directory" | undefined> {
   try {
     const stats = await stat(file);
@@ -315,33 +322,34 @@ interface RepositoryEntry {
 }
 
 /** What the repository carries for Oh My Pi to load: `.omp/extensions/` modules (a file, or a
- * directory with an index), and the `SKILL.md` of each `.omp/skills/*` and `.claude/skills/*`. */
-async function repositoryEntries(cwd: string): Promise<RepositoryEntry[]> {
+ * directory with an index), and the `SKILL.md` of each `.omp/skills/*` and `.claude/skills/*`,
+ * read through the host. */
+async function repositoryEntries(host: CapabilityHost, cwd: string): Promise<RepositoryEntry[]> {
   const entries: RepositoryEntry[] = [];
   const extensions = path.join(cwd, ".omp", "extensions");
-  for (const name of await namesIn(extensions)) {
+  for (const name of await host.namesIn(extensions)) {
     const candidate = path.join(extensions, name);
-    const kind = await kindOf(candidate);
+    const kind = await host.kindOf(candidate);
     if (kind === "file" && EXTENSION_MODULE.test(name)) {
       entries.push({ path: candidate, directory: false });
     } else if (kind === "directory") {
       const indexes = await Promise.all(
-        EXTENSION_INDEXES.map((index) => kindOf(path.join(candidate, index)))
+        EXTENSION_INDEXES.map((index) => host.kindOf(path.join(candidate, index)))
       );
       if (indexes.includes("file")) entries.push({ path: candidate, directory: true });
     }
   }
   for (const skills of SKILL_DIRECTORIES) {
-    for (const name of await namesIn(path.join(cwd, skills))) {
+    for (const name of await host.namesIn(path.join(cwd, skills))) {
       const skill = path.join(cwd, skills, name, "SKILL.md");
-      if ((await kindOf(skill)) === "file") entries.push({ path: skill, directory: false });
+      if ((await host.kindOf(skill)) === "file") entries.push({ path: skill, directory: false });
     }
   }
   return entries;
 }
 
 const checkRepositoryExtensions: Check = async (host, input) => {
-  const entries = await repositoryEntries(input.cwd);
+  const entries = await repositoryEntries(host, input.cwd);
   if (entries.length === 0) {
     return ok("the repository carries no .omp/extensions, .omp/skills or .claude/skills");
   }
@@ -714,7 +722,8 @@ async function runCommand(
 }
 
 /**
- * The production host: Oh My Pi's own modules, and the pane's `dispatch` and `gh`.
+ * The production host: Oh My Pi's own modules, the workspace on disk, and the pane's `dispatch`
+ * and `gh`.
  *
  * Every `@oh-my-pi/pi-coding-agent` import below is a lazy, string-literal `import()`, and must
  * stay one: the package and its subpaths exist only inside Oh My Pi's bundle, whose loader
@@ -768,6 +777,8 @@ export function ompCapabilityHost(): CapabilityHost {
         disabledExtensions: cfgDisabledExtensions.get(settings),
       });
     },
+    namesIn,
+    kindOf,
     run: runCommand,
   };
 }

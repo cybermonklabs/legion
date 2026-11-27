@@ -86,7 +86,7 @@ function runLast(subject: string, seconds = budgetSeconds) {
   const started = performance.now();
   const result = Bun.spawnSync(
     [
-      "bun",
+      process.execPath,
       join(import.meta.dir, "nats-stream.ts"),
       "last",
       serverUrl,

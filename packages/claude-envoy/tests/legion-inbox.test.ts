@@ -1,15 +1,24 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
 import { createServer, type Server, type Socket } from "node:net"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root"
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { createInboxNotifier } from "../src/legion-inbox"
 
-const scratch: string[] = []
+// Each inbox's unix socket stands in for the bridge's, which Go binds
+// (packages/daemon/internal/claudebridge/inbox.go) and so holds to the 107 bytes a socket path holds
+// on Linux (`socketPathRefusal`); Bun's own server binds past that. So it goes in a directory of its
+// own, made under TMPDIR when its path fits there and under /tmp otherwise, which says so
+// (`socketRoot`). The maker names a directory <prefix>-XXXXXX.
+const prefix = "legion-inbox"
+const directory = temporaryDirectories(prefix, {
+  root: socketRoot("legion-inbox.test.ts's inbox", (root) =>
+    socketPathRefusal(join(root, `${prefix}-XXXXXX`, "inbox.sock")),
+  ),
+})
 const servers: Server[] = []
-afterEach(async () => {
+afterEach(() => {
   for (const server of servers.splice(0)) server.close()
-  for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
 /** A stand-in for the bridge's inbox (`claudebridge/inbox.go`): it records each line and answers
@@ -18,9 +27,7 @@ async function inbox(answer: (delivery: { id: string; content: string }) => obje
   readonly socketPath: string
   readonly lines: { id: string; content: string }[]
 }> {
-  const dir = await mkdtemp(join(tmpdir(), "legion-inbox-"))
-  scratch.push(dir)
-  const socketPath = join(dir, "inbox.sock")
+  const socketPath = join(directory(), "inbox.sock")
   const lines: { id: string; content: string }[] = []
   const server = createServer((socket: Socket) => {
     let buffered = ""
@@ -70,8 +77,7 @@ test("rejects a delivery the bridge refuses, naming its error", async () => {
 })
 
 test("rejects when no bridge listens at the socket", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "legion-inbox-"))
-  scratch.push(dir)
+  const dir = directory()
   await expect(
     createInboxNotifier(join(dir, "absent.sock")).notification(notification("x", "evt-4")),
   ).rejects.toThrow("the Legion inbox")

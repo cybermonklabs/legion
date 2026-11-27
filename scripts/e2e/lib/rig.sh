@@ -180,16 +180,11 @@ start_kept() {
   _held_exec start_kept "$1" "$3" --from "$work/$2.sock" "${@:4}"
 }
 
-# report_port LOG PATTERN prints the port a process that bound port 0 itself reported: the digits
-# right after the first match of the extended regular expression PATTERN in LOG (nats-server -p -1:
-# 'Listening for client connections on [^ ]*:'). It fails while LOG holds no such line, so it is
-# also the poll that waits for one.
-report_port() {
-  local _match
-  _match=$(grep -m1 -oE -- "$2[0-9]+" "$1" 2>/dev/null) || return 1
-  _match=${_match%%$'\n'*}
-  printf '%s\n' "${_match##*[!0-9]}"
-}
+# report_port LOG PATTERN, the port a process that bound port 0 itself reported, is
+# lib/report-port.sh's: it needs nothing of this rig's, and envoy-session-delivery.sh sources it
+# without this file.
+# shellcheck source-path=SCRIPTDIR source=report-port.sh
+. "$root/scripts/e2e/lib/report-port.sh"
 
 # port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
 port_answers() {

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   constants,
   copyFileSync,
@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type AppCredentialSource,
   type AppRole,
@@ -28,6 +28,18 @@ import {
   tokenOf,
 } from "./stand-in-github-fixtures";
 
+// Each row and hook waits on its own processes' exits and on the stand-in GitHub's answers, and on
+// no clock of its own. At Bun's 5 s default, with the run confined to one CPU beside 32 busy loops,
+// the file failed in a hook ("a beforeEach/afterEach hook timed out", at 6.68 s); unconfined, at a
+// load average near 900 on this box, six of its rows exited 143. The limit below is a hang guard,
+// not a budget: with no limit, under the 32 loops, the module and its hooks took 7.47 s and
+// 5.72 s before the first row in two runs, and the slowest row without a limit of its own took
+// 3.41 s. This is three times the slowest of those, rounded up. It fires only if a child never
+// exits or the stand-in never answers. It is set before `standInGitHub` registers its hooks below:
+// in Bun 1.4.4 a hook takes the default timeout of the moment it is registered, so a hook
+// registered first keeps 5 s.
+setDefaultTimeout(30_000);
+
 // lib/app-logins.ts run as the stage proofs run it, against the stand-in GitHub of
 // stand-in-github-fixtures.ts, which answers GraphQL's viewer and GET /apps/<slug> under an
 // installation token of one of its Apps, and the two App-JWT routes a key-configured App is
@@ -37,6 +49,10 @@ const { url: standIn, seen, verified, dir } = standInGitHub("app-logins-test");
 const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
+// The PATH every child of this file gets: the caller's, behind this Bun's own directory. A child
+// shell runs `bun` by name under `home`, where a `bun` that is a mise shim has no version ("bun is
+// not a valid shim").
+const childPath = `${dirname(process.execPath)}:${process.env.PATH ?? ""}`;
 
 // A GitHub that never answers: a listener of this file's own, held until the file ends, that closes
 // every connection it accepts before a byte of an answer (fetch reads ECONNRESET). The port of a
@@ -93,8 +109,8 @@ const keyApp = (id: string, command = `cat -- ${join(dir, `key-${id}.pem`)}`) =>
 // is given stdin, so a token command that inherited it would read `stdin-leak` where the
 // closed-stdin case expects nothing.
 async function run(path: string, env: Record<string, string> = {}, api = standIn) {
-  const child = Bun.spawn(["bun", script, path, api], {
-    env: { PATH: process.env.PATH ?? "", HOME: home, ...env },
+  const child = Bun.spawn([process.execPath, script, path, api], {
+    env: { PATH: childPath, HOME: home, ...env },
     stdin: new Blob(["stdin-leak"]),
     stdout: "pipe",
     stderr: "pipe",
@@ -124,7 +140,7 @@ read_app_logins
 ${then}`;
   const child = Bun.spawn(["bash", "-c", shell], {
     env: {
-      PATH: process.env.PATH ?? "",
+      PATH: childPath,
       HOME: home,
       LIB: join(import.meta.dir, "workflow.sh"),
       work,
@@ -211,7 +227,7 @@ describe("app-logins.ts", () => {
   const behindReader = async (body: string, stall: number) => {
     const shell = `{\n${body}\n} 2>&1 | { sleep ${stall}; cat; }`;
     const child = Bun.spawn(["bash", "-c", shell], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
+      env: { PATH: childPath, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -327,11 +343,14 @@ describe("app-logins.ts", () => {
   // the row guards is the writer: no `EPIPE` may leave it.
   test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
     const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
-    const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const child = Bun.spawn(
+      [process.execPath, script, config(app("101", relayed), app("202")), standIn],
+      {
+        env: { PATH: childPath, HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
     // The read end is closed before the child has finished starting, let alone written: every
     // write the helper makes to fd 2 from here on meets a reader that is gone.
     await child.stderr.cancel();
@@ -654,8 +673,8 @@ describe("app-logins.ts", () => {
   test("--roles reads only the roles it names, and refuses one it does not know", async () => {
     const path = join(dir, `legion-${++configs}.yaml`);
     writeFileSync(path, `github_apps:\n  implement:\n${app("101")}\n`);
-    const one = Bun.spawn(["bun", script, "--roles", "implement", path, standIn], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
+    const one = Bun.spawn([process.execPath, script, "--roles", "implement", path, standIn], {
+      env: { PATH: childPath, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -668,8 +687,8 @@ describe("app-logins.ts", () => {
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toEqual({ implement: "example-implement[bot]" });
     for (const roles of ["merger", "implement,implement", ""]) {
-      const bad = Bun.spawnSync(["bun", script, "--roles", roles, path], {
-        env: { PATH: process.env.PATH ?? "", HOME: home },
+      const bad = Bun.spawnSync([process.execPath, script, "--roles", roles, path], {
+        env: { PATH: childPath, HOME: home },
         stderr: "pipe",
       });
       expect(bad.exitCode).toBe(2);

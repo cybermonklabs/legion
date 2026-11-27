@@ -55,16 +55,72 @@ NAME = re.compile(r"[^\s()!&|,]+")
 # A file whose constraint names more tags than this is refused rather than searched.
 MAX_FILE_TAGS = 6
 LISTED = ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles")
+# The variables the go command reads (`go help environment`): its own (GO_EXTLINK_ENABLED and
+# GCCGOTOOLDIR among them), GIT_ALLOW_PROTOCOL, and the C tools that configure cgo.
+GO_VARIABLE = re.compile(
+    r"GO[A-Z0-9_]*|CGO_\w+|AR|CC|CXX|FC|GCCGO|GCCGOTOOLDIR|GIT_ALLOW_PROTOCOL|PKG_CONFIG")
+# Those of them that say only where the go command keeps files or fetches modules from, which
+# changes no answer here.
+GO_LOCATIONS = frozenset({"GIT_ALLOW_PROTOCOL", "GOAUTH", "GOCACHE", "GOINSECURE", "GOMODCACHE",
+                          "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB",
+                          "GOTMPDIR", "GOVCS"})
+
+
+def go_environment() -> dict:
+    """This process's environment for a go command, less everything in it the go command reads to
+    choose its toolchain or to decide what a package holds: every variable GO_VARIABLE names but
+    GO_LOCATIONS, and the user's `go env -w` file (GOENV=off), which an empty variable does not
+    override, since the go command reads an empty GOFLAGS or GOWORK from that file. The go command
+    then takes its root from its own binary and its defaults from that root's go.env. Each such
+    setting is the caller's or a python3 shim's, never the job's (check-ci-filters.sh's header says
+    what mise's shim did). CI's one, setup-go's GOTOOLCHAIN=local, picks the same toolchain once
+    dropped: the version packages/daemon/go.mod names, which setup-go installs and go.work names
+    too. This script's go commands run under it, and check-ci-filters.sh's engine
+    (ci_filter_coverage.py) and go-test-step-expansion.py import it from here."""
+    env = {name: value for name, value in os.environ.items()
+           if name in GO_LOCATIONS or not GO_VARIABLE.fullmatch(name)}
+    env["GOENV"] = "off"
+    return env
 
 
 def go(module: Path, args: list, **env) -> str:
-    """The output of a go command run in the module, so with its own toolchain, with `env` added
-    to the environment (GOOS and GOARCH, for a listing of another platform)."""
-    result = subprocess.run(["go", *args], cwd=module, env={**os.environ, **env}, capture_output=True, text=True)
+    """The output of a go command run in the module, so with its own toolchain, under
+    go_environment() with `env` added (GOOS and GOARCH, for a listing of another platform): a
+    caller's GOTOOLCHAIN=local with an older go first on PATH, or a caller's GOFLAGS, then changes
+    no set. go_environment() drops setup-go's GOTOOLCHAIN=local too, so where go.work asks for a
+    newer go than the one installed, the first go command here downloads that toolchain, in the vet
+    steps and as ci_job_reads.py is imported. go's standard error therefore goes to this script's
+    as go writes it, so a download that stalls is named while it waits; standard output is kept."""
+    result = subprocess.run(["go", *args], cwd=module, env={**go_environment(), **env},
+                            stdout=subprocess.PIPE, text=True)
     if result.returncode != 0:
-        raise SystemExit(f"go_build_tags.py: in {module}, go {' '.join(args[:3])} ... failed: "
-                         f"{' '.join(result.stderr.split())[:500]}")
+        raise SystemExit(f"go_build_tags.py: in {module}, go {' '.join(args[:3])} ... exited "
+                         f"{result.returncode}; its standard error is above")
     return result.stdout
+
+
+_TOOLCHAINS: dict = {}
+
+
+def toolchain_go(module: Path) -> str:
+    """The go binary of the toolchain the module selects, by its path, resolved once per module.
+
+    A go command of this repository runs under go_environment(), which drops the caller's
+    GOTOOLCHAIN, so a go older than go.work's switches to the toolchain go.work names. That switch
+    needs the toolchain in the module cache or a proxy to fetch it from, and a command that sets
+    GOPROXY=off for its own listing forbids the fetch and dies with `toolchain not available`. So
+    the toolchain is resolved first, by a `go env GOROOT` that writes nothing and runs under this
+    machine's own cache and proxy (go(), which sets neither), and the caller then runs its listing
+    with the binary this names under GOTOOLCHAIN=local: no switch, no fetch, and the listing may
+    set GOPROXY=off. ci_filter_coverage.Session.toolchain() does the same for the engine's go
+    commands. Where the answer is no file, the plain `go` is given back, as that function does.
+    """
+    key = str(module.resolve())
+    if key not in _TOOLCHAINS:
+        root = go(module, ["env", "GOROOT"]).strip()
+        exe = Path(root) / "bin" / "go" if root else None
+        _TOOLCHAINS[key] = str(exe) if exe and exe.is_file() else "go"
+    return _TOOLCHAINS[key]
 
 
 def platforms(module: Path) -> tuple:

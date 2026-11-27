@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, sep } from "node:path";
 import { restoreEnvironment } from "./environment";
-import { type HostGateNeeds, hostTool, requireHostTools, skipWithout } from "./host-tools";
+import {
+  type HostGateNeeds,
+  hostTool,
+  pythonInterpreter,
+  requireHostTools,
+  skipWithout,
+} from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
@@ -82,6 +88,23 @@ test("the warning names the calling file under a path that holds a space", () =>
   expect(run.exitCode).toBe(0);
   expect(run.stderr.toString()).toContain(`Skipped the tests in ${caller}.`);
 });
+
+// A child under a HOME of the test's own, with no python3 on its PATH at all: an interpreter
+// resolved by name there would fail, or be another one. Skipped where the host has no python3.
+test.skipIf(hostTool("python3") === null)(
+  "pythonInterpreter names an interpreter that runs with no PATH under a HOME of its own",
+  () => {
+    const python = pythonInterpreter();
+    expect(python.startsWith("/")).toBe(true);
+    const run = Bun.spawnSync([python, "-I", "-c", "import sys; print(sys.executable)"], {
+      env: { PATH: "", HOME: makeDirectory("home") },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect({ code: run.exitCode, stderr: run.stderr.toString() }).toEqual({ code: 0, stderr: "" });
+    expect(run.stdout.toString().trim()).toBe(python);
+  }
+);
 
 /**
  * The test file gatedRun runs, as constant text: a gated row, a gated block of two rows, and an

@@ -538,24 +538,40 @@
 #                    .github/scripts/check-ci-filters.sh generate "$RUNNER_TEMP/ci-filters.yaml"
 # CI runs it in ci.yaml's ci-filters job, and its tests in ci.yaml's test job.
 #
-# On a machine whose `go` is a bootstrap that switches to a toolchain in the module cache - every
-# Legion worker pod is one - every closure above fails with `toolchain not available`, because the
-# go commands run over an emptied GOMODCACHE and so cannot reach the toolchain module either. The
-# real findings then sit among those, where a reader judging this by its tail or its exit status
-# sees nothing. Run it on the binary of the toolchain go.work pins instead, and it answers as CI
-# does: GOTOOLCHAIN=local then keeps that binary, where it would pin the bootstrap, whose refusal
-# reads as a version mismatch rather than as the setup it is. Unset GOROOT too. The engine asks
-# `go env GOROOT` which go to run, and an exported GOROOT is that answer whichever go PATH finds
-# first, so a GOROOT another install left (mise's go1.27.0 on a dev box) runs that go, and every
-# closure fails with `go.work requires go >= 1.27.3 (running go 1.27.0; GOTOOLCHAIN=local)`: 1618
-# problems where CI finds none, measured on one tree. go itself names that toolchain's root: the
-# go PATH finds, where it already is go.work's version (as setup-go and mise install it), else
-# the toolchain module in this machine's module cache, fetched there once if it is not. Where go
-# can have neither, it says why, and the recipe stops there.
-#   v=$(sed -n 's/^go //p' go.work)
-#   goroot=$(env -u GOROOT GOTOOLCHAIN="go$v" go env GOROOT) &&
-#     env -u GOROOT PATH="$goroot/bin:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
-# Either way, read its output by grepping for the problem rather than by its last line.
+# A machine whose `go` is a bootstrap that switches to a toolchain in the module cache - every
+# Legion worker pod is one - needs no recipe of its own: the engine resolves the toolchain go.work
+# pins with that go, under this machine's own module cache (above), before any closure runs over
+# the empty one. Where go cannot have that toolchain, the run fails naming the version go could
+# not have. Either way, read its output by grepping for the problem rather than by its last line.
+#
+# No Go setting of the caller's changes the answer. Before it runs Go the engine, and
+# go_build_tags.py, which reads each module's build tags before the engine runs, drop every
+# variable the go command reads but those that say where it keeps or fetches files, and the
+# user's `go env -w` file with them (GOENV=off: go_build_tags.go_environment), and the engine starts
+# from the go this script's own PATH resolves, which this script hands it (CI_FILTERS_GO), since
+# the python3 below may be a version manager's shim that gives the engine a GOROOT and a PATH of
+# its own. mise's gives it the GOROOT of the Go it picks, go1.27.0 where go.work names go1.27.3,
+# so under a caller's GOTOOLCHAIN=local `go env GOROOT` named that root and every go command
+# refused go.work: 1,451 reported problems, 94 of them `requires go >= 1.27.3`, from a shell
+# whose bare run reports none. The toolchain is now the one go.work or go.mod names, by
+# GOTOOLCHAIN's own rules, and a caller's GOFLAGS, GOOS, CGO_ENABLED, GOEXPERIMENT or
+# GO111MODULE changes no listing.
+#
+# Nor does the machine it runs on. Every go command is listed for linux/amd64 with cgo on
+# (ci_filter_coverage.CI_PLATFORM), unless the command sets its own GOOS, GOARCH or CGO_ENABLED:
+# the platform of the ubuntu-24.04 runner every job of ci.yaml that runs a go command runs on, as
+# setup-go's `go env` prints it there. A darwin or arm64 machine, or a worker pod whose go.env
+# turns cgo off, then answers as CI does; their own listing would hold other files, since
+# first-party files are built for linux or darwin alone (`_linux.go`, `_darwin.go`,
+# `//go:build linux || darwin`, `unix && !linux`). Two jobs run elsewhere, and judging them as
+# linux/amd64 is exact today: tool-fallback-arm runs on ubuntu-24.04-arm and runs no go command,
+# and the arm64 leg of release-envoy-listener.yaml's matrix is in a workflow ci.yaml does not
+# call. Were either to run one, linux/arm64 would select the same first-party files: every
+# build constraint that names an architecture names amd64 and arm64 together (`(amd64 ||
+# arm64)`), no first-party file name carries an architecture, and none is constrained by cgo or
+# imports "C" (a search of every tracked .go file for those names and constraints when this was
+# written). So, with go.work's toolchain the first go on PATH, run it from any shell on any
+# machine.
 set -euo pipefail
 
 caller=$PWD
@@ -575,6 +591,14 @@ case "$#:${1:-}" in
     ;;
 esac
 export CI_FILTERS_MODE="${1:-check}"
+# The go this script's PATH resolves, which the engine starts from (ci_filter_coverage.GO): the
+# python3 below may be a version manager's shim, whose PATH puts another go first. With none, no
+# closure can be listed, so it says that rather than failing in the engine on the first one.
+if ! CI_FILTERS_GO=$(type -P go); then
+  echo "::error file=.github/scripts/check-ci-filters.sh::no go on PATH, so this check cannot list the closure of any go command. Run it where \`go\` resolves to a Go toolchain." >&2
+  exit 1
+fi
+export CI_FILTERS_GO
 
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py, which reads the files of
 # .github/ci-gates and the //ci: lines of the Go files through ci_filter_sources.py), the rules
