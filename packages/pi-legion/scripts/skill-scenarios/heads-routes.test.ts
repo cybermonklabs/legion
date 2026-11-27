@@ -1,165 +1,36 @@
-// The GitHub a heads scenario's agent reads, rendered from a world given here as data: each call
-// is answered by the first route whose match names it, as gh-standin.ts picks one, and each row
-// asserts GitHub's answer to that call. rig.test.ts's heads_routes rows run the same renderer on
-// the world rig.sh collects from a real fixture.
+// The GitHub a heads scenario's agent reads, rendered from the world heads-routes-fixture.ts
+// gives as data: each call is answered by the first route whose match names it, as gh-standin.ts
+// picks one, and each row asserts GitHub's answer to that call. The reads of a head's files, and
+// of the workflow runs, are heads-routes-files.test.ts's rows, over the same fixture.
+// rig.test.ts's heads_routes rows run the same renderer on the world rig.sh collects from a real
+// fixture.
 import { expect, setDefaultTimeout, test } from "bun:test";
 import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
-import type { HeadsWorld } from "./heads-answers";
-import { type Route, type RouteTable, renderHeadsRoutes } from "./heads-routes";
+import { type Route, renderHeadsRoutes } from "./heads-routes";
+import {
+  answer,
+  DIFF702,
+  DIFF703,
+  DOCS,
+  GO_CHECKS,
+  H702,
+  H703,
+  MAIN,
+  notFound,
+  plain,
+  README703,
+  routeOf,
+  TREE702,
+  USAGE,
+  USAGE_FAILED,
+  USAGE_LOG,
+  world,
+} from "./heads-routes-fixture";
 import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
 
 // One row runs the renderer as a bun process of its own, a start a loaded machine stretches.
 setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "heads-routes.ts" }));
-
-const MAIN = "1".repeat(40);
-const H702 = "2".repeat(40);
-const H703 = "3".repeat(40);
-const BASE_TREE = "4".repeat(40);
-const TREE702 = "5".repeat(40);
-const TREE703 = "6".repeat(40);
-const DOCS_TREE = "7".repeat(40);
-const README = "a".repeat(40);
-const README703 = "b".repeat(40);
-const USAGE = "c".repeat(40);
-const USAGE_TEXT = "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n";
-
-/** A file's bytes in base64 as heads_routes collects them: 60 characters a line, and a newline. */
-const base64 = (text: string) =>
-  `${(
-    Buffer.from(text)
-      .toString("base64")
-      .match(/.{1,60}/g) ?? []
-  ).join("\n")}\n`;
-const blob = (file: string, sha: string, text: string) => ({
-  path: file,
-  mode: "100644",
-  type: "blob",
-  sha,
-  size: Buffer.byteLength(text),
-  content: base64(text),
-});
-const DIFF702 =
-  "diff --git a/docs/usage.md b/docs/usage.md\nnew file mode 100644\nindex 0000000..cccccc\n--- /dev/null\n+++ b/docs/usage.md\n@@ -0,0 +1,3 @@\n+# Usage\n+\n+Run `widgets --help` to list every command of the widgets CLI.\n";
-const DIFF703 =
-  "diff --git a/README.md b/README.md\nindex aaaaaa..bbbbbb 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,3 +1,5 @@\n # widgets\n \n Small CLI helpers.\n+\n+Usage: see docs/usage.md.\n";
-
-/** The world of reviewer-own-head: #702 adds docs/usage.md, #703 points the README at it, the
- * base has no protection, and `named`, `named703` and `approved` set what the case changes. */
-function world(
-  options: {
-    named?: HeadsWorld["pulls"][number]["named"];
-    named703?: HeadsWorld["pulls"][number]["named"];
-    approved?: boolean;
-    only702?: boolean;
-  } = {}
-): HeadsWorld {
-  const pulls: HeadsWorld["pulls"] = [
-    {
-      number: 702,
-      head: H702,
-      body: "Dispatch: ACME-7\n\n## For the reviewer\n",
-      files: [{ path: "docs/usage.md", additions: 3, deletions: 0 }],
-      jobs: ["lint", "test"],
-      named: options.named ?? [],
-      diff: DIFF702,
-      url: "https://github.com/example/widgets/pull/702",
-      subject: "docs: the usage page of the widgets CLI (ACME-7)",
-    },
-    {
-      number: 703,
-      head: H703,
-      body: "Dispatch: ACME-7\n\n## Verification\n",
-      files: [{ path: "README.md", additions: 2, deletions: 0 }],
-      jobs: ["lint", "test"],
-      named: options.named703 ?? [],
-      diff: DIFF703,
-      url: "https://github.com/example/widgets/pull/703",
-      subject: "docs: point the README at the usage page (ACME-7)",
-    },
-  ];
-  return {
-    repo: "example/widgets",
-    key: "ACME-7",
-    title: "A usage page",
-    base: "main",
-    main: MAIN,
-    approved: options.approved ?? false,
-    at: "2026-11-22T12:00:00Z",
-    pulls: options.only702 === true ? pulls.slice(0, 1) : pulls,
-    branches: [
-      { name: "legion/ACME-7-702", sha: H702 },
-      { name: "legion/ACME-7-703", sha: H703 },
-      { name: "main", sha: MAIN },
-    ],
-    trees: [
-      {
-        sha: MAIN,
-        tree: BASE_TREE,
-        message: "init\n",
-        parent: "",
-        entries: [blob("README.md", README, "# widgets\n\nSmall CLI helpers.\n")],
-      },
-      {
-        sha: H702,
-        tree: TREE702,
-        message: "docs: the usage page of the widgets CLI (ACME-7)\n",
-        parent: MAIN,
-        entries: [
-          blob("README.md", README, "# widgets\n\nSmall CLI helpers.\n"),
-          { path: "docs", mode: "040000", type: "tree", sha: DOCS_TREE, size: 0, content: null },
-          blob("docs/usage.md", USAGE, USAGE_TEXT),
-        ],
-      },
-      {
-        sha: H703,
-        tree: TREE703,
-        message: "docs: point the README at the usage page (ACME-7)\n",
-        parent: MAIN,
-        entries: [
-          blob(
-            "README.md",
-            README703,
-            "# widgets\n\nSmall CLI helpers.\n\nUsage: see docs/usage.md.\n"
-          ),
-        ],
-      },
-    ],
-  };
-}
-
-const GO_CHECKS = { name: "go-checks", checkRun: 9101, run: 41, suite: 41, status: "in_progress" };
-const DOCS = { name: "docs", checkRun: 9001, run: 40, suite: 40, status: "completed" };
-/** A named job that ended without a pass, and its log: the failed test of the changed page. */
-const USAGE_LOG =
-  "usage-test\tRun go test ./docs/...\t--- FAIL: TestTheUsagePageListsEveryCommand (0.01s)\n" +
-  "usage-test\tRun go test ./docs/...\t    usage_test.go:21: docs/usage.md names 3 commands; `widgets --help` lists 4: add, export, list, remove\n" +
-  "usage-test\tRun go test ./docs/...\tFAIL\n";
-const USAGE_FAILED = {
-  name: "usage-test",
-  checkRun: 9201,
-  run: 42,
-  suite: 42,
-  status: "completed",
-  conclusion: "failure",
-  log: USAGE_LOG,
-};
-
-/** The route gh-standin.ts answers `call` with: the first whose match names it. */
-function routeOf(table: RouteTable, call: string): Route {
-  const route = table.routes.find((candidate) => new RegExp(candidate.match, "s").test(call));
-  if (route === undefined) throw new Error(`no route names: ${call}`);
-  return route;
-}
-/** The answer gh-standin.ts gives `call` before any `--json` or `--jq`. */
-const answer = (table: RouteTable, call: string) => routeOf(table, call).stdout;
-const notFound = (doc: string) => ({
-  stdout: { message: "Not Found", documentation_url: doc, status: "404" },
-  stderr: "gh: Not Found (HTTP 404)\n",
-  exit: 1,
-  status: 404,
-});
-const plain = renderHeadsRoutes(world());
 
 // Catches: a `gh pr` read answered for the wrong pull request, a number the world does not hold
 // answered as if it did, or a base said to require checks.
@@ -720,98 +591,6 @@ test("gh pr close of a pull request the world holds prints gh's line", () => {
   expect(() => routeOf(plain, "gh pr close 703 --delete-branch")).toThrow("no route names");
 });
 
-// Catches: `gh run list` with no route, and a list that is not the REST runs': the repository's
-// runs, a head's by its commit or branch (none for another), and each run's fields under `--json`.
-// A filter the world cannot apply (a workflow, a status) has no route.
-test("gh run list prints the workflow runs, all or one head's, as gh does", () => {
-  const failed = renderHeadsRoutes(world({ named: [USAGE_FAILED] }));
-  const line = (status: string, workflow: string, branch: string, id: number) =>
-    `completed\t${status}\tA usage page (ACME-7)\t${workflow}\t${branch}\tpull_request\t${id}\t0s\t2026-11-22T12:00:00Z`;
-  const run1 = line("success", "ci", "legion/ACME-7-702", 1);
-  const run42 = line("failure", "usage-test", "legion/ACME-7-702", 42);
-  const run101 = line("success", "ci", "legion/ACME-7-703", 101);
-  expect(answer(failed, "gh run list -R example/widgets --limit 10")).toBe(
-    [run1, run42, run101].join("\n")
-  );
-  expect(answer(failed, "gh run list")).toBe([run1, run42, run101].join("\n"));
-  expect(answer(failed, `gh run list --commit ${H702}`)).toBe([run1, run42].join("\n"));
-  expect(answer(failed, "gh run list -b legion/ACME-7-703")).toBe(run101);
-  expect(answer(failed, `gh run list --commit=${"9".repeat(40)}`)).toBe("");
-  expect(answer(failed, "gh run list --json databaseId,conclusion -L 5")).toMatchObject([
-    { databaseId: 1, conclusion: "success", headSha: H702, workflowName: "ci" },
-    {
-      databaseId: 42,
-      status: "completed",
-      conclusion: "failure",
-      name: "usage-test",
-      displayTitle: "A usage page (ACME-7)",
-      headBranch: "legion/ACME-7-702",
-      event: "pull_request",
-      url: "https://github.com/example/widgets/actions/runs/42",
-    },
-    { databaseId: 101, headSha: H703 },
-  ]);
-  expect(answer(failed, `gh run list -c ${H703} --json databaseId`)).toMatchObject([
-    { databaseId: 101 },
-  ]);
-  for (const call of ["gh run list --workflow usage-test", "gh run list -s failure --json name"])
-    expect(() => routeOf(failed, call)).toThrow("no route names");
-  const running = renderHeadsRoutes(world({ named: [GO_CHECKS] }));
-  expect(answer(running, `gh run list --commit ${H702}`)).toBe(
-    [
-      line("success", "ci", "legion/ACME-7-702", 1),
-      "in_progress\t\tA usage page (ACME-7)\tgo-checks\tlegion/ACME-7-702\tpull_request\t41\t0s\t2026-11-22T12:00:00Z",
-    ].join("\n")
-  );
-});
-
-// Catches: `gh workflow list` with no route, a rig error in an architect's run of the other head's
-// world (`gh workflow list --repo example/widgets`). It answers the world's workflows, one for each
-// name the world's runs carry, each active: under `--json` the four fields gh names, else off a
-// terminal each name, state and id with a tab between two and no header. The world's repository may
-// be named before the command or after it; another repository, and a limit below the count, have no
-// route. The routes stand last in the table, so no call another route answers is answered anew.
-test("gh workflow list prints the world's workflows, as gh does", () => {
-  const failed = renderHeadsRoutes(world({ named: [USAGE_FAILED] }));
-  const listed = answer(failed, "gh workflow list --json id,name,path,state -R example/widgets");
-  expect(listed).toEqual([
-    { id: expect.any(Number), name: "ci", path: ".github/workflows/ci.yml", state: "active" },
-    {
-      id: expect.any(Number),
-      name: "usage-test",
-      path: ".github/workflows/usage-test.yml",
-      state: "active",
-    },
-  ]);
-  const workflows = listed as { id: number; name: string; state: string }[];
-  expect(new Set(workflows.map((workflow) => workflow.id)).size).toBe(2);
-  const text = workflows.map((w) => `${w.name}\t${w.state}\t${w.id}`).join("\n");
-  for (const call of [
-    "gh workflow list --repo example/widgets",
-    "gh workflow list",
-    "gh workflow ls -R example/widgets --all",
-    "gh -R example/widgets workflow list",
-    "gh --repo=example/widgets workflow list -L 10",
-    "gh workflow list -R https://github.com/example/widgets",
-  ])
-    expect({ call, text: answer(failed, call) }).toEqual({ call, text });
-  expect(answer(failed, "gh -R example/widgets workflow list --json name")).toEqual(listed);
-  for (const call of [
-    "gh workflow list -R skills-rig/project",
-    "gh -R skills-rig/project workflow list",
-    "gh workflow list --limit 1",
-  ])
-    expect(() => routeOf(failed, call)).toThrow("no route names");
-  // The table before these routes is the one the stand-in served: none of it answers the list.
-  const before = failed.routes.filter((route) => !/workflow \(list\|ls\)/.test(route.match));
-  expect(failed.routes.slice(0, before.length)).toEqual(before);
-  expect(
-    before.filter((route) =>
-      new RegExp(route.match, "s").test("gh workflow list --repo example/widgets")
-    )
-  ).toEqual([]);
-});
-
 // Catches: a compare of the base with a head that is not GitHub's, and a compare with a commit
 // the world does not hold answered as if it did (an architect compared the base with one).
 test("compare: the base with each head by name or sha, and GitHub's 404 for an unknown commit", () => {
@@ -848,137 +627,6 @@ test("compare: the base with each head by name or sha, and GitHub's 404 for an u
     const { match: _compare, ...refusal } = routeOf(plain, call);
     expect({ call, refusal }).toEqual({ call, refusal: notFound(doc) });
   }
-});
-
-// Catches: a read of a file at a head (contents, raw or JSON, a directory, a tree, a blob, the
-// commit) with no route, bytes that are not the commit's own, and a path or object no commit
-// holds answered instead of GitHub's 404.
-test("the files of the base and each head: contents, raw bytes, listings, trees, blobs, commits", () => {
-  const usage = answer(plain, `gh api repos/example/widgets/contents/docs/usage.md?ref=${H702}`);
-  expect(usage).toEqual({
-    type: "file",
-    encoding: "base64",
-    size: Buffer.byteLength(USAGE_TEXT),
-    name: "usage.md",
-    path: "docs/usage.md",
-    content: base64(USAGE_TEXT),
-    sha: USAGE,
-    url: `https://api.github.com/repos/example/widgets/contents/docs/usage.md?ref=${H702}`,
-    git_url: `https://api.github.com/repos/example/widgets/git/blobs/${USAGE}`,
-    html_url: `https://github.com/example/widgets/blob/${H702}/docs/usage.md`,
-    download_url: `https://raw.githubusercontent.com/example/widgets/${H702}/docs/usage.md`,
-  });
-  expect(
-    answer(
-      plain,
-      "gh api -H Accept: application/vnd.github.raw repos/example/widgets/contents/docs/usage.md?ref=legion%2FACME-7-702"
-    )
-  ).toBe(USAGE_TEXT);
-  // The base answers with no ref at all, and its file there is the base's own.
-  expect(answer(plain, "gh api repos/example/widgets/contents/README.md")).toMatchObject({
-    sha: README,
-  });
-  expect(
-    answer(plain, `gh api repos/example/widgets/contents/README.md?ref=${H703}`)
-  ).toMatchObject({
-    sha: README703,
-  });
-  expect(answer(plain, "gh api repos/example/widgets/contents/docs?ref=legion/ACME-7-702")).toEqual(
-    [
-      {
-        type: "file",
-        size: Buffer.byteLength(USAGE_TEXT),
-        name: "usage.md",
-        path: "docs/usage.md",
-        sha: USAGE,
-        url: "https://api.github.com/repos/example/widgets/contents/docs/usage.md?ref=legion/ACME-7-702".replace(
-          "legion/ACME-7-702",
-          H702
-        ),
-      },
-    ]
-  );
-  expect(answer(plain, `gh api repos/example/widgets/contents/?ref=${H702}`)).toMatchObject([
-    { type: "file", name: "README.md" },
-    { type: "dir", name: "docs", size: 0 },
-  ]);
-  const { match: _missing, ...missing } = routeOf(
-    plain,
-    `gh api repos/example/widgets/contents/no/such/file.md?ref=${H702}`
-  );
-  expect(missing).toEqual(
-    notFound("https://docs.github.com/rest/repos/contents#get-repository-content")
-  );
-  expect(answer(plain, `gh api repos/example/widgets/git/trees/${H702}?recursive=1`)).toMatchObject(
-    {
-      sha: TREE702,
-      truncated: false,
-      tree: [
-        { path: "README.md", type: "blob", sha: README, size: 30 },
-        {
-          path: "docs",
-          mode: "040000",
-          type: "tree",
-          sha: DOCS_TREE,
-          url: `https://api.github.com/repos/example/widgets/git/trees/${DOCS_TREE}`,
-        },
-        { path: "docs/usage.md", type: "blob", sha: USAGE },
-      ],
-    }
-  );
-  expect(answer(plain, "gh api repos/example/widgets/git/trees/legion/ACME-7-702")).toMatchObject({
-    sha: TREE702,
-    tree: [{ path: "README.md" }, { path: "docs" }],
-  });
-  expect(answer(plain, `gh api repos/example/widgets/git/trees/${DOCS_TREE}`)).toEqual({
-    sha: DOCS_TREE,
-    url: `https://api.github.com/repos/example/widgets/git/trees/${DOCS_TREE}`,
-    truncated: false,
-    tree: [
-      {
-        path: "usage.md",
-        mode: "100644",
-        type: "blob",
-        sha: USAGE,
-        url: `https://api.github.com/repos/example/widgets/git/blobs/${USAGE}`,
-        size: Buffer.byteLength(USAGE_TEXT),
-      },
-    ],
-  });
-  expect(routeOf(plain, `gh api repos/example/widgets/git/trees/${"e".repeat(40)}`).status).toBe(
-    404
-  );
-  expect(answer(plain, `gh api repos/example/widgets/git/blobs/${USAGE}`)).toEqual({
-    sha: USAGE,
-    node_id: "B_rig",
-    size: Buffer.byteLength(USAGE_TEXT),
-    url: `https://api.github.com/repos/example/widgets/git/blobs/${USAGE}`,
-    content: base64(USAGE_TEXT),
-    encoding: "base64",
-  });
-  expect(routeOf(plain, `gh api repos/example/widgets/git/blobs/${"e".repeat(40)}`).status).toBe(
-    404
-  );
-  expect(answer(plain, "gh api repos/example/widgets/commits/legion/ACME-7-702")).toMatchObject({
-    sha: H702,
-    commit: {
-      message: "docs: the usage page of the widgets CLI (ACME-7)\n",
-      tree: { sha: TREE702 },
-    },
-    parents: [{ sha: MAIN }],
-    files: [{ filename: "docs/usage.md", status: "added", changes: 3 }],
-  });
-  expect(answer(plain, "gh api repos/example/widgets/commits/main")).toMatchObject({
-    sha: MAIN,
-    parents: [],
-    files: [],
-  });
-  expect(answer(plain, `gh api repos/example/widgets/git/commits/${H703}`)).toEqual({
-    sha: H703,
-    message: "docs: point the README at the usage page (ACME-7)\n",
-    tree: { sha: TREE703 },
-    parents: [{ sha: MAIN }],
-  });
 });
 
 // Catches: a renderer whose command line reads no world, or takes a world that lacks a field
