@@ -2326,12 +2326,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	supervisionOf.refreshGate = refreshGate
 	supervisionOf.cancel, supervisionOf.draining, supervisionOf.endDrain, supervisionOf.decided = cancel, draining, endDrain, api.NewRouteDecisions()
 	supervisionOf.stopping, supervisionOf.beginStop, supervisionOf.sessionStops = stopping, beginStop, &sessionStops
-	// The machines' report of a stalled turn they ended, and of a task whose sends keep failing
-	// with an answer, goes to supervision, which is built after their deps: the two callbacks
-	// whose receiver is supervision itself, set here before any machine exists, as every answer
-	// the workflow lends supervision is on the plan built before it.
+	// The machines' report of a stalled turn they ended, of a task whose sends keep failing with
+	// an answer, and of a phase task held long behind another claim's turn, goes to supervision,
+	// which is built after their deps: the three callbacks whose receiver is supervision itself,
+	// set here before any machine exists, as every answer the workflow lends supervision is on
+	// the plan built before it.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	sup.deps.PromptAnswersReached = supervisionOf.promptAnswersReached
+	sup.deps.IssueHoldReached = supervisionOf.issueHoldReached
 	return supervisionOf, nil
 }
 

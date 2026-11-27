@@ -1068,13 +1068,19 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// machine's decision publishes (ClaimView.SendInFlight), a tail of its own locked section
 	// with no agent round trip in it. Two sends that start inside each other's tail are what
 	// remains, and no answer read outside the other machine's lock can rule that out.
+	//
+	// A turn can run for hours, and the task waits for all of it, so a hold that lasts more than
+	// issueHoldTold is told to the issue's architect once (heldForTurn). A task that gets past
+	// the check here, the one way every phase task goes to its send, ends the hold it had.
 	if m.adopts(*p) {
 		if other, inTurn := m.issueInTurn(); inTurn {
 			m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
 				"delivery", p.ID, "issue", m.claim.Issue, "inTurn", other)
+			m.heldForTurn(*p, other)
 			return nil
 		}
 	}
+	m.issueHold = issueHold{}
 	// A resume task is written at its send, wherever that send is decided: one on a daemon that
 	// wires no answer to RootHears is still written from the record first (currentRootTask), since
 	// the text it was queued with holds no resume, only the news its start carries or nothing at
@@ -1770,6 +1776,53 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 		return "", false
 	}
 	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token)
+}
+
+// issueHoldTold is how long sendPending holds a phase task behind another claim of its issue in a
+// turn (issueInTurn) before the issue's architect is told of the hold, once (heldForTurn). The
+// hold is right however long it lasts, since the roles of an issue share one working copy, but a
+// task that waits this long is a phase that does not move: on OSSV-343 (dispatch://INFRA-3916 R6)
+// a tester's task waited 88 minutes behind one turn of the implementer, and nobody was told.
+const issueHoldTold = 10 * time.Minute
+
+// issueHold is the hold sendPending keeps on the pending phase task behind another claim's turn:
+// the task it holds, by the moment that task was queued (Delivery.QueuedAt, which a new id of the
+// same task keeps, as answeredFailure's count is keyed), the moment the hold began, and whether
+// the issue's architect has been told of it. The zero value is no hold.
+type issueHold struct {
+	task  time.Time
+	since time.Time
+	told  bool
+}
+
+// heldForTurn records that sendPending holds p behind inTurn, another claim of the issue in a
+// turn, and tells the issue's architect, once, when the hold has lasted more than issueHoldTold:
+// one Warn line, and the daemon's notice through Deps.IssueHoldReached, both naming the held
+// claim, its task and the claim in the turn. A hold begins at the first sweep, hello, turn end or
+// ready that holds the task, and lasts while every one after it holds the task again: a task that
+// gets past the hold ends it (sendPending), and so does any other task in its place, a newer one
+// that replaced it or the next after a drop, which begins a hold of its own. The claim in the turn
+// can change while the task waits, as one role's turn ends and another's begins; the task is held
+// all the same, and the line and the notice name the claim whose turn holds it when they are
+// written. The hold is memory only, so a daemon restart begins it again from the first hold the
+// new machine makes.
+func (m *Machine) heldForTurn(p Delivery, inTurn claim.Token) {
+	now := m.deps.Clock.Now()
+	h := &m.issueHold
+	if h.since.IsZero() || !h.task.Equal(p.QueuedAt) {
+		*h = issueHold{task: p.QueuedAt, since: now}
+		return
+	}
+	held := now.Sub(h.since)
+	if h.told || held <= issueHoldTold {
+		return
+	}
+	h.told = true
+	m.log.Warn("supervise: a phase task has waited more than 10 minutes behind another claim of its issue in a turn; the issue's architect is told",
+		"delivery", p.ID, "phase", string(p.Phase), "issue", m.claim.Issue, "inTurn", inTurn, "heldSince", h.since, "held", held)
+	if m.deps.IssueHoldReached != nil {
+		m.deps.IssueHoldReached(m.current(), inTurn, held)
+	}
 }
 
 // adopt hands the working copy the role's App identity before the phase task d reaches the agent,

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    A phase task held more than 10 minutes behind another claim's turn now writes one Warn line and
+    one worker-stalled notice to the issue's architect, naming the held claim, its task and the
+    claim in the turn, so a long hold is told rather than read by elimination
+    (dispatch://INFRA-3916, R6).
+time: 2026-11-27T23:00:00Z
+custom:
+    Issue: INFRA-3916

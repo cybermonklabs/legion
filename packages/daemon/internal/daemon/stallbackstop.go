@@ -263,6 +263,57 @@ func (s *supervision) promptAnswersReached(c supervise.Claim, reason string) {
 	}()
 }
 
+// issueHoldReached tells the architect that owns the claim's notices that its phase task has
+// waited more than supervise's bound behind inTurn, another claim of the issue in a turn
+// (supervise's Deps.IssueHoldReached): the machine times the hold and decides when to tell, once
+// per hold, and this writes the `worker-stalled` notice through the stall notice's own rows
+// (enqueueStallNotice), so the architect reads it where it reads a stall, and a release that
+// reads notices today reads this one, where a kind of its own would be refused by the strict
+// decode of earlier releases (record's validNoticeKind). The claim in the turn can be that
+// architect's own, and the notice still goes to it, naming its own claim, since its turn is what
+// holds the task. No stop was made and no claim failed (the zero StallBackstopStop), so the
+// architect is told alone, with no controller row. The machine calls it inside its decision, so
+// the row is written on a goroutine of its own, bounded by stallNoticeBudget. A row the store
+// refuses is logged and not written again, as promptAnswersReached's is not: the hold is told
+// once, and the task goes when the turn ends either way.
+func (s *supervision) issueHoldReached(c supervise.Claim, inTurn claim.Token, held time.Duration) {
+	reason := issueHoldReason(c, inTurn, held)
+	if c.Issue == "" || s.plan.enqueue == nil {
+		s.log.Warn("supervise: a phase task waits long behind another claim's turn, and there is no owner to tell",
+			"claim", c.Token, "issue", c.Issue, "reason", reason)
+		return
+	}
+	go func() {
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), stallNoticeBudget)
+		defer cancel()
+		written, err := s.enqueueStallNotice(ctx, c, supervise.StallBackstopStop{}, reason)
+		switch {
+		case err != nil:
+			s.log.Error("supervise: tell the owner that a phase task waits long behind another claim's turn",
+				"claim", c.Token, "issue", c.Issue, "error", err)
+		case !written:
+			s.log.Warn("supervise: a phase task of a claim of another project's issue waits long behind another claim's turn; no owner is told",
+				"claim", c.Token, "issue", c.Issue, "reason", reason)
+		}
+	}()
+}
+
+// issueHoldReason is what the architect is told of a phase task held behind another claim's turn
+// (issueHoldReached): the held claim, its task, by its phase and delivery id, the claim in the
+// turn, and how long the task has waited, in words built from those fields alone.
+func issueHoldReason(c supervise.Claim, inTurn claim.Token, held time.Duration) string {
+	task := "its phase task"
+	if p := c.Pending; p != nil {
+		task = fmt.Sprintf("its %s task %s", p.Phase, p.ID)
+	}
+	return fmt.Sprintf("The %s claim %s has waited %s to be sent %s: %s, another claim of the issue, is in a turn or has a prompt on its way to one. "+
+		"The roles of an issue share one working copy, so a phase task is not adopted onto it while another role is in a turn; "+
+		"the daemon sends the task at the first sweep after that turn ends.",
+		c.Role, c.Token, held.Round(time.Second), task, inTurn)
+}
+
 // stallBackstopRecord is what the owner is told and what the log line carries: the record the
 // daemon read, in one sentence, and what it did about it. It is the same text either way, so a
 // deployment with no workflow leaves the same account in its log as the notice would have

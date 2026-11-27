@@ -3508,7 +3508,10 @@ func designReview(decision DecisionKind) bool {
 // pending task keeps failing with an answer — the shim refusing the adoption, the agent refusing
 // the prompt or running no turn for it — which the daemon keeps and sends the task to again:
 // written once per task, at the prompt-failure limit of such answers in a row (supervise's
-// answeredFailure, internal/daemon's promptAnswersReached).
+// answeredFailure, internal/daemon's promptAnswersReached). And it is the notice of a phase task
+// held more than 10 minutes behind another claim of its issue in a turn, naming the held claim,
+// its task and the claim in the turn, written once per hold (supervise's heldForTurn,
+// internal/daemon's issueHoldReached).
 //
 // `worker-silent` is the worker that stopped between turns rather than inside one: its process
 // is up, it holds no task, and its agent has not stepped for longer than the bound the

@@ -1014,6 +1014,17 @@ type ClaimView struct {
 	WakeWaiting *WakeWaiting
 }
 
+// InTurn is whether the claim this view publishes is in a turn or has a prompt on its way to one,
+// which is what holds another claim's phase task back from adopting the working copy an issue's
+// roles share (internal/daemon's claimInTurn, Deps.IssueInTurn, sendPending's hold). The state is
+// StateWorking from a turn's start to its end, whichever event told the machine it ended, and the
+// send in flight covers the prompt before that start. Nothing else names the claim: a turn that
+// ended names nothing, whatever its outcome, and neither does a next prompt that waits on the
+// provider-error backoff or a relaunch that waits for the refresh gate. A refused loop of a run
+// Oh My Pi goes on from ends no turn, so the plugin's report of one leaves the claim working
+// (dispatch://INFRA-3916 R6).
+func (v ClaimView) InTurn() bool { return v.State == StateWorking || v.SendInFlight }
+
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
 // when its tree closes.
 func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) }
@@ -1395,6 +1406,14 @@ type Deps struct {
 	// failed claim once gave. nil tells nobody. It is called inside the machine's decision, so it
 	// returns at once.
 	PromptAnswersReached func(c Claim, reason string)
+	// IssueHoldReached is told of a phase task that sendPending has held for more than
+	// issueHoldTold behind inTurn, another claim of its issue in a turn or with a send on its way to
+	// one (issueInTurn), once per hold (heldForTurn), with how long the task has waited. c is the
+	// held claim, whose pending delivery is the task. The hold itself is right, since the roles of
+	// an issue share one working copy; this is what tells the issue's architect a task waits that
+	// long, a turn that runs for hours included. nil tells nobody. It is called inside the
+	// machine's decision, so it returns at once.
+	IssueHoldReached func(c Claim, inTurn claim.Token, held time.Duration)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -2107,6 +2126,10 @@ type Machine struct {
 	// line is written once per delivery rather than at every sweep that asks again. Memory only: a
 	// restarted daemon writes the line once more for the delivery it finds held.
 	staleHeldDelivery string
+	// issueHold is the hold sendPending's check of the issue's turns (issueInTurn) keeps on the
+	// pending phase task: when it began, and whether the issue's architect has been told of it
+	// (heldForTurn). Memory only: a restarted daemon starts the hold's time again.
+	issueHold issueHold
 	// refusalLogged is the Warn line holdRecorded last wrote for a refused hold, so a refusal asked
 	// again at every sweep (sendPending, for a claim that does not hold its session) is written
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.

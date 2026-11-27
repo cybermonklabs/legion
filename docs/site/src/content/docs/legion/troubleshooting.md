@@ -1480,6 +1480,7 @@ A search that finds no line for a time before the first line does not show that 
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
   `inTurn` names the claim whose turn holds it.
+  A hold that lasts more than 10 minutes also writes `supervise: a phase task has waited more than 10 minutes behind another claim of its issue in a turn; the issue's architect is told` at Warn, once per hold, with the `delivery`, its `phase`, `inTurn` and `held`, and the issue's architect gets one `worker-stalled` notice that names the held claim, its task and the claim in the turn.
 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
   The task stays queued and is sent again at the next sweep. The refusal costs the claim no prompt budget, because the shim answered, and the pending task counts it in `sendFailures`.

@@ -84,11 +84,12 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 
 // claimInTurn names a claim of issue other than except whose agent is in a turn now, or is about
 // to be, for the adoption a phase task makes of the working copy an issue's roles share
-// (supervise's Deps.IssueInTurn). A claim counts when its published state is StateWorking, a turn
-// in flight, and when its machine has a send in flight (supervise.ClaimView.SendInFlight): the
-// prompt that starts that turn is on its way and the adoption it goes behind may be rewriting the
-// shared working copy at this moment, which is the very thing this answer guards. Without it two
-// phase tasks to two roles of one issue each read the other as idle and adopt together
+// (supervise's Deps.IssueInTurn). A claim counts when its published view is in a turn
+// (supervise.ClaimView.InTurn, the one statement of the rule): its state is StateWorking, a turn
+// in flight, or its machine has a send in flight (supervise.ClaimView.SendInFlight): the prompt
+// that starts that turn is on its way, and the adoption it goes behind may be rewriting the shared
+// working copy at this moment, which is the very thing this answer guards. Without the send in
+// flight two phase tasks to two roles of one issue each read the other as idle and adopt together
 // (dispatch://INFRA-314), and a turn's end wakes a held claim whose own next send has already
 // started.
 //
@@ -107,7 +108,7 @@ func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token,
 		if view.Token == except || view.Issue != issue {
 			continue
 		}
-		if view.State == supervise.StateWorking || view.SendInFlight {
+		if view.InTurn() {
 			return view.Token, true
 		}
 	}
