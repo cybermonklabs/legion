@@ -555,7 +555,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity = workflow.identity
 		plan.knownIdentity = workflow.knownIdentity
-		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
+		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.issueLaunchRepository
+		// The repository the record holds for an issue, which the update-round sweep reads a pod
+		// built from the repository the issue has left by (supervision.repositoryDrift) and the
+		// idle rule's repository hold reads through it (supervision.podRepositoryDrifted). It is
+		// on the plan, as every other answer the workflow lends supervision is, so a supervision
+		// built from this plan holds it however it was built: a relaunched one of a test's rig
+		// copies the plan and would otherwise read no drift at all.
+		plan.recordedRepository = recordedRepositoryOf(workflow.recordedIssue)
+		// Everything that writes on a Dispatch issue outside the workflow itself reads this one
+		// field: supervision's own writes, which read it through the plan it holds
+		// (plan.writeOnIssue).
+		plan.enqueue = workflow.enqueueOutbox
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
@@ -568,7 +579,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.retroWakeHolds = workflow.retroWakeHolds
 		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
+		plan.rootTask, plan.designNews, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		// The run's boot event, and from it on the state event of every write the run makes. The
@@ -1219,12 +1230,29 @@ type plan struct {
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read at the first launch and kept while the issue
-	// holds its workspace), which a working copy's adoption and a tmux pane's credential refresh
-	// read; launchRepository is the same as every launch reads it (workflowRuntime.launchRepository,
-	// which prepares a recorded issue's repository the cache set does not hold). Both nil without
-	// a workflow.
-	repository       func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
-	launchRepository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	// holds its workspace); nil without a workflow. It is the narrow half of the read below, for
+	// the two consumers that want the repository and its branch alone: the runtime factory, whose
+	// tmux runtime reads a pane's repository through it (claimRepository), and a claim's adopted
+	// identity (adoptIdentity).
+	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	// launchRepository is what one read of an issue's record tells a launch of its claims
+	// (workflowRuntime.issueLaunchRepository, which prepares a recorded issue's repository the
+	// cache set does not hold): the repository it works, its default branch and what a
+	// correction of its repository left on the record, which every launch from then on is told
+	// beside the repository it works now (specs.repository); nil without a workflow, which
+	// records no repository and corrects none.
+	launchRepository func(ctx context.Context, issue string) (launchRepository, error)
+	// recordedRepository is the repository the daemon's record holds for an issue now, and ""
+	// for an issue no record holds (recordedRepositoryOf, over workflowRuntime.recordedIssue);
+	// nil without a workflow, which records no issue's repository and so has nothing a pod could
+	// disagree with. It is the whole of the record the update-round sweep needs to read a pod
+	// built from the repository the issue has left (supervision.repositoryDrift, groupDrift) and
+	// the idle rule's repository hold reads it through that same comparison
+	// (supervision.podRepositoryDrifted). A function for the reason enqueue is one: threading
+	// the workflow's record store into supervision to read one column would tie every claim
+	// decision to the workflow. A nil field adds no reason, as an issue the record does not hold
+	// adds none.
+	recordedRepository func(ctx context.Context, issue string) (string, error)
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
@@ -1258,14 +1286,15 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, retroWakeHolds, rootHears, rootTask, designNews and treeClosable are the
-	// workflow's answers to the supervisor's predicates; nil without a workflow, where every
-	// delivery is sent as it was queued and every tree closes.
+	// phaseHolds, retroWakeHolds, rootHears, rootTask, designNews, workingCopy and treeClosable
+	// are the workflow's answers to the supervisor's predicates; nil without a workflow, where
+	// every delivery is sent as it was queued and every tree closes.
 	phaseHolds     func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
 	retroWakeHolds func(ctx context.Context, issue string) (bool, error)
 	rootHears      func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask       func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	workingCopy    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable   func(ctx context.Context, c supervise.Claim) (bool, error)
 	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
 	// pod start gate puts first among the starts no request raised (supervise.Deps.PhaseRole); nil
@@ -1387,6 +1416,18 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// enqueue writes outbox rows of an issue, all of them in one transaction, the workflow's own
+	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
+	// outbox to write to and no Dispatch issue to write on. run fills it beside repository, before
+	// the workflow attaches, because it is the one enqueue outside the workflow: every write
+	// supervision makes on an issue reads it, through the plan it holds: the update-round sweep's
+	// notices, asks and issue message (reconcilePodUpdates) and the stall backstop's owner notices
+	// (tellStallBackstopped). Rows that must land together go in one call, since a stall told the
+	// controller but not the issue would be told again at every tick (tellUpdateStalled). It
+	// answers whether it wrote them: it writes none of a claim of another project's issue, whose
+	// rows only that project's daemon runs, and each caller says so rather than report a row it
+	// did not write.
+	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error)
 	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
 	// nil holds, tells and drops nothing.
 	holdOutbox           func(record.OutboxRow) bool
@@ -1454,7 +1495,7 @@ func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
 // listener the stream listener, address the one every agent's shim dials (shimAddress), tokens the
 // workflow's App tokens and repository the workflow's repository of an issue (issueRepository;
-// both nil without a workflow), st the store the runtime reads, and cached the repositories the
+// both nil without a workflow), st the store the runtime reads, cached the repositories the
 // Sandbox runtime keeps a repository cache of: the repositories of the project's live issue
 // records and of the launches since their last read (workflowRuntime.cacheRepositories; none
 // without a workflow). The rename rule every role's gh bundle resolves a configured pair by, one
@@ -1463,6 +1504,19 @@ func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 // workflow completed, so no factory reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
 	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error)
+
+// writeOnIssue posts one message on the issue, with the document it links when it links one,
+// through the outbox's Dispatch message row that the plan's enqueue writes, and answers whether
+// it queued it: it queues none on another project's issue (plan.enqueue), and refuses the write
+// where there is no enqueue: a deployment with no workflow has no outbox to write to and no
+// Dispatch issue to write on. Supervision writes through it, by the plan it holds (podupdate's
+// podWentWithoutItsRound).
+func (p plan) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) (bool, error) {
+	if p.enqueue == nil {
+		return false, fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
+	}
+	return p.enqueue(ctx, issue, post)
+}
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
 // then what writes or runs something: the state directory, the instructions copy, and what the
@@ -1980,20 +2034,6 @@ type supervision struct {
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
-	// enqueue writes outbox rows of an issue, all of them in one transaction, the workflow's own
-	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
-	// outbox to write to and no Dispatch issue to write on. It is the whole of the record the
-	// update-round sweep and the stall backstop need (reconcilePodUpdates, tellStallBackstopped):
-	// the notices they publish, the asks and the message written on the issue are all outbox
-	// rows, and threading the workflow engine into supervision to post them would tie every
-	// claim decision to the workflow. Rows that must land together go in one call, since a stall
-	// told the controller but not the issue would be told again at every tick
-	// (tellUpdateStalled). It answers whether it wrote them: it writes none of a claim of another
-	// project's issue, whose rows only that project's daemon runs, and each caller says so rather
-	// than report a row it did not write. The workflow sets it where it attaches, before
-	// supervision restores or launches any claim, as it sets the supervisor's terminal callback
-	// there.
-	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error)
 	// applySweepFacts applies the facts a sweep of supervision read, through the workflow's own
 	// handlers (workflowRuntime.applySweepFacts); nil in a deployment with no workflow, which
 	// records no issue a fact could be about. It is the whole of what the silence sweep needs of
@@ -2002,7 +2042,7 @@ type supervision struct {
 	// transaction (workflow.(*Engine).workerSilent). The facts of one sweep go in one call so the
 	// ids it minted can be read against what this daemon has applied in one query rather than one
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
-	// launches any claim, as it sets enqueue above.
+	// launches any claim, as it sets the supervisor's durable-state callback there.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
@@ -2229,6 +2269,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		DesignNews:              p.designNews,
+		WorkingCopy:             p.workingCopy,
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
@@ -2289,7 +2330,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	supervisionOf.stopping, supervisionOf.beginStop, supervisionOf.sessionStops = stopping, beginStop, &sessionStops
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
-	// any machine exists, as the workflow sets enqueue where it attaches.
+	// any machine exists, as every answer the workflow lends supervision is on the plan built
+	// before it.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	return supervisionOf, nil
 }
@@ -3519,16 +3561,19 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // Its writes take the same rule from the other side: no row is written into the outbox keyed by
 // another project's issue (ownsKey, claim.KeyOfProject). Every write of record.Store that inserts,
 // upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
-// NameUndeliveredHookPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps,
-// DropStatusWrites, and ClearGeneration and ClearTreeGeneration, which queue the publication of
-// the gates they empty — refuses a key of another project, and EnqueueID refuses it with
-// claim.ErrKeyOfAnotherProject. The state rows that internal/record and internal/store queue
-// inside their own writes (package stateevent's comment names them) are not among them: each is
-// keyed by the bare Dispatch project key of what its write names. The boot row goes in through
-// Enqueue (workflowRuntime.queueStateBoot), and its key is the project's own.
-// The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
-// (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
-// here.
+// NameUndeliveredHookPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps
+// and DropStatusWrites — refuses a key of another project, and EnqueueID refuses it with
+// claim.ErrKeyOfAnotherProject. ClearGeneration and ClearTreeGeneration refuse one too: they write
+// no outbox row, since their caller queues the publication of the gates they empty (workflow's
+// Engine.ClearGeneration, through EnqueueDesignGates), but the facts they delete are that
+// project's daemon's, and so are the changes requests their forget deletes by id
+// (DropQueuedChanges), which only the clear's own read hands it. The state rows that
+// internal/record and internal/store queue inside their own writes (package stateevent's comment
+// names them) are not among those writes: each is keyed by the bare Dispatch project key of what
+// its write names. The boot row goes in through Enqueue (workflowRuntime.queueStateBoot), and its
+// key is the project's own. The rest act on a row by its id under a lease this daemon holds of a
+// row its own scope gave it (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox,
+// RetryOutbox), and need no rule here.
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
 // NameUndeliveredHookPrompt where it opens a message, and ExpediteOutbox — wakes the row's lane
@@ -3543,10 +3588,12 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
 // status, and ReleaseSlot, ReleaseSlotForWait and ReleaseTreeSlots, which take slots away, the
-// tree's close and its root's re-admission among them — asks for one read of the live records once
-// its transaction commits (live, the workflow's wakeLive, which holds one request at most), so the
-// repository caches and legion state follow the records without a timer. live is nil where no
-// refresher runs.
+// tree's close and its root's re-admission among them — and each correction that moves a record
+// onto another repository (CorrectIssueRepository, where it wrote the row), which changes the
+// repository a live record names, asks for one read of the live records once its transaction
+// commits (live, the workflow's wakeLive, which holds one request at most), so the repository
+// caches and legion state follow the records without a timer. live is nil where no refresher
+// runs.
 type projectRecords struct {
 	record.Store
 	project  string
@@ -3580,6 +3627,20 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	}
 	s.liveOnCommit(ctx)
 	return nil
+}
+
+// CorrectIssueRepository asks for the read only where it moved the record: the read is what takes
+// the repository the issue left out of the cache set and the live set once no other live record
+// names it. The follow after a boot moves records with this write alone, so without this the
+// repository left would stay cached, and read again by the refresher, until some other write
+// asked.
+func (s projectRecords) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error) {
+	corrected, err := s.Store.CorrectIssueRepository(ctx, tx, key, repo, defaultBranch, githubRepo, at)
+	if err != nil || !corrected {
+		return corrected, err
+	}
+	s.liveOnCommit(ctx)
+	return true, nil
 }
 
 func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
@@ -3808,23 +3869,24 @@ func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue s
 	return s.Store.DropStatusWrites(ctx, tx, issue)
 }
 
-// ClearGeneration queues the publication of every gate it empties, keyed by the issue
-// (record.Postgres.clearGates), so a clear of another project's issue is refused whole: the
-// facts it would delete are that project's daemon's too.
-func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
-	if !s.ownsKey(record.OutboxKindDesignGatesPublish, issue) {
-		return nil
+// ClearGeneration deletes the facts of the issue's generation and answers the issues whose gates
+// it emptied, whose publication its caller queues (record.Postgres.clearGates), so a clear of
+// another project's issue is refused whole, emptying nothing and answering no issue: the facts it
+// would delete are that project's daemon's.
+func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue record.Issue, forget record.KeptForget) ([]string, error) {
+	if !s.ownsKey(record.OutboxKindDesignGatesPublish, issue.Key) {
+		return nil, nil
 	}
-	return s.Store.ClearGeneration(ctx, tx, issue, now)
+	return s.Store.ClearGeneration(ctx, tx, issue, forget)
 }
 
 // ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
 // project: a record takes its root's project when the workflow writes it.
-func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
+func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget record.KeptForget) ([]string, error) {
 	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
-		return nil
+		return nil, nil
 	}
-	return s.Store.ClearTreeGeneration(ctx, tx, tree, now)
+	return s.Store.ClearTreeGeneration(ctx, tx, tree, forget)
 }
 
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction

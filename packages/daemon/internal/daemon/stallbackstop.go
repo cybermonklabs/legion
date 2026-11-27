@@ -172,7 +172,7 @@ type stallNoticeOwed struct {
 // claim has no issue and so no owner to tell; the line it logs is the whole of its telling, and
 // the record is in it. So is the line of a claim of another project's issue, which the operator's
 // spawn makes: its owner's notice would be a row keyed by that issue, which only that project's
-// daemon runs, so none is written (supervision.enqueue), and the line says so.
+// daemon runs, so none is written (plan.enqueue), and the line says so.
 func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Claim, stop supervise.StallBackstopStop) bool {
 	found := stallBackstopRecord(c, stop, s.plan.clock.Now().Sub(stop.LastStep))
 	if c.Issue == "" {
@@ -180,7 +180,7 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 			"claim", c.Token, "role", c.Role, "record", found)
 		return true
 	}
-	if s.enqueue == nil {
+	if s.plan.enqueue == nil {
 		s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn, and this deployment has no workflow to tell the owner through",
 			"claim", c.Token, "issue", c.Issue, "record", found)
 		return true
@@ -205,7 +205,7 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 
 // enqueueStallNotice writes the owner's notice rows, both in one call so a stall told to one
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
-// for one call), and answers whether it wrote them (supervision.enqueue). A phase worker's stall
+// for one call), and answers whether it wrote them (plan.enqueue). A phase worker's stall
 // is read by the architect that owns its issue, and a child's own architect's stall by the
 // architect above that child, as each one's death is. A tree architect's own stall whose end
 // failed its claim over a stop the runtime did not confirm
@@ -224,7 +224,7 @@ func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim,
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) && stop.End == supervise.EndFailed && stop.StopUnconfirmed {
 		rows = append(rows, record.ControllerNotice(notice))
 	}
-	return s.enqueue(ctx, c.Issue, rows...)
+	return s.plan.enqueue(ctx, c.Issue, rows...)
 }
 
 // stallBackstopNotice is the kind of the notice above (record's validNoticeKind), beside

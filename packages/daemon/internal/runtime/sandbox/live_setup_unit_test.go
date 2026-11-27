@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/testport"
@@ -1014,7 +1015,7 @@ func newSetupRig(t *testing.T, network setupNetwork) *setupRig {
 		"legion": fmt.Sprintf(setupRigLegion, shellQuote(r.owners), setupRigToken),
 	}
 	for name, script := range scripts {
-		if err := os.WriteFile(filepath.Join(r.bin, name), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(r.bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1045,7 +1046,7 @@ func (r *setupRig) mktemp(template string) {
 		r.t.Fatal(err)
 	}
 	script := fmt.Sprintf("#!/bin/sh\n[ \"$*\" = -d ] || exec %[1]s \"$@\"\nexec %[1]s -d \"${TMPDIR:-/tmp}\"/%[2]s\n", shellQuote(real), shellQuote(template))
-	if err := os.WriteFile(filepath.Join(r.bin, "mktemp"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(r.bin, "mktemp"), []byte(script), 0o700); err != nil {
 		r.t.Fatal(err)
 	}
 }
@@ -1066,7 +1067,7 @@ func (r *setupRig) poisons() map[string]map[string]string {
 	r.git(fixturegit.InitWorkTree(headers, "")[1:]...)
 	r.git("-C", headers, "config", "http.https://github.com/.extraheader", "Authorization: basic Zm9yZ2Vk")
 	askpass := filepath.Join(r.root, "askpass")
-	if err := os.WriteFile(askpass, []byte("#!/bin/sh\necho forged\n"), 0o700); err != nil {
+	if err := execfile.Write(askpass, []byte("#!/bin/sh\necho forged\n"), 0o700); err != nil {
 		r.t.Fatal(err)
 	}
 	poisons := map[string]map[string]string{
@@ -1249,7 +1250,7 @@ func newHelperLog(t *testing.T) *helperLog {
 func (h *helperLog) helper(name string) string {
 	h.t.Helper()
 	path := filepath.Join(h.dir, "helper-"+name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n[ \"$1\" = get ] && echo "+name+" >>"+h.ran+"\nexit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\n[ \"$1\" = get ] && echo "+name+" >>"+h.ran+"\nexit 0\n"), 0o700); err != nil {
 		h.t.Fatal(err)
 	}
 	return path

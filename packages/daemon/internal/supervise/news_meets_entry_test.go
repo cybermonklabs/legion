@@ -63,7 +63,7 @@ var newsHoldings = []newsHolding{
 		h.t.Helper()
 		h.reach(StateReady)
 		h.conn.SetStreaming(true)
-		h.conn.RefusePrompt(busyAnswer)
+		h.conn.FailPrompt(busyRefusal())
 		h.must(task)
 		h.wantState(StateWorking)
 	}, func(h *harness) {

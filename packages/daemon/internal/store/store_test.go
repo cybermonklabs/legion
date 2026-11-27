@@ -1108,7 +1108,11 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // above 20261126110259, and those two, 20261122154643, 20261119203047 and 20261119003157 write
 // it too, while main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write
 // none. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of
-// the list adds either, so neither is in the list. The project pause's 20261115194357 is in it as
+// the list adds either, so neither is in the list, and nor are the four of main's
+// cybermonklabs/legion#3712 (20261112012123, 20261112215432, 20261118073048 and 20261122212816):
+// none writes outbox_kind_check, and each changes only tables and columns that versions outside
+// the list create (issues, claims, pending_task_deliveries, parked_decisions, phases.entry_verbatim
+// and readmitted_approvals). The project pause's 20261115194357 is in it as
 // well, though it rewrites no kind list: a database migrated before the pause takes it in the
 // upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
 // must take them all. Any other version left out makes the cases below weaker, never red, which is

@@ -288,10 +288,11 @@ func retroStart(t *testing.T, issue record.Issue, role claim.Role, run uint64, i
 	return row
 }
 
-// retroTaskLine is the first line of the retro's task on issue (workflow's continueLine at the
-// retro).
+// retroTaskLine is the opening of the retro's task on issue (workflow's taskOpening at the retro):
+// its working copy line, which names the branch alone where the engine places no working copy
+// (workflow.Config.WorkspaceDir), and after the line break that ends it the continue line.
 func retroTaskLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. Phase: retro.", issue.Title, issue.Key)
+	return fmt.Sprintf("Working copy: branch %s.\nContinue %s. Issue: %s. Phase: retro.", claim.IssueBranch(issue.Key), issue.Title, issue.Key)
 }
 
 // heldRetroTask fails unless machine's claim holds the task start row id delivers: the row's own

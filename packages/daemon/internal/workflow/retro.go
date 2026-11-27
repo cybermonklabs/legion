@@ -269,15 +269,15 @@ func findingsClause(topic string) string {
 		", and that architect puts it to the person as one decision. A requirement that another open child of the same parent carries is pending and goes to no one."
 }
 
-// retroAfterCloseTask is the task of the retro after the close of stood's issue: the retro's
-// first line and the standing of its run's retro, as every retro task opens (the working copy,
-// and for a run with plan rows its task and its `Steps:` line), the pull request where the issue
-// has one, then what R2 says: the issue is closed, the retro moves it nowhere and the retro
-// skill's steps that move work back do not apply, and where a finding goes (findingsClause, the
-// root architect's topic), then how the retro is reported. The start that carries it names no
-// phase.
+// retroAfterCloseTask is the task of the retro after the close of stood's issue: it opens as every
+// retro task does (taskOpening: the working copy line, which every send writes again for the
+// process the task goes to, then the continue line), then the standing of its run's retro (for a
+// run with plan rows its task and its `Steps:` line), the pull request where the issue has one,
+// then what R2 says: the issue is closed, the retro moves it nowhere and the retro skill's steps
+// that move work back do not apply, and where a finding goes (findingsClause, the root architect's
+// topic), then how the retro is reported. The start that carries it names no phase.
 func retroAfterCloseTask(stood record.Issue, at Standing, pr *record.PullRequest, topic string) string {
-	text := continueLine(stood) + at.lines
+	text := taskOpening(stood, at) + at.lines
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
 	}

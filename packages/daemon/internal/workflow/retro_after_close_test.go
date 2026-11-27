@@ -386,7 +386,8 @@ func runRetroOf(t *testing.T, pool *pgxpool.Pool, issue string, generation uint6
 // assertOneRetroStart fails unless the rows since mark hold exactly one start of key's retro after
 // its close, and no start of the retro phase: the implementer's (the retro's agent on main), naming
 // run, no phase, no entry and no look, at the issue's generation as it stands, whose task opens as
-// every retro task does (continueLine at the retro). It answers that start.
+// every retro task does (taskOpening at the retro: the working copy line, which a rig that places
+// no working copy writes naming the branch alone, then the continue line). It answers that start.
 func assertOneRetroStart(t *testing.T, pool *pgxpool.Pool, key string, run uint64, mark int64) record.SuperviseRequest {
 	t.Helper()
 	issue := issueRecord(t, pool, key)
@@ -403,7 +404,7 @@ func assertOneRetroStart(t *testing.T, pool *pgxpool.Pool, key string, run uint6
 	}
 	retro := *issue
 	retro.Phase = phase.Retro
-	if lead := continueLine(retro); !strings.HasPrefix(start.Task, lead) {
+	if lead := taskOpening(retro, WorkingCopy(retro, nil)); !strings.HasPrefix(start.Task, lead) {
 		t.Fatalf("the task of %s's retro after its close = %q, want it to open %q", key, start.Task, lead)
 	}
 	if phased := phaseStartsOf(supervises, phase.Retro); len(phased) != 0 {

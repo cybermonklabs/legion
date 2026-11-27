@@ -29,6 +29,10 @@ body: |-
     `done` keeps the agent and session of a retro it starts or finds running. Store migration
     `20261126164240_run_retros` adds the record of each run's retro, and docs/kubernetes.md gives its
     way back, under "Rolling back the release that runs a closed issue's retro after its close".
+    `POST /legion/v1/claims/owed` answers the retro's agent that it owes `the retro after the close
+    of <KEY>` while that retro is open, so its end-of-turn reminder asks for the report. The retro's
+    task opens with its `Working copy:` line, as every phase task does, and each send writes that line
+    again for the repository the agent's process works.
 time: 2026-11-26T04:22:11.713874811Z
 custom:
     Issue: INFRA-5602

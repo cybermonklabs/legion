@@ -121,7 +121,7 @@ func TestTheRetroTaskOfAnOpenIssueWhosePullRequestMergedNamesTheRootArchitect(t 
 			}
 			task := retro[0].Task
 			at := *issueRecord(t, r.pool, "LEGION-210")
-			if lead := continueLine(at); !strings.HasPrefix(task, lead) {
+			if lead := taskOpening(at, WorkingCopy(at, r.engine.cfg.WorkspaceDir)); !strings.HasPrefix(task, lead) {
 				t.Fatalf("the retro task opens %q, want %q", task, lead)
 			}
 			if !strings.Contains(task, steps) {

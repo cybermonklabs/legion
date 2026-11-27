@@ -171,3 +171,24 @@ func TestACompletionOfADoneIssuesRetroAfterItsCloseIsTakenWithItsRating(t *testi
 		})
 	}
 }
+
+// The retro Legion runs after a done issue's close is what its agent owes while the record holds
+// it open (owedBy, by the rule the completion route takes the retro's report on: servedRetroRun),
+// as an open look of a check is what a tester owes there: the end-of-turn reminder of the claim
+// whose worker took the retro's task names that retro, where the issue's phase, done, names
+// nothing. Once the record ends the retro, here at its bound, the claim owes nothing, though it
+// still serves the retro's run.
+func TestClaimOwedIsTheRetroAfterTheCloseItsAgentWorks(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	implementer, run := newRetroAfterCloseClaim(t, h)
+	implementer.owes(t, "the retro after the close of LEGION-208")
+
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := record.NewStore().EndRetroAfterClose(ctx, tx, "LEGION-208", run, retroStepStartedAt.Add(workflow.RetroAfterCloseBound),
+			record.RetroOutcomeStopped, record.RetroEndBound)
+		return err
+	}); err != nil {
+		t.Fatalf("end the retro after the close of LEGION-208 at its bound: %v", err)
+	}
+	implementer.owesNothing(t)
+}

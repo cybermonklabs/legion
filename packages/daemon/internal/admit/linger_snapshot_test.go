@@ -231,8 +231,8 @@ func TestABootListingOfASetBackBacklogLeavesTheTreeRunning(t *testing.T) {
 // putNewRoot, called from applySummary's stored==nil branch at release, never carried the
 // summary's own sequence, so a freshly created root's LastDispatchSeq was always 0 regardless of
 // what the summary actually showed. An older, already-superseded event reaching Apply later then
-// passed applyObservation's own sequence fence (observation.Seq <= stored.LastDispatchSeq, since 0
-// fences nothing) and overwrote what the newer summary had already established.
+// passed applyObservation's own sequence fence (record.Issue.Outdates, which a record at sequence
+// 0 says of no event) and overwrote what the newer summary had already established.
 func TestAReleasedRootIgnoresAnOlderLateEvent(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
