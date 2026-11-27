@@ -53,7 +53,8 @@ func CheckOverlays(ctx context.Context, img Image, overlays, own []string) (refu
 			return fmt.Sprintf("Oh My Pi refuses %s: %s", file, why), errors.Join(unanswered...)
 		}
 		if err != nil {
-			unanswered = append(unanswered, err)
+			// CONTROL ONLY: the check stops at the first run with no exit of its own.
+			return "", err
 		}
 	}
 	why, err := run(overlays)
