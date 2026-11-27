@@ -63,10 +63,20 @@ function isAtom(element: Element): boolean {
  * after it where the point stands past the end of its last line (`pastAtomEnd`): after an atom,
  * and after a reference's words as the editor holds them. An atom drawn with no text - a picture
  * once it has loaded - counts as one too, so the walk reads each element drawn in place of the
- * editor's text before its own texts. A text with no characters - the link pass leaves one where
- * a reference starts or ends a text (`row-references.ts`'s `linkRowReferences`) - holds nothing
- * to press or count, so the walk passes it: no drawn text begins there, and an atom before it is
- * still the last thing counted.
+ * editor's text before its own texts. The browser answers a point past the end of a line whose
+ * last text ends with a space with a place in that text before the space, which the line's end
+ * collapses - Chromium does - and so before what follows that text on the line, where nothing
+ * there draws a box: a picture whose reference names no artifact is drawn as a link with no words.
+ * So a place in a text outside every marked element, with only spaces after it in that text, and
+ * with nothing after it before a hard break or the words' end but texts of spaces alone and
+ * elements that draw no box, stands at the end of that line (`toLineEnd`): the count goes past all
+ * of it, the spaces as the text they are and an atom among those elements as the last thing
+ * counted, so the press says it fell past that atom. A place with an element drawn in a box or a
+ * character that is no space after it stays where the browser answered it. Only such a place
+ * reads the boxes of the elements after it, so no other press lays the words out. A text with no
+ * characters - the link pass leaves one where a reference starts or ends a text
+ * (`row-references.ts`'s `linkRowReferences`) - holds nothing to press or count, so the walk
+ * passes it: no drawn text begins there, and an atom before it is still the last thing counted.
  */
 export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
   const doc = words.ownerDocument;
@@ -77,7 +87,9 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   const end = doc.createRange();
   end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
   const atom = (node instanceof Element ? node : node.parentElement)?.closest(HELD_OTHERWISE);
-  if (atom != null && pastAtomEnd(atom, x, y)) end.setStartAfter(atom);
+  if (atom != null) {
+    if (pastAtomEnd(atom, x, y)) end.setStartAfter(atom);
+  } else toLineEnd(words, end);
   const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   // The words as the editor holds them, and the press's place in them once it is passed.
   let held = "";
@@ -134,34 +146,66 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   };
 }
 
-/** Whether the point (`x`, `y`) stands past the end of `atom`'s last line: right of its greatest
- *  right where the atom runs left to right, and left of its least left where it runs right to
- *  left. Chromium draws an atom in one box for each run of one direction and gives the boxes of
- *  one line left to right on the screen, so the line's end need not be the last box's. A box is on
- *  the last line where its middle stands at or below the last box's top; a padded atom's boxes
- *  can be taller than its line and overlap the line above, as a link under `.prose` is, so no
- *  edge tells the two lines apart. An atom's box is as tall as its font, not as its line, so
- *  `y` only tells the last line from the one before it, the last box above the last line: the two
- *  lines meet half way between that box's foot and the last box's top, and a point at or above
- *  that is on no last line. An atom whose boxes all stand on one line has no line before its
- *  last. Where the browser names the atom neither direction, the point is past no end of it. Read
- *  only for a place the browser answered inside an atom, so no other press lays the words out. */
+/** Whether the point (`x`, `y`) stands past the end of `atom`'s last line: right of the greatest
+ *  right of its boxes on that line. The view draws every statement left to right - nothing in it
+ *  sets `dir` or `direction` - and Chromium draws an atom in one box for each run of one direction
+ *  and gives the boxes of one line left to right on the screen, so the line's end need not be the
+ *  last box's. A box is on the last line where its middle stands at or below the last box's top; a
+ *  padded atom's boxes can be taller than its line and overlap the line above, as a link under
+ *  `.prose` is, so no edge tells the two lines apart. An atom's box is as tall as its font, not as
+ *  its line, so `y` only tells the last line from the one before it, the last box above the last
+ *  line: the two lines meet half way between that box's foot and the last box's top, and a point
+ *  at or above that is on no last line. An atom whose boxes all stand on one line has no line
+ *  before its last. Read only for a place the browser answered inside an atom, so no other press
+ *  lays the words out. */
 function pastAtomEnd(atom: Element, x: number, y: number): boolean {
   const boxes = atom.getClientRects();
   const last = boxes[boxes.length - 1];
   if (last === undefined) return false;
   let earlier: DOMRect | undefined;
-  let { left, right } = last;
+  let { right } = last;
   for (const box of boxes) {
     if (box.top + box.bottom < 2 * last.top) earlier = box;
-    else {
-      left = Math.min(left, box.left);
-      right = Math.max(right, box.right);
-    }
+    else right = Math.max(right, box.right);
   }
   if (earlier !== undefined && y <= (earlier.bottom + last.top) / 2) return false;
-  const direction = atom.ownerDocument.defaultView?.getComputedStyle(atom).direction;
-  return direction === "rtl" ? x < left : direction === "ltr" && x > right;
+  return x > right;
+}
+
+/** A character that is no space a line's end collapses: the view draws its words with CSS's
+ *  collapsible white space, spaces, tabs and line feeds. */
+const NO_SPACE = /[^ \t\n]/u;
+
+/** Moves `end`, the place the browser answered in `words` outside every element drawn in place of
+ *  the editor's text, to the end of the line it stands at the end of, where it is such a place
+ *  (`pressInWords`): a place in a text with only spaces after it in that text, and nothing after
+ *  it before a hard break or the words' end but texts of spaces alone and elements that draw no
+ *  box, every client rect of no width or none. The line ends right before that hard break, or at
+ *  the words' end; the chips that trail the words (`data-node-trail`) stand after their end. The
+ *  walk lays out each element after the place until one draws a box, the elements inside one that
+ *  draws none among them, since what an element holds can draw boxes of its own. Anything else
+ *  leaves `end` as it is. */
+function toLineEnd(words: HTMLElement, end: Range): void {
+  const text = end.startContainer;
+  if (!(text instanceof Text) || NO_SPACE.test(text.data.slice(end.startOffset))) return;
+  const walker = words.ownerDocument.createTreeWalker(
+    words,
+    NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT
+  );
+  walker.currentNode = text;
+  for (let after = walker.nextNode(); after !== null; after = walker.nextNode()) {
+    if (after instanceof Text) {
+      if (NO_SPACE.test(after.data)) return;
+    } else if (after instanceof Element) {
+      if (after.localName === "br") {
+        end.setStartBefore(after);
+        return;
+      }
+      if (after.closest("[data-node-trail]") !== null) break;
+      for (const box of after.getClientRects()) if (box.width > 0) return;
+    }
+  }
+  end.setStart(words, words.childNodes.length);
 }
 
 /** The word at `offset` in `text` - the run of characters that are no space around it - with

@@ -201,11 +201,8 @@ const ATOMS: readonly (readonly [
 const NOTE = "Read the note";
 /** The press at the end of `NOTE`, before an atom after it. */
 const AT_NOTE_END: CaretAt = { x: 1, y: 2, offset: NOTE.length, word: ["the ", "note", "", 4] };
-/** `NOTE` and then inline HTML that ends the words, in a paragraph that runs `direction`. */
-function noteAndHtml(direction?: "ltr" | "rtl"): string {
-  const style = direction === undefined ? "" : ` style="direction: ${direction}"`;
-  return `<p${style}>${NOTE}${HTML_ATOM}</p>`;
-}
+/** `NOTE` and then inline HTML that ends the words. */
+const NOTE_AND_HTML = `<p>${NOTE}${HTML_ATOM}</p>`;
 
 /** A press at `at`, (1, 2) where none is given, that the browser answers in the last marked
  *  element `paragraph` draws, at `offset` into its last text: a place inside an atom, or inside a
@@ -268,12 +265,11 @@ test("a press inside an atom that ends the words goes before it", () => {
 // line: a point past its end, on that line, goes after the atom, as a press past the end of the
 // words does, or at the start of the text after it where text follows on the next line. A point on
 // that line's end, inside the line or on a line of the atom before its last stays inside the atom,
-// at its start. The end is the line's right edge where the atom runs left to right, and its left
-// edge where it runs right to left. A reference is text the editor holds, and a place inside one
-// is read by its last line too: a point past the end of that line goes after the reference's
-// words as the editor holds them. A place in the text after an atom reads no line of the atom.
-// happy-dom lays nothing out, so each case gives the atom's lines, placed from the press at
-// (1, 2).
+// at its start. The end is the line's right edge: the view draws every statement left to right. A
+// reference is text the editor holds, and a place inside one is read by its last line too: a point
+// past the end of that line goes after the reference's words as the editor holds them. A place in
+// the text after an atom reads no line of the atom. happy-dom lays nothing out, so each case gives
+// the atom's lines, placed from the press at (1, 2).
 test("a press the browser answers inside an atom, past the end of its last line, says the caret goes after it", () => {
   const after: CaretAt = { ...AT_NOTE_END, pastAtom: true };
   // A press the browser answers at the end of the text of the last atom `paragraph` draws, as
@@ -293,29 +289,25 @@ test("a press the browser answers inside an atom, past the end of its last line,
         );
         expect(at, `${past} px past ${atom}`).toEqual(after);
       }
-      expect(pressPast(noteAndHtml()), `${past} px past the end`).toEqual(after);
+      expect(pressPast(NOTE_AND_HTML), `${past} px past the end`).toEqual(after);
       expect(pressPast(KEPT), `${past} px past, before text`).toEqual({
         x: 1,
         y: 2,
         offset: "Kept by ".length,
         next: true,
       });
-      line = new DOMRect(1 + past, -8, 60, 20);
-      expect(pressPast(noteAndHtml("rtl")), `${past} px past, right to left`).toEqual(after);
     }
-    // On the end of the atom's last line, inside the line, on the atom's line before its last,
-    // and past the right edge of a line that runs right to left, whose end is its left edge.
+    // On the end of the atom's last line, inside the line, and on the atom's line before its last.
     const stays = [
-      [new DOMRect(-59, -8, 60, 20), "ltr", undefined],
-      [new DOMRect(-30, -8, 60, 20), "ltr", undefined],
-      [new DOMRect(-99, 20, 60, 20), "ltr", new DOMRect(-30, -8, 60, 20)],
-      [new DOMRect(-60, -8, 60, 20), "rtl", undefined],
+      [new DOMRect(-59, -8, 60, 20), undefined],
+      [new DOMRect(-30, -8, 60, 20), undefined],
+      [new DOMRect(-99, 20, 60, 20), new DOMRect(-30, -8, 60, 20)],
     ] as const;
-    for (const [box, direction, before] of stays) {
+    for (const [box, before] of stays) {
       line = box;
       earlier = before;
-      const at = pressPast(noteAndHtml(direction));
-      const name = `${direction} line ${box.left} to ${box.right}, ${box.top} to ${box.bottom}`;
+      const at = pressPast(NOTE_AND_HTML);
+      const name = `line ${box.left} to ${box.right}, ${box.top} to ${box.bottom}`;
       expect(at, name).toEqual(AT_NOTE_END);
       expect(at.next, name).toBeUndefined();
     }
