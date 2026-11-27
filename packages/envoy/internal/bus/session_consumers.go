@@ -335,12 +335,12 @@ func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.
 // store, so it travels on the connection the frame's message was pulled and is answered on.
 //
 // A frame whose headers and data together are past the server's max payload is refused before the
-// wait for a connection (Client.checkSend), as ErrTooLarge naming its size and the bound: a stored
-// message that fits the limit alone can still make such a frame once the relay adds its headers,
-// and every send of it is refused again. nats.go's own refusal, which a frame meets only when the
-// client had not read the bound of the server it reached, is named the same way (Client.refused).
-// A frame the connection dropped under after the wait is refused as ErrReconnecting
-// (Reconnecting).
+// wait for a connection (Client.checkSend), as ErrTooLarge naming its size and the bound
+// (*MessageTooLargeError): a stored message that fits the limit alone can still make such a frame
+// once the relay adds its headers, and every send of it is refused again. nats.go's own refusal,
+// which a frame meets only when the client had not read the bound of the server it reached, is
+// named the same way (Client.refused). A frame the connection dropped under after the wait is
+// refused as ErrReconnecting (Reconnecting).
 func (s *SessionConsumers) Publish(ctx context.Context, msg *nats.Msg) error {
 	if err := s.client.checkSend(msg); err != nil {
 		return err
@@ -401,8 +401,7 @@ type SessionConsumerStart struct {
 	// acked for days is recreated from AckFloor+1 and not from StartSeq (the listener restores a
 	// consumer a delete took, sessionDelivery.deleteConsumer). A restart that keeps the consumer
 	// it found (RestartAtFloor's keepAtFloor, KeepListed) answers the sequence after that floor as
-	// StartSeq, so there too AckFloor is StartSeq-1. Every start a relay runs from carries it
-	// (cmd/listener relayPassedSet.prune).
+	// StartSeq, so there too AckFloor is StartSeq-1.
 	AckFloor uint64
 }
 

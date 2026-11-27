@@ -194,8 +194,9 @@ func TestDeliverSubjectIsNotStored(t *testing.T) {
 
 // A relay frame is a stored message's bytes with the relay's headers, so a message that fits the
 // server's max payload alone can make a frame past it. Publish refuses it before sending, as
-// ErrTooLarge, an ErrRefused, in the words of every size refusal (sizeText): the frame's size,
-// headers included, and the limit. The connection stays up and still sends a frame at the limit.
+// ErrTooLarge, an ErrRefused, in the words of a refusal made on a message's own data and headers
+// (pastMaxPayload, sizeText): the frame's size, headers included, and the limit. The connection
+// stays up and still sends a frame at the limit.
 func TestPublishNamesAFramePastTheMaxPayloadTooLarge(t *testing.T) {
 	t.Parallel()
 	_, consumers := sessionConsumersOnStream(t)
@@ -1430,8 +1431,7 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 			t.Fatalf("the list holds no consumer for %s (%d listed)", id, len(listed))
 		}
 	}
-	// The start carries the floor it kept the consumer at, StartSeq-1, as every other start does,
-	// so the relay drops what it passed at or below that floor (cmd/listener relayPassedSet.prune).
+	// The start carries the floor it kept the consumer at, StartSeq-1, as every other start does.
 	start, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.LegacyAgentSubject(kept)}, listed[kept])
 	if want := (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers), AckFloor: written}); err != nil || !ok || start != want {
 		t.Fatalf("KeepListed of an acked consumer = %+v, %t, %v; want %+v kept, its AckFloor StartSeq-1", start, ok, err, want)

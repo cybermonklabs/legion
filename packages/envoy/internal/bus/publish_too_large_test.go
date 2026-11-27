@@ -144,50 +144,65 @@ func sizedPayload(t *testing.T, topic string, size int) string {
 	return strings.Repeat("p", size-fixed)
 }
 
-// sizeText is the text every size refusal of a message of size bytes, headers included, against
-// maxPayload carries.
+// sizeText is the text of a refusal made on a message's own data and headers (pastMaxPayload): a
+// message of size bytes, headers included, against maxPayload. The refusal of a relay frame
+// carries frameText instead.
 func sizeText(size, maxPayload int) string {
 	return fmt.Sprintf("a message of %d bytes, its headers included, against the server's max payload of %d bytes", size, maxPayload)
 }
 
+// frameText is the text the refusal of a message of size bytes stored on subject carries, whose
+// relay frame, with the relay's headers, is past maxPayload.
+func frameText(size int, subject string, maxPayload int) string {
+	return fmt.Sprintf("a message of %d bytes, which reaches a session in a relay frame of %d bytes with the relay's headers, against the server's max payload of %d bytes",
+		size, size+RelayFrameHeaderBytes(subject), maxPayload)
+}
+
 // TooLargeToPublish measures a message as its publish on its own topic sends it - the envelope as
-// encoded and the Nats-Msg-Id header it is stored under - and refuses it past the server's max
-// payload in the words of the publish's own refusal, sending nothing. The bound is exact: a
-// message of the max payload to the byte, its header included, is not refused, and the publish
-// stores it, so the count is no stricter than the server's; one byte more is refused, and so is
-// its publish, in the same words. The encoding is what counts, not the payload's length: a payload
-// of '<', which the encoding writes as six bytes each (\u003c), is refused though the payload
-// alone is a quarter of the bound. A client that knows no max payload is
-// TestAClientThatHasNotConnectedRefusesNoMessageForItsSize's.
+// encoded, the Nats-Msg-Id header it is stored under, and, for a topic the stream stores, the
+// relay's own headers, which carry it to a session (RelayFrameHeaderBytes) - and refuses it past
+// the server's max payload in the words of the publish's own refusal, sending nothing. The relay's
+// headers are the larger reserve of the two, so they are what the bound on such a topic is. The
+// bound is exact: a message that leaves them exactly their room is not refused, and the publish
+// stores it, so the count is no stricter than it must be; one byte more is refused, and so is its
+// publish, in the same words, which name the message's size and the size of its frame. The
+// encoding is what counts, not the payload's length: a payload of '<', which the encoding writes
+// as six bytes each (\u003c), is refused though the payload alone is a quarter of the bound. A
+// client that knows no max payload is TestAClientThatHasNotConnectedRefusesNoMessageForItsSize's.
 func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.T) {
 	t.Parallel()
 	rig := newSizeRig(t)
 	const topic = "notifications.team.too-large"
-	header := messageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(sizeEnvelope(topic, "")))})
+	header := MessageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(sizeEnvelope(topic, "")))})
 	if header == 0 {
 		t.Fatal("UNKNOWN: the envelope earns no message id, so its publish carries no header to count")
 	}
-	atBound := sizeEnvelope(topic, sizedPayload(t, topic, rig.maxPayload-header))
-	pastBound := sizeEnvelope(topic, sizedPayload(t, topic, rig.maxPayload-header+1))
+	reserved := RelayFrameHeaderBytes(topic)
+	if reserved <= header {
+		t.Fatalf("UNKNOWN: the relay's headers take %d bytes and the message id header %d: the rows below stand on the relay's being the larger reserve", reserved, header)
+	}
+	atBound := sizeEnvelope(topic, sizedPayload(t, topic, rig.maxPayload-reserved))
+	pastBound := sizeEnvelope(topic, sizedPayload(t, topic, rig.maxPayload-reserved+1))
 	escaped := sizeEnvelope(topic, strings.Repeat("<", rig.maxPayload/4))
 
 	sentBefore := rig.client.Conn.Stats().OutMsgs
 	if err := rig.client.TooLargeToPublish(atBound); err != nil {
-		t.Fatalf("a message of exactly the max payload, %d bytes with its header, was refused: %v", rig.maxPayload, err)
+		t.Fatalf("a message leaving the relay's %d header bytes exactly their room under the max payload of %d was refused: %v", reserved, rig.maxPayload, err)
 	}
 	for _, refused := range []struct {
 		name string
 		item contracts.Envelope
+		says string
 	}{
-		{"a message one byte past the max payload with its header", pastBound},
-		{"a payload a quarter of the bound that encodes past it", escaped},
+		{"a message one byte past the room the relay's headers need", pastBound, frameText(encodedSize(t, pastBound), topic, rig.maxPayload)},
+		{"a payload a quarter of the bound that encodes past it", escaped, sizeText(encodedSize(t, escaped)+header, rig.maxPayload)},
 	} {
 		err := rig.client.TooLargeToPublish(refused.item)
 		if !errors.Is(err, ErrTooLarge) || !errors.Is(err, ErrRefused) {
 			t.Fatalf("%s: %v, want an ErrRefused naming ErrTooLarge", refused.name, err)
 		}
-		if says := sizeText(encodedSize(t, refused.item)+header, rig.maxPayload); !strings.Contains(err.Error(), says) {
-			t.Fatalf("%s: %q, want it to say %q", refused.name, err, says)
+		if !strings.Contains(err.Error(), refused.says) {
+			t.Fatalf("%s: %q, want it to say %q", refused.name, err, refused.says)
 		}
 	}
 	if sent := rig.client.Conn.Stats().OutMsgs - sentBefore; sent != 0 {
@@ -195,12 +210,38 @@ func TestTooLargeToPublishRefusesWhatThePublishWouldWithoutSendingIt(t *testing.
 	}
 
 	if err := rig.client.Publish(atBound); err != nil {
-		t.Fatalf("the publish of a message of exactly the max payload with its header: %v, want it stored", err)
+		t.Fatalf("the publish of a message leaving the relay's headers exactly their room: %v, want it stored", err)
 	}
 	checked := rig.client.TooLargeToPublish(pastBound)
 	if published := rig.client.Publish(pastBound); published == nil || published.Error() != checked.Error() {
 		t.Fatalf("the publish of a message one byte past the bound answered %v, want the check's own refusal %q", published, checked)
 	}
+
+	// The message id header is the larger reserve once the dedupe key outgrows the relay's fixed
+	// header bytes, which a Dispatch envelope's key may: then the header is the bound, exact to the
+	// byte. No route answer can show this branch apart from the publish's own count of the same
+	// header (checkSend), which refuses the same message before anything is sent, so it is held
+	// here, at the check itself.
+	t.Run("a message id that outgrows the relay's headers", func(t *testing.T) {
+		long := func(payload string) contracts.Envelope {
+			item := sizeEnvelope(topic, payload)
+			item.DedupeKey = "dispatch-size-" + strings.Repeat("k", 300)
+			return item
+		}
+		header := MessageBytes(&nats.Msg{Header: msgIDHeader(storedMsgID(long("")))})
+		if header <= reserved {
+			t.Fatalf("UNKNOWN: the message id header takes %d bytes and the relay's headers %d: the row wants the message id the larger reserve", header, reserved)
+		}
+		fixed := encodedSize(t, long("p")) - 1
+		atBound, pastBound := long(strings.Repeat("p", rig.maxPayload-header-fixed)), long(strings.Repeat("p", rig.maxPayload-header-fixed+1))
+		if err := rig.client.TooLargeToPublish(atBound); err != nil {
+			t.Fatalf("a message of exactly the max payload with its %d-byte message id header was refused: %v", header, err)
+		}
+		err := rig.client.TooLargeToPublish(pastBound)
+		if says := sizeText(encodedSize(t, pastBound)+header, rig.maxPayload); !errors.Is(err, ErrTooLarge) || !strings.Contains(err.Error(), says) {
+			t.Fatalf("a message one byte past the max payload with its message id header: %v, want ErrTooLarge saying %q", err, says)
+		}
+	})
 }
 
 // Every send a caller's payload reaches refuses a message past the server's max payload, its
@@ -285,7 +326,7 @@ func TestEverySendRefusesAMessagePastTheMaxPayloadBeforeItWaitsOrReadsItsContext
 			return consumers.Publish(ended, &nats.Msg{Subject: DeliverSubject("ses_spent_time"), Header: frame, Data: []byte(data)})
 		}, sent, nil},
 	} {
-		header := messageBytes(&nats.Msg{Header: path.header})
+		header := MessageBytes(&nats.Msg{Header: path.header})
 		// body is what the send is handed for a message whose data takes size bytes: an envelope's
 		// payload, or the raw data itself.
 		body := func(size int) string {
@@ -359,7 +400,7 @@ func TestARefusalNatsGoMakesIsTheSameErrTooLargeHeadersIncluded(t *testing.T) {
 	const topic = contracts.RoleTopicPrefix + "unread"
 	holder := contracts.LegacyAgentSubject("ses_size_unread")
 	msgID := ForwardMsgID("dispatch-size", holder)
-	header := messageBytes(&nats.Msg{Header: msgIDHeader(msgID)})
+	header := MessageBytes(&nats.Msg{Header: msgIDHeader(msgID)})
 	item := sizeEnvelope(topic, sizedPayload(t, topic, rig.maxPayload+1-header))
 	says := sizeText(rig.maxPayload+1, rig.maxPayload)
 

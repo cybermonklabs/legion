@@ -86,7 +86,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 			StoredAt:     time.Now(),
 			SessionAcker: acker,
 		}
-		if err := relays.publishFrame(ctx, runs[i], msg, "stream", false, "", ""); err != nil {
+		if err := relays.publishFrame(ctx, runs[i], msg, "stream", false, relayGapRetention, ""); err != nil {
 			t.Fatalf("publish frame %d: %v", seq, err)
 		}
 		frame, err := sent.NextMsg(5 * time.Second)

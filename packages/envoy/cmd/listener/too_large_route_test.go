@@ -104,16 +104,20 @@ func (w *subjectWatch) through(t *testing.T, conn *natsgo.Conn) []string {
 	return before
 }
 
-// storedSize is what the route's stored publish of item holds against the server's max payload:
-// its encoding and the Nats-Msg-Id header it is stored under, the dedupe key and the topic
-// (bus.ForwardMsgID), which a minted key earns.
+// storedSize is what the route's check (bus.Client.TooLargeToPublish) holds a stored publish of
+// item to against the server's max payload: its encoding and the larger of two reserves beside it,
+// the Nats-Msg-Id header it is stored under, the dedupe key and the topic (bus.ForwardMsgID), which
+// a minted key earns, and the room the relay's frame headers take (bus.RelayFrameHeaderBytes),
+// since the stored message reaches a session in consumer mode as its bytes under those headers.
+// For a key of the usual length the relay's headers are the larger.
 func storedSize(t *testing.T, item contracts.Envelope) int {
 	t.Helper()
 	encoded, err := json.Marshal(item)
 	if err != nil {
 		t.Fatalf("encode the envelope: %v", err)
 	}
-	return len(encoded) + (&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(item.DedupeKey, item.Topic)}}}).Size()
+	msgID := bus.MessageBytes(&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(item.DedupeKey, item.Topic)}}})
+	return len(encoded) + max(msgID, bus.RelayFrameHeaderBytes(item.Topic))
 }
 
 // bandText is a text of 'm's whose message, as size measures it, takes exactly want bytes. Past the
@@ -156,7 +160,10 @@ func bandText(t *testing.T, size func(text string) int, want int) string {
 // takes it past, sent by that limited sender under each deadline. Only the route's early check,
 // counting the header, answers it 413: a check that left the header out would let it through to
 // the sender limit, whose 429 comes before the publish could refuse it, so the row tells the
-// early refusal from the publish's own by its status.
+// early refusal from the publish's own by its status. Its dedupe key is a minted one whose session
+// part is long enough that the header is the larger of the two reserves the route's check counts
+// (storedSize): under a key of the usual length the relay's frame headers are the larger, and the
+// frame's room, not the header, would refuse the message, with or without the header counted.
 //
 // The band the route's check leaves is a message within the bound until the route adds its sender
 // stamp (senderStamp). A publish of one is 413 whatever is left of its deadline, refused by the
@@ -164,9 +171,9 @@ func bandText(t *testing.T, size func(text string) int, want int) string {
 // live deadline, is 413 only after the route's own work for it: the watch must see the session read
 // and the wake report, which show the message passed the route's check, and nothing on the
 // target's subjects, which shows the publish sent nothing. Each band message is sized, under the
-// idempotency key its request sends, to be within the bound without the stamp and one byte past it
-// with, so a message outside the band fails the row: a smaller one is published, a larger one is
-// refused before the route's reads.
+// idempotency key its request sends, to be within the bound the route's check holds it to
+// (storedSize) without the stamp and one byte past it with, so a message outside the band fails the
+// row: a smaller one is published, a larger one is refused before the route's reads.
 func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing.T) {
 	t.Parallel()
 	rig := newQuietKnownSessionRig(t)
@@ -246,15 +253,21 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}}
 	oversized := strings.Repeat("m", 2<<20)
 	// The header band: an envelope within the bound by itself and one byte past it with the
-	// Nats-Msg-Id header its publish carries, from the limited sender under the key the request
-	// sends.
-	headerKey := id.New()
+	// Nats-Msg-Id header its publish carries, from the limited sender under the dedupe key the
+	// request sends. The key is minted (contracts.MintedDedupeKeyPattern), so its publish earns the
+	// header, and its session part is long enough that the header is the larger reserve, so the
+	// envelope with the relay's frame headers alone is within the max payload.
+	headerKey := contracts.AgentSendDedupeKey(strings.Repeat("s", 256), id.New())
 	headerEnvelope := func(text string) contracts.Envelope {
-		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", SourceSession: limited, Message: text}, contracts.ExpectsReplyUnset), topic, publishDedupePrefix+headerKey)
+		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", SourceSession: limited, Message: text}, contracts.ExpectsReplyUnset), topic, headerKey)
+	}
+	msgIDReserve := bus.MessageBytes(&natsgo.Msg{Header: natsgo.Header{natsgo.MsgIdHdr: []string{bus.ForwardMsgID(headerKey, topic)}}})
+	if frameReserve := bus.RelayFrameHeaderBytes(topic); msgIDReserve <= frameReserve {
+		t.Fatalf("UNKNOWN: the header band's Nats-Msg-Id header takes %d bytes, not more than the relay's %d, so the frame's room and not the header would refuse it", msgIDReserve, frameReserve)
 	}
 	band := bandText(t, func(text string) int { return storedSize(t, headerEnvelope(text)) }, maxPayload+1)
-	if encoded, err := json.Marshal(headerEnvelope(band)); err != nil || len(encoded) > maxPayload {
-		t.Fatalf("UNKNOWN: the header band's envelope takes %d bytes by itself (%v), want it within the max payload of %d", len(encoded), err, maxPayload)
+	if encoded, err := json.Marshal(headerEnvelope(band)); err != nil || len(encoded)+msgIDReserve != maxPayload+1 {
+		t.Fatalf("UNKNOWN: the header band's envelope takes %d bytes by itself (%v), want %d, which its %d-byte header takes one byte past the max payload of %d", len(encoded), err, maxPayload+1-msgIDReserve, msgIDReserve, maxPayload)
 	}
 	for _, deadline := range deadlines {
 		for _, row := range []struct {
@@ -279,7 +292,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	refused("a publish from a sender at its limit", request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": oversized, "source_session": limited}))
 	for _, deadline := range deadlines {
 		refused("a publish within the bound but for its header, from a sender at its limit, "+deadline.name, request(deadline.ctx, "/v1/messages/publish", map[string]string{
-			"topic": topic, "message": band, "source_session": limited, "idempotency_key": headerKey,
+			"topic": topic, "message": band, "source_session": limited, "dedupe_key": headerKey,
 		}))
 	}
 	if after := request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": "within the bound", "source_session": limited}); after.Code != http.StatusTooManyRequests {
@@ -291,8 +304,8 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	if stamp == nil {
 		t.Fatalf("UNKNOWN: %s has no sender stamp, so the stamp band is empty", live)
 	}
-	// stampBand is a text whose envelope, as build makes it under key, is within the bound without
-	// the stamp and one byte past it with.
+	// stampBand is a text whose envelope, as build makes it under key, is within what the route
+	// accepts on its topic without the stamp and one byte past it with (storedSize).
 	stampBand := func(name string, build func(text string) contracts.Envelope) string {
 		t.Helper()
 		stamped := func(text string) contracts.Envelope {
@@ -302,7 +315,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 		}
 		text := bandText(t, func(text string) int { return storedSize(t, stamped(text)) }, maxPayload+1)
 		if bare := storedSize(t, build(text)); bare > maxPayload {
-			t.Fatalf("UNKNOWN: %s takes %d bytes without the stamp, want it within the max payload of %d", name, bare, maxPayload)
+			t.Fatalf("UNKNOWN: %s takes %d bytes without the stamp, its reserve counted, want it within the max payload of %d", name, bare, maxPayload)
 		}
 		return text
 	}

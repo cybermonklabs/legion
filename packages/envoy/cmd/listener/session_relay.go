@@ -46,13 +46,34 @@ const (
 	// repository answer for the session's projects, and names that gap in relayHeaderGapReason.
 	relayHeaderGap = "Envoy-Gap"
 	// relayHeaderGapReason names a gap that is not the stream's own loss, beside relayHeaderGap:
-	// relayGapRepositoryWithheld for the edge's withheld GitHub events (sessionRelays.edgeWithholds).
-	// A gap mark with no reason is the stream's retention gap.
+	// relayGapReasonNames[relayGapRepositoryWithheld] for the edge's withheld GitHub events
+	// (sessionRelays.edgeWithholds). A gap mark with no reason is the stream's retention gap.
 	relayHeaderGapReason = "Envoy-Gap-Reason"
-	// relayGapRepositoryWithheld is relayHeaderGapReason's value for a gap of GitHub events the
-	// edge withheld because no fresh repository answer could say they were the session's.
-	relayGapRepositoryWithheld = "repository_withheld"
 )
+
+// relayGapReason is the reason a frame's gap mark (relayHeaderGap) names: the stream's retention
+// gap, which writes no reason, or a reason relayHeaderGapReason carries by its name in
+// relayGapReasonNames. The relay names a gap by no other value: relayNATS's gapReason,
+// publishFrame and relayFrameHeader all take this type, and relayFrameHeader writes the name of
+// the reason it is given, so every reason the relay can write is one below relayGapReasonCount.
+// TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader ranges over all of them, so a reason added
+// here whose name is longer fails that row until the room the listener's checks reserve for a
+// frame's headers (bus.RelayFrameHeaderBytes) counts it.
+type relayGapReason uint8
+
+const (
+	// relayGapRetention is the stream's retention gap: messages the session had not taken are gone.
+	relayGapRetention relayGapReason = iota
+	// relayGapRepositoryWithheld is a gap of GitHub events the edge withheld because no fresh
+	// repository answer could say they were the session's.
+	relayGapRepositoryWithheld
+	// relayGapReasonCount is how many reasons there are: every one is below it.
+	relayGapReasonCount
+)
+
+// relayGapReasonNames is what relayHeaderGapReason carries for each reason, "" for the retention
+// gap, which writes none.
+var relayGapReasonNames = [relayGapReasonCount]string{relayGapRepositoryWithheld: "repository_withheld"}
 
 // The replies a session sends on a frame's reply subject, each exactly one ASCII word.
 const (
@@ -323,74 +344,6 @@ type sessionRelays struct {
 	frames          map[string]*relayFrame
 	refusedLoggedAt time.Time
 	refusedHeld     int
-
-	// passed is the stored messages each relay acknowledged without a frame because the frame was
-	// too large to relay (passTooLarge), which each get one WARN (relayPassedSet).
-	passed relayPassedSet
-}
-
-// relayPassedSet is the stored messages the relays acknowledged without a frame, because the frame
-// was too large to relay (sessionRelays.passTooLarge), by session, then by stream and sequence.
-// The WARN for such a message is written once per listener process, also when a restart at the
-// ack floor hands it back: the relay acknowledges it out of order, so while an earlier frame is
-// unanswered it is above the floor, and a restart there delivers it again. The session is the
-// first key because one stored message on a followed topic reaches the consumer of each session
-// that follows it, and each such session gets its own WARN.
-//
-// Each start of a session's relay drops the entries its consumer can no longer hand back
-// (prune): those at or below the ack floor the start read, and those of another stream. So the
-// set holds, for each session, only the messages above the floor its relay last started from,
-// and the ones passed since. A session whose relay never starts here again keeps its few
-// entries. Such messages are rare: only a stored message within the frame's few hundred header
-// bytes of the server's max payload is one.
-type relayPassedSet struct {
-	mu        sync.Mutex
-	bySession map[string]map[relayPassed]struct{}
-}
-
-// relayPassed names, within one session's entries of relayPassedSet, a stored message a relay
-// acknowledged without a frame: the stream's identity and the message's stream sequence.
-type relayPassed struct {
-	streamID string
-	seq      uint64
-}
-
-// first records that sessionID's relay passed the message at seq on the stream streamID, and
-// reports whether it was not recorded yet, which is when the caller writes the WARN.
-func (s *relayPassedSet) first(sessionID, streamID string, seq uint64) bool {
-	key := relayPassed{streamID: streamID, seq: seq}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	passed, ok := s.bySession[sessionID]
-	if !ok {
-		if s.bySession == nil {
-			s.bySession = map[string]map[relayPassed]struct{}{}
-		}
-		passed = map[relayPassed]struct{}{}
-		s.bySession[sessionID] = passed
-	}
-	if _, logged := passed[key]; logged {
-		return false
-	}
-	passed[key] = struct{}{}
-	return true
-}
-
-// prune drops sessionID's entries that its consumer, started at start, can no longer hand back:
-// those of another stream than start.StreamID, and those at or below start.AckFloor, which the
-// consumer has every message acknowledged through.
-func (s *relayPassedSet) prune(sessionID string, start bus.SessionConsumerStart) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	passed := s.bySession[sessionID]
-	for key := range passed {
-		if key.streamID != start.StreamID || key.seq <= start.AckFloor {
-			delete(passed, key)
-		}
-	}
-	if len(passed) == 0 {
-		delete(s.bySession, sessionID)
-	}
 }
 
 // relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
@@ -665,8 +618,7 @@ type relayFrame struct {
 	// count is the message's and not the reply's, so the frame carries it from publishFrame to
 	// the nak onReply sends (relayNakDelayFor).
 	delivered uint64
-	// answered is set once the session sent any reply for the frame, or once NATS refused the
-	// frame as too large to relay (publishFrame), under framesMu.
+	// answered is set once the session sent any reply for the frame, under framesMu.
 	answered bool
 	// gapMark is the repository gap mark the frame carried (the owed mark publishFrame was given),
 	// "" for a frame that carried none and for a stream retention gap. The relay clears the mark
@@ -1222,11 +1174,11 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // registration.
 //
 // A frame NATS refuses as past the server's max payload (bus.ErrTooLarge) is refused again at
-// every send: the frame adds its headers to a stored message that fits the limit alone. The
-// relay acknowledges that message, logs one WARN and goes on to the next message, which carries
-// the Envoy-Gap header, and the Envoy-Gap-Reason header, the refused frame carried, if any
-// (passTooLarge). A restart at the ack floor would only meet the same refusal and hold back every
-// later message of the session. Any other failed publish restarts at the ack floor.
+// every send: the frame adds its headers to a stored message that fits the limit alone. The relay
+// sends the session a notice in the frame's place, under the frame's headers and reply subject,
+// and goes on to the next message, and the session's answer to the notice settles the message
+// (publishFrame). A notice that cannot be built or published fails the frame, and that failure
+// restarts at the ack floor, as any other failed publish does.
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
 	// An edge listener relays a session only on the projects of the token it admitted the
@@ -1311,8 +1263,8 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
 		return relayRetry
 	}
-	// gapReason names the gap the next frame marks, "" for the stream's retention gap
-	// (relayHeaderGapReason). owed is the mark the next frame carries for GitHub events withheld
+	// gapReason names the gap the next frame marks, relayGapRetention for the stream's retention
+	// gap (relayHeaderGapReason). owed is the mark the next frame carries for GitHub events withheld
 	// with no frame sent after them, which the frame clears once it is published
 	// (repositoryGapSent), "" for none: the events are acknowledged, so the stream's start says
 	// nothing of them. It is the mark this run noted for an event it withheld, and before each
@@ -1322,10 +1274,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// while it moves, which rides the first frame after the copy shows it. carried is the last
 	// mark a frame of this run carried, which the run does not take from the copy again: the copy
 	// can trail the clear, and the session would be sent the same gap notice twice.
-	streamID, gap, gapReason, owed, carried := start.StreamID, start.Gap, "", "", ""
-	// The start read the consumer's ack floor, so the passed messages the consumer cannot hand
-	// back any more leave the set here (relayPassedSet.prune).
-	m.passed.prune(sessionID, start)
+	streamID, gap, gapReason, owed, carried := start.StreamID, start.Gap, relayGapRetention, "", ""
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
@@ -1398,16 +1347,6 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		}
 		m.endGiveBacks(sessionID, verdict)
 		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason, owed); err != nil {
-			// A frame too large to relay is passed even when the run is ending, so its message is
-			// acknowledged and not left unsettled.
-			if errors.Is(err, bus.ErrTooLarge) {
-				if !m.passTooLarge(run, msg, streamID, err) {
-					return relayRetry
-				}
-				// No frame went out, so the gap, if any, goes on the next one, with its reason
-				// and the repository gap mark it owes.
-				continue
-			}
 			if ctx.Err() != nil {
 				return relayEnded
 			}
@@ -1421,7 +1360,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.repositoryGapSent(ctx, sessionID, owed)
 			carried = owed
 		}
-		gap, gapReason, owed = false, "", ""
+		gap, gapReason, owed = false, relayGapRetention, ""
 	}
 }
 
@@ -1616,11 +1555,27 @@ func (m *sessionRelays) endGiveBacks(sessionID string, verdict frameVerdict) {
 // frame takes its mark (relayFrame.sentMark) before it is published, so a registration heard after
 // the publish always holds a higher one.
 //
-// A frame NATS refuses as past the server's max payload (bus.ErrTooLarge) never went out, so no
-// reply can name it: it is dropped from the frames the relay awaits and marked answered, so the
-// receipt wait passes over it (receiptDeadline), and the error is returned for the caller to
-// acknowledge the message (passTooLarge).
-func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason, owed string) error {
+// A frame the bus refuses for its size - the stored message and the relay's headers past the
+// server's max payload, which SessionConsumers.Publish answers as a *bus.MessageTooLargeError,
+// from its own check or from nats.go's refusal (Client.refused) - goes out as a notice in its
+// place (publishTooLargeNotice), under the same headers and the same reply subject, so the
+// session's answer to the notice settles the message as its answer to the frame would have: done
+// acknowledges it, and nak has the server deliver it again, and so the notice again. Such a
+// message never reaches the session whole, however often it is sent, and before the notice its
+// failed publish restarted the relay at the ack floor, where it came first again, so no later
+// message of the session was ever sent. A message the listener's own checks accept is held to the
+// frame's room when it is stored (bus.RelayFrameHeaderBytes); the writes that keep the stream's
+// bound alone, which RelayFrameHeaderBytes names, can still store one that meets this, and so can
+// an older build, or a max payload the server has since lowered.
+//
+// The acknowledgement waits for the notice rather than preceding it. The frame stays awaited under
+// its token while the notice goes out, and the notice carries the frame's reply subject, so the
+// session's answer to the notice is the answer onReply settles the message by. An acknowledgement
+// before the notice would leave, if the notice's publish failed, a message acknowledged and no
+// notice: the session never told of a message it never receives, which is the fault the notice
+// exists to end. And a frame whose token were dropped at the refusal would leave the session's
+// answer to the notice nothing to settle.
+func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason relayGapReason, owed string) error {
 	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
 	token := reply[strings.LastIndexByte(reply, '.')+1:]
 	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), sentMark: m.delivery.mark(), delivered: msg.Delivered, gapMark: owed}
@@ -1632,68 +1587,39 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	run.unanswered = append(run.unanswered, frame)
 	m.frames[token] = frame
 	m.framesMu.Unlock()
-	header := nats.Header{}
-	header.Set(relayHeaderSubject, msg.Subject)
-	header.Set(relayHeaderStreamSeq, strconv.FormatUint(msg.StreamSeq, 10))
-	header.Set(relayHeaderStreamID, streamID)
-	header.Set(relayHeaderDelivered, strconv.FormatUint(msg.Delivered, 10))
-	header.Set(relayHeaderStoredAt, msg.StoredAt.UTC().Format(time.RFC3339Nano))
-	if gap {
-		header.Set(relayHeaderGap, "true")
-		if gapReason != "" {
-			header.Set(relayHeaderGapReason, gapReason)
-		}
-	}
-	err := m.delivery.consumers.Publish(ctx, &nats.Msg{
+	out := &nats.Msg{
 		Subject: bus.DeliverSubject(run.sessionID),
 		Reply:   reply,
-		Header:  header,
+		Header:  relayFrameHeader(msg.Subject, msg.StreamSeq, streamID, msg.Delivered, msg.StoredAt, gap, gapReason),
 		Data:    msg.Data,
-	})
-	if errors.Is(err, bus.ErrTooLarge) {
-		m.framesMu.Lock()
-		frame.answered = true
-		delete(m.frames, token)
-		delete(run.outstanding, token)
-		m.framesMu.Unlock()
 	}
-	return err
+	err := m.delivery.consumers.Publish(ctx, out)
+	var tooLarge *bus.MessageTooLargeError
+	if !errors.As(err, &tooLarge) {
+		return err
+	}
+	return m.publishTooLargeNotice(ctx, run.sessionID, out, msg, streamID, tooLarge)
 }
 
-// passTooLarge acknowledges msg, whose frame NATS refused as past the server's max payload
-// (refusal, bus.ErrTooLarge), so the relay goes on to the session's next message. It writes one
-// WARN for the message and the session in this listener process (sessionRelays.passed). The
-// session does not receive the message, and nothing tells it: no delivery_failed notice is
-// published. The WARN names the event by the stored message's event_id field alone, and by an
-// empty event_id when that field does not decode.
-//
-// It reports false when the acknowledgement could not be sent, which it logs: the caller then
-// restarts at the ack floor, which hands the message back, and the next pass writes the WARN.
-func (m *sessionRelays) passTooLarge(run *relayRun, msg bus.SessionMessage, streamID string, refusal error) bool {
-	if err := msg.Ack(); err != nil {
-		m.logger.Warn("session relay could not acknowledge a message too large to relay; restarting at the ack floor",
-			slog.String("session_id", run.sessionID),
-			slog.Uint64("stream_seq", msg.StreamSeq),
-			slog.String("error", err.Error()))
-		return false
+// relayFrameHeader is the header of the frame of a message stored on subject at stream sequence
+// seq of the stream streamID, delivered for the delivered-th time and stored at storedAt, gap
+// marking it the first after a gap that gapReason names when it is not the stream's retention
+// gap. Its largest is bus.RelayFrameHeaderBytes(subject), the room the listener's publish of an
+// envelope on its own topic leaves for it (TestTheRelayFrameHeaderBoundIsTheRelaysLargestHeader).
+func relayFrameHeader(subject string, seq uint64, streamID string, delivered uint64, storedAt time.Time, gap bool, gapReason relayGapReason) nats.Header {
+	header := nats.Header{}
+	header.Set(relayHeaderSubject, subject)
+	header.Set(relayHeaderStreamSeq, strconv.FormatUint(seq, 10))
+	header.Set(relayHeaderStreamID, streamID)
+	header.Set(relayHeaderDelivered, strconv.FormatUint(delivered, 10))
+	header.Set(relayHeaderStoredAt, storedAt.UTC().Format(time.RFC3339Nano))
+	if gap {
+		header.Set(relayHeaderGap, "true")
+		if name := relayGapReasonNames[gapReason]; name != "" {
+			header.Set(relayHeaderGapReason, name)
+		}
 	}
-	if !m.passed.first(run.sessionID, streamID, msg.StreamSeq) {
-		return true
-	}
-	var stored struct {
-		EventID string `json:"event_id"`
-	}
-	if json.Unmarshal(msg.Data, &stored) != nil {
-		stored.EventID = ""
-	}
-	m.logger.Warn("session relay acknowledged a message too large to relay; the session does not receive it",
-		slog.String("session_id", run.sessionID),
-		slog.String("event_id", stored.EventID),
-		slog.String("subject", msg.Subject),
-		slog.Uint64("stream_seq", msg.StreamSeq),
-		slog.Int("size", len(msg.Data)),
-		slog.String("error", refusal.Error()))
-	return true
+	return header
 }
 
 // receiptDeadline is when the oldest frame of run the session has not answered reaches the

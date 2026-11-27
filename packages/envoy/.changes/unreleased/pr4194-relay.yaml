@@ -1,11 +1,9 @@
 kind: Fixed
 body: |-
-  A stored message whose relay frame NATS refuses as larger than its max payload no longer
-  blocks the session's later messages: the listener acknowledges it, logs one warning naming the
-  event and the session, and goes on to the next message. A registration made after the relay
-  paused on a frame the session left unanswered, a heartbeat while the relay's probe waits for its
-  receipt included, now ends the pause at once, so the session has its messages within a receipt
-  wait of registering rather than after a pause backoff of up to 30 seconds.
+  A registration made after the relay paused on a frame the session left unanswered, a heartbeat
+  while the relay's probe waits for its receipt included, now ends the pause at once, so the session
+  has its messages within a receipt wait of registering rather than after a pause backoff of up to
+  30 seconds.
 time: 2026-11-16T18:39:49Z
 custom:
     Issue: pr4194

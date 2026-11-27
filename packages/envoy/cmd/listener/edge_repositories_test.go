@@ -196,9 +196,9 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	frames := standIn.collect(t, 1, 10*time.Second)
 	requireFrames(t, frames, next)
-	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapRepositoryWithheld {
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapReasonNames[relayGapRepositoryWithheld] {
 		t.Fatalf("the first frame after the withheld GitHub event and the relay's restart carries %s %q and %s %q, want true and %s",
-			relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapRepositoryWithheld)
+			relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapReasonNames[relayGapRepositoryWithheld])
 	}
 }
 
@@ -249,9 +249,9 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	frames := standIn.collect(t, 1, 10*time.Second)
 	requireFrames(t, frames, next)
-	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapRepositoryWithheld {
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapReasonNames[relayGapRepositoryWithheld] {
 		t.Fatalf("the first frame after the withheld GitHub event and the move carries %s %q and %s %q, want true and %s",
-			relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapRepositoryWithheld)
+			relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapReasonNames[relayGapRepositoryWithheld])
 	}
 	testwait.Eventually(t, "the sent mark to be cleared from the session's entry", func() bool {
 		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == ""
@@ -446,9 +446,9 @@ func TestAMarkAnotherRelayWritesDuringARunReachesTheRunsNextFrame(t *testing.T) 
 	next, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-2.comment.created")
 	frames := standIn.collect(t, 1, 10*time.Second)
 	requireFrames(t, frames, next)
-	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapRepositoryWithheld {
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapReasonNames[relayGapRepositoryWithheld] {
 		t.Fatalf("the live run's frame after the other relay's mark %q carries %s %q and %s %q, want true and %s; the entry holds %q for a later run",
-			mark, relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapRepositoryWithheld, storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap)
+			mark, relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapReasonNames[relayGapRepositoryWithheld], storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap)
 	}
 	testwait.Eventually(t, "the mark the frame carried to be cleared from the session's entry", func() bool {
 		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == ""
