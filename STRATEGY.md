@@ -80,3 +80,5 @@ These need the owner's decision before an agent builds them:
 - Deployment- or company-specific logic in Legion itself.
 
 *Resist a change when:* it makes the daemon control agents, or guards against an agent doing its job.
+
+The ci-ok control C of INFRA-5794 adds this line: its pull request is closed unmerged.
