@@ -71,6 +71,7 @@ import { type Press, trackPress } from "../press-focus";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useAddressActed, useAddressLanding } from "../spec-filter/address-landing";
+import { GATES } from "../text-comments/gates";
 import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
@@ -484,6 +485,9 @@ export function VerificationFilterBody({
     onEditing,
     onOwnEdit: () => {},
     onReport: reportHere,
+    // The margin part's read-only caret in this view's rows waits on part Y's gate: until it is
+    // on, Enter on a comment, an ask or a result here says the row has no text.
+    readOnlyCaret: GATES.PART_Y,
   });
   /** The document the row with this id is being edited in, while it is the row edited. */
   const editingFor = (id: string): string | undefined =>

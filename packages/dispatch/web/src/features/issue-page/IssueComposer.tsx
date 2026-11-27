@@ -22,6 +22,7 @@ import {
 import { MentionField } from "../conversation/MentionField";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
+import { EMPTY_AGENTS } from "../refs/agent-registry";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
@@ -352,6 +353,11 @@ function WriteLine({
     [statement]
   );
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
+  // The line stands open from the load, so it is handed no agents, and reads no list of them for
+  // its mention picker, until the reader uses it (the focus in it), as a margin card's reply
+  // composer does (`text-comments/TextThreadCard.tsx`): a page sends no read for the line that
+  // its reader has not used.
+  const [used, setUsed] = useState(false);
   // What the line is aimed at (`LineAim`); none for a write on the issue itself.
   const aim: LineAim | undefined =
     reply !== null
@@ -430,28 +436,31 @@ function WriteLine({
     uploading: ANSWER_LINES.uploading,
   };
   return (
-    <MentionComposer
-      box="issue-page-composer"
-      closed={isClosed}
-      kind={writesKinds ? writer.kind : "comment"}
-      listed={targets?.entries}
-      mutationKey={writer.sendKey}
-      onClose={place.giveBack}
-      onKindChange={(next) => {
-        if (next === "ask" || next === "comment") writer.setKind(next);
-        return undefined;
-      }}
-      // The reader is taken to what they wrote - their newest node under the row the line was
-      // aimed at, or under the issue - and the line writes on the issue again. A comment on a
-      // statement's text takes the reader back to the statement's own row, whichever row draws
-      // the comment itself. Neither is refused here: the write store drops the send before it
-      // calls this, so no send is out by then.
-      onSent={() => finish(writer, place, { to: aim?.landsOn ?? "newest", under })}
-      outline={look}
-      owner={owner}
-      replyParent={replyParentOf(reply, comments.data ?? [], messages.data ?? [])}
-      replyTo={reply}
-    />
+    <div className="contents" onFocusCapture={() => setUsed(true)}>
+      <MentionComposer
+        agents={used ? undefined : EMPTY_AGENTS}
+        box="issue-page-composer"
+        closed={isClosed}
+        kind={writesKinds ? writer.kind : "comment"}
+        listed={targets?.entries}
+        mutationKey={writer.sendKey}
+        onClose={place.giveBack}
+        onKindChange={(next) => {
+          if (next === "ask" || next === "comment") writer.setKind(next);
+          return undefined;
+        }}
+        // The reader is taken to what they wrote - their newest node under the row the line was
+        // aimed at, or under the issue - and the line writes on the issue again. A comment on a
+        // statement's text takes the reader back to the statement's own row, whichever row draws
+        // the comment itself. Neither is refused here: the write store drops the send before it
+        // calls this, so no send is out by then.
+        onSent={() => finish(writer, place, { to: aim?.landsOn ?? "newest", under })}
+        outline={look}
+        owner={owner}
+        replyParent={replyParentOf(reply, comments.data ?? [], messages.data ?? [])}
+        replyTo={reply}
+      />
+    </div>
   );
 }
 

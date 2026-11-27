@@ -289,6 +289,7 @@ export function useNodeEditing({
   onEditing,
   onOwnEdit,
   onReport,
+  readOnlyCaret = true,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -310,6 +311,11 @@ export function useNodeEditing({
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
+  /** Whether Enter on the row of a node read-only in the room puts the read-only caret in its
+   *  words (R6, `read-only-caret.ts`) before it says the row has no text to put a caret in. The
+   *  outline and the Spec view take it; a view whose rows the margin part's caret waits on a gate
+   *  for (`text-comments/gates.ts`) passes that gate. */
+  readOnlyCaret?: boolean;
 }): NodeEditing {
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
   // The row the reader has just left the caret in, so that row takes the focus back.
@@ -347,13 +353,26 @@ export function useNodeEditing({
   const edit = useCallback(
     (row: string, node: TreeNode, at?: CaretAt) => {
       keyMoved.current = undefined;
+      // A node with no text of a room or a document to put the caret in. The row of a node
+      // read-only in the room - an ask, a comment, a message, a lens, a finding, a risk, a
+      // constraint or a result - takes a caret that moves and selects in its text and types
+      // nothing, where the tree puts one in (`readOnlyCaret`); a row that draws none of its text
+      // still has nothing to put a caret in. Enter is taken on the row itself (`useTreeKeymap`'s
+      // `tree-edit`), so the row is the element that holds the focus.
+      const noText = () => {
+        const focused = document.activeElement;
+        const drawn = focused?.matches(rowSelectorOf(row)) === true ? focused : null;
+        if (readOnlyCaret && caretOnEnter(drawn, node.type)) return;
+        onReport(KEY_REPORTS.no_text);
+      };
       // An issue whose tree read the cache holds is edited in its room: a node of another issue,
       // and on a converted issue the conversation, take no caret there.
       const facts = roomNow.current;
       if (facts !== undefined) {
         const target = roomTarget(node, artifacts, facts);
         if ("report" in target) {
-          onReport(KEY_REPORTS[target.report]);
+          if (target.report === "no_text") noText();
+          else onReport(KEY_REPORTS[target.report]);
           return;
         }
         // Enter on the row already edited before the editor's hold is on leaves the first Enter's
@@ -364,15 +383,7 @@ export function useNodeEditing({
       }
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
-        // The row of a node read-only in the room - an ask, a comment, a message, a lens, a
-        // finding, a risk, a constraint or a result - takes a caret that moves and selects in its
-        // text and types nothing (R6, `read-only-caret.ts`); a row that draws none of its text
-        // still has nothing to put a caret in. Enter is taken on the row itself
-        // (`useTreeKeymap`'s `tree-edit`), so the row is the element that holds the focus.
-        const focused = document.activeElement;
-        const drawn = focused?.matches(rowSelectorOf(row)) === true ? focused : null;
-        if (caretOnEnter(drawn, node.type)) return;
-        onReport(KEY_REPORTS.no_text);
+        noText();
         return;
       }
       // Enter on the row already edited before the editor's hold is on leaves the first Enter's
@@ -380,7 +391,7 @@ export function useNodeEditing({
       if (editing?.row === row && hold.current !== "on") return;
       setEditing({ artifactId: place.artifact.id, at, blockId: place.blockId, row });
     },
-    [artifacts, editing, onReport]
+    [artifacts, editing, onReport, readOnlyCaret]
   );
   const stopEditing = useCallback(() => {
     setEditing((held) => {

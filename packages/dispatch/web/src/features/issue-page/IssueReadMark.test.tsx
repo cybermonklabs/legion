@@ -145,7 +145,8 @@ test("the end on screen writes nothing until the outline holds its reads, and th
       expect(page.client.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(1)
     );
     await waitFor(() => expect(getIssueEvents).toHaveBeenCalledTimes(1));
-    expect(listComments).toHaveBeenCalledWith("CORE-1");
+    // The outline's comments read, as `issueCommentsQuery` makes it: with `node_anchor=true`.
+    expect(listComments).toHaveBeenCalledWith("CORE-1", undefined, true);
     jest.useFakeTimers();
     try {
       // The end on screen for two seconds while the comments read is out.

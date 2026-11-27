@@ -48,6 +48,7 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
+import { GATES } from "../text-comments/gates";
 import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
@@ -358,6 +359,9 @@ export function DecisionsFilterBody({
     onEditing,
     onOwnEdit: () => {},
     onReport: reportHere,
+    // The margin part's read-only caret in this view's rows waits on part U's gate: until it is
+    // on, Enter on a question here says the row has no text.
+    readOnlyCaret: GATES.PART_U,
   });
   // A press on a row's words asks for the caret where the row takes one, by the outline's one
   // rule (`takesCaret`): over the room of the issue the page's writer is of, and what each
