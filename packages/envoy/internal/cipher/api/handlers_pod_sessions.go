@@ -25,12 +25,13 @@ var thumbprintShape = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 // podSessionBody is POST /v1/oauth/exchange/pod-sessions's exact shape.
 type podSessionBody struct {
-	// The pod's own projected Kubernetes ServiceAccount token, whose audience is the broker's
-	// (BROKER_K8S_OIDC_AUDIENCE), the very token the registrar hands POST /v1/enrollments as it
-	// enrolls that pod, or, where it is set, BROKER_POD_REGISTRATION_AUDIENCE, which no other
-	// route accepts. It is what names the pod — its account is the token's subject and its uid
-	// the kubernetes.io pod uid — so a registrar cannot register a pod whose token it does not
-	// hold, and nothing is taken on the registrar's word but the session name.
+	// The pod's own projected Kubernetes ServiceAccount token, of an audience the broker takes
+	// (one BROKER_K8S_OIDC_AUDIENCE lists), the very token the registrar hands POST
+	// /v1/enrollments as it enrolls that pod, or, where it is set, of
+	// BROKER_POD_REGISTRATION_AUDIENCE, which no other route accepts. It is what names the pod —
+	// its account is the token's subject and its uid the kubernetes.io pod uid — so a registrar
+	// cannot register a pod whose token it does not hold, and nothing is taken on the
+	// registrar's word but the session name.
 	PodToken string `json:"pod_token"`
 	// The session name that pod may exchange under.
 	Session string `json:"session"`
@@ -220,14 +221,15 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	}
 }
 
-// podSessionToken verifies a registration's pod token, raw: at the broker's own audience
-// (Deps.Enroll.Pod) and, where BROKER_POD_REGISTRATION_AUDIENCE is set, at that audience too
-// (Deps.PodRegistrationTokens). A token either verifier accepts is answered its claims. Any other
-// is answered the error of the verifier whose audience it carries: an oidc.ErrAudience from one
-// verifier yields to the other's error. A verifier judges a token's audience before its expiry,
-// so an expired token of either audience answers oidc.ErrExpired, and the daemon retries it; a
-// token of neither audience answers the second verifier's oidc.ErrAudience. registerPodSession is
-// the one caller, so no other route accepts a token of the registration audience.
+// podSessionToken verifies a registration's pod token, raw: at the audiences the broker's own
+// BROKER_K8S_OIDC_AUDIENCE lists (Deps.Enroll.Pod) and, where BROKER_POD_REGISTRATION_AUDIENCE is
+// set, at that audience too (Deps.PodRegistrationTokens). A token either verifier accepts is
+// answered its claims. Any other is answered the error of the verifier whose audience it carries:
+// an oidc.ErrAudience from one verifier yields to the other's error. A verifier judges a token's
+// audience before its expiry, so an expired token of any of those audiences answers
+// oidc.ErrExpired, and the daemon retries it; a token of none of them answers the second
+// verifier's oidc.ErrAudience. registerPodSession is the one caller, so no other route accepts a
+// token of the registration audience.
 func (s *server) podSessionToken(ctx context.Context, raw string) (enroll.AccountClaims, error) {
 	claims, err := s.deps.Enroll.Pod.VerifyAccount(ctx, raw)
 	if err == nil || s.deps.PodRegistrationTokens == nil {

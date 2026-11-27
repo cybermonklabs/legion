@@ -72,7 +72,7 @@ server as the caller `dispatch`, each by its own account. An account is written 
 forms, and the entry's own text says which: a Kubernetes ServiceAccount subject, as above, or
 `google:` and a Google service account's address
 (`listener=google:example-listener@example-project.iam.gserviceaccount.com`). A Kubernetes caller
-presents its projected token for `BROKER_K8S_OIDC_AUDIENCE`, verified against
+presents its projected token of an audience `BROKER_K8S_OIDC_AUDIENCE` lists, verified against
 `BROKER_K8S_OIDC_ISSUER`, and is looked up by the token's `sub`, so such an entry needs that pair.
 A Google caller presents its machine's own Google identity token for `BROKER_GOOGLE_OIDC_AUDIENCE`
 — the audience every machine of the deployment already holds a token for, so the Envoy listener on
@@ -274,9 +274,10 @@ also refuses, naming the account, an account given twice for the same service.
 The account must be one the service's pods name. The broker refuses to start, naming the entry,
 if `BROKER_SERVICES` binds a namespace's `default` account
 (`system:serviceaccount:<namespace>:default`). Every pod in a namespace whose spec names no account
-runs as `default`, and any of those pods can get a token for the broker's audience. A `default`
-binding would therefore prove nothing about which pods are the service's. Create a dedicated
-account, such as `legion-worker`, set it as the pods' `serviceAccountName`, and bind that account.
+runs as `default`, and any of those pods can get a token of an audience `BROKER_K8S_OIDC_AUDIENCE`
+lists. A `default` binding would therefore prove nothing about which pods are the service's.
+Create a dedicated account, such as `legion-worker`, set it as the pods' `serviceAccountName`, and
+bind that account.
 
 While a secret's owner tag names a service the list leaves out, the broker refuses the secret as
 `owner-tag-malformed` ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
@@ -324,8 +325,8 @@ enrols the one pod whose token made it: any other pod UID is refused `403 POD_SE
 A pod enrolling itself states no session name either, `403 POD_SELF_ENROLL_NO_SESSION`: the pods
 of one account enrol under one principal, so a name such a pod picked would be a sibling pod's,
 and the enrolment would take that sibling's grants. `agent-secrets enroll --pod` sends none.
-The broker verifies the token as it verifies a pod's, against
-`BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE`, so the setting needs both, and refuses a
+The broker verifies the token as it verifies a pod's, against `BROKER_K8S_OIDC_ISSUER` and an
+audience `BROKER_K8S_OIDC_AUDIENCE` lists, so the setting needs both, and refuses a
 token that lives longer than an hour from its issue (`exp` minus `iat`, beside a minute of skew) as
 `TOKEN_TOO_LONG_LIVED`: give the daemon's projected token an `expirationSeconds` of at most 3600,
 and `kubectl create token` a `--duration` of at most `1h`. Each account holds one launcher
@@ -373,21 +374,23 @@ Unset, the broker starts and the route admits no registration: it refuses every 
 `403 POD_REGISTRAR_NOT_LISTED`, the one `403` of this route that the Legion daemon retries. So
 a deployment sets `BROKER_POD_REGISTRARS` before its first daemon sets `exchange_audience`.
 
-`BROKER_POD_REGISTRATION_AUDIENCE` (optional) is a second audience the route accepts for the pod
-token in the body, beside the broker's own `BROKER_K8S_OIDC_AUDIENCE`, which the pod token a daemon
-sends today carries. The broker verifies a token of either audience against
-`BROKER_K8S_OIDC_ISSUER`, which the setting needs. It refuses an expired token of either audience
-`401 POD_TOKEN_EXPIRED`, and every other token that does not verify, one of neither audience
-included, `401 POD_TOKEN_INVALID`. No other route accepts a token of this audience: enrolment and
-every ServiceAccount login verify the broker's own audience, the token exchange
-`BROKER_EXCHANGE_K8S_AUDIENCE`, and the NATS auth service `BROKER_NATS_K8S_AUDIENCE`. So a daemon
-can be handed a pod's token that registers that pod and that no other route takes.
+`BROKER_POD_REGISTRATION_AUDIENCE` (optional) is an audience the route accepts for the pod token in
+the body, beside the audiences `BROKER_K8S_OIDC_AUDIENCE` lists, one of which the pod token a
+daemon sends today carries. The broker verifies a token of any of these audiences against
+`BROKER_K8S_OIDC_ISSUER`, which the setting needs. It refuses an expired token of any of them
+`401 POD_TOKEN_EXPIRED`, and every other token that does not verify, a token of none of these
+audiences included, `401 POD_TOKEN_INVALID`. No other route accepts a token of this audience:
+enrolment and every ServiceAccount login verify the audiences `BROKER_K8S_OIDC_AUDIENCE` lists
+([Moving callers to another pod-token audience](#moving-callers-to-another-pod-token-audience)),
+the token exchange `BROKER_EXCHANGE_K8S_AUDIENCE`, and the NATS auth service
+`BROKER_NATS_K8S_AUDIENCE`. So a daemon can be handed a pod's token that registers that pod and
+that no other route takes.
 
 The broker refuses to start, naming `BROKER_POD_REGISTRATION_AUDIENCE` and the other setting, when
-the audience equals `BROKER_K8S_OIDC_AUDIENCE`, `BROKER_EXCHANGE_K8S_AUDIENCE` or
+the audience equals an audience `BROKER_K8S_OIDC_AUDIENCE` lists, `BROKER_EXCHANGE_K8S_AUDIENCE` or
 `BROKER_NATS_K8S_AUDIENCE`, since a token of it would then be spendable on that setting's routes
 too. It also refuses the audience set without `BROKER_K8S_OIDC_ISSUER`. Unset, the route accepts the
-broker's own audience alone.
+audiences `BROKER_K8S_OIDC_AUDIENCE` lists, and no other.
 
 The request carries the pod's own projected ServiceAccount token, which the broker verifies
 against the cluster's issuer as it verifies an enrolling pod's, bar the one check it does not make
@@ -673,10 +676,11 @@ broker refuses to start, naming the entry or the account, on:
 
 A mapped account on the pod side of a `BROKER_POD_REGISTRARS` entry is not refused, so a daemon may
 register a person's pod under a session name. The registration's body carries that pod's token, and
-unless `BROKER_POD_REGISTRATION_AUDIENCE` is set it is a token of the broker's own audience, the one
-the person's pod logs in with, so the daemon then holds a token that acts as the person. For such an
-entry, set `BROKER_POD_REGISTRATION_AUDIENCE` and hand the daemon the pod's token of that audience,
-which no other route accepts.
+unless `BROKER_POD_REGISTRATION_AUDIENCE` is set it is a token of an audience
+`BROKER_K8S_OIDC_AUDIENCE` lists, which the broker also takes when the person's pod logs in, so the
+daemon then holds a token that acts as the person. For such an entry, set
+`BROKER_POD_REGISTRATION_AUDIENCE` and hand the daemon the pod's token of that audience, which no
+other route accepts.
 
 The pod enrols itself with `agent-secrets enroll --pod --service <its login service>`, which names
 no session. It names its Dispatch projects as the person's session does, with
@@ -1480,9 +1484,9 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Type secrets | A `github-app` secret needs outbound HTTPS access to `api.github.com`, and a `github-owners` tag naming the GitHub accounts it mints for, which the deployment sets when it creates the secret. A `github-installations` secret needs no outbound access and no setting: it needs the same `github-owners` tag and a minter outside the broker that stores new installation tokens in it more often than every 40 minutes (every ten minutes leaves three runs in a row to fail), since the broker hands a stored token over only while more than 20 minutes of it are left ([Requests and grants](/legion/broker/concepts/#requests-and-grants)). A `google-login` secret needs outbound HTTPS access to `oauth2.googleapis.com`. A `google-service-account` secret needs outbound HTTPS access to `iamcredentials.googleapis.com`, an entry in `BROKER_SERVICE_ACCOUNT_SECRETS` binding it to one account, and the broker's own Google identity holding `roles/iam.serviceAccountTokenCreator` on each bound account, on the reader account `BROKER_DIRECTORY_ACCOUNT` names where the deployment reads groups (Google Workspace groups, below), and on no other, since the broker mints the token by impersonating that account; without the role Google refuses the mint and the session is answered `502 MINT_FAILED`. An `anthropic-federation` secret needs outbound HTTPS access to `iamcredentials.googleapis.com` and `api.anthropic.com`, an entry in `BROKER_SERVICE_ACCOUNT_SECRETS` binding it to one account, the broker's own Google identity holding `iam.serviceAccounts.getOpenIdToken` on that account (`roles/iam.serviceAccountOpenIdTokenCreator`, or Token Creator, which holds it too), since the broker mints that account's identity token for the audience `https://api.anthropic.com`, and an Anthropic federation rule that admits that account's token for the organization and service account its value names, with a `token_lifetime_seconds` of 3600 or less ([Anthropic's reference](https://platform.claude.com/docs/en/manage-claude/wif-reference)). **The deployment's binding, not the secret's stored value, chooses which account the broker impersonates.** A secret bound to no account, and a stored value naming an account other than the bound one, release nothing and are logged `class=binding`, so a secret someone writes with another person's account in it mints no token, and a secret the deployment never bound mints none either. What the secret's own tags still decide is who may ask for it (`requesters`) and what the token can do (`scopes`, on a `google-service-account` secret), so the write access to a bound secret is an administrator's ([People who manage secrets](#people-who-manage-secrets)). The broker reads the stored value for each release, as it reads any secret, and returns only the minted token. It also reads each type secret's value once for each version and type a pod lists, to check it, and refuses a secret whose value its type's minter could not mint from ([the value read](#the-value-read)). It needs no IAM permission to mint a GitHub App or a Google login value, and `BROKER_SERVICE_ACCOUNT_SECRETS` is the one `BROKER_*` setting any of these types needs. A mint GitHub, Google or Anthropic refuses answers the session `502 MINT_FAILED`, naming their reason, and logs `broker: mint failed` (below); so does a `github-installations` token with 20 minutes or less left (`class=upstream`). A call to GitHub or Google that answered a 5xx or a rate limit, or got no answer, is attempted up to three times before that ([the mint retry](#the-mint-retry)); an Anthropic federation exchange is sent once. A GitHub profile the installation cannot serve, because its permissions cut to what the installation holds leave none or because GitHub refuses a repository it names, answers `422 PROFILE_MINT_REFUSED` instead and logs `broker: narrowing refused`; so does a `github-installations` profile whose stored token holds a permission past the profile's, holds none of its permissions but `metadata`, or reaches other repositories than the profile names. A target outside the profile answers `400 TARGET_REFUSED`, naming the profile's accounts and repositories, and a target naming a repository of a `github-installations` profile answers `400 TARGET_REPOSITORIES_REFUSED`. |
 | Google Workspace groups (optional) | To serve a secret whose `owner` or `requesters` names a group, outbound HTTPS access to `admin.googleapis.com` (or the base URL `BROKER_DIRECTORY_URL` names) and to `iamcredentials.googleapis.com`, and the reader account `BROKER_DIRECTORY_ACCOUNT` names, with Workspace's Groups Reader admin role assigned to it, `roles/iam.serviceAccountTokenCreator` on it for the broker's own Google identity, and the IAM Service Account Credentials API turned on in its project. The broker reads each group a served secret names when a five-minute read of the namespace first names it and once an hour after that, and a group it has not read for 2 hours admits nobody. So a Directory or IAM outage, a missing grant or a missing role leaves every group's requests with nobody to decide them, and every grant that rests on a group without a release, within 2 hours; each read's `group members read` line names the cause ([Health and logs](#health-and-logs)). |
 | A local stand-in (development only) | `BROKER_FAKE_SECRETS_FILE` names a JSON file the broker reads in place of the store, in Secrets Manager's shape whatever `BROKER_SECRETS_STORE` says, each secret's `kms_key_id` naming the agent-secrets key as the selected store configures it (`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME` with the GCP store). With the GCP store each secret's `name` is its resource name, and a request freezes that name as its source, as Secret Manager answers it; with the AWS store a request freezes a local ARN. The [configuration reference](/legion/broker/reference/config/#variables-the-broker-reads) gives its format. |
-| Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token for `BROKER_K8S_OIDC_AUDIENCE`, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
+| Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token of an audience `BROKER_K8S_OIDC_AUDIENCE` lists, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
 | The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read, or a code exchange the token endpoint answers `408`, `429` or `5xx`, answers with a body cut off before it arrives whole, or does not answer, answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable`: in `last_failed_sign_in_reason` for a failure at the sign-in's callback, and in `client_check` once a client check finds the provider down, which is the only field that shows a failure at the sign-in's start ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
-| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
+| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` names the cluster's service-account token issuer, and `BROKER_K8S_OIDC_AUDIENCE` lists the audiences the pods' and the services' projected tokens carry ([Moving callers to another pod-token audience](#moving-callers-to-another-pod-token-audience)). The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`, `BROKER_VM_EXCHANGE_ACCOUNTS` and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
 | The Envoy hub's NATS auth service (optional) | With `BROKER_NATS_URLS`, the broker answers the authorization of each connection the Envoy hub sends it: a session presenting its broker access token and a proof of its key gets its own delivery channel, and a service presenting a platform token for `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account `BROKER_NATS_SERVICES` lists, gets its kind's grant; an `edge-listener` entry's connection gets the edge listener's grant for the projects its entry lists. It connects to the hub as the user `BROKER_NATS_SEED_FILE` holds, signs with the account seed in `BROKER_NATS_ISSUER_SEED_FILE` and opens each request with the curve seed in `BROKER_NATS_XKEY_SEED_FILE`; each file is refused at startup unless it holds a seed of its kind. It places every client it admits, the operator and the hold's probe included, in the hub account `BROKER_NATS_ACCOUNT` names, `$G`, the global account, when unset; a hub that keeps JetStream in an account of its own names the account its clients sit in, never the account JetStream sits in (`JETSTREAM`, which refuses the start), and must declare that account before the broker names it, since the hub refuses every client placed in an account it does not have. A value that is neither `$G` nor one subject token of at most 64 letters, digits, `_` and `-`, or one that holds an nkey seed in any spelling (in either case, behind a prefix, or split by `-` or `_`), refuses the start, naming the setting and never the value. Every replica answers in one queue group, so a stopped replica delays no connection. With none of these set the broker runs no auth service. `BROKER_NATS_SERVICES` may list one `operator` entry, the deployment's one operator identity, whose grant follows the NATS writer hold's phase, and one `probe` entry, the hold's probe. The hold's row lives in this broker's Postgres, signed by the operator's Ed25519 key, whose public halves are `BROKER_NATS_HOLD_SIGNING_KEYS`, and only the operator writes it, through `/v1/nats-hold`. With `BROKER_NATS_HOLD_READ=true` (default `false`) the auth service reads the row at each decision on a pool of its own (`BROKER_NATS_HOLD_POOL_SIZE`, default 2) and, while no row that verifies can be read, refuses every client but the operator; the broker then needs the `operator` entry and the signing keys to start, and starts with no row, so the operator writes the first row (`POST /v1/nats-hold/restore`) before the setting is turned on. |
@@ -1537,6 +1541,53 @@ The move takes four steps:
    rewrite leaves every approval chain verifying.
 4. Once a read of the database finds no `request_secrets` row of a live grant or of a pending
    request under the old prefix, remove `BROKER_SECRETS_SECOND_PREFIX`.
+
+## Moving callers to another pod-token audience
+
+`BROKER_K8S_OIDC_AUDIENCE` takes one or more audiences, separated by white space (spaces, tabs or
+line feeds), for example `example-pod-new example-pod-old`. All of them are audiences of the tokens
+of the one issuer `BROKER_K8S_OIDC_ISSUER` names. A value of one audience is read as before.
+
+The broker takes a token of any listed audience, each where it took a token of the one audience
+before:
+
+- for a pod's enrolment and its renewals
+- for a service's token login of `BROKER_SERVICE_LOGINS`, and for the registration and release
+  routes (`POST /v1/oauth/exchange/pod-sessions` and its `/release`) that the service calls with
+  its token
+- for a caller of `BROKER_API_ACCOUNTS`
+- for an edge listener's `GET /v1/project-repositories`
+- as the pod token a registration's body carries, beside `BROKER_POD_REGISTRATION_AUDIENCE`
+
+The token exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`), the NATS auth service and the NATS writer hold
+(`BROKER_NATS_K8S_AUDIENCE`) take a token of none of the listed audiences. Each of them keeps its
+one audience.
+
+The broker checks a token against the listed audience the token carries. It checks the token's
+issuer, signature, expiry and pod UID as before. So an expired token of a listed audience is
+refused as expired. Each route gives it the code it gives an expired token, such as
+`403 POD_TOKEN_EXPIRED` at enrolment. A token of an audience the setting does not list is refused
+as before, expired or not: `403 POD_IDENTITY_MISMATCH` at enrolment, for example. A token login's
+`401 TOKEN_INVALID` for such a token names every listed audience.
+
+With `BROKER_K8S_OIDC_ISSUER` set, the broker refuses to start:
+
+- on a value of white space alone, naming `BROKER_K8S_OIDC_AUDIENCE`
+- on an audience listed twice, naming the setting and the audience
+- on a listed audience that `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_POD_REGISTRATION_AUDIENCE` or
+  `BROKER_NATS_K8S_AUDIENCE` names too, naming both settings. A token of that audience would be
+  spendable on the routes of both settings. This holds for one listed audience too.
+
+A deployment lists a second audience only while it moves its callers from one audience to another.
+The move takes three steps:
+
+1. Add the new audience beside the old one, and deploy the broker with it. Do not deploy a broker
+   release from before the setting took a list while the setting lists two audiences. Such a
+   broker reads the whole value as one audience and refuses every token of either.
+2. Move the callers: set the new audience on each projected token that a route above takes, and
+   deploy the workloads whose pods mount those tokens.
+3. Once no pod projects a token of the old audience, remove the old audience from the setting and
+   deploy the broker again.
 
 ## Rolling back past the project tags
 
