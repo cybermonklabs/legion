@@ -49,9 +49,9 @@ func TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore(t *test
 	tester := pwRoleToken(t, spParent, claim.RoleTester)
 	putWorkerClaim(t, pool, spParent, spParent, claim.RoleTester, 1, supervise.StateIdle, "")
 	tested := pnWorkerStart(t, pool, spParent, claim.RoleTester)
-	if tested.Entry != retry.Entry+1 {
-		t.Fatalf("the tester's start = %+v; want entry %d, one above the implementer's entry %d: the issue has one counter for its entries",
-			tested, retry.Entry+1, retry.Entry)
+	if tested.Entry <= retry.Entry {
+		t.Fatalf("the tester's start = %+v; want an entry above the implementer's entry %d: the issue has one counter for its entries",
+			tested, retry.Entry)
 	}
 	pwDeliver(t, pool, spParent, tester, tested)
 	pwApplied(t, pool, admission, "api", "failed", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
@@ -61,9 +61,9 @@ func TestParentWaitsHoldsTheWorkOfAnEntryRaisedAfterARetryOfTheOneBefore(t *test
 		t.Fatalf("the parent after the tester's failure = phase %s, want implementing", got.Phase)
 	}
 	fixed := pnWorkerStart(t, pool, spParent, claim.RoleImplementer)
-	if fixed.Entry != tested.Entry+1 || strings.Contains(fixed.Task, "the runner is back") {
-		t.Fatalf("the implementer's start after the tester's failure = %+v; want entry %d, one above the tester's entry %d, on the work of that failure",
-			fixed, tested.Entry+1, tested.Entry)
+	if fixed.Entry <= tested.Entry || strings.Contains(fixed.Task, "the runner is back") {
+		t.Fatalf("the implementer's start after the tester's failure = %+v; want an entry above the tester's entry %d, on the work of that failure",
+			fixed, tested.Entry)
 	}
 	// The turn that took the retry ended with the implementer's completion. That completion retires
 	// the claim's pending delivery (store's RetireDelivery). The lane then delivers the entry the

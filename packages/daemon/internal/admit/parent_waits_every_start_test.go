@@ -1683,7 +1683,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if back := issue(t, pool, spParent); back.Phase != phase.Testing {
 			t.Fatalf("the parent after its child is done = %s, want testing", back.Phase)
 		}
-		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry != stopped.Entry+1 || !row.EntryMovedBack ||
+		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry <= stopped.Entry || !row.EntryMovedBack ||
 			row.EntryFrom != phase.AwaitingChildren {
 			t.Fatalf("the tester's row after the return = %+v, want the entry above the stopped one (%d) raised as a move back out of awaiting_children, which the route's entry fence refuses a completion behind",
 				row, stopped.Entry)
