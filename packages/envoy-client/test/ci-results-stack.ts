@@ -115,26 +115,47 @@ const DPOP_KEY_LINE = "broker: the proxy's DPoP key";
 const ACCESS_LINE = 'msg="dispatch: request"';
 
 /** The probe spec: one statement and its two program checks, each of another job. */
-const PROBE_SPEC = `:::requirement{#the-probe-tests-pass kind="behavior"}
-The two probe tests pass at each commit of a branch.
-:::
-
-:::check{#${PROBE_CHECK} serves="the-probe-tests-pass" subject="code" procedure="program" runner="go" selector="example.com/acme/probe TestProbe" job="go-checks"}
-Claim: The probe test passes.
-Procedure: The program runs the probe test one time.
-Failing example: A probe test that fails.
-:::
-
-:::check{#${OTHER_JOBS_CHECK} serves="the-probe-tests-pass" subject="code" procedure="program" runner="go" selector="example.com/acme/probe TestSecondProbe" job="lint"}
-Claim: The second probe test passes.
-Procedure: The program runs the second probe test one time.
-Failing example: A second probe test that fails.
-:::
+const PROBE_SPEC = `---
+type: requirement
+id: the-probe-tests-pass
+kind: behavior
+text:
+  - The two probe tests pass at each commit of a branch.
+---
+type: check
+id: ${PROBE_CHECK}
+serves: the-probe-tests-pass
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/probe TestProbe
+  job: go-checks
+claim: The probe test passes.
+procedure_text:
+  - The program runs the probe test one time.
+failing_example:
+  - A probe test that fails.
+---
+type: check
+id: ${OTHER_JOBS_CHECK}
+serves: the-probe-tests-pass
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/probe TestSecondProbe
+  job: lint
+claim: The second probe test passes.
+procedure_text:
+  - The program runs the second probe test one time.
+failing_example:
+  - A second probe test that fails.
 `;
 
-/** Writes the probe spec into `dir` as the one file `probe.md`, for {@link CIResultsStack.setFiles}. */
+/** Writes the probe spec into `dir` as the one file `probe.yaml`, for {@link CIResultsStack.setFiles}. */
 export function writeProbeSpec(dir: string): void {
-  writeFileSync(path.join(dir, "probe.md"), PROBE_SPEC);
+  writeFileSync(path.join(dir, "probe.yaml"), PROBE_SPEC);
 }
 
 /** One job of a push run of the workflow, as `jobEnv` makes its variables. */
@@ -228,7 +249,7 @@ export interface CIResultsStack {
   jobEnv(run: JobRun): Record<string, string>;
   /** The argv that runs `argv` under `agent-secrets result-grant`, as a job's step runs it. */
   jobCommand(argv: readonly string[]): string[];
-  /** The spec files of the commit `sha`: every `.md` file directly in `dir`. */
+  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`. */
   setFiles(sha: string, dir: string): void;
   /** Every result of the project at `commit`, as a person reads them, newest first. */
   results(commit: string): Promise<StoredResult[]>;
@@ -685,7 +706,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       setFiles(sha: string, dir: string): void {
         const files: Record<string, string> = {};
         for (const entry of readdirSync(dir, { withFileTypes: true })) {
-          if (entry.isFile() && entry.name.endsWith(".md")) {
+          if (entry.isFile() && entry.name.endsWith(".yaml")) {
             files[entry.name] = readFileSync(path.join(dir, entry.name), "utf8");
           }
         }

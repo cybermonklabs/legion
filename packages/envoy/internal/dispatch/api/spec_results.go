@@ -3,7 +3,7 @@ package api
 // spec_results.go is the route a CI job writes the result of a check of the spec files with,
 // POST /api/v1/projects/{key}/results, and the read beside it (R12 of the spec). The job holds a
 // results token the secrets broker minted for its run (ciphertoken.Caller.ResultsOnly), and this
-// route is the one route that token reaches (resultsScopeRoutes). Dispatch takes who wrote the
+// route is the one route that token reaches (routeDecl.ResultsScope). Dispatch takes who wrote the
 // result and what it is for from that token, from GitHub and from the spec files at the run's
 // commit; the body says only what the job observed. The recorder of a result is the run, and no
 // person: the broker's result entry names a person, whom nobody authenticated for this write and
@@ -395,14 +395,16 @@ func (s *server) specCheckRun(ctx context.Context, reader *repositoryReader, rep
 
 // specFilesAt is what the spec files of repository at commit hold: the process's cached answer, or
 // the files GitHub serves read with the graph logic's one reading of them (specgraph.Judge), with
-// no retired list, since the files hold no history. A commit whose tree holds no spec directory
-// holds no check. A set over the bounds of the notes package is a problem of the files, not a
-// GitHub that did not answer, found from GitHub's listing before any file is read, as spec-check
-// finds it (notes.ReadSet): a listing over notes.MaxFiles files or notes.MaxSetSize bytes in sum
-// is one problem (notes.CheckSet), and else each listed file over notes.MaxFileSize is one; where
-// none is, a file GitHub serves over it is one. A listing GitHub truncates, or one over the
-// response limit Dispatch reads it within, is one problem too: a commit's tree never changes, so
-// every read of it answers the same, and a write again could never be judged.
+// no retired list, since the files hold no history. The spec files are the entries of the spec
+// directory that specgraph.IsFile keeps, the rule spec-check reads a directory by, and a commit
+// whose tree holds no spec directory holds no check. A set over the bounds of the notes package is
+// a problem of the files, not a GitHub that did not answer, found from GitHub's listing before any
+// file is read, as spec-check finds it (notes.ReadSet): a listing over notes.MaxFiles files or
+// notes.MaxSetSize bytes in sum is one problem (notes.CheckSet), and else each listed file over
+// notes.MaxFileSize is one; where none is, a file GitHub serves over it is one. A listing GitHub
+// truncates, or one over the response limit Dispatch reads it within, is one problem too: a
+// commit's tree never changes, so every read of it answers the same, and a write again could
+// never be judged.
 func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repository, commit string) (specFiles, error) {
 	s.specReads.init()
 	return readCached(s.specReads.checks, repository+"@"+commit, func() (specFiles, error) {
@@ -410,7 +412,7 @@ func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repo
 		if err != nil {
 			return specFiles{}, err
 		}
-		listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir)
+		listing, err := s.deps.GitHub.Dir(ctx, token, reader.owner, reader.name, commit, specDir, specgraph.IsFile)
 		var tooLarge *githubapp.ResponseTooLargeError
 		switch {
 		case errors.Is(err, githubapp.ErrTreeTruncated):
@@ -453,12 +455,13 @@ func (s *server) specFilesAt(ctx context.Context, reader *repositoryReader, repo
 
 // judgeSpecFiles is what the route keeps of files as specgraph.Judge reads them: how many
 // problems they have and the first, written as spec-check writes one, "<dir>/<file>:<line>:
-// <node>: <detail>", or, with none, every check by id.
+// <node>: <detail>" with each value of the input in it cut (specgraph.Problem.Text), or, with
+// none, every check by id.
 func judgeSpecFiles(read map[string][]byte) specFiles {
 	tree, problems := specgraph.Judge(read, specgraph.Options{})
 	if len(problems) > 0 {
 		first := problems[0]
-		return specFiles{Problems: len(problems), First: fmt.Sprintf("%s/%s:%d: %s: %s", specDir, first.Pos.File, first.Pos.Line, first.Node, first.Detail)}
+		return specFiles{Problems: len(problems), First: fmt.Sprintf("%s/%s:%d: %s", specDir, first.Pos.File, first.Pos.Line, first.Text())}
 	}
 	files := specFiles{Checks: make(map[string]specCheckFacts, len(tree.Checks))}
 	for _, check := range tree.Checks {

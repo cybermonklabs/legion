@@ -62,9 +62,9 @@ function commit(digit: string): string {
 const stackDirectory = useCIResultsStackDirectory();
 const cliState = temporaryDirectory("ci-results-cli-state");
 const specFiles = temporaryDirectory("ci-results-spec");
-/** The probe spec beside a file whose block never closes, and the probe spec with its check's
- *  failing example left out: two trees the graph logic refuses (specgraph.Judge). */
-const unclosedFiles = temporaryDirectory("ci-results-unclosed-spec");
+/** The probe spec beside a file whose statement no check serves, and the probe spec with its
+ *  check's failing example left out: two trees the graph logic refuses (specgraph.Judge). */
+const unservedFiles = temporaryDirectory("ci-results-unserved-spec");
 const lackingFiles = temporaryDirectory("ci-results-lacking-spec");
 /** The observed texts the rows below read from files, as a job's step writes its log. */
 const observedFiles = temporaryDirectory("ci-results-observed");
@@ -288,16 +288,16 @@ describe.skipIf(!dispatchStackEnabled)(
 
     beforeAll(async () => {
       writeProbeSpec(specFiles);
-      writeProbeSpec(unclosedFiles);
+      writeProbeSpec(unservedFiles);
       writeFileSync(
-        join(unclosedFiles, "broken.md"),
-        ':::requirement{#broken kind="behavior"}\nThis block never closes.\n'
+        join(unservedFiles, "broken.yaml"),
+        "---\ntype: requirement\nid: broken\nkind: behavior\ntext:\n  - No check serves this statement.\n"
       );
       writeProbeSpec(lackingFiles);
-      const probe = await Bun.file(join(lackingFiles, "probe.md")).text();
+      const probe = await Bun.file(join(lackingFiles, "probe.yaml")).text();
       writeFileSync(
-        join(lackingFiles, "probe.md"),
-        probe.replace("Failing example: A probe test that fails.\n", "")
+        join(lackingFiles, "probe.yaml"),
+        probe.replace("failing_example:\n  - A probe test that fails.\n", "")
       );
       stack = await startCIResultsStack({ work: stackDirectory });
     }, 600_000);
@@ -551,8 +551,8 @@ console.log(JSON.stringify(answers));
     // (specgraph.Judge), so a tree they refuse holds no check to write a result for.
     test("a result for a check of files the graph logic refuses is refused, and nothing is stored", async () => {
       for (const [at, files, checkRunId, problem] of [
-        [commit("b"), unclosedFiles, 108, "broken.md:1: broken: leaf-without-check"],
-        [commit("c"), lackingFiles, 109, `probe.md:5: ${PROBE_CHECK}: no-failing-example`],
+        [commit("b"), unservedFiles, 108, "broken.yaml:1: broken: leaf-without-check"],
+        [commit("c"), lackingFiles, 109, `probe.yaml:7: ${PROBE_CHECK}: schema: node: missing property 'failing_example'`],
       ] as const) {
         const ran = await writeResult(runAt(at, checkRunId, {}, files), at);
 

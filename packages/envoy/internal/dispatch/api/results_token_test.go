@@ -1,7 +1,7 @@
 // results_token_test.go holds Dispatch to its results list: a results token - one the secrets
 // broker minted from a result entry for one CI run, the scope results alone beside the project
-// scope results, a person, one project and the run - reaches the routes resultsScopeRoutes names
-// and nothing else. Every other row of the table and GET /ws/live answer it 403
+// scope results, a person, one project and the run - reaches the routes whose declarations state
+// ResultsScope and nothing else. Every other row of the table and GET /ws/live answer it 403
 // RESULTS_ONLY_TOKEN before the route's handler, before the sign-in check and before its
 // Idempotency-Key is read (refuseLimitedToken). The walks send the read-only walks' probes
 // (readOnlyWalkToken.probe) with this token and this list (limitedToken); the read-only token
@@ -11,7 +11,6 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -52,17 +51,16 @@ type limitedAnswer struct {
 	code   string
 }
 
-// limitedToken is a broker token Dispatch serves on a list of its own beside the route table and
-// answers 403 on every other row and on GET /ws/live, before the row's handler: a results token
-// (resultsScopeRoutes), which refuseLimitedToken holds to its list. The two walks below take one.
+// limitedToken is a broker token Dispatch serves on a list of its own, the routes whose
+// declarations state its mark, and answers 403 on every other row and on GET /ws/live, before the
+// row's handler: a results token (routeDecl.ResultsScope), which refuseLimitedToken holds to its
+// list. The two walks below take one.
 type limitedToken struct {
 	// kind names the token in a failure: "a results token".
 	kind string
 	// answer is what the broker answers for the token, bound to the caller's key.
 	answer func(jkt string) ciphertoken.Introspection
-	// list is the routes the token may call, by "<method> <pattern>"; listed reads the mark
-	// routes() stamps from it onto a row.
-	list   []string
+	// listed reads the mark a route's declaration states when the token may call it.
 	listed func(apiRoute) bool
 	// refusal is the code every other row answers the token with, under 403 and no challenge.
 	refusal string
@@ -88,7 +86,6 @@ func resultsLimitedToken() limitedToken {
 	return limitedToken{
 		kind:    "a results token",
 		answer:  func(jkt string) ciphertoken.Introspection { return resultsOnlyToken(jkt, resultsTokenProject) },
-		list:    resultsScopeRoutes,
 		listed:  func(route apiRoute) bool { return route.ResultsScope },
 		refusal: codeResultsOnlyToken,
 		listAnswers: map[string]limitedAnswer{
@@ -105,9 +102,10 @@ func resultsLimitedToken() limitedToken {
 
 // walkEveryChainWith builds every row's own chain as register does (routeHandler), with the row's
 // handler replaced by a recorder, and sends each the token with a body and a valid
-// Idempotency-Key. Every row the token's list does not name answers 403 with its refusal and
-// never runs its handler; each row the list names runs it once, and is a row the walk names an
-// answer for (listAnswers), so a list that grows fails the walk until the walk names the row too.
+// Idempotency-Key. Every row whose declaration does not state the token's mark answers 403 with
+// its refusal and never runs its handler; each row that states it runs it once, and is a row the
+// walk names an answer for (listAnswers), so a list that grows fails the walk until the walk names
+// the row too, and a row the walk names that no longer states the mark fails it as well.
 // GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
 // replaced. A row is counted once its assertions have run, and the count is held to the rows the
 // registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
@@ -171,8 +169,8 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
-	if listed != len(token.list) {
-		t.Fatalf("%d rows carry the mark of the list of %s, want the list's %d (%v)", listed, token.kind, len(token.list), token.list)
+	if listed != len(token.listAnswers) {
+		t.Fatalf("%d rows state the mark of %s, want the %d the walk names an answer for (%v)", listed, token.kind, len(token.listAnswers), token.listAnswers)
 	}
 	t.Logf("walked %d rows of the table (test hooks in) and GET %s with %s: %d listed, %d refused, every refusal %s",
 		walked, liveSocketPattern, token.kind, listed, walked-listed+1, token.refusal)
@@ -234,20 +232,4 @@ func TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler(t
 // results token 403 RESULTS_ONLY_TOKEN on every row but the listed one, whose handler answers it.
 func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) {
 	walkTheMountedServerWith(t, resultsLimitedToken())
-}
-
-// TestRegisterRefusesAResultsListOfNoMountedRow: a results list naming a route nothing serves
-// reads as though it opened a route that is not there, so Register refuses it and names the
-// route. It replaces the package's list for its length, so it is not parallel.
-func TestRegisterRefusesAResultsListOfNoMountedRow(t *testing.T) {
-	kept := resultsScopeRoutes
-	t.Cleanup(func() { resultsScopeRoutes = kept })
-	if refusal := registerRefusal(t); refusal != "" {
-		t.Fatalf("api.Register refused the results list as it stands: %s", refusal)
-	}
-	const name = "POST /api/v1/projects/{key}/results/no-such-route"
-	resultsScopeRoutes = []string{name}
-	if refusal := registerRefusal(t); !strings.Contains(refusal, "results list") || !strings.Contains(refusal, name) {
-		t.Fatalf("api.Register with %s on the results list refused %q, want a refusal of the results list naming it", name, refusal)
-	}
 }

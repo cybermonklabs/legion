@@ -129,9 +129,9 @@ type Credential struct {
 	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
 	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
 	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
-	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes its approve list names
-	// (approveScopeRoutes) alone, answering it 403 APPROVE_ONLY_TOKEN on every other
-	// (refuseLimitedToken), before anything else the route does. False for every other
+	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes whose declaration states
+	// ApproveOnly (api's routeDecl.ApproveOnly) alone, answering it 403 APPROVE_ONLY_TOKEN on every
+	// other (refuseLimitedToken), before anything else the route does. False for every other
 	// credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
@@ -150,6 +150,11 @@ type Credential struct {
 	// under `named` an account entry's naming no person, whose writes are recorded under its
 	// account — and is refused every write under any other (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Principal is who a broker-issued token acts for, in the form that names its kind and scope
+	// (ciphertoken.Caller.Principal): the one the Envoy listener records a registration on that
+	// token as, which a successor's reply is held to (api's callerPrincipal and
+	// actsForSuccessorPrincipal). Empty for every other credential.
+	Principal string
 	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
 	// nil for every other credential until a later slice sets a personal token's
 	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
@@ -160,9 +165,9 @@ type Credential struct {
 	// checks (ciphertoken.ScopeResults): one the secrets broker minted from a result entry for one
 	// CI run, naming a person, one project and the run. The person stays inside the server: a
 	// result, an answer and the access log name the run (SpecCheckRecorder). Dispatch serves it on
-	// the routes its results list names (resultsScopeRoutes) alone and answers it 403
-	// RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route
-	// does. False for every other credential.
+	// the routes whose declaration states ResultsScope (api's routeDecl.ResultsScope) alone and
+	// answers it 403 RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else
+	// the route does. False for every other credential.
 	ResultsOnly bool
 	// CI is the run a ResultsOnly credential was minted for, read whole by the verifier
 	// (ciphertoken.Caller.CI, oauthwire.ParseCIRun): what that credential writes is held to the
@@ -2227,6 +2232,49 @@ type CheckResultRetractedEventPayload struct {
 	Reason       string `json:"reason"`
 }
 
+// RoleUndeliveredEventType is the event Dispatch's outbox appends on an event's own owner when its
+// copy for a role reached no session: every copy the outbox kept for the role on the role's kept
+// lane ended its hour with no session holding the role (RoleUndeliveredExpired), or Envoy no longer
+// held the last copy to keep it again (RoleUndeliveredCopyGone). The outbox writes it as a system
+// actor, so it wakes no route and reaches no role (events.Broker.Notify); a person reads it in the
+// owner's history, and a session that follows the owner's topic is sent it.
+const RoleUndeliveredEventType = "role.undelivered"
+
+// SystemMessage is a message Dispatch itself writes on an issue, as one of its own system actors
+// (api.Background.PostSystemMessage): ID is the id it is stored under, which its writer chooses so
+// that a post made again writes no second message, IssueKey the issue it is posted on, and Body
+// its markdown. Dispatch's outbox posts the message that names the events a role did not take
+// with it.
+type SystemMessage struct {
+	ID       string
+	IssueKey string
+	Body     string
+}
+
+// The reasons a role.undelivered event gives (RoleUndeliveredEventPayload.Reason).
+const (
+	// RoleUndeliveredExpired: each of the copy's keeps ended its hour with no session taking it.
+	RoleUndeliveredExpired = "expired"
+	// RoleUndeliveredCopyGone: the stream no longer held the copy that expired - its retention
+	// passed it, or a stream created again since holds another message at its sequence - so the
+	// outbox had nothing to keep again.
+	RoleUndeliveredCopyGone = "copy_gone"
+)
+
+// RoleUndeliveredEventPayload is the payload of role.undelivered (RoleUndeliveredEventType): the
+// event whose copy reached no session (EventID, EventType), the role it was routed to, how many
+// times its copy was kept on the role's kept lane, when the last copy was kept and when Envoy
+// dropped it, and why the outbox stopped.
+type RoleUndeliveredEventPayload struct {
+	EventID   int64     `json:"event_id"`
+	EventType string    `json:"event_type"`
+	Role      string    `json:"role"`
+	Keeps     int       `json:"keeps"`
+	KeptAt    time.Time `json:"kept_at"`
+	DroppedAt time.Time `json:"dropped_at"`
+	Reason    string    `json:"reason"`
+}
+
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
 // once a document has been quiet for a while after a person's settled browser edit: the versions
 // the quiet window spans (FromVersion is the one before the window's first person's version,
@@ -3608,16 +3656,26 @@ type Comment struct {
 // is what says the post itself is gone rather than the one block. All three are absent on a part
 // of an ask, which no correction marks. An event's reply_block keeps the marks the write that
 // appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
-// with every field but its text, which is empty: a delete event carries no text of another post.
+// with every field but its text, quote and occurrence: its text is empty and the other two are
+// absent, because a delete event carries no text of another post.
+//
+// Quote and Occurrence are the words of the block the reply quotes and which of their matches in
+// the block's plain text they are, counted from 0, as the reply stored them
+// (comments.replies_to_quote and replies_to_occurrence, and the same two of messages): both or
+// neither, absent on a reply that quotes nothing, as the marks are absent where the post holds
+// none. A read leaves both out once the quoted post is deleted (refs.ReplyBlocks), as they are
+// words of that post.
 type ReplyBlock struct {
-	Node      string     `json:"node"`
-	Ref       string     `json:"ref,omitempty"`
-	BlockID   string     `json:"block_id"`
-	Text      string     `json:"text"`
-	Removed   bool       `json:"removed"`
-	EditedAt  *time.Time `json:"edited_at,omitempty"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	DeletedBy *Actor     `json:"deleted_by,omitempty"`
+	Node       string     `json:"node"`
+	Ref        string     `json:"ref,omitempty"`
+	BlockID    string     `json:"block_id"`
+	Text       string     `json:"text"`
+	Removed    bool       `json:"removed"`
+	EditedAt   *time.Time `json:"edited_at,omitempty"`
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy  *Actor     `json:"deleted_by,omitempty"`
+	Quote      *string    `json:"quote,omitempty"`
+	Occurrence *int       `json:"occurrence,omitempty"`
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET

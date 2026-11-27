@@ -74,3 +74,11 @@ func Hash(placeholder string) string {
 	sum := sha256.Sum256([]byte(placeholder))
 	return hex.EncodeToString(sum[:])
 }
+
+// ASCIILetterOrDigit is whether b is an ASCII letter or digit, the left-boundary rule for a
+// kind's own placeholder_prefix: a kind prefix right after one of these does not open a
+// placeholder. The proxy's leftover scan and the broker's log mask both call this function for
+// the one rule.
+func ASCIILetterOrDigit(b byte) bool {
+	return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
+}

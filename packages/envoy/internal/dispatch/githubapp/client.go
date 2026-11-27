@@ -1148,7 +1148,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 
 // Dir is one directory listing at a commit: the directory's own tree object
 // id (identical files give an identical SHA, whatever else the commit
-// changed) and its regular markdown files.
+// changed) and the files its keep rule accepts.
 type Dir struct {
 	// SHA is the subtree object id; empty when the directory does not exist
 	// at the commit.
@@ -1156,7 +1156,8 @@ type Dir struct {
 	Files []DirFile
 }
 
-// DirFile is one `*.md` regular file directly inside the directory.
+// DirFile is one file directly inside the directory that the listing's keep
+// rule accepts.
 type DirFile struct {
 	Name string // file name inside the directory
 	Path string // repo-relative path, for error messages
@@ -1164,18 +1165,20 @@ type DirFile struct {
 	Size int64
 }
 
-// Dir lists the markdown files directly inside dir at commit sha with one
-// subtree read (`GET /repos/{owner}/{repo}/git/trees/{sha}:{dir}`): only the
-// directory's own entries come back, so a large repository elsewhere cannot
-// push the response past the read cap. GitHub's 404 for a commit without dir
-// is an empty Dir (a valid, empty model). An entry counts when notes.IsNote
-// keeps it, read with notes.GitKind from its type and mode: the rule of which
-// entries are notes is the notes package's, which keeps the regular blobs
-// (mode 100644 / 100755) named *.md and skips symlinks (120000), submodules,
-// and nested directories. A listing GitHub answers truncated is
-// ErrTreeTruncated — it cannot be trusted, so the sync fails whole. dir is a
-// plain repo-relative path, no leading slash.
-func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (Dir, error) {
+// Dir lists the files directly inside dir at commit sha that keep accepts with
+// one subtree read (`GET /repos/{owner}/{repo}/git/trees/{sha}:{dir}`): only
+// the directory's own entries come back, so a large repository elsewhere
+// cannot push the response past the read cap. GitHub's 404 for a commit
+// without dir is an empty Dir (a valid, empty model). An entry counts when
+// keep accepts its name and its kind, read with notes.GitKind from its type
+// and mode, the rule notes.ReadSet takes for a directory on disk: notes.IsNote
+// for the notes of .dispatch/architecture, which keeps the regular blobs (mode
+// 100644 / 100755) named *.md, and specgraph.IsFile for the spec files of
+// .dispatch/spec, which keeps those named *.yaml; each skips symlinks
+// (120000), submodules, and nested directories. A listing GitHub answers
+// truncated is ErrTreeTruncated — it cannot be trusted, so the sync fails
+// whole. dir is a plain repo-relative path, no leading slash.
+func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string, keep func(name string, kind notes.Kind) bool) (Dir, error) {
 	if c == nil {
 		return Dir{}, ErrNoAppKey
 	}
@@ -1214,7 +1217,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 	}
 	listing := Dir{SHA: tree.SHA}
 	for _, entry := range tree.Tree {
-		if !notes.IsNote(entry.Path, notes.GitKind(entry.Type, entry.Mode)) {
+		if !keep(entry.Path, notes.GitKind(entry.Type, entry.Mode)) {
 			continue
 		}
 		listing.Files = append(listing.Files, DirFile{

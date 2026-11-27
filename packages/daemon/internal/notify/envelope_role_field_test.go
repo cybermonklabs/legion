@@ -58,7 +58,8 @@ func TestPublishReadsAnEnvelopeAnswerThatCarriesTheRoleFieldAsWithoutIt(t *testi
 				if tc.keep {
 					return publisher.PublishKept(context.Background(), topic, "pr-blocked on LEGION-2", payload, "legion-outbox:42")
 				}
-				return false, publisher.Publish(context.Background(), topic, "pr-blocked on LEGION-2", payload, "legion-outbox:42")
+				_, err = publisher.Publish(context.Background(), topic, "pr-blocked on LEGION-2", payload, "legion-outbox:42")
+				return false, err
 			}
 
 			kept, err := read(envelope)

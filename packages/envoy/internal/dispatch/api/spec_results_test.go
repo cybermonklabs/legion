@@ -57,40 +57,106 @@ const (
 // the graph logic takes (specgraph.Judge finds no problem in it), as the files of a commit a job
 // reports on must be.
 var specResultsFiles = map[string]string{
-	"probe.md": `:::requirement{#the-probe-holds kind="behavior"}
-The probe test passes on each commit.
-:::
-
-:::check{#probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestP" job="go-checks"}
-Claim: The probe test passes.
-Procedure: The program runs the probe test one time.
-Failing example: A probe test that fails.
-:::
-
-:::check{#second-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestQ" job="envoy-go"}
-Claim: The second probe test passes.
-Procedure: The program runs the second probe test one time.
-Failing example: A second probe test that fails.
-:::
-
-:::check{#matrix-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestM" job="m"}
-Claim: The matrix probe test passes on each leg.
-Procedure: The program runs the matrix probe test on each leg.
-Failing example: A matrix probe test that fails on one leg.
-:::
-
-:::check{#parenthesized-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestR" job="foo (bar)"}
-Claim: The parenthesized probe test passes.
-Procedure: The program runs the parenthesized probe test one time.
-Failing example: A parenthesized probe test that fails.
-:::
-
-:::check{#build-probe-passes serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestB" job="build"}
-Claim: The build probe test passes on each leg.
-Procedure: The program runs the build probe test on each leg.
-Failing example: A build probe test that fails on one leg.
-:::
+	"probe.yaml": `---
+type: requirement
+id: the-probe-holds
+kind: behavior
+text:
+  - The probe test passes on each commit.
+---
+type: check
+id: probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestP
+  job: go-checks
+claim: The probe test passes.
+procedure_text:
+  - The program runs the probe test one time.
+failing_example:
+  - A probe test that fails.
+---
+type: check
+id: second-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestQ
+  job: envoy-go
+claim: The second probe test passes.
+procedure_text:
+  - The program runs the second probe test one time.
+failing_example:
+  - A second probe test that fails.
+---
+type: check
+id: matrix-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestM
+  job: m
+claim: The matrix probe test passes on each leg.
+procedure_text:
+  - The program runs the matrix probe test on each leg.
+failing_example:
+  - A matrix probe test that fails on one leg.
+---
+type: check
+id: parenthesized-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestR
+  job: foo (bar)
+claim: The parenthesized probe test passes.
+procedure_text:
+  - The program runs the parenthesized probe test one time.
+failing_example:
+  - A parenthesized probe test that fails.
+---
+type: check
+id: build-probe-passes
+serves: the-probe-holds
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/m/p TestB
+  job: build
+claim: The build probe test passes on each leg.
+procedure_text:
+  - The program runs the build probe test on each leg.
+failing_example:
+  - A build probe test that fails on one leg.
 `,
+}
+
+// specPaddingFile is a spec file of size bytes that the graph logic takes (specgraph.Judge finds
+// no problem in it): one term, padding-term<n>, as print writes it, whose definition is a run of
+// letters as long as the size needs. A size below the shortest such file fails the test.
+func specPaddingFile(t *testing.T, n, size int) string {
+	t.Helper()
+	term := specgraph.Term{ID: fmt.Sprintf("padding-term%04d", n), Name: "padding", Definition: "a"}
+	shortest, err := term.Print()
+	if err != nil || size < len(shortest) {
+		t.Fatalf("a padding file of %d bytes: the shortest is %d bytes (%v)", size, len(shortest), err)
+	}
+	term.Definition = strings.Repeat("a", size-len(shortest)+1)
+	printed, err := term.Print()
+	if err != nil || len(printed) != size {
+		t.Fatalf("the padding file is %d bytes, want %d (%v)", len(printed), size, err)
+	}
+	return printed
 }
 
 // specResultsWorkflowPath is the workflow file of the default run, the path its workflow_ref names.
@@ -549,22 +615,22 @@ func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
 		name, file, content, first string
 	}{
 		{
-			name: "an unclosed block in another file", file: "broken.md",
-			content: ":::requirement{#broken kind=\"behavior\"}\nThis block never closes.\n",
-			first:   ".dispatch/spec/broken.md:1: broken: leaf-without-check: no statement is under it and no check serves it",
+			name: "a statement no check serves, in another file", file: "broken.yaml",
+			content: "---\ntype: requirement\nid: broken\nkind: behavior\ntext:\n  - No check serves this statement.\n",
+			first:   ".dispatch/spec/broken.yaml:1: broken: leaf-without-check: no statement is under it and no check serves it",
 		},
 		{
-			name: "a check without its failing example", file: "probe.md",
-			content: strings.Replace(specResultsFiles["probe.md"], "Failing example: A probe test that fails.\n", "", 1),
-			first:   ".dispatch/spec/probe.md:5: probe-passes: no-failing-example: the check has no failing example",
+			name: "a check without its failing example", file: "probe.yaml",
+			content: strings.Replace(specResultsFiles["probe.yaml"], "failing_example:\n  - A probe test that fails.\n", "", 1),
+			first:   ".dispatch/spec/probe.yaml:7: probe-passes: schema: node: missing property 'failing_example'",
 		},
 		{
-			name: "a spec file that holds a NUL byte", file: "nul.md", content: "# A heading\n\x00\n",
-			first: ".dispatch/spec/nul.md:2: -: bad-encoding: a spec file is UTF-8 text with no NUL byte",
+			name: "a spec file that holds a NUL byte", file: "nul.yaml", content: "# A heading\n\x00\n",
+			first: ".dispatch/spec/nul.yaml:2: -: bad-yaml: control characters are not allowed",
 		},
 		{
-			name: "a spec file over the size bound", file: "big.md", content: strings.Repeat("\n", notes.MaxFileSize+1),
-			first: "file too large: .dispatch/spec/big.md is 1048577 bytes (limit 1048576)",
+			name: "a spec file over the size bound", file: "big.yaml", content: strings.Repeat("\n", notes.MaxFileSize+1),
+			first: "file too large: .dispatch/spec/big.yaml is 1048577 bytes (limit 1048576)",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -588,11 +654,11 @@ func TestSpecFilesTheGraphLogicRefusesAreRefused(t *testing.T) {
 func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	files := maps.Clone(specResultsFiles)
-	files["big-b.md"] = strings.Repeat("\n", notes.MaxFileSize+2)
-	files["big-a.md"] = strings.Repeat("\n", notes.MaxFileSize+1)
+	files["big-b.yaml"] = strings.Repeat("\n", notes.MaxFileSize+2)
+	files["big-a.yaml"] = strings.Repeat("\n", notes.MaxFileSize+1)
 	rig.github.files[specResultsCommit] = files
 	refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusConflict, "SPEC_FILES_REFUSED")
-	const want = "have 2 problems, so they hold no check to write a result for. The first: file too large: .dispatch/spec/big-a.md is 1048577 bytes (limit 1048576)"
+	const want = "have 2 problems, so they hold no check to write a result for. The first: file too large: .dispatch/spec/big-a.yaml is 1048577 bytes (limit 1048576)"
 	if !strings.Contains(refusal.Error, want) {
 		t.Fatalf("the refusal %q does not say %q", refusal.Error, want)
 	}
@@ -605,21 +671,21 @@ func TestEachFileOverTheBoundIsAProblem(t *testing.T) {
 // with that one finding, and GitHub is asked for no file. The files of a commit at each bound
 // write their result.
 func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
-	// The probe spec and blank files up to count files in all.
-	padded := func(count int) map[string]string {
+	// The probe spec and padding files up to count files in all, each a file the graph logic takes.
+	padded := func(t *testing.T, count int) map[string]string {
 		files := maps.Clone(specResultsFiles)
 		for i := 0; len(files) < count; i++ {
-			files[fmt.Sprintf("n%04d.md", i)] = "\n"
+			files[fmt.Sprintf("n%04d.yaml", i)] = specPaddingFile(t, i, 100)
 		}
 		return files
 	}
-	// The probe spec and files of blank lines, each within notes.MaxFileSize, summing to total.
-	summing := func(total int) map[string]string {
+	// The probe spec and padding files, each within notes.MaxFileSize, summing to total.
+	summing := func(t *testing.T, total int) map[string]string {
 		files := maps.Clone(specResultsFiles)
-		left := total - len(files["probe.md"])
+		left := total - len(files["probe.yaml"])
 		for i := 0; left > 0; i++ {
 			size := min(left, notes.MaxFileSize)
-			files[fmt.Sprintf("blank-%02d.md", i)] = strings.Repeat("\n", size)
+			files[fmt.Sprintf("padding-%02d.yaml", i)] = specPaddingFile(t, i, size)
 			left -= size
 		}
 		return files
@@ -630,8 +696,8 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 		files map[string]string
 		want  string
 	}{
-		{name: "one file over MaxFiles", files: padded(notes.MaxFiles + 1), want: refusedAs + "1001 files (limit 1000)"},
-		{name: "one byte over MaxSetSize", files: summing(notes.MaxSetSize + 1), want: refusedAs + "16777217 bytes in its files (limit 16777216)"},
+		{name: "one file over MaxFiles", files: padded(t, notes.MaxFiles+1), want: refusedAs + "1001 files (limit 1000)"},
+		{name: "one byte over MaxSetSize", files: summing(t, notes.MaxSetSize+1), want: refusedAs + "16777217 bytes in its files (limit 16777216)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
@@ -651,8 +717,8 @@ func TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead(t *testing.T) {
 		name  string
 		files map[string]string
 	}{
-		{name: "MaxFiles files", files: padded(notes.MaxFiles)},
-		{name: "files summing MaxSetSize", files: summing(notes.MaxSetSize)},
+		{name: "MaxFiles files", files: padded(t, notes.MaxFiles)},
+		{name: "files summing MaxSetSize", files: summing(t, notes.MaxSetSize)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newSpecResultsRig(t)
@@ -750,8 +816,10 @@ func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
 func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 	const check = "unit-probe-passes"
 	files := maps.Clone(specResultsFiles)
-	files["probe.md"] += "\n:::check{#" + check + ` serves="the-probe-holds" subject="code" procedure="program" runner="go" selector="example.com/m/p TestU" job="test (unit)"}` + "\n" +
-		"Claim: The unit probe test passes.\nProcedure: The program runs the unit probe test one time.\nFailing example: A unit probe test that fails.\n:::\n"
+	files["probe.yaml"] += "---\ntype: check\nid: " + check + "\nserves: the-probe-holds\nsubject: code\nprocedure: program\n" +
+		"test:\n  runner: go\n  selector: example.com/m/p TestU\n  job: test (unit)\n" +
+		"claim: The unit probe test passes.\nprocedure_text:\n  - The program runs the unit probe test one time.\n" +
+		"failing_example:\n  - A unit probe test that fails.\n"
 	workflow := func(matrixJob string) string {
 		return "jobs:\n" +
 			"  " + matrixJob + ":\n    strategy:\n      matrix:\n        suite: [unit]\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n" +

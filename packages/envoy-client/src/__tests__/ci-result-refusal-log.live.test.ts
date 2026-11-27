@@ -21,7 +21,7 @@ const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 const stackDirectory = useCIResultsStackDirectory();
 const work = temporaryDirectory("acceptance-tci2-run2-red");
 /** The name of a spec file whose second line is a workflow command. */
-const INJECTED = "x\n::error title=injected::boom.md";
+const INJECTED = "x\n::error title=injected::boom.yaml";
 
 function git(cwd: string, ...args: string[]): string {
   const ran = Bun.spawnSync(
@@ -69,7 +69,7 @@ describe.skipIf(!dispatchStackEnabled)("a CI job's refusal, as its log holds it"
     writeProbeSpec(spec);
     writeFileSync(
       join(spec, INJECTED),
-      ':::requirement{#a-lonely-statement kind="behavior"}\nThe part gives its answer.\n:::\n'
+      "---\ntype: requirement\nid: a-lonely-statement\nkind: behavior\ntext:\n  - The part gives its answer.\n"
     );
     git(dir, "init", "-q");
     git(dir, "add", "-A");

@@ -514,7 +514,7 @@ test("registers aside capability and soft-reclaims the role persisted for a resu
     },
     setRole: async (input) => {
       setRoles.push(input)
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
   })
 

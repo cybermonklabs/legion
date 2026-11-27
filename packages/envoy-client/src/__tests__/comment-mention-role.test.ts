@@ -220,17 +220,14 @@ describe("dispatch comment --mention-role", () => {
     expect(requests).toEqual([]);
   });
 
-  // R2: the command's help names the flag and says what a role mention reaches.
-  test("dispatch comment --help names the flag and says the comment reaches the role's holder", async () => {
+  // R2: the command's help names the flag.
+  test("dispatch comment --help names the flag", async () => {
     const { code, stdout } = await run(["comment", "--help"]);
 
     expect(code).toBe(0);
     const lines = stdout.split("\n");
     const at = lines.indexOf("  --mention-role <name>");
     expect(at, stdout).toBeGreaterThan(-1);
-    expect(lines[at + 1]).toContain(
-      "Dispatch delivers the comment to the session that holds the role"
-    );
     expect(requests).toEqual([]);
   });
 

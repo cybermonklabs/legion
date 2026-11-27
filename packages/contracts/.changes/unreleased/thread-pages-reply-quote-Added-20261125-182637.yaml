@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  The Dispatch API document and its generated types describe the issue's thread pages: the
+  `order`, `limit`, `before`, `author` and `person` query parameters of
+  `GET /api/v1/issues/{key}/comments`, `/messages` and `/asks`, with the values each takes, and
+  each route's second `200` answer, `CommentThreadPage`, `MessageThreadPage` or `AskThreadPage`
+  (`{threads, before, remaining}`, each row with `last_activity_at`). `MAX_THREAD_PAGE_LIMIT`
+  (100) and `DEFAULT_THREAD_PAGE_LIMIT` (20) are the page's bounds, generated into Go. The six
+  routes that write a reply to a block take `quote` and `occurrence`, and `ReplyBlock`,
+  `WrittenReplyBlockSchema` and `ReplyBlockSchema` carry them; a reply's own delete event never
+  carries them.
+time: 2026-11-25T18:26:37Z
+custom:
+    Issue: thread-pages-reply-quote

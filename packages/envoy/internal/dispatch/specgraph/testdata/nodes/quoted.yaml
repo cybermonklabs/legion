@@ -1,0 +1,15 @@
+---
+type: term
+id: quoted
+name: quoted term
+definition:
+  - 'a: b'
+  - 'x #y'
+  - "no"
+  - "2026-11-16"
+  - it's
+  - say "x"
+  - "a\tb"
+  - café
+  - "emoji \U0001F600"
+  - ' lead'
