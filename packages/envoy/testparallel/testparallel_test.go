@@ -180,7 +180,27 @@ func TestPlantedKeepsAnAddressAndATimeUnderItsMarker(t *testing.T) {
 }
 `
 
-// plantedPackage is a package holding plantedTests and citedTests; two test files that import
+// splitTests is a test file of the planted package whose one test runs itself again alone, as an
+// internal/alonetest test does: its marker gives the reason of the run alone, and only the branch
+// of the run that starts it calls t.Parallel(), which keeps the rule.
+const splitTests = `package planted
+
+import (
+	"os"
+	"testing"
+)
+
+func TestPlantedKeepsSplittingItsRunAlone(t *testing.T) {
+	// Not parallel: its run alone counts allocations with testing.AllocsPerRun.
+	if os.Getenv("PLANTED_RUN_ALONE") == "" {
+		t.Parallel()
+		return
+	}
+	_ = t.TempDir()
+}
+`
+
+// plantedPackage is a package holding plantedTests, citedTests and splitTests; two test files that import
 // testing under another name and with a dot, each with a test that breaks the rule; a test of its
 // external test package that breaks it; and a test behind a build tag this build does not set,
 // which breaks it too and is read all the same, since a tagged test runs in some lane.
@@ -190,6 +210,7 @@ func plantedPackage(t *testing.T) string {
 		"planted.go":      "package planted\n",
 		"planted_test.go": plantedTests,
 		"cited_test.go":   citedTests,
+		"split_test.go":   splitTests,
 		"aliased_test.go": "package planted\n\nimport tst \"testing\"\n\nfunc TestPlantedKeepsAliasedParallel(t *tst.T) {\n\tt.Parallel()\n}\n\nfunc TestPlantedBreaksAliased(t *tst.T) {}\n",
 		"dotted_test.go":  "package planted\n\nimport . \"testing\"\n\nfunc TestPlantedBreaksDotted(t *T) {}\n",
 		"outside_test.go": "package planted_test\n\nimport \"testing\"\n\nfunc TestPlantedBreaksOutside(t *testing.T) {\n\t_ = t.Name()\n}\n",
@@ -230,8 +251,9 @@ func (f *failures) Errorf(format string, args ...any) {
 // one behind a build tag the build does not set, and one whose reason names a line (a file's, on
 // its first line or its second, a bare one, or one in words, on one line or across two, singular
 // or plural, after a tab). A test that says it is not parallel and runs a subtest in parallel
-// keeps the rule, and so does one whose marker is followed by a comment holding an address's port
-// and a time of day. It lists the tests that keep the rule by running alone, each with its reason.
+// keeps the rule, and so do one whose marker is followed by a comment holding an address's port
+// and a time of day, and one that calls t.Parallel() only in the branch of an if, as a test that
+// runs itself again alone does. It lists the tests that keep the rule by running alone, each with its reason.
 // A function that is not a test is not counted.
 func TestSerialTestsNamesEachTestThatBreaksTheRule(t *testing.T) {
 	t.Parallel()
@@ -273,8 +295,8 @@ func TestSerialTestsNamesEachTestThatBreaksTheRule(t *testing.T) {
 		"planted_test.go:103 TestPlantedBreaksWithAnUnnamedParameter",
 		"planted_test.go:105 TestPlantedBreaksEmpty",
 	}
-	if read != 34 || !slices.Equal(named, want) {
-		t.Fatalf("serialTests read %d tests and named\n\t%s\nwant 34 tests read and\n\t%s", read, strings.Join(named, "\n\t"), strings.Join(want, "\n\t"))
+	if read != 35 || !slices.Equal(named, want) {
+		t.Fatalf("serialTests read %d tests and named\n\t%s\nwant 35 tests read and\n\t%s", read, strings.Join(named, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	for _, b := range broken {
 		want := forgetsBoth
@@ -299,6 +321,7 @@ func TestSerialTestsNamesEachTestThatBreaksTheRule(t *testing.T) {
 		"cited_test.go:42 TestPlantedKeepsAnAddressAndATimeUnderItsMarker it sets an environment variable of the whole process.",
 		"planted_test.go:15 TestPlantedKeepsSayingWhyNot it sets an environment variable of the whole process.",
 		"planted_test.go:20 TestPlantedKeepsSayingWhyNotWithAParallelSubtest it sets an environment variable of the whole process.",
+		"split_test.go:8 TestPlantedKeepsSplittingItsRunAlone its run alone counts allocations with testing.AllocsPerRun.",
 	}
 	if !slices.Equal(alone, wantAlone) {
 		t.Errorf("serialTests listed the tests that run alone as\n\t%s\nwant\n\t%s", strings.Join(alone, "\n\t"), strings.Join(wantAlone, "\n\t"))

@@ -16,6 +16,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -97,6 +98,10 @@ func joined(tests []foundTest, line func(foundTest) string) string {
 // tag such as e2e or multiprocess still runs in some lane, and its tests run beside each other
 // there.
 func serialTests(dir string) (read int, broken, marked []foundTest, err error) {
+	// A directory that is not there globs to nothing, which would read as a package with no test.
+	if _, err := os.Stat(dir); err != nil {
+		return 0, nil, nil, err
+	}
 	names, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
 	if err != nil {
 		return 0, nil, nil, err
@@ -193,13 +198,18 @@ func callsParallelFirst(param *ast.Ident, body *ast.BlockStmt) bool {
 // method value taken to call later (p := t.Parallel). A function literal that declares a parameter
 // of param's name, as a subtest's func(t *testing.T) does, is passed over, since that name is
 // another *testing.T there and a subtest may run in parallel under a serial test; one that
-// captures param is read as the test's own code.
+// captures param is read as the test's own code. The branches of an if statement are passed over
+// too, and its condition is read: a test that runs itself again in a run of the test binary of its
+// own (internal/alonetest) calls t.Parallel() only in the branch of the run that starts the other,
+// which measures nothing and only waits, and its `// Not parallel:` comment gives the reason of the
+// run alone, which cannot run beside anything.
 func callsParallel(param *ast.Ident, body *ast.BlockStmt) bool {
 	if param == nil {
 		return false
 	}
 	found := false
-	ast.Inspect(body, func(n ast.Node) bool {
+	var visit func(ast.Node) bool
+	visit = func(n ast.Node) bool {
 		// ast.Inspect visits a node's later siblings whatever this returns: once found, this guard
 		// ends the walk's work there.
 		if found {
@@ -208,13 +218,20 @@ func callsParallel(param *ast.Ident, body *ast.BlockStmt) bool {
 		switch n := n.(type) {
 		case *ast.FuncLit:
 			return !declares(n.Type, param.Name)
+		case *ast.IfStmt:
+			if n.Init != nil {
+				ast.Inspect(n.Init, visit)
+			}
+			ast.Inspect(n.Cond, visit)
+			return false
 		case *ast.SelectorExpr:
 			if isParallelOf(param, n) {
 				found = true
 			}
 		}
 		return true
-	})
+	}
+	ast.Inspect(body, visit)
 	return found
 }
 
