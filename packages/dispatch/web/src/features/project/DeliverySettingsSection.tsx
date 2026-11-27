@@ -142,7 +142,8 @@ interface SourceDraft {
   pr_checks_rollup_job_name: string;
 }
 
-/** The fields as typed. A target left empty keeps the eval's target: the save leaves it out. */
+/** The fields as typed. A target left as it was read, or left empty, keeps the eval's target: the
+ *  save leaves it out (`editedTargets`). */
 interface Draft {
   delivery: boolean;
   sources: SourceDraft[];
@@ -226,6 +227,18 @@ function draftOf(record: ProjectDeliverySettings | null): Draft {
   };
 }
 
+/** The fields of the record a save starts from: every field it read, one this build does not know
+ *  included, so a field of a newer build survives a save of this one; but not its targets, each a
+ *  version of its eval that another write may have moved since the read, which a save names only
+ *  where the reader changed it (`editedTargets`). */
+function recordFields(record: ProjectDeliverySettings | null) {
+  if (record === null) {
+    return {};
+  }
+  const { targets: _eachEvalsOwn, ...fields } = record;
+  return fields;
+}
+
 /** A stored source as a save sends it back unchanged. An `events` source names its kind alone. */
 function storedSourceInput(source: ProjectDeploySource): ProjectDeploySourceInput {
   if (source.kind === "events") {
@@ -244,10 +257,11 @@ function storedSourceInput(source: ProjectDeploySource): ProjectDeploySourceInpu
   };
 }
 
-/** With delivery off, start from the stored record and discard edits to the hidden fields. */
+/** With delivery off, start from the stored record and discard edits to the hidden fields, the
+ *  targets among them: the save names no target, so each eval keeps the target it holds. */
 function storedInput(record: ProjectDeliverySettings | null): ProjectDeliverySettingsInput {
   return {
-    ...record,
+    ...recordFields(record),
     delivery: false,
     sources: record?.sources?.map(storedSourceInput) ?? [],
     population_authors: record?.population_authors ?? [],
@@ -284,23 +298,34 @@ function parsedTarget(text: string): number | typeof TARGET_OFF | undefined {
   return trimmed === "" || !Number.isFinite(value) ? undefined : value;
 }
 
-/** The save of a project with delivery on: built from the record it read (sending back every field
- *  the form does not edit, one it does not know included), overwriting the fields the form edits
- *  and each target box that holds text (a box left empty keeps its eval's target). `refusalOf`
- *  passed the draft first. */
-function draftInput(
+/** Each target the reader changed since the fields were drawn from the record (`initial`), as a
+ *  save sends it. A box that holds what it was drawn with, or nothing, keeps its eval's target, so
+ *  the save leaves it out: a target another write moved while the form was open stands. */
+function editedTargets(
   draft: Draft,
-  record: ProjectDeliverySettings | null
-): ProjectDeliverySettingsInput {
+  initial: Draft
+): NonNullable<ProjectDeliverySettingsInput["targets"]> {
   const targets: NonNullable<ProjectDeliverySettingsInput["targets"]> = {};
   for (const slug of TARGET_SLUGS) {
     const target = parsedTarget(draft.targets[slug]);
-    if (target !== undefined) {
+    if (target !== undefined && target !== parsedTarget(initial.targets[slug])) {
       targets[slug] = target;
     }
   }
+  return targets;
+}
+
+/** The save of a project with delivery on: built from the record it read (sending back every field
+ *  the form does not edit, one it does not know included, but the targets: `recordFields`),
+ *  overwriting the fields the form edits, and naming each target the reader changed
+ *  (`editedTargets`). `refusalOf` passed the draft first. */
+function draftInput(
+  draft: Draft,
+  initial: Draft,
+  record: ProjectDeliverySettings | null
+): ProjectDeliverySettingsInput {
   return {
-    ...record,
+    ...recordFields(record),
     delivery: true,
     sources: draft.sources.map(sourceInput),
     population_authors: listEntries(draft.population_authors),
@@ -309,7 +334,7 @@ function draftInput(
       draft.failure_sources.includes(value)
     ),
     failures_measured_since: textOrNull(draft.failures_measured_since),
-    targets,
+    targets: editedTargets(draft, initial),
   };
 }
 
@@ -380,10 +405,11 @@ interface DeliverySettingsSectionProps {
  * roll-up job) or the project's posted deploys (`events`, one at most), with Add and Remove; the
  * population rule; the failure sources with the day they are counted from; and the targets of
  * the seven delivery evals, each a number or `off`. With delivery off it shows the switch alone,
- * and Save sends the stored fields back unchanged. Save updates the project's settings through
- * `PUT /api/v1/projects/{key}/settings/delivery`; a refusal shows under the form as the server
- * wrote it and the draft stays. A save starts the fields over from the record the server stored,
- * and so does anyone else's save once the record is read again.
+ * and Save sends the stored fields back unchanged; a save names only the targets the reader
+ * changed, so a target another write moved while the form was open stands. Save updates the
+ * project's settings through `PUT /api/v1/projects/{key}/settings/delivery`; a refusal shows under
+ * the form as the server wrote it and the draft stays. A save starts the fields over from the
+ * record the server stored, and so does anyone else's save once the record is read again.
  */
 export function DeliverySettingsSection({
   project,
@@ -512,7 +538,12 @@ function DeliverySettingsFields({
   unnamedWriter,
 }: DeliverySettingsFieldsProps): ReactNode {
   const id = useId();
-  const [draft, setDraft] = useState<Draft>(() => draftOf(record));
+  // The fields as they were drawn from the record, which a save compares each target box against
+  // (`editedTargets`). A re-read with a new write time draws the fields, and this, again (the
+  // section's `key`); one that answers a target another write moved does not, so the box still
+  // holds what it was drawn with and the save leaves that target out.
+  const [initial] = useState(() => draftOf(record));
+  const [draft, setDraft] = useState<Draft>(initial);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const update = (next: Draft) => {
     setDraft(next);
@@ -542,7 +573,7 @@ function DeliverySettingsFields({
       onRefused();
       return;
     }
-    onSave(draftInput(draft, record));
+    onSave(draftInput(draft, initial, record));
   };
 
   return (
@@ -747,7 +778,8 @@ function DeliverySettingsFields({
                   id={`${id}-targets-hint`}
                 >
                   Each a number in its eval&apos;s unit, or off for no target. Saved as a new
-                  version of the project&apos;s eval; a box left empty keeps the eval&apos;s target.
+                  version of the project&apos;s eval; a box left empty, or as it was read, keeps the
+                  eval&apos;s target.
                 </p>
                 {TARGET_SLUGS.map((slug) => (
                   <label className={settingsFieldLabel} htmlFor={`${id}-target-${slug}`} key={slug}>

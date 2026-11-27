@@ -195,21 +195,26 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 
 // putProjectDeliverySettings answers PUT /api/v1/projects/{key}/settings/delivery: it updates the
 // project's delivery settings with each top-level field the body names (keeping the stored value
-// of every top-level field it leaves out; null clears a field that may be empty; sources, when
-// present, replaces the list) and writes each target the body changes as a new version of the
-// project's eval, in one transaction, and answers the stored settings as GET does.
+// of every top-level field it leaves out as the settings stand when the save is written, so a save
+// that waited for another save of the project keeps what that one wrote; null clears a field that
+// may be empty; sources, when present, replaces the list) and writes each target the body names
+// that its eval does not hold already as a new version of the project's eval, in one transaction
+// (settingsSave), and answers the stored settings as GET does.
 //
 // It refuses, writing nothing: a field no reader could read, 400 DELIVERY_SETTINGS_INPUT naming the
 // field and, for a source's, the source's index (delivery.ValidateProjectSettings, and the targets
 // and the first day here); a source's repository the GitHub App cannot read, 409
-// DELIVERY_SETTINGS_ACCESS naming the source, proved for every github_workflow source while
-// delivery is on and before anything is written, as the singleton's save proves its one repository
-// (a save that turns delivery off proves nothing, so a project whose repository the App lost can
-// still stop); and the D1 refusals, 409 DELIVERY_NO_DEFAULT_REPOSITORY and
-// DELIVERY_REPOSITORY_SHARED, the latter naming the other project (delivery.PutProjectSettings).
-// A repository is stored lower-case under its new name where a rename pair renames it away, as an
-// excluded one is. The change rows both writes log are moved into the change log once the
-// transaction commits, as every eval write's are (evals.Store.RegisterWith).
+// DELIVERY_SETTINGS_ACCESS naming the source, proved while delivery is on for every repository a
+// github_workflow source of the written settings reads, the default repository a source naming
+// none reads included, before the transaction opens, as the singleton's save proves its one
+// repository (a save that turns delivery off proves nothing, so a project whose repository the App
+// lost can still stop); the D1 refusals, 409 DELIVERY_NO_DEFAULT_REPOSITORY and
+// DELIVERY_REPOSITORY_SHARED, the latter naming the other project (delivery.PutProjectSettings);
+// and 409 DELIVERY_SETTINGS_CHANGED, where another write moved what the save rests on under each
+// of its attempts (resolveThenLock). A repository is stored lower-case under its new name where a
+// rename pair renames it away, as an excluded one is. The change rows both writes log are moved
+// into the change log once the transaction commits, as every eval write's are
+// (evals.Store.RegisterWith).
 func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input projectDeliverySettingsInput
 	body, err := decodeJSONBody(r, &input)
@@ -228,51 +233,21 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 	}
 	ctx := r.Context()
 	key := r.PathValue("key")
-	project, err := s.loadProject(ctx, s.deps.Store.Pool, key)
-	if err != nil {
+	if _, err := s.loadProject(ctx, s.deps.Store.Pool, key); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	save, refusal := s.projectSettingsSave(key, input)
-	if refusal == nil {
-		if err := s.keepStoredDeliverySettings(ctx, &save, present); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		refusal = delivery.ValidateProjectSettings(save)
-	}
-	targets, targetRefusal := parseDeliveryTargets(input.Targets)
-	if refusal == nil {
-		refusal = targetRefusal
-	}
+	named, refusal := s.projectSettingsSave(key, input)
 	if refusal != nil {
 		s.writeSettingsRefusal(w, refusal)
 		return
 	}
-	if save.Delivery {
-		denied, err := s.checkSourceAccess(ctx, save, project.DefaultRepo)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if denied != nil {
-			s.writeSettingsRefusal(w, denied)
-			return
-		}
+	targets, targetRefusal := parseDeliveryTargets(input.Targets)
+	save := &settingsSave{
+		server: s, project: key, named: named, present: present, targets: targets, targetRefusal: targetRefusal,
+		actor: actor, proved: map[string]bool{},
 	}
-	changes, unheld, err := s.deliveryTargetChanges(ctx, key, targets, actor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if unheld != nil {
-		s.writeSettingsRefusal(w, unheld)
-		return
-	}
-	if _, err := s.registry().RegisterWith(ctx, key, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := delivery.PutProjectSettings(ctx, tx, save, actor)
-		return err
-	}, changes...); err != nil {
+	if _, err := resolveThenLock(ctx, save.resolve, save.write, settingsChanged(key)); err != nil {
 		var settingsRefusal *delivery.SettingsError
 		switch {
 		case errors.As(err, &settingsRefusal):
@@ -292,6 +267,164 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 	WriteJSON(w, http.StatusOK, answer)
 }
 
+// codeDeliverySettingsChanged is the refusal of a settings save under each of whose attempts
+// (resolutionAttempts) another write moved the stored settings or a target it names, so it could
+// not prove what it would write: 409, with nothing written.
+const codeDeliverySettingsChanged = "DELIVERY_SETTINGS_CHANGED"
+
+// settingsChanged is project's refusal codeDeliverySettingsChanged.
+func settingsChanged(project string) *delivery.SettingsError {
+	message := fmt.Sprintf("another write moved project %s's delivery settings, or a target this save names, under each of its %d attempts: read them again and save again", project, resolutionAttempts)
+	return &delivery.SettingsError{Code: codeDeliverySettingsChanged, Message: message}
+}
+
+// settingsSave is one PUT of a project's delivery settings as resolveThenLock runs it: the fields
+// its body names (named, its repositories canonical: projectSettingsSave) and which of them it
+// names (present), the targets it sets and the refusal of its targets, its writer, and the
+// repositories an attempt has proved the GitHub App can read, by lower-case name. Each attempt
+// reads the stored settings before its transaction (resolve) and again once it holds the project's
+// lock (write), and writes the second read's value of each field the body leaves out.
+type settingsSave struct {
+	server        *server
+	project       string
+	named         delivery.ProjectSettingsInput
+	present       map[string]jsonMember
+	targets       map[string]*float64
+	targetRefusal error
+	actor         model.Actor
+	proved        map[string]bool
+}
+
+// resolve is an attempt's work before its transaction, holding no lock: the save as the stored
+// settings fill it (merged), refused where no reader could read it (delivery.ValidateProjectSettings,
+// then the targets), the GitHub App's read of each repository its github_workflow sources read
+// proved while delivery is on (checkSourceAccess), and the register write of each target the body
+// names that its eval does not hold already (deliveryTargetChanges).
+func (save *settingsSave) resolve(ctx context.Context) ([]evals.Registration, error) {
+	s := save.server
+	merged, defaultRepo, err := save.merged(ctx, s.deps.Store.Pool)
+	if err != nil {
+		return nil, err
+	}
+	if err := delivery.ValidateProjectSettings(merged); err != nil {
+		return nil, err
+	}
+	if save.targetRefusal != nil {
+		return nil, save.targetRefusal
+	}
+	if merged.Delivery {
+		denied, err := s.checkSourceAccess(ctx, merged, defaultRepo, save.proved)
+		if err != nil {
+			return nil, err
+		}
+		if denied != nil {
+			return nil, denied
+		}
+	}
+	changes, unheld, err := s.deliveryTargetChanges(ctx, save.project, save.targets, save.actor)
+	if err != nil {
+		return nil, err
+	}
+	if unheld != nil {
+		return nil, unheld
+	}
+	return changes, nil
+}
+
+// write is an attempt's transaction: the settings and the target changes resolve worked out, in
+// one write (evals.Store.RegisterWith, which takes the changed evals' locks first), under the
+// project's lock (delivery.LockProject, then PutProjectSettings' repository locks), so each field
+// the body leaves out is read where no other save of the project can commit before this one. It
+// asks GitHub nothing. It rolls back and answers errStaleResolution, for resolveThenLock to resolve
+// again, where delivery is on and a source reads a repository no attempt proved (another save's
+// source, or the default repository a source naming none reads, written while this one waited),
+// and where a target the body names moved since resolve read it (targetsMoved).
+func (save *settingsSave) write(ctx context.Context, changes []evals.Registration) ([]evals.Registered, error) {
+	return save.server.registry().RegisterWith(ctx, save.project, func(ctx context.Context, tx pgx.Tx) error {
+		if err := delivery.LockProject(ctx, tx, save.project); err != nil {
+			return err
+		}
+		merged, defaultRepo, err := save.merged(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if merged.Delivery && !save.provedEvery(merged, defaultRepo) {
+			return errStaleResolution
+		}
+		moved, err := save.targetsMoved(ctx, tx, changes)
+		if err != nil {
+			return err
+		}
+		if moved {
+			return errStaleResolution
+		}
+		_, err = delivery.PutProjectSettings(ctx, tx, merged, save.actor)
+		return err
+	}, changes...)
+}
+
+// merged is the save as q holds the project now: the fields the body names and the stored value of
+// each field it leaves out (keepStoredDeliverySettings), and the project's default repository,
+// which a github_workflow source naming no repository reads.
+func (save *settingsSave) merged(ctx context.Context, q delivery.Querier) (delivery.ProjectSettingsInput, *string, error) {
+	merged := save.named
+	stored, err := delivery.GetProjectSettings(ctx, q, save.project)
+	if err == nil {
+		keepStoredDeliverySettings(&merged, save.present, stored)
+		return merged, stored.DefaultRepo, nil
+	}
+	if !errors.Is(err, delivery.ErrNoSettings) {
+		return delivery.ProjectSettingsInput{}, nil, err
+	}
+	var defaultRepo *string
+	if err := q.QueryRow(ctx, `select default_repo from projects where key = $1`, save.project).Scan(&defaultRepo); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return delivery.ProjectSettingsInput{}, nil, delivery.ErrProjectNotFound
+		}
+		return delivery.ProjectSettingsInput{}, nil, fmt.Errorf("read the default repository of %s: %w", save.project, err)
+	}
+	return merged, defaultRepo, nil
+}
+
+// provedEvery reports whether an attempt proved every repository a github_workflow source of merged
+// reads (delivery.SourceRepoOf over defaultRepo). A source that reads none is PutProjectSettings'
+// to refuse.
+func (save *settingsSave) provedEvery(merged delivery.ProjectSettingsInput, defaultRepo *string) bool {
+	for _, source := range merged.Sources {
+		repo, reads := delivery.SourceRepoOf(delivery.DeploySource{Kind: source.Kind, Repo: source.Repo}, defaultRepo)
+		if reads && !save.proved[strings.ToLower(repo)] {
+			return false
+		}
+	}
+	return true
+}
+
+// targetsMoved reports whether a target the body names stands in tx at another value than the one
+// changes were worked out from (deliveryTargetChanges): one that now differs from what the body sets
+// and has no change among them, which the write would leave as another write moved it although the
+// body sets it, or one that now equals it and has one, which would write a version of a target the
+// eval holds already (a person's write of an unmoved target is still a version, evals'
+// sameDefinition). The eval of each change is locked (RegisterWith), so its target stands until
+// the save commits; another eval the body names is not, and a write that moves it after this read
+// comes after this save, which writes nothing to it.
+func (save *settingsSave) targetsMoved(ctx context.Context, tx pgx.Tx, changes []evals.Registration) (bool, error) {
+	for _, slug := range deliverySettingsTargetSlugs {
+		target, named := save.targets[slug]
+		if !named {
+			continue
+		}
+		entry, held, err := evals.EvalIn(ctx, tx, evals.EvalID(save.project, slug))
+		if err != nil {
+			return false, err
+		}
+		changed := slices.ContainsFunc(changes, func(change evals.Registration) bool { return change.Slug == slug })
+		if !held || equalPointers(entry.Definition.Target, target) == changed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // topLevelJSONMembers reads the top-level names independently of their values. In the typed
 // decode both an omitted list and an explicit null list are nil; only the latter clears one.
 func topLevelJSONMembers(body []byte) (map[string]jsonMember, error) {
@@ -302,9 +435,11 @@ func topLevelJSONMembers(body []byte) (map[string]jsonMember, error) {
 	return members, nil
 }
 
-// keepStoredDeliverySettings fills the fields the body leaves out, without normalizing those
-// values again. Do it before validation and the GitHub access check: both read the whole save.
-func (s *server) keepStoredDeliverySettings(ctx context.Context, save *delivery.ProjectSettingsInput, present map[string]jsonMember) error {
+// keepStoredDeliverySettings fills each field of save that present, the body's top-level names,
+// leaves out with stored's value, without normalizing those values again. The save reads stored
+// both before its transaction, for its validation and its GitHub access check, which both read the
+// whole save, and under the project's lock, for what it writes (settingsSave).
+func keepStoredDeliverySettings(save *delivery.ProjectSettingsInput, present map[string]jsonMember, stored delivery.ProjectSettings) {
 	has := func(field string) bool {
 		if _, named := present[field]; named {
 			return true
@@ -320,16 +455,6 @@ func (s *server) keepStoredDeliverySettings(ctx context.Context, save *delivery.
 	deliveryNamed, sourcesNamed := has("delivery"), has("sources")
 	authorsNamed, excludedNamed := has("population_authors"), has("excluded_repos")
 	failuresNamed, sinceNamed := has("failure_sources"), has("failures_measured_since")
-	if deliveryNamed && sourcesNamed && authorsNamed && excludedNamed && failuresNamed && sinceNamed {
-		return nil
-	}
-	stored, err := delivery.GetProjectSettings(ctx, s.deps.Store.Pool, save.Project)
-	if errors.Is(err, delivery.ErrNoSettings) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	if !deliveryNamed {
 		save.Delivery = stored.Delivery
 	}
@@ -361,7 +486,6 @@ func (s *server) keepStoredDeliverySettings(ctx context.Context, save *delivery.
 	if !sinceNamed {
 		save.FailuresMeasuredSince = stored.FailuresMeasuredSince
 	}
-	return nil
 }
 
 // projectSettingsSave is the save input names, its repositories canonical: each source's
@@ -457,14 +581,16 @@ func parseDeliveryTargets(raw json.RawMessage) (map[string]*float64, error) {
 }
 
 // checkSourceAccess proves the GitHub App can read the repository of each github_workflow source
-// of save (delivery.SourceRepoOf over the project's default repository defaultRepo), before
-// anything is written: a repository it cannot read is the refusal it answers, 409
-// DELIVERY_SETTINGS_ACCESS naming the source. A source that reads no repository is left to the
-// save, which refuses it DELIVERY_NO_DEFAULT_REPOSITORY.
-func (s *server) checkSourceAccess(ctx context.Context, save delivery.ProjectSettingsInput, defaultRepo *string) (*delivery.SettingsError, error) {
+// of save (delivery.SourceRepoOf over the project's default repository defaultRepo) that proved,
+// the repositories an earlier attempt of the save proved, by lower-case name, does not hold, and
+// adds each it proves to proved. It runs before the save's transaction opens, so no lock waits on
+// GitHub: a repository it cannot read is the refusal it answers, 409 DELIVERY_SETTINGS_ACCESS
+// naming the source. A source that reads no repository is left to the save, which refuses it
+// DELIVERY_NO_DEFAULT_REPOSITORY.
+func (s *server) checkSourceAccess(ctx context.Context, save delivery.ProjectSettingsInput, defaultRepo *string, proved map[string]bool) (*delivery.SettingsError, error) {
 	for i, source := range save.Sources {
 		repo, reads := delivery.SourceRepoOf(delivery.DeploySource{Kind: source.Kind, Repo: source.Repo}, defaultRepo)
-		if !reads {
+		if !reads || proved[strings.ToLower(repo)] {
 			continue
 		}
 		owner, name, _ := strings.Cut(repo, "/")
@@ -477,14 +603,17 @@ func (s *server) checkSourceAccess(ctx context.Context, save delivery.ProjectSet
 			}
 			return nil, err
 		}
+		proved[strings.ToLower(repo)] = true
 	}
 	return nil, nil
 }
 
 // deliveryTargetChanges is a register write of each target of targets that is not its eval's
 // target already, as actor (Registration.Target alone, so every other field is carried forward
-// from the eval's newest version), in deliverySettingsTargetSlugs' order. A target of an eval the
-// project holds no version of is refused, named: its evals are seeded when the project is made.
+// from the eval's newest version), in deliverySettingsTargetSlugs' order, read before the save's
+// transaction opens; the transaction reads each target again (settingsSave.targetsMoved). A target
+// of an eval the project holds no version of is refused, named: its evals are seeded when the
+// project is made.
 func (s *server) deliveryTargetChanges(ctx context.Context, project string, targets map[string]*float64, actor model.Actor) ([]evals.Registration, *delivery.SettingsError, error) {
 	if len(targets) == 0 {
 		return nil, nil, nil

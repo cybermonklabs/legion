@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -10,11 +11,17 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -23,12 +30,19 @@ import (
 // to a stub broker (newBrokerTokenRigOn).
 func newDeliverySettingsRig(t *testing.T, fake *fakeGitHubApp) *brokerTokenRig {
 	t.Helper()
+	return newDeliverySettingsRigRecording(t, fake, nil)
+}
+
+// newDeliverySettingsRigRecording is newDeliverySettingsRig whose GitHub hands each request to
+// record, where it is set, before fake answers it (githubtest.Spec.Record).
+func newDeliverySettingsRigRecording(t *testing.T, fake *fakeGitHubApp, record func(*http.Request)) *brokerTokenRig {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	github := githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
+	github := githubtest.Server(t, githubtest.Spec{Record: record, Handle: fake.handler(t).ServeHTTP})
 	return newBrokerTokenRigOn(t, testServerOptions{app: &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, githubAPIBase: github})
 }
 
@@ -553,5 +567,298 @@ func TestAnEventsSourceIsSavedAndReadBackThroughTheRoute(t *testing.T) {
 	}
 	if after := readProjectDelivery(t, rig.handler, "ALPHA"); string(after) != string(before) {
 		t.Errorf("the refused save left %s, want %s", after, before)
+	}
+}
+
+// projectLockWait matches the statement at which a save waits for its project's delivery lock
+// (delivery.LockProject), as waitForLockWait reads it.
+const projectLockWait = `%pg_advisory_xact_lock(6902, hashtext(%`
+
+// heldSaveLocks counts the locks of a settings save that a session of the current database other
+// than $1 holds: a project's delivery lock (6902) and a repository's (6901), each of two keys
+// (objsubid 2: delivery.LockProject, LockRepositories), and the lock of each eval the database
+// holds, of one key whose high half is classid (objsubid 1: evals' lockEvals).
+const heldSaveLocks = `
+	select count(*) from pg_locks
+	where locktype = 'advisory' and granted and pid <> $1
+		and database = (select oid from pg_database where datname = current_database())
+		and ((objsubid = 2 and classid in (6901, 6902))
+			or (objsubid = 1 and ((classid::bigint << 32) | objid::bigint) in (
+				select hashtext('eval:' || eval_id)::bigint from evals_current)))`
+
+// settingsLockWatch is the settings tests' GitHub seen from the database: each request that
+// reaches GitHub (record, githubtest.Spec.Record) fails the test where a session of database other
+// than the test's own holder (hold) holds a lock of a settings save (heldSaveLocks), since a save
+// asks GitHub nothing while it holds one. It notes the repository of each installation lookup,
+// owner/repo, in asked, and hands it to lookup, where set, before GitHub answers.
+type settingsLockWatch struct {
+	t        *testing.T
+	database *store.Store
+	lookup   func(repo string)
+	// holder is the backend of the test's own transaction holding a project's lock, 0 for none.
+	holder atomic.Int32
+	mu     sync.Mutex
+	asked  []string
+}
+
+func (w *settingsLockWatch) record(r *http.Request) {
+	if w.database == nil {
+		return
+	}
+	var held int
+	if err := w.database.Pool.QueryRow(r.Context(), heldSaveLocks, w.holder.Load()).Scan(&held); err != nil {
+		w.t.Errorf("read the locks held while GitHub is asked %s %s: %v", r.Method, r.URL.Path, err)
+	} else if held != 0 {
+		w.t.Errorf("GitHub is asked %s %s while a session holds %d of a settings save's locks", r.Method, r.URL.Path, held)
+	}
+	repo, lookup := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"), "/installation")
+	if !lookup {
+		return
+	}
+	w.mu.Lock()
+	w.asked = append(w.asked, repo)
+	w.mu.Unlock()
+	if w.lookup != nil {
+		w.lookup(repo)
+	}
+}
+
+// askedSince is each repository GitHub was asked about after the first from of them (asked).
+func (w *settingsLockWatch) askedSince(from int) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.asked[from:])
+}
+
+// hold begins a transaction that takes project's delivery lock (delivery.LockProject), as a save of
+// the project holds it, and leaves its backend out of the watch.
+func (w *settingsLockWatch) hold(t *testing.T, project string) pgx.Tx {
+	t.Helper()
+	holder, err := w.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin the holder of %s's lock: %v", project, err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	var pid int32
+	if err := holder.QueryRow(t.Context(), `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("read the holder's backend: %v", err)
+	}
+	w.holder.Store(pid)
+	if err := delivery.LockProject(t.Context(), holder, project); err != nil {
+		t.Fatalf("hold %s's lock: %v", project, err)
+	}
+	return holder
+}
+
+// release commits holder, its backend back in the watch first: once committed, its connection
+// goes back to the pool, where the save under test may take it.
+func (w *settingsLockWatch) release(t *testing.T, holder pgx.Tx) {
+	t.Helper()
+	w.holder.Store(0)
+	if err := holder.Commit(t.Context()); err != nil {
+		t.Fatalf("commit the holder: %v", err)
+	}
+}
+
+// workflowSourceInput is a github_workflow source naming repo as delivery.PutProjectSettings takes
+// it, for a write the test makes beside the route's.
+func workflowSourceInput(repo string) delivery.SourceInput {
+	return delivery.SourceInput{
+		Kind: delivery.SourceKindGitHubWorkflow, Repo: new(repo), DeployWorkflowPath: new(".github/workflows/ship.yml"),
+		ProductionJobNames: []string{"ship"}, PRChecksWorkflowPath: new(".github/workflows/ci.yml"),
+	}
+}
+
+// A save keeps the value a field it leaves out holds when the save is written, not when the save
+// read it: a PUT naming population_authors alone, sent while another save of the project holds the
+// project's lock (delivery.LockProject) with its write made but not committed, waits for that lock
+// and then keeps every field the other save wrote, its source's row and id included, beside its own
+// population. The other save's source reads a repository the PUT had not proved, so the PUT proves
+// it once the lock is free, before its own transaction, and asks GitHub nothing while a session
+// but the test's holder holds a save's lock (settingsLockWatch).
+func TestAPartialPutThatWaitedForAnotherSaveKeepsWhatThatSaveWrote(t *testing.T) {
+	t.Parallel()
+	watch := &settingsLockWatch{t: t}
+	rig := newDeliverySettingsRigRecording(t, readableRepos(), watch.record)
+	watch.database = rig.database
+	createTestProject(t, rig.handler, "ALPHA")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")},
+		"population_authors": []string{"octocat"}, "excluded_repos": []string{"acme/dojo"},
+	})
+
+	holder := watch.hold(t, "ALPHA")
+	since := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	other, err := delivery.PutProjectSettings(t.Context(), holder, delivery.ProjectSettingsInput{
+		Project: "ALPHA", Delivery: true, Sources: []delivery.SourceInput{workflowSourceInput("acme/alpha")},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{"acme/other"},
+		FailureSources: []string{delivery.FailureSourceReverts}, FailuresMeasuredSince: &since,
+	}, model.Actor{Kind: "user", ID: "bob"})
+	if err != nil {
+		t.Fatalf("the other save: %v", err)
+	}
+	from := len(watch.askedSince(0))
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- putProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"population_authors": []string{"hubot"}})
+	}()
+	waitForLockWait(t, rig.database, projectLockWait)
+	watch.release(t, holder)
+
+	response := awaitResponse(t, answered)
+	if response.Code != http.StatusOK {
+		t.Fatalf("the PUT that waited: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	saved := decodeBody[projectDeliverySettings](t, response)
+	if !slices.Equal(saved.PopulationAuthors, []string{"hubot"}) || !saved.Delivery || len(saved.Sources) != 1 ||
+		saved.Sources[0].ID != other.Sources[0].ID || !slices.Equal(sourceRepos(saved), []string{"acme/alpha"}) ||
+		!slices.Equal(saved.ExcludedRepos, []string{"acme/other"}) ||
+		!slices.Equal(saved.FailureSources, []string{delivery.FailureSourceReverts}) || deref(saved.FailuresMeasuredSince) != "2026-11-01" {
+		t.Fatalf("the PUT of population_authors alone that waited holds %+v; want hubot, and delivery on, source %s reading acme/alpha, acme/other excluded and reverts from 2026-11-01 as the other save wrote them",
+			saved, other.Sources[0].ID)
+	}
+	if asked := watch.askedSince(from); !slices.Equal(asked, []string{"acme/alpha-deploy", "acme/alpha"}) {
+		t.Errorf("the PUT asked GitHub about %q, want acme/alpha-deploy, the source it read first, then acme/alpha, the source the other save wrote", asked)
+	}
+}
+
+// An enable that waits for another write of its project proves what that write left it reading: a
+// PUT turning delivery on, whose source reads the project's default repository, is sent while the
+// test holds the project's lock (delivery.LockProject) in a transaction that has made the other
+// write but not committed it: a save with delivery off naming another repository, or a move of
+// the default repository, which the default-repository route makes under that lock. Once the lock
+// is free the PUT finds its source reading a repository it never proved and proves it with no lock
+// held (settingsLockWatch): where the GitHub App can read it, the PUT saves, its target with it;
+// where it cannot, it refuses 409 DELIVERY_SETTINGS_ACCESS naming the source and writes nothing,
+// the settings left as the other write left them and the target with no new version.
+func TestAnEnableThatWaitedForAWriteOfItsRepositoryProvesTheRepositoryThatWriteLeft(t *testing.T) {
+	t.Parallel()
+	fake := readableRepos()
+	for _, repo := range []string{"acme/gamma", "acme/delta", "acme/delta-moved"} {
+		fake.installations[repo] = "read"
+	}
+	watch := &settingsLockWatch{t: t}
+	rig := newDeliverySettingsRigRecording(t, fake, watch.record)
+	watch.database = rig.database
+	saveWithDeliveryOff := func(t *testing.T, holder pgx.Tx, project, repo string) {
+		t.Helper()
+		if _, err := delivery.PutProjectSettings(t.Context(), holder, delivery.ProjectSettingsInput{
+			Project: project, Sources: []delivery.SourceInput{workflowSourceInput(repo)},
+		}, model.Actor{Kind: "user", ID: "bob"}); err != nil {
+			t.Fatalf("save %s's settings with delivery off and a source reading %s: %v", project, repo, err)
+		}
+	}
+	moveDefault := func(t *testing.T, holder pgx.Tx, project, repo string) {
+		t.Helper()
+		if _, err := holder.Exec(t.Context(), `update projects set default_repo = $2 where key = $1`, project, repo); err != nil {
+			t.Fatalf("move %s's default repository to %s: %v", project, repo, err)
+		}
+	}
+	for _, row := range []struct {
+		name, project, repo string
+		readable            bool
+		write               func(t *testing.T, holder pgx.Tx, project, repo string)
+	}{
+		{"a save with delivery off names a repository the App cannot read", "ALPHA", "acme/secret", false, saveWithDeliveryOff},
+		{"a save with delivery off names a repository the App can read", "BETA", "acme/beta-deploy", true, saveWithDeliveryOff},
+		{"the default repository moves to one the App cannot read", "GAMMA", "acme/secret", false, moveDefault},
+		{"the default repository moves to one the App can read", "DELTA", "acme/delta-moved", true, moveDefault},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			first := "acme/" + strings.ToLower(row.project)
+			createTestProject(t, rig.handler, row.project)
+			setDefaultRepository(t, rig.handler, row.project, first)
+			savedProjectDelivery(t, rig.handler, row.project, map[string]any{
+				"delivery": false, "sources": []any{workflowSource("", ".github/workflows/deploy.yml", "release")},
+			})
+			evalID := row.project + "/deploy-frequency"
+			version, _ := evalVersion(t, rig, evalID)
+
+			holder := watch.hold(t, row.project)
+			row.write(t, holder, row.project, row.repo)
+			from := len(watch.askedSince(0))
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				answered <- putProjectDelivery(t, rig.handler, row.project, map[string]any{
+					"delivery": true, "targets": map[string]any{"deploy-frequency": 9},
+				})
+			}()
+			waitForLockWait(t, rig.database, projectLockWait)
+			watch.release(t, holder)
+			response := awaitResponse(t, answered)
+
+			if asked := watch.askedSince(from); !slices.Equal(asked, []string{first, row.repo}) {
+				t.Errorf("the enable asked GitHub about %q, want %s, which it read first, then %s, which the other write left", asked, first, row.repo)
+			}
+			after, target := evalVersion(t, rig, evalID)
+			settings := settingsOf(t, readProjectDelivery(t, rig.handler, row.project))
+			if !row.readable {
+				refusal := refusedSettings(t, response, http.StatusConflict, delivery.CodeDeliverySettingsAccess)
+				if refusal.Source == nil || *refusal.Source != 0 || !strings.Contains(refusal.Message, row.repo) {
+					t.Errorf("the refusal %+v does not name source 0 and %s", refusal, row.repo)
+				}
+				if settings.Delivery || !slices.Equal(sourceRepos(settings), []string{row.repo}) || after != version {
+					t.Errorf("the refused enable left delivery %v, sources reading %q and %s at version %d; want delivery off, the source reading %s and version %d, as the other write left them",
+						settings.Delivery, sourceRepos(settings), evalID, after, row.repo, version)
+				}
+				return
+			}
+			if response.Code != http.StatusOK {
+				t.Fatalf("the enable: status=%d body=%s, want 200", response.Code, response.Body.String())
+			}
+			if !settings.Delivery || !slices.Equal(sourceRepos(settings), []string{row.repo}) || after != version+1 || target == nil || *target != 9 {
+				t.Errorf("the enable left delivery %v, sources reading %q and %s at version %d target %v; want delivery on, the source reading %s and version %d target 9",
+					settings.Delivery, sourceRepos(settings), evalID, after, target, row.repo, version+1)
+			}
+		})
+	}
+}
+
+// A save under each of whose attempts (resolutionAttempts) another write moves what it rests on is
+// refused 409 DELIVERY_SETTINGS_CHANGED and writes nothing: an enable whose source reads the
+// project's default repository, where the default-repository route moves the default while each
+// attempt asks GitHub about the one it read (settingsLockWatch.lookup), so each attempt's
+// transaction finds the source reading a repository no attempt proved. Each attempt asks about the
+// repository no attempt before it proved alone, with no lock held; the settings stay as the moves
+// left them, and the target the save names has no new version.
+func TestASaveWhoseRepositoryMovesAtEachAttemptIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
+	watch := &settingsLockWatch{t: t}
+	rig := newDeliverySettingsRigRecording(t, readableRepos(), watch.record)
+	watch.database = rig.database
+	createTestProject(t, rig.handler, "ALPHA")
+	setDefaultRepository(t, rig.handler, "ALPHA", "acme/alpha")
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": false, "sources": []any{workflowSource("", ".github/workflows/deploy.yml", "release")},
+	})
+	before := settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA"))
+	version, target := evalVersion(t, rig, "ALPHA/deploy-frequency")
+	moves := map[string]string{"acme/alpha": "acme/beta", "acme/beta": "acme/beta-deploy"}
+	watch.lookup = func(repo string) {
+		next, moved := moves[repo]
+		if !moved {
+			return
+		}
+		response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/projects/ALPHA/default-repository", map[string]any{"repo": next}, "alice")
+		if response.Code != http.StatusOK {
+			t.Errorf("move ALPHA's default repository to %s while the save asks GitHub about %s: status=%d body=%s", next, repo, response.Code, response.Body.String())
+		}
+	}
+
+	from := len(watch.askedSince(0))
+	refusedSettings(t, putProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "targets": map[string]any{"deploy-frequency": 9},
+	}), http.StatusConflict, codeDeliverySettingsChanged)
+	if asked := watch.askedSince(from); !slices.Equal(asked, []string{"acme/alpha", "acme/beta"}) {
+		t.Errorf("the save asked GitHub about %q, want acme/alpha, then acme/beta, one repository at each of its %d attempts", asked, resolutionAttempts)
+	}
+	after := settingsOf(t, readProjectDelivery(t, rig.handler, "ALPHA"))
+	if after.Delivery || len(after.Sources) != 1 || after.Sources[0].ID != before.Sources[0].ID ||
+		!slices.Equal(sourceRepos(after), []string{"acme/beta-deploy"}) || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("the refused save left %+v; want delivery off and source %s, written at %s, reading acme/beta-deploy, where the moves left the default",
+			after, before.Sources[0].ID, before.UpdatedAt)
+	}
+	if held, heldTarget := evalVersion(t, rig, "ALPHA/deploy-frequency"); held != version || !equalPointers(heldTarget, target) {
+		t.Errorf("the refused save left deploy-frequency at version %d target %v, want version %d target %v", held, heldTarget, version, target)
 	}
 }
