@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The first block index of a large document no longer holds the values of all its blocks in
+  memory at once: it builds and writes them a batch of 1,024 blocks at a time, in one transaction,
+  and stores the same values in the same order as before.
+time: 2026-11-27T15:00:00Z
+custom:
+    Issue: INFRA-1253

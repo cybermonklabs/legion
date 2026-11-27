@@ -306,14 +306,18 @@ func AttributeFacts(tuples []Tuple, node Node) []Tuple {
 // Joined is several writes held for one cause as one write held for it: QueueCaused moves the
 // nodes of each and appends the facts of each under that cause, in the order given, each in an
 // append of its own, since each carries the mark its own node write left (nodeMark), and
-// QueueNodes writes the nodes of each. Its Nodes and Tuples are theirs, in that order, and a fact
-// a writer appends to its Tuples after joining them is appended after every one's (Uncaused's
-// parts). A writer whose caller causes one write it answers adds its own to it here.
+// QueueNodes writes the nodes of each. Its Nodes and facts are theirs, in that order, its runs
+// (Uncaused.HoldRun) held as runs and none built, and a fact a writer adds to it after joining
+// them is appended after every one's (Uncaused's parts). A writer whose caller causes one write it
+// answers adds its own to it here.
 func Joined(writes ...Uncaused) Uncaused {
 	var joined Uncaused
 	for _, write := range writes {
+		for _, held := range write.runs {
+			joined.runs = append(joined.runs, heldRun{at: len(joined.tuples) + held.at, run: held.run})
+		}
 		joined.Nodes = append(joined.Nodes, write.Nodes...)
-		joined.Tuples = append(joined.Tuples, write.Tuples...)
+		joined.tuples = append(joined.tuples, write.tuples...)
 		joined.parts = append(joined.parts, write.split()...)
 	}
 	return joined

@@ -209,7 +209,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 			return fmt.Errorf("index references: %w", err)
 		}
 		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			graphstore.QueueCaused(b, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent)
+			graphstore.QueueCaused(b, graphstore.Holding(mentions...), graphstore.NoEvent)
 			return nil
 		}); err != nil {
 			return fmt.Errorf("record what the references stated: %w", err)

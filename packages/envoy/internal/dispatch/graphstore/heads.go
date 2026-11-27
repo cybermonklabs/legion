@@ -83,16 +83,25 @@ func HeadsOfClaims(claims []Claim) []NodeKey {
 }
 
 // HeldHeads is the nodes a held write (Uncaused) names, as HeadsOf names those of a write: each
-// node its node write wrote and the near end of each fact it holds for its cause.
+// node its node write wrote and the near end of each fact it holds for its cause, each once, in the
+// order of its first place. A key is kept only the first time it is met, since a write may hold its
+// blocks' values as a run (Uncaused.HoldRun) of several facts a block, each built as it is read.
 func HeldHeads(write Uncaused) []NodeKey {
-	keys := make([]NodeKey, 0, len(write.Nodes)+len(write.Tuples))
+	keys := make([]NodeKey, 0, len(write.Nodes))
+	seen := make(map[NodeKey]struct{}, len(write.Nodes))
+	add := func(key NodeKey) {
+		if _, held := seen[key]; !held {
+			seen[key] = struct{}{}
+			keys = append(keys, key)
+		}
+	}
 	for _, node := range write.Nodes {
-		keys = append(keys, NodeKey{Kind: node.Kind, ID: node.ID})
+		add(NodeKey{Kind: node.Kind, ID: node.ID})
 	}
-	for _, held := range write.Tuples {
-		keys = append(keys, NodeKey{Kind: held.FromKind, ID: held.FromID})
+	for held := range write.Facts() {
+		add(NodeKey{Kind: held.FromKind, ID: held.FromID})
 	}
-	return distinctKeys(keys)
+	return keys
 }
 
 // distinctKeys is keys with each key once, in the order of its first place.

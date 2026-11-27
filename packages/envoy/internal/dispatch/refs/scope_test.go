@@ -512,7 +512,7 @@ func TestAQueuedVersionsCopyResolvesToTheSourceItsLineNames(t *testing.T) {
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
 		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, record.at), version.markdown, version.blocks, version.located, version.pointers, "", TypedFacts{})
 		for _, block := range []string{"c", "d"} {
-			write.Tuples = append(write.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			write.State(graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 				FromKind: BlockNodeKind, FromID: document.address(block), Kind: graphstore.TupleCopiedFrom,
 				ToKind: graphstore.KindAsk, ToID: first, At: record.at, Who: alice, Asserted: true,
 			}})

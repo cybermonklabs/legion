@@ -277,19 +277,18 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 // never stamped.
 func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	// Not parallel: under the race detector the settlement below is the largest growth of the
-	// package's binary, most of it the block index's plan of the settled version's blocks
-	// (refs.PlanBlocks). At 150,000 blocks it took the binary from 1,144,912 kB to 8,760,892 kB in
-	// envoy-go-race-docs job 140472711245, past the step's RACE_MEM_LIMIT_KB while every other test
-	// of its leg was paused; run alone it took the binary to a VmHWM of 8,415,168 kB, past that limit
-	// by itself. So the document holds the queue's 100,000 blocks and a tenth, past the queue with
-	// room, which the decode of the stamp below holds, and no further: run alone, 110,000 blocks
-	// took the binary to 5,908,088 kB.
+	// package's binary. Its block index states five values of each of the 150,001 blocks, which it
+	// holds as a run built a batch at a time (refs' blockValueRun). Run alone in a build Job, the
+	// test peaked at a VmHWM of 4,811,000 to 4,966,204 kB over three runs, as main's did at
+	// 4,888,884 to 5,090,112 kB; with the values held as tuples it peaked at 7,699,132 kB, and its
+	// leg's binary reached 8,760,892 kB in envoy-go-race-docs job 140472711245, past the step's
+	// RACE_MEM_LIMIT_KB, while every other test of that leg was paused.
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
-	const blocks = 110_000
+	const blocks = 150_000
 	// The room's state before the settlement, so the stamp is what the stored history holds past it.
 	var unstamped crdt.StateVector
 	if err := service.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {

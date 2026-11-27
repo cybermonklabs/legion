@@ -154,9 +154,9 @@ func (r *settlementReconciliation) writeOpenedAskTies(ctx context.Context, tx pg
 	// facts alone, with no node write of their own, so each ask's share of them is a write of its
 	// own.
 	r.openedTies = make(map[string]graphstore.Uncaused, len(r.opened))
-	for _, tie := range ties.Stated().Tuples {
+	for tie := range ties.Stated().Facts() {
 		held := r.openedTies[tie.FromID]
-		held.Tuples = append(held.Tuples, tie)
+		held.State(tie)
 		r.openedTies[tie.FromID] = held
 	}
 	moved := ties.Moved()
