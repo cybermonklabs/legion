@@ -1,4 +1,4 @@
-import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
+import { Plugin, PluginKey, TextSelection } from "@milkdown/kit/prose/state";
 import { prosemirrorToYXmlFragment, yCursorPluginKey } from "y-prosemirror";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
@@ -176,6 +176,78 @@ await test("an element of a document-level node is refused", async () => {
   }
 });
 
+function addInlineBlock(room: Y.Doc, kind: "heading" | "paragraph"): Y.XmlElement {
+  const block = new Y.XmlElement(kind);
+  block.setAttribute("blockId", kind);
+  if (kind === "heading") {
+    // Yjs stores the heading schema's numeric attribute, despite XmlElement's string default.
+    (block as Y.XmlElement<Record<string, string | number>>).setAttribute("level", 2);
+  }
+  block.insert(0, [new Y.XmlText("Words before and after the caret.")]);
+  const fragment = room.getXmlFragment("prosemirror");
+  fragment.insert(fragment.length, [block]);
+  return block;
+}
+
+function blockText(block: Y.XmlElement): Y.XmlText {
+  const first = block.get(0);
+  const text = first instanceof Y.XmlElement ? first.get(0) : first;
+  assert(text instanceof Y.XmlText, "the block must contain live Y.XmlText");
+  return text;
+}
+
+/** Exercise both directions of the real binding. The caret starts away from either end and
+ * must stay next to the same character when a second client inserts before it. */
+function assertLiveText(handle: ProofEditorHandle, room: Y.Doc, block: Y.XmlElement): void {
+  const { view } = handle;
+  const id = block.getAttribute("blockId");
+  assert(typeof id === "string", "the live block must have an id");
+  assert(view.state.doc.type.name === block.nodeName, "the view must use the block's own type");
+  assert(view.state.doc.attrs.blockId === id, "the view must keep the block's own id");
+  const original = blockText(block).toString();
+  assert(original.length >= 6, "both sides of the caret must start with real text");
+  assert(view.state.doc.textContent === original, "the view must draw the original text");
+
+  // A typed block has one paragraph below its root; a heading or paragraph is itself inline.
+  const start = view.state.doc.inlineContent ? 0 : 1;
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, start + 4)));
+  view.dispatch(view.state.tr.insertText("!"));
+  const typed = `${original.slice(0, 4)}!${original.slice(4)}`;
+  assert(blockText(block).toString() === typed, "typing must update the bound element's text");
+  assert(block.getAttribute("blockId") === id, "typing must not rewrite the block id");
+  const caret = view.state.selection.head;
+  assert(caret === start + 5, "typing must advance the caret inside the block");
+
+  const peer = new Y.Doc();
+  try {
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(room));
+    const other = blockText(findBlock(peer.getXmlFragment("prosemirror"), id));
+    assert(other.toString() === typed, "the second client must see the typed character");
+    const prefix = "Peer: ";
+    other.insert(0, prefix);
+    Y.applyUpdate(room, Y.encodeStateAsUpdate(peer, Y.encodeStateVector(room)));
+    assert(view.state.doc.textContent === prefix + typed, "the view must draw the peer's edit");
+    assert(
+      view.state.selection.empty && view.state.selection.head === caret + prefix.length,
+      "the caret must stay next to the typed character after the peer's insert"
+    );
+  } finally {
+    peer.destroy();
+  }
+}
+
+for (const kind of ["paragraph", "heading"] as const) {
+  await test(`createProofEditor edits a non-empty ${kind} root and follows a peer's insert`, async () => {
+    const room = await seededRoom();
+    const element = addInlineBlock(room, kind);
+    try {
+      await withEditor(room, { element }, (handle) => assertLiveText(handle, room, element));
+    } finally {
+      room.destroy();
+    }
+  });
+}
+
 await test("after rebindElement the root has the target's own type and attributes, blockId among them", async () => {
   const room = await seededRoom();
   const fragment = room.getXmlFragment("prosemirror");
@@ -203,6 +275,39 @@ await test("after rebindElement the root has the target's own type and attribute
         "typed text must reach the target"
       );
       assert(source.toString() === before, "rebind and typing must leave the source untouched");
+      assertLiveText(handle, room, target);
+    });
+  } finally {
+    room.destroy();
+  }
+});
+
+await test("rebindElement edits a non-empty heading and then a typed block on the same view", async () => {
+  const room = await seededRoom();
+  const fragment = room.getXmlFragment("prosemirror");
+  const source = findBlock(fragment, "r1");
+  const sibling = findBlock(fragment, "r2");
+  const heading = addInlineBlock(room, "heading");
+  const sourceBefore = source.toString();
+  try {
+    await withEditor(room, { element: source }, (handle) => {
+      const { view } = handle;
+      handle.rebindElement(heading);
+      assert(handle.view === view, "binding the heading must keep the view");
+      assert(view.state.doc.attrs.level === 2, "binding the heading must keep its level");
+      assertLiveText(handle, room, heading);
+      const headingAfter = heading.toString();
+      handle.rebindElement(sibling);
+      assert(handle.view === view, "binding the typed block must keep the view");
+      assertLiveText(handle, room, sibling);
+      assert(
+        heading.toString() === headingAfter,
+        "editing the typed block must leave the heading alone"
+      );
+      assert(
+        source.toString() === sourceBefore,
+        "both rebinds must leave the original block alone"
+      );
     });
   } finally {
     room.destroy();
