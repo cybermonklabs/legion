@@ -3573,7 +3573,7 @@ func designReview(decision DecisionKind) bool {
 // givers of its copies, the plan the first step runs (an owner's, of the issue's generation or
 // carried to it, or the default steps), and that the architect may give the plan again with
 // register_plan as its own.
-// Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
+// Or a plan of an issue whose experiment's group runs the project's default steps (workflow's
 // passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
 // run takes the project's default steps, and the reason names each version and the group
 // (intake's GroupClause), and offers no register_plan, which that issue's owner is answered

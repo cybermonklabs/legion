@@ -10,8 +10,6 @@ package requests
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,14 +95,6 @@ func GitHubSlot(owner string) string {
 	return SlotGitHubPrefix + fold.ASCII(owner)
 }
 
-// placeholderHash is a placeholder's SHA-256 in hex: the key airlock_placeholders holds it under,
-// and the only form of it any query carries, so the plaintext a command holds never reaches a
-// statement log, pg_stat_statements or a database error.
-func placeholderHash(placeholder string) string {
-	sum := sha256.Sum256([]byte(placeholder))
-	return hex.EncodeToString(sum[:])
-}
-
 // placeholdersOf reads every placeholder grant grantID holds, keyed by name and then by slot. It
 // is one indexed read: grant_id leads the unique constraint's index.
 func placeholdersOf(ctx context.Context, q querier, grantID string) (map[string]map[string]string, error) {
@@ -154,7 +144,7 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 				return nil, err
 			}
 			names, slots = append(names, name), append(slots, slot)
-			texts, hashes = append(texts, text), append(hashes, placeholderHash(text))
+			texts, hashes = append(texts, text), append(hashes, placeholder.Hash(text))
 		}
 	}
 	if len(names) == 0 {
@@ -541,6 +531,10 @@ type AirlockConnection struct {
 	// they cost nothing: the read below already joins the enrollment row.
 	SessionID, RuntimeID string
 	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
+	// CheckRunID is the check run of the CI job a minted grant was made for (the grant's ci claim,
+	// checkRunOf), which every line the proxy writes about the grant's calls names; "" for a
+	// secret's grant and for a minted grant that carries no run.
+	CheckRunID string
 	// Minted marks a grant of a capability the broker mints and holds (MintedKind): it belongs to
 	// no enrollment, and the proxy holds it to the one host its grant binds.
 	Minted  bool
@@ -616,7 +610,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
-		where p.placeholder_sha256 = $1`, placeholderHash(presented)).
+		where p.placeholder_sha256 = $1`, placeholder.Hash(presented)).
 		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
 			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -794,9 +788,9 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	return answered, nil
 }
 
-// ProxyPlaceholderGrant is the grant the broker minted placeholder for, and "" when it knows
-// none. The proxy reads it to name, in the refusal of a request that still carries a placeholder
-// after the swap, which grant that placeholder was minted for.
+// ProxyPlaceholderGrant is the grant the broker minted the placeholder presented for, and "" when
+// it knows none. The proxy reads it to name, in the refusal of a request that still carries a
+// placeholder after the swap, which grant that placeholder was minted for.
 //
 //   - A secret's release placeholder is read from airlock_placeholders, by the table's primary
 //     key: it names its grant live or ended, until the sweep has deleted an ended grant's rows
@@ -806,16 +800,16 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 //     kind's word and the grant's id, exactly when a connection of it would be opened - while the
 //     grant lives under this broker's entry digest - and none once it has ended, for a grant made
 //     under another digest, or for a kind this broker does not serve.
-func (m *Machine) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {
-	if kind, minted := m.mintedKindOfPlaceholder(placeholder); minted {
-		conn, err := m.mintedConnection(ctx, kind, placeholder)
+func (m *Machine) ProxyPlaceholderGrant(ctx context.Context, presented string) (string, error) {
+	if kind, minted := m.mintedKindOfPlaceholder(presented); minted {
+		conn, err := m.mintedConnection(ctx, kind, presented)
 		if errors.Is(err, ErrGrantNotLive) {
 			return "", nil
 		}
 		return conn.GrantID, err
 	}
 	var grantID string
-	err := m.Store.Pool.QueryRow(ctx, `select grant_id from airlock_placeholders where placeholder_sha256 = $1`, placeholderHash(placeholder)).Scan(&grantID)
+	err := m.Store.Pool.QueryRow(ctx, `select grant_id from airlock_placeholders where placeholder_sha256 = $1`, placeholder.Hash(presented)).Scan(&grantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
