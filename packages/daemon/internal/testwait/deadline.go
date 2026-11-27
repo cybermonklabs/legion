@@ -41,7 +41,7 @@ func StandInDeadline(parent context.Context) (ctx context.Context, pass func(cau
 	d := &standInDeadline{parent: parent, causes: causes, record: record, done: make(chan struct{})}
 	// A context derived from d, or a select already waiting on Done, learns parent's end when d
 	// ends, which this does for those that do not ask d first.
-	stop := context.AfterFunc(parent, d.endWithParent)
+	stop := func() bool { return false } // CONTROL ONLY: the parent's end not observed
 	// pass and cancel look at parent first too: a parent that ended before them ended d then.
 	pass = func(cause error) {
 		if cause == nil {
