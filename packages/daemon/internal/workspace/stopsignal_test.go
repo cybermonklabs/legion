@@ -90,15 +90,15 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		diag := filepath.Join(dir, "diag")
 		script := testexec.MarkStart(`"$3"`) + `; printf '%s\n' "$$" >"$5.pid"; : >"$1"; trap 'read -r tu </proc/uptime; read -r ts </proc/self/schedstat; rm -f "$1"; read -r ou </proc/uptime; read -r os </proc/self/schedstat; printf "%s\n%s\n%s\n%s\n" "$tu" "$ts" "$ou" "$os" >"$5.trap"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
-		// CONTROL (never merged): the machine holds the command on CPU 0's run queue, at nice 19
-		// behind 16 busy loops, until it reports that it is running.
-		h := holdOnCPU0(t, 16, ready)
+		// DIAG (never merged): no hold: no busy loop, and the command runs as the row's own does,
+		// with no nice and no pin, so the watch sees the row's own stop on this machine.
+		h := holdOnCPU0(t, 0, ready)
 		w := watchStop(t, ready, diag+".pid", h)
 		t.Logf("DIAG pressure before the call: %s", pressure(dir))
 		anchorWall, anchorBoot := time.Now(), bootNow()
 		call := calling(t)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"nice", "-n", "19", "taskset", "-c", "0", "sh", "-c", script, "sh", lock, ready, mark, readyAt, diag})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt, diag})
 		returned := time.Now()
 		cpu := processCPU(t)
 		elapsed := returned.Sub(started)
