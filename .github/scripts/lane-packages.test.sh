@@ -234,6 +234,24 @@ echo "case: the same group, the race suite absent from NEEDS"
 gate merge_group "$(needs envoy-go=success)" "$base"
 check "fails, naming it absent" "$(contains "$out" '^::error::envoy-go-race is absent in this merge group')"
 
+echo "case: the same group, the router suppressing the race suite its paths selected"
+# The case the gate exists for: changes' output says false and the suite skipped, which ci-ok.sh
+# accepts as a job changes did not select. The gate does not read that output, so it refuses.
+suppressed=$(py 'import json, sys
+doc = json.loads(sys.argv[1])
+doc["changes"]["outputs"]["envoy_go_race"] = "false"
+print(json.dumps(doc))' "$(needs envoy-go-race=skipped envoy-go=success)")
+gate merge_group "$suppressed" "$base"
+check "fails" "$(is "$status" 1)"
+check "names envoy-go-race skipped" "$(contains "$out" '^::error::envoy-go-race is skipped in this merge group')"
+
+echo "case: a group whose one labelled suite ran is not refused"
+# The quiet twin: a pull request that carried lane:envoy_go_race, whose record cites that job,
+# reaches its group with the suite run and passed, and nothing of it is refused.
+gate merge_group "$(needs envoy-go-race=success envoy-go=success)" "$base"
+check "passes" "$(is "$status" 0)"
+check "and writes no error" "$(is "$(contains "$out" '::error::')" false)"
+
 echo "case: a group no slow suite owns a file of, every suite skipped"
 group docs/notes/lane-free.md
 gate merge_group "$(needs envoy-go-race=skipped envoy-go=skipped daemon-go=skipped test=skipped)" "$base"
