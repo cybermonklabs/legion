@@ -5455,6 +5455,117 @@ test("what references the focused row names each task that serves it by the task
   );
 });
 
+/** The first lines of the two tasks of the row below, each a whole sentence of at most 100
+ *  characters, so the outline's first-line rule draws each whole (`firstLineOf`). */
+const LONG_OPENER_TASK_LINES = [
+  "Draw the history in Details.",
+  "Read the history from the event log one page of two hundred events at a time, newest first.",
+] as const;
+
+// Decision 560, where a task's block opens with long attributes. The read's excerpt of a block is
+// its first 480 runes of markdown, the block's opening line included (`refs.BlockExcerpt`). A
+// task that serves many statements opens with a line longer than that, so its excerpt holds the
+// opening line alone; one that serves fewer holds the opening line and the start of its first
+// sentence. Neither may name its row by that excerpt: each row names its task by the task's own
+// first line, as the outline names a row, and draws no markup of its block.
+// Found by the tester on a running build of 621ddcba with a copy of INFRA-3570: its statement
+// spec#b-w-tasks drew `:::plan_task{#p-tasks serves="R1.` and `A and` for two of its rows.
+// SLOW(>=2s): a spec of 41 statements and a plan of two tasks written, the plan's index waited for,
+// and one load of the issue with the list opened.
+test("what references the focused row names a task whose block opens with long attributes by the task's first line", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const pads = Array.from({ length: 40 }, (_, index) => `r-p${String(index).padStart(2, "0")}`);
+      const issue = await createIssue({
+        project: "CORE",
+        spec: [
+          ":::requirement{#r-served}\nThe history is drawn in Details.\n:::\n",
+          ...pads.map((id) => `:::requirement{#${id}}\nStatement ${id}.\n:::\n`),
+        ].join("\n"),
+        title: "Two tasks with long openings serve a statement",
+      });
+      const address = (id: string) => `dispatch://${issue.key}/spec#b-${id}`;
+      // The opening line of a task that serves the statement and as many more as it takes for
+      // that line to reach `at least` runes.
+      const opener = (task: string, atLeast: number): string => {
+        const serves = [address("r-served")];
+        const line = () => `:::plan_task{#${task} serves="${serves.join(" ")}"}`;
+        for (const id of pads) {
+          if (line().length >= atLeast) break;
+          serves.push(address(id));
+        }
+        return line();
+      };
+      const long = opener("t-long", 520);
+      const cut = opener("t-cut", 420);
+      // The seed holds the shapes the row is about: the first opening line passes the excerpt's
+      // 480 runes, and the second ends before them with the cut inside its first sentence.
+      expect(
+        long.length,
+        "the first task's opening line is no longer than the excerpt"
+      ).toBeGreaterThan(480);
+      expect(
+        cut.length,
+        "the second task's opening line leaves its first sentence uncut"
+      ).toBeLessThan(480 - 20);
+      expect(
+        cut.length + 1 + LONG_OPENER_TASK_LINES[1].length,
+        "the excerpt's cut does not fall inside the second task's first sentence"
+      ).toBeGreaterThan(480);
+      const statement = address("r-served");
+      await createIssueArtifact(issue.key, {
+        content:
+          `How ${issue.key} is built.\n\n` +
+          `${long}\n${LONG_OPENER_TASK_LINES[0]} Each entry keeps its day.\n:::\n\n` +
+          `${cut}\n${LONG_OPENER_TASK_LINES[1]} The read mark stays.\n:::\n`,
+        name: "plan.md",
+      });
+      await expect
+        .poll(
+          async () =>
+            (await getIssueCoverage(issue.key)).requirements?.find(
+              (row) => row.block_id === "r-served"
+            )?.plan_tasks,
+          `the plan's two tasks never came to serve ${statement}`
+        )
+        .toBe(2);
+      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
+        (artifact) => artifact.primary
+      );
+      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      return { key: issue.key, statement: blockNode(spec.slug, "r-served") };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      const facts = await focusedRowFacts(page, seeded.statement);
+      const references = facts.locator("[data-node-references]");
+      await references
+        .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+        .click();
+      const rows = references.locator("li");
+      await expect(rows, "the list does not draw one row per serving task").toHaveCount(2);
+      for (const line of LONG_OPENER_TASK_LINES) {
+        await expect(
+          rows.getByRole("link", { exact: true, name: line }),
+          `no row names its task by the task's first line "${line}"`
+        ).toHaveCount(1);
+      }
+      for (const text of await rows.allTextContents()) {
+        for (const markup of [":::", "{#", "serves=", "dispatch://"]) {
+          expect(text, `a row of what references the statement draws "${markup}"`).not.toContain(
+            markup
+          );
+        }
+      }
+    }
+  );
+});
+
 /** The agent session that asks the question of the row below, with the title and the tmux target
  *  its writes stamp, which its copy handles hold. */
 const factsAsker = {
