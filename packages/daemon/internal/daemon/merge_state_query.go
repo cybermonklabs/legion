@@ -190,7 +190,8 @@ func (p graphQLPull) headChecks() record.HeadChecks {
 // chunkAnswer is what one query of a base's batch read (queryChunk): github, the implement App's
 // client of the repository whose token the query was made with, which a CONFLICTING answer's base
 // rules are read with too (applyMergeability); answers, each pull request GitHub answered, by
-// number; unanswered, GitHub's word on each it did not; readAt, the moment the answer was in hand;
+// number; unanswered, GitHub's word on each it did not; readAt, the moment the answer was in hand,
+// on the ladders' clock (mergeStateNow), which the next read's wait runs from (nextPlace);
 // and, for a query that failed, whether it was never sent because the token could not be minted
 // (unminted) or ran out of GitHub's time (timedOut, queryTimedOut).
 type chunkAnswer struct {
@@ -235,7 +236,7 @@ func (w *workflowRuntime) queryChunk(ctx context.Context, repo ghrepo.Repository
 		sent := time.Now()
 		err := query.GraphQL(bounded, chunkQuery(numbers), map[string]any{"owner": repo.Owner(), "name": repo.Name()}, &answer)
 		took = time.Since(sent)
-		got.readAt = time.Now().UTC()
+		got.readAt = w.mergeStateNow()
 		return err
 	})
 	if minted != nil {

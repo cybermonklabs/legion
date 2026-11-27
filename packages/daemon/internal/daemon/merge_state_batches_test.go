@@ -215,6 +215,69 @@ func newBatchRig(t *testing.T, pool *store.Pool, answer func(query int32, asked 
 	return rig
 }
 
+// ladderClock is the ladders' clock a test holds (workflowRuntime.mergeStateClock and
+// mergeStateTimer). Its time moves only when a ladder begins a wait the clock lets end, and then
+// by that wait as the ladder set it, so a read falls due, and is read, by the clock's time and not
+// by how long the machine took to get there. A wait of held or longer does not end until the test
+// lets it (release), and one of stop or longer never ends; such a wait leaves the time as it was.
+// holding closes when the first held wait begins.
+//
+// The ladder gives its clock the wait as its place set it (mergeStateAfter), not what is left of
+// it, so a wait a wake cut short and the ladder then began again moves the time past that read's
+// due by what had passed before the wake. A read still comes only once due, but a test whose two
+// pull requests are both owed then could see them asked together; the one test that holds this
+// clock has 87's ladder ended before 86's cut-short wait is begun again.
+type ladderClock struct {
+	mu       sync.Mutex
+	at       time.Time
+	held     time.Duration
+	stop     time.Duration
+	released bool
+	holding  chan struct{}
+	began    sync.Once
+}
+
+// holdTheLadders puts w's ladders on a ladderClock that holds each wait of held or longer until
+// the test releases it and never ends one of stop or longer.
+func holdTheLadders(w *workflowRuntime, held, stop time.Duration) *ladderClock {
+	clock := &ladderClock{at: time.Now().UTC(), held: held, stop: stop, holding: make(chan struct{})}
+	w.mergeStateClock = clock.now
+	w.mergeStateTimer = clock.after
+	return clock
+}
+
+func (c *ladderClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+// after is the wait a ladder begins: one the clock lets end ends at once, its time moved on by
+// the wait; any other answers a channel that never receives, so only a wake, a request or the
+// ladder's context ends it (baseFollowWait).
+func (c *ladderClock) after(wait time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if wait >= c.stop {
+		return nil
+	}
+	if wait >= c.held && !c.released {
+		c.began.Do(func() { close(c.holding) })
+		return nil
+	}
+	c.at = c.at.Add(wait)
+	ended := make(chan time.Time, 1)
+	ended <- c.at
+	return ended
+}
+
+// release lets the held waits end from the next one a ladder begins on.
+func (c *ladderClock) release() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.released = true
+}
+
 // askedOf is every query's numbers, in the order the queries came.
 func (rig *batchRig) askedOf() [][]int {
 	rig.mu.Lock()
@@ -664,6 +727,13 @@ func TestARetargetedPullRequestDoesNotBounceBetweenBases(t *testing.T) {
 // its first read comes two of the ladder's waits after the handover, and each next one twice as
 // long after, whatever the other's ladder stands at, and the other's ladder goes on as it was. The
 // two are read apart while their reads fall due apart.
+//
+// The ladders' clock is held (holdTheLadders), so where the reads fall due is the clock's and not
+// the machine's: on the wall clock, 86's fourth read fell due 16 units after its third, and the
+// test handed 87 over only once it saw that third read, so a test or a reader late by about ten of
+// those units under load put 87's second read in the same query as 86's fourth ([86 87], CI's
+// race Job legion5230-r19b). Here 86's fourth wait is held until 87 is handed over, 87's waits end
+// as they begin, and 86's fourth read comes after them, however long the machine takes.
 func TestAHeadHandedOverIsReadOnItsOwnLadder(t *testing.T) {
 	t.Parallel()
 	const unit = 25 * time.Millisecond
@@ -686,13 +756,18 @@ func TestAHeadHandedOverIsReadOnItsOwnLadder(t *testing.T) {
 		return http.StatusOK, batchAnswer(t, asked, nodes...)
 	})
 	rig.w.mergeStateRetry = unit
+	clock := holdTheLadders(rig.w, 16*unit, 32*unit)
 	repo := ghrepo.MustParse("acme/widgets")
 	followsOf := func(issue string) []map[string]any {
 		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
 	}
 
 	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
-	testwait.Eventually(t, "86's third read after its handover", func() bool { return len(followsOf("CAPTURE-1")) >= 3 })
+	testwait.Receive(t, "86's fourth wait after its handover, which the ladders' clock holds", clock.holding)
+	if reads := followsOf("CAPTURE-1"); len(reads) != 3 {
+		t.Fatalf("86's reads logged %v before its fourth wait, want three", reads)
+	}
+	clock.release()
 	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": "head-87"}, false)
 	testwait.Eventually(t, "87's two reads and 86's fourth", func() bool {
 		return len(followsOf("CAPTURE-2")) >= 2 && len(followsOf("CAPTURE-1")) >= 4

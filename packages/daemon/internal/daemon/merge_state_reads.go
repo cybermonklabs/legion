@@ -359,6 +359,21 @@ func (w *workflowRuntime) mergeStateAfter(wait, remaining time.Duration) <-chan 
 	return time.After(remaining)
 }
 
+// mergeStateNow is the moment on the ladders' clock: the time a pull request handed over to its
+// base's batch falls due from, the time a read after the ladder is due at and read against, and
+// the time a read of the batch was answered at, which its next wait runs from (followBase). It is
+// the wall clock in UTC unless the runtime's mergeStateClock names another, as a test does that
+// holds the ladders' waits (mergeStateTimer): with the waits held and the moments still the wall's,
+// every read that fell due while the test held a wait would be read together once it ended, so
+// which reads the batch asks together would turn on how long the machine took, the thing holding
+// the waits rules out.
+func (w *workflowRuntime) mergeStateNow() time.Time {
+	if w.mergeStateClock != nil {
+		return w.mergeStateClock().UTC()
+	}
+	return time.Now().UTC()
+}
+
 // errUnapplied marks a read GitHub answered whose answer the record did not take: the fact that
 // carries it failed (applyMergeability), as a write the database fails fails it. The record holds
 // what it held before the read, so the pull request is owed a read still.

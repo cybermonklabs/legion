@@ -98,7 +98,7 @@ func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owe
 		return
 	}
 	key := baseReadKey(repo, base)
-	now, first := time.Now().UTC(), 2*w.mergeStateWait()
+	now, first := w.mergeStateNow(), 2*w.mergeStateWait()
 	starts := false
 	w.mergeStateMu.Lock()
 	for issue, head := range owed {
@@ -394,12 +394,12 @@ func (w *workflowRuntime) baseFollowWait(ctx context.Context, key string) bool {
 		w.mergeStateMu.Lock()
 		read := w.baseReads[key]
 		stop := read.climb || len(read.owed) == 0 || anyClimbing(read)
-		next, set := firstDue(read)
+		next, set := firstDue(read, w.mergeStateNow())
 		w.mergeStateMu.Unlock()
 		if stop {
 			return false
 		}
-		wait := time.Until(next)
+		wait := next.Sub(w.mergeStateNow())
 		if wait <= 0 {
 			return ctx.Err() == nil
 		}
@@ -414,15 +414,15 @@ func (w *workflowRuntime) baseFollowWait(ctx context.Context, key string) bool {
 }
 
 // firstDue is the soonest moment an owed pull request of read on its ladder falls due, now for
-// one with no due time yet, and the wait its place set before that read (baseOwed.wait). Under
-// mergeStateMu, with nothing in a climb.
-func firstDue(read *baseRead) (time.Time, time.Duration) {
+// one with no due time yet, and the wait its place set before that read (baseOwed.wait). now is
+// the ladders' clock's (mergeStateNow). Under mergeStateMu, with nothing in a climb.
+func firstDue(read *baseRead, now time.Time) (time.Time, time.Duration) {
 	var first time.Time
 	var set time.Duration
 	for _, place := range read.owed {
 		due := place.due
 		if due.IsZero() {
-			due = time.Now().UTC()
+			due = now
 		}
 		if first.IsZero() || due.Before(first) {
 			first, set = due, place.wait
@@ -465,7 +465,7 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 	repo, base, owed := read.repo, read.base, maps.Clone(read.owed)
 	w.mergeStateMu.Unlock()
 
-	now := time.Now().UTC()
+	now := w.mergeStateNow()
 	var together, alone []baseReading
 	for _, issue := range slices.Sorted(maps.Keys(owed)) {
 		place := owed[issue]
@@ -678,7 +678,7 @@ func (w *workflowRuntime) nextPlace(place baseOwed, head string, at time.Time, a
 // answered nothing for it, or whose answer the record did not take, asked for alone from then on
 // when alone says so, and logs that read when it was on its ladder.
 func (w *workflowRuntime) missed(key, issue string, place baseOwed, after time.Duration, alone bool) {
-	next := w.nextPlace(place, "", time.Now().UTC(), after)
+	next := w.nextPlace(place, "", w.mergeStateNow(), after)
 	next.alone = alone
 	if !place.climb {
 		w.log.Warn(followReadLine, "issue", issue, "head", place.head, "attempt", next.attempt, "wait", place.waitBefore(w.mergeStateWait()),
