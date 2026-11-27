@@ -284,12 +284,13 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
 	// The claim's own identity is the six variables its commits carry (GitIdentity.Env), and a
-	// failed mint of it fails the launch. Every role's of claim.Roles is the table the push step of
-	// `legion jj` reads to set the author of a commit a push sends from the role its Legion-Role
-	// trailer names, where the step's rules let it (runtime.RoleIdentitiesVariable): an issue's
-	// roles share one working copy, so a commit's author may be another role's App. The table is
-	// built with the claim's own identity for its own App's roles and with one resolution of the
-	// other App's (roleIdentities); when the other App's identity cannot be resolved, the launch
+	// failed mint of it fails the launch. Every role's, Legion's and each the deployment defines, is
+	// the table the push step of `legion jj` reads to set the author of a commit a push sends from
+	// the role its Legion-Role trailer names, where the step's rules let it
+	// (runtime.RoleIdentitiesVariable): an issue's roles share one working copy, so a commit's
+	// author may be another role's App. The table is built with the claim's own identity for its
+	// own App's roles and with one resolution of the other App's (roleIdentities); when the other
+	// App's identity cannot be resolved, the launch
 	// goes on with a table of its own App's roles alone, and a commit whose trailer names a role
 	// left out keeps its author. A launch whose context ended during that resolution fails, as one
 	// whose context ended during the claim's own mint does: that is no failure of the other App.
@@ -319,33 +320,45 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 }
 
 // roleIdentities is the table of every role's identity a launch of c carries
-// (runtime.RoleIdentitiesVariable), given own, c's own identity. A role of c's own App takes own,
-// since one App commits as one identity, and asks nothing more. The other App's roles take that
-// App's identity, resolved once for all of them (otherAppIdentity). When it cannot be resolved,
-// the table leaves them out and the daemon logs one warning naming c, that App and the error, so
-// a failed mint of one App's lease fails no launch of the other App's role, and the push step
-// leaves the author of a commit whose trailer names a role left out as it is. A resolution that
-// failed once ctx had ended is the launch's own end rather than the other App's failure: it is
-// the error, and nothing is logged.
+// (runtime.RoleIdentitiesVariable), given own, c's own identity: Legion's roles and each role the
+// deployment defines, by the App each acts as (appauth.AppRoleFor). A role of c's own App takes
+// own, since one App commits as one identity, and asks nothing more. The other App's roles take
+// that App's identity, resolved once for all of them (otherAppIdentity). When it cannot be
+// resolved, the table leaves them out and the daemon logs one warning naming c, that App and the
+// error, so a failed mint of one App's lease fails no launch of the other App's role, and the push
+// step leaves the author of a commit whose trailer names a role left out as it is. A resolution
+// that failed once ctx had ended is the launch's own end rather than the other App's failure: it
+// is the error, and nothing is logged.
 func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository ghrepo.Repository, own runtime.GitIdentity) (map[claim.Role]runtime.GitIdentity, error) {
 	deployed := deploymentApps(s.roles)
 	app, err := appauth.AppRoleFor(c.Role, deployed)
 	if err != nil {
 		return nil, err
 	}
-	identities := make(map[claim.Role]runtime.GitIdentity, len(claim.Roles))
+	roles := slices.Clone(claim.Roles)
+	for _, role := range s.roles {
+		roles = append(roles, role.Name)
+	}
+	identities := make(map[claim.Role]runtime.GitIdentity, len(roles))
 	var others []claim.Role
-	for _, role := range claim.Roles {
-		if roleApp, _ := appauth.AppRoleFor(role, deployed); roleApp == app {
+	otherApp := appauth.Implement
+	if app == appauth.Implement {
+		otherApp = appauth.Review
+	}
+	for _, role := range roles {
+		roleApp, err := appauth.AppRoleFor(role, deployed)
+		switch {
+		case err != nil:
+			continue
+		case roleApp == app:
 			identities[role] = own
-		} else {
+		default:
 			others = append(others, role)
 		}
 	}
 	if len(others) == 0 {
 		return identities, nil
 	}
-	otherApp, _ := appauth.AppRoleFor(others[0], deployed)
 	other, err := s.otherAppIdentity(ctx, others[0], repository)
 	switch {
 	case err == nil:

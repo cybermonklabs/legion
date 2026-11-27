@@ -205,7 +205,7 @@ func TestAReadOfABlockedHeadAsksForItsRollup(t *testing.T) {
 				return batchAnswer(t, asked, node)
 			})
 			w := readRuntime(pool, api.URL, quietLogger())
-			state, incomplete, _, err := w.readMergeState(context.Background(), "CAPTURE-1")
+			state, incomplete, _, err := w.readMergeState(context.Background(), ownWork("CAPTURE-1"))
 			if err != nil || state != record.MergeStateBlocked {
 				t.Fatalf("the read answered %s, %v; want blocked", state, err)
 			}
@@ -387,7 +387,7 @@ func TestABaseReadWhoseMintFailsStillTellsAPersistentNull(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go rig.w.readMergeStates(ctx)
-	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[string]string{"CAPTURE-1": "code"}, false)
+	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[taskRead]string{ownWork("CAPTURE-1"): "code"}, false)
 	testwait.Eventually(t, "the review-stuck notice of the null mergeable", func() bool {
 		return len(noticeReasons(t, rig.pool, "review-stuck")) > 0
 	})
@@ -429,7 +429,7 @@ func TestABlockedRestReadTakesItsVerdictFromTheGraphQLAnswer(t *testing.T) {
 		return batchAnswer(t, asked, batchNode(86, "code", "CONFLICTING", "DIRTY"))
 	})
 	w := readRuntime(pool, api.URL, quietLogger())
-	state, _, _, err := w.readMergeState(context.Background(), "CAPTURE-1")
+	state, _, _, err := w.readMergeState(context.Background(), ownWork("CAPTURE-1"))
 	if err != nil || state != record.MergeStateDirty {
 		t.Fatalf("the read answered %s, %v; want the GraphQL answer's dirty", state, err)
 	}
@@ -549,7 +549,7 @@ func TestAWholeAnswerIsRecordedAtItsOwnReadTime(t *testing.T) {
 		return batchAnswer(t, asked, batchNode(86, "code", "MERGEABLE", "BLOCKED"))
 	})
 	w := readRuntime(pool, api.URL, quietLogger())
-	if state, _, _, err := w.readMergeState(context.Background(), "CAPTURE-1"); err != nil || state != record.MergeStateBlocked {
+	if state, _, _, err := w.readMergeState(context.Background(), ownWork("CAPTURE-1")); err != nil || state != record.MergeStateBlocked {
 		t.Fatalf("the read answered %s, %v; want blocked", state, err)
 	}
 	servedAt := time.Unix(0, served.Load()).UTC().Truncate(time.Microsecond)

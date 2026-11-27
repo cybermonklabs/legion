@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -168,6 +169,51 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 	}
 	if value, set := controller.Env[runtime.RoleIdentitiesVariable]; set {
 		t.Errorf("the controller's launch carries LEGION_ROLE_IDENTITIES=%q, want none: it pushes nothing", value)
+	}
+}
+
+// A launch's table of every role's identity holds each role the deployment defines too, by the App
+// the role acts as (its `github_app`): the checker on the implement App, the critic on the review
+// App. The table is one the push step's read takes whole (runtime.ReadRoleIdentities, which takes
+// a key of the role grammar since it reads no settings), so a role of the deployment in it turns
+// no launch's step off.
+func TestALaunchCarriesTheIdentityOfEachRoleOfTheDeployment(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	repository := ghrepo.MustParse("zeta/tools")
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
+		roles: []config.Role{
+			{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
+			{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
+		},
+		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
+		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+			return appIdentities[appOf(role)], nil
+		}}
+	every := map[claim.Role]runtime.GitIdentity{
+		"checker": appIdentities[appauth.Implement],
+		"critic":  appIdentities[appauth.Review],
+	}
+	for _, role := range claim.Roles {
+		every[role] = appIdentities[appOf(role)]
+	}
+	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer})
+	if err != nil {
+		t.Fatalf("the implementer's SpawnSpec: %v", err)
+	}
+	got := spec.Env[runtime.RoleIdentitiesVariable]
+	if want := runtime.RoleIdentities(every); got != want {
+		t.Errorf("LEGION_ROLE_IDENTITIES = %q, want Legion's roles and the deployment's, each by its App, %q", got, want)
+	}
+	if read, why := runtime.ReadRoleIdentities(got); why != "" || !maps.Equal(read, every) {
+		t.Errorf("the push step reads the launch's table as %v, %q; want every role's identity, %v", read, why, every)
 	}
 }
 

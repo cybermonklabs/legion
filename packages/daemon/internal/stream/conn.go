@@ -337,9 +337,10 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on
-// origin holds. The shim runs its two jj reads within timeout; the answer is awaited for that plus
-// the RPC timeout, the round trip. A shim built before the read forwards it to OMP, whose
-// unknown-command answer is a refusal like the shim's own.
+// origin holds. The shim runs one jj snapshot of each task's working copy, then its two jj reads,
+// within timeout; the answer is awaited for that plus the RPC timeout, the round trip. A shim
+// built before the read forwards it to OMP, whose unknown-command answer is a refusal like the
+// shim's own.
 func (c *Conn) WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceWork, error) {
 	id := rand.Text()
 	frame := shimwire.WorkspaceWork{ID: id, Issue: issue, TimeoutMs: int(timeout.Milliseconds())}

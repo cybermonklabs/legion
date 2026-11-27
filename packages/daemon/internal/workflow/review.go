@@ -1550,8 +1550,10 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	if err != nil || !owed {
 		return err
 	}
-	key := pr.Issue
-	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	// The task names which of the issue's pull requests the read is of: each task of a plan has
+	// one of its own, and the fact is of this one.
+	key, task := pr.Issue, pr.Task
+	store.OnCommit(ctx, func() { e.cfg.ReadMergeState(key, task) })
 	return nil
 }
 

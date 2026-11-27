@@ -25,8 +25,12 @@
 --
 -- The outbox check is one list, so this migration names every kind, as 20261121165047 did: its
 -- thirty-one kinds and task_pull_requests_close. Its version stands above 20261121165047 on purpose:
--- Migrate applies every unrecorded migration in version order, so the list with the higher version
--- is the last word on any database.
+-- Migrate applies every unrecorded migration in version order, so on a database main migrated
+-- this file runs late, after main's, and its list is the last word there. The last migration to
+-- write the list owns every value of it, main's included, so this one names main's two basis
+-- seeds (pending_basis_seed and reparent_seed, main's 20261122154643, which sorts above this
+-- file) beside its own kinds. Without them an upgrade of a database main migrated stops on a
+-- queued seed row (SQLSTATE 23514) and the daemon does not boot.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
@@ -88,4 +92,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch', 'task_pull_requests_close'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch', 'task_pull_requests_close',
+  'pending_basis_seed', 'reparent_seed', 'merge_holds_changed'));

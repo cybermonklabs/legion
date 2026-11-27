@@ -1,0 +1,39 @@
+-- 20261126234607_task_start_from.up.sql — the phase a task's waiting start moves from
+-- (plan_tasks.start_from).
+--
+-- A start of a step waits where the base of its merge is not the issue's default branch, where its
+-- needs have still to join, or where the agent of its step runs another task's step
+-- (workflow's start: mergeWaitsForBase, joinNeeds, waitForAgent). The start that runs when the
+-- wait ends is written by another transaction (workflow's startAfterWait), which until now told
+-- the phase row no phase the move came from, so main's rule that a parent accepted back from its
+-- retro or its merge is left where it stands (record.EntryFrom, the workflow's acceptedEntry,
+-- dispatch://INFRA-3320 R9) did not reach a start that had waited: the admission pass then stopped
+-- the role and moved the parent to awaiting_children. start_from keeps that phase with the wait,
+-- as start_reason keeps why the step was started (20261121165047), and the start that follows the
+-- wait passes it on.
+--
+-- The column is text, the phase as record writes one, '' for a start that waits after no move and
+-- for a task that waits for nothing. MoveTask clears it at every move, as it clears start_reason:
+-- a task that moves again waits for its new move's own reason. A row of a release before this one
+-- reads '' and so keeps today's behaviour, which is what the daemon did with no column at all.
+--
+-- There is no down file. This directory keeps none, so the way back is the transaction below, run
+-- with the daemon stopped, before the earlier image is pinned. It drops the column, which the
+-- earlier release names nowhere, and deletes this file's version row, which is owed to the
+-- roll-forward so that it runs this file again:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table plan_tasks drop column if exists start_from;
+--   delete from schema_version where version = 20261126234607;
+--   commit;
+--   SQL
+--
+-- What the way back costs is the phase each waiting start would have carried: the start that runs
+-- after such a wait counts as a move back with no phase of its own, as it did before this file.
+--
+-- This version stands above every migration of main this branch has merged (main's newest is
+-- 20261126110259) and above this branch's own 20261126144204, so Migrate applies it last on every
+-- database. It writes no check list, so it takes no value of either side away.
+
+alter table plan_tasks add column start_from text not null default '';

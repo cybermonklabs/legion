@@ -84,12 +84,13 @@ func RefusalReason(err error) string {
 var ErrTokenRefused = errors.New("runtime: the shim did not read its projected token")
 
 // WorkspaceWorkTimeout is how long the agent's side is given to read whether its workspace holds
-// work origin does not hold (WorkspaceWorkReader): two jj reads, one of which snapshots the
-// working copy; nothing is packed or pushed. It is the runtimes' budget for the request, not a
-// setting: a read that cannot finish in this long is one the caller is told about rather than one
-// the daemon waits longer for. It is half of the daemon's one-minute sweep, which bounds the
-// sweep's runtime calls, so a jj that runs out of time is answered by the shim's own timeout
-// inside that bound rather than by the caller's deadline.
+// work origin does not hold (WorkspaceWorkReader): one jj snapshot of each task's working copy,
+// then two jj reads, one of which snapshots the issue's working copy; nothing is packed or
+// pushed. It is the runtimes' budget for the request, not a setting: a read that cannot finish in
+// this long is one the caller is told about rather than one the daemon waits longer for. It is
+// half of the daemon's one-minute sweep, which bounds the sweep's runtime calls, so a jj that runs
+// out of time is answered by the shim's own timeout inside that bound rather than by the caller's
+// deadline.
 const WorkspaceWorkTimeout = 30 * time.Second
 
 // CompactTimeout is how long Oh My Pi is given to shorten a session: the operation's own bound,

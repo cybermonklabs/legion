@@ -64,9 +64,11 @@ func leaveUnnamed(log *slog.Logger, retryIn time.Duration, key, repo, why string
 // repository (record.Store.UnfilledIssues) with the repository Dispatch resolves the issue to now
 // (its own, an ancestor's, or the project's default), that repository's default branch and GitHub's
 // spelling of it, both from one read of GitHub per repository (backfillRead). One read of
-// Dispatch's listing serves every record. A record Dispatch resolves to no repository, or does not
-// list, is left, as is one where any pull request of its tasks, or failing one, its workspace (a
-// tmux daemon's, issueWorkspaces), is in another repository than the one Dispatch resolves, as
+// Dispatch's listing serves every record, as one read of the store serves the pull requests of
+// every task of every record (record.Store.TaskPullRequestRowsOf). A record Dispatch resolves to
+// no repository, or does not list, is left, as is one where any pull request of its tasks, or
+// failing one, its workspace (a tmux daemon's, issueWorkspaces), is in another repository than
+// the one Dispatch resolves, as
 // GitHub names either: each pull request of a task names the repository the issue worked in,
 // whether or not that task's work merges by itself, and a record on another would create its branch
 // there, disarm a stranger's pull request, and strand the workspace's unpushed work; the log names
@@ -95,18 +97,20 @@ func leaveUnnamed(log *slog.Logger, retryIn time.Duration, key, repo, why string
 // name it moved to reach it before that pass as after it.
 func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, reads repositoryReadBounds, log *slog.Logger) (left bool, err error) {
 	var unfilled []record.Issue
-	pulls := map[string][]record.PullRequest{}
+	var pulls map[string][]record.PullRequest
 	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if unfilled, err = records.UnfilledIssues(ctx, tx, project); err != nil {
 			return err
 		}
-		for _, issue := range unfilled {
-			if pulls[issue.Key], err = records.TaskPullRequestRows(ctx, tx, issue.Key); err != nil {
-				return err
-			}
+		// Only each pull request's repository and number are read, so the rows alone, those of
+		// every task of every issue in one read.
+		keys := make([]string, len(unfilled))
+		for i, issue := range unfilled {
+			keys[i] = issue.Key
 		}
-		return nil
+		pulls, err = records.TaskPullRequestRowsOf(ctx, tx, keys)
+		return err
 	}); err != nil {
 		return false, fmt.Errorf("read the records with no repository: %w", err)
 	}
@@ -182,8 +186,8 @@ type filling struct {
 
 // fillOf is what issue's record is filled with from repo, the repository Dispatch resolves it to,
 // as fillRepositories says, or why it is left, naming the step that settles it. pulls holds each
-// pull request of each task of each issue (record.Store.TaskPullRequests), in task order. Its read
-// of GitHub is bounded by attempt (backfillRead).
+// pull request of each task of each issue (record.Store.TaskPullRequestRowsOf), in task order. Its
+// read of GitHub is bounded by attempt (backfillRead).
 func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pulls map[string][]record.PullRequest, clones []workspace.Workspace,
 	stateDir string, named *defaultBranches, renames ghrepo.Renames, attempt time.Duration) (filling, error) {
 	read, err := backfillRead(ctx, named, repo, attempt)

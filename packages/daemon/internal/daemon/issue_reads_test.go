@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"io"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A webhook GitHub never delivers leaves the record at a head GitHub has moved past, and every
@@ -303,4 +307,84 @@ func TestTheReadStampIsWhenGitHubAnsweredNotWhenTheHeadFollowEnded(t *testing.T)
 			pr.StateReadAt.UTC().Format(time.RFC3339Nano), pr.StateReadAt.Sub(followed), followed.UTC().Format(time.RFC3339Nano),
 			pr.StateReadAt.Sub(answered), answered.UTC().Format(time.RFC3339Nano))
 	}
+}
+
+// A start read that GitHub's rate limit refuses hands the open pull request of each task left to
+// the reads of its base (startReadFailed, followOnBase), each under its own task, so two tasks of
+// one issue on one base are two follows there and both are read. CAPTURE-1's task a has #86 open
+// at code and its task b #87 at pushed, both on main; GitHub refuses the start read of a's #86
+// with its rate limit, and its GraphQL API answers the base's reads MERGEABLE and clean. Each
+// follow is read before b's, or with it, since a's was handed over first, so by the time main's
+// batch has asked GitHub for #87 it has asked for #86 as well, and each read's line names its task.
+//
+// The fault it catches is a follow keyed by the issue alone: b's follow replaced a's in main's
+// batch, no line said so, and a's round stood unread until its pull request's next event (its
+// control: followOnBase queueing map[taskRead]string{{issue: issue}: pr.HeadSHA}, where the batch
+// asks for #87 alone).
+func TestARateLimitedStartReadFollowsEveryTasksPullRequest(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedTwoTasks(t, pool)
+	b := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 87, Branch: "legion/CAPTURE-1.b", HeadSHA: "pushed", Failing: []string{}}
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutPullRequest(ctx, tx, b) }); err != nil {
+		t.Fatalf("record b's pull request: %v", err)
+	}
+	// The base each pull request's opened recorded, which the hand-over to the base's reads needs.
+	if _, err := pool.Exec(context.Background(), "update pull_requests set base = 'main' where issue = 'CAPTURE-1'"); err != nil {
+		t.Fatalf("record main as the base of both pull requests: %v", err)
+	}
+	heads := map[int]string{86: "code", 87: "pushed"}
+	branches := map[int]string{86: "legion/CAPTURE-1", 87: "legion/CAPTURE-1.b"}
+	var mu sync.Mutex
+	queried := map[int]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			asked := readBatchRequest(t, r)
+			var nodes []map[string]any
+			mu.Lock()
+			for _, number := range asked {
+				queried[number]++
+				node := batchNode(number, heads[number], "MERGEABLE", "CLEAN")
+				node["headRefName"] = branches[number]
+				nodes = append(nodes, node)
+			}
+			mu.Unlock()
+			_, _ = io.WriteString(w, batchAnswer(t, asked, nodes...))
+			return
+		}
+		w.Header().Set("X-Ratelimit-Remaining", "0")
+		http.Error(w, `{"message":"API rate limit exceeded for installation ID 171972716."}`, http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+	logs := &syncBuffer{}
+	w := readRuntime(pool, server.URL, slog.New(slog.NewJSONHandler(logs, nil)))
+	w.mergeStateRetry = readRigWait
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.readMergeStates(ctx)
+
+	w.readIssuesAtStart(ctx)
+	limited := loggedLines(t, logs.String(), "read an issue's pull request as the daemon starts: GitHub's rate limit")
+	if len(limited) != 1 || limited[0]["task"] != "a" || limited[0]["left"] != float64(2) {
+		t.Fatalf("the start read logged %v, want one rate limit, on a's read, with a's and b's left", limited)
+	}
+	testwait.Eventually(t, "main's batch to ask GitHub for b's #87", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return queried[87] > 0
+	})
+	mu.Lock()
+	got := maps.Clone(queried)
+	mu.Unlock()
+	if got[86] == 0 {
+		t.Fatalf("main's batch asked GitHub for %v by the time it asked for b's #87, want a's #86 asked as well: each task's pull request the rate-limited start read left is followed on its own", got)
+	}
+	testwait.Eventually(t, "a read line of each task's follow", func() bool {
+		var readA, readB bool
+		for _, line := range loggedLines(t, logs.String(), followReadLine) {
+			readA = readA || line["issue"] == "CAPTURE-1" && line["task"] == "a" && line["head"] == "code"
+			readB = readB || line["issue"] == "CAPTURE-1" && line["task"] == "b" && line["head"] == "pushed"
+		}
+		return readA && readB
+	})
 }

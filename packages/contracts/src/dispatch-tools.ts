@@ -527,20 +527,25 @@ const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}
  *  here, before its reason is posted. */
 function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): string | undefined {
   const options = issueStatusOptionsOf(input);
+  const optionInput = input as {
+    readonly include_children?: unknown;
+    readonly unlink_children?: unknown;
+    readonly status?: unknown;
+  };
   if (options.length === 0) return undefined;
   const named = options.join(", ").replace(/, ([^,]*)$/, " and $1");
   const others = ISSUE_UPDATE_PATCH_FIELDS.filter((field) => input[field] !== undefined);
   return brokenParts([
     [
-      !(input["include_children"] === true && input["unlink_children"] === true),
+      !(optionInput.include_children === true && optionInput.unlink_children === true),
       "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two.",
     ],
     [
-      !(input["include_children"] === true && input["status"] === "done"),
+      !(optionInput.include_children === true && optionInput.status === "done"),
       "include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
     ],
     [
-      typeof input["status"] === "string",
+      typeof optionInput.status === "string",
       `status is required with ${named}. Add status, or drop ${named}.`,
     ],
     [
@@ -987,10 +992,13 @@ const RESULT_SHAPE_RULE =
  *  shapes are one command because a retraction answers for one recorded result: the reader of
  *  `dispatch results` sees the result and its retraction together. */
 function resultProblem(value: unknown): string | undefined {
-  const input = value as Record<string, unknown>;
+  const input = value as Record<string, unknown> & {
+    readonly retract?: unknown;
+    readonly reason?: unknown;
+  };
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
-  if (typeof input["retract"] === "string") {
-    const reason = input["reason"];
+  if (typeof input.retract === "string") {
+    const reason = input.reason;
     if (typeof reason !== "string" || reason.trim() === "") {
       return "retract needs reason, the words that say why the result is wrong.";
     }
@@ -999,7 +1007,7 @@ function resultProblem(value: unknown): string | undefined {
     }
     return undefined;
   }
-  if (input["reason"] !== undefined) {
+  if (input.reason !== undefined) {
     return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
   }
   const missing = RESULT_REQUIRED_FIELDS.filter((field) => input[field] === undefined);
@@ -1089,8 +1097,10 @@ const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
 const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
 /** A route `dispatch api` sends: the API's root, which lists every route, or a route under it,
- *  with a query or none. */
-const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
+ *  with a query or none. `dispatch proxy` tests a write's path with it too, and names
+ *  `dispatch api` only for a write to such a route (`methodRefusal`, envoy-client's
+ *  dispatch-proxy.ts). */
+export const API_ROUTE_PATTERN = /^\/api\/v1(?=[/?]|$)/;
 
 /** The characters a URL parser percent-encodes in a path and no rule above refuses: Bun's `URL`
  *  writes each as its `%XX`, so a route holding one would be sent as another spelling of it. */
@@ -1259,7 +1269,9 @@ export const dispatchToolSpecs = [
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
-        .describe("Optional coarse priority, a number from 0 to 3: 0 is highest and 3 is lowest.")
+        .describe(
+          "Optional coarse priority from 0 (P0, highest) to 3 (P3, lowest). Setting 0 needs the p0 scope."
+        )
         .optional(),
       assignee: z
         .string()
@@ -1389,7 +1401,9 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 0, max: 3 })
         .nullable()
         .optional()
-        .describe("Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."),
+        .describe(
+          "Coarse priority from 0 (P0, highest) to 3 (P3, lowest), or null to clear it. Setting 0 needs the p0 scope, unless the issue's own priority is 0 already."
+        ),
       assignee: z
         .string()
         .nullable()
@@ -2542,7 +2556,7 @@ export const dispatchToolSpecs = [
       "Read an issue or document summary, targeted ask, or targeted comment reply chain, or the conversation " +
       "a message belongs to. Do not use it for document contents; use dispatch doc-read instead. Supply ref, issue, " +
       "issue plus artifact (one of its documents), project plus artifact, or project alone, which lists the project's documents on no issue and nothing more; or message alone, which reads a human's direct message to this session and every " +
-      "reply to it (they belong to no issue). A document summary names its issue, reference, versions and approval. " +
+      "reply to it (they belong to no issue). A document summary names its issue, reference, versions and, once its approval has been asked for, its approval. " +
       "An issue read lists every document, picture and file the issue holds under `Documents:`, each by slug, filename and kind. " +
       "An anchored comment or ask also says where its quote sits, as `Position:`: the block's path from the top, " +
       "and in a table the row (0 is the header), the cells before the anchored one, and the column's header; " +
@@ -2727,7 +2741,9 @@ export const dispatchToolSpecs = [
       "List a project's issues for a roadmap or backlog pass: every issue in one project, each carrying " +
       "its status, priority, parent, labels, open-ask count, progress (its spec's task-list items and " +
       "its direct children, each done of total, as `tasks 3/7 · children 2/5`, each only when it has " +
-      "any), and route with whether it reaches anyone, " +
+      "any), and route with whether it reaches anyone (a row's text names a route only when no live " +
+      "session holds it: nobody does, its holder is unresponsive, or that is unknown; `details` carry " +
+      "every route), " +
       "so you can see backlog shape without opening every issue. Optionally filter by status, parent, " +
       "label, priority, route status, or how recently it changed; priority takes one or more of 0-3 " +
       "(P0-P3) and null for an issue with no priority, so an owner's P0/P1 audit is priority [0, 1]. " +
@@ -2851,15 +2867,18 @@ export const dispatchToolSpecs = [
       "Turn a project's proven-sessions setting on or off. With it on, an architect's write of an " +
       "issue's spec or Verification document passes only on a credential that proves the " +
       "architect's session. A role-holder publication then passes only on a credential that " +
-      "proves legion-daemon:<project>. on sends PUT /api/v1/projects/{key}/proven-sessions, which " +
+      "proves legion-daemon:<project>, or legion-daemon:<P> of another project's daemon on a " +
+      "broker token that names P. on sends PUT /api/v1/projects/{key}/proven-sessions, which " +
       "any credential that may write the project's issues may send. off sends DELETE on the same " +
       "path, which needs the person scope: a credential without it is refused with 403 " +
       "OAUTH_SCOPE_REQUIRED, and the shared token and a pod's token hold none. A token scoped to " +
-      "another project is refused with 403 PROJECT_SCOPE. Only the project's roll-out issue " +
-      "turns it on, once the project's daemon and pods write with their own tokens. Turned on " +
-      "before that, it stops every architect write and every role-holder publication on the " +
-      "shared token, until a person turns it off. The answer names the project and the setting " +
-      "as Dispatch stored it.",
+      "another project turns the setting on, as the shared token does, and off only with the " +
+      "person scope. A token scoped to one project gets 403 PROJECT_SCOPE for a project that " +
+      "does not exist and for a private project that it does not name. Only the project's " +
+      "roll-out issue turns it on, once the project's daemon and pods write with their own " +
+      "tokens. Turned on before that, it stops every architect write and every role-holder " +
+      "publication on the shared token, until a person turns it off. The answer names the " +
+      "project and the setting as Dispatch stored it.",
     arguments: (z) => ({
       project: z.string().describe("Project key whose setting to change, such as CORE."),
       proven_sessions: z
@@ -2965,7 +2984,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project, project_scope}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the service a broker token naming no person names: a job's identity as its job entry lists it, the Kubernetes account an exchange entry lists, or the fleet of a machine nobody has signed in on; else null. project_scope is a broker token's project scope, and null for every other credential. A job's broker token has the project scope named or public, holds no OAuth scope and writes as its service: a route that needs an OAuth scope refuses it with 403 OAUTH_SCOPE_REQUIRED before Dispatch's project check runs. named may write its one project, and that check judges its write to another project as it judges a person's named token's for the same project: 403 PROJECT_SCOPE until dispatch://INFRA-4799 changes that answer for both. public names no one project, so it may write wherever a token that names no project may. An exchange entry's broker token that names its account has the project scope named and no project, and writes as that account wherever a token that names no project may. A machine's broker token that names a service has the project scope person; it may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project, project_scope}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the service a broker token naming no person names: a job's identity as its job entry lists it, the Kubernetes account an exchange entry lists, or the fleet of a machine nobody has signed in on; else null. project_scope is a broker token's project scope, and null for every other credential. A job's broker token has the project scope named or public, holds no OAuth scope and writes as its service: a route that needs an OAuth scope refuses it with 403 OAUTH_SCOPE_REQUIRED before Dispatch's project check runs. named names one project, and that check judges its writes as it judges a person's named token's for the same project: it refuses a write that belongs to the deployment, such as a project create, with 403 PROJECT_SCOPE_DEPLOYMENT. public names no one project, so it may write wherever a token that names no project may. An exchange entry's broker token that names its account has the project scope named and no project, and writes as that account wherever a token that names no project may. A machine's broker token that names a service has the project scope person; it may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the project your credential's token names, or null when it names none. A token that names a project also writes other projects' objects, as a credential that names none does. The one exception is a private project that the token does not name.",
     arguments: () => ({}),
     strict: true,
   },
@@ -2981,7 +3000,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_api",
     example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
     description:
-      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print the answer's body: Dispatch's JSON, indented, for jq to read; any other body of a 2xx, such as a file version's bytes or a document version's Markdown, as it came. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them): dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once, and once more only after Dispatch answers that the token it presented is not live (Dispatch then authenticated nothing, so nothing ran), with no redirect followed and no Idempotency-Key. On a 2xx answer it exits 0 and prints Dispatch's JSON as above, and any other body unchanged, with nothing added: an answer with Content-Disposition: attachment (a file version, a ?download=true read) is stored content, printed byte for byte whatever its type, JSON included. A 2xx whose body holds a credential the command presented (its token or its request's DPoP proof) is not printed: it exits 1 with CREDENTIAL_ECHOED, naming the status and saying a write may have been made. Any other answer exits 1 with its code: when Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint; an answer that is neither a 2xx nor Dispatch's JSON, such as a proxy's page, is named by its status. A usage error, such as a path outside /api/v1 or a body with no method, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, a JSON answer longer than the output limit is written to a file the output names; a body printed as it came is written whole.",
+      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print the answer's body: Dispatch's JSON, indented, for jq to read; any other body of a 2xx, such as a file version's bytes or a document version's Markdown, as it came. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them), or, for an issue comment POST that carries an Idempotency-Key, through dispatch proxy: dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once, and once more only after Dispatch answers that the token it presented is not live (Dispatch then authenticated nothing, so nothing ran), with no redirect followed and no Idempotency-Key. On a 2xx answer it exits 0 and prints Dispatch's JSON as above, and any other body unchanged, with nothing added: an answer with Content-Disposition: attachment (a file version, a ?download=true read) is stored content, printed byte for byte whatever its type, JSON included. A 2xx whose body holds a credential the command presented (its token or its request's DPoP proof) is not printed: it exits 1 with CREDENTIAL_ECHOED, naming the status and saying a write may have been made. Any other answer exits 1 with its code: when Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint; an answer that is neither a 2xx nor Dispatch's JSON, such as a proxy's page, is named by its status. A usage error, such as a path outside /api/v1 or a body with no method, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, a JSON answer longer than the output limit is written to a file the output names; a body printed as it came is written whole.",
     arguments: (z) => ({
       path: z
         .string({ min: 1 })
@@ -3133,7 +3152,8 @@ export const dispatchToolSpecs = [
     description:
       "List what the Inbox of the person you act for shows, read with your own credential. " +
       "Each heading carries its count, then its rows: Needs you (their open asks waiting on a " +
-      "person and not inside a snooze, plus the credential requests they may decide), Waiting on " +
+      "person and not inside a snooze; its count also counts the credential requests they may " +
+      "decide, which are listed under Credential requests and not here), Waiting on " +
       "agents, Later (the asks they snoozed), Unread threads (the threads they wrote in that " +
       "somebody else has written in since, and the messages they sent an agent session that it " +
       "answered) and Credential requests. An ask's line names its " +

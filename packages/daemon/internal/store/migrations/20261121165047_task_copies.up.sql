@@ -26,11 +26,14 @@
 -- and so does the workflow where it records a pull request on the issue's own branch
 -- (BranchGiven); it names no task, so a task's branch has one place, plan_tasks.branch.
 --
--- The outbox check is one list, so this migration names every kind, as 20261119203047 did: its
--- thirty kinds and task_branch. Its version stands above 20261119203047 on purpose, and above
--- every other migration that writes the list again: Migrate applies every unrecorded migration in
--- version order, so the list with the higher version is the last word on any database, a database
--- that already took 20261119203047 among them.
+-- The outbox check is one list, and the last migration to write it owns every value of it, main's
+-- included: Migrate applies every unrecorded migration in version order, so on a database main
+-- migrated this file runs after main's, late, and its list is the last word there. So it names
+-- every kind: 20261119203047's thirty, task_branch, and main's two basis seeds
+-- (pending_basis_seed and reparent_seed, main's 20261122154643, which sorts above this file).
+-- Without them an upgrade of a database main migrated stops on a queued seed row (SQLSTATE
+-- 23514) and the daemon does not boot. A fresh database is unharmed: the two kinds arrive here
+-- rather than at main's migration, and 20261126144204 writes the list again above both.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. It deletes each task_branch row
@@ -92,4 +95,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch', 'pending_basis_seed',
+  'reparent_seed', 'merge_holds_changed'));

@@ -13,8 +13,8 @@ import (
 // (FromBlocks); one that names no task of the plan is Validate's to refuse, and waits on nothing.
 //
 // An owner or a sub-owner writes the plan, and register_plan checks it before the fact lock, so no
-// read here walks the plan once for each task or each need: parts nest as deep as the plan has
-// tasks, and a walk up the whole nesting for each need cost the depth times the needs. names is
+// climb here walks the whole nesting once for each task or each need: parts nest as deep as the plan
+// has tasks, and a walk up the whole nesting for each need cost the depth times the needs. names is
 // each task id in id order, then each PartOf that names no task of the plan, in id order, which the
 // rule reads as a task with no needs and no task above it; at is each name's index in names. up[k][i]
 // is the index of the name 2^k steps above name i through PartOf, -1 above the top, and depth[i]
@@ -293,9 +293,12 @@ func (w waits) waitPath(from, to waitNode, cut map[waitEdge]bool, component []in
 // whose two moments lie in two components is searched for no wait at all. That is every need of a
 // plan with no part: with the cycles of needs left out, only a part's wait for its task's start
 // and a task's end's wait for its parts close a cycle of waits. A search runs inside one component
-// alone, so its cost is that component's, and a chain of needs costs one pass over the plan. The
-// passes only leave needs out, so a later wait lies inside a component of the first. It reads ended
-// once for each need and each moment it reaches, and answers its error once it has one.
+// alone, so its cost is that component's, and a chain of needs costs one pass over the plan. A need
+// in a component costs at most two searches in each pass, its own wait and, in the first, the one
+// of causes, so a plan with many such needs in one large component costs their count times its
+// size, which register_plan bounds with a deadline of its own (api's planCheckBound). The passes
+// only leave needs out, so a later wait lies inside a component of the first. It reads ended once
+// for each need and each moment it reaches, and answers its error once it has one.
 func (w waits) needReasons(onCycle map[waitEdge]bool, ended func() error) (map[waitEdge]string, error) {
 	cut := make(map[waitEdge]bool, len(onCycle))
 	maps.Copy(cut, onCycle)
@@ -331,30 +334,25 @@ func (w waits) needReasons(onCycle map[waitEdge]bool, ended func() error) (map[w
 		}
 		return w.waitPath(from, to, cut, component, c, ended)
 	}
-	// causes says whether id's need is a cause of the first pass. A need of id itself closes a cycle
-	// of needs, which is cut before this reads it. The end of a task above id waits for need's end
-	// only where it lies in the component of need's end, and the tasks above id whose ends lie there
-	// are the nearest ones: each end on the way from such a task's end down to id's end, and on to
-	// need's end, lies in it too.
+	// causes says whether id's need is a cause of the first pass: one of the two tasks holds the
+	// other, or need's end waits for the end of a task above id that does not hold need. A need
+	// of id itself closes a cycle of needs, which is cut before this reads it. The task id is a part
+	// of decides the last alone, with one search. Each task above it holds need wherever it does,
+	// since holds climbs the one chain of PartOf. And the end of each task above it waits for the end
+	// of the part below it, a wait no cut removes, so need's end waits for the end of a task further
+	// up, through ends inside need's component, only where it waits for the end of id's task too.
+	// A climb that searched from need's end to each task above id in turn, and tested holding only
+	// after each search, cost the depth of the nesting for each need.
 	causes := func(id, need string) (bool, error) {
 		if w.holds(id, need) || w.holds(need, id) {
 			return true, nil
 		}
-		end := componentOf(waitNode{need, false})
-		for above := w.up[0][w.at[id]]; above >= 0; above = w.up[0][above] {
-			name := w.names[above]
-			if componentOf(waitNode{name, false}) != end {
-				break
-			}
-			_, ends, err := waitsFor(waitNode{need, false}, waitNode{name, false})
-			if err != nil {
-				return false, err
-			}
-			if ends && !w.holds(name, need) {
-				return true, nil
-			}
+		above := w.up[0][w.at[id]]
+		if above < 0 || w.holds(w.names[above], need) {
+			return false, nil
 		}
-		return false, nil
+		_, ends, err := waitsFor(waitNode{need, false}, waitNode{w.names[above], false})
+		return ends, err
 	}
 	for pass := 1; pass <= 2; pass++ {
 		for _, id := range w.ids {

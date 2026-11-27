@@ -115,10 +115,15 @@ const (
 	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a
 	// deletion would take it with the pod.
 	IdleHoldUnownedClaimProcess
-	// IdleHoldUnownedOperatorSuspended: an operator's own suspension holds a claim of the pod
-	// (pods.IdleClaim.OperatorSuspended), the one suspension no daemon rule undoes, and the
-	// operator's resume brings that role back into this pod.
-	IdleHoldUnownedOperatorSuspended
+	// IdleHoldUnownedSuspensionHolds: a suspension that the operator or the controller holds over
+	// an agent of the pod (pods.IdleClaim.SuspensionHolds, read from
+	// supervise's SuspendSource.Holds), which no daemon rule undoes, and whose holder's resume
+	// brings that role back into this pod. Its recorded name stays `unowned_operator_suspended`,
+	// from when the operator's was the one suspension that held: a release record holds the
+	// hold's name and nothing else (idleHoldNames), the records already written carry this one,
+	// and a deployment reads the hold by it (docs/kubernetes.md), so a new name would read one
+	// hold as two across the records written before and after it.
+	IdleHoldUnownedSuspensionHolds
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
@@ -190,15 +195,15 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldUnauthorized:    "unauthorized",
 	IdleHoldNoLiveClaim:     "no_live_claim",
 
-	IdleHoldUnownedClaimLive:         "unowned_claim_live",
-	IdleHoldUnownedNoClaim:           "unowned_no_claim",
-	IdleHoldUnownedSandboxGone:       "unowned_sandbox_gone",
-	IdleHoldUnownedClaimProcess:      "unowned_claim_process",
-	IdleHoldUnownedOperatorSuspended: "unowned_operator_suspended",
-	IdleHoldUnownedDelivery:          "unowned_delivery_waiting",
-	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
-	IdleHoldUnownedReleasing:         "unowned_releasing",
-	IdleHoldUnownedNotIdle:           "unowned_not_idle",
+	IdleHoldUnownedClaimLive:       "unowned_claim_live",
+	IdleHoldUnownedNoClaim:         "unowned_no_claim",
+	IdleHoldUnownedSandboxGone:     "unowned_sandbox_gone",
+	IdleHoldUnownedClaimProcess:    "unowned_claim_process",
+	IdleHoldUnownedSuspensionHolds: "unowned_operator_suspended",
+	IdleHoldUnownedDelivery:        "unowned_delivery_waiting",
+	IdleHoldUnownedTreeNotLive:     "unowned_tree_not_live",
+	IdleHoldUnownedReleasing:       "unowned_releasing",
+	IdleHoldUnownedNotIdle:         "unowned_not_idle",
 
 	IdleHoldPaused:           "paused",
 	IdleHoldPauseHeld:        "pause_held",
@@ -448,9 +453,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - the project is paused, or a pause holds the pod (IdleHoldPaused, IdleHoldPauseHeld);
 //   - a live claim is in a turn, starting or stopping (IdleHoldInTurn);
 //   - a stopped claim still records a process, which the suspension would wait on for as long as
-//     it stands (IdleHoldUnownedClaimProcess), or an operator's suspension holds a claim, which
-//     keeps the pod for that operator as UnownedPodRelease keeps it
-//     (IdleHoldUnownedOperatorSuspended);
+//     it stands (IdleHoldUnownedClaimProcess), or a suspension that holds, the operator's or
+//     the controller's, is over a claim, which keeps the pod for its holder as
+//     UnownedPodRelease keeps it (IdleHoldUnownedSuspensionHolds);
 //   - a task, notice, message or start waits for delivery to a role of the pod (IdleHoldDelivery);
 //   - a live role's session has reported nothing since its last turn, or reported background
 //     work of its own running (IdleHoldUnreported, IdleHoldBackgroundWork);
@@ -591,8 +596,8 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 		}
 	}
 	for _, c := range view.Claims {
-		if c.OperatorSuspended() {
-			return IdleDecision{Hold: IdleHoldUnownedOperatorSuspended}
+		if c.SuspensionHolds() {
+			return IdleDecision{Hold: IdleHoldUnownedSuspensionHolds}
 		}
 	}
 	if view.Waiting {
@@ -671,12 +676,13 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //     read through issueStopFences), so a release marked for such an issue could never finish:
 //     the mark would stand while the teardown waited for a process nothing is going to stop;
 //
-//   - no claim is an operator's suspension (pods.IdleClaim.OperatorSuspended). It is the one
-//     suspension the daemon never ends by itself (supervise.Claim.RuleMayResume), and the
-//     operator who suspended the role may want the workspace as its roles left it. Such a pod
-//     stands for as long as the operator leaves it standing: they end it by resuming the claim,
-//     which starts the role in the pod that is still there, or by stopping it, which retires the
-//     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
+//   - no claim is under a suspension that holds (pods.IdleClaim.SuspensionHolds): the operator's
+//     or the controller's (supervise's SuspendSource.Holds). Those are the
+//     suspensions the daemon never ends by itself (supervise.Claim.RuleMayResume), and the one
+//     who suspended the role may want the workspace as its roles left it. Such a pod stands for
+//     as long as its holder leaves it standing: the holder ends it by resuming the agent, which
+//     starts the role in the pod that is still there, or by stopping it, which retires the agent
+//     and leaves the issue to this rule (IdleHoldUnownedSuspensionHolds);
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
@@ -750,8 +756,8 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 		}
 	}
 	for _, c := range view.Claims {
-		if c.OperatorSuspended() {
-			return IdleDecision{Hold: IdleHoldUnownedOperatorSuspended}
+		if c.SuspensionHolds() {
+			return IdleDecision{Hold: IdleHoldUnownedSuspensionHolds}
 		}
 	}
 	if view.Waiting {

@@ -38,7 +38,21 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 	if err != nil || len(awaited) == 0 {
 		return false, err
 	}
-	return !slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State != record.PullRequestMerged }), nil
+	return !slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return !finishedBy(issue, &at.pr) }), nil
+}
+
+// finishedBy is PhaseFinished's rule over one merge issue awaits, its pull request as its caller
+// read it, nil for none: the issue stands in merging and that pull request merged. PhaseFinished
+// asks it of each merge the issue awaits (mergesAwaited). A caller that read the pull requests of
+// many issues in one query (record.Store.PullRequestsOf, the merge holds' mergeHoldsChanged) asks
+// it of each issue's merge pull request alone (record.Store.MergePullRequest: the first task with
+// a merge that is not done), with no read of its own. For an issue with no plan rows that is the
+// one merge it awaits. For a plan the two answers agree where the merge of every task but the
+// last to finish made that task done (lastToFinish), and differ where two tasks stand running at
+// their merges and only the first one's pull request merged: the merge pull request reads
+// finished, and PhaseFinished does not.
+func finishedBy(issue record.Issue, pr *record.PullRequest) bool {
+	return issue.Phase == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 }
 
 // RoleFor is phase.RoleFor, which is where the role that works a phase is decided
@@ -349,9 +363,10 @@ func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice rec
 
 // noticeWithController tells the architect that owns the issue and, in an outbox row of its own,
 // the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
-// the architect the same notice again. Every hold is told this way, since the architect answers one
-// with a retry or an escalation to the controller, and so is the tree architect's own failed
-// claim, since every notice of the tree that no child's own architect takes reaches that architect.
+// the architect the same notice again. Two notices are told this way, each one the controller acts
+// on: the architect's escalation of a hold, which hands the held issue to the controller, and the
+// tree architect's own failed claim while its root is not done, since every notice of the tree
+// that no child's own architect takes reaches that architect (retryOrEscalate, claimFailed).
 func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
 	if err := e.notice(ctx, tx, issue, notice); err != nil {
 		return err
@@ -502,16 +517,24 @@ const testerVerdictLabel = "Tester's verdict"
 // agent instead (waitForAgent), and nothing of it starts: no entry is raised, no start is counted
 // and no start is queued. The settle hands the agent on when it is free (handOnAgents), through
 // this function again. A run with no plan rows passes no agent's check: its walk names no agent.
+// A start that waits, for its base, its join or its agent, keeps from on its task (keepStartFrom),
+// so the start after the wait raises its entry from the phase this move left (startAfterWait).
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, pull taskPull, told func(Standing) string,
 	from phase.Phase, movedBack bool,
 ) error {
-	if waits, err := e.mergeWaitsForBase(ctx, tx, &s); err != nil || waits {
+	waits, err := e.mergeWaitsForBase(ctx, tx, &s)
+	if err != nil {
 		return err
 	}
+	if waits {
+		return e.keepStartFrom(ctx, tx, s, from)
+	}
 	if s.walk.Wait == record.StepWaitJoin {
-		waits, err := e.joinNeeds(ctx, tx, &s, role)
-		if err != nil || waits {
+		if waits, err = e.joinNeeds(ctx, tx, &s, role); err != nil {
 			return err
+		}
+		if waits {
+			return e.keepStartFrom(ctx, tx, s, from)
 		}
 	}
 	if role == "" {
@@ -523,9 +546,11 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 	if role == claim.RoleArchitect {
 		return e.startStandingStep(ctx, tx, s)
 	}
-	waits, err := e.waitForAgent(ctx, tx, &s, role)
-	if err != nil || waits {
+	if waits, err = e.waitForAgent(ctx, tx, &s, role); err != nil {
 		return err
+	}
+	if waits {
+		return e.keepStartFrom(ctx, tx, s, from)
 	}
 	at, err := e.standingPart(ctx, tx, s, pull)
 	if err != nil {
@@ -536,6 +561,20 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 		return err
 	}
 	return e.started(ctx, tx, s, role, sent, entry, startMarks{stored: true})
+}
+
+// keepStartFrom keeps from, the phase the move into s's start left, on s's task while that start
+// waits (record.Store.SetStartFrom): the start that runs once the wait ends (startAfterWait) raises
+// its entry from it, as this start would have (enter's from, record.PhaseRow.EntryFrom), so the
+// admission pass and the release of a hold read the entry of a move back out of retro or merging
+// as one, whether or not its start waited (acceptedEntry). A start after a wait that waits again
+// passes the from it kept, which writes nothing. Every move of the task clears it
+// (record.Store.MoveTask). A run with no plan rows waits for nothing.
+func (e *Engine) keepStartFrom(ctx context.Context, tx pgx.Tx, s TaskScope, from phase.Phase) error {
+	if !s.walk.Stored || s.walk.StartFrom == from {
+		return nil
+	}
+	return e.store.SetStartFrom(ctx, tx, s.issue.Key, s.issue.Generation, s.walk.Task, from)
 }
 
 // mergeWaitsForBase says whether the merge of s's task waits for the base of its pull request to

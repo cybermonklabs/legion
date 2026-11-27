@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
@@ -182,6 +183,26 @@ func (s *Postgres) SetStartReason(ctx context.Context, tx pgx.Tx, issue string, 
 	return nil
 }
 
+// SetStartFrom writes from as the phase the move that started the step task of the plan of issue
+// at generation stands at came from, in the transaction that moves the task there (MoveTask, which
+// clears it at every move), beside its reason (SetStartReason). The start that runs when a wait for
+// the base, the join or the agent ends reads it and tells the phase row where the work came from
+// (the workflow's startAfterWait, record.PhaseRow.EntryFrom), so main's rule that an accepted
+// parent is left where it stands reaches a start that waited. A task that is not running, and a
+// task the plan does not hold, are refused, naming it.
+func (s *Postgres) SetStartFrom(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, from phase.Phase) error {
+	tag, err := tx.Exec(ctx, `update plan_tasks set start_from = $4 where issue = $1 and generation = $2 and task = $3 and state = 'running'`,
+		issue, int64(generation), task, string(from))
+	if err != nil {
+		return fmt.Errorf("write the phase the start of task %s of %s at generation %d moved from: %w", task, issue, generation, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("write the phase the start of task %s of %s at generation %d moved from: the plan holds no such task that is running", task, issue, generation)
+	}
+	noteRecordWrite(ctx)
+	return nil
+}
+
 // DeleteTasks deletes each of tasks from the plan of issue at generation, with its steps: what a
 // later version that removes a task writes. Only a waiting or a stopped task is removed, since a
 // later version changes nothing that runs or ran; a name that is neither, or that the plan does not
@@ -240,7 +261,7 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	}
 	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6,
 		stopped_reason = case when $6 = 'left' then stopped_reason else '' end,
-		hold_reason = '', start_reason = '',
+		hold_reason = '', start_reason = '', start_from = '',
 		step_wait = case when $6 = 'running' and state in ('waiting', 'stopped') then 'join' else '' end,
 		step_wait_since = case when $6 = 'running' and state in ('waiting', 'stopped') then now() end
 		where issue = $1 and generation = $2 and task = $3 and state <> 'left'

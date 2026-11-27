@@ -11,40 +11,43 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // baseRead is one base's batch of merge-state reads (workflowRuntime.baseReads): the repository
-// as GitHub serves it and the base branch; owed, each issue whose pull request on that base is
-// owed a read (baseOwed); climb, whether a request for a climb arrived since the ladder last took
-// one up (baseLadderNext); and wake, which tells a follow's wait that the batch changed, so that it
-// checks again whether a climb was asked, nothing is owed any more, or a read falls due sooner
-// (baseFollowWait). A wake is no request: a wait that finds none of those goes on waiting. A
-// baseRead stands in baseReads from the request that starts its ladder until that ladder ends, so
-// a base has one ladder at a time, and the ladder ends only once nothing is owed: every owed pull
-// request was answered a state, closed, moved its head off the one its reads follow, or left for
-// another ladder. GitHub's rate limit and the pace of the queries are the installation's, not the
-// base's (queryGate).
+// as GitHub serves it and the base branch; owed, each pull request on that base owed a read, by
+// the issue and the task it is of (taskRead, baseOwed), since each task of a plan has a pull
+// request of its own and one task's place in the batch is no other's; climb, whether a request
+// for a climb arrived since the ladder last took one up (baseLadderNext); and wake, which tells a
+// follow's wait that the batch changed, so that it checks again whether a climb was asked,
+// nothing is owed any more, or a read falls due sooner (baseFollowWait). A wake is no request: a
+// wait that finds none of those goes on waiting. A baseRead stands in baseReads from the request
+// that starts its ladder until that ladder ends, so a base has one ladder at a time, and the
+// ladder ends only once nothing is owed: every owed pull request was answered a state, closed,
+// moved its head off the one its reads follow, or left for another ladder. GitHub's rate limit
+// and the pace of the queries are the installation's, not the base's (queryGate).
 type baseRead struct {
 	repo  ghrepo.Repository
 	base  string
-	owed  map[string]baseOwed
+	owed  map[taskRead]baseOwed
 	climb bool
 	wake  chan struct{}
 }
 
-// baseOwed is one issue's place in its base's batch: head, the head its reads follow, "" until a
-// read found GitHub answering `unknown` for it; climb, whether it is in a climb, which a request
-// for one puts it in and which reads the head the record holds whatever head the follow reads, so
-// a push to the base that arrives while the issue is followed keeps the follow and adds its own
-// reads; climbed, the climb's reads of it so far, up to mergeStateLadderReads; asked, the number of
-// the request that last put it there (workflowRuntime.baseAsks, never reused), so a read that took
-// the issue up before a later request changes nothing that request put; alone, whether a query
-// that asked for it alone failed, which has it asked for alone until GitHub answers it, so a pull
-// request GitHub cannot answer in time costs no other its read; and its own ladder of reads after
-// its climb or its handover, as one pull request's follow was (dispatch://INFRA-4374 R4): attempt,
-// the reads on that ladder so far, wait, the wait before the next one, and due, when that one is
-// due. A pull request is read on its ladder no sooner than it is due, and a climb of other pull
-// requests leaves its ladder as it is.
+// baseOwed is one task's pull request's place in its base's batch: head, the head its reads
+// follow, "" until a read found GitHub answering `unknown` for it; climb, whether it is in a climb,
+// which a request for one puts it in and which reads the head the record holds whatever head the
+// follow reads, so a push to the base that arrives while the pull request is followed keeps the
+// follow and adds its own reads; climbed, the climb's reads of it so far, up to
+// mergeStateLadderReads; asked, the number of the request that last put it there
+// (workflowRuntime.baseAsks, never reused), so a read that took the pull request up before a
+// later request changes nothing that request put; alone, whether a query that asked for it alone
+// failed, which has it asked for alone until GitHub answers it, so a pull request GitHub cannot
+// answer in time costs no other its read; and its own ladder of reads after its climb or its
+// handover, as one pull request's follow was (dispatch://INFRA-4374 R4): attempt, the reads on
+// that ladder so far, wait, the wait before the next one, and due, when that one is due. A pull
+// request is read on its ladder no sooner than it is due, and a climb of other pull requests
+// leaves its ladder as it is.
 type baseOwed struct {
 	head    string
 	climb   bool
@@ -64,36 +67,37 @@ func baseReadKey(repo ghrepo.Repository, base string) string {
 
 // queueBaseMergeStates is what the workflow asks for on the commit of a push to base of repo
 // (workflow's basePush, the engine's Config.ReadBaseMergeStates): a read of GitHub's merge state
-// for each of issues, the pull requests on that base the push owes a read, which a push onto the
-// base can turn behind or conflicting with it while GitHub sends no event of the pull request
-// itself (dispatch://INFRA-4374 R0, R4). They are read in one batch, a climb of the base's reads
-// (queueBaseRead): GraphQL queries of baseReadChunk pull requests each, asked for by number,
-// rather than one GET /pulls/{number} of each. It only records the issues and wakes the reader,
-// so the push's own transaction waits for no GitHub call, and a runtime with no reader queues
-// nothing.
-func (w *workflowRuntime) queueBaseMergeStates(repo, base string, issues []string) {
+// for each of pulls, the pull requests on that base the push owes a read, each named by its issue
+// and its task, which a push onto the base can turn behind or conflicting with it while GitHub
+// sends no event of the pull request itself (dispatch://INFRA-4374 R0, R4). Two tasks of one
+// issue with pull requests on the base are two reads. They are read in one batch, a climb of the
+// base's reads (queueBaseRead): GraphQL queries of baseReadChunk pull requests each, asked for by
+// number, rather than one GET /pulls/{number} of each. It only records the pull requests and
+// wakes the reader, so the push's own transaction waits for no GitHub call, and a runtime with no
+// reader queues nothing.
+func (w *workflowRuntime) queueBaseMergeStates(repo, base string, pulls []workflow.TaskPullRequest) {
 	repository, err := ghrepo.Parse("the pushed repository", repo)
 	if err != nil {
 		w.log.Warn("github: a push to a base names no repository the daemon can read; its pull requests are read at their next event",
-			"repo", repo, "base", base, "issues", issues, "error", err)
+			"repo", repo, "base", base, "pullRequests", pulls, "error", err)
 		return
 	}
-	owed := make(map[string]string, len(issues))
-	for _, issue := range issues {
-		owed[issue] = ""
+	owed := make(map[taskRead]string, len(pulls))
+	for _, pull := range pulls {
+		owed[taskRead{issue: pull.Issue, task: pull.Task}] = ""
 	}
 	w.queueBaseRead(w.repositories.serving(repository), base, owed, true)
 }
 
-// queueBaseRead puts each issue of owed in the batch of base of repo, out of any other batch it
-// was in, with the head its reads follow, and asks that batch's ladder for a climb (climb) or for
-// a follow: a head a climb of one pull request handed over, whose own ladder of reads starts then,
-// its first read two of the ladder's waits on, whatever the other owed pull requests' ladders
-// stand at (baseOwed). A climb asked for an issue the batch already follows keeps the head it
-// follows. A ladder that is not running starts (readBaseMergeStates); one that is is woken under
-// the lock it reads its requests under, so it takes up a climb at once and a follow when it falls
-// due. It only records and wakes (putLocked).
-func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owed map[string]string, climb bool) {
+// queueBaseRead puts each task's pull request of owed in the batch of base of repo, out of any
+// other batch it was in, with the head its reads follow, and asks that batch's ladder for a climb
+// (climb) or for a follow: a head a climb of one pull request handed over, whose own ladder of
+// reads starts then, its first read two of the ladder's waits on, whatever the other owed pull
+// requests' ladders stand at (baseOwed). A climb asked for a pull request the batch already
+// follows keeps the head it follows. A ladder that is not running starts (readBaseMergeStates);
+// one that is is woken under the lock it reads its requests under, so it takes up a climb at once
+// and a follow when it falls due. It only records and wakes (putLocked).
+func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owed map[taskRead]string, climb bool) {
 	if w.baseWake == nil || len(owed) == 0 {
 		return
 	}
@@ -101,10 +105,10 @@ func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owe
 	now, first := time.Now().UTC(), 2*w.mergeStateWait()
 	starts := false
 	w.mergeStateMu.Lock()
-	for issue, head := range owed {
+	for pull, head := range owed {
 		var place baseOwed
-		if read := w.baseReads[key]; read != nil && w.baseReadOf[issue] == key {
-			place = read.owed[issue]
+		if read := w.baseReads[key]; read != nil && w.baseReadOf[pull] == key {
+			place = read.owed[pull]
 		}
 		if head != "" {
 			place.head = head
@@ -116,7 +120,7 @@ func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owe
 		} else {
 			place.attempt, place.wait, place.due = 0, first, now.Add(first)
 		}
-		_, start := w.putLocked(repo, base, issue, place)
+		_, start := w.putLocked(repo, base, pull, place)
 		starts = starts || start
 	}
 	w.mergeStateMu.Unlock()
@@ -125,22 +129,22 @@ func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owe
 	}
 }
 
-// putLocked puts issue in the batch of base of repo at place, out of any other batch it was in,
-// under a new request (workflowRuntime.baseAsks), which place then names, and asks the batch's
-// ladder for a climb when place is in one. A ladder that runs is woken; one that does not is to be
-// started, which putLocked answers with the batch's key, and which the caller does once it has
-// let the lock go (baseWake.add). Under mergeStateMu, so that each caller (queueBaseRead,
-// moveBase) makes its own check and this placement in one step.
-func (w *workflowRuntime) putLocked(repo ghrepo.Repository, base, issue string, place baseOwed) (string, bool) {
+// putLocked puts pull, the pull request of one task, in the batch of base of repo at place, out
+// of any other batch it was in, under a new request (workflowRuntime.baseAsks), which place then
+// names, and asks the batch's ladder for a climb when place is in one. A ladder that runs is
+// woken; one that does not is to be started, which putLocked answers with the batch's key, and
+// which the caller does once it has let the lock go (baseWake.add). Under mergeStateMu, so that
+// each caller (queueBaseRead, moveBase) makes its own check and this placement in one step.
+func (w *workflowRuntime) putLocked(repo ghrepo.Repository, base string, pull taskRead, place baseOwed) (string, bool) {
 	key := baseReadKey(repo, base)
 	read, running := w.batchLocked(repo, base)
-	if w.baseReadOf[issue] != key {
-		w.leaveBaseLocked(issue)
+	if w.baseReadOf[pull] != key {
+		w.leaveBaseLocked(pull)
 	}
 	w.baseAsks++
 	place.asked = w.baseAsks
-	read.owed[issue] = place
-	w.baseReadOf[issue] = key
+	read.owed[pull] = place
+	w.baseReadOf[pull] = key
 	if place.climb {
 		read.climb = true
 	}
@@ -157,86 +161,86 @@ func (w *workflowRuntime) batchLocked(repo ghrepo.Repository, base string) (*bas
 		w.baseReads = map[string]*baseRead{}
 	}
 	if w.baseReadOf == nil {
-		w.baseReadOf = map[string]string{}
+		w.baseReadOf = map[taskRead]string{}
 	}
 	key := baseReadKey(repo, base)
 	read, running := w.baseReads[key]
 	if !running {
-		read = &baseRead{repo: repo, base: base, owed: map[string]baseOwed{}, wake: make(chan struct{}, 1)}
+		read = &baseRead{repo: repo, base: base, owed: map[taskRead]baseOwed{}, wake: make(chan struct{}, 1)}
 		w.baseReads[key] = read
 	}
 	return read, running
 }
 
-// leaveBaseLocked takes issue out of the batch it is owed a read in, if any, under mergeStateMu:
+// leaveBaseLocked takes pull out of the batch it is owed a read in, if any, under mergeStateMu:
 // another batch takes it (putLocked), or the request that put it there is no longer owed a read
-// (leaveBase). A batch left with no issue is woken, so its follow ends rather than wait to read
-// nothing.
-func (w *workflowRuntime) leaveBaseLocked(issue string) {
-	key, owed := w.baseReadOf[issue]
+// (leaveBase). A batch left with no pull request is woken, so its follow ends rather than wait to
+// read nothing.
+func (w *workflowRuntime) leaveBaseLocked(pull taskRead) {
+	key, owed := w.baseReadOf[pull]
 	if !owed {
 		return
 	}
-	delete(w.baseReadOf, issue)
+	delete(w.baseReadOf, pull)
 	if read := w.baseReads[key]; read != nil {
-		delete(read.owed, issue)
+		delete(read.owed, pull)
 		if len(read.owed) == 0 {
 			nudge(read.wake)
 		}
 	}
 }
 
-// ownsLocked says whether key's batch still holds issue under the request asked, under
+// ownsLocked says whether key's batch still holds pull under the request asked, under
 // mergeStateMu.
-func (w *workflowRuntime) ownsLocked(key, issue string, asked uint64) bool {
+func (w *workflowRuntime) ownsLocked(key string, pull taskRead, asked uint64) bool {
 	read := w.baseReads[key]
-	return read != nil && w.baseReadOf[issue] == key && read.owed[issue].asked == asked
+	return read != nil && w.baseReadOf[pull] == key && read.owed[pull].asked == asked
 }
 
-// owns says whether key's batch still holds issue at all: a read that took it up applies no
-// answer of it once a climb of its own has taken it, or another batch has.
-func (w *workflowRuntime) owns(key, issue string) bool {
+// owns says whether key's batch still holds pull at all: a read that took it up applies no answer
+// of it once a climb of its own has taken it, or another batch has.
+func (w *workflowRuntime) owns(key string, pull taskRead) bool {
 	w.mergeStateMu.Lock()
 	defer w.mergeStateMu.Unlock()
-	return w.baseReadOf[issue] == key
+	return w.baseReadOf[pull] == key
 }
 
-// heldUnder is the batch that holds issue and the number of the request it holds it under, "" and
+// heldUnder is the batch that holds pull and the number of the request it holds it under, "" and
 // 0 when no batch does: what a climb notes as it begins, and later hands leaveBase, which takes the
-// issue out only while that request stands (climbMergeState).
-func (w *workflowRuntime) heldUnder(issue string) (key string, asked uint64) {
+// pull request out only while that request stands (climbMergeState).
+func (w *workflowRuntime) heldUnder(pull taskRead) (key string, asked uint64) {
 	w.mergeStateMu.Lock()
 	defer w.mergeStateMu.Unlock()
-	key = w.baseReadOf[issue]
+	key = w.baseReadOf[pull]
 	if read := w.baseReads[key]; read != nil {
-		asked = read.owed[issue].asked
+		asked = read.owed[pull].asked
 	}
 	return key, asked
 }
 
-// leaveBase takes issue out of key's batch when the request that put it there was asked, the one a
+// leaveBase takes pull out of key's batch when the request that put it there was asked, the one a
 // read took it up under: GitHub answered it a state, the record or GitHub no longer holds it open
 // at the head its reads follow, or a climb of its own reads it now (climbMergeState). A later
 // request stands.
-func (w *workflowRuntime) leaveBase(key, issue string, asked uint64) {
+func (w *workflowRuntime) leaveBase(key string, pull taskRead, asked uint64) {
 	w.mergeStateMu.Lock()
 	defer w.mergeStateMu.Unlock()
-	if w.ownsLocked(key, issue, asked) {
-		w.leaveBaseLocked(issue)
+	if w.ownsLocked(key, pull, asked) {
+		w.leaveBaseLocked(pull)
 	}
 }
 
-// moveBase moves issue from key's batch to the batch of base of repo at place, its own ladder
-// with it, when the request that put it in key's was place.asked: GitHub's read of the pull
-// request names that base now, so its reads go on there. The check and the move are one step
-// under mergeStateMu: a newer request for the issue - a climb of its own, or the head that climb
+// moveBase moves pull from key's batch to the batch of base of repo at place, its own ladder with
+// it, when the request that put it in key's was place.asked: GitHub's read of the pull request
+// names that base now, so its reads go on there. The check and the move are one step under
+// mergeStateMu: a newer request for the pull request - a climb of its own, or the head that climb
 // handed over to a batch - either lands before it, and the move does nothing, or after it, and
 // stands. So no move decided on an older read puts back a head a newer one replaced.
-func (w *workflowRuntime) moveBase(key, issue string, place baseOwed, repo ghrepo.Repository, base string) {
+func (w *workflowRuntime) moveBase(key string, pull taskRead, place baseOwed, repo ghrepo.Repository, base string) {
 	w.mergeStateMu.Lock()
 	destination, starts := "", false
-	if w.baseWake != nil && w.ownsLocked(key, issue, place.asked) {
-		destination, starts = w.putLocked(repo, base, issue, place)
+	if w.baseWake != nil && w.ownsLocked(key, pull, place.asked) {
+		destination, starts = w.putLocked(repo, base, pull, place)
 	}
 	w.mergeStateMu.Unlock()
 	if starts {
@@ -244,13 +248,13 @@ func (w *workflowRuntime) moveBase(key, issue string, place baseOwed, repo ghrep
 	}
 }
 
-// setOwed sets issue's place in key's batch to place, when the request that put it there was
+// setOwed sets pull's place in key's batch to place, when the request that put it there was
 // asked. A later request stands.
-func (w *workflowRuntime) setOwed(key, issue string, asked uint64, place baseOwed) {
+func (w *workflowRuntime) setOwed(key string, pull taskRead, asked uint64, place baseOwed) {
 	w.mergeStateMu.Lock()
 	defer w.mergeStateMu.Unlock()
-	if w.ownsLocked(key, issue, asked) {
-		w.baseReads[key].owed[issue] = place
+	if w.ownsLocked(key, pull, asked) {
+		w.baseReads[key].owed[pull] = place
 	}
 }
 
@@ -303,9 +307,9 @@ func (w *workflowRuntime) baseLadderNext(ctx context.Context, key string) (climb
 	}
 	climb, read.climb = read.climb || anyClimbing(read), false
 	if ctx.Err() != nil || len(read.owed) == 0 {
-		for issue := range read.owed {
-			if w.baseReadOf[issue] == key {
-				delete(w.baseReadOf, issue)
+		for pull := range read.owed {
+			if w.baseReadOf[pull] == key {
+				delete(w.baseReadOf, pull)
 			}
 		}
 		delete(w.baseReads, key)
@@ -430,21 +434,21 @@ func firstDue(read *baseRead) time.Time {
 	return first
 }
 
-// baseReading is one owed issue a read of its base's batch reads: its place in the batch and the
-// pull request the record holds open.
+// baseReading is one owed task's pull request a read of its base's batch reads: the issue and the
+// task it is of, its place in the batch and the pull request the record holds open.
 type baseReading struct {
-	issue string
-	owed  baseOwed
-	pr    record.PullRequest
+	pull taskRead
+	owed baseOwed
+	pr   record.PullRequest
 }
 
 // readBase reads key's batch once: each owed pull request in a climb, and each other one due on its
 // ladder, none before it is due.
 //
-// It first reads each issue's record. One whose record no longer holds its pull request open, or
-// holds it at another head than the one its reads follow with no climb asked since, leaves the
-// batch unread, logged as the end of its reads when it was on its ladder. One whose record read
-// fails stays owed, and is read at its next turn.
+// It first reads the record of each owed pull request's issue, for its task. One whose record no
+// longer holds its task's pull request open, or holds it at another head than the one its reads
+// follow with no climb asked since, leaves the batch unread, logged as the end of its reads when
+// it was on its ladder. One whose record read fails stays owed, and is read at its next turn.
 //
 // It then asks GitHub's GraphQL API for the rest by number, one query at a time from one queue:
 // each one a query that asked for it alone failed for in a query of its own, until GitHub answers
@@ -466,31 +470,33 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 
 	now := time.Now().UTC()
 	var together, alone []baseReading
-	for _, issue := range slices.Sorted(maps.Keys(owed)) {
-		place := owed[issue]
+	for _, pull := range slices.SortedFunc(maps.Keys(owed), compareTaskReads) {
+		place := owed[pull]
 		if !place.climb && place.due.After(now) {
 			continue
 		}
-		stored, err := issueRecord(ctx, w.pool, w.records, issue, "")
+		stored, err := issueRecord(ctx, w.pool, w.records, pull.issue, pull.task)
 		if err != nil {
 			if ctx.Err() == nil {
-				w.log.Warn("github: read the record of a pull request owed a merge-state read; it is read at its next turn", "issue", issue, "error", err)
+				w.log.Warn("github: read the record of a pull request owed a merge-state read; it is read at its next turn",
+					"issue", pull.issue, "task", pull.task, "error", err)
 			}
-			w.missed(key, issue, place, 0, place.alone)
+			w.missed(key, pull, place, 0, place.alone)
 			continue
 		}
 		pr := stored.pullRequest()
 		if place.head != "" && !place.climb {
-			pr = stored.openAt(place.head)
+			pr = stored.openAt(place.head, pull.task)
 		}
 		if pr == nil || pr.State != record.PullRequestOpen {
 			if !place.climb {
-				w.log.Info(followEndLine, "issue", issue, "head", place.head, "attempt", place.attempt+1, "wait", place.waitBefore(w.mergeStateWait()))
+				w.log.Info(followEndLine, "issue", pull.issue, "task", pull.task, "head", place.head, "attempt", place.attempt+1,
+					"wait", place.waitBefore(w.mergeStateWait()))
 			}
-			w.leaveBase(key, issue, place.asked)
+			w.leaveBase(key, pull, place.asked)
 			continue
 		}
-		r := baseReading{issue: issue, owed: place, pr: *pr}
+		r := baseReading{pull: pull, owed: place, pr: *pr}
 		if place.alone {
 			alone = append(alone, r)
 		} else {
@@ -535,7 +541,7 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 func (w *workflowRuntime) readStopped(ctx context.Context, key string, queries [][]baseReading, after time.Duration) {
 	for _, part := range queries {
 		for _, r := range part {
-			if w.owns(key, r.issue) {
+			if w.owns(key, r.pull) {
 				w.sendBack(ctx, key, r, after, r.owed.alone)
 			}
 		}
@@ -548,7 +554,7 @@ func (w *workflowRuntime) readStopped(ctx context.Context, key string, queries [
 // told at the time bound though no read answers and a failure that repeats asks no round twice.
 func (w *workflowRuntime) sendBack(ctx context.Context, key string, r baseReading, after time.Duration, alone bool) {
 	w.readFailed(ctx, r.pr)
-	w.missed(key, r.issue, r.owed, after, alone)
+	w.missed(key, r.pull, r.owed, after, alone)
 }
 
 // chunkOutcome is what one query of a batch came to when it answered nothing: failed, it failed;
@@ -569,10 +575,10 @@ type chunkOutcome struct {
 // Each answer goes through applyMergeability, as one GET /pulls/{number} of the pull request would:
 // the same fact, under the same event id, its CONFLICTING answer reading the base's rules, and
 // stamped with the moment its own query was answered, so that an answer read before a newer one
-// the record holds is dropped as older (workflow's mergeability). An issue a climb of its own, or
-// another batch, took while the query ran has no answer applied. A pull request GitHub answers a
-// state for, or answers closed, leaves the batch; one it answers `unknown` for on another base
-// moves to that base's batch (moveBase), by GitHub's word alone, so no stale record sends it back;
+// the record holds is dropped as older (workflow's mergeability). A pull request a climb of its
+// own, or another batch, took while the query ran has no answer applied. A pull request GitHub
+// answers a state for, or answers closed, leaves the batch; one it answers `unknown` for on another
+// base moves to that base's batch (moveBase), by GitHub's word alone, so no stale record sends it back;
 // and one it answers `unknown` for here goes on along its climb or its ladder. One the answer left
 // out (an error of GitHub's for that pull request alone) goes on along its climb or its ladder too,
 // and so does one whose answer the record did not take (applyMergeability failed, as a write the
@@ -602,13 +608,13 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 	w.log.Info("github: read the merge state of pull requests on a base by number", "repo", repo.String(), "base", base,
 		"asked", len(numbers), "answered", len(got.answers))
 	for _, r := range part {
-		if !w.owns(key, r.issue) {
+		if !w.owns(key, r.pull) {
 			continue
 		}
 		node, ok := got.answers[r.pr.Number]
 		if !ok {
 			w.log.Warn("github: GitHub answered nothing for a pull request owed a merge-state read; it is read again",
-				"issue", r.issue, "repo", repo.String(), "pullRequest", r.pr.Number, "error", got.unanswered[r.pr.Number])
+				"issue", r.pull.issue, "task", r.pull.task, "repo", repo.String(), "pullRequest", r.pr.Number, "error", got.unanswered[r.pr.Number])
 			w.sendBack(ctx, key, r, 0, r.owed.alone)
 			continue
 		}
@@ -618,28 +624,29 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 		if err != nil {
 			if ctx.Err() == nil {
 				w.log.Warn("github: the record did not take GitHub's merge state for a pull request owed a merge-state read; it is read again",
-					"issue", r.issue, "head", r.pr.HeadSHA, "repo", repo.String(), "pullRequest", r.pr.Number, "answered", string(state), "error", err)
+					"issue", r.pull.issue, "task", r.pull.task, "head", r.pr.HeadSHA, "repo", repo.String(), "pullRequest", r.pr.Number,
+					"answered", string(state), "error", err)
 			}
-			w.missed(key, r.issue, r.owed, 0, false)
+			w.missed(key, r.pull, r.owed, 0, false)
 			continue
 		}
 		next := w.nextPlace(r.owed, r.pr.HeadSHA, got.readAt, 0)
 		next.alone = false
 		if !r.owed.climb {
-			w.log.Info(followReadLine, "issue", r.issue, "head", r.pr.HeadSHA, "attempt", next.attempt, "wait", r.owed.waitBefore(w.mergeStateWait()),
-				"answered", string(state))
+			w.log.Info(followReadLine, "issue", r.pull.issue, "task", r.pull.task, "head", r.pr.HeadSHA, "attempt", next.attempt,
+				"wait", r.owed.waitBefore(w.mergeStateWait()), "answered", string(state))
 		}
 		switch {
 		// An answer the round can decide on ends the pull request's reads; `unknown`, and a
 		// `blocked` answer missing part of what the round decides it on, keep them (answerIncomplete).
 		case answer.State != "open" || !answerIncomplete(fact):
-			w.leaveBase(key, r.issue, r.owed.asked)
+			w.leaveBase(key, r.pull, r.owed.asked)
 		case answer.Base.Ref != "" && answer.Base.Ref != base:
 			w.log.Info("github: GitHub holds a pull request owed a merge-state read on another base; its reads go on there",
-				"issue", r.issue, "repo", repo.String(), "base", base, "now", answer.Base.Ref)
-			w.moveBase(key, r.issue, next, repo, answer.Base.Ref)
+				"issue", r.pull.issue, "task", r.pull.task, "repo", repo.String(), "base", base, "now", answer.Base.Ref)
+			w.moveBase(key, r.pull, next, repo, answer.Base.Ref)
 		default:
-			w.setOwed(key, r.issue, r.owed.asked, next)
+			w.setOwed(key, r.pull, r.owed.asked, next)
 		}
 	}
 	return chunkOutcome{}
@@ -677,15 +684,15 @@ func (w *workflowRuntime) nextPlace(place baseOwed, head string, at time.Time, a
 	return place
 }
 
-// missed has issue's place in key's batch go on along its climb or its ladder after a read that
+// missed has pull's place in key's batch go on along its climb or its ladder after a read that
 // answered nothing for it, or whose answer the record did not take, asked for alone from then on
 // when alone says so, and logs that read when it was on its ladder.
-func (w *workflowRuntime) missed(key, issue string, place baseOwed, after time.Duration, alone bool) {
+func (w *workflowRuntime) missed(key string, pull taskRead, place baseOwed, after time.Duration, alone bool) {
 	next := w.nextPlace(place, "", time.Now().UTC(), after)
 	next.alone = alone
 	if !place.climb {
-		w.log.Warn(followReadLine, "issue", issue, "head", place.head, "attempt", next.attempt, "wait", place.waitBefore(w.mergeStateWait()),
-			"answered", "no answer")
+		w.log.Warn(followReadLine, "issue", pull.issue, "task", pull.task, "head", place.head, "attempt", next.attempt,
+			"wait", place.waitBefore(w.mergeStateWait()), "answered", "no answer")
 	}
-	w.setOwed(key, issue, place.asked, next)
+	w.setOwed(key, pull, place.asked, next)
 }

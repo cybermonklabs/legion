@@ -239,6 +239,14 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		for _, role := range waitingForPod[issue.Key] {
 			view.StartWaitsForPod = append(view.StartWaitsForPod, string(role))
 		}
+		// The priority Dispatch resolves the issue to, absent where Dispatch sent none
+		// (api.Issue.ResolvedPriority), and the issue it resolves it from, empty where it is the
+		// issue's own or none (api.Issue.PriorityFrom): an issue Dispatch resolved no priority
+		// for has no issue it comes from.
+		if issue.Resolved.Known {
+			resolved := api.PriorityView(issue.Resolved.Priority)
+			view.ResolvedPriority, view.PriorityFrom = &resolved, issue.Resolved.From
+		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
@@ -485,6 +493,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	projected.Admission.Active = active
+	// The holders the cap does not count (R10 of dispatch://INFRA-3199): the project's own holders
+	// that admission treats as P0 (record.Issue.StartsNow), counted by the one count admission's
+	// cap readers make (record.HoldersOf), so the number the state gives is the number the pass
+	// admitted under.
+	projected.Admission.P0Holders = new(record.HoldersOf(own, slots).P0)
 	// The roots of the live trees, which no slot says any more: a slot counts one issue the
 	// daemon has started, and a tree is live before the daemon has started anything of it — a
 	// root waiting in the line for its tree to be opened holds no row, and neither does a child

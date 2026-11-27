@@ -213,9 +213,13 @@ func (r issueRecords) numbered(number int) *record.PullRequest {
 	return r.find(func(pr record.PullRequest) bool { return pr.Number == number })
 }
 
-// openAt is the issue's open pull request at head, nil for none.
-func (r issueRecords) openAt(head string) *record.PullRequest {
-	return r.find(func(pr record.PullRequest) bool { return pr.State == record.PullRequestOpen && pr.HeadSHA == head })
+// openAt is the issue's open pull request of task at head, nil for none. Task "" - the zero task
+// of an issue with no plan rows, or a read of the task the record judges, which names none - takes
+// the open pull request at head of any task of the issue.
+func (r issueRecords) openAt(head, task string) *record.PullRequest {
+	return r.find(func(pr record.PullRequest) bool {
+		return pr.State == record.PullRequestOpen && pr.HeadSHA == head && (task == "" || pr.Task == task)
+	})
 }
 
 func (r issueRecords) find(match func(record.PullRequest) bool) *record.PullRequest {
@@ -294,7 +298,8 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 // recorded, which this read looks up by the branch of the task the record judges. It is what
 // covers a daemon that was down while GitHub made the deliveries nothing redelivers. A read that
 // fails is logged and the boot goes on; the open pull request the record holds for its task is
-// handed to the reads of its base (followOnBase), and a run of null `mergeable` reads it holds
+// handed to the reads of its base (followOnBase), under that task, so a second task of the same
+// issue whose read fails too is followed beside it, and a run of null `mergeable` reads it holds
 // asks the round again (readFailed): a round that waits quietly on the head has no handoff coming
 // that would read it. GitHub's rate limit ends the start read there, because every read after it
 // on the same installation meets the same limit, and the panes share it; the hand-off makes no
@@ -302,9 +307,9 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 // all the same, which wait out the limit.
 //
 // A read that finds GitHub still computing the merge of an open pull request's head - merge state
-// `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
-// climbs and then hands the head to the reads of its base, which follow it while GitHub goes on
-// answering `unknown` (followOnBase, followBase).
+// `unknown`, or `mergeable` null - queues a ladder of reads for that task's pull request
+// (queueMergeState), which climbs and then hands the head to the reads of its base, which follow
+// it while GitHub goes on answering `unknown` (followOnBase, followBase).
 // The reads that followed GitHub's merge state before the daemon stopped were held in memory, and
 // this is what goes on with them after a restart (dispatch://INFRA-4374 R4). GitHub's `unknown` is
 // the whole reason: no rule of classify.MergeStateReadOwed is read for it, and a read that answers
@@ -325,7 +330,9 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		if err == nil {
 			if computing {
 				w.log.Info("github: the start read found GitHub's merge state unknown; a ladder reads the pull request again", "issue", read.issue, "task", read.task)
-				w.queueMergeState(read.issue)
+				// The task of the pull request the read judged: an open pull request's own task, or
+				// "" - the task the record judges - for an issue handed off with none recorded.
+				w.queueMergeState(read.issue, read.task)
 			}
 			continue
 		}
@@ -400,7 +407,9 @@ func (w *workflowRuntime) issuesInWorkflow(ctx context.Context) ([]taskRead, err
 // taskRead is one read of the pull request of one task of an issue: one a completion asks for
 // (handoffCompleted), naming the task of its plan whose step completed, or one the start makes
 // (issuesInWorkflow), naming the task of an open pull request; "" for an issue with no plan rows,
-// and for a read of the task the record judges (judgedTask).
+// and for a read of the task the record judges (judgedTask). It is also the key of every read of
+// GitHub's merge state: the ladder of one task's pull request (workflowRuntime.mergeStateRunning)
+// and its place in its base's batch (baseRead.owed, workflowRuntime.baseReadOf).
 type taskRead struct {
 	issue, task string
 }

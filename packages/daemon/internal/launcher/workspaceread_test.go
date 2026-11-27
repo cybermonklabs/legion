@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -206,4 +208,141 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 		t.Fatalf("the read of a workspace whose .jj/repo names another repository = %+v, want it refused by the workspace guards", refused)
 	}
 	ran()
+}
+
+// An edit that a task's agent leaves in the working copy of its task, with no jj command after
+// it, is work that the launcher's read counts, as a role's shim's read counts it (Medium 6 of the
+// review of #5169). The read snapshots the working copy of each task beside the issue's own
+// (workspace.TaskCopies) before it lists the work, so the edit is in that working copy's commit,
+// and the read lists that commit. A release declines on such a read.
+//
+// The snapshot is a jj command in the task's working copy, and jj migrates and loads the legacy
+// configuration file of the workspace it opens where the id file beside it is missing. So the
+// launcher runs the guards in each task's working copy before jj runs there, as it does in the
+// issue's (workspace.GuardJJ). A legacy workspace-config.toml that a role writes in the task's
+// .jj, which names a signing program, is removed, and the program does not run. A task's working
+// copy whose .jj/repo names another repository than the shared clone is refused by the guards,
+// and is not read.
+func TestTheLauncherReadCountsAnEditLeftInATasksWorkingCopy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (the fixture's home).
+	for _, tool := range []string{"git", "jj"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("this row drives the real %s, which the worker image and CI both install: %v", tool, err)
+		}
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range fixtureenv.Home(home) {
+		key, value, _ := strings.Cut(entry, "=")
+		t.Setenv(key, value)
+	}
+	// signer leaves the file signed and refuses: a program that a task's configuration names, which
+	// the read must never run.
+	signer, signed := filepath.Join(root, "sign.sh"), filepath.Join(root, "sign-ran")
+	if err := os.WriteFile(signer, []byte("#!/bin/sh\ntouch '"+signed+"'\ncat >/dev/null\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := fixturegit.Isolated(t, home)
+	located, err := workspace.Location(filepath.Join(root, "state"), ghrepo.MustParse("acme/widgets"), "LEGION-208")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, seed, clone, ws := filepath.Join(root, "remote"), filepath.Join(root, "seed"), located.Clone, located.Dir
+	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run.Run(root, fixturegit.InitBare(remote, "main")...)
+	run.Run(root, fixturegit.InitWorkTree(seed, "main")...)
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run.Run(seed, "git", "add", "base.txt")
+	run.Run(seed, "git", "commit", "--quiet", "-m", "base")
+	run.Run(seed, "git", "push", "--quiet", remote, "main")
+	run.Run(root, "git", "clone", "--quiet", "--no-local", remote, clone)
+	run.Run(clone, fixturegit.JJInit(clone, true)...)
+	run.Run(clone, "jj", "workspace", "add", ws, "--name", filepath.Base(ws), "--revision", "main", "-R", clone)
+	// The working copy of a task of the issue, where workspace.ProvisionTask makes it: a workspace
+	// of the clone beside the issue's own, named for the task's branch (workspace.TaskDir).
+	task, err := workspace.TaskDir(ws, "legion/LEGION-208.b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Run(clone, "jj", "workspace", "add", task, "--name", filepath.Base(task), "--revision", "main", "-R", clone)
+	// taskHead is the task's working-copy commit, read without a snapshot, so it is the state the
+	// launcher's read left.
+	taskHead := func() string {
+		t.Helper()
+		return run.Out(task, "jj", "log", "-R", task, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
+	}
+
+	g := newSessionRig(t, Config{Workspace: ws})
+	answer := func(id string) shimwire.WorkspaceWorkResult {
+		t.Helper()
+		got, ok := g.roleConn.answer(shimwire.WorkspaceWork{ID: id, Issue: "LEGION-208", TimeoutMs: 120_000}).(shimwire.WorkspaceWorkResult)
+		if !ok || got.ID != id {
+			t.Fatalf("the launcher answered %#v, want the result of %s", got, id)
+		}
+		if _, err := os.Stat(signed); err == nil {
+			t.Fatalf("the launcher's read %s ran the signing program that the task's working copy names", id)
+		}
+		return got
+	}
+	// counted fails the test unless read id counted the task's working copy, and nothing else, as
+	// its one work commit, the issue's own working copy holding no change.
+	counted := func(id string) {
+		t.Helper()
+		work, refused, err := runtime.WorkspaceWorkOf(answer(id))
+		if err != nil || refused != "" {
+			t.Fatalf("the launcher's read %s = %+v (refused %q, %v), want the work it read", id, work, refused, err)
+		}
+		head := taskHead()
+		if !work.HoldsWork() || work.Changed || !slices.Equal(work.Commits, []string{head}) || work.Count != 1 {
+			t.Fatalf("the launcher's read %s lists %v and counts %d, changed %t, holding work %t; want the task's working copy %s, which holds the edit its agent left: a release takes the pod on a read that holds no work, and deletes the edit with its disk",
+				id, work.Commits, work.Count, work.Changed, work.HoldsWork(), head)
+		}
+	}
+
+	// The edit, with no jj command after it.
+	if err := os.WriteFile(filepath.Join(task, "task.txt"), []byte("task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	counted("task-edit")
+	if files := run.Out(task, "jj", "file", "list", "-R", task, "--ignore-working-copy", "-r", "@"); !slices.Contains(strings.Fields(files), "task.txt") {
+		t.Fatalf("the task's working copy %s holds %q after the read, want task.txt in it: the read did not snapshot the edit its agent left there", taskHead(), files)
+	}
+
+	// The legacy configuration file a role can write in the task's .jj, with the id file beside it
+	// deleted, which jj would migrate and load: the signing program, which the snapshot of a new
+	// change would run. The read runs the guards in the task's working copy first, so jj loads no
+	// such file, the program does not run, and the file is gone.
+	if err := os.Remove(filepath.Join(task, ".jj", "workspace-config-id")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("delete the task's workspace-config-id, as a role could: %v", err)
+	}
+	legacy := filepath.Join(task, ".jj", "workspace-config.toml")
+	if err := os.WriteFile(legacy, []byte("[signing]\nbehavior = \"force\"\nbackend = \"gpg\"\nbackends.gpg.program = \""+signer+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(task, "more.txt"), []byte("more\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	counted("task-legacy-config")
+	if _, err := os.Lstat(legacy); err == nil {
+		t.Fatalf("the task's legacy configuration file %s is still there after the read, want it removed before jj ran", legacy)
+	}
+
+	// A task's working copy the guards refuse: its .jj/repo names another repository than the
+	// shared clone that the layout puts beside the issue's workspace.
+	if err := os.WriteFile(filepath.Join(task, ".jj", "repo"), []byte(filepath.Join(root, "another-repository")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if refused := answer("task-another-repository"); refused.OK || !strings.Contains(refused.Error, "refusing to run jj in "+task) {
+		t.Fatalf("the read of a workspace whose task's .jj/repo names another repository = %+v, want it refused by the workspace guards in %s", refused, task)
+	}
 }

@@ -12,7 +12,10 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // workIssue is the issue the workspace read's fixtures belong to: its branch on the remote is
@@ -135,6 +138,39 @@ func TestWorkspaceWorkReadsTheIssuePodLayout(t *testing.T) {
 	}
 }
 
+// An edit that a task's agent leaves in the working copy of its task, with no jj command after
+// it, is work that the read counts, so a release that reads it declines (Medium 6 of the review
+// of #5169). The working copy of a task is a workspace of the pod's clone beside the issue's own
+// (workspace.TaskCopies). The read lists the work with --ignore-working-copy, which sees each
+// working copy as its last snapshot left it. So a read that snapshots only the issue's own
+// working copy reads the task's as the empty commit it was added on, counts nothing, and the
+// release deletes the disk with the edit on it. The read snapshots the working copy of each task
+// first, so the edit is in that working copy's commit, and the read lists that commit. The issue's
+// own working copy holds no change, so the read says that it did not change: the edit is counted
+// as a commit, not as a change in the issue's working copy.
+func TestWorkspaceWorkCountsAnEditLeftInATasksWorkingCopy(t *testing.T) {
+	f := newWorkFixture(t)
+	task := f.taskCopy("b")
+	f.writeIn(task, "task.txt")
+
+	got := f.read()
+	work, refused, err := runtime.WorkspaceWorkOf(got)
+	if err != nil || refused != "" {
+		t.Fatalf("the read answered %+v (refused %q, %v), want the work it read", got, refused, err)
+	}
+	head := f.jj(task, "log", "-R", task, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id")
+	if !work.HoldsWork() || !slices.Equal(work.Commits, []string{head}) || work.Count != 1 {
+		t.Errorf("the read lists %v and counts %d, holding work %t; want the task's working copy %s, which holds the edit its agent left: a release takes the pod on a read that holds no work, and deletes the edit with its disk",
+			work.Commits, work.Count, work.HoldsWork(), head)
+	}
+	if files := f.jj(task, "file", "list", "-R", task, "--ignore-working-copy", "-r", "@"); !slices.Contains(strings.Fields(files), "task.txt") {
+		t.Errorf("the task's working copy %s holds %q after the read, want task.txt in it: the read did not snapshot the edit its agent left there", head, files)
+	}
+	if issueHead := f.commit("@"); work.Head != issueHead || work.Changed {
+		t.Errorf("the read names the working copy %s, changed %t; want the issue's own %s, which holds no change", work.Head, work.Changed, issueHead)
+	}
+}
+
 // A workspace-work frame the shim cannot decode is refused, and one with no id to answer is
 // logged and answered nothing: the daemon is the frame's only sender, so Oh My Pi, which would
 // refuse it as an unknown command, never reads either.
@@ -180,7 +216,7 @@ func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.
 	child := newOMP(t)
 	cfg := config(t, path, child)
 	cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
-		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+t.TempDir())
+		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+issueWorkspace(t))
 	run(t, cfg, newClock())
 	p := daemon.accept(t)
 	p.open(t)
@@ -207,11 +243,12 @@ func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.
 	}
 }
 
-// workFixture is one remote and an issue pod laid out on it as provisioning lays it out: the
-// pod's colocated clone, which tracks the remote's main and the issue's branch and keeps
-// unreachable commits as Legion's clones do (workspace's ensureFetchConfiguration), and the issue
-// workspace added to that clone. Every command is real git or jj under the fixture's isolated
-// home, which the shim under test is given too (workspaceCommand, docs/testing.md).
+// workFixture is one remote and an issue pod laid out on it as provisioning lays it out
+// (issueLocation): the pod's colocated clone, which tracks the remote's main and the issue's
+// branch and keeps unreachable commits as Legion's clones do (workspace's
+// ensureFetchConfiguration), and the issue workspace added to that clone. Every command is real
+// git or jj under the fixture's isolated home, which the shim under test is given too
+// (workspaceCommand, docs/testing.md).
 type workFixture struct {
 	t                             *testing.T
 	root, home, remote, clone, ws string
@@ -225,12 +262,13 @@ func newWorkFixture(t *testing.T) *workFixture {
 		}
 	}
 	root := t.TempDir()
+	located := issueLocation(t, root)
 	f := &workFixture{
 		t: t, root: root, home: filepath.Join(root, "home"), remote: filepath.Join(root, "remote"),
-		clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
+		clone: located.Clone, ws: located.Dir,
 	}
 	seed := filepath.Join(root, "seed")
-	for _, dir := range []string{f.home, f.remote, seed} {
+	for _, dir := range []string{f.home, f.remote, seed, filepath.Dir(f.clone), filepath.Dir(f.ws)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -252,6 +290,42 @@ func newWorkFixture(t *testing.T) *workFixture {
 	f.jj(f.clone, "bookmark", "track", "-R", f.clone, "main@origin", "legion/"+workIssue+"@origin")
 	f.jj(f.clone, "workspace", "add", "-R", f.clone, "--name", filepath.Base(f.ws), f.ws)
 	return f
+}
+
+// issueLocation is where provisioning lays out workIssue's workspace and its pod's clone under
+// root (workspace.Location). The read finds the working copies of the issue's tasks beside the
+// issue's own by that layout (workspace.TaskCopies), and refuses a workspace outside it.
+func issueLocation(t *testing.T, root string) workspace.Workspace {
+	t.Helper()
+	located, err := workspace.Location(filepath.Join(root, "state"), ghrepo.MustParse("acme/widgets"), workIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return located
+}
+
+// issueWorkspace is workIssue's workspace directory in a layout of its own (issueLocation), made
+// empty, for a read whose jj is a fake that opens no repository.
+func issueWorkspace(t *testing.T) string {
+	t.Helper()
+	dir := issueLocation(t, t.TempDir()).Dir
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// taskCopy adds the working copy of the task of workIssue whose part of the branch is part, where
+// workspace.ProvisionTask makes it: a workspace of the pod's clone beside the issue's own, named
+// for the task's branch (workspace.TaskDir), here on main. It answers its directory.
+func (f *workFixture) taskCopy(part string) string {
+	f.t.Helper()
+	dir, err := workspace.TaskDir(f.ws, "legion/"+workIssue+"."+part)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.jj(f.clone, "workspace", "add", "-R", f.clone, "--name", filepath.Base(dir), "--revision", "main", dir)
+	return dir
 }
 
 // read is the real shim's answer to one workspace-work frame, asked over the daemon's end of the

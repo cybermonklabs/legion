@@ -1,7 +1,11 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -42,22 +46,46 @@ import (
 // going with a pod is the work that keeps a release from taking it.
 const WorkRevset = `(::(working_copies() | bookmarks()) ~ ::(remote_bookmarks() | tags())) ~ (empty() & description(exact:""))`
 
-// ReadWork runs the read's two jj commands in the workspace dir with jj, through run, which runs
-// one command and answers its trimmed standard output (RunCommand under the caller's budget and
-// environment, which for the pod's launcher holds no configuration of anyone's). global are jj
-// options the caller puts before each command's own. The first command
-// reads the working copy's commit and whether it is empty, and it is the one jj snapshot the read
-// makes; the second is --ignore-working-copy, so both describe one state of the workspace. It
-// answers the working copy's commit, whether that commit holds a change, and every work commit
-// (WorkRevset), newest first. The snapshot is what the read writes, as every jj command that reads
-// the working copy does: jj records an operation and, where files of the working copy changed, a
-// new working-copy commit and the git ref jj keeps for it (refs/jj/keep). The read changes no file
-// of the working copy, moves no bookmark and pushes nothing, and it needs no git.
-func ReadWork(run func(args ...string) (string, error), jj, dir string, global ...string) (head string, changed bool, work []string, err error) {
+// ReadWork runs the read's jj commands with jj, through run, which runs one command in the
+// directory it is given and answers its trimmed standard output (RunCommand under the caller's
+// budget and environment, which for the pod's launcher holds no configuration of anyone's). dir is
+// the issue's own workspace, and global are jj options the caller puts before each command's own.
+//
+// The read first snapshots the working copy of each task of the issue (taskCopiesOf), each in that
+// working copy itself: a task's agent works there, and the list below sees each working copy as
+// its last snapshot left it, so without this an edit the agent left with no jj command after it
+// would read as no work, and a release would delete it with the disk. A working copy of which only
+// the aside of a cut-short Remove is left is being removed, and is not read. Then the read runs
+// two commands in dir: the first reads the working copy's commit and whether it is empty, and is
+// the snapshot of the issue's own working copy; the second is --ignore-working-copy, so both
+// describe one state of the workspace. It answers the working copy's commit, whether that commit
+// holds a change, and every work commit (WorkRevset) of every working copy, newest first. A dir
+// outside Location's layout is refused before any jj runs, since the read could not name the
+// working copies of its tasks.
+//
+// The snapshots are what the read writes, as every jj command that reads a working copy does: jj
+// records an operation and, where files of the working copy changed, a new working-copy commit and
+// the git ref jj keeps for it (refs/jj/keep). The read changes no file of any working copy, moves
+// no bookmark and pushes nothing, and it needs no git.
+func ReadWork(run func(dir string, args ...string) (string, error), jj, dir string, global ...string) (head string, changed bool, work []string, err error) {
 	command := func(args ...string) []string {
 		return append(append([]string{jj}, global...), args...)
 	}
-	at, err := run(command("log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)...)
+	copies, err := taskCopiesOf(dir)
+	if err != nil {
+		return "", false, nil, err
+	}
+	for _, task := range copies {
+		if _, err := os.Lstat(task.Dir); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", false, nil, fmt.Errorf("the working copy of %s: %w", task.Bookmark, err)
+		}
+		if _, err := run(task.Dir, command("log", "-R", task.Dir, "-r", "@", "--no-graph", "-T", "commit_id")...); err != nil {
+			return "", false, nil, err
+		}
+	}
+	at, err := run(dir, command("log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)...)
 	if err != nil {
 		return "", false, nil, err
 	}
@@ -65,9 +93,22 @@ func ReadWork(run func(args ...string) (string, error), jj, dir string, global .
 	if head == "" || (empty != "true" && empty != "false") {
 		return "", false, nil, fmt.Errorf("jj answered %q for the working copy, not its commit and whether it is empty", at)
 	}
-	listed, err := run(command("log", "-R", dir, "--ignore-working-copy", "-r", WorkRevset, "--no-graph", "-T", `commit_id ++ "\n"`)...)
+	listed, err := run(dir, command("log", "-R", dir, "--ignore-working-copy", "-r", WorkRevset, "--no-graph", "-T", `commit_id ++ "\n"`)...)
 	if err != nil {
 		return "", false, nil, err
 	}
 	return head, empty == "false", OutputLines(listed), nil
+}
+
+// taskCopiesOf is the working copy of each task beside dir, the issue's own working copy
+// (TaskCopies), read from dir's place in Location's layout (layoutWorkspace). The layout writes
+// the issue's key in lower case, and an issue key is upper case (claim.IsIssueKey), so the issue's
+// own branch names the directory's name in upper case. A dir outside the layout is refused.
+func taskCopiesOf(dir string) ([]Workspace, error) {
+	issue, err := layoutWorkspace(dir)
+	if err != nil {
+		return nil, fmt.Errorf("the working copies of the tasks beside %s: %w", dir, err)
+	}
+	issue.Bookmark = Bookmark(strings.ToUpper(filepath.Base(issue.Dir)))
+	return TaskCopies(issue)
 }

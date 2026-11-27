@@ -116,16 +116,15 @@ func (s *shim) drainCommands() {
 }
 
 // openedWorkspace is what one request of the daemon's runs its commands with in the workspace
-// its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
-// command there with the request's environment and within its budget, with stdin fed to it, and
-// answers its trimmed standard output (workspace.RunCommand). runIn is run in another directory,
-// with the same environment, context and budget: the adoption's, in the working copy of a task
-// beside the issue's (adoptionDir). ctx is the request's command context, bounded by its budget,
-// for work beside the commands run runs (workspace.ProvisionTask of a task's working copy).
+// its role works in (openWorkspace): the workspace, the jj of PATH, and runIn, which runs one
+// command in the directory it is given — the workspace, or the working copy of a task beside it
+// (adoptionDir, workspace.ReadWork) — with the request's environment and within its budget, with
+// stdin fed to it, and answers its trimmed standard output (workspace.RunCommand). ctx is the
+// request's command context, bounded by its budget, for work beside the commands runIn runs
+// (workspace.ProvisionTask of a task's working copy).
 type openedWorkspace struct {
 	dir   string
 	jj    string
-	run   func(stdin []byte, args ...string) (string, error)
 	runIn func(dir string, stdin []byte, args ...string) (string, error)
 	ctx   context.Context
 }
@@ -157,8 +156,7 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	runIn := func(at string, stdin []byte, args ...string) (string, error) {
 		return workspace.RunCommand(ctx, start, budget, started, env, at, stdin, args)
 	}
-	run := func(stdin []byte, args ...string) (string, error) { return runIn(dir, stdin, args...) }
-	return openedWorkspace{dir: dir, jj: jj, run: run, runIn: runIn, ctx: ctx}, cancel, nil
+	return openedWorkspace{dir: dir, jj: jj, runIn: runIn, ctx: ctx}, cancel, nil
 }
 
 // adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome

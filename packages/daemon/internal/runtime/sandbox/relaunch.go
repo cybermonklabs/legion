@@ -107,10 +107,11 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 //
 // Such a pod is kept unless the update round over it is over by the daemon's rule for a round with
 // no process in its pod (Options.RoundPodEnds, dispatch://INFRA-4109 R7): no role process runs in
-// it, and nothing holds it — no operator's suspension, no project pause, and, before the round's
-// bound, no role that holds the round's ask it has not answered. The round would replace such a
-// pod a moment later, so a role started in it would have its first turn ended and be launched a
-// second time, as INFRA-4455's tester was on 2026-11-19. The daemon is asked under the pod's launch
+// it, and nothing holds it — no suspension that holds (the operator's or the controller's), no
+// project pause, and, before the round's bound, no role that holds the round's ask it has not
+// answered. The round would replace such a pod a moment later, so a role started
+// in it would have its first turn ended and be launched a second time, as INFRA-4455's tester was
+// on 2026-11-19. The daemon is asked under the pod's launch
 // turn, so the round's bound is read when the launch runs rather than when the role was resumed,
 // and a yes has this launch make the round's own replacement: the Suspended patch names the pod
 // under the round's mark (displacing, suspendAnnotating, roundReplacement), and the role starts
@@ -277,7 +278,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			"scheduledFor", scheduledFor.Round(time.Second), "startBound", bound, "claim", spec.Claim)
 		live = false
 	}
-	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
+	_, accountDrifted := accountDrift(pod, l.kind.serviceAccount(r))
 	installing := l.spec.Plugins != nil
 	// A kept volume on which an init container failed for a cause local to it is reset: the launch
 	// replaces its Sandbox as it replaces one of the other disk shape (volumeReset). A change of

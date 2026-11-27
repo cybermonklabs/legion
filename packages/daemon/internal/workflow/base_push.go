@@ -10,6 +10,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
+// TaskPullRequest names the pull request of one task of an issue, as the engine asks the daemon to
+// read it (Config.ReadBaseMergeStates): the issue's key and the task (record.PullRequest.Task), ""
+// for an issue with no plan rows. Each task of a plan has a pull request of its own, so the issue
+// alone does not say which pull request a read is of.
+type TaskPullRequest struct {
+	Issue, Task string
+}
+
 // basePush records that a pull request's base branch moved. Two facts are such a push: the push
 // Envoy publishes for a branch that is no issue's, which is the shape of a branch pull requests sit
 // on (intake.BasePush), and a push on an issue's or a task's branch (intake.Push), on which the pull
@@ -53,7 +61,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 	if err != nil {
 		return intake.Result{}, err
 	}
-	var owed []string
+	var owed []TaskPullRequest
 	for _, pr := range open {
 		if pr.BaseMoved == fact.After {
 			// The same push redelivered, or a push that returned the base to the commit the
@@ -91,7 +99,7 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 			return intake.Result{}, err
 		}
 		if read {
-			owed = append(owed, own.Issue)
+			owed = append(owed, TaskPullRequest{Issue: own.Issue, Task: own.Task})
 		}
 	}
 	if len(owed) > 0 {

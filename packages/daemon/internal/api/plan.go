@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -83,6 +84,41 @@ type PlanReason struct {
 // registerPlanRoute is register_plan as a refusal names it, the operation the caller retries.
 const registerPlanRoute = "register_plan"
 
+// planCheckBound is the most time register_plan gives its check of one plan (checkPlan). The check
+// runs before the fact lock on a plan an owner or a sub-owner wrote, and the client waits as long as
+// the daemon takes, so nothing else stops a check that costs far more than the plan's size: the
+// rules of parts search a need's component once for each need whose end waits for its task's start
+// (plan's needReasons), and a plan of many such needs in one large component costs their count times
+// its size. The plan package holds each long shape it names to a second of CPU
+// (TestEachShapeOfALongPlanIsCheckedInNearLinearTime), so ten seconds stops no plan of those shapes
+// on a daemon less than ten times slower, and holds a goroutine of the daemon about that long at
+// most: the check reads its context once in plan's contextSteps steps.
+const planCheckBound = 10 * time.Second
+
+// planCheckStopped is the cause of the whole plan that checkPlan gives in plan.Validate's place
+// where that check ran past its bound, which it names.
+const planCheckStopped = "Legion stopped checking the plan after %s, the most time it gives the check of one plan, so this answer may not name every cause the plan has. " +
+	"Give a plan with fewer tasks, or with fewer parts nested under each other and fewer needs among them."
+
+// checkPlan is register_plan's two checks of given against d: each cause this release does not
+// carry out yet (plan.Supported), then each that no release can (plan.Validate), which runs under
+// bound. Where Validate runs past bound, its causes are one cause of the whole plan that names the
+// bound (planCheckStopped) and cut is true, so the owner reads Supported's causes and why the rest
+// are not named, and the plan is refused. Its one error is ctx's, where ctx ended before Validate
+// did.
+func checkPlan(ctx context.Context, given plan.Plan, d plan.Deployment, bound time.Duration) (refusals []plan.Refusal, cut bool, err error) {
+	checking, stop := context.WithTimeout(ctx, bound)
+	defer stop()
+	invalid, err := plan.Validate(checking, given, d)
+	if err != nil {
+		if ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, err
+		}
+		invalid, cut = []plan.Refusal{{Reason: fmt.Sprintf(planCheckStopped, bound)}}, true
+	}
+	return append(plan.Supported(given, d), invalid...), cut, nil
+}
+
 // OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 219): the
 // routes register_plan and stop_task with register_plan's answer (answers.go's
 // AnswerPlanRegister) and the `reasons` of its refusal (PlanRefusal), a failed step's returnTo on
@@ -122,10 +158,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // for the version Dispatch has and the issue carrying it (documentOfIssue), reads the plan's blocks
 // at the version given, each need as the task it names (planAt, through plan.FromBlocks), and
 // refuses with one reason for each cause of a plan this release does not carry out (plan.Supported)
-// or no release can (plan.Validate); each of those answers records nothing. A plan both take is
-// recorded as intake.PlanGiven, its needs as task ids, whose rules of a later version are the
-// workflow's. A new version's apply answers its added tasks; where the workflow takes the version
-// already in force, the route reads that version's recorded additions after it applies.
+// or no release can (plan.Validate, under the daemon's own bound: checkPlan); each of those answers
+// records nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose
+// rules of a later version are the workflow's. A new version's apply answers its added tasks; where
+// the workflow takes the version already in force, the route reads that version's recorded
+// additions after it applies.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version.
 // No id decides whether a registration is one already taken (intake.ApplyFact applies every
@@ -180,14 +217,17 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// yet, then what no release can. Each judges the plan against the deployment the daemon's
 	// settings define (Options.Deployment), so a role of `roles` is a role a step names. Validate
 	// checks a plan its owner wrote, before the fact lock, so it runs on the request's context and
-	// stops when the request ends, recording nothing.
-	invalid, err := plan.Validate(r.Context(), given, s.deployment)
+	// stops when the request ends, recording nothing, and under the daemon's own bound
+	// (planCheckBound), past which the plan is refused.
+	refusals, cut, err := checkPlan(r.Context(), given, s.deployment, planCheckBound)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)
 		s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
 		return
 	}
-	refusals := append(plan.Supported(given, s.deployment), invalid...)
+	if cut {
+		s.log.Warn("api: the check of a plan ran past its bound, so the plan is refused", "issue", req.Issue, "artifact", artifactID, "version", req.Version, "bound", planCheckBound)
+	}
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return

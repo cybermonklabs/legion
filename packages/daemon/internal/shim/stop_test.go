@@ -75,8 +75,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			},
 		},
 		{
+			// The read finds the working copies of the issue's tasks by the workspace's place in
+			// provisioning's layout, so its workspace is there (issueWorkspace).
 			name:      "the workspace read",
-			workspace: func(t *testing.T) string { return t.TempDir() },
+			workspace: issueWorkspace,
 			request: shimwire.WorkspaceWork{
 				ID: "read-1", Issue: workIssue, TimeoutMs: int(commandBudget(t).Milliseconds()),
 			},

@@ -1,40 +1,41 @@
 -- 20261126144204_checks_of_the_merge_with_main.up.sql — the phase check and the outbox kind check
 -- written again with every value of both branches that merged: this branch's phase step and its
 -- three task kinds (task_branch, task_pull_requests_close, task_copy_remove), and main's phase
--- awaiting_children and its two basis seeds (pending_basis_seed, reparent_seed;
--- dispatch://INFRA-3320).
+-- awaiting_children, its two basis seeds (pending_basis_seed, reparent_seed;
+-- dispatch://INFRA-3320) and its merge_holds_changed (main's 20261126110259).
+--
+-- The rule this file and every migration of this branch that writes a list follow: the last
+-- migration to write a list owns every value of it, main's included. A list that leaves out a
+-- value main added is the last word on a database main migrated, and a row of that kind is
+-- refused there (SQLSTATE 23514), which stops the upgrade and the daemon's boot with it.
 --
 -- Each check is one list, and each branch wrote its own lists of it. Main's 20261114232555 names
--- awaiting_children without step, and its 20261122154643 the two basis seeds without the three
--- task kinds. This branch's 20261117223524 names step and awaiting_children, which main's
--- 20261114232555 wrote below it; its 20261121165047 and 20261122122826 name task_branch and
--- task_pull_requests_close and no seed, since they stand below main's 20261122154643, before the
--- seeds exist; and its 20261123072431 names every task kind and both seeds, since it stands above
--- that migration. On a fresh database Migrate applies every migration in version order, so
--- 20261117223524's phase list and 20261123072431's kind list are the last word, and this file
--- writes them again unchanged. On a database main migrated, Migrate applies this branch's
--- migrations late, in version order, and 20261123072431 and 20261117223524 again end with the
--- same lists. On a database a build of this branch migrated before its merge of main, Migrate
--- applies main's two late, after this branch's lists, and each takes this branch's values away;
--- this file stands above both, and above every other migration, so it puts them back. Every
+-- awaiting_children without step, its 20261122154643 the two basis seeds without the three task
+-- kinds, and its 20261126110259 merge_holds_changed without them. This branch's 20261117223524
+-- names step and awaiting_children, which main's 20261114232555 wrote below it; its
+-- 20261121165047 and 20261122122826 name task_branch and task_pull_requests_close with main's two
+-- seeds, which they must, since they sort below main's 20261122154643 and so are the last word on
+-- a database main migrated; and its 20261123072431 names every task kind and both seeds. This
+-- file stands above all of them and above main's 20261126110259, so it is the last word on every
+-- database, and it names every value of both branches: 36 kinds, main's merge_holds_changed among
+-- them. On a fresh database Migrate applies every migration in version order and this file ends
+-- the lists; on a database main migrated, or one a build of this branch migrated before its merge
+-- of main, Migrate applies the unrecorded migrations late and this file still ends them. Every
 -- database ends with the same two lists.
 --
 -- An upgrade applies a list late over the rows the table holds, and a row the list refuses stops
--- it (SQLSTATE 23514) before this file runs. On a database main migrated, this branch's
--- 20261121165047 and 20261122122826 refuse a queued row of either basis seed. With every daemon of
--- it stopped, an operator first deletes those rows (`delete from outbox where kind in
--- ('pending_basis_seed', 'reparent_seed')`), then runs the upgrade, as main's 20261122154643 says
--- for the same rows: the next boot queues a pending-basis seed again for each step that still
--- waits, and a re-parented root and its new parent's architect are not told of that one move. On a
--- database a build of this branch migrated, main's 20261114232555 refuses an issue that stands at
--- the phase step (it leaves issues_held_from_check, which keeps step, as it was), and main's
--- 20261122154643 refuses a queued row of the three task kinds. No deployment holds such a
--- database: only a build of this branch made one. With every daemon of it stopped, an operator
--- first finishes or stops each task whose issue stands at step, and deletes the queued rows of the
--- three kinds (`delete from outbox where kind in ('task_branch', 'task_pull_requests_close',
--- 'task_copy_remove')`), then runs the upgrade. What that delete costs is the work those rows
--- owed: a task's branch made on GitHub, the close of the other pull requests of an issue, and the
--- removal of a removed task's working copy.
+-- it (SQLSTATE 23514) before this file runs. That is why 20261121165047 and 20261122122826, which
+-- sort below main's 20261122154643 and so run after it on a database main migrated, name main's
+-- two basis seeds in their own lists: a queued row of either stands, the upgrade runs through,
+-- and no operator deletes a row. On a database a build of this branch migrated, main's
+-- 20261114232555 refuses an issue that stands at the phase step (it leaves issues_held_from_check,
+-- which keeps step, as it was), and main's 20261122154643 refuses a queued row of the three task
+-- kinds. No deployment holds such a database: only a build of this branch made one. With every
+-- daemon of it stopped, an operator first finishes or stops each task whose issue stands at step,
+-- and deletes the queued rows of the three kinds (`delete from outbox where kind in
+-- ('task_branch', 'task_pull_requests_close', 'task_copy_remove')`), then runs the upgrade. What
+-- that delete costs is the work those rows owed: a task's branch made on GitHub, the close of the
+-- other pull requests of an issue, and the removal of a removed task's working copy.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the
@@ -61,4 +62,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'task_branch', 'task_pull_requests_close', 'task_copy_remove'));
+  'merge_holds_changed', 'task_branch', 'task_pull_requests_close', 'task_copy_remove'));

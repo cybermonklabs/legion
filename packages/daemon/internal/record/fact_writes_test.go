@@ -293,6 +293,9 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "why a plan's task's step started", seed: seedRunning, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.SetStartReason(ctx, tx, key, generation, "a", "the reviewer sent the work back"))
 		}, marks: true},
+		{name: "the phase a plan's task's waiting start moves from", seed: seedRunning, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.SetStartFrom(ctx, tx, key, generation, "a", phase.Merging))
+		}, marks: true},
 		{name: "a plan's task held", seed: seedRunning, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.HoldTask(ctx, tx, key, generation, "a", ""))
 		}, marks: true},

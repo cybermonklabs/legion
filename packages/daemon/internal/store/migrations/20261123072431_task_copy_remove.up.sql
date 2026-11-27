@@ -46,4 +46,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'task_branch', 'task_pull_requests_close', 'task_copy_remove'));
+  'merge_holds_changed', 'task_branch', 'task_pull_requests_close', 'task_copy_remove'));

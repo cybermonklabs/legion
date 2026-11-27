@@ -133,8 +133,9 @@ func (v PlanVersion) Givers() []claim.Token {
 
 // GivenByOwner says whether a giver of version is an architect of issue's tree now, as store reads
 // the tree (ArchitectOfTree): the one rule by which a version is its owners'. A default plan has no
-// giver and is nobody's. PlansInForce gives a sub-owner version the non-sub-owner giver it changes;
-// an otherwise constructed version uses its actual givers (PlanVersion.Givers). Each reader of an
+// giver and is nobody's. A version PlansInForce read is judged by the givers it read for it
+// (ownershipGivers), which for a version a sub-owner gave are the givers of the owner's plan it
+// changed; an otherwise constructed version by its own givers (PlanVersion.Givers). Each reader of an
 // owner's plans judges by it through the store its caller hands (GivenByEarlierOwners,
 // OwnersNewestPlan, PlansOfEarlierOwners, PlansOfOwners), so the workflow, which hands its own
 // store, judges a give of a plan and the first step of a run by the one tree the routes read too.
@@ -219,8 +220,11 @@ type ReturnCounts struct {
 // writes it yet: the join of a task's parts will. The join of its needs writes JoinConflicts alone.
 // StartReason is why the step the task stands at was started: a start again at its first step, or
 // a move back to an earlier step (SetStartReason), "" for a first start and after any later move:
-// the step that starts after a wait reads it (the workflow's startAfterWait). Needs, JoinConflicts
-// and PartsConflicts are nil where they hold none.
+// the step that starts after a wait reads it (the workflow's startAfterWait). StartFrom is the
+// phase that move came from, kept with the wait for the same reader (SetStartFrom), so a start
+// that waited for its base, its join or its agent still tells the phase row where it came from
+// (EntryFrom, the workflow's acceptedEntry); "" where the start followed no move. Needs,
+// JoinConflicts and PartsConflicts are nil where they hold none.
 type PlanTask struct {
 	Issue       string
 	Generation  uint64
@@ -247,6 +251,7 @@ type PlanTask struct {
 	StepWait       StepWait
 	StepWaitSince  *time.Time
 	StartReason    string
+	StartFrom      phase.Phase
 	// Base is the base the task's latest start fixed for its pull request (SetTaskBase, written
 	// where the start joins its needs): the base the plan gave it then (StoredPlan.PlannedBase),
 	// which stands for its run whatever a later version says of who needs it or whether it merges.
@@ -926,7 +931,7 @@ const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.tas
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
 	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.parts_conflicts, plan_tasks.hold_reason,
-	plan_tasks.step_wait, plan_tasks.step_wait_since, plan_tasks.start_reason, plan_tasks.base`
+	plan_tasks.step_wait, plan_tasks.step_wait_since, plan_tasks.start_reason, plan_tasks.start_from, plan_tasks.base`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -940,7 +945,7 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
 			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.PartsConflicts, &task.HoldReason, &task.StepWait, &task.StepWaitSince,
-			&task.StartReason, &task.Base); err != nil {
+			&task.StartReason, &task.StartFrom, &task.Base); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
@@ -970,32 +975,50 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 const inForce = `source = 'owner' and issue = $1
 	and version = (select max(version) from issue_plans newest where newest.issue = issue_plans.issue and newest.generation = issue_plans.generation)`
 
-// answeringGiver is who answers for a version given by givenBy, over the versions of its generation
-// given before it by earlier, the latest first: givenBy, but for a version a sub-owner gave
-// (SubOwnerOf), the giver of the latest version before it that no sub-owner gave. A sub-owner
-// changes only the parts of its task in its owner's plan (the workflow's planGiven), so its version
-// is its owner's plan, carried to a later generation as the owner's. A sub-owner's version with no
-// such version before it answers for itself, and no owner is a sub-owner.
-func answeringGiver(givenBy claim.Token, earlier []string) claim.Token {
-	if _, subOwner := SubOwnerOf(givenBy); !subOwner {
-		return givenBy
-	}
-	for _, before := range earlier {
-		if _, subOwner := SubOwnerOf(claim.Token(before)); !subOwner {
-			return claim.Token(before)
+// ownershipGivers is the givers by which version, an owner's version in force, is judged its
+// owners' (GivenByOwner). A sub-owner is no owner: it changes only the parts of its task in its
+// owner's plan (the workflow's planGiven), and its give of the version in force adds it as a giver
+// as an owner's does (AddPlanGiver). So they are each giver of version that is no sub-owner
+// (SubOwnerOf), and, where a sub-owner's give made version (firstGiver), the version being its
+// owner's plan, the givers of the version it changed, read so in turn, back to a version an owner's
+// give made: a version's givers are a set, and each giver of each of those versions is one. earlier
+// is the givers of each owner's version of its generation below it, the latest first. A sub-owner's
+// version with only sub-owners before it answers for itself (PlanVersion.Givers), and no owner is
+// a sub-owner.
+func ownershipGivers(version PlanVersion, earlier []PlanVersion) []claim.Token {
+	var owners []claim.Token
+	v := version
+	for i := 0; ; i++ {
+		for _, giver := range v.Givers() {
+			if _, subOwner := SubOwnerOf(giver); !subOwner && !slices.Contains(owners, giver) {
+				owners = append(owners, giver)
+			}
 		}
+		if _, subOwner := SubOwnerOf(v.firstGiver()); !subOwner || i == len(earlier) {
+			break
+		}
+		v = earlier[i]
 	}
-	return givenBy
+	if owners == nil {
+		return version.Givers()
+	}
+	return owners
 }
 
-// ownershipGivers is the giver or givers that decide whether version belongs to an issue's owners.
-// A version a sub-owner gave is its owner's plan, so its answer is the latest prior non-sub-owner
-// giver of that generation. Every other version is its givers' plan (PlanVersion.Givers).
-func ownershipGivers(version PlanVersion, earlier []string) []claim.Token {
-	if _, subOwner := SubOwnerOf(version.GivenBy); subOwner {
-		return []claim.Token{answeringGiver(version.GivenBy, earlier)}
+// firstGiver is the giver whose give made v, the first the store added: the first of its earlier
+// givers, since AddPlanGiver appends the giver it replaces, else GivenBy.
+func (v PlanVersion) firstGiver() claim.Token {
+	if len(v.EarlierGivers) > 0 {
+		return v.EarlierGivers[0]
 	}
-	return version.Givers()
+	return v.GivenBy
+}
+
+// earlierVersion is the givers of one owner's version below a version in force, as PlansInForce
+// reads them.
+type earlierVersion struct {
+	GivenBy       claim.Token   `json:"given_by"`
+	EarlierGivers []claim.Token `json:"earlier_givers"`
 }
 
 // PlansInForce is each owner's version of the plan of issue that is the plan in force of its
@@ -1004,23 +1027,37 @@ func ownershipGivers(version PlanVersion, earlier []string) []claim.Token {
 // they were given (PlanVersion.GivenAt, the first give of the giver the store added last), and of
 // two given at one moment the earlier generation's first. A default plan is nobody's, so none is
 // among them. It judges no giver: OwnersNewestPlan, PlansOfEarlierOwners and PlansOfOwners judge
-// each version through the store their caller hands (GivenByOwner). A version a sub-owner gave
-// carries its owner-facing givers for those judgments (ownershipGivers).
+// each version through the store their caller hands (GivenByOwner). Each version carries the
+// givers those judgments read (ownershipGivers), from every giver, given_by and earlier_givers, of
+// each owner's version of its generation below it, so a version a sub-owner gave is judged by each
+// giver of the owner's plan it changed.
 func (s *Postgres) PlansInForce(ctx context.Context, tx pgx.Tx, issue string) ([]PlanVersion, error) {
-	rows, err := tx.Query(ctx, "select "+planVersionColumns+`, array(select earlier.given_by from issue_plans earlier
+	rows, err := tx.Query(ctx, "select "+planVersionColumns+`, coalesce((select jsonb_agg(jsonb_build_object('given_by', earlier.given_by,
+				'earlier_givers', earlier.earlier_givers) order by earlier.version desc)
+			from issue_plans earlier
 			where earlier.issue = issue_plans.issue and earlier.generation = issue_plans.generation and earlier.source = 'owner'
-				and earlier.version < issue_plans.version
-			order by earlier.version desc)
+				and earlier.version < issue_plans.version), '[]')
 		from issue_plans where `+inForce+`
 		order by given_at, generation`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("read the plans in force of %s: %w", issue, err)
 	}
 	given, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PlanVersion, error) {
-		var earlier []string
-		version, err := scanPlanVersion(row, &earlier)
+		var raw []byte
+		version, err := scanPlanVersion(row, &raw)
+		if err != nil {
+			return PlanVersion{}, err
+		}
+		var read []earlierVersion
+		if err := json.Unmarshal(raw, &read); err != nil {
+			return PlanVersion{}, fmt.Errorf("decode the givers of the versions below version %d at generation %d: %w", version.Version, version.Generation, err)
+		}
+		earlier := make([]PlanVersion, len(read))
+		for i, givers := range read {
+			earlier[i] = PlanVersion{GivenBy: givers.GivenBy, EarlierGivers: givers.EarlierGivers}
+		}
 		version.ownerGivers = ownershipGivers(version, earlier)
-		return version, err
+		return version, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the plans in force of %s: %w", issue, err)
@@ -1032,9 +1069,10 @@ func (s *Postgres) PlansInForce(ctx context.Context, tx pgx.Tx, issue string) ([
 // (Store.PlansInForce), generation 0 among them, which holds a plan given before the daemon
 // recorded the issue: the latest given of which a giver is an architect of the issue's tree now,
 // as store reads the tree (GivenByOwner), and of two given at one moment the later generation's.
-// A version a sub-owner gave is judged by the owner-facing giver PlansInForce supplies. nil where
-// no owner gave a plan that is in force. The versions are read, and their rows closed, before each
-// giver is judged, since a transaction runs one statement at a time.
+// A version a sub-owner gave is judged by each giver of the owner's plan it changed, as PlansInForce
+// reads them (ownershipGivers). nil where no owner gave a plan that is in force. The versions are
+// read, and their rows closed, before each giver is judged, since a transaction runs one statement
+// at a time.
 func OwnersNewestPlan(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (*StoredPlan, error) {
 	given, err := store.PlansInForce(ctx, tx, issue.Key)
 	if err != nil {
@@ -1056,7 +1094,7 @@ func OwnersNewestPlan(ctx context.Context, store Store, tx pgx.Tx, issue Issue) 
 // gave, as store reads the issue's tree (GivenByEarlierOwners), in the order they were given: the
 // plans the issue's first step passes over. The architect of the tree's root and each
 // sub-architect of the tree are owners, so no plan one of them gave is among them. A version a
-// sub-owner gave is judged by the non-sub-owner version it changed.
+// sub-owner gave is judged by each giver of the owner's plan it changed (ownershipGivers).
 func PlansOfEarlierOwners(ctx context.Context, store Store, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
 	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key), GivenByEarlierOwners)
 }
@@ -1064,8 +1102,8 @@ func PlansOfEarlierOwners(ctx context.Context, store Store, tx pgx.Tx, issue Iss
 // PlansOfOwners is each plan in force of issue (Store.PlansInForce) of which a giver is an
 // architect of the issue's tree now, as store reads the tree (GivenByOwner), in the order they
 // were given: every plan an owner gave that a first step could take, generation 0 and each copy a
-// carry wrote among them. A version a sub-owner gave is judged by the non-sub-owner version it
-// changed.
+// carry wrote among them. A version a sub-owner gave is judged by each giver of the owner's plan it
+// changed (ownershipGivers).
 func PlansOfOwners(ctx context.Context, store Store, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
 	return plansInForceWhere(ctx, store, tx, issue, fmt.Sprintf("read the plans of %s that its owners gave", issue.Key), GivenByOwner)
 }
@@ -1145,10 +1183,10 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, parts_conflicts, start_reason, base)
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, parts_conflicts, start_reason, start_from, base)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, parts_conflicts, start_reason, base
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, parts_conflicts, start_reason, start_from, base
 			from plan_tasks where issue = $1 and generation = $2`
 		names = []string{`insert into plan_branches (issue, generation, branch)
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}

@@ -193,6 +193,10 @@ func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 			of, err := records.PullRequestsOf(ctx, tx, []string{issue.Key})
 			return []PullRequest{of[issue.Key]}, err
 		}},
+		{"TaskPullRequestRowsOf", func(tx pgx.Tx) ([]PullRequest, error) {
+			of, err := records.TaskPullRequestRowsOf(ctx, tx, []string{issue.Key})
+			return of[issue.Key], err
+		}},
 		{"PullRequestRowByNumber", func(tx pgx.Tx) ([]PullRequest, error) {
 			row, err := records.PullRequestRowByNumber(ctx, tx, strings.ToUpper(pr.Repo), pr.Number)
 			return rowOf(row), err

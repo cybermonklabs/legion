@@ -53,7 +53,7 @@ func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 					HandoffVersion: 1, Summary: "reviewed", Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 				engine := mergingEngine()
 				var reads []string
-				engine.cfg.ReadMergeState = func(issue string) { reads = append(reads, issue) }
+				engine.cfg.ReadMergeState = func(issue, _ string) { reads = append(reads, issue) }
 				applyRefusingNothing(t, pool, engine, tc.facts...)
 				if !slices.Contains(reads, "LEGION-208") {
 					t.Fatalf("after the rebase the daemon asked a merge-state read of %v, want LEGION-208's", reads)

@@ -29,8 +29,8 @@ import (
 //
 // Of a plan of any count of tasks, one among them, the task is named in ofTask, and the position is
 // that task's: issue stands where the issue stands for that task alone (standingOfTask), the pass
-// is that task's, the pull request is that task's own row (record.Store.PullRequestOfTask), which
-// for the one task of a plan of one is the issue's merge pull request, branch its branch
+// is that task's, the pull request is that task's own row (record.Store.PullRequestRowOfTask),
+// which for the one task of a plan of one is the issue's merge pull request, branch its branch
 // (record.PlanTask.BranchOf) and base the branch its pull request is against
 // (record.StoredPlan.BaseOf), the default branch for the task that merges. noStep says the
 // completion is of no task of the plan, and of no phase of it. Of an issue with no plan rows,
@@ -57,7 +57,7 @@ type completionPosition struct {
 // that completes, whose phases row names the entry it was last raised to, and the check opened at
 // checkOpenedAt, the time a check report names (the issue's newest for the zero time).
 // An issue the workflow does not record is a position with no issue and no error. The pull
-// request is the row of the completion's task (record.Store.PullRequestOfTask): the route reads
+// request is the row of the completion's task (record.Store.PullRequestRowOfTask): the route reads
 // its head and its state and writes nothing of it.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token, checkOpenedAt time.Time) (completionPosition, error) {
 	var position completionPosition

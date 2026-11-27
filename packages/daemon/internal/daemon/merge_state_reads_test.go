@@ -502,7 +502,7 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 	testwait.Eventually(t, "the request reached the ladder that is running", func() bool {
 		w.mergeStateMu.Lock()
 		defer w.mergeStateMu.Unlock()
-		run := w.mergeStateRunning["CAPTURE-1"]
+		run := w.mergeStateRunning[ownWork("CAPTURE-1")]
 		return run != nil && run.asked
 	})
 	release <- struct{}{}
@@ -564,12 +564,12 @@ func TestAConditionalReadAnswered304LeavesTheRecordAsItWas(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		captureInTesting(t, pool)
 		w := readRuntime(pool, api, quietLogger())
-		state, _, _, err := w.readMergeState(context.Background(), "CAPTURE-1")
+		state, _, _, err := w.readMergeState(context.Background(), ownWork("CAPTURE-1"))
 		if err != nil || state != record.MergeStateBlocked {
 			t.Fatalf("the first read answered %s, %v; want blocked", state, err)
 		}
 		first := recordedPull(t, pool, "CAPTURE-1")
-		state, _, pr, err := w.readMergeState(context.Background(), "CAPTURE-1")
+		state, _, pr, err := w.readMergeState(context.Background(), ownWork("CAPTURE-1"))
 		if err != nil || state != record.MergeStateBlocked || pr == nil || pr.HeadSHA != "code" {
 			t.Fatalf("the read answered 304 answered %s of %+v, %v; want the blocked of the answer it kept, at code", state, pr, err)
 		}

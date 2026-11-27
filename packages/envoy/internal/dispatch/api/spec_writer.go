@@ -59,7 +59,7 @@ import (
 // answer asks Legion to run it.
 
 // specWriterArchitectRole is the role whose sessions write the spec and the Verification document
-// of an issue Legion runs: the first role of legionagents.Roles.
+// of an issue Legion runs: the first role of legionclaim.Roles.
 const specWriterArchitectRole = "architect"
 
 // specDocumentName and verificationDocumentName are the names the check gives an issue's spec and

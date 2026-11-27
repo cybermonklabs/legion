@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // A head GitHub has answered for reaches its base's reads, and they read it until GitHub's answer is
@@ -175,7 +176,7 @@ func TestAClimbWhoseFirstReadFailsLeavesTheHeadWithItsBase(t *testing.T) {
 	testwait.Eventually(t, "the climb to hand the head to its base", func() bool {
 		rig.w.mergeStateMu.Lock()
 		defer rig.w.mergeStateMu.Unlock()
-		return rig.w.baseReadOf["CAPTURE-1"] != ""
+		return rig.w.baseReadOf[ownWork("CAPTURE-1")] != ""
 	})
 	// The head's next CI settlement asks for a read of its own (workflow's askMergeState), and
 	// GitHub refuses that climb's first read.
@@ -237,7 +238,7 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 	climbing := func(w *workflowRuntime) bool {
 		w.mergeStateMu.Lock()
 		defer w.mergeStateMu.Unlock()
-		_, running := w.mergeStateRunning["CAPTURE-1"]
+		_, running := w.mergeStateRunning[ownWork("CAPTURE-1")]
 		return running
 	}
 	batched := func(w *workflowRuntime) bool {
@@ -273,9 +274,9 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 						if batch := w.baseReads[key]; batch == nil {
 							t.Errorf("no batch of main holds CAPTURE-1 as the climb's first read runs, want the one the hand-over made")
 						} else {
-							place := batch.owed["CAPTURE-1"]
+							place := batch.owed[ownWork("CAPTURE-1")]
 							place.due = time.Now().UTC()
-							batch.owed["CAPTURE-1"] = place
+							batch.owed[ownWork("CAPTURE-1")] = place
 							nudge(batch.wake)
 						}
 						w.mergeStateMu.Unlock()
@@ -284,7 +285,7 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 						}
 					}
 					// The push to main commits while the climb's first read runs.
-					w.queueBaseMergeStates("acme/widgets", "main", []string{"CAPTURE-1"})
+					w.queueBaseMergeStates("acme/widgets", "main", []workflow.TaskPullRequest{{Issue: "CAPTURE-1"}})
 					return cleanPull
 				case read < push:
 					return cleanPull
@@ -302,14 +303,14 @@ func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
 			t.Cleanup(cancel)
 			go rig.w.readMergeStates(ctx)
 			if tc.handed {
-				rig.w.queueBaseRead(acme, "main", map[string]string{"CAPTURE-1": "code"}, false)
+				rig.w.queueBaseRead(acme, "main", map[taskRead]string{ownWork("CAPTURE-1"): "code"}, false)
 				// The climb notes this batch and this request as it begins: nothing else puts the
 				// issue anywhere before it, and the follow's first read is two hours on.
-				if held, asked := rig.w.heldUnder("CAPTURE-1"); held != key || asked == 0 {
+				if held, asked := rig.w.heldUnder(ownWork("CAPTURE-1")); held != key || asked == 0 {
 					t.Fatalf("the base's batch holds CAPTURE-1 as %q under request %d, want main's batch under a request of its own", held, asked)
 				}
 			}
-			rig.w.queueMergeState("CAPTURE-1")
+			rig.w.queueMergeState("CAPTURE-1", "")
 
 			testwait.Eventually(t, "the push's read to record GitHub's CONFLICTING after the climb's first read", func() bool {
 				_, pr := capturePhase(t, rig.pool)
@@ -340,8 +341,8 @@ func TestAClimbsFirstReadTakesTheIssueOutOfItsBase(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go rig.w.readMergeStates(ctx)
-	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[string]string{"CAPTURE-1": "code"}, false)
-	rig.w.queueMergeState("CAPTURE-1")
+	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[taskRead]string{ownWork("CAPTURE-1"): "code"}, false)
+	rig.w.queueMergeState("CAPTURE-1", "")
 
 	testwait.Eventually(t, "the climb's read, and the climb and the base's batch to end", func() bool {
 		running, waiting := ladders(rig.w)
@@ -350,7 +351,7 @@ func TestAClimbsFirstReadTakesTheIssueOutOfItsBase(t *testing.T) {
 	if got := rig.reads.Load(); got != 1 {
 		t.Fatalf("GitHub was read %d times, want the climb's one read", got)
 	}
-	if held, _ := rig.w.heldUnder("CAPTURE-1"); held != "" {
+	if held, _ := rig.w.heldUnder(ownWork("CAPTURE-1")); held != "" {
 		t.Fatalf("CAPTURE-1 is held by %q after the climb read it, want no batch", held)
 	}
 }

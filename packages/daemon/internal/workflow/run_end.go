@@ -259,8 +259,10 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // work stands and its own pull request (standingPart). Where the start that waited was a start
 // again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
 // its entry counts as a move back, as that start's own would have had it waited for nothing
-// (startAtFirstStep, transition). The entry names no phase a move left (record.PhaseRow.EntryFrom,
-// enter's from): the record keeps none for a start that waited. said is the log line, which names
+// (startAtFirstStep, transition). The entry names the phase the move into the start that waited
+// left (Walk.StartFrom, which that start kept when it waited: keepStartFrom), as enter's from, so
+// an entry a move back out of retro or merging raised reads as one (record.PhaseRow.EntryFrom,
+// acceptedEntry) whether or not its start waited for its agent. said is the log line, which names
 // the issue, the task, its place and role, and args. A task at its parts that now waits for nothing
 // lets its parts that wait start: this one place of the three doors runs startReadyNow for it.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
@@ -271,10 +273,10 @@ func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, sai
 	}
 	reason := w.StartReason
 	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
-		"reason", reason}, args...)...)
+		"reason", reason, "from", w.StartFrom}, args...)...)
 	if err := e.start(ctx, tx, s, role, taskPull{}, func(at Standing) string {
 		return task(view, at, record.PhaseRow{}, reason)
-	}, "", reason != ""); err != nil || w.Place.Kind != record.PlaceParts {
+	}, w.StartFrom, reason != ""); err != nil || w.Place.Kind != record.PlaceParts {
 		return err
 	}
 	return e.startReadyNow(ctx, tx, view.Key)

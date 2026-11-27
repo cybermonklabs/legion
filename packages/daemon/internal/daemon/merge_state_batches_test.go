@@ -29,6 +29,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// ownWork is the key the merge-state reads hold the pull request of key's own work under: the
+// zero task of an issue with no plan rows (taskRead), which is what seedOnMain and seedCapture
+// seed.
+func ownWork(key string) taskRead {
+	return taskRead{issue: key}
+}
+
 // batchRequest is the GraphQL query a read of a base's batch sends (chunkQuery), as the stand-ins
 // read it.
 type batchRequest struct {
@@ -654,7 +661,7 @@ func TestARetargetedPullRequestDoesNotBounceBetweenBases(t *testing.T) {
 		t.Fatalf("the batch logged %d moves %v, want one move to release and none back", len(moved), moved)
 	}
 	rig.w.mergeStateMu.Lock()
-	held := rig.w.baseReadOf["CAPTURE-1"]
+	held := rig.w.baseReadOf[ownWork("CAPTURE-1")]
 	rig.w.mergeStateMu.Unlock()
 	if want := baseReadKey(ghrepo.MustParse("acme/widgets"), "release"); held != want {
 		t.Fatalf("CAPTURE-1 is followed by %q, want %q", held, want)
@@ -692,9 +699,9 @@ func TestAHeadHandedOverIsReadOnItsOwnLadder(t *testing.T) {
 		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
 	}
 
-	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
+	rig.w.queueBaseRead(repo, "main", map[taskRead]string{ownWork("CAPTURE-1"): "head-86"}, false)
 	testwait.Eventually(t, "86's third read after its handover", func() bool { return len(followsOf("CAPTURE-1")) >= 3 })
-	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": "head-87"}, false)
+	rig.w.queueBaseRead(repo, "main", map[taskRead]string{ownWork("CAPTURE-2"): "head-87"}, false)
 	testwait.Eventually(t, "87's two reads and 86's fourth", func() bool {
 		return len(followsOf("CAPTURE-2")) >= 2 && len(followsOf("CAPTURE-1")) >= 4
 	})
@@ -731,12 +738,12 @@ func TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed(t *testing.T) {
 		w.mergeStateMu.Lock()
 		defer w.mergeStateMu.Unlock()
 		if w.baseReads == nil {
-			w.baseReads = map[string]*baseRead{key: {repo: repo, base: "main", wake: make(chan struct{}, 1), owed: map[string]baseOwed{}}}
-			w.baseReadOf = map[string]string{}
+			w.baseReads = map[string]*baseRead{key: {repo: repo, base: "main", wake: make(chan struct{}, 1), owed: map[taskRead]baseOwed{}}}
+			w.baseReadOf = map[taskRead]string{}
 		}
 		w.baseAsks++
-		w.baseReads[key].owed["CAPTURE-1"] = baseOwed{head: "head-86", asked: w.baseAsks, wait: wait, due: time.Now().UTC().Add(wait)}
-		w.baseReadOf["CAPTURE-1"] = key
+		w.baseReads[key].owed[ownWork("CAPTURE-1")] = baseOwed{head: "head-86", asked: w.baseAsks, wait: wait, due: time.Now().UTC().Add(wait)}
+		w.baseReadOf[ownWork("CAPTURE-1")] = key
 	}
 	waited := func() (bool, time.Duration) {
 		t.Helper()
@@ -756,7 +763,7 @@ func TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed(t *testing.T) {
 	due()
 	go func() {
 		time.Sleep(wait / 4)
-		w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-3": ""}, true)
+		w.queueBaseRead(repo, "main", map[taskRead]string{ownWork("CAPTURE-3"): ""}, true)
 	}()
 	if read, took := waited(); read || took >= wait {
 		t.Fatalf("with a climb asked during it, the follow's wait answered read %t after %s, want it ended before its %s", read, took, wait)
@@ -766,7 +773,7 @@ func TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed(t *testing.T) {
 	}
 	w.mergeStateMu.Lock()
 	for _, issue := range []string{"CAPTURE-1", "CAPTURE-3"} {
-		w.leaveBaseLocked(issue)
+		w.leaveBaseLocked(ownWork(issue))
 	}
 	w.mergeStateMu.Unlock()
 	if _, goes := w.baseLadderNext(ctx, key); goes {
@@ -799,30 +806,30 @@ func TestAMoveDecidedOnAnOlderReadKeepsTheNewerHeadHandedOver(t *testing.T) {
 		w.baseAsks++
 		place := baseOwed{head: "old", asked: w.baseAsks}
 		w.baseReads = map[string]*baseRead{from: {repo: repo, base: "main", wake: make(chan struct{}, 1),
-			owed: map[string]baseOwed{"CAPTURE-1": place}}}
-		w.baseReadOf = map[string]string{"CAPTURE-1": from}
+			owed: map[taskRead]baseOwed{ownWork("CAPTURE-1"): place}}}
+		w.baseReadOf = map[taskRead]string{ownWork("CAPTURE-1"): from}
 		return place
 	}
-	handOver := func() { w.queueBaseRead(repo, "release", map[string]string{"CAPTURE-1": "newer"}, false) }
+	handOver := func() { w.queueBaseRead(repo, "release", map[taskRead]string{ownWork("CAPTURE-1"): "newer"}, false) }
 	followed := func() (string, string) {
 		w.mergeStateMu.Lock()
 		defer w.mergeStateMu.Unlock()
-		held := w.baseReadOf["CAPTURE-1"]
+		held := w.baseReadOf[ownWork("CAPTURE-1")]
 		if read := w.baseReads[held]; read != nil {
-			return held, read.owed["CAPTURE-1"].head
+			return held, read.owed[ownWork("CAPTURE-1")].head
 		}
 		return held, ""
 	}
 
 	place := owedOnMain()
 	handOver()
-	w.moveBase(from, "CAPTURE-1", place, repo, "release")
+	w.moveBase(from, ownWork("CAPTURE-1"), place, repo, "release")
 	if held, head := followed(); held != to || head != "newer" {
 		t.Fatalf("after the newer handover and then the older move, CAPTURE-1 is followed by %q at %q; want release's batch at newer", held, head)
 	}
 
 	place = owedOnMain()
-	w.moveBase(from, "CAPTURE-1", place, repo, "release")
+	w.moveBase(from, ownWork("CAPTURE-1"), place, repo, "release")
 	handOver()
 	if held, head := followed(); held != to || head != "newer" {
 		t.Fatalf("after the older move and then the newer handover, CAPTURE-1 is followed by %q at %q; want release's batch at newer", held, head)
@@ -837,7 +844,7 @@ func TestAMoveDecidedOnAnOlderReadKeepsTheNewerHeadHandedOver(t *testing.T) {
 			defer both.Done()
 			<-start
 			runtime.Gosched()
-			w.moveBase(from, "CAPTURE-1", place, repo, "release")
+			w.moveBase(from, ownWork("CAPTURE-1"), place, repo, "release")
 		}()
 		go func() {
 			defer both.Done()
@@ -1150,10 +1157,10 @@ func TestAFollowerIsReadNoSoonerThanItIsDue(t *testing.T) {
 	repo := ghrepo.MustParse("acme/widgets")
 	handed := map[int]time.Time{}
 	handed[86] = time.Now()
-	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
+	rig.w.queueBaseRead(repo, "main", map[taskRead]string{ownWork("CAPTURE-1"): "head-86"}, false)
 	time.Sleep(unit)
 	handed[87] = time.Now()
-	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": "head-87"}, false)
+	rig.w.queueBaseRead(repo, "main", map[taskRead]string{ownWork("CAPTURE-2"): "head-87"}, false)
 	followsOf := func(issue string) []map[string]any {
 		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
 	}
@@ -1203,9 +1210,9 @@ func TestAClimbLeavesTheOtherFollowersOnTheirLadders(t *testing.T) {
 		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followReadLine), func(line map[string]any) bool { return line["issue"] != issue })
 	}
 
-	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
+	rig.w.queueBaseRead(repo, "main", map[taskRead]string{ownWork("CAPTURE-1"): "head-86"}, false)
 	testwait.Eventually(t, "86's second read on its ladder", func() bool { return len(followsOf("CAPTURE-1")) >= 2 })
-	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": ""}, true)
+	rig.w.queueBaseRead(repo, "main", map[taskRead]string{ownWork("CAPTURE-2"): ""}, true)
 	testwait.Eventually(t, "87 answered and 86's fourth read", func() bool {
 		return recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && len(followsOf("CAPTURE-1")) >= 4
 	})

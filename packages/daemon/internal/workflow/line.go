@@ -77,6 +77,11 @@ type Walk struct {
 	// a step that starts after a wait (startAfterWait) tells it and counts as a move back, as that
 	// start would have, had it waited for nothing.
 	StartReason string
+	// StartFrom is the phase the move into the start that waits at the task's place left
+	// (record.PlanTask.StartFrom), which that start keeps when it waits (keepStartFrom): the step
+	// that starts after the wait (startAfterWait) raises its entry with it (enter's from), as that
+	// start would have, had it waited for nothing. Every move clears it.
+	StartFrom phase.Phase
 	// Version is the version of the plan in force (record.StoredPlan.Version): where the plan came
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
@@ -121,7 +126,7 @@ func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, mer
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
 		Line: line, Places: record.LinePlaces(line, subOwned), Merges: merges, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince,
-		StartReason: task.StartReason, Version: stored.Version}
+		StartReason: task.StartReason, StartFrom: task.StartFrom, Version: stored.Version}
 }
 
 // lineOf is the line of a task whose steps are steps, as its walk reads it: the phase each step
@@ -397,7 +402,7 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, s *TaskScope, to phase
 		if state == record.TaskRunning && (w.State == record.TaskWaiting || w.State == record.TaskStopped) {
 			wait = record.StepWaitJoin
 		}
-		w.Place, w.State, w.Wait, w.WaitSince, w.StartReason = place, state, wait, nil, ""
+		w.Place, w.State, w.Wait, w.WaitSince, w.StartReason, w.StartFrom = place, state, wait, nil, "", ""
 	}
 	issue.Phase = to
 	running, err := e.store.RunningSteps(ctx, tx, *issue)

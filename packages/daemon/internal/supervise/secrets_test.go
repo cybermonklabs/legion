@@ -118,7 +118,7 @@ func TestAResumedClaimEnrollsOnItsHello(t *testing.T) {
 	if got := broker.revocations(); len(got) != 1 || got[0] != first {
 		t.Fatalf("the suspension revoked %v, want [%s]", got, first)
 	}
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	h.wantState(StateLaunching)
 	h.helloWithIdentity() // the resumed pod's hello: the claim already records its session
 	enrollments := broker.enrolled()
@@ -139,7 +139,7 @@ func TestEveryEndOfAProcessRevokesItsEnrollment(t *testing.T) {
 		"found gone":           func(h *harness) { h.observe(runtime.Gone) },
 		"not the recorded pod": func(h *harness) { h.observe(runtime.NotRecordedProcess) },
 		"suspended":            func(h *harness) { h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator}) },
-		"stopped":              func(h *harness) { h.must(RequestStop{Claim: h.token}) },
+		"stopped":              func(h *harness) { h.must(RequestStop{Claim: h.token, By: SuspendedByOperator}) },
 		"the agent exited":     func(h *harness) { h.exit() },
 	} {
 		t.Run(name, func(t *testing.T) {

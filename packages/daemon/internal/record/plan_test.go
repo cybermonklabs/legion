@@ -422,6 +422,14 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 	})
 }
 
+// subOwnerToken is the claim token of the sub-owner of task of the issue keyed key.
+func subOwnerToken(t *testing.T, key, task string) claim.Token {
+	t.Helper()
+	token, err := claim.AgentToken("legion", key, plan.SubOwnerAgent(task))
+	must(t, err)
+	return token
+}
+
 // subOwnersPlans writes, for LEGION-210 in the tree of planIssue, the plans of two generations
 // whose versions in force a sub-owner gave: at generation 1 the tree's architect gave version 1
 // and the sub-owners of tasks f and g gave versions 2 and 3, and at generation 2 the architect of
@@ -431,11 +439,7 @@ func subOwnersPlans(t *testing.T, st *store.Store) (issue Issue, owners, earlier
 	t.Helper()
 	ctx := context.Background()
 	const key = "LEGION-210"
-	subOwner := func(task string) claim.Token {
-		token, err := claim.AgentToken("legion", key, plan.SubOwnerAgent(task))
-		must(t, err)
-		return token
-	}
+	subOwner := func(task string) claim.Token { return subOwnerToken(t, key, task) }
 	issue = issueFixture(key)
 	issue.Tree = planIssue
 	inTx(t, st, func(tx pgx.Tx) {
@@ -461,10 +465,10 @@ func subOwnersPlans(t *testing.T, st *store.Store) (issue Issue, owners, earlier
 }
 
 // A sub-owner's version is its owner's plan, carried to a later generation as the owner's: it is
-// judged by the latest version before it that no sub-owner gave. So the version in force of
-// generation 1, which two sub-owners gave over a version of the tree's architect, is not among the
-// plans of earlier owners, and the version in force of generation 2, which a sub-owner gave over a
-// version of another tree's architect, is.
+// judged by the givers of the owner's version it changed (ownershipGivers). So the version in force
+// of generation 1, which two sub-owners gave over a version of the tree's architect, is not among
+// the plans of earlier owners, and the version in force of generation 2, which a sub-owner gave
+// over a version of another tree's architect, is.
 //
 // The fault it catches is a sub-owner's version judged as its giver's, which is no architect of the
 // tree, so the next generation's first step would drop the plan (its control: PlansOfEarlierOwners
@@ -497,6 +501,118 @@ func TestOwnersNewestPlanTakesASubOwnersVersion(t *testing.T) {
 		must(t, err)
 		if got == nil || !reflect.DeepEqual(got.Version, owners) {
 			t.Fatalf("the newest plan an owner of %s gave = %+v, want generation 1's, in force at version 3: %+v", issue.Key, got, owners)
+		}
+	})
+}
+
+// The givers of a version a sub-owner gave are every giver of the owner's plan it changed. The tree
+// root's architect gives version 1 of LEGION-210, and LEGION-300's architect, a sub-architect of
+// the tree, gives it again, so version 1's givers are both, the sub-architect the giver the store
+// added last (AddPlanGiver); then the sub-owner of task f gives version 2. Once the
+// sub-architecture ends, LEGION-300 standing in a tree of its own, version 1's last giver owns
+// nothing of the issue, but the root's architect still does, so version 2 is its owners' plan: the
+// first step passes nothing over (PlansOfEarlierOwners, each of which workflow's
+// passOverEarlierOwners deletes, as this test does), and the owners' newest plan
+// (OwnersNewestPlan) is version 2.
+//
+// The fault it catches is a sub-owner's version judged by the last giver of the version it changed
+// alone (its control: PlansInForce reading each earlier version's given_by alone, under which
+// version 2 is passed over and deleted, and the owners' newest plan is none).
+func TestASubOwnersVersionKeepsEveryGiverOfTheVersionItChanged(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	const key = "LEGION-210"
+	issue, member := issueFixture(key), issueFixture("LEGION-300")
+	issue.Tree, member.Tree = planIssue, planIssue
+	first, firstTasks, firstSteps := ownersPlan(key, 1, 1, planOwner, planGivenAt)
+	second, secondTasks, secondSteps := ownersPlan(key, 1, 2, subOwnerToken(t, key, "f"), planGivenAt.Add(2*time.Hour))
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, recorded := range []Issue{issueFixture(planIssue), member, issue} {
+			must(t, NewStore().PutIssue(ctx, tx, recorded))
+		}
+		putPlan(t, tx, first, firstTasks, firstSteps)
+		addGiver(t, tx, key, 1, 1, otherOwner, planGivenAt.Add(time.Hour), true)
+		putPlan(t, tx, second, secondTasks, secondSteps)
+	})
+	member.Tree = member.Key
+	inTx(t, st, func(tx pgx.Tx) { must(t, NewStore().PutIssue(ctx, tx, member)) })
+
+	inTx(t, st, func(tx pgx.Tx) {
+		earlier, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
+		must(t, err)
+		for _, version := range earlier {
+			must(t, NewStore().DeletePlan(ctx, tx, key, version.Generation))
+		}
+		newest, err := OwnersNewestPlan(ctx, NewStore(), tx, issue)
+		must(t, err)
+		if len(earlier) != 0 || newest == nil || !reflect.DeepEqual(newest.Version, second) {
+			t.Fatalf("the first step passed over %+v, and the owners' newest plan is then %+v; want none passed over, and version 2, the sub-owner's over the root architect's version 1: %+v",
+				earlier, newest, second)
+		}
+	})
+}
+
+// A sub-owner's give of the version in force adds it as that version's giver, the giver the store
+// added last (AddPlanGiver), and takes the version from no owner: an owner's give made it, so its
+// givers that are no sub-owner still answer for it, and for a version a sub-owner gives over it.
+// In each of three generations of LEGION-210, in the tree of planIssue, an owner gives version 1
+// and the sub-owner of task f gives it again: at generation 1 the tree root's architect gave it,
+// and it stays in force; at generation 2 the root's architect gave it, and the sub-owner of task g
+// gives version 2 over it; at generation 3 the architect of another tree gave it, and the sub-owner
+// of g gives version 2 over it. Only generation 3's version in force is an earlier owner's plan
+// (PlansOfEarlierOwners), and the owners' newest plan (OwnersNewestPlan) is generation 2's.
+//
+// The faults it catches: a version judged by the sub-owner that gave it last, not the owner whose
+// give made it (its control: ownershipGivers judging a version whose GivenBy is a sub-owner by the
+// versions below it alone, under which generation 1's version is an earlier owner's), and a version
+// a sub-owner gave whose walk passes over the version below it because a sub-owner gave that one
+// last (its control: the walk skipping each earlier version whose given_by is a sub-owner, under
+// which generation 2's version is an earlier owner's too and the owners' newest plan is none).
+// Generation 3's version is the control that the walk still reaches an earlier owner.
+func TestASubOwnersGiveOfAnOwnersVersionLeavesItTheOwners(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	const key = "LEGION-210"
+	issue := issueFixture(key)
+	issue.Tree = planIssue
+	var owners, earlier PlanVersion
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, recorded := range []Issue{issueFixture(planIssue), issue} {
+			must(t, NewStore().PutIssue(ctx, tx, recorded))
+		}
+		at := planGivenAt
+		for _, given := range []struct {
+			generation uint64
+			owner      claim.Token
+			over       bool
+		}{{1, planOwner, false}, {2, planOwner, true}, {3, otherOwner, true}} {
+			v, tasks, steps := ownersPlan(key, given.generation, 1, given.owner, at)
+			putPlan(t, tx, v, tasks, steps)
+			addGiver(t, tx, key, given.generation, 1, subOwnerToken(t, key, "f"), at.Add(time.Hour), true)
+			if given.over {
+				v, tasks, steps = ownersPlan(key, given.generation, 2, subOwnerToken(t, key, "g"), at.Add(2*time.Hour))
+				putPlan(t, tx, v, tasks, steps)
+			}
+			switch given.generation {
+			case 2:
+				owners = v
+			case 3:
+				earlier = v
+			}
+			at = at.Add(3 * time.Hour)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
+		must(t, err)
+		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
+			t.Errorf("the plans of earlier owners of %s = %+v, want generation 3's alone, over another tree's architect's version 1: %+v", key, got, want)
+		}
+		newest, err := OwnersNewestPlan(ctx, NewStore(), tx, issue)
+		must(t, err)
+		if newest == nil || !reflect.DeepEqual(newest.Version, owners) {
+			t.Errorf("the owners' newest plan of %s = %+v, want generation 2's version 2, over the root architect's version 1: %+v", key, newest, owners)
 		}
 	})
 }

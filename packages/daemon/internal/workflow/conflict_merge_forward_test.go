@@ -873,12 +873,23 @@ func askedBeforeTheMerger(at phase.Phase) record.PullRequest {
 // readingEngine is the engine of these tests (mergingEngineAt, at the first conflicting read) with
 // a reader of GitHub's merge state, which appends the issue of each read the engine asks for to
 // asked once the fact's transaction commits: a read of one pull request (Config.ReadMergeState),
-// and each issue of a base push's batch (Config.ReadBaseMergeStates).
+// and each issue of a base push's batch (Config.ReadBaseMergeStates); the task each read names is
+// not what these tests read.
 func readingEngine(asked *[]string) *Engine {
 	engine := mergingEngineAt(firstConflictRead)
-	engine.cfg.ReadMergeState = func(issue string) { *asked = append(*asked, issue) }
-	engine.cfg.ReadBaseMergeStates = func(_, _ string, issues []string) { *asked = append(*asked, issues...) }
+	engine.cfg.ReadMergeState = func(issue, _ string) { *asked = append(*asked, issue) }
+	engine.cfg.ReadBaseMergeStates = func(_, _ string, owed []TaskPullRequest) { *asked = append(*asked, issuesOf(owed)...) }
 	return engine
+}
+
+// issuesOf is the issue of each pull request of owed, in order: what a test that reads which
+// issues a base push asked reads of its batch (Config.ReadBaseMergeStates).
+func issuesOf(owed []TaskPullRequest) []string {
+	issues := make([]string, len(owed))
+	for i, pull := range owed {
+		issues[i] = pull.Issue
+	}
+	return issues
 }
 
 // basePushOntoMain is a push onto main, the base #42 sits on.

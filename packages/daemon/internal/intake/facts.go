@@ -55,6 +55,16 @@ type DispatchIssue struct {
 	// payload, the listing's or the detail's (record.DispatchPriority over Dispatch's 0 to 3 or
 	// null). The record takes it wherever it takes the observation's rank.
 	Priority record.Priority
+	// Resolved is the priority Dispatch resolves the issue to, with the issue it comes from, as the
+	// same observation showed it (record.Resolved): Known is false where the observation carried no
+	// `resolved_priority`, and a present null is no priority. The record takes it with Priority.
+	Resolved record.Resolved
+	// ResolvedOnly says the event changed nothing of the issue but the priority Dispatch resolves it
+	// to: its `changed` names `resolved_priority` or `priority_from` and nothing else, as the event
+	// Dispatch appends on an issue whose ancestor's priority or parent changed (J3 of
+	// dispatch://INFRA-5793). It is no work of the issue's own, so it marks no movement
+	// (record.Issue.MovedAt).
+	ResolvedOnly bool
 	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
@@ -167,7 +177,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), Resolved: dispatchResolved(issue.Resolved), HandedOver: issue.HandedOver,
+		Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
 		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
@@ -194,8 +205,8 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), Resolved: dispatchResolved(issue.Resolved), HandedOver: issue.HandedOver,
+		ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy, ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
 }
 
 // dispatchPriority is level, the priority a Dispatch read serves, as the record keeps it. The
@@ -204,6 +215,15 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 func dispatchPriority(level *int) record.Priority {
 	priority, _ := record.DispatchPriority(level)
 	return priority
+}
+
+// dispatchResolved is the resolved priority a Dispatch read serves, as the record keeps it: unknown
+// where the read carried none, else its level, none for a present null, and the issue it comes from.
+func dispatchResolved(resolved *dispatch.ResolvedPriority) record.Resolved {
+	if resolved == nil {
+		return record.Resolved{}
+	}
+	return record.Resolved{Priority: dispatchPriority(resolved.Priority), From: resolved.From, Known: true}
 }
 
 // Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
@@ -248,6 +268,22 @@ type AdoptedChild struct {
 func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
+
+// MergeHoldsChanged is an event that changes the daemon's own project's merge holds document
+// (record.MergeHoldsDocument), which Dispatch publishes on
+// notifications.dispatch.document.<Project>.merge-holds-md.<type>: its creation, a new version,
+// its rename or its removal (the decoder's mergeHoldsChangeTypes), as when the controller created
+// it, added a hold, changed one or lifted one. Event is the Dispatch event's id, which ApplyFact
+// records the fact under, so a delivery of the same event again applies nothing. The workflow
+// tells the architect of each issue in accepting and the merger of each issue in merging
+// (workflow's mergeHoldsChanged): a role that a hold stops waits on nothing else, since a
+// Dispatch document event does not wake a released pod.
+type MergeHoldsChanged struct {
+	Project string
+	Event   string
+}
+
+func (MergeHoldsChanged) namedIssue() (string, bool) { return "", false }
 
 // DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
@@ -687,6 +723,23 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 type ProjectResumed struct{}
 
 func (ProjectResumed) namedIssue() (string, bool) { return "", false }
+
+// P0BoundChanged is a change of the project's P0 bound while the daemon runs (dispatch://INFRA-5636
+// C3), applied as a synthetic fact by the P0 bound routes (api's changeP0Bound) and never decoded
+// from an event. Change is the change as the store records it: a set to a number
+// (store.P0BoundSet, Bound from 1 to 2147483647, which the route refused anything else against), a
+// set to none (store.P0BoundUnbounded, no bound whatever legion.yaml says), or a clear
+// (store.P0BoundCleared, which returns the project to legion.yaml's admission_p0_bound), with who
+// made it, in a pause's actor shape, why and when. The routes leave Change.Project empty: admission
+// writes its own project there. Admission is its one handler: it appends the change
+// (store.RecordP0BoundChangeTx) and then runs the admission pass whatever it wrote, in the same
+// transaction, so the bound is in force from that pass on (admit.Admission.applyFact). The workflow
+// engine and the blockers mirror do nothing for it.
+type P0BoundChanged struct {
+	Change store.P0BoundChange
+}
+
+func (P0BoundChanged) namedIssue() (string, bool) { return "", false }
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
@@ -1712,8 +1765,8 @@ func ClaimFailedOf(c supervise.Claim, limits supervise.Limits) ClaimFailed {
 // SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
 // has read none of its own earlier work (supervise's startFresh). Claim is that claim, whose name
 // is its agent's, and Role the role of the step it runs. Detail is why, as the supervisor said it.
-// It is told on the issue, to its architect and to the controller, because a worker that silently
-// lost its memory looks like one that is merely slow.
+// It is told on the issue and to its architect, because a worker that silently lost its memory
+// looks like one that is merely slow; the controller gets no copy (#4065).
 //
 // Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
 // Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
@@ -1962,11 +2015,12 @@ func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
 }
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
-// `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
-// outbox met an operator's suspension on) or `claim failed` (the implementer's claim failed in
-// the look). Look names the look, so a row of a look already ended changes nothing, and OpenedAt
-// the check instance (its OpenedAt), the check of the issue it acts on, so a row of a closed check
-// changes nothing either; a zero OpenedAt names none, and the end is of the issue's newest check.
+// `look bound` (the check_look row due at the look's bound), `operator hold` or `controller hold`
+// (a check start the outbox met a suspension of the check's role on, which holds against every
+// rule, named by whose it is) or `claim failed` (the implementer's claim failed in the look). Look
+// names the look, so a row of a look already ended changes nothing, and OpenedAt the check
+// instance (its OpenedAt), the check of the issue it acts on, so a row of a closed check changes
+// nothing either; a zero OpenedAt names none, and the end is of the issue's newest check.
 type CheckLookEnded struct {
 	Issue    string
 	Look     int

@@ -129,7 +129,7 @@ type Runtime interface {
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
 	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
@@ -1162,11 +1162,14 @@ func RoleIdentities(identities map[claim.Role]GitIdentity) string {
 
 // ReadRoleIdentities reads the table, value, as RoleIdentities writes it. It answers the table and
 // "", or why value cannot be used: empty, not one JSON object of identities (trailing data after
-// the object included), a key that is no role (claim.IsRole: a role the deployment defines is
-// one, since a launch writes it beside Legion's six), or a name or an email that is empty or holds a
-// line break. An identity may hold fields it does not know, which it passes over: a role's image
-// may run a `legion` of another release than the daemon's, and a field a later daemon adds must not
-// turn its step off. The reason names no value, so the line it goes into stays one line.
+// the object included), a key that is no role (claim.IsRole: a name of the role grammar, the
+// controller's refused), or a name or an email that is empty or holds a line break. A key is held
+// to the grammar and not to Legion's six because the daemon writes each role the deployment
+// defines beside Legion's (its specs.roleIdentities), and this read, which loads no settings, has
+// no list of the deployment's roles to hold a key to. An identity may hold fields it does not
+// know, which it passes over: a role's image may run a `legion` of another release than the
+// daemon's, and a field a later daemon adds must not turn its step off. The reason names no
+// value, so the line it goes into stays one line.
 func ReadRoleIdentities(value string) (map[claim.Role]GitIdentity, string) {
 	if value == "" {
 		return nil, "empty"

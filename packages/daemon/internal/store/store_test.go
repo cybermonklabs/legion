@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testDSN is the devbox and CI Postgres the store tests run against. Without it
@@ -83,7 +84,9 @@ func emptyStore(t *testing.T) *Store {
 		t.Fatalf("create %s: %v", name, err)
 	}
 	t.Cleanup(func() {
-		if err := testdb.Drop(context.Background(), admin, name); err != nil {
+		dropContext, cancel := testwait.TeardownContext(t)
+		defer cancel()
+		if err := testdb.Drop(dropContext, admin, name); err != nil {
 			t.Errorf("drop %s: %v", name, err)
 		}
 	})
@@ -1118,10 +1121,11 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 (design_changes),
-// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the copies of a plan's tasks'
-// 20261121165047 (task_branch), the pull requests by task's 20261122122826
-// (task_pull_requests_close), the removal of a removed task's working copy's 20261123072431
-// (task_copy_remove) and the merge of main's 20261126144204 (the lists of both) do: the case of a
+// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the merge holds' 20261126110259
+// (merge_holds_changed), the copies of a plan's tasks' 20261121165047 (task_branch), the pull
+// requests by task's 20261122122826 (task_pull_requests_close), the removal of a removed task's
+// working copy's 20261123072431 (task_copy_remove) and the merge of main's 20261126144204 (the
+// lists of both) do: the case of a
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
@@ -1134,12 +1138,15 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // that table exists; and one that replaces an index a version of the list creates, as
 // 20261122074350 replaces 20261105183200's pod_resumes_one_open_per_role. dispatch://INFRA-3320's
 // gate basis (20261114064234) and awaiting_children (20261114232555) are in it as versions that
-// branch added. 20261126144204 is the last migration that writes outbox_kind_check: it stands
-// above main's 20261119003157, 20261119203047 and 20261122154643 and this branch's 20261121165047,
-// 20261122122826 and 20261123072431, which write it too, and main's 20261111090000, 20261111091500
-// and 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read
-// no column a version of the list adds either, so neither is in the list. Any other version left
-// out makes the cases below weaker,
+// branch added. The project pause's 20261115194357 is in it as well, though it rewrites no kind
+// list: a database migrated before the pause takes it in the upgrade, over a row of every kind the
+// schema admits, and its held_by_pause column on the outbox must take them all.
+// 20261126144204 is the last migration that writes outbox_kind_check: it stands
+// above main's 20261119003157, 20261119203047, 20261122154643 and 20261126110259 and this branch's
+// 20261121165047, 20261122122826 and 20261123072431, which write it too, and main's 20261111090000,
+// 20261111091500 and 20261116144907 write none. The cache trimmer's two, 20261111090000 and
+// 20261111091500, read no column a version of the list adds either, so neither is in the list. Any
+// other version left out makes the cases below weaker,
 // never red, which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
@@ -1148,12 +1155,13 @@ var thisRelease = map[int]bool{
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261114064234: true,
-	20261114232555: true, 20261116144907: true, 20261116165926: true, 20261117000528: true,
-	20261117004117: true, 20261117023932: true, 20261117034837: true, 20261117064152: true,
-	20261117213545: true, 20261117224125: true, 20261119003157: true, 20261119203047: true,
-	20261121165047: true, 20261122074350: true, 20261122122826: true, 20261122154643: true,
-	20261123072431: true, 20261123200630: true, 20261123212127: true, 20261123221142: true,
-	20261124023617: true, 20261124033010: true, 20261126144204: true,
+	20261114232555: true, 20261115060739: true, 20261115121838: true, 20261115194357: true,
+	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
+	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261117213545: true,
+	20261117224125: true, 20261119003157: true, 20261119203047: true, 20261121165047: true,
+	20261122074350: true, 20261122122826: true, 20261122154643: true, 20261123072431: true,
+	20261123200630: true, 20261123212127: true, 20261123221142: true, 20261124023617: true,
+	20261124033010: true, 20261126110259: true, 20261126144204: true,
 }
 
 const idleRelease = 20261101222956
@@ -1280,18 +1288,20 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 // and the outbox kind check again with every value of both branches of the merge of main 169cfac.
 const mergeChecksVersion = 20261126144204
 
-// mainsLateMigrations are main's migrations of dispatch://INFRA-3320 that a database this branch's
-// head migrated before its merge of main lacks, all below that head's newest: the gate basis, the
-// phase awaiting_children (which writes the phase check without step) and the two basis seeds'
-// kind list (which writes the kind check without the three task kinds).
-var mainsLateMigrations = []int{20261114064234, 20261114232555, 20261122154643}
+// mainsLateMigrations are main's migrations that a database this branch's head migrated before
+// its merge of main lacks and that write either check, all below that head's newest:
+// dispatch://INFRA-3320's gate basis, its phase awaiting_children (which writes the phase check
+// without step) and its two basis seeds' kind list, and the merge holds' 20261126110259 (which
+// writes the kind check with merge_holds_changed and without the three task kinds).
+var mainsLateMigrations = []int{20261114064234, 20261114232555, 20261122154643, 20261126110259}
 
-// A database this branch's head migrated before its merge of main takes main's three migrations
-// late, after this branch's own lists of the two checks, and each of main's two lists takes this
+// A database this branch's head migrated before its merge of main takes main's four migrations
+// late, after this branch's own lists of the two checks, and each of main's three lists takes this
 // branch's values away: the phase step, and the task_branch, task_pull_requests_close and
 // task_copy_remove kinds. 20261126144204 stands above every migration and writes both lists again
 // with the values of both branches, so the upgraded database takes an issue at step or at
-// awaiting_children, and a row of each task kind and each basis seed. The control is the same
+// awaiting_children, and a row of each task kind, each basis seed and main's merge_holds_changed.
+// The control is the same
 // database upgraded without 20261126144204: the step and a task_branch row are refused there,
 // which is what the migration exists for.
 func TestTheChecksOfTheMergeWithMainPutBackWhatMainsLateListsTakeAway(t *testing.T) {
@@ -1359,7 +1369,8 @@ func TestTheChecksOfTheMergeWithMainPutBackWhatMainsLateListsTakeAway(t *testing
 				where key = 'LEGION-208'`); err != nil {
 				t.Fatalf("an issue at awaiting_children after the merge's checks: %v", err)
 			}
-			for _, kind := range []string{"task_branch", "task_pull_requests_close", "task_copy_remove", "pending_basis_seed", "reparent_seed", "phase_ended"} {
+			for _, kind := range []string{"task_branch", "task_pull_requests_close", "task_copy_remove",
+				"pending_basis_seed", "reparent_seed", "phase_ended", "merge_holds_changed"} {
 				if err := queue(kind); err != nil {
 					t.Errorf("a %s row after the merge's checks: %v", kind, err)
 				}

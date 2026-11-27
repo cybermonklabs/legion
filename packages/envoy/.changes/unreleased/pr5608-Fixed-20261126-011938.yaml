@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `airlock-check.sh` (k4's `.svc` stand-in and k7's broker), `aws-moto-check.sh` and
+  `dev-stack.sh --project-access` give no server a port picked free beforehand: each server binds
+  port 0 and the script reads the port it reports, and where a URL must be known before the
+  broker binds (its public URL, its airlock proxy's URL) the URL is the broker's own port-0 address
+  or a front bound first and pointed at the port the broker logs. `dev-stack.sh --project-access`
+  no longer stops with "another process took that port first".
+time: 2026-11-26T01:19:38Z
+custom:
+    Issue: pr5608

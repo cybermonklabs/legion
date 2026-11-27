@@ -36,7 +36,8 @@ const notYet = " This release of Legion does not carry it out yet."
 // on those cycles from the same pass, so a need on a cycle gets the cycle's reason alone. It refuses
 // no plan for a step the plan lacks. Its one error is ctx's, once ctx ends before the checks of
 // cycles and of parts are done: an owner or a sub-owner writes the plan, and register_plan checks
-// it before the fact lock, where only the request's own end can stop it.
+// it before the fact lock, where only the request's own end and the daemon's own deadline for the
+// check (api's planCheckBound) can stop it.
 func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}, nil

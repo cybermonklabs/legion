@@ -41,16 +41,16 @@ import (
 
 // replacementRecord is the daemon's encoding of a replacement's record (store.PodReplacement's
 // Record): a round's (Round set: its recorded reasons, who made the replacement, and the read
-// before it) or a launch's own (Claim set: the launching claim and why it replaced the pod, and the
-// read through the pod's launcher). The read is heldRead's, whose fields the encoding carries
-// beside the record's own.
+// before it, with the claim it was made through, none for the pod's launcher) or a launch's own
+// (Claim set with no Round: the launching claim and why it replaced the pod, and the read through
+// the pod's launcher). The read is heldRead's, whose fields the encoding carries beside the
+// record's own.
 type replacementRecord struct {
 	Round   string      `json:"round,omitempty"`
 	Reasons string      `json:"reasons,omitempty"`
 	By      string      `json:"by,omitempty"`
 	Claim   claim.Token `json:"claim,omitempty"`
 	Why     string      `json:"why,omitempty"`
-	Role    claim.Role  `json:"role,omitempty"`
 	At      time.Time   `json:"at"`
 	heldRead
 }
@@ -86,7 +86,7 @@ func failedText(err error) string {
 // round's replacement is the suspension of the issue's Sandbox over the pod, so it takes the pod,
 // and the pod's uid is its target (GPT-6.1 Sol's point 4).
 func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store.PodReplacement, error) {
-	encoded, err := json.Marshal(replacementRecord{Round: read.round, Reasons: reasons, By: read.by.String(), Role: read.role, At: read.at.UTC(),
+	encoded, err := json.Marshal(replacementRecord{Round: read.round, Reasons: reasons, By: read.by.String(), Claim: read.claim, At: read.at.UTC(),
 		heldRead: heldReadOf(read.work, read.err)})
 	if err != nil {
 		return store.PodReplacement{}, err
@@ -124,7 +124,7 @@ func (r replacementRecord) read(pod string) workspaceRead {
 	case viaLaunch.String():
 		by = viaLaunch
 	}
-	read := workspaceRead{round: r.Round, by: by, role: r.Role, at: r.At}
+	read := workspaceRead{round: r.Round, by: by, claim: r.Claim, at: r.At}
 	read.work, read.err = r.work(pod)
 	return read
 }

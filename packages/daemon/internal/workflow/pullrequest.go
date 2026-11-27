@@ -874,22 +874,23 @@ func taskMergingAt(stored *record.StoredPlan, pr *record.PullRequest) string {
 // leftMergingAt says why the workflow no longer works the merge of pull request number at head,
 // or "" while it does: the work stands at that merge itself, not held from it (stands, the issue's
 // phase for an issue with no plan rows and the place of the pull request's task for an issue with
-// plan rows, MergingAt, "" where it stands there); the issue is in the workflow; its tree does not
-// linger (lingers, record.TreeLingers); and the pull request the record holds for it (pr, nil for
-// none) is number, open, at head. In each other state no merger is told of a removal from the
-// merge queue at head: the workflow no longer works that merge at that head, and the merger of a
-// lingering tree is suspended by its close and would never hold its role to hear it. The facts
-// that write the read and the merger's message (dequeued, mergeQueueReadDone) and the daemon's
-// outbox rows that read the pull request and deliver the message all judge by this one rule,
-// through MergingAt, so no two of them disagree about a merge that ended.
+// plan rows, MergingAt, "" where it stands there); the issue is in the workflow and its tree does
+// not linger (lingers, record.TreeLingers), which leftPhase judges at the phase the issue stands
+// in, since stands has judged the merge's own place; and the pull request the record holds for it
+// (pr, nil for none) is number, open, at head. In each other state no merger is told of a removal
+// from the merge queue at head: the workflow no longer works that merge at that head, and the
+// merger of a lingering tree is suspended by its close and would never hold its role to hear it.
+// The facts that write the read and the merger's message (dequeued, mergeQueueReadDone) and the
+// daemon's outbox rows that read the pull request and deliver the message all judge by this one
+// rule, through MergingAt, so no two of them disagree about a merge that ended.
 func leftMergingAt(issue record.Issue, stands string, lingers bool, pr *record.PullRequest, number int, head string) string {
-	switch {
-	case stands != "":
+	if stands != "" {
 		return stands
-	case record.OutOfWorkflow(issue.Status):
-		return fmt.Sprintf("the issue is out of the workflow at status %s", issue.Status)
-	case lingers:
-		return "the issue's tree lingers or has closed"
+	}
+	if left := leftPhase(issue, issue.Phase, lingers); left != "" {
+		return left
+	}
+	switch {
 	case pr == nil:
 		return "the record holds no pull request for the issue"
 	case pr.Number != number:
@@ -898,6 +899,26 @@ func leftMergingAt(issue record.Issue, stands string, lingers bool, pr *record.P
 		return fmt.Sprintf("the pull request is %s", pr.State)
 	case pr.HeadSHA != head:
 		return fmt.Sprintf("the record holds the pull request at %s", pr.HeadSHA)
+	}
+	return ""
+}
+
+// leftPhase says why the workflow no longer works issue's phase at, or "" while it does: the
+// issue stands in at itself, not held from it; it is in the workflow; and its tree does not linger
+// (lingers, record.TreeLingers). The role of an issue that left the phase is told nothing that
+// only the phase needs: the workflow no longer works that phase, and the role of a lingering tree
+// is suspended by its close and would never hold its role to hear it. The merge holds' rule
+// (heldPhaseLeft) judges by it at the phase it weighs. The merge-queue rule (leftMergingAt) asks it
+// at the phase the issue stands in, for the workflow and the linger alone: where a merge stands is
+// its task's place for an issue with plan rows (MergingAt), not the issue's phase.
+func leftPhase(issue record.Issue, at phase.Phase, lingers bool) string {
+	switch {
+	case issue.Phase != at:
+		return fmt.Sprintf("the issue stands in %s, not %s", issue.Phase, at)
+	case record.OutOfWorkflow(issue.Status):
+		return fmt.Sprintf("the issue is out of the workflow at status %s", issue.Status)
+	case lingers:
+		return "the issue's tree lingers or has closed"
 	}
 	return ""
 }

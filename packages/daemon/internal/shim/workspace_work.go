@@ -32,15 +32,16 @@ func (s *shim) workspaceWork(request shimwire.WorkspaceWork) {
 
 // readWorkspaceWork runs the read (workspace.ReadWork) in the workspace the shim's environment
 // names in LEGION_WORKSPACE, with the jj of PATH and within the request's budget, as the adoption
-// does (openWorkspace). It answers the working copy's commit, whether that commit holds a change,
-// and every work commit (workspace.WorkRevset), newest first; the one thing it writes is jj's
-// snapshot of the working copy.
+// does (openWorkspace). Each command runs in the working copy it reads: the working copy of each
+// task beside the issue's, whose snapshot comes first, and the issue's own. It answers the working
+// copy's commit, whether that commit holds a change, and every work commit (workspace.WorkRevset),
+// newest first; the one thing it writes is jj's snapshot of each working copy.
 func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
 	opened, done, err := s.openWorkspace("read", s.cfg.Env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
 		return "", false, nil, err
 	}
 	defer done()
-	run := func(args ...string) (string, error) { return opened.run(nil, args...) }
+	run := func(dir string, args ...string) (string, error) { return opened.runIn(dir, nil, args...) }
 	return workspace.ReadWork(run, opened.jj, opened.dir)
 }

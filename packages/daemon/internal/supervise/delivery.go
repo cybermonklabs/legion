@@ -1020,15 +1020,11 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	m.askFirst = false
 	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
-			// The agent's answer is the daemon's first word of the turn, so the turn is dated
-			// from it (Claim.LastTurnStart), as recordBusyTurn dates a turn from a busy answer,
-			// and the confirmation's write carries the date: a let-go in this turn reads a report
-			// older than it as no report of the turn (recordEnd), where the start of the turn
-			// before it would count the report that turn's end left as one of this turn.
-			m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
-			// The turn this claim is put in is logged before the write that records it, as
-			// turnStarted logs its own: a line written after the write would say nothing of the
-			// turn whose write failed.
+			// The agent's answer is the daemon's first word of the turn. The turn this claim is
+			// put in is dated and logged before the write that records it (startTurn,
+			// Claim.LastTurnStart), as turnStarted logs its own: a line written after the write
+			// would say nothing of the turn whose write failed.
+			m.claim.State = StateWorking
 			m.startTurn(p.ID)
 			m.log.Info("supervise: the agent is in a turn; confirming the delivery an earlier daemon sent", "delivery", p.ID)
 			news, _ := m.turnAnswers()
@@ -1313,11 +1309,10 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 		return nil
 	}
 	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
-	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
-	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
-	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
+	m.claim.State = StateWorking
 	// The guard above has already established that the claim holds no delivery, so this turn is
-	// no task's and the line names none. It goes before the write, as the others do.
+	// no task's and the line names none. The turn is dated from the agent's answer, the daemon's
+	// first word of it (startTurn, Claim.LastTurnStart), before the write, as the others are.
 	m.startTurn("")
 	return m.persist(ctx)
 }
@@ -1970,13 +1965,21 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
-// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
-// with --fresh-session, or one no session store holds any more. Nothing in a new session says
-// that an older one existed, so a worker reading an empty transcript takes its task for a fresh
-// start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded,
-// and then the two things that outlive a session: the issue's branch, and the handoff records its
-// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// abandoned (forgetSession): one whose last turns the provider refused, one left behind by a
+// fresh session the operator or the controller asked for or by the operator's forget-session
+// (forgottenBy), one no session store holds any more, or one the daemon replaced for the project
+// controller (replaceEndedSession, replaceAgedSession). Nothing in a new session says that an
+// older one existed, so a worker reading an empty transcript takes its task for a fresh start and
+// does again what is already pushed (item 4 of the refusal section of the phase-workflow spec). It
+// names the session that was left behind and why in the words the claim recorded, and then the
+// two things that outlive a session: the issue's branch, and the handoff records its phases wrote
+// on the Dispatch issue.
+//
+// The controller works no checkout and has no architect, so it is told neither: its sentence
+// (controllerAbandonedTask) names the session it replaces and why, and says that Envoy messages
+// sent to that session may be lost, before the start message its keeper sends it
+// (dispatch://INFRA-2045 R4).
+//
 // last is whether this sentence is the last one before the task, and so ends in the task's own
 // instruction: in front of a task with no record's sentence after it. Where the record's sentence
 // follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
@@ -1990,20 +1993,36 @@ func interruptedTask(cause string) string {
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
 func abandonedTask(c Claim, branch string, last bool) string {
-	read := "read the issue"
+	if c.Role == claim.RoleController {
+		return controllerAbandonedTask(c, last)
+	}
 	if branch == "" {
 		branch = claim.IssueBranch(c.Issue)
 	}
-	if c.Role != claim.RoleController {
-		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
-			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			branch, c.Issue, handoffWords())
-	}
+	read := fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
+		"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
+		branch, c.Issue, handoffWords())
 	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
 		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
 		c.Abandoned.Session, c.Abandoned.Why, read)
+	if last {
+		sentence += " Then continue the task."
+	}
+	return sentence + "\n\n"
+}
+
+// controllerAbandonedTask is abandonedTask for the project's controller: the session it replaces
+// and why, quoted as abandonedTask quotes them, that the old session's work is gone, and that an
+// Envoy message sent to the old session may never reach this one, so the controller reads the
+// records its start procedure reads rather than wait for a message it may never get.
+func controllerAbandonedTask(c Claim, last bool) string {
+	sentence := fmt.Sprintf("The session this controller ran before this one, %q, was replaced by this one: %q. "+
+		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
+		"gone, and Envoy messages sent to that session may be lost, so read the daemon's state and the Dispatch "+
+		"records your start procedure reads before you act on any of that session's work.",
+		c.Abandoned.Session, c.Abandoned.Why)
 	if last {
 		sentence += " Then continue the task."
 	}

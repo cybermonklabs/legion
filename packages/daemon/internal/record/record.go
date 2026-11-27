@@ -187,6 +187,10 @@ type Issue struct {
 	// It is the issue's own and never its tree root's: the root's is read from the root's record
 	// where it is wanted (PriorityOf).
 	Priority Priority
+	// Resolved is the priority Dispatch resolves the issue to, with the issue it comes from, as the
+	// same observation showed it (record's Resolved), taken wherever Priority is taken: admission
+	// reads it (AdmissionPriority), the issue's own priority keeps its meaning.
+	Resolved Resolved
 	// Repo is the GitHub repository (owner/name) the issue targets, and DefaultBranch that
 	// repository's default branch: Dispatch's resolved repository and GitHub's default branch when
 	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
@@ -2607,6 +2611,12 @@ type Store interface {
 	TaskPullRequestRows(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
 	PullRequestRowOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
 	MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
+	// TaskPullRequestRowsOf is TaskPullRequestRows for each of issues, by issue key, in one
+	// statement whatever the number of issues, for a caller that reads every task's pull request
+	// of many issues and may make no read per issue (the daemon's fillRepositories). An issue the
+	// record holds no pull request for has no entry, and no issues reads nothing. PutPullRequest
+	// refuses its records, naming the read.
+	TaskPullRequestRowsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string][]PullRequest, error)
 	// ClearedPullRequestClock is the clock (updated_at) of the newest lifecycle event pull request
 	// number of repo had applied when a new generation's clear deleted its row (ClearGeneration),
 	// repo compared without case as PullRequestByNumber compares it, and the zero time when no clear
@@ -2943,6 +2953,10 @@ type Store interface {
 	// SetStartReason writes why the step a running task stands at was started: a start again at its
 	// first step, or a move back. Every move of the task clears it.
 	SetStartReason(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
+	// SetStartFrom writes the phase the move that started the step a running task stands at came
+	// from, so a start that waits for its base, its join or its agent still tells the phase row
+	// where the work came from. Every move of the task clears it, as it clears the reason.
+	SetStartFrom(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, from phase.Phase) error
 	// ReturnCounts is the counts of returns of task: on the task for a generation with plan rows,
 	// on the implementer's phases row for one with none.
 	ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (ReturnCounts, error)

@@ -518,12 +518,13 @@ func (p *projectPause) resumeOwedSpawns(ctx context.Context, ended store.Pause) 
 }
 
 // resumeOwedSpawn posts the rule's resume (supervise.RequestRuleResume) of token, an operator's
-// spawn that pause stopped owing a launch, which no start row can carry: the resume of the
-// pause's own (resumeOwedSpawns) or a stop that committed once that pause had ended (stopped).
-// The machine paces it (supervise's exemptWake exempts no rule's resume), finds a claim that
-// already runs nothing to do, and never resumes a claim the operator suspended. The post only
-// queues the event (supervisor.post), so a stop transaction, which runs inside its machine's own
-// decision, may make it.
+// spawn that pause stopped owing a launch, which no start row can carry: the resume of the pause's
+// own (resumeOwedSpawns) or a stop that committed once that pause had ended (stopped). The machine
+// paces it (supervise's exemptWake exempts no rule's resume), finds a claim that already runs
+// nothing to do, and never resumes a claim a suspension that holds is over (the operator's or the
+// controller's, supervise.Claim.RuleMayResume). The post only queues the event
+// (supervisor.post), so a stop transaction, which runs inside its machine's own decision, may make
+// it.
 func (p *projectPause) resumeOwedSpawn(token claim.Token, pause int64) {
 	p.supervisor.post(token, supervise.RequestRuleResume{Claim: token,
 		Reason: fmt.Sprintf("the project's resume: pause %d stopped it with a launch owed, and its issue has no record a start row could carry", pause)})

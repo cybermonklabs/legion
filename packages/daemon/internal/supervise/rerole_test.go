@@ -29,7 +29,7 @@ func TestARerolePersistsTheRoleAndRelaunchesOnTheSameSession(t *testing.T) {
 		t.Fatalf("the stored claim's role = %s, want tester", stored.Role)
 	}
 
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	resume := h.wantCalls("Resume", 1)[0]
 	if resume.Spec.Role != claim.RoleTester || resume.Spec.Claim != testToken || resume.Spec.ResumeSessionFile != sessionFile {
 		t.Fatalf("relaunched %+v, want the tester's role on %s resuming %s", resume.Spec, testToken, sessionFile)
@@ -119,7 +119,7 @@ func TestARequestsStandingIsJudgedUnderTheLockAtItsFirstAct(t *testing.T) {
 			t.Fatalf("the suspension: %v", err)
 		}
 		holds = false
-		if err := h.m.Handle(ctx, RequestResume{Claim: testToken}); err != nil {
+		if err := h.m.Handle(ctx, RequestResume{Claim: testToken, By: SuspendedByOperator}); err != nil {
 			t.Fatalf("the resume of the same request: %v", err)
 		}
 		if got := h.claim().State; got != StateLaunching || reads != 2 {

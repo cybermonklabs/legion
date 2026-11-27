@@ -36,11 +36,13 @@ import (
 // `.jj/workspace-config.toml` of the workspace) where the id file beside it is missing, migrating
 // it into the configuration it reads. So before jj runs, the read runs the guards the daemon's own
 // jj commands run (workspace.GuardJJ): the workspace and the shared clone that the layout puts
-// beside it, and each such legacy file removed. The image's jj keeps a repository's configuration
-// by id (0.38 and later), so after the guards no file a role wrote loads. A workspace the guards
-// refuse, or whose legacy file cannot be removed, is not read, and the daemon keeps its pod as it
-// keeps one whose read cannot be made. The snapshot still runs, so a change in the working copy is
-// counted (R5).
+// beside it, and each such legacy file removed. The read snapshots the working copy of each task
+// beside the issue's too (workspace.ReadWork), a jj command that opens that task's workspace, so
+// the guards run in each task's working copy before jj runs there. The image's jj keeps a
+// repository's configuration by id (0.38 and later), so after the guards no file a role wrote
+// loads. A workspace the guards refuse, or whose legacy file cannot be removed, is not read, and
+// the daemon keeps its pod as it keeps one whose read cannot be made. The snapshots still run, so
+// a change in the working copy of the issue or of any of its tasks is counted (R5).
 
 // launcherReadEnv is the whole environment of the read's jj: the launcher's PATH, and a home of the
 // read's own, home, for every place jj reads a configuration or a state from. No other variable of
@@ -91,7 +93,8 @@ func (m *manager) readWorkspace(ctx context.Context, writer *shimwire.Writer, re
 // the command's own wait (pidGuard.starter). It runs with no configuration of anyone's
 // (launcherReadEnv), in a home made for the one read and removed after it, and only after the
 // workspace guards hold the workspace to the layout and remove each legacy configuration file
-// (workspace.GuardJJ); a workspace they refuse is not read.
+// (workspace.GuardJJ): those of the issue's workspace before the read starts, and those of a task's
+// working copy before the read's command in it. A workspace they refuse is not read.
 func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
 	dir := m.cfg.Workspace
 	if dir == "" {
@@ -119,8 +122,15 @@ func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceW
 	bounded, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	started, env := time.Now(), launcherReadEnv(home)
-	run := func(args ...string) (string, error) {
-		return workspace.RunCommand(bounded, start, budget, started, env, dir, nil, args)
+	run := func(at string, args ...string) (string, error) {
+		// The guards held the issue's workspace above; a task's working copy is held here, before
+		// the one command the read runs in it, its snapshot.
+		if at != dir {
+			if err := workspace.GuardJJ(at); err != nil {
+				return "", fmt.Errorf("launcher: the workspace guards refuse the read of a task's working copy: %w", err)
+			}
+		}
+		return workspace.RunCommand(bounded, start, budget, started, env, at, nil, args)
 	}
 	return workspace.ReadWork(run, jj, dir, launcherReadConfig...)
 }

@@ -22,8 +22,9 @@ import (
 // task it carries, a stop), an architect's notice, the message that tells a parent's worker the
 // admission pass stopped that its phase ended (record.PhaseEnded), the words a hook fired on a move
 // back puts in front of a role (record.HookPrompt), the ask an update round puts to a role of the
-// pod (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
-// (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer or,
+// pod (record.UpdateAsk), the messages that tell the merger its pull request left the merge queue
+// (record.MergeQueueRemoval) and that the project's merge holds changed
+// (record.MergeHoldsChanged), and each message of a merge forward, the ask to the implementer or,
 // in merging, the merger, and the word to the worker of the phase the issue stays in
 // (record.MergeForwardMessage). Two reads of GitHub reach no session themselves, but their answers
 // are what write a message, so each holds the pod as its message does: the read that comes before
@@ -38,7 +39,7 @@ import (
 // while its row is pending, which is one attempt where the publish goes through or finds no
 // holder.
 var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read",
-	"merge_queue_removal", "conflict_confirm", "merge_forward"}
+	"merge_queue_removal", "merge_holds_changed", "conflict_confirm", "merge_forward"}
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary
