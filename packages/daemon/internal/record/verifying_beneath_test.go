@@ -124,3 +124,48 @@ func TestAChildInVerifyingDoesNotHoldItsParentsFirstPhase(t *testing.T) {
 		})
 	}
 }
+
+// A parent held before its retro for the issues beneath it (HoldForChildren) is released by the
+// workflow's acceptanceHeld, which waits for WorkBeneath (D10): a child whose close waits in
+// verifying has merged its work, so it holds the parent's acceptance no longer. The admission
+// pass's facts carry the same hold (RetroHolds.Beneath, retroHoldsOf), which the held list and the
+// line's word read and which decides whether the pass reads the parent's release
+// (admit's readsHeldRetro), so they must name what the workflow waits for and nothing more. Read
+// over OpenBeneath, they told the controller that the parent waited on a merged child, and where
+// that child's check waits for the root's merge, they named a hold the root's own retro could
+// never end. The controls are the child at work, which holds the parent, and the child done.
+func TestARetroHeldParentDoesNotWaitOnAChildInVerifying(t *testing.T) {
+	const parent, child = "LEGION-720", "LEGION-721"
+	parentKey := parent
+	for _, tc := range []struct {
+		name   string
+		stands phase.Phase
+		status string
+		holds  bool
+	}{
+		{name: "the child waits in verifying", stands: phase.Verifying, status: "testing"},
+		{name: "control: the child at work in implementing", stands: phase.Implementing, status: "in_progress", holds: true},
+		{name: "control: the child done", stands: phase.Done, status: "done"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held := Issue{Key: parent, Tree: parent, Project: "LEGION", Phase: phase.Held, Hold: &Hold{From: phase.Retro, Reason: HoldForChildren},
+				Generation: 1, Status: "retro"}
+			beneath := Issue{Key: child, Tree: parent, Parent: &parentKey, Project: "LEGION", Phase: tc.stands, Generation: 1,
+				Status: tc.status, DispatchStatus: tc.status}
+			issues := []Issue{held, beneath}
+			heldParents := RetroHeldParents(issues)
+			if !slices.Equal(heldParents, []string{parent}) {
+				t.Fatalf("the parents held before their retro = %v, want %s: the fixture is no such parent", heldParents, parent)
+			}
+			holds := retroHoldsOf(&passChain{issues: issues}, heldParents, nil, nil)[parent]
+			want := []string{}
+			if tc.holds {
+				want = []string{child}
+			}
+			if got := append([]string{}, holds.Beneath...); !slices.Equal(got, want) {
+				t.Errorf("the pass's hold beneath %s = %v, want %v: it names what the workflow's acceptanceHeld waits for (WorkBeneath)",
+					parent, holds.Beneath, want)
+			}
+		})
+	}
+}

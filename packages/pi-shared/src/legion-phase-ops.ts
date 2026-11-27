@@ -69,18 +69,6 @@ function namesCheck(args: Readonly<Record<string, unknown>>): boolean {
   return args["check_opened_at"] !== undefined;
 }
 
-/** The input gate effect of a successful call. A look's report leaves phase input open, and so
- * does `report_defect`, which moves no phase: the role goes on with its step. */
-export function phaseInputAfter(
-  op: string,
-  args: { readonly check_opened_at?: unknown }
-): "phase-closed" | "update-answered" | undefined {
-  if (op === "ready_for_update") return "update-answered";
-  if (op === "request_backward_move" || (op === "handoff_complete" && !namesCheck(args)))
-    return "phase-closed";
-  return undefined;
-}
-
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
 const requiredString = (op: PhaseOp, field: string) => {
   const message = `${op} requires ${field}`;
@@ -378,7 +366,12 @@ export const PHASE_OP_SENTENCES = {
     "report_defect (`issue`, `defect`, `head`, and `check` where the defect is about a check) records a defect of the change of `issue`, found once its task's last step passed: " +
     "`defect` says what is wrong, with its evidence, `head` is the 40-character lower-case commit the pull request's head stood at when you saw it, " +
     "and `check` is the block id of the issue's check it is about; the answer is the defect's id, whether the daemon `recorded` it, found it the " +
-    "`same` as one it holds or `joined` it to one, and `nextChange`, the change that will carry it, and the call moves no phase, so go on with your step. ",
+    "`same` as one it holds or `joined` it to one, and `nextChange`, the change that will carry it, and the call moves no phase, so go on with your step. " +
+    "The daemon refuses it before the issue's last step passed (DEFECT_BEFORE_LAST_STEP), from a role or an issue that may not report it " +
+    "(DEFECT_CALLER_NOT_ALLOWED), with no text, one too long or one holding a decision block (DEFECT_TEXT_REQUIRED, DEFECT_TEXT_TOO_LONG, " +
+    "DEFECT_TEXT_DECISION_BLOCK), with no head or one that is no full lower-case commit (DEFECT_HEAD_REQUIRED), with a check that is no block id " +
+    "(DEFECT_CHECK_INVALID), on an issue that closed (DEFECT_ISSUE_CLOSED), in a tree that lingers after it left the workflow (TREE_LINGERING), " +
+    "for a key that is no issue key (INVALID_ISSUE) and for an issue it has not recorded (ISSUE_NOT_FOUND); each refusal records nothing. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -759,9 +752,9 @@ export async function executePhaseOp(
           };
     }
     case "report_defect":
-      // A report moves no phase, so it answers the daemon's answer and the host closes nothing
-      // (phaseInputAfter). The claim's grant serves its own issue, an architect's its whole tree;
-      // which issue a role may report on is the daemon's to hold.
+      // A report moves no phase, so it answers the daemon's answer and nothing closes the
+      // session's phase input. The claim's grant serves its own issue, an architect's its whole
+      // tree; which issue a role may report on is the daemon's to hold.
       return daemon.reportDefect({
         grantId: await mintClaimGrant(daemon, claim),
         issue: args.issue,

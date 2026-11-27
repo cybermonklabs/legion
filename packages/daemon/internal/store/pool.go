@@ -360,10 +360,11 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 }
 
 // acquire hands out one of the pool's connections to a caller that must run its own work on the
-// connection after its transaction ends and before the connection returns to the pool. Store.apply
-// is the one such caller: it resets the session of the connection that a migration ran on
-// (releaseMigrationConn). A transaction from BeginTx cannot serve it, because pgx returns that
-// transaction's connection to the pool as the transaction ends. acquire runs the guard first, as
+// connection outside a transaction, before the connection returns to the pool. It has two such
+// callers. Store.apply resets the session of the connection that a migration ran on
+// (releaseMigrationConn). TakeMergeReadSlot holds the merge read's session advisory lock on its
+// connection (MergeReadSlot). A transaction from BeginTx cannot serve either, because pgx returns
+// that transaction's connection to the pool as the transaction ends. acquire runs the guard first, as
 // every other way this pool hands out a connection does. Then it marks the caller as holding a
 // connection, as BeginTx does. The caller runs release only once the connection is back in the pool
 // or closed, so the guard sees the connection for as long as the caller holds it. release is never

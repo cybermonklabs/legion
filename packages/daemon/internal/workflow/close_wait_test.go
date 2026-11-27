@@ -144,6 +144,23 @@ func (r *waitRig) stored(key string) record.StoredWait {
 	return stored
 }
 
+// withdrew writes withdrawn into key's stored wait, as a withdrawal applied before this moment
+// left it (defectWithdrawal, waitNamesDefects): a withdrawal the row that writes close-wait.md has
+// not rendered yet.
+func (r *waitRig) withdrew(key string, withdrawn record.WaitWithdrawal) {
+	r.t.Helper()
+	issue := r.issue(key)
+	stored, err := storedWaitOf(issue)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn)
+	if err := putStoredWait(&issue, stored); err != nil {
+		r.t.Fatal(err)
+	}
+	seedRecord(r.t, r.pool, func(tx pgx.Tx) error { return record.NewStore().PutIssue(r.t.Context(), tx, issue) })
+}
+
 // stands fails the test unless key stands at want with the record's status status.
 func (r *waitRig) stands(key string, want phase.Phase, status string) {
 	r.t.Helper()
@@ -405,6 +422,53 @@ func TestAMergeWithNothingToWaitForClosesAtTheRead(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A withdrawal is said once in close-wait.md, in the first version written after it, whatever
+// writes the stored wait before that version is uploaded (D8). The write that would lose it is the
+// entry into verifying: the architect withdraws a defect in merging, which stores the withdrawal
+// and queues nothing because a row already waits, the pull request merges before that row runs,
+// and the entry builds the wait afresh (waitOf). The entry keeps it, so the one version the row
+// writes names the withdrawn defect and its reason, and so does a lingering tree's merge, which
+// writes the wait on a path of its own (closeMerged).
+func TestAWithdrawalMadeBeforeAMergeIsSaidInTheVersionAfterIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		linger  bool
+		merging func(rig *waitRig)
+	}{
+		{name: "a merge in merging", merging: func(rig *waitRig) { rig.seedRoot(phase.Merging, "retro") }},
+		{name: "a lingering tree's merge", linger: true, merging: func(rig *waitRig) { rig.seedRoot(phase.Merging, "retro") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newWaitRig(t, "")
+			tc.merging(rig)
+			if tc.linger {
+				until := rig.now.Add(time.Hour)
+				issue := rig.issue(waitRoot)
+				issue.LingerUntil = &until
+				seedRecord(t, rig.pool, func(tx pgx.Tx) error { return record.NewStore().PutIssue(t.Context(), tx, issue) })
+			}
+			withdrawn := record.WaitWithdrawal{ID: 7, Text: "the retry never stops", Reason: "the retro fixed it", At: rig.now}
+			rig.withdrew(waitRoot, withdrawn)
+			rig.mergeRoot()
+
+			stored := rig.stored(waitRoot)
+			if len(stored.Withdrawn) != 1 || stored.Withdrawn[0].ID != withdrawn.ID || stored.Withdrawn[0].Reason != withdrawn.Reason {
+				t.Fatalf("the stored wait's withdrawals after the merge = %+v, want defect %d with its reason: no version has said it yet",
+					stored.Withdrawn, withdrawn.ID)
+			}
+			document, err := record.CloseWaitDocument(rig.issue(waitRoot))
+			if err != nil {
+				t.Fatalf("render close-wait.md: %v", err)
+			}
+			if !strings.Contains(document, withdrawn.Reason) || !strings.Contains(document, withdrawn.Text) {
+				t.Fatalf("close-wait.md = %q, want it to name the withdrawn defect %d and its reason", document, withdrawn.ID)
+			}
+		})
+	}
+}
+
 // A merge in merging with an issue beneath it in the workflow enters verifying: the issue beneath
 // is a term of what the close waits for (F01), named in the stored wait and in the close-waits
 // notice. The child's leave judges the root again, and the read it queues closes it.
@@ -459,6 +523,50 @@ func TestTheCloseReadsTheChildrenFromDispatch(t *testing.T) {
 	}
 	rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: "LEGION-300", Status: "icebox"}}, passing("c-after", waitRootMerge)))
 	closedOnChecks(t, rig, waitRoot)
+}
+
+// A Dispatch child that is a tree of its own is no member of the merged issue's tree, so the issues
+// beneath it (record.OpenBeneath, which reads this tree's members) never count it, and only the
+// open children do. Its record is read from the store whatever tree holds it, so a rule that drops
+// every child the record holds in the workflow dropped this one too, and neither term counted it:
+// the root closed while Dispatch held its child open and at work. The control is the same child
+// done, which holds nothing.
+func TestAChildThatIsATreeOfItsOwnHoldsTheClose(t *testing.T) {
+	t.Parallel()
+	const own = "LEGION-301"
+	for _, tc := range []struct {
+		name, status string
+		stands       phase.Phase
+		holds        bool
+	}{
+		{name: "its own tree at work", status: "in_progress", stands: phase.Implementing, holds: true},
+		{name: "control: its own tree done", status: "done", stands: phase.Done},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newWaitRig(t, "")
+			rig.seedRoot(phase.Merging, "retro")
+			seedIssue(t, rig.pool, record.Issue{Key: own, Repo: waitRepo, DefaultBranch: "main", GitHubRepo: waitRepo, Tree: own, Project: "LEGION",
+				Title: own, Phase: tc.stands, Generation: 1, Status: tc.status, DispatchStatus: tc.status, Rank: "W", LastDispatchSeq: 1})
+			rig.mergeRoot()
+			rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: own, Status: tc.status}}, passing("c-after", waitRootMerge)))
+			if !tc.holds {
+				closedOnChecks(t, rig, waitRoot)
+				return
+			}
+			rig.stands(waitRoot, phase.Verifying, "testing")
+			var view closeView
+			seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+				var err error
+				view, err = rig.engine.closeWait(t.Context(), tx, rig.issue(waitRoot))
+				return err
+			})
+			if !slices.Equal(view.wait.OpenChildren, []string{own}) || len(view.wait.Beneath) != 0 {
+				t.Fatalf("closeWait's open children = %v and issues beneath = %+v, want %s among the open children alone: it is no member of the root's tree",
+					view.wait.OpenChildren, view.wait.Beneath, own)
+			}
+		})
+	}
 }
 
 // The wait is one document replaced at each change. The entry stores it, with since when the issue

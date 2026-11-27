@@ -87,9 +87,12 @@ func (e *Engine) closeWaitFrom(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // openChildren is each child of the read's Dispatch issue that the children-first rule reads as
-// open (record.ChildOpen) and that the record does not hold in the workflow: a child the record
-// holds in the workflow is an issue beneath, whose own record judges it. So no close comes past a
-// child Dispatch holds open, whatever the daemon's copy of Dispatch holds.
+// open (record.ChildOpen) and that the issues beneath do not already count: a child the record
+// holds in the workflow as a member of this tree is an issue beneath (record.OpenBeneath), whose
+// own record judges it. A child that is a tree of its own is no member, so OpenBeneath never
+// counts it, and it is kept here as ChildOpen answers, its record read from the store whatever
+// tree holds it. So no close comes past a child Dispatch holds open, whatever the daemon's copy of
+// Dispatch holds.
 func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, children []dispatch.IssueChild, members []record.Issue) ([]string, error) {
 	byKey := make(map[string]record.Issue, len(members))
 	for _, member := range members {
@@ -97,10 +100,9 @@ func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, children []dispatc
 	}
 	var open []string
 	for _, child := range children {
-		var recorded *record.Issue
-		if member, ok := byKey[child.Key]; ok {
-			recorded = &member
-		} else {
+		member, beneath := byKey[child.Key]
+		recorded := &member
+		if !beneath {
 			read, err := e.store.Issue(ctx, tx, child.Key)
 			if err != nil {
 				return nil, err
@@ -110,7 +112,7 @@ func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, children []dispatc
 		if !record.ChildOpen(record.DispatchIssueRow{Key: child.Key, Status: child.Status}, recorded) {
 			continue
 		}
-		if recorded != nil && record.InWorkflow(*recorded) {
+		if beneath && record.InWorkflow(member) {
 			continue
 		}
 		open = append(open, child.Key)
@@ -146,9 +148,15 @@ func putStoredWait(issue *record.Issue, stored record.StoredWait) error {
 // An item that stood in old in the same state keeps its since. Every other item stands from now.
 // Entered is old's: only an entry into verifying sets it (enterVerifying, endChange). Ended and
 // Closed are set by the change's end and the close alone, so each is said in one version.
+//
+// Withdrawn is old's, whole: a withdrawal stays in the wait until a version of close-wait.md
+// holding it is uploaded, which is what says it once (daemon's closeWaitPublish clears exactly
+// what its version showed). Every writer of the wait goes through this, the entry into verifying
+// and a lingering tree's merge among them, so a withdrawal made before a merge reaches the first
+// version written after it. A caller with one to add appends it to this.
 func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWait, now time.Time) record.StoredWait {
 	wait := view.wait
-	stored := record.StoredWait{Entered: old.Entered}
+	stored := record.StoredWait{Entered: old.Entered, Withdrawn: slices.Clone(old.Withdrawn)}
 	blocks := map[string]dispatch.CheckBlock{}
 	if view.answer != nil {
 		for _, block := range view.answer.Results.Checks {
@@ -355,7 +363,6 @@ func (e *Engine) enterVerifying(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	stored := e.waitOf(issue, view, old, now)
 	stored.Entered, stored.Ended = now, ended
-	stored.Withdrawn = heldWithdrawals(old, nil)
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
 	}
@@ -616,9 +623,10 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 
 // judgeCloseNoting is judgeClose for an event that close-wait.md names once, in a version it
 // writes: withdrawn, the defects a withdrawal ended (defectWithdrawal), which the stored wait it
-// writes holds as its Withdrawn beside every withdrawal the wait already held (heldWithdrawals).
-// The wait keeps a withdrawal until a version of the document holding it is uploaded, whatever
-// writes the wait first; the row that uploads it takes it out (daemon's closeWaitPublish).
+// writes holds as its Withdrawn beside every withdrawal the wait already held (waitOf carries
+// those). The wait keeps a withdrawal until a version of the document holding it is uploaded,
+// whatever writes the wait first; the row that uploads it takes it out (daemon's
+// closeWaitPublish).
 //
 // Where the close still waits, the wait is stored first, with the notices that come at once, and
 // then a reason that waits starts the next change where its moment has come (startChangeIfDue):
@@ -651,7 +659,7 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = heldWithdrawals(old, withdrawn)
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn...)
 	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
 		return err
 	}
@@ -782,7 +790,7 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = heldWithdrawals(old, withdrawn)
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn...)
 	stored.Closed = &now
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
@@ -812,17 +820,6 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	return e.leave(ctx, tx, issue, "done")
-}
-
-// heldWithdrawals is what a stored wait written over old holds of withdrawals: each one old holds,
-// which no uploaded version of close-wait.md has said yet, then withdrawn, the ones the write
-// adds. waitOf builds every other item of the wait afresh, so this is what keeps a withdrawal from
-// being replaced before the row that writes close-wait.md renders it.
-func heldWithdrawals(old record.StoredWait, withdrawn []record.WaitWithdrawal) []record.WaitWithdrawal {
-	if len(old.Withdrawn) == 0 && len(withdrawn) == 0 {
-		return nil
-	}
-	return append(slices.Clone(old.Withdrawn), withdrawn...)
 }
 
 // closeLingeringMember writes the close of issue, a member of a lingering tree, on row, the table's
@@ -1055,9 +1052,27 @@ func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.
 }
 
 // closesByChecks says whether issue, a child, closes by its checks and not by its owning
-// architect's done: its work merged (Issue.Merge), so its checks or a person close it (D16, door 7).
-func closesByChecks(issue record.Issue) bool {
-	return issue.Merge.Merged() && !claim.IsTreeRoot(issue.Key, issue.Tree)
+// architect's done: the work of its current generation merged, so its checks or a person close it
+// (D16, door 7). It reads the generation, not the merge snapshot alone: a child run again keeps the
+// snapshot of an earlier generation's merge (Issue.Merge), which no clear touches, and its own work
+// has not merged, so its architect's done is the architect's to make. The current generation's
+// work merged where the issue waits in verifying, where a next change of it runs (NextChange), or
+// where its pull request row merged: each clear of a generation deletes every row that is not open
+// (clearPullRequests), so a merged row is this generation's, as it is for a child whose pull
+// request merged before the child reached merging.
+func (e *Engine) closesByChecks(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return false, nil
+	}
+	if issue.Phase == phase.Verifying || issue.NextChange != 0 {
+		return true, nil
+	}
+	rows, err := e.store.PullRequestsOf(ctx, tx, []string{issue.Key})
+	if err != nil {
+		return false, err
+	}
+	row, ok := rows[issue.Key]
+	return ok && row.State == record.PullRequestMerged, nil
 }
 
 // architectsDoneSetBack tells the owning architect that its done on issue, a merged child, was set

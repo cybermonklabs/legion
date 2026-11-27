@@ -718,7 +718,7 @@ type LineFacts struct {
 	StartedParentWaits map[string]ChildWait
 	// RetroHolds is the three holds on the acceptance of each parent held before its retro
 	// (HoldForChildren, RetroHeldParents), by parent key (retroHoldsOf): the issues beneath it
-	// still in the workflow (OpenBeneath), the roots still in the workflow that rest on its
+	// whose work has still to happen (WorkBeneath), the roots still in the workflow that rest on its
 	// approval (RestingRootsOn) and its open Dispatch children, judged as StartedParentWaits is
 	// (readChildWaits). They are the three that hold its retro (workflow's acceptanceHeld), which
 	// the held word children_before_retro names in R8's order (HeldReasonOf) and the admission

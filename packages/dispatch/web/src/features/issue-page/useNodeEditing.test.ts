@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 
 import type { Artifact } from "../../api/types";
-import { artifact, KEY } from "./decisions-filter/decisions-fixtures";
+import { KEY } from "../decision-card/decision-fixture";
+import { artifact } from "./decisions-filter/decisions-fixtures";
 import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";
 import { nodeEditable } from "./useNodeEditing";
