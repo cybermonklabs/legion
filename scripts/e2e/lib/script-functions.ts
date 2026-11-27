@@ -39,14 +39,12 @@ export function scriptAssignments(path: string): (name: string) => string {
 
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
-// A library a script sources: `. "<path>"` at the start of a line. The path is a shell word, and
-// every script here writes it against a directory a variable names: `$root`, the checkout, or one
-// the sourcing file sets to its own directory. It can hold `..`, as #4296's loopback-dsn.sh does
-// (`. "$psql_env_dir/../../../packages/envoy/scripts/lib/pg-url.sh"`), so the path is resolved
-// whole rather than read by its last segments: by its tail that line names scripts/e2e/lib's
-// pg-url.sh, which is a different file, and a library read under the wrong name hides what the
-// real one holds.
-const sourced = /^\s*\. "([^"]+\.sh)"\s*$/gm;
+// A library a script sources: `. "<word>"` or `source "<word>"` at the start of a line. The word
+// is a shell word, and a path holding `..` names a different file when it is read by its last
+// segments, so it is resolved whole. A word this file cannot resolve without running the shell is
+// no library it can read: `unreadableSources` names those lines, and a scan that walks what a
+// script sources fails on them rather than passing over a file it never read.
+const sourced = /^[ \t]*(?:\.|source)[ \t]+"([^"]+)"[ \t]*$/gm;
 /** The checkout, from this file in scripts/e2e/lib. */
 const checkout = join(import.meta.dir, "..", "..", "..");
 
@@ -64,19 +62,65 @@ function sourcedPath(from: string, written: string): string {
   return existsSync(beside) ? beside : resolve(checkout, rest);
 }
 
+/** A path a script writes for its own directory: `$(dirname "$0")` and the `BASH_SOURCE` form
+ *  beside it, which every script here uses for that and nothing else. */
+const ownDirectory =
+  /^(?:\$\(dirname "\$0"\)|\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd -P\))\/(.+)$/;
+
+/** Where `written` reaches from the script at `from`, or `undefined` when reading it would mean
+ *  running the shell: a word that is a variable whole (`. "$lib"`), a glob, or any other command
+ *  substitution. Such a line is named by `unreadableSources` instead. */
+function resolvedSource(from: string, written: string): string | undefined {
+  const own = ownDirectory.exec(written);
+  if (own !== null) return resolve(dirname(from), own[1] ?? "");
+  if (written.includes("$(") || written.includes("`") || written.includes("*")) return undefined;
+  const against = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.+)$/.exec(written);
+  if (against === null) {
+    if (written.includes("$")) return undefined;
+    return isAbsolute(written) ? written : resolve(dirname(from), written);
+  }
+  const [, name, rest = ""] = against;
+  if (rest.includes("$")) return undefined;
+  if (name === "root") return resolve(checkout, rest);
+  const beside = resolve(dirname(from), rest);
+  return existsSync(beside) ? beside : resolve(checkout, rest);
+}
+
+/** Every line of the script at `path` that sources a library this file cannot resolve, as
+ *  `<path under the checkout>:<line>: <the line>`. A scan that walks what a script sources must
+ *  fail on these: the file behind such a line is never read, so anything in it is unseen. */
+export function unreadableSources(path: string): string[] {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const found: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    const word = /^[ \t]*(?:\.|source)[ \t]+"?([^"\s]+)"?[ \t]*$/.exec(line);
+    if (word === null) continue;
+    // A path that resolves but names no file of the tree is one the script makes as it runs, as
+    // nats-callout-sessions.sh does with its drivers; the walk skips it and says so here only
+    // where it cannot resolve the path at all, which is the shape that hides a library.
+    if (resolvedSource(path, word[1] ?? "") !== undefined) continue;
+    found.push(`${relative(checkout, path)}:${index + 1}: ${line.trim()}`);
+  }
+  return found;
+}
+
 /**
- * Every script among `paths`, and every library under scripts/e2e/lib one of them sources
- * (`. "…/lib/<name>"`), and the libraries those source in turn, each path once. A harness reads
- * the functions a script reaches through it, and a test the libraries a script runs with.
+ * Every script among `paths`, every library one of them sources (`. "<path>"`), wherever in the
+ * checkout that path reaches, and the libraries those source in turn, each path once. A harness
+ * reads the functions a script reaches through it, and a test the libraries a script runs with.
  */
 export function sourcedLibraries(...paths: string[]): string[] {
   const read = new Set<string>();
   const pending = [...paths];
   for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
-    if (read.has(path)) continue;
+    if (read.has(path) || !existsSync(path)) continue;
     read.add(path);
     for (const found of readFileSync(path, "utf8").matchAll(sourced)) {
-      pending.push(sourcedPath(path, found[1] ?? ""));
+      const reaches = resolvedSource(path, found[1] ?? "");
+      // A line this reader cannot resolve, or whose file this tree does not hold, is named by
+      // unreadableSources; the walk goes on rather than ending on it.
+      if (reaches !== undefined) pending.push(reaches);
     }
   }
   return [...read];

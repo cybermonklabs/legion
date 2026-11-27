@@ -20,6 +20,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -30,9 +31,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { libRowBoundMs, rowWaits } from "./row-waits";
+import { sourcedLibraries, unreadableSources } from "./script-functions";
+
+/** A name of this run alone, so two runs never read each other's planted scripts. */
+const run = randomUUID();
 
 rowWaits(libRowBoundMs);
 
@@ -270,19 +275,33 @@ function logicalLine(lines: string[], from: number): { text: string; last: numbe
   return { text, last: index };
 }
 
-/** Every start in the e2e scripts whose own arguments carry a setting named for a secret, as
- *  `file:line: NAMES`. */
+/** Every script of scripts/e2e, and every library one of them sources, wherever in the checkout
+ *  that reaches: a start that leaks lives as readily in a sourced library as in the script, so
+ *  the scan reads what the scripts reach and not only the scripts. */
+function scanned(): string[] {
+  // The files that are there, not the tracked ones: a script added and not yet committed runs
+  // like any other, so the scan reads it too.
+  const scripts = [join(repoRoot, "scripts", "e2e"), join(repoRoot, "scripts", "e2e", "lib")]
+    .flatMap((dir) => readdirSync(dir).map((name) => join(dir, name)))
+    .filter((path) => path.endsWith(".sh"));
+  return sourcedLibraries(...scripts);
+}
+
+/** Every line of a scanned file that sources a library the scan cannot resolve, as
+ *  `file:line: the line`. Such a file is never read, so a start that leaks inside it is unseen:
+ *  the scan refuses these rather than passing over them. A variable in place of a path is the
+ *  shape that would quiet the scan, so it is a refusal and not a skip. */
+function unreadable(): string[] {
+  return scanned().flatMap((path) => unreadableSources(path));
+}
+
+/** Every start among the scanned files whose own arguments carry a setting named for a secret,
+ *  as `file:line: NAMES`. */
 function startsWithSecretArguments(): string[] {
-  const files = execFileSync(
-    "git",
-    ["-C", repoRoot, "ls-files", "scripts/e2e/*.sh", "scripts/e2e/lib/*.sh"],
-    { encoding: "utf8" }
-  )
-    .split("\n")
-    .filter((name) => name !== "");
   const found: string[] = [];
-  for (const name of files) {
-    const lines = readFileSync(join(repoRoot, name), "utf8").split("\n");
+  for (const path of scanned()) {
+    const name = relative(repoRoot, path);
+    const lines = readFileSync(path, "utf8").split("\n");
     for (let index = 0; index < lines.length; index++) {
       const first = index;
       const { text, last } = logicalLine(lines, index);
@@ -294,9 +313,72 @@ function startsWithSecretArguments(): string[] {
   return found;
 }
 
+/** Runs `body` with `script` written in scripts/e2e and `library` in the checkout, both under
+ *  names of this run alone, and removes them after. */
+function withScripts(
+  files: readonly { readonly path: string; readonly text: string }[],
+  body: () => void
+): void {
+  try {
+    for (const { path, text } of files) writeFileSync(path, `#!/usr/bin/env bash\n${text}\n`);
+    body();
+  } finally {
+    for (const { path } of files) rmSync(path, { force: true });
+  }
+}
+
 describe("every start of an e2e script keeps its secrets out of its arguments", () => {
   test("no start writes a secret-named setting in the arguments it gives", () => {
     expect(startsWithSecretArguments()).toEqual([]);
+  });
+
+  test("every library a script of scripts/e2e sources can be read", () => {
+    expect(unreadable()).toEqual([]);
+  });
+
+  // The first direction: a library sourced by a path the scan resolves is read, so a start that
+  // leaks inside it is named. The library is the one #4296 sources, written as it will be there.
+  test("a start in a sourced library of another package is scanned and named", () => {
+    const library = join(repoRoot, "packages", "envoy", "scripts", "lib", `pg-url-${run}.sh`);
+    const script = join(repoRoot, "scripts", "e2e", `sourced-scan-${run}.sh`);
+    withScripts(
+      [
+        {
+          path: library,
+          text: 'start_process dispatch env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
+        },
+        { path: script, text: `. "$root/packages/envoy/scripts/lib/pg-url-${run}.sh"` },
+      ],
+      () => {
+        expect(startsWithSecretArguments()).toEqual([
+          `packages/envoy/scripts/lib/pg-url-${run}.sh:2: DATABASE_URL`,
+        ]);
+      }
+    );
+  });
+
+  // The second direction, and the one that would have caught a workaround: a library sourced
+  // through a variable is a refusal naming the file and line, never a silent skip. The leak
+  // planted behind it is unseen, which is why the line itself must fail.
+  test("a library sourced through a variable fails the scan by name, rather than being skipped", () => {
+    const library = join(repoRoot, "packages", "envoy", "scripts", "lib", `pg-url-${run}.sh`);
+    const script = join(repoRoot, "scripts", "e2e", `sourced-scan-${run}.sh`);
+    withScripts(
+      [
+        {
+          path: library,
+          text: 'start_process dispatch env -i PATH="$PATH" DATABASE_URL="$url" "$bin"',
+        },
+        {
+          path: script,
+          text: `pg_url_lib=$root/packages/envoy/scripts/lib/pg-url-${run}.sh\n. "$pg_url_lib"`,
+        },
+      ],
+      () => {
+        expect(unreadable()).toEqual([`scripts/e2e/sourced-scan-${run}.sh:3: . "$pg_url_lib"`]);
+        expect(startsWithSecretArguments()).toEqual([]);
+      }
+    );
   });
 
   // The scan reads what it is pointed at: each shape it must find, and the three it must leave

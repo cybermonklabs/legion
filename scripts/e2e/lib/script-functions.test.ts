@@ -39,6 +39,14 @@ test("a sourced path that climbs out of its own directory names the file it reac
   ]);
 });
 
+// The shape INFRA-3862's coordinator reports: a script sourcing a library of another package by a
+// path holding /lib/<name>.sh. Matched by its tail it reads as a library of scripts/e2e/lib,
+// which is where the suite's ENOENT came from.
+test("a sourced library of another package is read from that package, not from scripts/e2e/lib", () => {
+  expect(sourcedBy('. "$co/packages/envoy/scripts/lib/pg-url.sh"')).toEqual([
+    "packages/envoy/scripts/lib/pg-url.sh",
+  ]);
+});
 test("a sourced path against the checkout names the file it reaches", () => {
   expect(sourcedBy('. "$root/packages/envoy/scripts/lib/exec-env.sh"')).toEqual([
     "packages/envoy/scripts/lib/exec-env.sh",
