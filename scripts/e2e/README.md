@@ -5428,6 +5428,9 @@ A read of a fact that no part holds answers as it did (404 where no record exist
 
 - Lane R's seed (`seed.ts case-world`) files the other issues with their titles, parents, labels, statuses, `blocked_by` links, claims and board order, and the case's issue with its labels.
   It writes each step run as the project's daemon writes it, and reads every fact back through the routes that `dispatch read` and `dispatch steps` read.
+  Dispatch stamps each handoff, comment, ask and result with the time the seed writes it, so the seed writes each run's start and end among those stamps, in the world's order (`seed.ts placeStepTimes`): each record falls in the run whose window holds its case time, from the run's start up to its end, and a run that has not ended stays open.
+  Where the world has step runs, it waits a millisecond before each record whose case time is later than the one before it, and before the step writes it waits until its clock has passed the last start or end it placed, for at most 5 s.
+  A world whose stamps leave a run's start or end no place fails the setup, naming the run, and so does a record that the read-back finds outside the run it belongs in or inside a run it does not belong in.
   It writes the id the scratch Dispatch gives each gate step's document to `dispatch-fixture.json`, which the stand-in reads, and names that id in the prompt.
 
 - Lane R's GitHub (`case-world.ts githubFixtures`, which `gh-standin.ts` serves) answers the repository's read with the settings, each branch's rules (`[]` for a branch they do not name), and a pull request's node id, merge state, auto-merge request, GraphQL read, diff and merge from the world.
@@ -5435,7 +5438,7 @@ A read of a fact that no part holds answers as it did (404 where no record exist
 - Lane D's seed (`teardown_effects_live_test.go`) writes the daemon parts into the real daemon's store and reads each back through `read_record` and `read_state`.
   It admits the claim on `claim.issue` in `claim.tree`, writes the case's record, each record with its architect claim in its state, the phases row with its entry and owed task, a slot for each active issue and the gate rows.
   It writes each world record whose writer is `claim.session` as the replay's own session.
-  It files and reads back the Dispatch parts as lane R's seed does.
+  It files and reads back the Dispatch parts as lane R's seed does, but writes each step run at the world's own instants: its replay reads no step time.
   Its GitHub fixture answers the daemon's reads with the settings, the branch rules and each pull request's merge state, auto-merge request and node id, and a merge queue change names its pull request by that node id.
   A document a trace or a run names by the case's id or by lane R's scratch id is named by the id lane D's Dispatch gave it.
 
