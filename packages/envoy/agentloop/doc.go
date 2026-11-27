@@ -15,9 +15,11 @@
 //
 // ToolCall.Index is one-based. Request.FirstToolIndex is the number of tool calls an earlier run
 // of the same work already made, so the first call of this run is FirstToolIndex + 1. The calls
-// of a step are numbered in the order the model asked for them, and run one at a time, under one
-// mutex. A caller can therefore key an idempotent write on the index and re-run the work without
-// that write happening twice.
+// of a step are numbered in the order the model asked for them, and run one at a time in that
+// same order, each once the calls numbered before it in the step have ended. A call whose run
+// was stopped or passed its time bound waits only for the call that runs, so the run waits for
+// no call that will not come. A caller can therefore key an idempotent write on the index and
+// re-run the work without that write happening twice.
 //
 // # The auth header is fixed per Kind
 //

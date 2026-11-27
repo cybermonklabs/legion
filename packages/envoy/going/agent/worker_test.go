@@ -701,9 +701,9 @@ func TestAWindowOfTurnsPastTheBoundStopsTheRun(t *testing.T) {
 // TestACallsLineShowsAsItStarts: each tool call sends its call frame as it starts, so the run's
 // events hold it right before the tool frame its saved step carries: the step that tool frame
 // carries, the tool, its kind and the present form of its label, the words the reply frame names
-// the call with. The calls of a model call run one at a time, in any order; the call frame of the
-// first to start carries the prose that model call streamed so far, and a later one none. The
-// reply frame, saved once the model call's tools ran, comes after them.
+// the call with. The calls of a model call run one at a time, in the order the model asked for
+// them; the call frame of the first to start carries the prose that model call streamed so far,
+// and a later one none. The reply frame, saved once the model call's tools ran, comes after them.
 func TestACallsLineShowsAsItStarts(t *testing.T) {
 	const prose = "Checking DEMO-15 and its comments."
 	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {

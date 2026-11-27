@@ -196,8 +196,9 @@ type worker struct {
 
 	// used is what the run has spent, its earlier turns' and this one's; turn is this turn's
 	// alone, which end adds to the run's budget. A tool call adds its time to both from the
-	// goroutine it runs on (toolRun): one of agentloop's, which runs a step's calls one at a time
-	// and ends them before its Run returns, or the run's own.
+	// goroutine it runs on (toolRun): one of agentloop's, which runs a step's calls one at a time,
+	// in the order the model asked for them, and ends them before its Run returns, or the run's
+	// own.
 	used, turn agentwire.Budget
 	// history is the run's steps as the claim answered them, then each step saved since, in the
 	// order of their numbers; next is the number the next step takes.

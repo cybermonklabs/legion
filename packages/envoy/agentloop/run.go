@@ -273,8 +273,8 @@ type run struct {
 	reason provider.FinishReason
 	failed error
 
-	// tool holds one tool call at a time, so a step's calls run one after another.
-	tool sync.Mutex
+	// order runs a step's tool calls one at a time, in the order the model asked for them.
+	order callOrder
 
 	// numbering guards the tool call indexes: indexes is the index each call's id took
 	// when the model asked for it, and next is the index the next call takes.
@@ -424,14 +424,17 @@ func (r *run) failure() error {
 	return r.failed
 }
 
-// prepareStep offers no tool on the last allowed call, so that call must answer, and on the
-// kinds Anthropic serves, where the run places cache marks, moves the newest message's mark:
-// the history's end keeps the one Run put there, because the step takes a mark off no message
-// of the history, the newest message gets one, and the one an earlier step put on its newest
-// message is taken off (the SDK carries a step's message overrides into later steps; Anthropic
-// allows four marks). Where the request's Input is empty, the first call's newest message is
-// the history's own last message, which keeps the history's mark for the whole run.
+// prepareStep forgets the tool calls the step before announced and never ran (callOrder), offers
+// no tool on the last allowed call, so that call must answer, and on the kinds Anthropic serves,
+// where the run places cache marks, moves the newest message's mark: the history's end keeps the
+// one Run put there, because the step takes a mark off no message of the history, the newest
+// message gets one, and the one an earlier step put on its newest message is taken off (the SDK
+// carries a step's message overrides into later steps; Anthropic allows four marks). Where the
+// request's Input is empty, the first call's newest message is the history's own last message,
+// which keeps the history's mark for the whole run. The SDK calls it in the stream's goroutine
+// before each model call, once every tool of the step before has returned.
 func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResult, error) {
+	r.order.forget()
 	result := &aisdk.PrepareStepResult{}
 	if state.StepNumber == r.req.Bounds.Calls-1 {
 		result.ToolChoice = &provider.ToolChoice{Type: provider.ToolChoiceNone}

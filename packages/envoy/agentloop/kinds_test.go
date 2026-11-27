@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"net/url"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An openai-chat run reaches the Chat Completions path under the endpoint's base URL, carries
@@ -506,6 +511,190 @@ func TestToolCallsAreNumberedInTheModelsOrderFromFirstToolIndex(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("round %d numbered the calls %v, want the model's order from %d: %v", round+1, got, first, want)
 		}
+	}
+}
+
+// The tool calls of one step run one at a time in the order the model asked for them. The SDK
+// starts a goroutine for each call at once, and the Go scheduler runs the one started last first
+// on a quiet processor, so calls that only took a lock in turn ran the last the model asked for
+// first. Each call yields while it holds its turn, so the calls still waiting run then.
+func TestAStepsToolCallsRunInTheModelsOrder(t *testing.T) {
+	t.Parallel()
+	const calls = 8
+	uses := make([]map[string]any, calls)
+	want := make([]ToolCall, calls)
+	for i := range calls {
+		id := fmt.Sprintf("toolu_%d", i+1)
+		uses[i] = anthropicToolUse(id, toolName, map[string]any{"path": fmt.Sprintf("%d.txt", i+1)})
+		want[i] = ToolCall{Index: i + 1, ID: id}
+	}
+	// Run the body often enough that an order the scheduler chose, on a machine of many
+	// processors or under the race detector's shuffled scheduling, would show.
+	for round := range 20 {
+		s := newStandIn(t,
+			anthropicStream("tool_use", anthropicUsage{Output: 3}, uses...),
+			anthropicStream("end_turn", anthropicUsage{Output: 2}, anthropicText("All eight read.")),
+		)
+		f := newFixture(t, s, AnthropicMessages, 2)
+		f.tool.onCall = func(ToolCall) { runtime.Gosched() }
+		if result, err := Run(context.Background(), f.req); err != nil || result.Fault != "" {
+			t.Fatalf("round %d: result %+v, %v", round+1, result, err)
+		}
+		got := make([]ToolCall, 0, calls)
+		for _, call := range f.tool.made() {
+			got = append(got, ToolCall{Index: call.Index, ID: call.ID})
+		}
+		if !slices.EqualFunc(got, want, func(a, b ToolCall) bool { return a.Index == b.Index && a.ID == b.ID }) {
+			t.Fatalf("round %d ran the calls %+v, want the model's order %+v", round+1, got, want)
+		}
+	}
+}
+
+// takeTurn makes one call through o on a goroutine of its own: it takes its turn under ctx, sends
+// its id on ran, holds the turn until release is closed and gives it back.
+func takeTurn(ctx context.Context, o *callOrder, id string, ran chan<- string, release <-chan struct{}) {
+	go func() {
+		o.take(ctx, id)
+		ran <- id
+		<-release
+		o.give(id)
+	}()
+}
+
+// requireWaiting waits until the calls that wait for their turn in o are want, in the order they
+// came, and fails t if a call takes a turn and says so on ran first: none of them may run yet.
+func requireWaiting(t *testing.T, o *callOrder, ran chan string, want ...string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the calls %v to wait for their turns", want), func() ([]string, bool) {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		ids := make([]string, len(o.waiting))
+		for i, w := range o.waiting {
+			ids[i] = w.id
+		}
+		return ids, slices.Equal(ids, want) || len(ran) > 0
+	})
+	if len(ran) > 0 {
+		t.Fatalf("%s took its turn, want %v all waiting", <-ran, want)
+	}
+}
+
+// The calls of a step take their turns in the order the model asked for them, however late each
+// comes: here they come last first, each once the one before it waits, while a call the step never
+// announced holds the turn, so all of them wait when it is given back. A lock that served the
+// calls in the order they came would run them last first.
+func TestCallOrderRunsAStepsCallsInTheModelsOrderWhateverOrderTheyCome(t *testing.T) {
+	t.Parallel()
+	var o callOrder
+	ids := []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"}
+	for _, id := range ids {
+		o.announce(id)
+	}
+	o.take(context.Background(), "unannounced")
+	ran := make(chan string, len(ids))
+	release := make(chan struct{})
+	close(release)
+	var came []string
+	for _, id := range slices.Backward(ids) {
+		takeTurn(context.Background(), &o, id, ran, release)
+		came = append(came, id)
+		requireWaiting(t, &o, ran, came...)
+	}
+	o.give("unannounced")
+	var order []string
+	for range ids {
+		order = append(order, testwait.Receive(t, "the next call of the step to take its turn", ran))
+	}
+	if !slices.Equal(order, ids) {
+		t.Fatalf("the calls ran in the order %v, having come in the order %v; want the model's order %v", order, came, ids)
+	}
+}
+
+// The calls a step announced and never ran, as a step whose finish reason runs no tool leaves
+// them, are forgotten as the next step is prepared: that step's first call runs, where it would
+// otherwise wait for calls that will never come, and its second still waits for its first.
+func TestCallOrderForgetsTheCallsAnEarlierStepNeverRan(t *testing.T) {
+	t.Parallel()
+	var o callOrder
+	o.announce("a1")
+	o.announce("a2")
+	o.forget()
+	o.announce("b1")
+	o.announce("b2")
+	ran := make(chan string, 2)
+	release := make(chan struct{})
+	takeTurn(context.Background(), &o, "b2", ran, release)
+	requireWaiting(t, &o, ran, "b2")
+	takeTurn(context.Background(), &o, "b1", ran, release)
+	if first := testwait.Receive(t, "b1 to take its turn, which the earlier step's a1 and a2 must not hold", ran); first != "b1" {
+		t.Fatalf("%s took the first turn of the step, want b1", first)
+	}
+	close(release)
+	if second := testwait.Receive(t, "b2 to take its turn once b1 gave it back", ran); second != "b2" {
+		t.Fatalf("%s took the second turn of the step, want b2", second)
+	}
+}
+
+// A call whose context ended, as a stopped run's or one past its time bound, stops waiting for
+// the calls announced before it, which may never come, and takes its turn once the call that runs
+// gives it back, never beside it.
+func TestCallOrderRunsACallWhoseContextEndedOnceNoCallRuns(t *testing.T) {
+	t.Parallel()
+	var o callOrder
+	for _, id := range []string{"c1", "c2", "c3"} {
+		o.announce(id)
+	}
+	ran := make(chan string, 2)
+	release := make(chan struct{})
+	takeTurn(context.Background(), &o, "c1", ran, release)
+	if first := testwait.Receive(t, "c1 to take its turn", ran); first != "c1" {
+		t.Fatalf("%s took the first turn of the step, want c1", first)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// c2 never comes, so c3 waits for it.
+	takeTurn(ctx, &o, "c3", ran, release)
+	requireWaiting(t, &o, ran, "c3")
+	cancel()
+	seen := testwait.Until(t, "c3 to see its context end", func() (string, bool) {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		switch {
+		case len(o.waiting) == 0:
+			return "c3 took the turn", true
+		case o.waiting[0].late:
+			return "c3 waits for c1 alone", true
+		}
+		return "c3 waits for c2", false
+	})
+	if seen != "c3 waits for c1 alone" {
+		t.Fatalf("%s while c1 held it, want it to wait for c1 to give it back", seen)
+	}
+	close(release)
+	if next := testwait.Receive(t, "c3 to take its turn once c1 gave it back, though c2 never came", ran); next != "c3" {
+		t.Fatalf("%s took the turn after c1, want c3", next)
+	}
+}
+
+// A call the SDK ran without announcing it takes its turn whenever no call runs, whatever the step
+// announced: here the step's calls have not come, and it runs at once. It still never runs beside
+// another call: the step's first call, coming while it runs, waits for it to end.
+func TestCallOrderRunsACallNeverAnnouncedOnceNoCallRuns(t *testing.T) {
+	t.Parallel()
+	var o callOrder
+	o.announce("a1")
+	o.announce("a2")
+	ran := make(chan string, 2)
+	release := make(chan struct{})
+	takeTurn(context.Background(), &o, "unannounced", ran, release)
+	if first := testwait.Receive(t, "the call never announced to take its turn, which a1 and a2 must not hold", ran); first != "unannounced" {
+		t.Fatalf("%s took the first turn, want the call never announced", first)
+	}
+	takeTurn(context.Background(), &o, "a1", ran, release)
+	requireWaiting(t, &o, ran, "a1")
+	close(release)
+	if next := testwait.Receive(t, "a1 to take its turn once the call never announced gave it back", ran); next != "a1" {
+		t.Fatalf("%s took the turn after the call never announced, want a1", next)
 	}
 }
 
