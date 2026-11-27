@@ -827,6 +827,21 @@ async function textsTableExists(): Promise<boolean> {
   return (await sql("select to_regclass('pull_request_texts') is not null")) === "t";
 }
 
+/** Whether pull_request_heads holds the merge columns, merge_commit_sha and merged_at (main's
+ *  20261125125702_after_merge_states): the build of a commit before them has neither. A read of
+ *  GitHub that writes a merged row writes both, and a results read that orders an issue's merged
+ *  rows reads GitHub again for a merged row holding no time of merge (api's fillMergeTimes), so a
+ *  fixture's merged row that stands for a row a read wrote holds both too. */
+async function mergeColumnsExist(): Promise<boolean> {
+  return (
+    (await sql(
+      `select count(*) from information_schema.columns
+       where table_schema = current_schema() and table_name = 'pull_request_heads'
+         and column_name in ('merge_commit_sha', 'merged_at')`
+    )) === "2"
+  );
+}
+
 /** One stored pull request row, as pull_request_heads holds it: the issue it records and the
  *  source of that issue, which a pass of the reconcile writes from the statement's answer
  *  (SyncAttributions), its state and head commit, which a read of GitHub writes, and whether its
@@ -3645,7 +3660,10 @@ async function ruleIssues(): Promise<string | undefined> {
 }
 
 /** rule-reaches-each-row's fixture, while no server runs: GitHub's answer for the 5,000 pull
- *  requests, and their rows. */
+ *  requests, and their rows. Each row holds GitHub's merge commit and time where the build's table
+ *  has the columns (mergeColumnsExist), as a read of GitHub writes a merged row: the case's reads
+ *  are the rule's, and a row holding no time of merge would have each results read that orders the
+ *  issue's merges ask GitHub for it. */
 async function ruleFixture(): Promise<void> {
   const { B, T } = sevenPart("rule");
   const pulls: Record<string, FakePullRequest> = {};
@@ -3670,13 +3688,14 @@ async function ruleFixture(): Promise<void> {
     pulls: { ...seeded.pulls, ...pulls },
   }));
   const texts = await textsTableExists();
+  const merges = await mergeColumnsExist();
   const k = "(n - 10000) % 100 + 1";
   await sql(
     `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
-       attribution_source, title, url, event_at, checked_at, github_read_at${texts ? "" : ", attribution_rule"})
+       attribution_source, title, url, event_at, checked_at, github_read_at${texts ? "" : ", attribution_rule"}${merges ? ", merge_commit_sha, merged_at" : ""})
      select '${attributionRepo}', n, lpad(to_hex(n), 40, 'f'), 'legion/' || lower((${sqlKeys(B)})[${k}]),
        'main', 'merged', (${sqlKeys(T)})[${k}], 'title_body', 'Change ' || n,
-       'https://github.com/${attributionRepo}/pull/' || n, '${attributionUpdatedAt}', now(), now()${texts ? "" : ", 2"}
+       'https://github.com/${attributionRepo}/pull/' || n, '${attributionUpdatedAt}', now(), now()${texts ? "" : ", 2"}${merges ? `, lpad(to_hex(n), 40, 'e'), '${attributionUpdatedAt}'` : ""}
      from generate_series(10001, 15000) n`
   );
   if (texts) {
@@ -3801,7 +3820,8 @@ async function ruleProbe(): Promise<string | undefined> {
 }
 
 /** rule-reaches-each-row's last fixture: pull request #15001, whose branch names the key of the
- *  issue nobody has made yet, in lower case as the other branches are written. */
+ *  issue nobody has made yet, in lower case as the other branches are written. Its row holds its
+ *  merge commit and time where the table has the columns, as ruleFixture's rows do. */
 async function ruleNewIssuePull(): Promise<void> {
   const { nextKey } = sevenPart("rule");
   const branch = `legion/${String(nextKey).toLowerCase()}`;
@@ -3824,12 +3844,13 @@ async function ruleNewIssuePull(): Promise<void> {
       },
     },
   }));
+  const merges = await mergeColumnsExist();
   await sql(
     `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state,
-       attribution_source, title, url, event_at, checked_at, github_read_at)
+       attribution_source, title, url, event_at, checked_at, github_read_at${merges ? ", merge_commit_sha, merged_at" : ""})
      values ('${attributionRepo}', 15001, '${attributionSha(15001)}', '${branch}', 'main', 'merged',
        'none', 'Change 15001', 'https://github.com/${attributionRepo}/pull/15001',
-       '${attributionUpdatedAt}', now(), now())`
+       '${attributionUpdatedAt}', now(), now()${merges ? `, '${attributionSha(15001, "e")}', '${attributionUpdatedAt}'` : ""})`
   );
   if (await textsTableExists()) {
     await sql(
