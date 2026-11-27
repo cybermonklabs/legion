@@ -12,6 +12,7 @@ import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 import { borderDefault } from "../../theme/classes";
 import { isPartyRoute } from "./party-references";
 import { useReferenceHref, useReferenceLabel, useReferenceTarget } from "./reference-target";
+import { REFERENCE_WORDS } from "./reference-words";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -573,13 +574,6 @@ function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFo
   }
   return wordsFormatting(pieces);
 }
-
-/** The words an element the `RefLink` portal draws into held before `collectReferenceAnchors`
- *  cleared them (`ReferenceAnchor.text`): a bare reference as its author wrote it, or a link's own
- *  words, none for the link of a picture whose reference names no artifact. `RefLink` may draw a
- *  name in their place; a surface that counts its words as their author wrote them reads these
- *  (`issue-page/row-references.ts`'s `markDrawnAtoms`). */
-export const REFERENCE_WORDS = "data-dispatch-words";
 
 /**
  * Finds every already-rendered `<a>` in root whose href is a dispatch:// reference or a

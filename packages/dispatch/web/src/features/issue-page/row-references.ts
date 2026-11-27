@@ -1,8 +1,8 @@
 import type { AgentText } from "../refs/AgentName";
 import { isPartyRoute } from "../refs/party-references";
 import { deletedLineText, editedName } from "../refs/post-marks";
-import { REFERENCE_WORDS } from "../refs/RefLink";
 import type { KnownReferences } from "../refs/reference-names";
+import { REFERENCE_WORDS } from "../refs/reference-words";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
 import { chipName } from "./first-line";
