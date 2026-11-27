@@ -522,7 +522,7 @@ func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.
 	// started, cannot stop the diff while it writes it.
 	guard := gitFirst(t, "case \" $* \" in\n"+
 		"*\" --unified=0 \"*) "+testexec.MarkStart(shQuote(mark))+"\n  : > "+shQuote(started)+"\n  setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  "+shQuote(git)+" \"$@\"\n  "+hold+" ;;\n"+
-		"*) exec "+shQuote(git)+" \"$@\" ;;\nesac\n")
+		"*) [ -e "+shQuote(started+".stalled")+" ] || { : > "+shQuote(started+".stalled")+"; sleep 4.5; }\n  exec "+shQuote(git)+" \"$@\" ;;\nesac\n")
 	ctx := deadlinePassedOnceStarted(t, theBound, started)
 	var err error
 	began := time.Now()
@@ -531,6 +531,7 @@ func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.
 	if _, statErr := os.Stat(started); statErr != nil {
 		t.Fatalf("the push's diff never started (%v), so its bound stopped no diff: %v", statErr, err)
 	}
+	t.Logf("CONTROL: the push answered %v", err)
 	says(t, setupFailure(t, err), "was stopped by its bound")
 	startedBeforeDue(t, ctx, err, "git", mark, began, called)
 }

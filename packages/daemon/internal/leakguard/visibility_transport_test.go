@@ -746,8 +746,10 @@ func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
 	shorten(t, &ghReadBound, time.Second)
 	within := testwait.Bounded(t, time.Minute, procgroup.StopGrace+procgroup.WaitDelay+time.Second)
 	until := time.Now().Add(within)
+	stalled := filepath.Join(t.TempDir(), "stalled")
 	for reads := 1; ; reads++ {
-		rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+		t.Logf("CONTROL: read %d", reads)
+		rig := newTransportRig(t, "[ -e "+shQuote(stalled)+" ] || { : > "+shQuote(stalled)+"; sleep 1.5; }\nprintf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 86400\n", noGraphQL, curlAnswers("private"), answersTheRefs)
 		ctx := bound(t)
 		var visibility Visibility
 		var err error
