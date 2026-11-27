@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,7 +37,8 @@ func configFileWith(t *testing.T, body string, prompts ...string) string {
 // the deployment holds it beside Legion's own roles. `owner`, the key of a task's owner, names no
 // role of Legion's, and a type of `role_types` is a type a role may have. No role takes a name of
 // Legion's own, the claim role `sub-owner` among them, or the name of a task's sub-owner's agent,
-// whose claim token a step of that role would take.
+// whose claim token a step of that role would take. A name outside the grammar or too long is
+// named as written where it has a key's shape (keyShape), and by its line alone where it has none.
 func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 	path := rolesFile(t, "roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n", "checker.md")
 	cfg, err := Load(path, noEnv)
@@ -112,17 +114,22 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 		})
 	}
 
+	nameLine := strings.Count(minimalFile, "\n") + 1
 	refusals := []struct{ name, body, want string }{
 		{"not a mapping", "roles: [checker]\n",
 			"roles must be a mapping of a role's name to its block, e.g. {checker: {type: testing, prompt_file: checker.md}}"},
 		{"a block that is not a mapping", "roles: {checker: testing}\n",
 			"roles.checker must be a mapping"},
 		{"a name outside the grammar", "roles: {Checker: {type: testing, prompt_file: checker.md}}\n",
-			`roles names "Checker", which is outside [a-z][a-z0-9-]*`},
+			fmt.Sprintf("unknown key at line %d under roles, whose name has no key's shape (%s): a role's name is a word of [a-z][a-z0-9-]*", nameLine, keyShapeWords)},
 		{"a name that starts with a digit", "roles: {2nd-check: {type: testing, prompt_file: checker.md}}\n",
-			`roles names "2nd-check", which is outside [a-z][a-z0-9-]*`},
+			fmt.Sprintf("unknown key at line %d under roles, whose name has no key's shape (%s): a role's name is a word of [a-z][a-z0-9-]*", nameLine, keyShapeWords)},
+		{"a name of a key's shape outside the grammar", "roles: {code_checker: {type: testing, prompt_file: checker.md}}\n",
+			`roles names "code_checker", which is outside [a-z][a-z0-9-]*`},
 		{"a name of 33 characters", "roles: {a-role-name-of-thirty-three-chars: {type: testing, prompt_file: checker.md}}\n",
-			"roles.a-role-name-of-thirty-three-chars is 33 characters, and a role's name has at most 32: Dispatch's step record takes no longer one"},
+			fmt.Sprintf("unknown key at line %d under roles, whose name has no key's shape (%s): a role's name has at most 32 characters: Dispatch's step record takes no longer one", nameLine, keyShapeWords)},
+		{"a name of a key's shape of 33 characters", "roles: {" + strings.Repeat("x", 33) + ": {type: testing, prompt_file: checker.md}}\n",
+			"roles." + strings.Repeat("x", 33) + " is 33 characters, and a role's name has at most 32: Dispatch's step record takes no longer one"},
 		{"a role named twice", "roles: {checker: {type: testing, prompt_file: checker.md}, checker: {type: review, prompt_file: checker.md}}\n",
 			"roles names checker twice"},
 		{"a key the block does not take", "roles: {checker: {type: testing, prompt_file: checker.md, phase: step}}\n",

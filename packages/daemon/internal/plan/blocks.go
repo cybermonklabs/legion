@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -42,8 +43,10 @@ type Block struct {
 // Each task's needs are the ids of the tasks they name, read against issue (resolveNeeds), so no
 // plan holds a need as a word. A document with no task block is read as a plan with no task, which
 // Validate refuses. It answers an error only for a block it cannot read at all: a task or a role
-// with no id, one id on two such blocks, a task block whose `steps` is outside the grammar
-// (ParseSteps), and task blocks whose parents make a cycle (Places); the error names the block.
+// with no id, one id on two such blocks, a task whose id is outside Dispatch's task form
+// (steprecord.TaskIDHolds), whose steps Dispatch could never record, a task block whose `steps` is
+// outside the grammar (ParseSteps), and task blocks whose parents make a cycle (Places); the error
+// names the block, its id or word quoted (quoted).
 func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
@@ -57,12 +60,19 @@ func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, er
 			return Plan{}, fmt.Errorf("a %s block has no id, so no step of the plan can be named", block.Type)
 		}
 		if earlier, ok := typeOf[block.ID]; ok {
-			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", block.ID, earlier, block.Type)
+			return Plan{}, fmt.Errorf("the id %s names a %s block and a %s block, so it names no one block", quoted(block.ID), earlier, block.Type)
 		}
 		typeOf[block.ID] = block.Type
 		if block.Type == RoleBlockType {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
+		}
+		if !steprecord.TaskIDHolds(block.ID) {
+			// The error gives no length of its own: quoted's mark gives the length of what the URL
+			// rule left of a cut id, and the length of the id as written would give away the length
+			// of a credential it holds.
+			return Plan{}, fmt.Errorf("the task %s has an id outside the form of a task id, %s, so Dispatch could record none of its steps",
+				quoted(block.ID), steprecord.TaskIDRule)
 		}
 		task, err := taskOf(block)
 		if err != nil {

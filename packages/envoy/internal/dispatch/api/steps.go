@@ -331,7 +331,8 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 		// of the step only where it stands at the step's place with the step's role: a later version
 		// of the plan in force can put another step at a place where an earlier step already ran.
 		// A run names no agent key, so a step `role:key` is matched by its role, which this release
-		// names at most once in a task.
+		// names at most once in a task. Its state is a word of contracts' PLANNED_STEP_STATES, which
+		// PlannedStep.State's enum tag holds (TestTheStepRouteNamesContractsWords).
 		type stepOf struct {
 			task string
 			step int
@@ -348,14 +349,15 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 			planned := model.StepTask{Task: task.ID, Planned: make([]model.PlannedStep, len(task.Steps)), Steps: []model.StepRecord{}}
 			for index, name := range task.Steps {
 				role, _, _ := strings.Cut(name, ":")
-				state := "not started"
+				state := contracts.PlannedStepNotStarted
 				if result, ran := newest[stepOf{task.ID, index + 1, role}]; ran {
-					state = cmp.Or(result, "running")
+					state = cmp.Or(result, contracts.PlannedStepRunning)
 				}
 				planned.Planned[index] = model.PlannedStep{Step: index + 1, Name: name, State: state}
 			}
 			if task.Needs != nil {
-				planned.Needs = append([]string{}, (*task.Needs)...)
+				needs := append([]string{}, (*task.Needs)...)
+				planned.Needs = &needs
 			}
 			read.Tasks = append(read.Tasks, planned)
 		}

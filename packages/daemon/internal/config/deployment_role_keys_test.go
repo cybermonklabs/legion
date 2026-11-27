@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func TestWorkerBackendsTakesARoleOfTheDeployment(t *testing.T) {
 // The check across keys runs once every key it judges is set, so a name no role holds is refused
 // through the daemon's load and through the check's load alike, with a list that names the roles
 // of the deployment beside Legion's; a name outside the role grammar is refused when the key is
-// read, before any other key is.
+// read, before any other key is, by its line alone, since it has no key's shape (unknownKeyAt).
 func TestTheCheckAcrossKeysSeesEveryKeyItJudges(t *testing.T) {
 	want := `worker_backends names "ghost", which is not an issue role (architect, planner, implementer, tester, reviewer, merger, checker)`
 	path := rolesFile(t, checkerRole+"worker_backends: {ghost: omp}\n", "checker.md")
@@ -45,7 +46,8 @@ func TestTheCheckAcrossKeysSeesEveryKeyItJudges(t *testing.T) {
 	}
 
 	_, err := Load(rolesFile(t, "worker_backends: {Checker: omp}\n"), noEnv)
-	want = `worker_backends names "Checker", which is not an issue role (architect, planner, implementer, tester, reviewer, merger)`
+	want = fmt.Sprintf("unknown key at line %d under worker_backends, whose name has no key's shape (%s): it must be an issue role (architect, planner, implementer, tester, reviewer, merger)",
+		strings.Count(minimalFile, "\n")+1, keyShapeWords)
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load of a name outside the grammar = %v, want %q", err, want)
 	}
@@ -78,7 +80,8 @@ func TestTheRoleKeyedSettingsTakeARoleOfTheDeployment(t *testing.T) {
 		{"a backstop of a name no role holds", checkerRole + "worker_stall_backstop_hours: {ghost: 2}\n",
 			`worker_stall_backstop_hours names "ghost", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger, controller, checker)`},
 		{"overlays of a name outside the grammar", checkerRole + "role_config_files: {Checker: [/etc/x.yml]}\n",
-			`role_config_files names "Checker", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger, controller)`},
+			fmt.Sprintf("unknown key at line %d under role_config_files, whose name has no key's shape (%s): it must be a Legion role (architect, planner, implementer, tester, reviewer, merger, controller)",
+				strings.Count(minimalFile+checkerRole, "\n")+1, keyShapeWords)},
 		{"overlays of a role on Claude Code", checkerRole + "worker_backends: {checker: claude}\nrole_config_files: {checker: [/etc/x.yml]}\n",
 			"role_config_files.checker names Oh My Pi overlays, and worker_backends.checker is claude, which reads none: drop the role from one of the two"},
 		{"a backstop below the role's own ladder", checkerRole + "worker_stall_backstop_hours: {checker: 1}\n",
@@ -90,6 +93,50 @@ func TestTheRoleKeyedSettingsTakeARoleOfTheDeployment(t *testing.T) {
 				t.Fatalf("Load = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A name of the role grammar with no key's shape (keyShape) that no role holds is refused by the
+// check across keys by its line alone, as a key's reader refuses a name outside the grammar, with
+// the list that names the roles of the deployment, through the daemon's load and through the
+// check's load alike: a made-up lower-case hex token of 32 characters fits the grammar, as an API
+// key pasted where a role goes can. A role of the deployment whose name has no key's shape,
+// `code-checker`, still reaches each key's reader.
+func TestARoleKeyOfNoKeyShapeNoRoleHoldsIsNamedByItsLine(t *testing.T) {
+	const token = "deadbeefcafe0123456789abcdef0123"
+	line := strings.Count(minimalFile+checkerRole, "\n") + 1
+	for _, tc := range []struct{ key, value, what string }{
+		{"worker_backends", "omp", "an issue role (architect, planner, implementer, tester, reviewer, merger, checker)"},
+		{"role_config_files", "[/etc/x.yml]", "a Legion role (architect, planner, implementer, tester, reviewer, merger, controller, checker)"},
+		{"worker_stall_backstop_hours", "2", "a Legion role (architect, planner, implementer, tester, reviewer, merger, controller, checker)"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			path := rolesFile(t, checkerRole+tc.key+": {"+token+": "+tc.value+"}\n", "checker.md")
+			want := fmt.Sprintf("unknown key at line %d under %s, whose name has no key's shape (%s): it must be %s", line, tc.key, keyShapeWords, tc.what)
+			for name, load := range map[string]func(string, func(string) string) (Config, error){"Load": Load, "LoadForValidation": LoadForValidation} {
+				if _, err := load(path, noEnv); err == nil || err.Error() != want {
+					t.Errorf("%s = %v, want %q", name, err, want)
+				}
+			}
+		})
+	}
+
+	const dashRole = "roles: {code-checker: {type: testing, prompt_file: checker.md}}\n"
+	cfg, err := Load(rolesFile(t, dashRole+"role_config_files: {code-checker: [/etc/x.yml]}\nworker_stall_backstop_hours: {code-checker: 2}\n", "checker.md"), noEnv)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.RoleConfigFiles["code-checker"], []string{"/etc/x.yml"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("RoleConfigFiles[code-checker] = %v, want %v", got, want)
+	}
+	if got := cfg.WorkerStallBackstops["code-checker"]; got != 2*time.Hour {
+		t.Errorf("WorkerStallBackstops[code-checker] = %s, want 2h", got)
+	}
+	if cfg, err = Load(rolesFile(t, dashRole+"worker_backends: {code-checker: claude}\n", "checker.md"), noEnv); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.BackendFor("code-checker"); got != runtime.BackendClaude {
+		t.Errorf("BackendFor(code-checker) = %q, want claude", got)
 	}
 }
 

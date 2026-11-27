@@ -8,7 +8,7 @@
 // does, through gates (testnats.StartGate) the test can close. The stand-in takes every message
 // from the relay of its own session consumer (bus.DeliverSubject), as a session in consumer
 // delivery does, and answers each frame received and done; it holds no subscription of its own on
-// any topic. While three senders publish a role message, a team topic message and a GitHub topic
+// any topic. While three senders publish a role message, a team topic message and a WhatsApp topic
 // message every 250 ms for at least a minute, it moves the stand-in to another server by a
 // lame-duck shutdown or a forced kill of the server it is on, holding it off the hub for the
 // window a plugin's reconnect wait leaves.
@@ -49,7 +49,7 @@ const (
 	serverChangeSession  = "ses_server_change_standin"
 	serverChangeRole     = "server-change-holder"
 	serverChangeTeam     = "notifications.team.server-change"
-	serverChangeCaptured = "notifications.github.legion-test.server_change.pr.1"
+	serverChangeCaptured = "notifications.whatsapp.legion-test.server_change"
 	serverChangeReplicas = 3
 
 	// serverChangeSendInterval is how often each sender sends one numbered message.
@@ -96,9 +96,11 @@ const (
 // serverChangeKinds names each kind and the topic its sender publishes to: a role topic the
 // stand-in holds, whose lane takes core NATS and whose forward the listener stores on the
 // holder's agent subject (startRoleForward); a team topic, the one namespace an agent names
-// itself; and a GitHub topic. The stream stores the last two under the topic itself, and the
-// stand-in's consumer filters on both, so every kind reaches it through the relay of that
-// consumer and none through a subscription of its own.
+// itself; and a WhatsApp topic, a stream subject of its own beside the team topic. The publish
+// route refuses GitHub's lane and Dispatch's lane by name, so the third kind is on neither. The
+// stream stores the last two under the topic itself, and the stand-in's consumer filters on both,
+// so every kind reaches it through the relay of that consumer and none through a subscription of
+// its own.
 var serverChangeKinds = [kindCount]struct{ name, topic string }{
 	{"role", contracts.RoleTopicPrefix + serverChangeRole},
 	{"team", serverChangeTeam},

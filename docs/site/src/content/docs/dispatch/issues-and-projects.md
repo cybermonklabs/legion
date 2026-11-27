@@ -361,12 +361,12 @@ agents using it stop working at once.
   where that step stands: **not started**, **running**, **passed**, **failed**, **stopped**, or
   Dispatch's own word for a state this page does not know. Under that, each task has one table of
   its runs: each run of a step with its role, type, agent, model, attempt, start, end and result.
-  A task none of whose steps has run says so in place of the table, for example
-  **No step of task b has run yet.** A step that ran twice, after a review sent its task back, has
-  a row for each run, and the second reads attempt 2; a run that failed or stopped and sent its
-  task back says which step it returned to. A run that has not ended reads **running**, and a
-  field Legion did not record reads `—`. Legion's daemon writes these records, and the tab only
-  reads them. An issue with no plan and no run reads **No step of this issue has run in Legion.**
+  A task none of whose steps has run says so in place of the table, for example **No step of task
+  b has run yet.** A step that ran twice, after a review sent its task back, has a row for each
+  run, and the second reads attempt 2; a run that failed or stopped and sent its task back says
+  which step it returned to. A run that has not ended reads **running**, and a field Legion did
+  not record reads `—`. Legion's daemon writes these records, and the tab only reads them. An
+  issue with no plan and no run reads **No step of this issue has run in Legion.**
 - **Conversation** is the issue's conversations, one card each: every ask with its replies and
   its answer, every comment thread with its replies, every message thread with its replies. The
   conversation with the newest reply is at the top, so a thread rises when someone answers it,

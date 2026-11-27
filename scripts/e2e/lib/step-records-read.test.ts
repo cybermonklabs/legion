@@ -41,6 +41,11 @@ const whole = [
   "default 0 retro implementer - attempt 1 legion-infra-infra-42-implementer anthropic/claude-opus-5 2026-11-20T11:00:00Z 2026-11-20T11:10:00Z passed",
   "default 0 merge merger - attempt 1 legion-infra-infra-42-merger - 2026-11-20T11:11:00Z 2026-11-20T11:20:00Z passed",
 ];
+// The line `dispatch steps` prints before the runs of the plan's one task, and the line of the
+// issue's experiment, which it prints right after the header for an issue a draw put in a group.
+const taskLine =
+  "task default needs []: 1 planner passed, 2 implementer passed, 3 tester passed, 4 reviewer passed, 5 acceptance:owner passed";
+const variantLine = "Experiment planning: variant b.";
 // records is the answer of these runs alone, the header's count following.
 function records(lines: string[]): string {
   return `${[`${key}: ${lines.length} steps in 1 tasks`, ...lines].join("\n")}\n`;
@@ -51,7 +56,8 @@ function without(drop: RegExp): string {
 }
 
 /** A finished issue of the project, closed at noon, whose newest run ran from a plan of these
- *  tasks' steps (the default task of the default steps when they are those), or from none. */
+ *  tasks' steps (the default task of the default steps when they are those), or from none. Each
+ *  task needs none, as this release's daemon writes a plan of one task. */
 function finished(issue: string, tasks: string[][] | null): FinishedIssue {
   const source = tasks?.length === 1 && tasks[0] === defaultSteps ? "default" : "owner";
   const plan: PlanRecord | null =
@@ -146,9 +152,7 @@ describe("step-records-read.sh", () => {
   // is no run, and the read judges the runs alone. The control is the read that takes every line
   // after the header for a run, which answers this whole read UNKNOWN.
   test("the line of a task of the plan is no run, and a whole answer with it passes", () => {
-    const planned =
-      "task default needs nothing: 1 planner passed, 2 implementer passed, 3 tester passed, 4 reviewer passed, 5 acceptance:owner passed";
-    const { code, stdout } = read(`${[whole[0], planned, ...whole.slice(1)].join("\n")}\n`);
+    const { code, stdout } = read(`${[whole[0], taskLine, ...whole.slice(1)].join("\n")}\n`);
     expect(stdout).toContain(`PASS: ${key}: 10 records;`);
     expect(code).toBe(0);
   });
@@ -162,26 +166,40 @@ describe("step-records-read.sh", () => {
   });
 
   test("the line of the issue's experiment right after the header is no fault: the read passes", () => {
-    const variant = "Experiment planning: variant b.";
-    const { code, stdout } = read(`${[whole[0], variant, ...whole.slice(1)].join("\n")}\n`);
-    expect(stdout).toContain(`${whole[0]}\n${variant}\n`);
+    const { code, stdout } = read(`${[whole[0], variantLine, ...whole.slice(1)].join("\n")}\n`);
+    expect(stdout).toContain(`${whole[0]}\n${variantLine}\n`);
     expect(stdout).toContain(`PASS: ${key}: 10 records`);
     expect(stdout).not.toContain("UNKNOWN");
     expect(code).toBe(0);
   });
 
   test("the same line anywhere but right after the header is no run: UNKNOWN, exit 2", () => {
-    const variant = "Experiment planning: variant b.";
     for (const lines of [
-      [...whole, variant],
-      [whole[0], whole[1], variant, ...whole.slice(2)],
-      [whole[0], variant, variant, ...whole.slice(1)],
+      [...whole, variantLine],
+      [whole[0], whole[1], variantLine, ...whole.slice(2)],
+      [whole[0], variantLine, variantLine, ...whole.slice(1)],
     ]) {
       const { code, stdout } = read(`${lines.join("\n")}\n`);
-      expect(stdout).toContain(`UNKNOWN: the line is no run: ${variant}`);
+      expect(stdout).toContain(`UNKNOWN: the line is no run: ${variantLine}`);
       expect(stdout).not.toContain("PASS");
       expect(code).toBe(2);
     }
+  });
+
+  // An issue a draw put in a group that runs a plan gets both lines, in the order `dispatch steps`
+  // prints them: the header, the Experiment line, then the task's line before its runs. The read
+  // passes over each. The control is the same answer with the two lines swapped: the Experiment
+  // line is read only right after the header, so the read answers UNKNOWN.
+  test("the Experiment line and then a task line, as dispatch steps prints them, pass", () => {
+    const printed = read(`${[whole[0], variantLine, taskLine, ...whole.slice(1)].join("\n")}\n`);
+    expect(printed.stdout).toContain(`${whole[0]}\n${variantLine}\n${taskLine}\n`);
+    expect(printed.stdout).toContain(`PASS: ${key}: 10 records;`);
+    expect(printed.stdout).not.toContain("UNKNOWN");
+    expect(printed.code).toBe(0);
+    const swapped = read(`${[whole[0], taskLine, variantLine, ...whole.slice(1)].join("\n")}\n`);
+    expect(swapped.stdout).toContain(`UNKNOWN: the line is no run: ${variantLine}`);
+    expect(swapped.stdout).not.toContain("PASS");
+    expect(swapped.code).toBe(2);
   });
 
   test("an answer with the merge record missing fails, exit 1, naming it", () => {

@@ -64,12 +64,13 @@ type RegisteredTask struct {
 }
 
 // PlanRefusal is the answer to a plan whose content Legion does not take, 409 PLAN_REFUSED: the
-// code and the sentence every refusal carries (Failure), and one reason for each cause
-// (intake.PlanRefused). A plan of an issue whose experiment's group takes no plan from its owner
-// is no such answer: it is the workflow's 409 PLAN_NOT_TAKEN (intake.PlanNotTaken), a Failure
-// with no reasons. `reasons` arrived with register_plan at OwnerPlanContract, and a caller below
-// it is served the Failure alone (shaping.go's refusal row), as a PauseFailure is below
-// pauseContract.
+// code and the sentence every refusal carries (Failure), and one reason for each cause, the first
+// plan.MostReasons of each kind of cause and one more that counts the rest of that kind
+// (plan.Supported and plan.Validate, intake.PlanRefused). A plan of an issue whose experiment's group takes no plan
+// from its owner is no such answer: it is the workflow's 409 PLAN_NOT_TAKEN (intake.PlanNotTaken),
+// a Failure with no reasons. `reasons` arrived with register_plan at OwnerPlanContract, and a
+// caller below it is served the Failure alone (shaping.go's refusal row), as a PauseFailure is
+// below pauseContract.
 type PlanRefusal struct {
 	Failure
 	Reasons []PlanReason `json:"reasons"`
@@ -158,11 +159,12 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // for the version Dispatch has and the issue carrying it (documentOfIssue), reads the plan's blocks
 // at the version given, each need as the task it names (planAt, through plan.FromBlocks), and
 // refuses with one reason for each cause of a plan this release does not carry out (plan.Supported)
-// or no release can (plan.Validate, under the daemon's own bound: checkPlan); each of those answers
-// records nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose
-// rules of a later version are the workflow's. A new version's apply answers its added tasks; where
-// the workflow takes the version already in force, the route reads that version's recorded
-// additions after it applies.
+// or no release can (plan.Validate, under the daemon's own bound: checkPlan), the first
+// plan.MostReasons of each kind named and the rest of it counted; each of those answers records
+// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of a
+// later version are the workflow's. A new version's apply answers its added tasks; where the
+// workflow takes the version already in force, the route reads that version's recorded additions
+// after it applies.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version.
 // No id decides whether a registration is one already taken (intake.ApplyFact applies every
@@ -214,11 +216,11 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
-	// yet, then what no release can. Each judges the plan against the deployment the daemon's
-	// settings define (Options.Deployment), so a role of `roles` is a role a step names. Validate
-	// checks a plan its owner wrote, before the fact lock, so it runs on the request's context and
-	// stops when the request ends, recording nothing, and under the daemon's own bound
-	// (planCheckBound), past which the plan is refused.
+	// yet, then what no release can, each check naming at most plan.MostReasons causes of each kind.
+	// Each judges the plan against the deployment the daemon's settings define (Options.Deployment),
+	// so a role of `roles` is a role a step names. Validate checks a plan its owner wrote, before the
+	// fact lock, so it runs on the request's context and stops when the request ends, recording
+	// nothing, and under the daemon's own bound (planCheckBound), past which the plan is refused.
 	refusals, cut, err := checkPlan(r.Context(), given, s.deployment, planCheckBound)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)

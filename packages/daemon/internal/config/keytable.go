@@ -108,6 +108,21 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 	}
 }
 
+// readsRoleKeyed is reads for a setting keyed by roles that checkDeploymentRoleKeys holds to a
+// role of the deployment once every key is read (worker_backends, role_config_files,
+// worker_stall_backstop_hours): beside the reader's answer, the file keeps the key's mapping
+// (fileConfig.RoleKeyed), from which that check takes the line of a name it refuses.
+func readsRoleKeyed[V any](read func(*yaml.Node, string) (map[claim.Role]V, error), keep func(*fileConfig, map[claim.Role]V)) func(*yaml.Node, string, *fileConfig) error {
+	readValue := reads(read, keep)
+	return func(value *yaml.Node, key string, file *fileConfig) error {
+		if err := readValue(value, key, file); err != nil {
+			return err
+		}
+		file.RoleKeyed[key] = value
+		return nil
+	}
+}
+
 // roundCap reads one of the two pod-update round caps and the review round cap: a positive integer
 // with no upper bound, whose absent key is no limit rather than a number nobody chose.
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
@@ -321,12 +336,12 @@ var topLevelKeys = func() []keyDescriptor {
 		{
 			Name: "worker_backends", Default: "every role runs on Oh My Pi", RequiredBy: "no",
 			Description: "The issue roles that run on Claude Code instead of Oh My Pi: each key a phase worker's role (`planner`, `implementer`, `tester`, `reviewer`, `merger`) or a role of `roles`, each value `omp` or `claude`; the architect and the controller always run on Oh My Pi.",
-			Read:        reads(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
+			Read:        readsRoleKeyed(readWorkerBackends, func(f *fileConfig, v map[claim.Role]runtime.Backend) { f.WorkerBackends = v }),
 		},
 		{
 			Name: "role_config_files", Default: "every role names only the overlays every role names", RequiredBy: "no",
 			Description: "Oh My Pi settings overlays one role names and no other — a model fallback chain for the roles whose output a machine checks, say: each key a role, each value absolute paths that role's `PI_CONFIG_FILES` names after the overlays every role names, so each outranks those.",
-			Read:        reads(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
+			Read:        readsRoleKeyed(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
 		},
 		{
 			Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
@@ -426,7 +441,7 @@ var topLevelKeys = func() []keyDescriptor {
 		{
 			Name: stallBackstopKey, Default: "twice the bound that role's own worker holds a tool call no deadline judges to: eight hours for an implementer and a reviewer, two for every other role and the controller", RequiredBy: "no",
 			Description: "The daemon's own backstop under a worker whose turn has stopped: per role, how many hours after that role's last recorded step the daemon ends the turn that step belongs to, so the task goes back to waiting and the session is sent it again, charging the claim nothing; `0` switches the backstop off for that role, and a bound below the role's whole stall ladder is refused.",
-			Read:        reads(readStallBackstops, func(f *fileConfig, v map[claim.Role]time.Duration) { f.WorkerStallBackstops = v }),
+			Read:        readsRoleKeyed(readStallBackstops, func(f *fileConfig, v map[claim.Role]time.Duration) { f.WorkerStallBackstops = v }),
 		},
 		{
 			Name: "worker_boot_timeout_seconds", RequiredBy: "no",
@@ -675,7 +690,7 @@ var nestedKeys = []memberGroup{
 		{Name: "plugins", Default: "a relaunch installs the pair the release workflow linked into this binary", RequiredBy: "no",
 			Description: "The exact pi-legion and pi-envoy pair a stale-plugin relaunch installs into a kept pod, in place of the image's own copies."},
 		{Name: "repository_cache", Default: "every cache runs on the daemon's own sizes and intervals", RequiredBy: "no",
-			Description: "The cache pod of each repository a live record names, which an issue pod's feed is filled from before GitHub is asked for the rest."},
+			Description: "The cache pod of each repository a live record names, which workspace-init uses to fill an issue pod's clone before GitHub supplies its delta."},
 		{Name: "setup", Default: "a role starts its Oh My Pi with nothing run first", RequiredBy: "no",
 			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0. It may install an Oh My Pi plugin marketplace from GitHub: such an install renames a directory in the role's home overlay, and gVisor's opaque mark on that directory stopped the pod's sandbox until legion-v19.18.1 mounted the overlay with `userxattr` (dispatch://INFRA-1262); a command that must stop no role skips the daemon-launched controller and exits 0 whatever step fails, as this short form does: `[/bin/sh, -c, '[ -z \"$LEGION_CONTROLLER\" ] || exit 0; cd ~ || exit 0; omp plugin marketplace remove <name> >/dev/null 2>&1; timeout 120 omp plugin marketplace add <owner>/<repo> && timeout 60 omp plugin install <plugin>@<name> --force && omp plugin enable <plugin>@<name> || echo \"skills install failed\" >&2; omp plugin marketplace remove <name> >/dev/null 2>&1; exit 0']` (docs/kubernetes.md, Configuration, gives the full example, which names the step that failed, and explains each step)."},
 		{Name: "skills_repository", Default: "", RequiredBy: "no",
@@ -736,8 +751,8 @@ var nestedKeys = []memberGroup{
 			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
-		{Name: "bucket", Default: "no bucket: an issue pod's feed comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
-			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's fetch downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
+		{Name: "bucket", Default: "no bucket: an issue pod's clone comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
+			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's provision downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
 		{Name: "service_account", Default: "the cache pods run as `pod.service_account`, as every issue pod does", RequiredBy: "when `bucket` is set",
 			Description: "The Kubernetes ServiceAccount the cache pods alone run as, the one the bucket's grant goes to; it must differ from the account the issue pods run as (`pod.service_account`, or `default` while that is unset), so no issue pod holds a grant on the bucket, and from `pod.controller_service_account` where that is set, so the controller's pod holds none either."},
 	}},

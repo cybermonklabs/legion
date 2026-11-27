@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/httpoutage"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -61,14 +62,17 @@ var Roles = []AppRole{Implement, Review}
 // GitIdentity is the bot identity that jj and git must use for work a role performs.
 type GitIdentity = runtime.GitIdentity
 
-// Lease is one installation-token lease, including its expiry, when it was minted and the App bot
-// identity.
+// Lease is one installation-token lease, including its expiry, when it was minted, the App bot
+// identity and the installation the token is of.
 type Lease struct {
 	Token     string
 	ExpiresAt time.Time
 	// Minted is when GitHub issued the token: one moments old may not be accepted yet.
 	Minted   time.Time
 	Identity GitIdentity
+	// Installation is the id of the installation GitHub minted the token on, whose budget every
+	// call made with the token spends (internal/daemon's rate reading).
+	Installation string
 }
 
 // TransientError is a GitHub answer that says nothing about the App or its installation, so the
@@ -179,32 +183,39 @@ type Tokens interface {
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: readPermissions,
 	// which is contents, metadata, pull requests, issues, Actions, checks, commit statuses and
-	// attestations, each at read. Two callers ask for it and no role's bundle does: a
-	// controller, which works no repository and holds one for every owner its App is installed
-	// on (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the
-	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
-	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
-	// directories hold that owner's own lease at the role's permissions instead (Token,
-	// GitHubCredential). An App on token_command gets what its command's release of
-	// the read profile holds instead, which the deployment's profiles file decides and the
-	// broker cuts to what the installation holds; the read profile docs/deployment.md gives names
-	// readPermissions. With a key of its own the mint asks for what the installation is granted
-	// of readPermissions and leaves the rest out (exchangeGranted), so an installation whose
-	// account has not granted the App issues, Actions, checks, commit statuses or attestations
-	// gets a token without the ones it is not granted rather than nothing. An owner with no name
-	// is refused before anything is minted, as Token's is.
+	// attestations, each at read. Two callers ask for it and no role's bundle does: a controller,
+	// which works no repository and holds one for every owner its App is installed on
+	// (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the implement
+	// App for the issue's own owner, which every issue pod's workspace-init and every repository
+	// cache clone with (implementTokens, internal/daemon). A workflow role's directories hold that
+	// owner's own lease at the role's permissions instead (Token, GitHubCredential). An App on
+	// token_command gets what its command's release of the read profile holds instead, which the
+	// deployment's profiles file decides and the broker cuts to what the installation holds; the
+	// read profile docs/deployment.md gives names readPermissions. With a key of its own the mint
+	// asks for what the installation is granted of readPermissions and leaves the rest out
+	// (exchangeGranted), so an installation whose account has not granted the App issues, Actions,
+	// checks, commit statuses or attestations gets a token without the ones it is not granted rather
+	// than nothing. An owner with no name is refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
 
-// Options makes a token manager testable. The zero value uses api.github.com, http.DefaultClient,
-// the wall clock, the daemon's own stderr for what a token_command writes there, and
-// slog.Default for what the manager logs: a grant shortfall, at warn (sayShortfalls).
+// Options makes a token manager testable. The zero value uses api.github.com (BaseURL as
+// githubrest.APIRoot reads it), http.DefaultClient, the wall clock, the daemon's own stderr for
+// what a token_command writes there, and slog.Default for what the manager logs: a grant
+// shortfall, at warn (sayShortfalls).
+//
+// Counter, when set, is told each installation token the manager is given, by an exchange or a
+// token_command's release, and the installation it is of (githubrate.Counter.Register), as GitHub
+// answers it, so the calls made with it count on that installation wherever they go through the
+// counter's transport. The daemon's boot sets it beside an HTTPClient on that transport; nil
+// registers nothing.
 type Options struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Now        func() time.Time
 	Stderr     io.Writer
 	Log        *slog.Logger
+	Counter    *githubrate.Counter
 }
 
 // Manager caches installation tokens by App and owner, and bot identities by App id. An App
@@ -220,6 +231,7 @@ type Manager struct {
 	now        func() time.Time
 	stderr     io.Writer
 	log        *slog.Logger
+	counter    *githubrate.Counter
 
 	mu                sync.Mutex
 	leases            map[scope]Lease
@@ -265,6 +277,9 @@ type pendingLease struct {
 	done  chan struct{}
 	lease Lease
 	err   error
+	// stale says a fresh list replaced the installation while this mint ran, and the mint's own
+	// caller asks again, so every waiter asks again too (lease).
+	stale bool
 }
 
 // refusedNarrowingAt is one remembered narrowing refusal: GitHub's own refusal, served again to
@@ -306,10 +321,7 @@ var (
 // New makes an App token manager. Config.Load resolves command and secret key sources before
 // constructing this manager; callers using LoadForValidation must resolve them themselves.
 func New(apps config.GitHubApps, options Options) *Manager {
-	baseURL := strings.TrimRight(options.BaseURL, "/")
-	if baseURL == "" {
-		baseURL = "https://api.github.com"
-	}
+	baseURL := githubrest.APIRoot(options.BaseURL)
 	client := options.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -339,6 +351,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		now:                  now,
 		stderr:               stderr,
 		log:                  log,
+		counter:              options.Counter,
 		leases:               map[scope]Lease{},
 		pending:              map[scope]*pendingLease{},
 		installations:        map[AppRole]map[string]string{},
@@ -350,6 +363,15 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		keys:                 map[string]*rsa.PrivateKey{},
 		refusals:             map[scope]refusedNarrowingAt{},
 		saidShortfalls:       map[saidShortfall]bool{},
+	}
+}
+
+// register tells the manager's Counter, when it has one, that token is an installation token of
+// installation (Options.Counter), the moment GitHub hands it over: so the calls the mint itself
+// goes on to make with it, such as the App's bot user read, are counted too.
+func (m *Manager) register(token, installation string) {
+	if m.counter != nil {
+		m.counter.Register(token, installation)
 	}
 }
 
@@ -469,6 +491,17 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // concurrent callers. A caller that waited on another's mint, which ended only because that
 // caller's own deadline did (a context error, or ErrCommandPending), asks again under its own
 // context rather than take that caller's failure as its own.
+// A mint whose installation a concurrent whole list replaced is also asked again, once for each
+// caller that mints, so neither its first caller nor a waiter can publish an old installation's
+// token after the replacement. The lease is stale only when the id the Manager holds for the
+// owner changed while its mint ran and the mint's installation is not the one held now. A mint
+// whose installation differs from a held id that did not change gives the same id at every mint,
+// so asking again would only mint again until the caller's deadline: an owner the configuration
+// pins to another owner's installation, or a token_command's release for one owner after a
+// reinstall, which moves no held id. A second mint that is stale too is served to its callers and
+// not cached. A waiter that goes round takes its own count, so a Token call can mint a third time
+// where it becomes the minter and a further list moves the held id under it; each extra mint
+// needs a real change of that id, so no call mints on and on.
 //
 // A narrowing GitHub refused is remembered per scope for narrowingRefusalWindow and served from
 // that memory while it holds, GitHub asked nothing: it is GitHub's definitive answer about what
@@ -503,6 +536,7 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 		return Lease{}, fmt.Errorf("the %s App's token names no owner account to mint on", request.role)
 	}
 	cacheKey := request.scope()
+	retried := false
 	for {
 		now := m.now()
 		m.mu.Lock()
@@ -521,7 +555,7 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 			m.mu.Unlock()
 			select {
 			case <-waiting.done:
-				if callerEnded(waiting.err) && ctx.Err() == nil {
+				if (waiting.stale || callerEnded(waiting.err)) && ctx.Err() == nil {
 					continue
 				}
 				return waiting.lease, waiting.err
@@ -531,23 +565,33 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 		}
 		waiting := &pendingLease{done: make(chan struct{})}
 		m.pending[cacheKey] = waiting
+		heldID := m.installations[request.role][cacheKey.owner]
 		m.mu.Unlock()
 
 		lease, err := m.mint(ctx, request)
 		minted := m.now()
 		m.mu.Lock()
+		// A list may replace this installation while its exchange is in flight. Do not put the
+		// old lease back after holdInstallations dropped it; every waiter asks the current scope.
+		installation := m.installations[request.role][cacheKey.owner]
+		stale := err == nil && installation != heldID && installation != "" && lease.Installation != installation
 		switch {
-		case err == nil:
+		case err == nil && !stale:
 			m.leases[cacheKey] = lease
 			delete(m.refusals, cacheKey)
 			maps.DeleteFunc(m.leases, func(_ scope, held Lease) bool { return !held.ExpiresAt.After(minted) })
 		case NarrowingRefused(err):
 			m.refusals[cacheKey] = refusedNarrowingAt{err: err, at: minted}
 		}
-		waiting.lease, waiting.err = lease, err
+		again := stale && !retried
+		waiting.lease, waiting.err, waiting.stale = lease, err, again
 		delete(m.pending, cacheKey)
 		close(waiting.done)
 		m.mu.Unlock()
+		if again {
+			retried = true
+			continue
+		}
 		return lease, err
 	}
 }
@@ -838,12 +882,24 @@ func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole, app con
 			return nil, err
 		}
 		found = make(map[string]string, len(released))
-		for owner := range released {
-			found[owner] = owner
+		for owner, installation := range released {
+			found[owner] = installation.id
 		}
 	} else if found, err = m.discoverInstallations(ctx, app); err != nil {
 		return nil, err
 	}
+	return m.holdInstallations(role, found), nil
+}
+
+// holdInstallations replaces the installation ids the Manager holds for every role of the same
+// App with found, keyed by the owner lowercased as a mint looks one up (installation), and returns
+// those keys sorted. Leases and narrowing refusals of a replaced installation are dropped, since
+// its token cannot stand in for the installation GitHub lists now. An unchanged or unlisted
+// owner's cached lease is left alone, and so is the lease of an owner the configuration pins to an
+// installation (configuredInstallation): every mint of that owner asks for the pinned id,
+// whichever id GitHub lists, so its lease is of the installation the next mint would use and no
+// list can replace it. It is the one way a whole installation read lands.
+func (m *Manager) holdInstallations(role AppRole, found map[string]string) []string {
 	installations := make(map[string]string, len(found))
 	owners := make([]string, 0, len(found))
 	for owner, installation := range found {
@@ -852,22 +908,120 @@ func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole, app con
 		owners = append(owners, key)
 	}
 	m.mu.Lock()
-	m.installations[role] = installations
+	app, _ := m.app(role)
+	for _, heldRole := range Roles {
+		heldApp, _ := m.app(heldRole)
+		if heldApp.AppID != app.AppID {
+			continue
+		}
+		previous := m.installations[heldRole]
+		maps.DeleteFunc(m.leases, func(key scope, lease Lease) bool {
+			installation := installations[key.owner]
+			return key.role == heldRole && installation != "" && lease.Installation != installation &&
+				configuredInstallation(heldApp, key.owner) == ""
+		})
+		maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
+			installation := installations[key.owner]
+			return key.role == heldRole && installation != "" && previous[key.owner] != installation
+		})
+		m.installations[heldRole] = installations
+	}
 	m.mu.Unlock()
 	slices.Sort(owners)
-	return owners, nil
+	return owners
 }
 
+// discoverInstallations is the owner accounts app is installed on, as GitHub spells each, and
+// the installation each is installed by: every installation GET /app/installations lists under
+// the App's JWT (listInstallations) that can mint a token (standing).
 func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubApp) (map[string]string, error) {
 	jwt, err := m.generateJWT(app.AppID, app.PrivateKey, m.now())
 	if err != nil {
 		return nil, err
 	}
+	listed, _, err := m.listInstallations(ctx, jwt)
+	if err != nil {
+		return nil, err
+	}
+	return standing(listed), nil
+}
+
+// standing is listed less every suspended installation, by owner as GitHub spells it: the
+// installations a token can be minted on. A suspended installation is GitHub's own statement that
+// it serves nothing: every token asked of it is refused 403. Listed, its owner would be a
+// directory of every role's bundle whose mint can only fail, and an owner nothing can be minted
+// on is what not being installed means.
+func standing(listed []ListedInstallation) map[string]string {
 	installations := map[string]string{}
+	for _, installation := range listed {
+		if !installation.Suspended {
+			installations[installation.Owner] = installation.ID
+		}
+	}
+	return installations
+}
+
+// ListedInstallation is one installation GET /app/installations lists for an App: its id, the
+// account it is installed on, as GitHub spells it, whether that account suspended it, and the
+// permissions the list names it granted, each permission's access ("read", "write", "admin") as
+// GitHub answers it to the App's JWT, which the daemon's rate reading logs on its line.
+type ListedInstallation struct {
+	ID, Owner   string
+	Suspended   bool
+	Permissions map[string]string
+}
+
+// AppInstallations is an App as its own JWT reads it: the slug it goes by now and every
+// installation GET /app/installations lists for it, in GitHub's order, a suspended one among them.
+type AppInstallations struct {
+	Slug          string
+	Installations []ListedInstallation
+}
+
+// ListInstallations is role's App as its own JWT reads it, for a reader that must account for
+// every installation GitHub lists whatever the project serves: the daemon's rate reading
+// (internal/daemon), which writes a line for each. Unlike InstalledOwners it keeps a suspended
+// installation, marked so, since GitHub lists it, and it names each installation's id. What it
+// read replaces the ids held for every role of this App and drops leases of replaced
+// installations (holdInstallations), so the next ReadToken reaches the installation GitHub lists
+// now. An App on token_command holds no key to sign the JWT with, and is refused.
+//
+// The slug is the one GitHub lists the installations with (app_slug), read at every call rather
+// than kept, so an App renamed while the daemon runs is named by its new slug at the next list;
+// GET /app is read for it only when the list names none, an empty list among them.
+func (m *Manager) ListInstallations(ctx context.Context, role AppRole) (AppInstallations, error) {
+	app, err := m.app(role)
+	if err != nil {
+		return AppInstallations{}, err
+	}
+	if app.TokenCommand != "" {
+		return AppInstallations{}, fmt.Errorf("the %s App is on %s and holds no key to list its installations under", role, tokenCommandField(role))
+	}
+	jwt, err := m.generateJWT(app.AppID, app.PrivateKey, m.now())
+	if err != nil {
+		return AppInstallations{}, err
+	}
+	listed, slug, err := m.listInstallations(ctx, jwt)
+	if err != nil {
+		return AppInstallations{}, err
+	}
+	if slug == "" {
+		if slug, err = m.appSlug(ctx, jwt); err != nil {
+			return AppInstallations{}, err
+		}
+	}
+	m.holdInstallations(role, standing(listed))
+	return AppInstallations{Slug: slug, Installations: listed}, nil
+}
+
+// listInstallations is every installation GET /app/installations lists under jwt, every page of
+// it, in GitHub's order, and the App's slug as the first installation that names one lists it
+// (app_slug): every installation of one App names that App's slug, "" where none names one.
+func (m *Manager) listInstallations(ctx context.Context, jwt string) (listed []ListedInstallation, slug string, _ error) {
 	for page := 1; ; page++ {
 		endpoint, err := url.Parse(m.baseURL + "/app/installations")
 		if err != nil {
-			return nil, fmt.Errorf("GitHub App installation URL: %w", err)
+			return nil, "", fmt.Errorf("GitHub App installation URL: %w", err)
 		}
 		query := endpoint.Query()
 		query.Set("per_page", "100")
@@ -875,48 +1029,72 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 		endpoint.RawQuery = query.Encode()
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		m.appHeaders(request, jwt)
 		response, err := m.client.Do(request)
 		if err != nil {
-			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", err)}
+			return nil, "", &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", err)}
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return nil, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
+			return nil, "", m.transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
 		}
 		body, err := readBody(response, "GitHub App installation discovery", responseBound)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		var payload []struct {
 			ID      json.RawMessage `json:"id"`
+			AppSlug string          `json:"app_slug"`
 			Account struct {
 				Login string `json:"login"`
 			} `json:"account"`
-			SuspendedAt *string `json:"suspended_at"`
+			Permissions map[string]any `json:"permissions"`
+			SuspendedAt *string        `json:"suspended_at"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("GitHub App installation discovery returned an invalid response")
+			return nil, "", fmt.Errorf("GitHub App installation discovery returned an invalid response")
 		}
 		for _, installation := range payload {
-			// A suspended installation is GitHub's own statement that it serves nothing: every
-			// token asked of it is refused 403. Listed, its owner would be a directory of every
-			// role's bundle whose mint can only fail, and an owner nothing can be minted on is
-			// what not being installed means.
+			id, err := installationID(installation.ID)
 			if installation.SuspendedAt != nil {
+				// A suspended installation serves nothing, so nothing GitHub lists of it fails the
+				// listing, as discovery skipped it before reading it: one with an id is listed,
+				// its account possibly empty, for the rate reading's line, and one with none,
+				// which no line could name, is left out.
+				if err == nil {
+					listed = append(listed, ListedInstallation{ID: id, Owner: installation.Account.Login, Suspended: true, Permissions: accessNamed(installation.Permissions)})
+				}
 				continue
 			}
-			id, err := installationID(installation.ID)
 			if err != nil || installation.Account.Login == "" {
-				return nil, fmt.Errorf("GitHub App installation discovery returned an invalid installation account")
+				return nil, "", fmt.Errorf("GitHub App installation discovery returned an invalid installation account")
 			}
-			installations[installation.Account.Login] = id
+			if slug == "" {
+				slug = installation.AppSlug
+			}
+			listed = append(listed, ListedInstallation{ID: id, Owner: installation.Account.Login, Permissions: accessNamed(installation.Permissions)})
 		}
 		if len(payload) < 100 {
-			return installations, nil
+			return listed, slug, nil
 		}
 	}
+}
+
+// accessNamed is each permission of listed whose value is an access GitHub names as text ("read",
+// "write", "admin"), the one kind it documents: a value of any other kind, which a later GitHub may
+// list, is left out rather than fail the listing of every installation of the App.
+func accessNamed(listed map[string]any) map[string]string {
+	if listed == nil {
+		return nil
+	}
+	permissions := make(map[string]string, len(listed))
+	for permission, access := range listed {
+		if text, ok := access.(string); ok {
+			permissions[permission] = text
+		}
+	}
+	return permissions
 }
 
 func installationID(raw json.RawMessage) (string, error) {

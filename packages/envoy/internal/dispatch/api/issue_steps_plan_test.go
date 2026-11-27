@@ -15,10 +15,11 @@ import (
 
 // stepsTask is one task of a read of an issue's steps as a person sees it: its id, what the plan
 // says of it (each planned step as `<step> <name> <state>`), and the ids of its runs in the order
-// the read lists them. Needs are kept as the read answers them, so null (nil) and [] stay apart.
+// the read lists them. Needs are kept as the read answers them, so null (nil) and [] (a pointer to
+// an empty list) stay apart.
 type stepsTask struct {
 	Task    string
-	Needs   []string
+	Needs   *[]string
 	Planned []string
 	Runs    []string
 }
@@ -95,8 +96,8 @@ func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
 		t.Fatalf("read the steps of %s: status=%d body=%s, want 200", owner, response.Code, response.Body.String())
 	}
 	want := []stepsTask{
-		{Task: "a", Needs: []string{}, Planned: []string{"1 implementer running", "2 reviewer not started"}, Runs: []string{implementing}},
-		{Task: "b", Needs: []string{"a"}, Planned: notStarted("tester")},
+		{Task: "a", Needs: &[]string{}, Planned: []string{"1 implementer running", "2 reviewer not started"}, Runs: []string{implementing}},
+		{Task: "b", Needs: &[]string{"a"}, Planned: notStarted("tester")},
 		{Task: "earlier", Runs: []string{earlier}},
 	}
 	if got := stepsTasks(decodeBody[model.IssueSteps](t, response)); !reflect.DeepEqual(got, want) {

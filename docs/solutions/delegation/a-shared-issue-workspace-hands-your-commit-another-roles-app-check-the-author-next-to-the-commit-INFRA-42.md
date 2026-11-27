@@ -40,11 +40,9 @@ implement App and a planner's, tester's or reviewer's the review App.
   jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'author.email()'
   ```
 
-- Before a push, `jj metaedit -r @ --update-author` is the whole repair. After a push: the identity
-  check in `skill://legion-worker/references/default-branch-check.md`, the rewrite guard
-  (`descendants(<commit>) ~ ::@` must be empty, so nothing of another tree is built on it),
-  `jj metaedit -r <commit> --update-author`, then one `jj bookmark set … --allow-backwards` and a
-  single push.
+- Before a push, `jj metaedit -r @ --update-author` is the whole repair. After a push, never
+  rewrite the commit (`skill://legion-worker/references/conflicts-and-rewrites.md`, "A wrong
+  pushed commit"): say in the pull request body which commit carries another role's App.
 
 ## Evidence (INFRA-42, sjawhar/legion#2086)
 

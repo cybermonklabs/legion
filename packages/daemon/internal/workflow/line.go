@@ -103,6 +103,31 @@ func todaysWalk() Walk {
 	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Places: record.TodaysPlaces, Merges: true}
 }
 
+// LineOf is the line of phases issue's run walks (Walk.Line), as store holds it in tx: the one
+// order a reader outside the engine names a task's steps in, such as the news of an approved
+// design, whose answer for an issue in accepting names the phases a move back reaches
+// (acceptingAnswer). For a run with plan rows it is the line of the task whose copy stands where
+// issue stands (scopesOn). Where several tasks stand there, it answers the first in task id order,
+// as the issue's other readers of one task take it (heldOrStoppedOf, PromotedScope): an error
+// would stop the design news of the whole tree (the daemon's moveBackOf fails the send) for as
+// long as two tasks stand in accepting, and a line that names one task's moves back is the lesser
+// cost. So where two tasks in accepting have different steps before it, the answer names the
+// first task's moves back only. A run none of whose tasks stands there is an error, since no
+// task's line names a move back of the issue. A run with no plan rows walks today's line
+// (todaysWalk).
+func LineOf(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) ([]phase.Phase, error) {
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range scopesOn(issue, stored) {
+		if !s.Planned() || s.issue.Phase == issue.Phase {
+			return s.walk.Line, nil
+		}
+	}
+	return nil, fmt.Errorf("the line of %s at generation %d: no task of its plan stands in %s", issue.Key, issue.Generation, issue.Phase)
+}
+
 // walksOf is the walk of each task of stored, the plan of the run of the issue keyed key, in task
 // id order (record.StoredPlan.Tasks): today's walk alone for a run with no plan rows (todaysWalk).
 func walksOf(key string, stored *record.StoredPlan) []Walk {

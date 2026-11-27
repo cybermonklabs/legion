@@ -2182,8 +2182,7 @@ block_account() {
 # (lib/stage4b-pods.jq reservation_problems); the launcher dialing the worker stream the daemon
 # served when the pod was created, at advertise_host; each role's gh files in a volume of its own
 # under its directory of the roles directory, read-only; no Secret value in a container's
-# environment, command or args; and split provisioning (only workspace-fetch reaches the
-# provisioning credential).
+# environment, command or args; and provisioning credentials mounted only in `workspace-init`.
 # shape_problems prints each way the pod object on stdin departs from that shape, or nothing. It
 # judges the object alone, so a pod the watch recorded is judged after it is gone, and it reads the
 # streams the run's daemons served from record_stream's record each time, so the shape watcher,
@@ -2203,6 +2202,7 @@ shape_problems() {
         or ([$s.volumes[] | select(.projected) | .projected.sources[] | select(.serviceAccountToken) | .serviceAccountToken.audience] != [$audience])
         then "the projected token source of the operator pod is not the one token for LEGION_E2E_MODEL_GATEWAY_AUDIENCE" else empty end),
       (if ($s.containers | map(.name)) != ["roles"] then "pod containers \($s.containers | map(.name)), want only [\"roles\"]" else empty end),
+      (if (($s.initContainers // []) | map(.name)) != ["workspace-init"] then "pod init containers \((($s.initContainers // []) | map(.name))), want only [\"workspace-init\"]" else empty end),
       # The operator mounts models.yml at the image home; the roles container holds every mount
       # under the home at the same path under the home mounts directory instead (homeMountsView),
       # and the namespaces of each role bind it back.
@@ -2226,9 +2226,8 @@ shape_problems() {
         | if $stream == null then "the launcher dials \(launcher_connect // "nothing"), but no worker stream was served when the pod was created (\(.metadata.creationTimestamp))"
           elif launcher_connect != $stream then "the launcher dials \(launcher_connect // "nothing (no --connect)"), not advertise_host at \($stream)"
           else empty end),
-      ([$s.initContainers[]? | select(.name != "workspace-fetch") | .volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the provision volume is mounted outside workspace-fetch" else empty end),
+      ([$s.initContainers[]? | select(.name != "workspace-init") | .volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the provision volume is mounted outside workspace-init" else empty end),
       ([$c.volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the roles container mounts the provision volume" else empty end),
-      ([$s.initContainers[]? | select(.name == "workspace-init") | .volumeMounts[]? | select(.name == "feed" and .readOnly != true)] | if length > 0 then "workspace-init mounts the feed writable" else empty end),
       # Each slot holds the GitHub App tokens of the role its process was launched as, here the
       # role its agent is named for, in a gh volume of its own (LEGION-631): gh-<slot> projects the
       # two gh keys of each owner in that slot Secret as <owner>/hosts.yml and <owner>/config.yml,
@@ -7008,8 +7007,8 @@ expect_failure pod-shape-unrecorded-pod test -z "$(stream_missing "$evidence/pod
 mv "$work/driver-actions.saved" "$evidence/driver-actions.txt"
 unames=$(cat "$evidence"/pods/*.txt 2>/dev/null | sed -n 's/^uname=//p' | sort -u | tr '\n' ' ')
 note "$(wc -l <"$evidence/pods-checked.txt") of them also read live by the shape watcher (gVisor uname -r: $unames)"
-grep -h '"init"' "$evidence"/pods/*.txt | jq -s -c 'map({role, init: [.init[] | select(.name == "workspace-fetch") | {started, finished}]})' >"$evidence/workspace-fetch.json"
-note "workspace-fetch per pod (started, finished) and node ephemeral-storage use: $evidence/workspace-fetch.json, $evidence/pods/"
+grep -h '"init"' "$evidence"/pods/*.txt | jq -s -c 'map({role, init: [.init[] | select(.name == "workspace-init") | {started, finished}]})' >"$evidence/workspace-init.json"
+note "workspace-init per pod (started, finished) and node ephemeral-storage use: $evidence/workspace-init.json, $evidence/pods/"
 pass
 
 begin pod-watch-verdict

@@ -12,9 +12,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// queueStart queues a start row of role on the root issue with id and last error lastError, as a
-// try of the outbox leaves it on its backoff.
-func queueStart(t *testing.T, st *Store, id int64, role claim.Role, lastError string) {
+// queueStartWithLastError queues a start row of role on the root issue with id and last error
+// lastError, as a try of the outbox leaves it on its backoff: the last error is what tells a start
+// that waits for its pod (pods.StartWaitsForPodPrefix) from a start that waits on anything else.
+func queueStartWithLastError(t *testing.T, st *Store, id int64, role claim.Role, lastError string) {
 	t.Helper()
 	if _, err := st.Pool().Exec(context.Background(), `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
 		values ($1, 'supervise', $2, jsonb_build_object('op', 'start', 'tree', $2::text, 'role', $3::text, 'generation', 1), 1, now(), $4)`,
@@ -43,7 +44,7 @@ func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 	ctx := context.Background()
 	openRunningTree(t, st)
 	suspendedImplementer(t, st, supervise.SuspendedByOperator)
-	queueStart(t, st, 31, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built before the deployment defined checker")
+	queueStartWithLastError(t, st, 31, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built before the deployment defined checker")
 
 	view := idleViewOf(t, st, rootIssue)
 	if view.Waiting {
@@ -56,7 +57,7 @@ func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 		t.Errorf("the view's hold = %q, want none", view.HeldFor)
 	}
 
-	queueStart(t, st, 32, claim.RoleTester, "Dispatch is down")
+	queueStartWithLastError(t, st, 32, claim.RoleTester, "Dispatch is down")
 	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
 		t.Errorf("the view reads no delivery waiting, want the tester's start that waits on Dispatch")
 	}
@@ -90,9 +91,9 @@ func TestAReleaseIsNotOvertakenByAStartThatWaitsForItsPod(t *testing.T) {
 			ctx := context.Background()
 			openRunningTree(t, st)
 			suspendedImplementer(t, st, supervise.SuspendedByReleased)
-			queueStart(t, st, first-2, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built before the deployment defined checker")
+			queueStartWithLastError(t, st, first-2, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built before the deployment defined checker")
 			if tc.other {
-				queueStart(t, st, first-1, claim.RoleTester, "Dispatch is down")
+				queueStartWithLastError(t, st, first-1, claim.RoleTester, "Dispatch is down")
 			}
 			markRelease(t, st, first, boundary, last, 0, claim.RoleImplementer)
 			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)

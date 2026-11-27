@@ -1321,7 +1321,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// (record.MergeForwardReview).
 	if current {
 		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
-			return refusal, nil
+			return refusal.Result(), nil
 		}
 	}
 	if word, _, ok := phase.Handoff(reported); ok {
@@ -1576,9 +1576,16 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		}
 	}
 	if !works {
-		reason := fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)
+		// A merge owed to the role whose claim failed is asked again at the ready of that role's
+		// next launch (askAgainAtLaunch), and the notice its failure sends says so (owedAskClause),
+		// after the role's own clauses, so the "it" of noStartOfItsOwn still names the role.
+		owed, err := e.owedAskClause(ctx, tx, *issue, fact.Role)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		reason := joinReason(fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working), noStartOfItsOwn(fact))
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: view.Phase, Failure: failure,
-			Reason: joinReason(reason, noStartOfItsOwn(fact))})
+			Reason: reason + owed})
 	}
 	if view.Phase == phase.Held {
 		return intake.Result{}, nil
@@ -2763,9 +2770,15 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, s TaskScope, from ph
 	}, freshSession); err != nil {
 		return "", err
 	}
-	// The release puts the issue back in a phase, so it queues the reconcile of the tree's news as
-	// a move does after its start (queueMovedNews). It puts the issue back in the phase the hold is
-	// from, which is no move between phases, so the merge forward stands as the hold left it.
+	// The release puts the issue back in the phase the hold is from, which is no move between
+	// phases, so the merge forward stands as the hold left it; but the worker it starts again is
+	// held as a worker a move starts is, where the merge of the head is owed to another role
+	// (holdStartedWorker). A merge owed to that worker itself is asked again at the ready of its new
+	// launch (askAgainAtLaunch). Then it queues the reconcile of the tree's news as a move does
+	// after its start (queueMovedNews).
+	if err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
+		return "", err
+	}
 	return from, e.queueMovedNews(ctx, tx, issue)
 }
 
@@ -3279,15 +3292,12 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 
 // acceptedRole is the role of the step the owner's acceptance of s's task accepts: the step before
 // the acceptance's place on the task's walk, by place and never by type, so the step after the
-// sign-off reads the report the owner read. A run with no plan rows walks today's line, where the
-// review stands before accepting.
+// sign-off reads the report the owner read. A run with no plan rows walks today's line on today's
+// steps (todaysWalk), where the review stands before accepting.
 func (e *Engine) acceptedRole(s TaskScope) (claim.Role, error) {
 	w := s.walk
-	if !w.Stored {
-		return claim.RoleReviewer, nil
-	}
 	place, ok := w.PlaceOf(phase.Accepting)
-	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
+	if !ok || place.Position < 2 {
 		return "", fmt.Errorf("sign off %s: task %s of its line %v has no step before its acceptance", s.issue.Key, w.Task, w.Line)
 	}
 	return claim.Role(w.Steps[place.Position-2].Role), nil
@@ -3560,7 +3570,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 		}
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
-	// it, and a move at a head held in a confirmed conflict asks for it where the merge comes
+	// it, a move while another role's merge forward of the head is open holds the worker it
+	// starts, and a move at a head held in a confirmed conflict asks for it where the merge comes
 	// next. It comes after the start, so the worker of the phase entered is started before the
 	// hold that tells it to wait for the merge. It reads pr, the row the start named, as the
 	// handler read it: the move reads its task's pull request once.

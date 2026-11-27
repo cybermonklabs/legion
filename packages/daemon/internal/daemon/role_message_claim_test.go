@@ -55,7 +55,9 @@ func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	row := record.OutboxRow{ID: 70, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), Payload: naming}
+	// Each row is made now, as the store makes a row it enqueues (created_at): a hook prompt ends at
+	// the hour after its row was made (keptRoleMessageEnded), and a row made at the zero time is past it.
+	row := record.OutboxRow{ID: 70, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), CreatedAt: time.Now(), Payload: naming}
 	if err := runner.execute(ctx, row); err != nil {
 		t.Fatalf("the hook prompt naming %s: %v", named, err)
 	}
@@ -63,7 +65,7 @@ func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
 		t.Fatalf("the hook prompt naming %s was published as %+v, want once on its topic", named, published)
 	}
 
-	old := record.OutboxRow{ID: 71, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), Payload: before}
+	old := record.OutboxRow{ID: 71, Issue: "LEGION-208", Kind: record.OutboxKindHookPrompt, NextAt: time.Now(), CreatedAt: time.Now(), Payload: before}
 	if err := runner.execute(ctx, old); err != nil {
 		t.Fatalf("the hook prompt of the release before: %v", err)
 	}
