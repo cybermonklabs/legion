@@ -37,11 +37,13 @@ import (
 //
 // A copy that names no session has no owner a caller can prove: a caller with no session, with or
 // without a token, that repeats it learns only that the key is taken, or gets its own envelope
-// without the header.
+// without the header. A role publish that names no session to a role nobody claims keeps no copy at
+// all, so on that route the first publish and the repeat are each refused 404 (roleSend.noHolder).
 //
 // The controls: A's own repeat under K gets the whole stored copy, and a request with a token and
-// no session gets its own kept copy whole.
+// no session to a role nobody claims is refused 404 with nothing kept, whoever its token proves.
 func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	const alice, bob = "ses_other_sender_alice", "ses_other_sender_bob"
 
@@ -55,6 +57,9 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		status int
 		// stored is the one copy the stream holds for the request, as the route answers it.
 		stored func(t *testing.T) contracts.Envelope
+		// keptRole is the role whose kept lane holds the copy of a route that keeps one, and empty
+		// for every other route.
+		keptRole string
 	}
 	// routes is the four routes, each to a topic, a target or a role of its own.
 	routes := func(t *testing.T) []route {
@@ -68,16 +73,16 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		return []route{
 			{"topic publish", "/v1/messages/publish", map[string]any{"topic": topic}, http.StatusOK, func(t *testing.T) contracts.Envelope {
 				return heldCopy(t, rig.harness.client, topic)
-			}},
+			}, ""},
 			{"send", "/v1/messages/send", map[string]any{"target_session": target}, http.StatusOK, func(t *testing.T) contracts.Envelope {
 				return heldCopy(t, rig.harness.client, contracts.LegacyAgentSubject(target))
-			}},
+			}, ""},
 			{"role publish", "/v1/messages/publish", map[string]any{"topic": contracts.RoleTopicPrefix + role}, http.StatusOK, func(t *testing.T) contracts.Envelope {
 				return heldForward(t, rig.harness.client, holder)
-			}},
+			}, ""},
 			{"role publish kept", "/v1/messages/publish", map[string]any{"topic": contracts.RoleTopicPrefix + unclaimed}, http.StatusAccepted, func(t *testing.T) contracts.Envelope {
 				return heldCopy(t, rig.harness.client, bus.KeptRoleSubject(unclaimed))
-			}},
+			}, unclaimed},
 		}
 	}
 	// caller is who a request comes from: the session it names (none when empty), the session a
@@ -169,6 +174,15 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 				t.Run(r.name, func(t *testing.T) {
 					key := uuid.NewString()
 					words := "the first sender's own words " + id.New()
+					if row.first == "" && r.keptRole != "" {
+						// A role publish that names no session is kept for nobody: no dead letter
+						// could reach its sender (roleSend.noHolder). So the first and the repeat
+						// are each refused 404, and the lane holds no copy for the repeat to read.
+						request(t, r, key, caller{}, words, "optional").requireStatus(t, "the first "+r.name, http.StatusNotFound)
+						request(t, r, key, row.second, "the second sender's words", "required").requireStatus(t, "the repeat of the first "+r.name, http.StatusNotFound)
+						assertNothingKept(t, rig.harness.client, r.keptRole)
+						return
+					}
 					request(t, r, key, caller{session: row.first}, words, "optional").requireStatus(t, "the first "+r.name, r.status)
 					kept := r.stored(t)
 					answer := request(t, r, key, row.second, "the second sender's words", "required")
@@ -184,15 +198,14 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		})
 	}
 
-	// A request's own copy is answered whole whoever proves what: a request with a token and no
-	// session is kept as its own copy, which its 202 answers.
-	t.Run("control: a request with a token and no session gets its own kept copy whole", func(t *testing.T) {
+	// A request with a token and no session names no session a dead letter could reach, whoever its
+	// token proves, so a role publish to a role nobody holds keeps nothing for it and is refused 404
+	// (roleSend.noHolder).
+	t.Run("control: a request with a token and no session is refused, and nothing is kept for it", func(t *testing.T) {
 		r := routes(t)[3]
 		first := request(t, r, uuid.NewString(), caller{token: bob, reads: true}, "my own words", "")
-		first.requireStatus(t, "the tokened first publish to the unclaimed role", http.StatusAccepted)
-		if kept := r.stored(t); !reflect.DeepEqual(first.envelope, kept) || first.Duplicate {
-			t.Fatalf("the tokened first publish answered %s, want its own kept copy %+v whole with no duplicate", first.raw, kept)
-		}
+		first.requireStatus(t, "the tokened first publish to the unclaimed role", http.StatusNotFound)
+		assertNothingKept(t, rig.harness.client, r.keptRole)
 	})
 }
 
@@ -202,6 +215,7 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 // reads the key-taken answer, as it does for a repeat. The control is the keep's own copy,
 // answered whole with no duplicate.
 func TestAKeptAnswerOfAnotherSendersCopyIsDuplicateOutsideARepeat(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	topic := contracts.RoleTopicPrefix + "kept-outside-" + id.New()
 	key := publishDedupePrefix + uuid.NewString()

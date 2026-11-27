@@ -19,6 +19,7 @@ import (
 // it, the other skips, so the owed settlement is resumed once in the period rather than once per
 // process (plan D9, audit finding 9).
 func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
