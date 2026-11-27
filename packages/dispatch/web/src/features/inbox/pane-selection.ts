@@ -297,6 +297,9 @@ export function usePaneSelection({
   const begun = useRef<readonly HandOff[]>([]);
   /** The hand-off that has landed and whose target has not taken the focus yet. */
   const focusTo = useRef<HandOff | undefined>(undefined);
+  /** What ends that hand-off's watch on the reader's next press (`landHandOff`): the watch goes
+   *  with the hand-off (`endLanded`), and with the list. */
+  const landedWatch = useRef<AbortController | undefined>(undefined);
   /** A target `focusTarget` gave the focus with no scroll while rows of `acted` still stood
    *  before it: once none does, it is shown whole at its nearest edge by the least scroll where
    *  the reader cannot see the whole of it (`landNearest`), while it still holds the focus. */
@@ -524,6 +527,16 @@ export function usePaneSelection({
     takeBegun(ids);
   };
 
+  /** Takes the landed hand-off off the record, and ends its watch on the reader's next press
+   *  with it: at that press, once its target takes the focus (`focusHandOff`), once its rows go
+   *  without that target drawn, once the bar's landing takes it (`takeHandOff`), and once a newer
+   *  landing takes its place. */
+  const endLanded = (): void => {
+    focusTo.current = undefined;
+    landedWatch.current?.abort();
+    landedWatch.current = undefined;
+  };
+
   const landHandOff = (ids: readonly string[]): void => {
     const began = takeBegun(ids);
     const acted = began?.acted ?? new Set(ids);
@@ -569,17 +582,16 @@ export function usePaneSelection({
       if (columns) select(undefined);
       else leaveView();
     }
-    focusTo.current = handOff;
     // The target can wait on a commit still to come - the empty message is drawn once the acted
     // rows go - and the reader's next press says they have moved on without it: a snooze of the
-    // last rows with the Later band open leaves them drawn, and no message comes.
-    const movedOn = () => {
-      if (focusTo.current === handOff) focusTo.current = undefined;
-      document.removeEventListener("keydown", movedOn, true);
-      document.removeEventListener("pointerdown", movedOn, true);
-    };
-    document.addEventListener("keydown", movedOn, true);
-    document.addEventListener("pointerdown", movedOn, true);
+    // last rows with the Later band open leaves them drawn, and no message comes. The watch on
+    // that press goes with this hand-off, so a newer landing ends the one it replaces.
+    endLanded();
+    focusTo.current = handOff;
+    const watch = new AbortController();
+    landedWatch.current = watch;
+    document.addEventListener("keydown", endLanded, { capture: true, signal: watch.signal });
+    document.addEventListener("pointerdown", endLanded, { capture: true, signal: watch.signal });
     setLandings((count) => count + 1);
   };
 
@@ -816,7 +828,7 @@ export function usePaneSelection({
     const handOff = focusTo.current;
     const target = handOff === undefined ? null : targetElement(handOff.target);
     if (handOff === undefined || target === null) return false;
-    focusTo.current = undefined;
+    endLanded();
     focusTarget(handOff.acted, target);
     return true;
   };
@@ -853,7 +865,7 @@ export function usePaneSelection({
     const handOff = focusTo.current;
     if (handOff !== undefined) {
       if (!focusHandOff() && !drawsAny(handOff.acted) && readingView() === null) {
-        focusTo.current = undefined;
+        endLanded();
       }
       return;
     }
@@ -910,11 +922,14 @@ export function usePaneSelection({
     row?.scrollIntoView?.({ block: "center" });
   });
 
+  // A landed hand-off's watch on the reader's next press goes with the list.
+  useEffect(() => () => landedWatch.current?.abort(), []);
+
   // `PaneSelection.takeHandOff`.
   const takeHandOff = (): LandingTarget | undefined => {
     const handOff = focusTo.current;
     if (handOff === undefined) return undefined;
-    focusTo.current = undefined;
+    endLanded();
     return () => targetElement(handOff.target);
   };
 

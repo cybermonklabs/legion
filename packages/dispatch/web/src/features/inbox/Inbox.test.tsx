@@ -63,6 +63,7 @@ import { QUIET_MS } from "../doc/refocus-when-settled";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { SnoozeWrites } from "./ask-snooze-fixture";
@@ -10996,6 +10997,298 @@ test("with the Later band open, a snooze of the selected row selects and focuses
     getInbox.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
+  }
+});
+
+/** Keeps the Later band open, as a reader who opened it once finds it on every visit after
+ *  (`useFoldedGroups`), though no row is in it yet. */
+function keepLaterOpen(): void {
+  window.localStorage.setItem(
+    userPreferenceStorageKey("alice", "inbox.folded-groups"),
+    JSON.stringify({ priority: [] })
+  );
+}
+
+// A landed hand-off's target can wait on a commit still to come (`landHandOff`): with the Later
+// band open, a snooze of the last row moves that row into the band, where it is still drawn, so
+// the list draws no empty message and the hand-off waits for one. The reader's next key or press
+// says they have moved on without it. So when the row goes later - a read that no longer lists
+// it, or the band folded shut - the focus stays where the reader put it, and moves neither to
+// the empty message nor to the list, which stands in for the message while every row it holds is
+// folded away.
+for (const { moveOnAndLetGo, name } of [
+  {
+    name: "with the Later band open, a snooze of the last row beside the column leaves the focus in the search box the reader's next key went to, when a read takes the row away later",
+    moveOnAndLetGo: async (user: UserEvent, takeAway: () => Promise<void>) => {
+      await user.keyboard("f");
+      const box = screen.getByRole("searchbox", { name: "Search asks" });
+      expect(box).toHaveFocus();
+      await takeAway();
+      await screen.findByRole("region", { name: "Inbox empty state" });
+      return box;
+    },
+  },
+  {
+    name: "with the Later band open, a snooze of the last row beside the column leaves the focus on the band's toggle the reader then clicks to fold the band shut",
+    moveOnAndLetGo: async (user: UserEvent) => {
+      const toggle = screen.getByRole("button", { name: /^Later \(1\)/ });
+      await user.click(toggle);
+      await waitFor(() => expect(rowIds()).toEqual([]));
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      return toggle;
+    },
+  },
+] satisfies readonly {
+  name: string;
+  /** The reader's own move while the hand-off waits, and then the snoozed row's going: by the
+   *  move itself, or by a read that no longer lists the row (`takeAway`). Answers what the move
+   *  put the focus on. */
+  moveOnAndLetGo: (user: UserEvent, takeAway: () => Promise<void>) => Promise<HTMLElement>;
+}[]) {
+  test(name, async () => {
+    const user = userEvent.setup();
+    const narrow = widenToReadingPane();
+    keepLaterOpen();
+    const only = inboxIssue("ask-a", "CORE-1", "Which approach?");
+    let served: InboxRow[] = [only];
+    const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+    const snoozeAsk = answerAskSnoozes().mockImplementation(
+      async (id, { snoozed_until: until }) => {
+        served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+        return { snoozed_until: until };
+      }
+    );
+    const getAsk = mockAskReads([only]);
+    const getIssue = mockIssueReads();
+    const { queryClient, unmount } = renderInbox();
+
+    try {
+      await screen.findByTestId("inbox-pane");
+      expect(selectedIds()).toEqual(["ask-a"]);
+      await user.keyboard("h");
+      await user.keyboard("2");
+      expect(snoozeAsk).toHaveBeenCalledTimes(1);
+      // The snoozed row is drawn in the open band, so no empty message is drawn for the hand-off.
+      await waitFor(() => expect(shortRow("ask-a")).toHaveAttribute("data-inbox-section", "later"));
+      await afterFrameAndTasks();
+      expect(screen.queryByRole("region", { name: "Inbox empty state" })).not.toBeInTheDocument();
+
+      const kept = await moveOnAndLetGo(user, async () => {
+        // Answered elsewhere: the next read lists nothing.
+        served = [];
+        await act(() => queryClient.invalidateQueries());
+      });
+      await afterFrameAndTasks();
+      expect(kept).toHaveFocus();
+    } finally {
+      unmount();
+      narrow();
+      getAsk.mockRestore();
+      getInbox.mockRestore();
+      getIssue.mockRestore();
+      snoozeAsk.mockRestore();
+    }
+  });
+}
+
+/** The listeners for the reader's next key or press put on `document` from some moment on. */
+interface PressListeners {
+  /** Those still there, by type. */
+  live: () => string[];
+  /** Puts `document`'s own methods back. */
+  restore: () => void;
+}
+
+/**
+ * The listeners for the reader's next key or press - `keydown` and `pointerdown`, in the capture
+ * phase - put on `document` from this call on: one is gone once it is removed, or once the signal
+ * it was added with aborts.
+ */
+function pressListenersOnDocument(): PressListeners {
+  const adds = spyOn(document, "addEventListener");
+  const removes = spyOn(document, "removeEventListener");
+  const capturing = (options: boolean | EventListenerOptions | undefined): boolean =>
+    typeof options === "boolean" ? options : options?.capture === true;
+  return {
+    live: () =>
+      adds.mock.calls.flatMap(([type, listener, options]) =>
+        (type === "keydown" || type === "pointerdown") &&
+        capturing(options) &&
+        !(typeof options === "object" && options.signal?.aborted === true) &&
+        !removes.mock.calls.some(
+          ([removedType, removed, removedOptions]) =>
+            removedType === type && removed === listener && capturing(removedOptions)
+        )
+          ? [type]
+          : []
+      ),
+    restore: () => {
+      adds.mockRestore();
+      removes.mockRestore();
+    },
+  };
+}
+
+/** A snooze write per ask that is out until the row lets it land (`land`), which then tells
+ *  `serve` the ask and its moment, for the reads after it to list. */
+function heldSnoozes(serve: (askId: string, until: string) => void) {
+  const out = new Map<string, () => void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    const landing = Promise.withResolvers<void>();
+    out.set(id, landing.resolve);
+    await landing.promise;
+    serve(id, until);
+    return { snoozed_until: until };
+  });
+  return {
+    /** Lets the writes of `ids` land, together. */
+    land: async (...ids: string[]) => {
+      await waitFor(() => expect(ids.filter((id) => !out.has(id))).toEqual([]));
+      await act(async () => {
+        for (const id of ids) out.get(id)?.();
+      });
+    },
+    snoozeAsk,
+  };
+}
+
+// A landed hand-off watches for the reader's next key or press, which says they have moved on
+// without its target (`landHandOff`), and the watch goes with the hand-off rather than wait on
+// that press: once its target takes the focus, once the selection bar's own landing takes it
+// (`takeHandOff`), and once a newer landing takes its place - two snoozes out together that land
+// with no press between them. Left there, each landing's watch heard every press on the page
+// until the next one came.
+test("a landed hand-off's watch on the reader's next press goes once its target takes the focus, once the selection bar's landing takes it, and once a newer landing takes its place", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+    inboxIssue("ask-d", "CORE-4", "Which week?"),
+    inboxIssue("ask-e", "CORE-5", "Which team?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const writes = heldSnoozes((id, until) => {
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+  });
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+  let listeners: PressListeners | undefined;
+  /** Counts the press listeners put on `document` from here on, in place of those counted so
+   *  far. */
+  const countFromHere = (): PressListeners => {
+    listeners?.restore();
+    listeners = pressListenersOnDocument();
+    return listeners;
+  };
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+
+    // The snooze of the row in hand lands, and the row after it takes the focus.
+    await user.keyboard("h");
+    await user.keyboard("2");
+    const spent = countFromHere();
+    await writes.land("ask-a");
+    await waitFor(() => expect(shortRow("ask-b")).toHaveFocus());
+    await afterFrameAndTasks();
+    expect(spent.live()).toEqual([]);
+
+    // Two snoozes out at once, of ask-b and then of ask-c, whose landings both find the reader
+    // where they acted: on ask-c, the row ask-b's snooze sends them to and the row ask-c's is of.
+    await user.keyboard("h");
+    await user.keyboard("2");
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
+    await user.keyboard("h");
+    await user.keyboard("2");
+    const replaced = countFromHere();
+    await writes.land("ask-b", "ask-c");
+    await waitFor(() => expect(shortRow("ask-d")).toHaveFocus());
+    await afterFrameAndTasks();
+    expect(replaced.live()).toEqual([]);
+
+    // The bar's Snooze of ask-d lands, and the bar's own landing gives ask-e the focus.
+    await user.click(markOf("ask-d"));
+    await screen.findByText("1 selected");
+    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    const taken = countFromHere();
+    await writes.land("ask-d");
+    await waitFor(() => expect(shortRow("ask-e")).toHaveFocus());
+    expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
+    await afterFrameAndTasks();
+    expect(taken.live()).toEqual([]);
+  } finally {
+    listeners?.restore();
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    writes.snoozeAsk.mockRestore();
+  }
+});
+
+// With the Later band open, a snooze of the last row leaves that row drawn there, so the landed
+// hand-off waits for an empty message that may never come, and its watch with it. It ends that
+// watch as it ends: once a read takes the row away and lists another, so that the list draws a
+// row and no message (the after-every-commit effect's drop), and as the list unmounts.
+test("a landed hand-off waiting for the empty message ends its watch on the reader's next press once a read takes its row away and lists another, and once the list unmounts", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  keepLaterOpen();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const arriving = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served: InboxRow[] = [first];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const writes = heldSnoozes((id, until) => {
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+  });
+  const getAsk = mockAskReads([first, arriving]);
+  const getIssue = mockIssueReads();
+  const { queryClient, unmount } = renderInbox();
+  let listeners: PressListeners | undefined;
+  /** Snoozes the row in hand, the list's last, and lets the write land: the hand-off waits. */
+  const snoozeTheLast = async (id: string): Promise<PressListeners> => {
+    await user.keyboard("h");
+    await user.keyboard("2");
+    listeners?.restore();
+    listeners = pressListenersOnDocument();
+    await writes.land(id);
+    await waitFor(() => expect(shortRow(id)).toHaveAttribute("data-inbox-section", "later"));
+    await afterFrameAndTasks();
+    expect(screen.queryByRole("region", { name: "Inbox empty state" })).not.toBeInTheDocument();
+    // The hand-off waits, watching for the reader's next key or press.
+    expect(listeners.live().sort()).toEqual(["keydown", "pointerdown"]);
+    return listeners;
+  };
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    const dropped = await snoozeTheLast("ask-a");
+    // Answered elsewhere as another ask arrives: the next read lists that one alone.
+    served = [arriving];
+    await act(() => queryClient.invalidateQueries());
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+    await afterFrameAndTasks();
+    expect(dropped.live()).toEqual([]);
+
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    const unmounted = await snoozeTheLast("ask-b");
+    unmount();
+    expect(unmounted.live()).toEqual([]);
+  } finally {
+    listeners?.restore();
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    writes.snoozeAsk.mockRestore();
   }
 });
 
