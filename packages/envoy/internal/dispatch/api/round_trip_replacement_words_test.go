@@ -22,6 +22,7 @@ import (
 // call then printed the upload's refusal, so the dry run and the call printed two refusals
 // (INFRA-4224 tester round 16).
 func TestARoundTripWithoutNewDocumentRefusesInTheReplacementUploadsOwnWords(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	uploads := "/api/v1/issues/" + issue.Key + "/artifacts"

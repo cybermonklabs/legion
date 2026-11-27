@@ -61,6 +61,7 @@ func TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap(t *testing.T) {
 // the caller's share; the person's sockets hold all 15 frames, the other person's frame would take
 // the replica past its budget, and the row fails naming that socket's close.
 func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
+	t.Parallel()
 	const budget, share = 8 << 20, 2 << 20
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(budget), withCallerBudget(share))
 	const other = "ses_edge_share_other"
@@ -104,6 +105,7 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 // Control: release giving back no place of the person's; the next socket is refused 429, and the
 // row fails naming it.
 func TestAPersonsClosedSocketsGiveTheirPlacesBack(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	sessionOf := func(i int) string { return "ses_edge_places_" + strconv.Itoa(i/relaySocketMaxPerSession) }
 	var clients []*relaySocketClient
@@ -138,6 +140,7 @@ func TestAPersonsClosedSocketsGiveTheirPlacesBack(t *testing.T) {
 // person's reservation of a refused frame; the person's count stays at that frame's bytes, and the
 // row fails naming it.
 func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
+	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(2<<20))
 	const idle, session = "ses_edge_refund_idle", "ses_edge_refund_held"
 	kept, _ := rig.open(t, idle)
@@ -172,6 +175,8 @@ func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
 // replica gives the socket's place back while the person's record still counts the frame, and the
 // row fails naming it.
 func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
+	// Not parallel: it requires the replica to keep the socket's place through a 1 s quiet window
+	// (testwait.Holds(time.Second)) after the client closes.
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session = "ses_edge_pump_last"
 	client, _ := rig.open(t, session)
