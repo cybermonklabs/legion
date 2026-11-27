@@ -315,10 +315,14 @@ func sameBlock(a, b Task) bool {
 // sameBesideText says whether two tasks of one id say the same thing but for their text: the same
 // steps, `needs`, `owner` and `merges`, the same task they are a part of, and the same parent
 // (sameParent). It is the one rule of a change that is only text: the change a running task takes
-// (RunningChange).
+// (RunningChange). Every `needs` word is compared, each where FromBlocks put it: a task it names
+// (Needs), an element it names (ElementNeeds), and a word that names neither (Unresolved). So a
+// version that changes a word of the last two is no change of the text alone either, though
+// Validate refuses it later.
 func sameBesideText(a, b Task) bool {
 	return a.PartOf == b.PartOf && sameParent(a.ParentRef, b.ParentRef) && a.Owner == b.Owner && a.Merges == b.Merges &&
-		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
+		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.ElementNeeds, b.ElementNeeds) &&
+		slices.Equal(a.Unresolved, b.Unresolved) && slices.Equal(a.Steps, b.Steps)
 }
 
 // sameParent says whether two parents, each a block's `parent` whole (Task.ParentRef), name one

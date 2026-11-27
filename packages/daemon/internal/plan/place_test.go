@@ -285,16 +285,20 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 				"Legion does not carry out an element, so a task cannot need one."}}},
 		// Each need holds the id of the element t1, one into another issue and one into another
 		// document of the plan's issue: neither names a block of the plan's document, so neither
-		// names the element, and both stay needs.
+		// names the element. Neither names a task of the plan either, so each is kept unresolved
+		// and refused as such (#4948), never as a need of an element.
 		{name: "a need of another issue's block and of another document's with an element's id",
 			blocks: []Block{under("a", "", ""), withParent(Block{ID: "t1", Type: TaskBlockType}, "a"), {ID: "b", Type: TaskBlockType,
 				Attributes: map[string]string{"steps": "implementer", "needs": "dispatch://ACME-2/artifact/plan-md#b-t1 dispatch://ACME-1/spec#b-t1"}}},
 			placed: map[string]string{"a": "", "b": ""}, elements: []Element{{ID: "t1", Of: "a", Under: "a"}},
+			refused: []Refusal{
+				{Task: "b", Reason: "task b needs dispatch://ACME-2/artifact/plan-md#b-t1, which names no task of this plan."},
+				{Task: "b", Reason: "task b needs dispatch://ACME-1/spec#b-t1, which names no task of this plan."}},
 			check: func(t *testing.T, p Plan) {
 				want := []string{"dispatch://ACME-2/artifact/plan-md#b-t1", "dispatch://ACME-1/spec#b-t1"}
 				at := slices.IndexFunc(p.Tasks, func(task Task) bool { return task.ID == "b" })
-				if at < 0 || p.Tasks[at].ElementNeeds != nil || !reflect.DeepEqual(p.Tasks[at].Needs, want) {
-					t.Errorf("the tasks = %+v, want b with the needs %q and no need of an element", p.Tasks, want)
+				if at < 0 || p.Tasks[at].ElementNeeds != nil || p.Tasks[at].Needs != nil || !reflect.DeepEqual(p.Tasks[at].Unresolved, want) {
+					t.Errorf("the tasks = %+v, want b with %q unresolved, no need of a task and no need of an element", p.Tasks, want)
 				}
 			}},
 		{name: "a requirement of the version", blocks: []Block{{ID: "r1", Type: "requirement"}, under("a", "r1", "")}, placed: map[string]string{"a": ""}},
