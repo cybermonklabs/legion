@@ -132,6 +132,7 @@ import {
   olderPageAnswered,
   putPlan,
   putStepExperiment,
+  referencesTo,
   rowFacts,
   seededHistoryEntry,
   stepRun,
@@ -5562,6 +5563,114 @@ test("what references the focused row names a task whose block opens with long a
           );
         }
       }
+    }
+  );
+});
+
+/** The second line of the code of the note the row below seeds, under the line that quotes the
+ *  plan's task by its address: the code block's row draws its first line alone. */
+const QUOTING_CODE_NEXT_LINE = "read the log one page at a time";
+
+// Decision 565 (2): a code block of another document that quotes a plan task by its address is a
+// node that references the task, since the server records a mention from inside code as `main`
+// does (`text/refs.go`'s `InCode`). The task's list of what references it names the code block by
+// the first line of its code, drawn as code in the look a code span in a node's words takes (the
+// task's own row draws its words' code span so): its address as its author typed it, with no name
+// of the task in its place and no link of its own, beside the word for a document and the day.
+// SLOW(>=2s): a statement, a plan of one task and a note whose code quotes it written, the note's
+// mention waited for, and one load of the issue with the list opened.
+test("what references the focused row names a code block that quotes it by the first line of its code, as code", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: ":::requirement{#r-served}\nThe history is drawn in Details.\n:::\n",
+        title: "A note's code quotes a task",
+      });
+      const statement = `dispatch://${issue.key}/spec#b-r-served`;
+      const plan = await createIssueArtifact(issue.key, {
+        content:
+          `How ${issue.key} is built.\n\n` +
+          `:::plan_task{#t-draw serves="${statement}"}\n` +
+          `${SERVING_TASK_LINES[0]} Run \`make history\` first.\n:::\n`,
+        name: "plan.md",
+      });
+      const task = `dispatch://${issue.key}/artifact/${plan.artifact.slug}#b-t-draw`;
+      const notes = await createIssueArtifact(issue.key, {
+        content: `How the history is read.\n\n\`\`\`\nopen ${task}\n${QUOTING_CODE_NEXT_LINE}\n\`\`\`\n`,
+        name: "notes.md",
+      });
+      // The mention is placed in the note's code block by the note's index, after the version is
+      // written, and the list is read once, when the reader opens it: the seed waits for it there.
+      const document = `dispatch://${issue.key}/artifact/${notes.artifact.slug}`;
+      await expect
+        .poll(
+          async () =>
+            ((await referencesTo(task)).edges ?? []).some(
+              (edge) =>
+                edge.kind === "mentions" &&
+                edge.node.kind === "block" &&
+                edge.node.document === document
+            ),
+          `the note's code block never came to reference ${task}`
+        )
+        .toBe(true);
+      return {
+        key: issue.key,
+        line: `open ${task}`,
+        task: blockNode(plan.artifact.slug, "t-draw"),
+      };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      const facts = await focusedRowFacts(page, seeded.task);
+      const references = facts.locator("[data-node-references]");
+      await references
+        .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+        .click();
+      // The code block's row, once the names read of the list's citing blocks has answered.
+      const quoting = references.locator("li").filter({ has: page.locator("code") });
+      await expect(quoting, "no row draws the code block's line as code").toHaveCount(1);
+      const code = quoting.locator("code");
+      await expect(
+        code,
+        "the code block's row does not draw its code's first line as typed"
+      ).toHaveText(seeded.line);
+      await expect(
+        quoting.getByRole("link", { exact: true, name: seeded.line }),
+        "the code block's row is no link named by its code's first line"
+      ).toHaveCount(1);
+      await expect(code.locator("a"), "an address in the code is drawn as a link").toHaveCount(0);
+      // The look of a code span in a node's words: the task's own row draws `make history` so.
+      const spanned = rowWords(nodeRow(page, seeded.task)).locator("code").first();
+      await expect(spanned, "the task's row draws no code span of its words").toHaveCount(1);
+      const [drawn, span] = await Promise.all(
+        [code, spanned].map((element) =>
+          element.evaluate((node) => {
+            const style = getComputedStyle(node);
+            return { color: style.color, family: style.fontFamily, weight: style.fontWeight };
+          })
+        )
+      );
+      expect(drawn, "the code block's line is not drawn in the look of a code span").toEqual(span);
+      // The row is drawn and settled: its code was read whole above, so one read of its text is
+      // the state the row means to check.
+      const text = ((await quoting.textContent()) ?? "").replace(/\s+/gu, " ");
+      expect(text, "the code block's row does not say it is a document's").toContain(
+        NODE_REFERENCES_WORDS.kinds.block
+      );
+      expect(text, "the code block's row names the task its code quotes").not.toContain(
+        SERVING_TASK_LINES[0]
+      );
+      expect(text, "the code block's row draws its code's next line").not.toContain(
+        QUOTING_CODE_NEXT_LINE
+      );
+      await expect(quoting.locator("[data-reference-time]"), "the row draws no day").toHaveCount(1);
     }
   );
 });

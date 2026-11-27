@@ -7,7 +7,15 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { api } from "../../../api/client";
-import type { CommentWithTrees, GraphEdge, GraphReferences } from "../../../api/types";
+import { referenceTargetsQuery } from "../../../api/queries";
+import type {
+  CommentWithTrees,
+  GraphEdge,
+  GraphReferences,
+  ReferenceTarget,
+  ReferenceTargets,
+} from "../../../api/types";
+import { markdownClassName } from "../../refs/markdown-engine";
 import { emulateChromiumFocusFixup } from "../chromium-focus-fixup";
 import { MarginSlotProvider } from "../margin-slot";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
@@ -131,7 +139,7 @@ afterEach(() => {
 
 /** The props of one drawing: the row the reader is on and its own address. */
 interface Drawn {
-  readonly node: { readonly id: string; readonly type: "issue" | "requirement" };
+  readonly node: { readonly id: string; readonly type: "issue" | "plan_task" | "requirement" };
   readonly reference: string | undefined;
 }
 
@@ -143,9 +151,18 @@ const STATEMENT_ROW: Drawn = {
 /** The component inside the shell it is drawn in: Details is the margin's drawer, open or
  *  shut, and the panel is inside it (`features/margin/margin-slot.tsx`). The outline has read
  *  the issue's comments under their key (`useIssueTree.ts`), and the item reads are watched so a
- *  case can say the list never asks for one. */
-function draw(detailsOpen: boolean, drawn: Drawn = STATEMENT_ROW, answer = ANSWER) {
+ *  case can say the list never asks for one. The page's batched names read answers each address
+ *  it is asked for with its member of `named`, and with none where `named` holds none. */
+function draw(
+  detailsOpen: boolean,
+  drawn: Drawn = STATEMENT_ROW,
+  answer = ANSWER,
+  named: readonly ReferenceTarget[] = []
+) {
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(answer);
+  const getReferenceTargets = spyOn(api, "getReferenceTargets").mockImplementation(
+    async (refs) => ({ targets: named.filter((target) => refs.includes(target.ref)) })
+  );
   const itemReads = [
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
@@ -164,11 +181,12 @@ function draw(detailsOpen: boolean, drawn: Drawn = STATEMENT_ROW, answer = ANSWE
   );
   restore = () => {
     getReferences.mockRestore();
+    getReferenceTargets.mockRestore();
     for (const read of itemReads) read.mockRestore();
     view.unmount();
     client.clear();
   };
-  return { client, getReferences, itemReads, view };
+  return { client, getReferences, getReferenceTargets, itemReads, view };
 }
 
 /** Fails a refresh of the references over the list `draw` drew and the reader opened, whose
@@ -193,15 +211,16 @@ function failRefreshThenFirstRead({
 }
 
 test("the first drawing of a focused row reads nothing", async () => {
-  const { getReferences } = draw(true);
+  const { getReferences, getReferenceTargets } = draw(true);
   expect(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   ).toBeDefined();
   expect(getReferences.mock.calls).toHaveLength(0);
+  expect(getReferenceTargets.mock.calls).toHaveLength(0);
 });
 
 test("the reader opening the list reads it once, and every node that references the row is a link to it", async () => {
-  const { getReferences, itemReads } = draw(true);
+  const { getReferences, getReferenceTargets, itemReads } = draw(true);
   const control = await screen.findByRole("button", {
     name: NODE_REFERENCES_WORDS.what_references,
   });
@@ -225,14 +244,23 @@ test("the reader opening the list reads it once, and every node that references 
   expect(list.textContent).toContain(NODE_REFERENCES_WORDS.kinds.comment);
   // The comment's words are the outline's read, which the list never asks for.
   expect(itemReads.map((read) => read.mock.calls.length)).toEqual([0, 0, 0]);
+  // The citing block's own words are one batched names read, of the check's address once the
+  // references have answered: the comment is no block, and its words are the outline's.
+  await waitFor(() =>
+    expect(
+      getReferenceTargets.mock.calls,
+      "the citing block was not named by one names read of its address"
+    ).toEqual([[["dispatch://LAY-2/artifact/verification-md#b-c1"]]])
+  );
 });
 
 test("a list the reader opens while Details is shut reads nothing", async () => {
-  const { getReferences } = draw(false);
+  const { getReferences, getReferenceTargets } = draw(false);
   await userEvent.click(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   );
   expect(getReferences.mock.calls).toHaveLength(0);
+  expect(getReferenceTargets.mock.calls).toHaveLength(0);
   expect(screen.queryByRole("list")).toBeNull();
 });
 
@@ -539,10 +567,9 @@ test("a comment's block that mentions the row reads as that comment, with where 
 });
 
 // The read's excerpt is the citing node's stored text, the markdown its author typed with the
-// addresses it cites, which no row draws. A citing node of another issue whose excerpt the read
-// sent no reading of - a server from before the excerpt's reading sends none - is named by its
-// word, with its issue and its time.
-test("a citing node of another issue whose excerpt has no reading is drawn by its kind's word with its issue and its time, never its excerpt", async () => {
+// addresses it cites, which no row draws. A citing block of another issue that the page's batched
+// names read names nothing for is named by its word, with its issue and its time.
+test("a citing block of another issue the names read names nothing for is drawn by its kind's word with its issue and its time, never its excerpt", async () => {
   const stored = "The **rail** follows [the statement](dispatch://LAY-2/spec#b-r1) closely.";
   const elsewhere: GraphEdge = {
     created_at: november(13, 10),
@@ -614,19 +641,22 @@ test("a node the read gives no words for is drawn by its word alone, with no add
 // Decision 560: each row names the node that references the focused one by the first line of its
 // own words, as the outline names a row, beside its tie's word and its day. Two tasks of one plan
 // that serve the statement drew two rows that each read "served by" and a day alone, which a
-// reader cannot tell apart. Each now reads its own task's first line, cut at its first sentence
-// end as the outline's line is, and neither draws the task's stored text, an address, the plan's
-// slug or the task's id.
+// reader cannot tell apart. Each now reads its own task's first line, from the names read's
+// reading of its content, cut at its first sentence end as the outline's line is, and neither
+// draws the task's stored text, an address, the plan's slug or the task's id.
 test("two tasks of one plan that serve the row are each named by the first line of its own words", async () => {
   const first = "Draw the history in Details.";
   const second = "Read the history from the event log.";
-  draw(true, STATEMENT_ROW, {
-    ...ANSWER,
-    edges: [
-      servingTask("t1", `${first} Each entry keeps its day.`),
-      servingTask("t2", `${second} It pages two hundred at a time.`),
-    ],
-  });
+  const tasks = [
+    servingTask("t1", `${first} Each entry keeps its day.`),
+    servingTask("t2", `${second} It pages two hundred at a time.`),
+  ];
+  draw(
+    true,
+    STATEMENT_ROW,
+    { ...ANSWER, edges: tasks.map((task) => task.edge) },
+    tasks.map((task) => task.target)
+  );
   await userEvent.click(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   );
@@ -635,9 +665,13 @@ test("two tasks of one plan that serve the row are each named by the first line 
       2
     )
   );
+  await waitFor(() =>
+    expect(
+      screen.getAllByRole("listitem").map((item) => within(item).getByRole("link").textContent),
+      "each task's row is not named by its own first line"
+    ).toEqual([first, second])
+  );
   const items = screen.getAllByRole("listitem");
-  const names = items.map((item) => within(item).getByRole("link").textContent);
-  expect(names, "each task's row is not named by its own first line").toEqual([first, second]);
   expect(
     within(items[0] as HTMLElement)
       .getByRole("link")
@@ -667,14 +701,15 @@ test("two tasks of one plan that serve the row are each named by the first line 
 // its link, as a node the read sends no excerpt of is: its stored text is markup, and its
 // address, the plan's slug and its id are no name.
 test("a citing block whose reading holds no word is drawn by its tie's word alone", async () => {
-  draw(true, STATEMENT_ROW, {
-    ...ANSWER,
-    edges: [servingTask("t3", "---", [{ type: "horizontal_rule" }])],
-  });
+  const task = servingTask("t3", "---", [{ type: "horizontal_rule" }]);
+  const { getReferenceTargets } = draw(true, STATEMENT_ROW, { ...ANSWER, edges: [task.edge] }, [
+    task.target,
+  ]);
   await userEvent.click(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   );
   const link = await screen.findByRole("link", { name: NODE_REFERENCES_WORDS.edges.serves });
+  await waitFor(() => expect(getReferenceTargets).toHaveBeenCalledTimes(1));
   expect(link.getAttribute("href")).toBe("/issues/LAY-2/artifacts/plan-md#b-t3");
   const items = screen.getAllByRole("listitem");
   expect(items).toHaveLength(1);
@@ -683,6 +718,113 @@ test("a citing block whose reading holds no word is drawn by its tie's word alon
     expect(text, `the row names the task by "${name}"`).not.toContain(name);
   }
   expect(text.split(NODE_REFERENCES_WORDS.edges.serves), "the word is drawn twice").toHaveLength(2);
+});
+
+/** The row the reader is on where a code block quotes it: the task `t1` of `LAY-2`'s plan. */
+const TASK_ROW: Drawn = {
+  node: { id: "plan-md#b-t1", type: "plan_task" },
+  reference: "dispatch://LAY-2/artifact/plan-md#b-t1",
+};
+
+// Decision 565 (2): a code block of another document that quotes the task by its address is a node
+// that references it, since the server records a mention from inside code. Code is literal, so its
+// row names it by the first line of its code, drawn as code in the look the renderer gives a code
+// span in a node's words (`MarkdownBody`'s inline variant), the address in it as its author typed
+// it and named by nothing, beside the word for a document and its day. Drawn as words, its address
+// was named by the page's word for a document: "See document for the history.".
+test("a code block that quotes the row is named by its code's first line, drawn as code with its address as typed", async () => {
+  const quoted = TASK_ROW.reference ?? "";
+  const ref = "dispatch://LAY-2/artifact/notes-md#b-c9";
+  const line = `See ${quoted} for the history.`;
+  const code = `${line}\nThen read the log.`;
+  const quoting: GraphEdge = {
+    created_at: november(14, 10),
+    direction: "in",
+    excerpt: { block_id: "c9", text: `\`\`\`\n${code}\n\`\`\`` },
+    kind: "mentions",
+    node: graphNode({
+      block_id: "c9",
+      document: "dispatch://LAY-2/artifact/notes-md",
+      id: "notes-md#c9",
+      issue_key: "LAY-2",
+      kind: "block",
+      ref,
+    }),
+    source_seq: null,
+  };
+  draw(true, TASK_ROW, { ...ANSWER, edges: [quoting] }, [
+    {
+      gone: false,
+      kind: "block",
+      name: `\`\`\`\n${code}\n\`\`\``,
+      ref,
+      text_tree: {
+        content: [{ content: [{ text: code, type: "text" }], type: "code_block" }],
+        type: "doc",
+      },
+    },
+  ]);
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  // The row is named by its word until the names read answers for the code block.
+  const item = await waitFor(() => {
+    const [only] = screen.getAllByRole("listitem");
+    expect(
+      only?.querySelector("a")?.textContent,
+      "the code block's row is still named by its word alone"
+    ).not.toBe(NODE_REFERENCES_WORDS.kinds.block);
+    return only as HTMLElement;
+  });
+  const link = within(item).getByRole("link");
+  const drawnCode = link.querySelector("code");
+  expect(
+    drawnCode?.textContent,
+    "the code block's row does not draw its code's first line as code"
+  ).toBe(line);
+  expect(
+    drawnCode?.parentElement?.className,
+    "the code block's line is not drawn in the look of a code span in a node's words"
+  ).toBe(markdownClassName);
+  expect(link.getAttribute("href")).toBe("/issues/LAY-2/artifacts/notes-md#b-c9");
+  const text = (item.textContent ?? "").replace(/\s+/g, " ");
+  expect(text, "the code block's row does not say it is a document's").toContain(
+    NODE_REFERENCES_WORDS.kinds.block
+  );
+  expect(text, "the code block's row draws its code's second line").not.toContain("Then read");
+  expect(item.querySelector("[data-reference-time]")?.textContent).toBe("14 Nov");
+});
+
+// A citing block is named by its word until the page's batched names read answers for it, and
+// still is where that read answers it gone: its excerpt is markup, and its address, the plan's
+// slug and its id are no name.
+test("a citing block whose names read has not answered, or answered it gone, is drawn by its tie's word", async () => {
+  const task = servingTask("t1", "Draw the history in Details. Each entry keeps its day.");
+  const { client, getReferenceTargets } = draw(true, STATEMENT_ROW, {
+    ...ANSWER,
+    edges: [task.edge],
+  });
+  const held = Promise.withResolvers<ReferenceTargets>();
+  getReferenceTargets.mockImplementationOnce(() => held.promise);
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  await waitFor(() => expect(getReferenceTargets).toHaveBeenCalledTimes(1));
+  expect(
+    screen.getByRole("listitem").querySelector("a")?.textContent,
+    "the row whose names read is out is not drawn by its tie's word"
+  ).toBe(NODE_REFERENCES_WORDS.edges.serves);
+  await act(async () =>
+    held.resolve({ targets: [{ gone: true, kind: "block", name: "", ref: task.target.ref }] })
+  );
+  expect(
+    client.getQueryState(referenceTargetsQuery([task.target.ref]).queryKey)?.status,
+    "the names read's answer did not land"
+  ).toBe("success");
+  expect(
+    screen.getByRole("listitem").querySelector("a")?.textContent,
+    "the row whose block the names read answered gone is not drawn by its tie's word"
+  ).toBe(NODE_REFERENCES_WORDS.edges.serves);
 });
 
 // A comment of this issue that cites the row is named by every one of its words, however many:
