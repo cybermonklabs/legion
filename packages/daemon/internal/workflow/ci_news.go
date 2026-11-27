@@ -143,6 +143,8 @@ func (e *Engine) ciNext(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wa
 		}
 	}
 	switch {
+	case record.HeldFor(issue, record.HoldForFix):
+		next.Next = record.CINextEndHoldFix
 	case fix != nil && (to == claim.RoleImplementer || !atTaskEnd(issue)):
 		next.Next = record.CINextFixRuns
 	case atTaskEnd(issue) && record.HeldFor(issue, record.HoldForCI):
