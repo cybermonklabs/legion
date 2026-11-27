@@ -3,6 +3,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
+  useCallback,
   useContext,
   useEffect,
   useId,
@@ -26,7 +27,9 @@ import {
   LensKinds,
   LensRefusal,
   lensActFor,
+  step,
 } from "../lenses/LensMenu";
+import type { MoveEntry } from "../node-caret";
 import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, LENS_WORDS } from "../page-words";
 import { abortOnReaderAct } from "../useNodeEditing";
@@ -34,7 +37,6 @@ import {
   type DeleteCount,
   type DeleteOutcome,
   heldRead,
-  type MoveEntry,
   type MoveOutcome,
   type NewEntry,
   useNodeWriteLine,
@@ -115,8 +117,9 @@ const COUNTING: DeleteState = { status: "counting" };
 
 /** One entry of the menu as it is drawn. */
 interface MenuEntry {
-  /** R1's entry, or the line under a Delete whose count could not be read, which asks again. */
-  readonly id: Entry | "count_again";
+  /** One of the entries `placement.ts` answers, Lens, or the line under a Delete whose count
+   *  could not be read, which asks again. */
+  readonly id: Entry | "count_again" | "lens";
   readonly words: string;
   /** Why the entry is grey, drawn under its words. */
   readonly reason?: string;
@@ -152,18 +155,6 @@ function ownItems(list: HTMLElement): HTMLElement[] {
   return [...list.querySelectorAll<HTMLElement>('[role="menuitem"]')].filter(
     (item) => item.closest('[role="menu"]') === list
   );
-}
-
-/** Where the focus goes from item `at` of `count` on `key`, as `LensMenu.tsx`'s menu has it: Up
- *  and Down step one, wrapping, and Home and End go to the ends; from the menu itself, Down goes
- *  to the first and Up to the last. Undefined for any other key. */
-function step(key: string, at: number, count: number): number | undefined {
-  if (count === 0) return undefined;
-  if (key === "Home") return 0;
-  if (key === "End") return count - 1;
-  if (key === "ArrowDown") return at < 0 ? 0 : (at + 1) % count;
-  if (key === "ArrowUp") return at < 0 ? count - 1 : (at - 1 + count) % count;
-  return undefined;
 }
 
 /** Gives the focus back to the row the control `inside` stands in, which is focusable. */
@@ -296,6 +287,14 @@ export function RowMenu({
     }
   }, [submenu]);
 
+  // The menu closes with the dry run out for this opening dropped and no submenu open: one
+  // function for the menu's life, which the listeners below call too.
+  const closeMenu = useCallback(() => {
+    out.current?.abort();
+    setSubmenu(undefined);
+    setOpen(false);
+  }, []);
+
   // A press outside the control and the menu closes it and leaves the focus to the press. Escape
   // is read in the capture phase, as `LensMenu.tsx` reads it, so it is marked before any other
   // listener of the page's and the tree's own Escape passes it by; a dialog over the page takes
@@ -304,25 +303,20 @@ export function RowMenu({
     if (!open) return;
     const inDialog = (target: EventTarget | null) =>
       target instanceof Element && target.closest('[role="dialog"]') !== null;
-    const close = () => {
-      out.current?.abort();
-      setSubmenu(undefined);
-      setOpen(false);
-    };
     const closeOutside = (event: PointerEvent) => {
       const target = event.target;
       if (inDialog(target)) return;
       const inside =
         target instanceof Node &&
         (panel.current?.contains(target) === true || control.current?.contains(target) === true);
-      if (!inside) close();
+      if (!inside) closeMenu();
     };
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
       if (dialogOpen()) return;
       event.preventDefault();
       focusRowOf(control.current);
-      close();
+      closeMenu();
     };
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape, true);
@@ -330,7 +324,7 @@ export function RowMenu({
       document.removeEventListener("pointerdown", closeOutside);
       document.removeEventListener("keydown", closeOnEscape, true);
     };
-  }, [open]);
+  }, [closeMenu, open]);
 
   // Delete's dry run (R6), sent with this opening's signal: an answer that comes once the menu
   // has closed, or once a newer ask has gone out, is drawn nowhere.
@@ -356,11 +350,6 @@ export function RowMenu({
     }
     setSubmenu(undefined);
     setOpen(true);
-  };
-  const closeMenu = () => {
-    out.current?.abort();
-    setSubmenu(undefined);
-    setOpen(false);
   };
   /** A pick's end: the menu closes and the focus goes back to the row, before the act goes. */
   const finish = () => {
@@ -420,7 +409,7 @@ export function RowMenu({
   const retypeOptions = retypeVerdict?.kind === "retype" ? retypeVerdict.kinds : undefined;
 
   /** The entry `id` grey with `reason`. */
-  const greyEntry = (id: Exclude<Entry, "lens">, reason: GreyReason): MenuEntry => ({
+  const greyEntry = (id: Entry, reason: GreyReason): MenuEntry => ({
     grey: true,
     id,
     reason: ANSWER_LINES[reason],
@@ -471,7 +460,6 @@ export function RowMenu({
   /** R1's entries before Lens, on a converted issue, each as its verdict stands. */
   const editingEntries = (placement: Placement, nodeId: string): MenuEntry[] =>
     ENTRIES.flatMap((id): MenuEntry[] => {
-      if (id === "lens") return [];
       const verdict = placement[id];
       if (verdict.kind === "grey") return [greyEntry(id, verdict.reason)];
       const words = CONTROL_LABELS[`edit_${id}`];

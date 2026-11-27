@@ -26,10 +26,9 @@ import {
   namedBy,
   useAddressFallback,
   useAddressTarget,
-  useLastHeldAddress,
-  useUnqualifiedLastHeld,
 } from "../address-target";
 import { useCurrentPoint } from "../current-point";
+import { useLastHeldAddress, useUnqualifiedLastHeld } from "../graph-edit/last-held-address";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
 import { type IssueAddress, issueAddress, presetPath } from "../issue-address";
@@ -54,7 +53,6 @@ import {
   useTreeRead,
 } from "../tree-read/tree-read";
 import { TreeReadFailed } from "../tree-read/view-read";
-import { treeReferences } from "../useIssueTree";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
 import { useFollowing } from "./following";
@@ -199,11 +197,12 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // nowhere, since the names read then names it not. The Spec view's own address is its slot's
   // (`view-spec.tsx`), and an address naming no document is `useUnqualifiedLastHeld`'s (below).
   const outlineAnswer = useTreeRead(issue).answer;
-  // Whether the tree cites a reference: one function while the tree stands, so the address's
-  // answer is worked out again only for a new tree or a new address (`useLastHeldAddress`).
+  // Whether the page's names read asks for a reference (`published.asked`), which it then names:
+  // one function while that set stands, so the address's answer is worked out again only for a
+  // new set or a new address (`useLastHeldAddress`).
   const cites = useCallback(
-    (reference: string) => treeReferences(root).includes(reference),
-    [root]
+    (reference: string) => published.asked.has(reference),
+    [published.asked]
   );
   const opened = useLastHeldAddress({
     address,

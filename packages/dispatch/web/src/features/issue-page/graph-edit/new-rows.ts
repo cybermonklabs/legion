@@ -404,7 +404,7 @@ function placeHeld(client: QueryClient, issue: string): void {
       missing = true;
       continue;
     }
-    const placing = placingOf({ held: answer, node: node.id, place: row.place });
+    const placing = placingOf({ node, place: row.place });
     if (placing.kind !== "send") continue;
     stopWait(held, blockId);
     change(client, issue, blockId, (each) => ({ ...each, stage: "placing" }));

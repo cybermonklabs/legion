@@ -129,7 +129,8 @@ export default {
       refused_node_not_deletable: "This kind of row cannot be deleted.",
       refused_delete_input: "The delete did not say how many rows it takes.",
       refused_node_holds_result: "A result is never deleted, so this row stays.",
-      refused_state_not_permitted: "The state of this issue does not allow this.",
+      refused_state_not_permitted:
+        "Only a person may delete a lens, a finding, a risk or a constraint under this row.",
       refused_delete_count_moved: "What is under this row changed, so check the new count.",
     },
   },

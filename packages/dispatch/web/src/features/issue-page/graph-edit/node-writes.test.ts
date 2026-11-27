@@ -72,8 +72,8 @@ import { placementOf } from "./placement";
  *   - `reads`: the page reads the tree again (412, `NODE_GONE`, 404); `gone`: the row leaves where
  *     the read lacks it (`NODE_GONE`, 404); `retry`: a press on the line tries the act again (the
  *     fallback line alone).
- * - `useNodeWrites(issue: { key: string; status: string; zoomRoot?: string }): NodeWrites`, a hook
- *   under the page's query client and router, whose held tree is Graph's outline read:
+ * - `useNodeWrites(issue: { closed: boolean; key: string; zoomRoot?: string }): NodeWrites`, a
+ *   hook under the page's query client and router, whose held tree is Graph's outline read:
  *   - `move(node, entry, row?)` queues `entry` (`indent`, `outdent`, `move_up`, `move_down`) for the
  *     node of that read id (`row` as `placementOf` takes it) and resolves with `{ status:
  *     "taken" }`, `{ status: "refused" }` or `{ status: "dropped", reason }` once it is sent,
@@ -171,7 +171,7 @@ function pageWrapper(client: QueryClient) {
 
 /** The page's hook under the page's query client and router, over `client`. */
 function hookOver(client: QueryClient) {
-  return renderHook(() => useNodeWrites({ key: KEY, status: "in_progress" }), {
+  return renderHook(() => useNodeWrites({ closed: false, key: KEY }), {
     wrapper: pageWrapper(client),
   });
 }
@@ -601,7 +601,7 @@ test("a node's chain is busy while an act is out, and a move queued behind it is
   const patches = answerPatches({ ...moved.move_up, gate: gate.promise }, moved.move_down);
   const { writes } = mount();
   expect(
-    placementOf({ held: converted, node: STATEMENT, status: "in_progress" }).move_down
+    placementOf({ closed: false, held: converted, node: STATEMENT, unplaced: false }).move_down
   ).toEqual({ kind: "grey", reason: "grey_last" });
   expect(writes().busy(STATEMENT), "a node with no act is busy").toBe(false);
   let both: Promise<unknown[]> | undefined;
@@ -734,7 +734,12 @@ const WRITTEN = "<owed-paragraph>";
  *  the issue's own blocks, right after the spec's, under the issue. */
 function belowCriterion(): NewRowAsk {
   const from = "<owed-criterion>";
-  const verdict = placementOf({ held: owedRead, node: from, status: "in_progress" }).new_below;
+  const verdict = placementOf({
+    closed: false,
+    held: owedRead,
+    node: from,
+    unplaced: false,
+  }).new_below;
   if (verdict.kind !== "new") throw new Error("New row below is not offered on the owed criterion");
   return {
     blockId: WRITTEN,
@@ -780,7 +785,7 @@ function mountNewRows(held: TreeAnswer = owedRead) {
   const view = renderHook(
     () => {
       useQuery(outlineQuery(KEY, "graph"));
-      return { rows: useNewRows(KEY), writes: useNodeWrites({ key: KEY, status: "in_progress" }) };
+      return { rows: useNewRows(KEY), writes: useNodeWrites({ closed: false, key: KEY }) };
     },
     { wrapper: pageWrapper(client) }
   );
@@ -892,7 +897,12 @@ test("the read that holds the node sends the one placing PATCH", async () => {
 // which lets the row go: its placement_seq never changes.
 test("a placing answered with the placement_seq it went under lets the row go once the held read holds the node at the answer's place", async () => {
   const from = "<owed-requirement>";
-  const verdict = placementOf({ held: indexedRead, node: from, status: "in_progress" }).new_below;
+  const verdict = placementOf({
+    closed: false,
+    held: indexedRead,
+    node: from,
+    unplaced: false,
+  }).new_below;
   if (verdict.kind !== "new") throw new Error("New row below is not offered on the requirement");
   const ask: NewRowAsk = {
     blockId: WRITTEN,
@@ -1002,7 +1012,12 @@ const PAGED = "<tree/paragraph>";
  *  made on the first page alone. */
 function underFirstStatement(): NewRowAsk {
   const from = "<statement-1>";
-  const verdict = placementOf({ held: firstPage, node: from, status: "in_progress" }).new_under;
+  const verdict = placementOf({
+    closed: false,
+    held: firstPage,
+    node: from,
+    unplaced: false,
+  }).new_under;
   if (verdict.kind !== "new")
     throw new Error("New row under is not offered on the first statement");
   return {
@@ -1290,7 +1305,14 @@ const outdentedSecond: TreeAnswer = {
     .filter((node) => node.id !== PAGED)
     .flatMap((node) =>
       node.id === LAST_OWN
-        ? [node, { ...pagedParagraph, placement_seq: OUTDENT_SEQ, rank: "<rank:8>" }]
+        ? [
+            node,
+            {
+              ...pagedParagraph,
+              placement_seq: OUTDENT_SEQ as unknown as number,
+              rank: "<rank:8>",
+            },
+          ]
         : [node]
     ),
 };

@@ -7,12 +7,11 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { fixture, nodeOf } from "./graph-edit-fixtures";
 import {
   ENTRIES,
-  type Entry,
+  type GreyVerdict,
   type PlacementInput,
   placementOf,
   placingOf,
   RETYPE_KINDS,
-  type Verdict,
 } from "./placement";
 import { retypeKinds } from "./room-writes";
 
@@ -24,26 +23,29 @@ import { retypeKinds } from "./room-writes";
  * read and nothing else, holds no rule only the server decides (whether a parent is in the walk,
  * whether a move empties a container, whether a delete is possible), and imports no React.
  *
- * - `ENTRIES: readonly Entry[]`, R1's nine entries in R1's order: `new_below`, `new_under`,
- *   `retype`, `indent`, `outdent`, `move_up`, `move_down`, `delete`, `lens`. The word of an entry is
- *   `CONTROL_LABELS["edit_" + entry]` of `page-words-r.ts`; Lens's is part W's `LENS_WORDS.act`.
+ * - `ENTRIES: readonly Entry[]`, R1's entries in R1's order but Lens, R1's last, which is part W's
+ *   act: `new_below`, `new_under`, `retype`, `indent`, `outdent`, `move_up`, `move_down`,
+ *   `delete`. The word of an entry is `CONTROL_LABELS["edit_" + entry]` of `page-words-r.ts`.
  * - `RETYPE_KINDS: readonly RetypeKind[]`, the four kinds Retype offers in order: `criterion`,
  *   `statement` (the tree read's supertag `requirement`), `check`, `plan_task`.
- * - `placementOf(input: PlacementInput): Placement`, with `Placement = Record<Entry, Verdict>`:
+ * - `placementOf(input: PlacementInput): Placement`, one verdict for each entry of `ENTRIES`:
  *   - `input.held: TreeAnswer`, the outline read the page holds (Graph's, every page it has loaded
  *     merged into it; a `cursor` that is not null says that pages remain);
  *   - `input.node: string`, the node's read id (`TreeAnswerNode.id`);
- *   - `input.status: string`, the issue's status; `"done"` closes the issue;
+ *   - `input.closed: boolean`, whether the issue is closed;
  *   - `input.row?: "own" | { under: string }`, the row the menu opens from: the node's own row
  *     (the default), or its second row under the node of that read id that it `serves`;
  *   - `input.zoomRoot?: string`, the read id of the node Graph is zoomed to;
  *   - `input.kinds?: readonly RetypeKind[]`, the kinds the editor's schema for the fragment lets
  *     the editor make (the default is `RETYPE_KINDS`; a child that is a view of its ancestor's
  *     spec gives the schema in which `requirement` may not be made, so no `statement`);
- *   - `input.unplaced?: true`, a new row the reader typed in that no `PATCH` has placed yet: its
- *     moves, New node below, New node under and Delete are grey with `grey_not_placed`.
+ *   - `input.unplaced: boolean`, whether the node is a new row the reader typed in that no
+ *     `PATCH` has placed yet: its moves, New node below, New node under and Delete are grey with
+ *     `grey_not_placed`.
  *   A node id the held read lacks is a bug of the caller: `placementOf` throws.
- * - A `Verdict` is one of
+ * - A verdict is one of these, each entry's typed by the ones it can be: a move's grey, `move` or
+ *   `read_next`, a new row's grey, `new` or `read_next`, Retype's grey or `retype`, and Delete's
+ *   grey or `ask`:
  *   - `{ kind: "grey", reason }`, `reason` a key of `ANSWER_LINES` of `page-words-r.ts` that starts
  *     `grey_`;
  *   - `{ kind: "move", body }` for Indent, Outdent, Move up and Move down: `body` is the `PATCH`
@@ -64,14 +66,11 @@ import { retypeKinds } from "./room-writes";
  *     of `input.kinds`, in `RETYPE_KINDS`' order: `{ kind: "grey", reason }`, or
  *     `{ kind: "to", attributes }` where `attributes` are the new block's `parent` or `serves`,
  *     as the `dispatch://` address of the node that the node stands under;
- *   - `{ kind: "ask" }`: the server decides (Delete: the dry run);
- *   - `{ kind: "open" }`: W's own act (Lens), which this module never greys.
- * - `placingOf({ held, node, place }): Placing`, the new node's `PATCH` (R3): `{ kind: "wait" }`
- *   until `held` holds the node with a `rank` and a `placement_seq`, then
+ *   - `{ kind: "ask" }`: the server decides (Delete: the dry run).
+ * - `placingOf({ node, place }): Placing`, the new node's `PATCH` (R3), `node` the new node as the
+ *   held read holds it: `{ kind: "wait" }` until it holds a `rank` and a `placement_seq`, then
  *   `{ kind: "send", body: place.body }`, `place` the `NewPlace` of the entry that made the row.
  */
-
-const STATUS = "in_progress";
 
 function answer(body: unknown): TreeAnswer {
   return body as TreeAnswer;
@@ -87,17 +86,16 @@ const firstPage = answer(fixture.paged.pages[0]?.body);
 // The child's read of its spec view, the statements of the issue above.
 const childSpec = answer(fixture.tree.child_spec.body);
 
-/** The nine verdicts for `node` of `held`, as the page asks them for the node's own row. */
+/** The verdicts for `node` of `held`, as the page asks them for the node's own row of an issue
+ *  that is not closed, and for a node that is no new row. */
 function place(node: string, extra: Partial<PlacementInput> = {}, held: TreeAnswer = converted) {
-  return placementOf({ held, node, status: STATUS, ...extra });
+  return placementOf({ closed: false, held, node, unplaced: false, ...extra });
 }
 
-const EDITING: readonly Entry[] = ENTRIES.filter((entry) => entry !== "lens");
-
 /** A grey verdict, whose reason must be a key of the page's words. */
-function grey(reason: string): Extract<Verdict, { kind: "grey" }> {
+function grey(reason: string): GreyVerdict {
   expect(Object.hasOwn(ANSWER_LINES, reason), `${reason} is no key of ANSWER_LINES`).toBe(true);
-  return { kind: "grey", reason } as Extract<Verdict, { kind: "grey" }>;
+  return { kind: "grey", reason } as GreyVerdict;
 }
 
 /** The kinds of node the tree read tells apart (`api/issue_tree_kinds.go`) and the typed blocks of the
@@ -163,11 +161,11 @@ const R2: Readonly<Record<string, { admitted: boolean; under: boolean }>> = {
 
 const R2_REASONS = ["grey_kind", "grey_own_issue", "grey_closed"];
 
-// The inventory of R2: each kind the server tells apart, against each of the nine entries. A kind
+// The inventory of R2: each kind the server tells apart, against each entry. A kind
 // the files add and this table does not name fails the first line; a kind no node of the fixture
 // is of fails the loop.
 test("every node kind takes or greys each editing entry as R2 says", () => {
-  // R1's nine entries in R1's order, and the four kinds Retype offers.
+  // R1's entries in R1's order but Lens, and the four kinds Retype offers.
   expect(ENTRIES).toEqual([
     "new_below",
     "new_under",
@@ -177,7 +175,6 @@ test("every node kind takes or greys each editing entry as R2 says", () => {
     "move_up",
     "move_down",
     "delete",
-    "lens",
   ]);
   expect(RETYPE_KINDS).toEqual(["criterion", "statement", "check", "plan_task"]);
   expect(Object.keys(place("<statement-3>"))).toEqual([...ENTRIES]);
@@ -193,7 +190,6 @@ test("every node kind takes or greys each editing entry as R2 says", () => {
     for (const node of nodes) {
       const verdicts = place(node.id);
       const named = `${kind} ${node.id}`;
-      expect(verdicts.lens, `Lens on ${named}`).toEqual({ kind: "open" });
       for (const entry of [
         "retype",
         "indent",
@@ -244,7 +240,7 @@ test("a node R2 does not admit greys every editing entry", () => {
   ];
   for (const id of others) {
     const verdicts = place(id);
-    for (const entry of EDITING) {
+    for (const entry of ENTRIES) {
       // New node under stays offered on an ask, a comment and a message (R3).
       if (
         entry === "new_under" &&
@@ -255,13 +251,12 @@ test("a node R2 does not admit greys every editing entry", () => {
       }
       expect(verdicts[entry], `${entry} on ${id}`).toEqual(grey("grey_kind"));
     }
-    expect(verdicts.lens, `Lens on ${id}`).toEqual({ kind: "open" });
   }
   // Every other node the read holds, the context among them (a person, a session, a kind of
   // lens, the blocks of an ask, a comment and a message).
   for (const node of converted.nodes ?? []) {
     if (node.id === converted.issue || kindOf(node) in R2) continue;
-    for (const entry of EDITING) {
+    for (const entry of ENTRIES) {
       expect(place(node.id)[entry], `${entry} on ${node.kind} ${node.id}`).toEqual(
         grey("grey_kind")
       );
@@ -273,7 +268,7 @@ test("a node of another issue greys its entries as edited on its own issue", () 
   // A check of a child issue under this issue's statement, read from this issue.
   const check = nodeOf(converted, "<child-check>");
   expect(check.issue, "the fixture's check belongs to the child").toBe("<child>");
-  for (const entry of EDITING) {
+  for (const entry of ENTRIES) {
     expect(place("<child-check>")[entry], `${entry} on the child's check`).toEqual(
       grey("grey_own_issue")
     );
@@ -287,7 +282,7 @@ test("a node of another issue greys its entries as edited on its own issue", () 
   );
   expect(above.length, "the child's spec read holds no node of the issue above").toBeGreaterThan(0);
   for (const node of above) {
-    for (const entry of EDITING) {
+    for (const entry of ENTRIES) {
       expect(
         place(node.id, {}, childSpec)[entry],
         `${entry} on ${node.id} of the issue above`
@@ -299,24 +294,22 @@ test("a node of another issue greys its entries as edited on its own issue", () 
 test("a closed issue greys every editing entry", () => {
   expect(done.converted).toBe(true);
   for (const id of ["<done-criterion>", "<done-statement>"]) {
-    const closed = placementOf({ held: done, node: id, status: "done" });
-    for (const entry of EDITING) {
+    const closed = place(id, { closed: true }, done);
+    for (const entry of ENTRIES) {
       expect(closed[entry], `${entry} on ${id}`).toEqual(grey("grey_closed"));
     }
-    expect(closed.lens).toEqual({ kind: "open" });
     // The same node of an issue that is not closed takes its entries.
-    const open = placementOf({ held: done, node: id, status: STATUS });
+    const open = place(id, {}, done);
     expect(open.new_under.kind).toBe("new");
     expect(open.delete).toEqual({ kind: "ask" });
   }
   // The issue's status comes before the node's kind: the issue itself, which R2 admits no entry
   // on, says it is closed too, and says its kind where the issue is not closed.
-  const root = placementOf({ held: done, node: done.issue, status: "done" });
-  for (const entry of EDITING) {
+  const root = place(done.issue, { closed: true }, done);
+  for (const entry of ENTRIES) {
     expect(root[entry], `${entry} on the closed issue itself`).toEqual(grey("grey_closed"));
   }
-  expect(root.lens).toEqual({ kind: "open" });
-  const rootOpen = placementOf({ held: done, node: done.issue, status: STATUS });
+  const rootOpen = place(done.issue, {}, done);
   expect(rootOpen.delete).toEqual(grey("grey_kind"));
 });
 
@@ -387,7 +380,7 @@ test("an indent past the loaded page reads the next pages first", () => {
   expect(firstPage.cursor, "the first page names the next").not.toBeNull();
   const tree = (firstPage.nodes ?? []).filter((node) => node.role !== "context");
   expect(tree.at(-1)?.parent?.id, "the first page ends elsewhere").toBe("<comment-on-statement-3>");
-  const cut = (node: string) => placementOf({ held: firstPage, node, status: STATUS });
+  const cut = (node: string) => place(node, {}, firstPage);
   expect(cut("<statement-3>").indent).toStrictEqual({
     body: { after: null, parent: "<statement-2>" },
     kind: "move",
@@ -441,7 +434,7 @@ test("a move names the ranked sibling of the same document that stands before th
 // fragment is on the next page: the siblings below the third statement, and below the criterion,
 // may be on the next page.
 test("a move past the loaded page reads the next page first", () => {
-  const cut = (node: string) => placementOf({ held: firstPage, node, status: STATUS });
+  const cut = (node: string) => place(node, {}, firstPage);
   expect(firstPage.cursor).not.toBeNull();
   expect(firstPage.nodes?.some((node) => node.id === "<statement-3>")).toBe(true);
   expect(firstPage.nodes?.some((node) => node.id === "<prose-under-criterion>")).toBe(false);
@@ -536,13 +529,13 @@ test("a node with no rank has every move grey", () => {
   const unranked = nodeOf(owed, "<owed-requirement>");
   expect(unranked.rank).toBeNull();
   expect(unranked.placement_seq).not.toBeNull();
-  const verdicts = placementOf({ held: owed, node: "<owed-requirement>", status: STATUS });
+  const verdicts = place("<owed-requirement>", {}, owed);
   for (const entry of ["indent", "outdent", "move_up", "move_down"] as const) {
     expect(verdicts[entry], entry).toEqual(grey("grey_no_rank"));
   }
   // Once the index ran the same node holds its rank and its moves are its place's.
   expect(nodeOf(indexed, "<owed-requirement>").rank).not.toBeNull();
-  const ranked = placementOf({ held: indexed, node: "<owed-requirement>", status: STATUS });
+  const ranked = place("<owed-requirement>", {}, indexed);
   expect(ranked.indent.kind).toBe("move");
   expect(ranked.move_up.kind).toBe("move");
   expect(ranked.move_down).toEqual(grey("grey_last"));
@@ -650,18 +643,13 @@ test("a new row's moves are grey until the node holds a rank and a placement_seq
   expect(written.rank).not.toBeNull();
   expect(written.placement_seq).not.toBeNull();
   for (const held of [owed, indexed]) {
-    const verdicts = placementOf({
-      held,
-      node: "<owed-requirement>",
-      status: STATUS,
-      unplaced: true,
-    });
+    const verdicts = place("<owed-requirement>", { unplaced: true }, held);
     for (const entry of ["new_below", "indent", "outdent", "move_up", "move_down"] as const) {
       expect(verdicts[entry], entry).toEqual(grey("grey_not_placed"));
     }
   }
   // Placed, the same node's moves are no longer grey as unplaced.
-  const placed = placementOf({ held: indexed, node: "<owed-paragraph>", status: STATUS });
+  const placed = place("<owed-paragraph>", {}, indexed);
   for (const entry of ["indent", "outdent", "move_up", "move_down"] as const) {
     const verdict = placed[entry];
     expect(verdict.kind === "grey" ? verdict.reason : "", entry).not.toBe("grey_not_placed");
@@ -676,40 +664,34 @@ test("a new row's Delete and New node under are grey until it is placed", () => 
     ["the read that owes the index", owed],
     ["the read after the index", indexed],
   ] as const) {
-    const verdicts = placementOf({
-      held,
-      node: "<owed-requirement>",
-      status: STATUS,
-      unplaced: true,
-    });
+    const verdicts = place("<owed-requirement>", { unplaced: true }, held);
     expect(verdicts.delete, `Delete on ${name}`).toEqual(grey("grey_not_placed"));
     expect(verdicts.new_under, `New node under on ${name}`).toEqual(grey("grey_not_placed"));
   }
   // Placed, the same node takes both again.
-  const placed = placementOf({ held: indexed, node: "<owed-requirement>", status: STATUS });
+  const placed = place("<owed-requirement>", {}, indexed);
   expect(placed.delete).toEqual({ kind: "ask" });
   expect(placed.new_under.kind).toBe("new");
   // A node R2 does not admit keeps its own reason.
-  expect(
-    placementOf({ held: converted, node: "<decision>", status: STATUS, unplaced: true }).delete
-  ).toEqual(grey("grey_kind"));
+  expect(place("<decision>", { unplaced: true }).delete).toEqual(grey("grey_kind"));
 });
 
 test("the new node's PATCH waits until the node holds a rank", () => {
   const under = place("<criterion>").new_under;
   if (under.kind !== "new") throw new Error("New node under is not offered on the criterion");
-  // The tree artifact owes its index: the read does not hold the paragraph.
-  expect(placingOf({ held: owed, node: "<owed-paragraph>", place: under.place })).toEqual({
-    kind: "wait",
-  });
-  // A node that is read with no rank is waited for too.
-  expect(placingOf({ held: owed, node: "<owed-requirement>", place: under.place })).toEqual({
+  // A node that is read with no rank is waited for.
+  const unranked = nodeOf(owed, "<owed-requirement>");
+  expect(placingOf({ node: unranked, place: under.place })).toEqual({ kind: "wait" });
+  // A ranked node the read gives no placement_seq is waited for too: the `PATCH` goes under it.
+  const written = nodeOf(indexed, "<owed-paragraph>");
+  expect(placingOf({ node: { ...written, placement_seq: null }, place: under.place })).toEqual({
     kind: "wait",
   });
   // The read after the index holds the paragraph with its rank and its placement_seq: one body.
-  expect<unknown>(
-    placingOf({ held: indexed, node: "<owed-paragraph>", place: under.place })
-  ).toStrictEqual({ body: under.place.body, kind: "send" });
+  expect<unknown>(placingOf({ node: written, place: under.place })).toStrictEqual({
+    body: under.place.body,
+    kind: "send",
+  });
 });
 
 test("retype is offered on a prose block that is one paragraph, and is grey on a prose heading, list, table or code block", () => {

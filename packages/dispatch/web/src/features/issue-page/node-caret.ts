@@ -65,9 +65,7 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined, at?
   const drawn = drawnBlock(host, blockId);
   if (drawn === null) return false;
   drawn.editable.focus({ preventScroll: true });
-  placingCaret += 1;
-  selectInEditor(at === undefined ? firstPlace(drawn.block) : placeAt(drawn.block, at));
-  placingCaret -= 1;
+  placeCaret(at === undefined ? firstPlace(drawn.block) : placeAt(drawn.block, at));
   return true;
 }
 
@@ -175,7 +173,7 @@ export type Point = readonly [node: Node, offset: number];
 
 /** The four moves of a node that Graph's editor keys make (INFRA-5705's R4), as the node menu's
  *  entries name them (`graph-edit/placement.ts`): Indent, Outdent, Move up and Move down. */
-export type MoveKey = "indent" | "move_down" | "move_up" | "outdent";
+export type MoveEntry = "indent" | "move_down" | "move_up" | "outdent";
 
 /** The two keys of a new node that Graph's editor takes with the caret at the end of a block's
  *  text (INFRA-5705's R3): Enter, a new row below (`new_below`, the menu's entry), and
@@ -228,7 +226,7 @@ function enterInEditor(view: EditorView): void {
  * composition, or the one that ends it, asks for no move (`heldOrComposing`), so the input method
  * keeps it.
  */
-function moveKeyOf(event: KeyboardEvent): MoveKey | undefined {
+function moveKeyOf(event: KeyboardEvent): MoveEntry | undefined {
   if (heldOrComposing(event)) return undefined;
   if (event.key === "Tab" && !event.altKey) return event.shiftKey ? "outdent" : "indent";
   if (!event.altKey || !event.shiftKey) return undefined;
@@ -291,7 +289,7 @@ export function confineKey(
   host: HTMLElement,
   blockId: string | undefined,
   event: KeyboardEvent,
-  onMove: ((move: MoveKey | EndKey) => boolean) | undefined,
+  onMove: ((move: MoveEntry | EndKey) => boolean) | undefined,
   view: EditorView | undefined,
   onFirst?: (words: string) => boolean
 ): void {
@@ -718,6 +716,18 @@ const keptCarets = new WeakMap<EditorView, KeptCaret & { readonly block: string 
  *  and the hold keeps none of it (`noteCaret`). */
 let placingCaret = 0;
 
+/** Puts the selection from `anchor` to `focus` in the editor (`selectInEditor`) as a caret the
+ *  page makes: counted in `placingCaret` while it is put, and no longer once that ends, whether
+ *  it was put or the put threw, so the hold keeps the reader's carets after it (`noteCaret`). */
+function placeCaret(anchor: Point, focus: Point = anchor): void {
+  placingCaret += 1;
+  try {
+    selectInEditor(anchor, focus);
+  } finally {
+    placingCaret -= 1;
+  }
+}
+
 /**
  * Keeps the reader's caret in the held block as `transaction` leaves it, from `guess`, the block's
  * start before it: a selection inside the block, from the reader's own edit or move of the caret,
@@ -797,9 +807,7 @@ export function putKeptCaret(
   if (!drawn.editable.contains(document.activeElement)) {
     drawn.editable.focus({ preventScroll: true });
   }
-  placingCaret += 1;
-  selectInEditor(anchor, head);
-  placingCaret -= 1;
+  placeCaret(anchor, head);
   return true;
 }
 
@@ -944,9 +952,7 @@ export function selectionIntoBlock(host: HTMLElement, blockId: string | undefine
     if (block.contains(point[0])) return point;
     return compare(point, start) < 0 ? start : end;
   };
-  placingCaret += 1;
-  selectInEditor(inside([anchor, selection.anchorOffset]), inside([focus, selection.focusOffset]));
-  placingCaret -= 1;
+  placeCaret(inside([anchor, selection.anchorOffset]), inside([focus, selection.focusOffset]));
 }
 
 /**

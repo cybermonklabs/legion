@@ -15,6 +15,7 @@ import { refreshQueries } from "../../../api/query-refresh";
 import { newSendKey } from "../../../lib/send-key";
 import { plainWrite, writesOf } from "../../writes/write-store";
 import type { Outline } from "../lenses/lens-reads";
+import type { MoveEntry } from "../node-caret";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { nextTreeCursor } from "../tree-read/tree-nodes";
 import {
@@ -106,9 +107,6 @@ const CONTAINER_KINDS: Readonly<Record<string, string>> = {
 /** The outline reads the page may hold (`Outline`), each read again after the writes. */
 const OUTLINES: readonly Outline[] = ["graph", "conversation"];
 
-/** The four entries that move a node (R4). */
-export type MoveEntry = Extract<Entry, "indent" | "move_down" | "move_up" | "outdent">;
-
 /** The two entries that make a new row (R3), whose node one `PATCH` places (`placeNode`). */
 export type NewEntry = Extract<Entry, "new_below" | "new_under">;
 
@@ -177,8 +175,8 @@ export type DeleteCount =
 
 /** The issue the writes are for, as the page holds it. */
 export interface NodeWritesIssue {
+  readonly closed: boolean;
   readonly key: string;
-  readonly status: string;
   readonly zoomRoot?: string;
 }
 
@@ -209,9 +207,9 @@ export interface NodeWrites {
 
 /** What a move carries from its press to its turn. */
 interface MovePress {
+  readonly closed: boolean;
   readonly entry: MoveEntry;
   readonly row: PlacementRow | undefined;
-  readonly status: string;
   readonly zoomRoot: string | undefined;
 }
 
@@ -684,10 +682,11 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
     return { kind: "send", send: () => sendMove(client, chain, act, request, label) };
   }
   const verdict = placementOf({
+    closed: act.closed,
     held,
     node: chain.node,
     row: act.row,
-    status: act.status,
+    unplaced: false,
     zoomRoot: act.zoomRoot,
   })[act.entry];
   switch (verdict.kind) {
@@ -700,8 +699,6 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
       const label = CONTROL_LABELS[`edit_${act.entry}`];
       return { kind: "send", send: () => sendMove(client, chain, act, request, label) };
     }
-    default:
-      throw new Error(`placement answered ${verdict.kind} for ${act.entry}`);
   }
 }
 
@@ -900,8 +897,8 @@ function pressMove(
   move: MovePress
 ): Promise<MoveOutcome> {
   const { promise, resolve } = Promise.withResolvers<MoveOutcome>();
-  const { entry, row, status, zoomRoot } = move;
-  press(client, issue, node, { done: resolve, entry, kind: "move", row, status, zoomRoot });
+  const { closed, entry, row, zoomRoot } = move;
+  press(client, issue, node, { closed, done: resolve, entry, kind: "move", row, zoomRoot });
   return promise;
 }
 
@@ -958,12 +955,12 @@ export type NodeActs = Omit<NodeWrites, "lines">;
  * draw none, queue on the node's one chain and write its rows' lines all the same, and are drawn
  * again for no line that changes.
  */
-export function useNodeActs({ key, status, zoomRoot }: NodeWritesIssue): NodeActs {
+export function useNodeActs({ closed, key, zoomRoot }: NodeWritesIssue): NodeActs {
   const queryClient = useQueryClient();
   const move = useCallback(
     (node: string, entry: MoveEntry, row?: PlacementRow) =>
-      pressMove(queryClient, key, node, { entry, row, status, zoomRoot }),
-    [key, queryClient, status, zoomRoot]
+      pressMove(queryClient, key, node, { closed, entry, row, zoomRoot }),
+    [closed, key, queryClient, zoomRoot]
   );
   const remove = useCallback(
     (node: string, expectedCount: number) => pressDelete(queryClient, key, node, expectedCount),
@@ -1001,8 +998,8 @@ export function useNodeActs({ key, status, zoomRoot }: NodeWritesIssue): NodeAct
  * The writes of Graph's node menu for `issue` (`NodeWrites`), under the page's query client,
  * whose held tree is Graph's outline read. Every hook of one client shares each node's chain and
  * each row's line, so the menu and the editor's keys queue on one chain, and a line outlives the
- * menu that drew it. A move takes the issue's status and zoom root as they stood at its press;
- * each act reads the held read as it stands at its turn, never one a render held.
+ * menu that drew it. A move takes whether the issue is closed and its zoom root as they stood at
+ * its press; each act reads the held read as it stands at its turn, never one a render held.
  */
 export function useNodeWrites(issue: NodeWritesIssue): NodeWrites {
   const state = stateOf(useQueryClient());

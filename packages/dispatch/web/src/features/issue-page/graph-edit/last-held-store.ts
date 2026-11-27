@@ -4,7 +4,7 @@ import { useCallback, useId, useLayoutEffect, useSyncExternalStore } from "react
 /**
  * The versions that last held the gone references a page read (R9 of INFRA-5705's spec), shared
  * with every surface that draws one: a row's words (`RowText.tsx`) and the address fallback
- * (`address-target.ts`' `useLastHeldAddress`). The page's one batched names read answers each
+ * (`last-held-address.ts`' `useLastHeldAddress`). The page's one batched names read answers each
  * gone reference with its `last_held` (`useIssueTree.ts`, `last-held-chips.ts`' `targetLastHeld`),
  * and publishes the map here beside the names it publishes (`refs/reference-names.tsx`), which
  * hold no version. Beside the map it publishes where the Spec view's own address opens instead,

@@ -1,4 +1,5 @@
 import { blockFragment } from "../../refs/block-reference";
+import type { MoveEntry } from "../node-caret";
 import type { ANSWER_LINES } from "../page-words";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -10,10 +11,11 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
  * (`page-words-r.ts`) that starts `grey_`.
  *
  * It reads, for each node, `kind`, `supertag`, `parent`, `rank`, `document`, `block_id`,
- * `placement_seq`, `read_only`, `issue` and `text_tree`, and for the answer `converted`,
- * `view_of` and `cursor`; never the page's own `TreeNode`. `document` is set on a typed block of
- * the spec, the Verification document or the plan and gives that block's band; it is absent on a
- * block of the issue's own fragment, which is the band of the issue's own fragment. Under one
+ * `placement_seq`, `read_only`, `issue`, `role`, `state` and `text_tree`, and for the answer
+ * `issue`, `converted`, `view_of`, `cursor` and `tuples`; never the page's own `TreeNode`.
+ * `document` is set on a typed block of the spec, the Verification document or the plan and
+ * gives that block's band; it is absent on a block of the issue's own fragment, which is the
+ * band of the issue's own fragment. Under one
  * parent the blocks stand in the order INFRA-1253 R7 gives - spec, the issue's own fragment,
  * Verification, plan - and a rank stays within its document's band, so a move names a sibling of
  * the node's own document alone.
@@ -26,8 +28,9 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
  * and asks again.
  */
 
-/** R1's nine entries, in R1's order. The word of an entry is `CONTROL_LABELS["edit_" + entry]`
- *  (`page-words-r.ts`); Lens's is part W's `LENS_WORDS.act`. */
+/** The entries of the node menu this module answers: R1's, in R1's order, but Lens, R1's last,
+ *  which is part W's act, drawn where part W offers it (`RowMenu.tsx`' `lensOf`). The word of an
+ *  entry is `CONTROL_LABELS["edit_" + entry]` (`page-words-r.ts`). */
 export const ENTRIES = [
   "new_below",
   "new_under",
@@ -37,8 +40,7 @@ export const ENTRIES = [
   "move_up",
   "move_down",
   "delete",
-  "lens",
-] as const;
+] as const satisfies readonly (keyof Placement)[];
 
 export type Entry = (typeof ENTRIES)[number];
 
@@ -62,18 +64,19 @@ export interface PlacementInput {
   readonly held: TreeAnswer;
   /** The node's read id (`TreeAnswerNode.id`). */
   readonly node: string;
-  /** The issue's status; `"done"` closes the issue. */
-  readonly status: string;
+  /** Whether the issue is closed. */
+  readonly closed: boolean;
   readonly row?: PlacementRow;
   /** The read id of the row Graph is zoomed to (`TreeNode.readId`), which can draw two nodes
    *  (`rowReadIds`). */
   readonly zoomRoot?: string;
   /** The kinds the editor's schema for the fragment lets the editor make (default: all four). */
   readonly kinds?: readonly RetypeKind[];
-  /** A new row the reader typed in that no `PATCH` has placed yet: its moves, both new rows and
-   *  Delete are grey with `grey_not_placed`, since no read holds its node where the server places
-   *  it, so there is no node to move, to count for a delete or to place a row beside or under. */
-  readonly unplaced?: true;
+  /** Whether the node is a new row the reader typed in that no `PATCH` has placed yet: its moves,
+   *  both new rows and Delete are grey with `grey_not_placed`, since no read holds its node where
+   *  the server places it, so there is no node to move, to count for a delete or to place a row
+   *  beside or under. */
+  readonly unplaced: boolean;
 }
 
 /** The body of the `PATCH` that moves a node, or places a new one. A node is named by its route
@@ -100,20 +103,54 @@ export type RetypeOption =
   | { readonly kind: "grey"; readonly reason: GreyReason }
   | { readonly kind: "to"; readonly attributes: RetypeAttributes };
 
-export type Verdict =
-  | { readonly kind: "grey"; readonly reason: GreyReason }
+/** An entry grey, with the reason it is. */
+export interface GreyVerdict {
+  readonly kind: "grey";
+  readonly reason: GreyReason;
+}
+
+/** A body that names a sibling or a last child that may stand on a page the page has not loaded:
+ *  the caller reads the next page and asks again. */
+interface ReadNext {
+  readonly kind: "read_next";
+}
+
+/** Indent, Outdent, Move up and Move down: grey, the `PATCH` that moves the node, or the next
+ *  page first. */
+export type MoveVerdict =
+  | GreyVerdict
   | { readonly kind: "move"; readonly body: MoveBody }
-  | { readonly kind: "read_next" }
+  | ReadNext;
+
+/** New row below and New row under: grey, where the new row stands, or the next page first. */
+export type NewVerdict =
+  | GreyVerdict
   | { readonly kind: "new"; readonly place: NewPlace; readonly line?: PlaceLine }
+  | ReadNext;
+
+/** Retype: grey, or the kinds it offers. */
+export type RetypeVerdict =
+  | GreyVerdict
   | {
       readonly kind: "retype";
       /** One member for each kind of `PlacementInput.kinds`, in `RETYPE_KINDS`' order. */
       readonly kinds: Readonly<Partial<Record<RetypeKind, RetypeOption>>>;
-    }
-  | { readonly kind: "ask" }
-  | { readonly kind: "open" };
+    };
 
-export type Placement = Readonly<Record<Entry, Verdict>>;
+/** Delete: grey, or the server's to decide (the dry run). */
+export type DeleteVerdict = GreyVerdict | { readonly kind: "ask" };
+
+/** Each entry's verdict, typed by what that entry can be. */
+export interface Placement {
+  readonly new_below: NewVerdict;
+  readonly new_under: NewVerdict;
+  readonly retype: RetypeVerdict;
+  readonly indent: MoveVerdict;
+  readonly outdent: MoveVerdict;
+  readonly move_up: MoveVerdict;
+  readonly move_down: MoveVerdict;
+  readonly delete: DeleteVerdict;
+}
 
 /** The held read, indexed once for one answer. */
 interface Walk {
@@ -138,8 +175,6 @@ interface Focus {
 }
 
 type Parent = NonNullable<TreeAnswerNode["parent"]>;
-
-type MoveEntry = "indent" | "outdent" | "move_up" | "move_down";
 
 const NONE: readonly TreeAnswerNode[] = [];
 
@@ -177,13 +212,13 @@ const ANSWERED_FIRST_KINDS: Readonly<Record<string, true>> = {
   risk: true,
 };
 
-const READ_NEXT: Verdict = { kind: "read_next" };
+const READ_NEXT: ReadNext = { kind: "read_next" };
 
-function grey(reason: GreyReason): Verdict {
+function grey(reason: GreyReason): GreyVerdict {
   return { kind: "grey", reason };
 }
 
-function move(body: MoveBody): Verdict {
+function move(body: MoveBody): MoveVerdict {
   return { body, kind: "move" };
 }
 
@@ -207,11 +242,10 @@ export function placementOf(input: PlacementInput): Placement {
   const node = walk.byId.get(input.node);
   if (node === undefined) throw new Error(`the held read holds no node ${input.node}`);
   const focus: Focus = { held, node, walk };
-  const closed = input.status === "done";
-  const edit = refusal(focus, closed, "edit");
-  const under = refusal(focus, closed, "under");
-  const unplaced = input.unplaced === true ? grey("grey_not_placed") : undefined;
-  const moves = (entry: MoveEntry): Verdict => {
+  const edit = refusal(focus, input.closed, "edit");
+  const under = refusal(focus, input.closed, "under");
+  const unplaced = input.unplaced ? grey("grey_not_placed") : undefined;
+  const moves = (entry: MoveEntry): MoveVerdict => {
     if (edit !== undefined) return grey(edit);
     if (unplaced !== undefined) return unplaced;
     if (input.row !== undefined && input.row !== "own") return grey("grey_own_row");
@@ -236,16 +270,13 @@ export function placementOf(input: PlacementInput): Placement {
     move_up: moves("move_up"),
     move_down: moves("move_down"),
     delete: edit !== undefined ? grey(edit) : (unplaced ?? { kind: "ask" }),
-    lens: { kind: "open" },
   };
 }
 
-/** What `placingOf` is asked: the held read, the new row's node and the place its entry made. */
+/** What `placingOf` is asked: the new row's node and the place its entry made. */
 export interface PlacingInput {
-  readonly held: TreeAnswer;
-  /** The new node: its read id, or the block id the page chose for it in the issue's own
-   *  fragment, which the tree read returns the node by once its index has run. */
-  readonly node: string;
+  /** The new node, as the caller found it in the held read (`new-rows.ts`' `readNodeOf`). */
+  readonly node: TreeAnswerNode;
   readonly place: NewPlace;
 }
 
@@ -253,16 +284,12 @@ export type Placing =
   | { readonly kind: "wait" }
   | { readonly kind: "send"; readonly body: MoveBody };
 
-/** The new node's `PATCH` (R3): to wait until `held` holds the node with a `rank` and a
+/** The new node's `PATCH` (R3): to wait until the held read holds `node` with a `rank` and a
  *  `placement_seq`, since the route refuses a node with no rank and the `PATCH` goes under that
  *  `placement_seq` (`node-writes.ts`' `placeNode`), and then the one body that places it. */
-export function placingOf({ held, node, place }: PlacingInput): Placing {
-  const nodes = held.nodes ?? [];
-  const found =
-    nodes.find((each) => each.id === node) ??
-    nodes.find((each) => each.block_id === node && each.document === undefined);
-  if (found === undefined || !hasRank(found)) return { kind: "wait" };
-  const seq = found.placement_seq;
+export function placingOf({ node, place }: PlacingInput): Placing {
+  if (!hasRank(node)) return { kind: "wait" };
+  const seq = node.placement_seq;
   if (seq === null || seq === undefined) return { kind: "wait" };
   return { body: place.body, kind: "send" };
 }
@@ -406,7 +433,7 @@ function refusal(
 
 /** Indent: under the ranked sibling that stands above the node, after its last ranked child of
  *  the node's own document. */
-function indent({ walk, node }: Focus): Verdict {
+function indent({ walk, node }: Focus): MoveVerdict {
   const parent = parentOf(node);
   const siblings = rankedChildren(walk, parent.id);
   const above = siblings[siblings.indexOf(node) - 1];
@@ -420,7 +447,7 @@ function indent({ walk, node }: Focus): Verdict {
 /** Outdent: under the parent's parent, after the old parent where that is a block of the node's
  *  own document; grey where the parent's row is the row Graph is zoomed to, read as either node
  *  that row draws (`rowReadIds`). */
-function outdent({ held, walk, node }: Focus, zoomRoot: string | undefined): Verdict {
+function outdent({ held, walk, node }: Focus, zoomRoot: string | undefined): MoveVerdict {
   const parent = parentOf(node);
   if (parent.id === held.issue) return grey("grey_directly_under_issue");
   if (zoomRoot !== undefined && rowReadIds(held, parent.id).includes(zoomRoot)) {
@@ -446,7 +473,7 @@ function siblingsOf(
 
 /** Move up: after the sibling that is to stand right before the node, null where it becomes the
  *  first. */
-function moveUp(focus: Focus): Verdict {
+function moveUp(focus: Focus): MoveVerdict {
   const parent = parentOf(focus.node);
   const { at, siblings } = siblingsOf(focus, parent);
   if (at <= 0) return grey("grey_first");
@@ -455,7 +482,7 @@ function moveUp(focus: Focus): Verdict {
 }
 
 /** Move down: after the sibling below the node. */
-function moveDown(focus: Focus): Verdict {
+function moveDown(focus: Focus): MoveVerdict {
   const parent = parentOf(focus.node);
   const { at, siblings } = siblingsOf(focus, parent);
   const below = siblings[at + 1];
@@ -471,7 +498,7 @@ function moveDown(focus: Focus): Verdict {
  *  would put it after every ranked sibling of that band), with the line that says so where that
  *  is not right below the node; grey on a block of any other document, where a block of the
  *  issue's own fragment would stand above it. */
-function newBelow({ walk, node }: Focus): Verdict {
+function newBelow({ walk, node }: Focus): NewVerdict {
   const parent = parentOf(node);
   switch (bandOf(node)) {
     case BAND.own:
@@ -504,7 +531,7 @@ function newBelow({ walk, node }: Focus): Verdict {
  *  read answers after it: a ranked child of its own band or a later one, or one of the rest. The
  *  new row is drawn right after the last child before that one that the outline draws in a row of
  *  its own, and first where there is none. */
-function newUnder({ walk, node }: Focus): Verdict {
+function newUnder({ walk, node }: Focus): NewVerdict {
   if (incomplete(walk, node.id, BAND.own)) return READ_NEXT;
   let before: TreeAnswerNode | undefined;
   for (const child of walk.children.get(node.id) ?? NONE) {
@@ -568,7 +595,7 @@ export function rowReadIds(held: TreeAnswer, id: string): readonly string[] {
 
 /** Retype (R5): on a prose block that is one paragraph alone, each kind its place can give, with
  *  the attributes that keep the node where it stands. */
-function retype({ held, walk, node }: Focus, kinds: readonly RetypeKind[]): Verdict {
+function retype({ held, walk, node }: Focus, kinds: readonly RetypeKind[]): RetypeVerdict {
   if (classOf(node) !== "prose" || !isOneParagraph(node)) return grey("grey_not_paragraph");
   const parent = parentOf(node);
   const address = (): string => {

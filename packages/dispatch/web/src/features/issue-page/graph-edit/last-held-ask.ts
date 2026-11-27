@@ -12,7 +12,7 @@ import { lastHeldPath } from "./last-held";
  * What the page asks `reference-targets` for where an address names, by its `#b-` fragment, a
  * block the read its view draws from lacks, and where the address opens by the answer: the Spec
  * view's own address through the page's names read (`useIssueTree.ts`), and a document's own
- * address through `address-target.ts`' `useLastHeldAddress`. It imports neither of those two
+ * address through `last-held-address.ts`' `useLastHeldAddress`. It imports neither of those two
  * modules, so both import it and no import cycle closes through it.
  */
 

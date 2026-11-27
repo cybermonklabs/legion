@@ -277,6 +277,7 @@ function referenceTargetBatches(named: readonly string[]): string[][] {
   return batches;
 }
 
+export { referenceTargetBatches };
 /** What a names read (`referenceTargetsQuery`) holds: one member per address it names. */
 export interface ReferenceTargetsAnswer {
   readonly targets: readonly ReferenceTarget[];

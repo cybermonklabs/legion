@@ -476,7 +476,7 @@ function focusRow(inside: HTMLElement | null): void {
 /** Where the focus goes from item `at` of `count` on `key`: Up and Down step one, wrapping, and
  *  Home and End go to the ends; from the menu itself, Down goes to the first and Up to the last.
  *  Undefined for any other key, and in a menu with no item. */
-function step(key: string, at: number, count: number): number | undefined {
+export function step(key: string, at: number, count: number): number | undefined {
   if (count === 0) return undefined;
   if (key === "Home") return 0;
   if (key === "End") return count - 1;

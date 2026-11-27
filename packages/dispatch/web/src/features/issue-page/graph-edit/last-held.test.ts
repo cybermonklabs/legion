@@ -16,7 +16,6 @@ import {
   usePublishReferenceNames,
 } from "../../refs/reference-names";
 import { parseIssuePath, parseNodeReference, referenceHref } from "../../refs/routes";
-import { blockReferences } from "../address-target";
 import { artifact, issueDetails, KEY, node } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode, targetNaming } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
@@ -34,6 +33,7 @@ import type { TreeAnswer } from "../tree-read/tree-read";
 import { treeReferences } from "../useIssueTree";
 import { fixture, renamed } from "./graph-edit-fixtures";
 import { lastHeldPath } from "./last-held";
+import { blockReferences } from "./last-held-address";
 import { targetLastHeld } from "./last-held-chips";
 import {
   useLastHeldOpening,
@@ -75,7 +75,7 @@ import {
  *   its `last_held`, replacing the address; where the read answers no `last_held`, the address
  *   opens without the block (no `#b-` fragment) and draws no line.
  * - An address of the issue's own route, Graph's, or the Plan or Verification filter's whose
- *   `#b-<block>` names, in no document, a block no read holds (`address-target.ts`'
+ *   `#b-<block>` names, in no document, a block no read holds (`last-held-address.ts`'
  *   `useUnqualifiedLastHeld`, opened by `slots/body.tsx`) sends one `reference-targets` read of
  *   the block in each document of the issue - the spec, the Verification document, the plan and
  *   the tree artifact first, as many as one request carries (`blockReferences`) - once every page
@@ -275,7 +275,7 @@ function titleChanges(root: Node): () => (string | null)[] {
 // R9: every surface that draws a reference to a gone node reads `last_held`, none by a new import of
 // the model: `chipOf` carries it into `NodeChip`, the row's `Chip` draws it, and a row's words and
 // the versions the page publishes (`last-held-store.ts`, `row-references.ts`, `RowText.tsx`) draw
-// it in place. The address fallback (`address-target.ts`, `useIssueTree.ts`,
+// it in place. The address fallback (`last-held-address.ts`, `useIssueTree.ts`,
 // `slots/view-spec.tsx`, `slots/body.tsx`) is the cases that draw the page at an address
 // (`drawAt`).
 test("every surface that draws a gone reference reads last_held", async () => {

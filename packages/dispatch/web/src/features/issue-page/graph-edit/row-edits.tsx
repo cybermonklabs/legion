@@ -12,13 +12,13 @@ import { READER_ACTS } from "../useNodeEditing";
 import { heldRead, type NewEntry, type NodeWritesIssue, useNodeActs } from "./node-writes";
 import {
   type NewPlace,
+  type NewVerdict,
   type PlaceLine,
   type Placement,
   type PlacementRow,
   placementOf,
   type RetypeAttributes,
   type RetypeKind,
-  type Verdict,
 } from "./placement";
 
 /**
@@ -126,12 +126,6 @@ export interface RowEdit {
 /** One row of the outline that stands for a node. */
 export type NodeDrawnRow = Extract<DrawnRow, { kind: "node" }>;
 
-/** The issue's status as the menu's verdicts read it (`placement.ts`: `"done"` closes it), from
- *  the outline's own rule for a closed issue (`isClosed`, its `closed_at`): the writes a row
- *  offers are refused on a closed issue and on no other, so any other status reads as open. */
-const CLOSED_STATUS = "done";
-const OPEN_STATUS = "open";
-
 /** No read id: the rows' read ids outside Graph, which no row reads. */
 const NO_READ_IDS: ReadonlyMap<string, string> = new Map();
 
@@ -156,17 +150,17 @@ export function zoomReadOf(
   return zoomRoot === undefined ? undefined : readIds.get(zoomRoot);
 }
 
-/** The issue `key` Graph's rows write for, as `useNodeWrites` takes it: its status as the
- *  verdicts read it for an issue closed or not (`isClosed`), and the read id of the node the
- *  outline is zoomed to (`zoomReadOf`). */
+/** The issue `key` Graph's rows write for, as `useNodeWrites` takes it: whether it is closed by
+ *  the outline's own rule (`isClosed`, its `closed_at`), which refuses the writes a row offers
+ *  on a closed issue alone, and the read id of the node the outline is zoomed to (`zoomReadOf`). */
 export function writesIssueOf(
   key: string,
   isClosed: boolean,
   zoomRead: string | undefined
 ): NodeWritesIssue {
   return {
+    closed: isClosed,
     key,
-    status: isClosed ? CLOSED_STATUS : OPEN_STATUS,
     ...(zoomRead === undefined ? {} : { zoomRoot: zoomRead }),
   };
 }
@@ -231,12 +225,12 @@ export function verdictsFor(
   const held = editingRead(client, outline, ask.node);
   if (held === undefined) return undefined;
   const verdicts = placementOf({
+    closed: outline.issue.closed,
     held,
     kinds: ask.kinds,
     node: ask.node,
     row: ask.row,
-    status: outline.issue.status,
-    unplaced: ask.unplaced ? true : undefined,
+    unplaced: ask.unplaced,
     zoomRoot: outline.issue.zoomRoot,
   });
   return { held, verdicts };
@@ -255,7 +249,7 @@ export async function placeNewRow(
   editor: RowEditor,
   node: string,
   entry: NewEntry,
-  verdictOf: () => Verdict | undefined
+  verdictOf: () => NewVerdict | undefined
 ): Promise<void> {
   let verdict = verdictOf();
   while (verdict?.kind === "read_next") {

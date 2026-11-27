@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { focusOnDocument } from "../../shell/roving";
 import type { TreeNode } from "../issue-tree";
-import type { EndKey, MoveKey } from "../node-caret";
+import type { EndKey, MoveEntry } from "../node-caret";
 import { type DrawnRow, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
 import type { EditedRow, MoveKeyBridge } from "../useNodeEditing";
@@ -115,7 +115,7 @@ export function useMoveKeys({
   bridge.take =
     key === undefined
       ? undefined
-      : (rowKey: string, move: MoveKey | EndKey): boolean => {
+      : (rowKey: string, move: MoveEntry | EndKey): boolean => {
           const row = rows.find(
             (each): each is NodeDrawnRow => each.kind === "node" && rowKeyOf(each) === rowKey
           );

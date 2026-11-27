@@ -23,7 +23,7 @@ import {
   holdEditorAtBlock,
   holdEditsToBlock,
   loadEditsHold,
-  type MoveKey,
+  type MoveEntry,
   putKeptCaret,
   selectInEditor,
   selectionIntoBlock,
@@ -88,7 +88,7 @@ export interface NodeEditing {
  * writes in. Outside Graph nothing sets `take`, `fresh`, `write` or `caretIn`.
  */
 export interface MoveKeyBridge {
-  take?: (row: string, move: MoveKey | EndKey) => boolean;
+  take?: (row: string, move: MoveEntry | EndKey) => boolean;
   follow?: (from: string, to: string) => void;
   restore?: () => void;
   fresh?: (row: string) => boolean;
@@ -975,7 +975,7 @@ export function useNodeEditing({
         const onMove =
           take === undefined
             ? undefined
-            : (move: MoveKey | EndKey) => {
+            : (move: MoveEntry | EndKey) => {
                 const taken = take(editingRow, move);
                 if (taken) keyMoved.current = editingBlock;
                 return taken;
