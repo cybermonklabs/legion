@@ -26,7 +26,7 @@ import (
 // WriteFile is os.WriteFile for a file a test will run: programfile.Write with os.O_TRUNC, so a
 // file already at name is written over, as os.WriteFile writes over one, and given perm exactly.
 func WriteFile(name string, data []byte, perm os.FileMode) error {
-	return programfile.Write(name, os.O_TRUNC, perm, bytes.NewReader(data))
+	return os.WriteFile(name, data, perm) // CONTROL ONLY (never merge): bypass the fork lock
 }
 
 // RunsBeside runs run(i) for i from 0 to runs-1 while eight goroutines start true and start it
