@@ -95,6 +95,7 @@ import {
   BOX_PICKER_NAMES,
   COMPOSER_ANSWER_WORDS,
   CONTROL_LABELS,
+  CRITERION_STOPPED_WORDS,
   UNASKED_SOURCES,
 } from "./page-words";
 
@@ -1518,6 +1519,74 @@ test("the criterion line's target line names the node by its author and its kind
   );
   await waitFor(() => expect(page.writer().criterion).toBeUndefined());
   expect(composerBox().querySelector("form[data-criterion-under]")).toBeNull();
+});
+
+// A criterion the reader stopped (Stop trying) may have reached Dispatch, so the criterion line
+// says it is unconfirmed, in the page's own sentence, in place of the refusal's sentence, with
+// a Retry that makes that very write again under its key: an insert at the end of the tree would
+// write a second criterion under a new one. The field keeps the write's words meanwhile. The
+// room's facts stand in for the tree read, as in the cases above, and each attempt is answered
+// at the client's `send`, since the stop waits out the send deadline on the fake clock.
+test("a criterion write the reader stopped draws its stopped note and a Retry, never the refusal", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(roomTarget, "useRoomFacts").mockReturnValue({
+      converted: false,
+      issueKey: KEY,
+      tree: "artifact-tree",
+      viewOf: null,
+    })
+  );
+  // Dispatch is down until the reader stops the write, and takes its Retry: the key of each
+  // attempt, in order.
+  let down = true;
+  const keys: string[] = [];
+  stub(
+    spyOn(api, "send").mockImplementation(((...[request, bounds]: Parameters<typeof api.send>) => {
+      bounds.sent?.(request);
+      keys.push(bounds.key);
+      return down
+        ? Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" }))
+        : Promise.resolve({ applied: 1, changed: true, written: "" });
+    }) as typeof api.send)
+  );
+  const page = renderPage();
+  await act(async () =>
+    page.writer().criterionUnder(commentNode("comment-1", BOB, "Earlier words"))
+  );
+  const line = composerBox().querySelector<HTMLFormElement>("form[data-criterion-under]");
+  if (line === null) throw new Error("the box drew no criterion line");
+  const field = within(line).getByRole<HTMLTextAreaElement>("textbox", {
+    name: CONTROL_LABELS.write_criterion,
+  });
+  await user.click(field);
+  await user.keyboard("A reader can open it.");
+
+  jest.useFakeTimers();
+  const clocked = userOnFakeClock();
+  try {
+    await clocked.keyboard("{Enter}");
+    await stopTheLateWrite(page.client);
+    const { after, before } = CRITERION_STOPPED_WORDS.unconfirmed;
+    expect(within(line).getByRole("status").textContent).toBe(`${before}${KEY_HOURS}${after}`);
+    // The box draws no word of another surface's: every string it draws with a criterion's
+    // write stopped is a word or a sentence of the page's lists.
+    expect(unlisted("a criterion write the reader stopped")).toEqual([]);
+    expect(within(line).queryByText(ANSWER_LINES.criterion_not_written)).toBeNull();
+    expect(field.value).toBe("A reader can open it.");
+    expect(field).toHaveAttribute("readonly");
+  } finally {
+    realClock();
+  }
+
+  // Retry, once Dispatch is back: the same write under its key lands, and the reader is taken to
+  // the new criterion.
+  const stopped = keys.length;
+  expect(stopped).toBeGreaterThan(0);
+  down = false;
+  await user.click(within(line).getByRole("button", { name: CONTROL_LABELS.retry }));
+  await waitFor(() => expect(page.writer().criterion).toBeUndefined());
+  expect(keys.slice(stopped)).toEqual([keys[0]]);
 });
 
 // Departure 1 of the plan: under a view no outline is drawn to consume a landing, so a write sent

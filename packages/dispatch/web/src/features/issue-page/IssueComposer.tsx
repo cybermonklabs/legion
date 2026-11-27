@@ -668,6 +668,13 @@ function CriterionLine({
  * the field to the page. A refusal gives it back to the field, so Escape and the next Enter reach
  * the line again; a focus the reader moved elsewhere meanwhile stays where they put it.
  *
+ * A write the reader stopped (Stop trying, at the pending-writes indicator) may have reached
+ * Dispatch, so the line says so in place of the refusal's sentence, in the page's own words
+ * (`criterionStopped`), with a Retry that makes that very write again under its key. Until then
+ * the field keeps the write's words and takes no typing, and Enter and Send make the same write
+ * again as Retry does (`useCriterionLine`), so a press that had landed is never written twice;
+ * Escape and the target line's control still end the aim.
+ *
  * It is a form of its own, with the line that writes on the issue kept mounted and hidden beside
  * it, so the page keeps one box. Its words go into the issue's own text, which tells nobody they
  * name (`criterion`), so the line lists nobody as mentioned. As on the write line, its field is
@@ -709,9 +716,10 @@ function CriterionForm({
   });
   // A line the page stops drawing while its write is out lets go of the box.
   useEffect(() => () => hold(false), [hold]);
-  // Whether a write of the line was out at the last render: its end with a refusal gives the
-  // field back the focus its disabled line moved to the page.
+  // Whether a write of the line was out at the last render: its end with a refusal, or with the
+  // reader's stop, gives the field back the focus its disabled line moved to the page.
   const wasOut = useRef(false);
+  const ended = line.answer !== undefined || line.stopped !== undefined;
   useEffect(() => {
     if (line.pending) {
       wasOut.current = true;
@@ -719,11 +727,13 @@ function CriterionForm({
     }
     if (!wasOut.current) return;
     wasOut.current = false;
-    if (line.answer !== undefined && focusOnDocument()) {
+    if (ended && focusOnDocument()) {
       // The line's one field is its only textarea (`MentionField`).
       form.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
     }
-  }, [line.answer, line.pending]);
+  }, [ended, line.pending]);
+  // What the line says of its last write: the reader's stop, or Dispatch's refusal.
+  const said = line.stopped ?? (line.answer === undefined ? undefined : ANSWER_LINES[line.answer]);
   return (
     <form
       aria-label={CONTROL_LABELS.criterion_target}
@@ -774,6 +784,9 @@ function CriterionForm({
             onPickerOpenChange={setPickerOpen}
             pickerWords={PICKER}
             placeholder={placeholderOf("criterion", place.phone)}
+            // A stopped write's words are on the wire: the field keeps them, and its focus,
+            // until the write's Retry.
+            readOnly={line.stopped !== undefined}
             writing={dispatchWritingBox("issue-page-composer", "criterion")}
           />
           {/* A press here leaves the focus where it is (`keepFocusOnPress`), so on a phone the
@@ -792,10 +805,25 @@ function CriterionForm({
             </RefusableButton>
           </div>
         </div>
-        {line.answer === undefined ? null : (
-          <p data-criterion-answer="" role="status" {...pageChrome}>
-            {ANSWER_LINES[line.answer]}
-          </p>
+        {said === undefined ? null : (
+          <div className="flex flex-wrap items-center gap-3">
+            <p data-criterion-answer="" role="status" {...pageChrome}>
+              {said}
+            </p>
+            {/* A press leaves the focus where it is (`keepFocusOnPress`), as one on Send does,
+                and the fieldset holds Retry while the write it makes is out. */}
+            {line.stopped === undefined ? null : (
+              <button
+                className="font-medium underline"
+                onClick={line.retry}
+                onMouseDown={keepFocusOnPress}
+                type="button"
+                {...pageChrome}
+              >
+                {CONTROL_LABELS.retry}
+              </button>
+            )}
+          </div>
         )}
       </fieldset>
     </form>

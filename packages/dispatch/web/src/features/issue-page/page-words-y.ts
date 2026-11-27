@@ -11,7 +11,24 @@
  *   `./page-words-parts`, and values from `./page-structure`. A value import from
  *   `page-words.ts` or `./page-words-parts` makes an import cycle.
  */
+import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
+
+/**
+ * What the box's criterion line says of a write the reader stopped, which may have reached
+ * Dispatch, by whether its Retry still goes under the write's key: while Dispatch holds the key,
+ * a sentence cut around the hours it keeps one, and once it holds it no longer, one sentence
+ * whole. They are the page's own, as the box's sentences for a send and a file a reader stopped
+ * are (`COMPOSER_ANSWER_WORDS`), so the box draws no word of another surface's.
+ */
+export const CRITERION_STOPPED_WORDS = freeze({
+  expired:
+    "Dispatch has not confirmed the criterion and no longer holds its key, so a Retry writes it anew and may write it a second time.",
+  unconfirmed: {
+    after: " hours of the first try writes it at most once, while a later one may write it twice.",
+    before: "Dispatch has not confirmed the criterion, which may be written, and a Retry within ",
+  },
+});
 
 export default {
   add: {
@@ -40,5 +57,5 @@ export default {
     },
   },
   unasked: [],
-  answers: [],
+  answers: [CRITERION_STOPPED_WORDS],
 } as const satisfies PartWords;

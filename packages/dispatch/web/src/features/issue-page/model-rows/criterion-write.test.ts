@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { DISPATCH_WRITING_HINT_QUIET } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
@@ -6,9 +6,13 @@ import { http } from "msw";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { onFakeClock } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
+import { stopTheLateWrite } from "../../../__tests__/stop-late-write";
+import { ApiError, api } from "../../../api/client";
 import { whoAmIQuery } from "../../../api/queries";
 import { pageKindBullet } from "../../../theme/classes";
+import { KEY_HOURS } from "../../writes/write-words";
 import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import {
@@ -18,6 +22,7 @@ import {
   OutlineWriterProvider,
   useOutlineWriter,
 } from "../outline-writer";
+import { CRITERION_STOPPED_WORDS } from "../page-words";
 import {
   criterionMarkdown,
   criterionOffered,
@@ -91,10 +96,13 @@ function signedInClient(): QueryClient {
   return client;
 }
 
-/** The criterion line under `PARENT`, on a client of its own signed in as alice. It tells
- *  `onOut` of its write going out and settling, as the box hears of it. */
-function renderLine(onLanded: () => void, onOut: (out: boolean) => void = () => {}) {
-  const client = signedInClient();
+/** The criterion line under `PARENT`, on `client`, a client of its own signed in as alice. It
+ *  tells `onOut` of its write going out and settling, as the box hears of it. */
+function renderLine(
+  onLanded: () => void,
+  onOut: (out: boolean) => void = () => {},
+  client = signedInClient()
+) {
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
   return renderHook(
@@ -102,6 +110,39 @@ function renderLine(onLanded: () => void, onOut: (out: boolean) => void = () => 
     { wrapper }
   );
 }
+
+/** One attempt of a write, as the client's `send` is handed it: its request, and the key it
+ *  goes under. */
+interface Attempt {
+  readonly key: string;
+  readonly request: unknown;
+}
+
+/** Answers each attempt of a write at the client's `send` with `answer()`, and keeps each one.
+ *  A write the reader stops waits out its send deadline on the fake clock, and an answer at
+ *  `fetch` comes on the real event loop, so the cases that stop a write answer a level above it,
+ *  where each attempt tells its request as `send` does before it goes out. */
+function answerSends(answer: () => Promise<unknown>): {
+  readonly attempts: Attempt[];
+  readonly restore: () => void;
+} {
+  const attempts: Attempt[] = [];
+  const send = spyOn(api, "send").mockImplementation(((
+    ...[request, bounds]: Parameters<typeof api.send>
+  ) => {
+    bounds.sent?.(request);
+    attempts.push({ key: bounds.key, request });
+    return answer();
+  }) as typeof api.send);
+  return { attempts, restore: () => send.mockRestore() };
+}
+
+/** Dispatch out of reach: an answer a write is tried again under its key after. */
+const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+
+/** What the line says of a write the reader stopped while Dispatch still holds its key: the
+ *  page's own sentence, cut around the hours Dispatch keeps a key. */
+const STOPPED_NOTE = `${CRITERION_STOPPED_WORDS.unconfirmed.before}${KEY_HOURS}${CRITERION_STOPPED_WORDS.unconfirmed.after}`;
 
 /** A node of the outline, as the tree read draws it. */
 function treeNode(partial: Partial<TreeNode> & Pick<TreeNode, "id" | "type">): TreeNode {
@@ -283,6 +324,82 @@ test("a refusal keeps the text", async () => {
     expect(unanswered.result.current.answer).toBeUndefined();
   } finally {
     unanswered.unmount();
+  }
+});
+
+// A write the reader stopped may have reached Dispatch, and an insert at the end of the tree
+// matches nothing it already holds, so a second write under a new key would write the criterion
+// twice. The line says the write is unconfirmed, in the page's own sentence, rather than that
+// it was not written, and its Retry makes that very request again under the same key, which
+// Dispatch answers with what the stopped write did there.
+test("a stopped write says it is unconfirmed, and its Retry sends the same request under its key", async () => {
+  let down = true;
+  const sends = answerSends(() => (down ? Promise.reject(UNAVAILABLE) : Promise.resolve(LANDED)));
+  const client = signedInClient();
+  const onLanded = mock(() => {});
+  const told: boolean[] = [];
+  const line = renderLine(onLanded, (out) => told.push(out), client);
+  try {
+    act(() => line.result.current.setText(TEXT));
+    await onFakeClock(async () => {
+      act(() => line.result.current.send());
+      await stopTheLateWrite(client);
+    });
+    expect(line.result.current.answer).toBeUndefined();
+    expect(line.result.current.stopped).toBe(STOPPED_NOTE);
+    expect(line.result.current.text).toBe(TEXT);
+    expect(line.result.current.pending).toBe(false);
+    // The stop settled the write, so the box lets go of its aim.
+    expect(told).toEqual([true, false]);
+    const request = criterionRequest(TREE, criterionMarkdown(PARENT, TEXT));
+    const [first] = sends.attempts;
+    expect(first).toEqual({ key: expect.any(String), request });
+    const stopped = sends.attempts.length;
+
+    down = false;
+    act(() => line.result.current.retry());
+    await waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
+    expect(sends.attempts.slice(stopped)).toEqual([{ key: first?.key, request }]);
+    expect(line.result.current.text).toBe("");
+    expect(line.result.current.stopped).toBeUndefined();
+    expect(told).toEqual([true, false, true, false]);
+  } finally {
+    line.unmount();
+    sends.restore();
+  }
+});
+
+// Enter and Send while a stopped write waits for its Retry make no write under a new key: the
+// send makes the stopped write again, as Retry does. The text is that write's own words, so it
+// takes no change meanwhile, and the request sent is the one the key covers.
+test("a send while a write is stopped makes that write again under its key, and the text takes no change", async () => {
+  let down = true;
+  const sends = answerSends(() => (down ? Promise.reject(UNAVAILABLE) : Promise.resolve(LANDED)));
+  const client = signedInClient();
+  const onLanded = mock(() => {});
+  const line = renderLine(onLanded, undefined, client);
+  try {
+    act(() => line.result.current.setText(TEXT));
+    await onFakeClock(async () => {
+      act(() => line.result.current.send());
+      await stopTheLateWrite(client);
+    });
+    const [first] = sends.attempts;
+    const stopped = sends.attempts.length;
+
+    act(() => line.result.current.setText(`${TEXT} Edited.`));
+    expect(line.result.current.text).toBe(TEXT);
+    expect(line.result.current.stopped).toBe(STOPPED_NOTE);
+
+    down = false;
+    act(() => line.result.current.send());
+    await waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
+    expect(sends.attempts.slice(stopped)).toEqual([
+      { key: first?.key, request: criterionRequest(TREE, criterionMarkdown(PARENT, TEXT)) },
+    ]);
+  } finally {
+    line.unmount();
+    sends.restore();
   }
 });
 
