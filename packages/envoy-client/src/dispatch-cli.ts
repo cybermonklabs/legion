@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { urlForText } from "@legion/contracts/log-text";
 import {
   askgateState,
   bytesDigest,
@@ -276,7 +277,8 @@ function commandHost(
  * session's records: it calls neither `refuse` nor `recordOutcome`. A run that cannot start ends
  * with the exit line, as every run does; `--help`, `--dry-run` and a refusal of its own arguments
  * print none. `--dry-run` checks what a run checks before it trades and prints the Dispatch
- * server, the session and the socket on standard output.
+ * server (as `urlForText` names it: a URL that carries user information or a query prints as a
+ * fixed phrase), the session and the socket on standard output.
  */
 async function runProxyCommand(
   rest: readonly string[],
@@ -326,9 +328,12 @@ async function runProxyCommand(
     const taken = socketPathTaken(socket);
     if (taken !== undefined) return cannotStart(taken);
     io.stdout(
-      [`Dispatch server: ${config.url}`, `Session: ${sessionId}`, `Socket: ${socket}`, ""].join(
-        "\n"
-      )
+      [
+        `Dispatch server: ${urlForText(config.url, "the configured Dispatch URL")}`,
+        `Session: ${sessionId}`,
+        `Socket: ${socket}`,
+        "",
+      ].join("\n")
     );
     return OK;
   }

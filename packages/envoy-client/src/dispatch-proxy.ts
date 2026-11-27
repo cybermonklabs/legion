@@ -9,6 +9,7 @@ import {
 import { constants } from "node:os";
 import type { Duplex } from "node:stream";
 import { API_ROUTE_PATTERN, DISPATCH_API_METHODS } from "@legion/contracts/dispatch-tools";
+import { errorClass, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { brokerTokenFor } from "./broker-credential";
 import { writeRoute } from "./dispatch-commands/api";
@@ -80,6 +81,11 @@ const TARGET_REFUSED = { status: 400, code: "PROXY_TARGET_REFUSED" } as const;
 const METHOD_REFUSED = { status: 405, code: "PROXY_METHOD_REFUSED" } as const;
 const TRADE_REFUSED = { status: 502, code: "PROXY_TRADE_REFUSED" } as const;
 const DISPATCH_UNREACHABLE = { status: 502, code: "PROXY_DISPATCH_UNREACHABLE" } as const;
+
+/** What names the Dispatch URL in the proxy's refusals where the URL does not print
+ *  (`urlForText`): one that carries user information or a query, or that is not a plain http(s)
+ *  URL. */
+const DISPATCH_URL_SETTING = "the configured Dispatch URL";
 
 /** What the proxy sends, as each of its refusals of a request says it. */
 const SENDS =
@@ -536,7 +542,7 @@ async function serve(
     answerRefusal(
       response,
       TARGET_REFUSED,
-      `The proxy sends each request to the Dispatch server ${run.config.url} alone, so a target that names a host, ${JSON.stringify(target)}, is refused. Write the path and the query alone.`
+      `The proxy sends each request to the Dispatch server at ${urlForText(run.config.url, DISPATCH_URL_SETTING)} alone, so a target that names a host, ${JSON.stringify(target)}, is refused. Write the path and the query alone.`
     );
     return;
   }
@@ -621,7 +627,7 @@ async function serve(
     answerRefusal(
       response,
       DISPATCH_UNREACHABLE,
-      `Dispatch at ${run.config.url} did not answer: ${messageFor(error)}`
+      `Dispatch at ${urlForText(run.config.url, DISPATCH_URL_SETTING)} did not answer: ${errorClass(error)}`
     );
     return;
   }
