@@ -23,7 +23,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -272,21 +271,25 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 		return nil, nil, fmt.Errorf("ask the pool: %w", redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(response.Body, maxIntermediateAnswer+1))
+	// The answer is the words of whoever answered a request that carried the pod's token: it is
+	// read and decoded through redact (ReadAnswer, Answer.Decode), and a refusal prints its status
+	// by the standard phrase (redact.StatusLine), never the pool's own, and its words as
+	// googleError reads them.
+	answer, err := redact.ReadAnswer(response, maxIntermediateAnswer)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		return nil, nil, fmt.Errorf("the pool's answer is past %d bytes", maxIntermediateAnswer)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the pool's answer: %w", err)
 	}
-	if len(answer) > maxIntermediateAnswer {
-		return nil, nil, fmt.Errorf("the pool's answer is past %d bytes", maxIntermediateAnswer)
-	}
 	if response.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("the pool answered %s: %s", response.Status, googleError(answer))
+		return nil, nil, fmt.Errorf("the pool answered %s: %s", redact.StatusLine(response.StatusCode), googleError(answer))
 	}
 	var issued struct {
 		PEMCertificate      string   `json:"pemCertificate"`
 		PEMCertificateChain []string `json:"pemCertificateChain"`
 	}
-	if err := json.Unmarshal(answer, &issued); err != nil {
+	if err := answer.Decode(&issued); err != nil {
 		return nil, nil, fmt.Errorf("the pool's answer is no certificate: %w", err)
 	}
 	cert, err := onePEMCertificate(issued.PEMCertificate)
@@ -321,17 +324,23 @@ func onePEMCertificate(text string) (*x509.Certificate, error) {
 }
 
 // googleError is what a Google API's refusal says, {"error": {"status", "message"}}, and the
-// first bytes of a body in any other shape. It is cut short, since it goes in a log line.
-func googleError(body []byte) string {
+// whole of a body in any other shape, each as the rule prints another party's words (Decode's
+// boxes, Answer.Words): every credential the request carried redacted - the pod's token, the
+// endpoint's user information and query values - and a URL's user information and query values
+// left out, so a refusal that echoes the request, as whatever answers in the pool's place can
+// write one, prints none of it. It is cut short, since it goes in a log line.
+func googleError(answer redact.Answer) string {
 	var refusal struct {
 		Error struct {
-			Status  string `json:"status"`
-			Message string `json:"message"`
+			Status  redact.RemoteText `json:"status"`
+			Message redact.RemoteText `json:"message"`
 		} `json:"error"`
 	}
-	text := strings.TrimSpace(string(body))
-	if json.Unmarshal(body, &refusal) == nil && refusal.Error.Status != "" {
-		text = refusal.Error.Status + ": " + refusal.Error.Message
+	var text string
+	if answer.Decode(&refusal) == nil && !refusal.Error.Status.IsEmpty() {
+		text = refusal.Error.Status.String() + ": " + refusal.Error.Message.String()
+	} else {
+		text = answer.Words().String()
 	}
 	if runes := []rune(text); len(runes) > 300 {
 		text = string(runes[:300]) + "…"

@@ -299,3 +299,117 @@ func TestAPoolEndpointThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		requireHolds(t, "net/url's own text", err.Error(), redacttest.Password)
 	})
 }
+
+// TestAPoolAnswerPrintsNoCredentialItEchoes: an answer that echoes the request - in its status
+// line, in a trailer of its body, in Google's error status or message, in a body of another shape
+// - prints its status by the standard phrase and its words as the rule reads them, with every
+// credential the request carried redacted, and a body that could not be read by its class. Each
+// twin reads the same answer as main did, which holds the credential. Control: the words beside
+// the echo still print. Captures proxy.intermediate-answer/<case>.
+func TestAPoolAnswerPrintsNoCredentialItEchoes(t *testing.T) {
+	echoed := func(r *http.Request) string {
+		user, password, _ := r.BasicAuth()
+		return "Authorization " + r.Header.Get("Authorization") + " user " + user + " password " + password + " key " + r.URL.Query().Get("key")
+	}
+	served := func(t *testing.T, handler http.HandlerFunc) string {
+		server := httptest.NewServer(handler)
+		t.Cleanup(server.Close)
+		return credentialedEndpoint(t, server.URL)
+	}
+	googleAnswer := func(status int, refusal func(r *http.Request) (string, string)) func(*testing.T) string {
+		return func(t *testing.T) string {
+			return served(t, func(w http.ResponseWriter, r *http.Request) {
+				code, message := refusal(r)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": status, "status": code, "message": message}})
+			})
+		}
+	}
+	for _, c := range []struct {
+		name     string
+		endpoint func(t *testing.T) string
+		basic    bool   // the pod presents no token, so the endpoint's user information goes as basic authentication
+		holds    string // the credential the twin's reading of the answer holds
+		says     string
+	}{
+		{
+			name: "status-line",
+			endpoint: func(t *testing.T) string {
+				return credentialedEndpoint(t, rawPool(t, func(r *http.Request) string {
+					return "HTTP/1.1 403 " + r.Header.Get("Authorization") + "\r\nContent-Length: 0\r\n\r\n"
+				}))
+			},
+			holds: wordsBearer,
+			says:  "the pool answered 403 Forbidden",
+		},
+		{
+			name: "body-unreadable",
+			endpoint: func(t *testing.T) string {
+				return credentialedEndpoint(t, rawPool(t, func(r *http.Request) string {
+					return "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n" + r.Header.Get("Authorization") + "\r\n\r\n"
+				}))
+			},
+			holds: wordsBearer,
+			says:  "read the pool's answer: the request failed",
+		},
+		{
+			name: "google-message",
+			endpoint: googleAnswer(http.StatusForbidden, func(r *http.Request) (string, string) {
+				return "PERMISSION_DENIED", "Permission denied on resource; the request carried " + echoed(r)
+			}),
+			holds: wordsBearer,
+			says:  "the pool answered 403 Forbidden: PERMISSION_DENIED: Permission denied on resource; the request carried Authorization ",
+		},
+		{
+			name: "google-status",
+			endpoint: googleAnswer(http.StatusUnauthorized, func(r *http.Request) (string, string) {
+				return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), "Request had invalid authentication credentials."
+			}),
+			holds: wordsBearer,
+			says:  ": Request had invalid authentication credentials.",
+		},
+		{
+			name: "other-shape",
+			endpoint: func(t *testing.T) string {
+				return served(t, func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusBadGateway)
+					_, _ = io.WriteString(w, "upstream refused the request; it carried "+echoed(r))
+				})
+			},
+			basic: true,
+			holds: redacttest.Password,
+			says:  "the pool answered 502 Bad Gateway: upstream refused the request; it carried Authorization ",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pool := bearerPool(c.endpoint(t))
+			if c.basic {
+				pool = basicPool(pool.Endpoint)
+			}
+			line := firstFailure(t, pool)
+			redacttest.RequireNoPiece(t, "proxy.intermediate-answer/"+c.name, line, wordsCredentials...)
+			requireSays(t, line, c.says)
+		})
+		t.Run(c.name+"-twin", func(t *testing.T) {
+			endpoint := c.endpoint(t)
+			var response *http.Response
+			var err error
+			if c.basic {
+				response, err = (&http.Client{}).Post(askedOf(endpoint), "application/json", strings.NewReader("{}"))
+			} else {
+				response, err = plainAsk(t, endpoint)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				requireHolds(t, "the read of the answer's body as main read it", err.Error(), c.holds)
+				return
+			}
+			requireHolds(t, "the answer as main read it", response.Status+" "+string(body), c.holds)
+		})
+	}
+}
