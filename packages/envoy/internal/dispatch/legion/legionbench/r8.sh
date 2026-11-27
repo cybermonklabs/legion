@@ -9,10 +9,12 @@
 # first waits for the Legion facts consumer to read INFRA whole, then judges each facts change's
 # push and the board's body, and takes the board's facts read, whose plan and median time
 # TestFarmBoardFactsRead measures. Last, legionbench compare holds this head's median recompute to
-# twice main's. r8.yaml runs it on the build farm.
+# twice main's. With R8_PROFILE=1 each arm's server also records a CPU profile of the drive's
+# window, which shows where its recomputes spend their time. r8.yaml runs it on the build farm.
 #
 # Every measurement prints a RESULT line and every miss a FAIL line; the script exits 1 when any
-# step failed.
+# step failed. A CPU profile judges nothing: one that could not be taken is a MARK line, and the
+# run's measurements stand without it.
 #
 # Environment:
 #   R8_WORK      scratch for everything the run writes (required)
@@ -23,6 +25,11 @@
 #   R8_RATE (0.26), R8_DURATION (10m): the drive's -rate and -duration
 #   R8_HEAD_FACTS (1): whether this head's server runs the Legion facts consumer; 0 drives this head
 #                as main is driven, for a head whose server starts no consumer yet
+#   R8_PROFILE (0): 1 profiles each arm's server's CPU over the drive's window, through the
+#                profiler the server serves on 127.0.0.1 when DISPATCH_PPROF_PORT is set (main and
+#                this head both serve it), into $R8_WORK/out as main.cpu.pprof and head.cpu.pprof;
+#                R8_DURATION, the profile's length, is then whole hours, minutes and seconds (10m,
+#                1h30m, 90s)
 #   R8_PGPORT (55432), R8_SHARED_BUFFERS (2GB), PGBIN (the newest /usr/lib/postgresql/*/bin)
 set -euo pipefail
 
@@ -35,11 +42,14 @@ work=$R8_WORK
 port=${R8_PGPORT:-55432}
 now=${R8_NOW:-$(date -u +%Y-%m-%dT00:00:00Z)}
 head_facts=${R8_HEAD_FACTS:-1}
+profile=${R8_PROFILE:-0}
 # Each server is stamped with its full commit, which /healthz answers and the facts consumer records.
 R8_MAIN=$(git -C "$source_dir" rev-parse "$R8_MAIN^{commit}")
 R8_HEAD=$(git -C "$source_dir" rev-parse "$R8_HEAD^{commit}")
 server_port=58111
 standin_port=13370
+# The port of the profiler of the server that runs, on 127.0.0.1, with R8_PROFILE=1.
+pprof_port=58112
 # The agent token of both servers, which the probe reads from $work/token: drawn for this run.
 token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 if [ -z "${PGBIN:-}" ]; then
@@ -48,9 +58,45 @@ fi
 mkdir -p "$work/bin" "$work/pglog" "$work/sock" "$work/out" "$work/web"
 printf '%s\n' "$token" >"$work/token"
 mark() { echo "MARK $(date -u +%FT%TZ) $*"; }
+
+# duration_seconds prints the Go duration $1, made of whole hours, minutes and seconds (10m,
+# 1h30m, 90s), in seconds, the unit of the profiler's `seconds`; it fails for any other form.
+duration_seconds() {
+  local rest=$1 total=0
+  [[ $rest =~ ^([0-9]+[hms])+$ ]] || return 1
+  while [[ $rest =~ ^([0-9]+)([hms])(.*)$ ]]; do
+    case ${BASH_REMATCH[2]} in
+      h) total=$((total + 10#${BASH_REMATCH[1]} * 3600)) ;;
+      m) total=$((total + 10#${BASH_REMATCH[1]} * 60)) ;;
+      s) total=$((total + 10#${BASH_REMATCH[1]})) ;;
+    esac
+    rest=${BASH_REMATCH[3]}
+  done
+  [ "$total" -gt 0 ] || return 1
+  echo "$total"
+}
+
+# With R8_PROFILE=1 every server this script starts serves its profiler, and each arm's profile
+# lasts as long as the drive appends events.
+pprof_env=()
+profile_seconds=0
+case "$profile" in
+  0) ;;
+  1)
+    profile_seconds=$(duration_seconds "${R8_DURATION:-10m}") || {
+      echo "FAIL r8 R8_PROFILE=1 profiles for R8_DURATION, which must be whole hours, minutes and seconds, not ${R8_DURATION:-10m}"
+      exit 1
+    }
+    pprof_env=(DISPATCH_PPROF_PORT="$pprof_port")
+    ;;
+  *)
+    echo "FAIL r8 R8_PROFILE is 0 or 1, not $profile"
+    exit 1
+    ;;
+esac
 status=0
-mark "r8.sh: source $source_dir at $(git -C "$source_dir" rev-parse HEAD), main $R8_MAIN, head $R8_HEAD, scale ${R8_SCALE:-1}, now $now, head facts $head_facts, node ${NODE_NAME:-unknown}"
-echo "RESULT r8 main=$R8_MAIN head=$R8_HEAD node=${NODE_NAME:-unknown} scale=${R8_SCALE:-1} rate=${R8_RATE:-0.26} duration=${R8_DURATION:-10m} cards=1000 ten_times=1"
+mark "r8.sh: source $source_dir at $(git -C "$source_dir" rev-parse HEAD), main $R8_MAIN, head $R8_HEAD, scale ${R8_SCALE:-1}, now $now, head facts $head_facts, profile $profile, node ${NODE_NAME:-unknown}"
+echo "RESULT r8 main=$R8_MAIN head=$R8_HEAD node=${NODE_NAME:-unknown} scale=${R8_SCALE:-1} rate=${R8_RATE:-0.26} duration=${R8_DURATION:-10m} cards=1000 ten_times=1 profile=$profile"
 
 # Postgres, its data on the run's own volume, its log in jsonlog for the statement the facts read is
 # taken from (the drive turns log_min_duration_statement on around one board read). The durability
@@ -109,7 +155,7 @@ start_server() {
   (cd "$home" && exec env -i PATH="$PATH" HOME="$home" XDG_CONFIG_HOME="$home" XDG_DATA_HOME="$home" \
     DATABASE_URL="$url" DISPATCH_AGENT_TOKEN="$token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$server_port" \
-    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "$bin" >>"$log" 2>&1) &
+    DISPATCH_WEB_DIST="$work/web" DISPATCH_NATS_DISABLED=1 "${pprof_env[@]}" "$bin" >>"$log" 2>&1) &
   server_pid=$!
   pids+=("$server_pid")
   local started=$SECONDS
@@ -134,6 +180,19 @@ stop_pid() {
   local pid=$1
   kill -TERM "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
+}
+
+# profile_window profiles the CPU of arm name's server over the drive's window into
+# $work/out/<name>.cpu.pprof, in the background beside the drive, whose output it reads in
+# drive_log. The drive prints its `board cards=` line as its window opens, after the catch-up (at
+# this head the facts consumer's whole read, which the profile so leaves out); the profile then
+# lasts as long as the window's events and ends within the drive's 5 s of grace after them.
+profile_window() {
+  local name=$1 drive_log=$2
+  until grep -q "^RESULT r8 arm=$name board cards=" "$drive_log"; do
+    sleep 1
+  done
+  curl -fsS -o "$work/out/$name.cpu.pprof" "http://127.0.0.1:$pprof_port/debug/pprof/profile?seconds=$profile_seconds"
 }
 
 # arm runs one build's arm: build, migrate, load, stand-in, serve, drive, and at this head the facts
@@ -174,10 +233,29 @@ arm() {
   if [ "$facts" = 1 ]; then
     facts_flags=(-facts -pg-log "$pg_log")
   fi
-  local rc=0
+  # The drive's output goes to drive_log as well as to this script's: profile_window watches it for
+  # the window, and the record keeps it with the servers' logs.
+  local rc=0 drive_log=$work/drive-$name.log profiler=""
+  : >"$drive_log"
+  if [ "$profile" = 1 ]; then
+    profile_window "$name" "$drive_log" &
+    profiler=$!
+    pids+=("$profiler")
+  fi
   "$work/bin/legionbench" drive -arm "$name" -url "http://127.0.0.1:$server_port" -token-file "$work/token" \
     -database "$url" -probe-dir "$head_tree/packages/dispatch" -server-log "$work/server-$name.log" \
-    -out "$work/out" -rate "${R8_RATE:-0.26}" -duration "${R8_DURATION:-10m}" "${facts_flags[@]}" || rc=$?
+    -out "$work/out" -rate "${R8_RATE:-0.26}" -duration "${R8_DURATION:-10m}" "${facts_flags[@]}" | tee "$drive_log" ||
+    rc=${PIPESTATUS[0]}
+  if [ -n "$profiler" ]; then
+    if ! grep -q "^RESULT r8 arm=$name board cards=" "$drive_log"; then
+      stop_pid "$profiler"
+      mark "arm $name: the drive opened no window, so its server's CPU was not profiled"
+    elif wait "$profiler" && [ -s "$work/out/$name.cpu.pprof" ]; then
+      echo "RESULT r8 arm=$name cpu_profile=out/$name.cpu.pprof seconds=$profile_seconds bytes=$(wc -c <"$work/out/$name.cpu.pprof")"
+    else
+      mark "arm $name: the profile of its server's CPU over the window was not taken"
+    fi
+  fi
   if [ "$facts" = 1 ] && [ -s "$work/out/facts-read.json" ]; then
     LEGIONBENCH_DATABASE_URL="$url" LEGIONBENCH_FACTS_READ="$work/out/facts-read.json" \
       "$work/bin/legionbench.test" -test.run '^TestFarmBoardFactsRead$' -test.v -test.count=1 || rc=1

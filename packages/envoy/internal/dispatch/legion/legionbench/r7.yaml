@@ -1,10 +1,12 @@
 # R7's Job (dispatch://INFRA-5577, check k27) on the build farm: legionbench/r7.sh, whole, in one
-# pod, at HEAD, the commit it checks out: the stated load, one and a half times it, and the
-# drainBatch control, each beside a first whole read of INFRA's facts (r7.sh says what each arm
-# runs). The code arrives as a git bundle in the build farm's input bucket, so the Job needs no
-# GitHub token and no pushed branch: the pod clones the public repository, fetches the bundle's
-# commits into it and checks out HEAD. The bundle holds the commits the public repository lacks:
-#   git bundle create legion.bundle <branches> --not origin/main
+# pod, at HEAD, the commit it checks out: the stated load, one and a half times it, and the sleep
+# control, whose drain sleeps 150 ms under the change log's lock and must miss R7's hold bound,
+# each beside a first whole read of INFRA's facts (r7.sh says what each arm runs and how the
+# control is judged). The code arrives as a git bundle in the build farm's input bucket, so the Job
+# needs no GitHub token and no pushed branch: the pod clones the public repository, fetches every
+# head the bundle lists into it and checks out HEAD. The bundle holds the commits the public
+# repository lacks, under whatever heads it lists (one of a jj workspace's HEAD lists no branch):
+#   git bundle create legion.bundle HEAD --not origin/main
 #   gcloud storage cp legion.bundle gs://<input bucket>/in/builds/infra-5577/<RUN>/legion.bundle
 # The log is the evidence: judge it by its RESULT and FAIL lines and its closing VERDICT line, never
 # by the Job's phase. The container exits 0 once it has printed that verdict, FAIL lines or not, so
@@ -12,7 +14,7 @@
 # retried. Each run's output goes to gs://<bucket>/out/builds/infra-5577/<RUN>/. Fill the ${…}
 # variables (and only those); LABEL_DOMAIN and BUCKET are the deployment's own, which this public
 # file names neither of, so the render refuses when one is unset, as it refuses any variable unset:
-#   export RUN=<run> HEAD=<commit> SCALE=1 AFTER=5m READ_TIMEOUT=30m ARMS="stated recorded control" \
+#   export RUN=<run> HEAD=<commit> SCALE=1 AFTER=5m READ_TIMEOUT=30m ARMS="stated recorded sleep" \
 #     OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain> BUCKET=<bucket>
 #   python3 -c 'import os, re, sys; names = ("RUN", "HEAD", "SCALE", "AFTER", "READ_TIMEOUT", "ARMS", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN", "BUCKET"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("r7.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < r7.yaml > "$TMPDIR/r7.yaml"
@@ -60,8 +62,8 @@ spec:
       nodeSelector:
         cloud.google.com/compute-class: build
       volumes:
-      # The clone and its control worktree, the Go caches, the builds, the Postgres data with its WAL
-      # (one database at ten times the run volume) and the logs.
+      # The clone and its sleep control's worktree, the Go caches, the builds, the Postgres data with
+      # its WAL (one database at ten times the run volume) and the logs.
       - name: scratch
         emptyDir: {sizeLimit: 46Gi}
       containers:
@@ -95,7 +97,7 @@ spec:
           git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
           cd /scratch/src
           git bundle verify /scratch/legion.bundle
-          git fetch /scratch/legion.bundle 'refs/heads/*:refs/bundle/*'
+          git fetch /scratch/legion.bundle $(git bundle list-heads /scratch/legion.bundle | awk '{print "+" $2 ":refs/bundle/" NR}')
           git checkout --detach "$HEAD"
           echo "MARK checkout $(git rev-parse HEAD)"
           rc=0

@@ -10,10 +10,16 @@
 #
 #   stated    the Design's rates, held to R7's bounds;
 #   recorded  one and a half times those rates, recorded and not held;
-#   control   k27's negative control: the server built from this commit with delivery.drainBatch set
-#             to 10,000 (the script edits the line in a worktree of its own and checks the edit
-#             took), at the Design's rates; its drain's p99 hold must be above R7's 100 ms, or the
-#             measurement cannot see the hold it bounds.
+#   sleep     k27's negative control, at the Design's rates: the server built from this commit with
+#             pg_sleep(0.15) in the drain's statement (delivery's drainOneBatch), run once
+#             delivery_changes_drain has taken the lock and moved rows, and before the statement's
+#             transaction commits (the script edits the line in a worktree of its own and checks
+#             the edit took). Each batch the drain moves then holds the lock 150 ms longer, and the
+#             drain still takes it 40 times or more, so only R7's 100 ms bound on the drain's p99
+#             hold can fail it. The arm is judged as a control: it passes when its drain misses
+#             that bound, which prints a RESULT line, and fails, with a FAIL line, when the drain's
+#             p99 hold is 100 ms or less or the drain took the lock fewer than 40 times, since the
+#             measurement then cannot see the hold it bounds.
 #
 # r7.yaml runs it on the build farm. Every measurement prints a RESULT line and every miss a FAIL
 # line; the script exits 1 when any arm failed.
@@ -24,7 +30,7 @@
 #   R7_SCALE (1), R7_SEED (5577), R7_NOW (the current UTC midnight): the load's -scale, -seed, -now
 #   R7_AFTER (5m), R7_READ_TIMEOUT (30m): how long the drive runs after the read, and how long the
 #                    read may take
-#   R7_ARMS ("stated recorded control"): the arms to run, in order
+#   R7_ARMS ("stated recorded sleep"): the arms to run, in order
 #   R7_PGPORT (55432), R7_SHARED_BUFFERS (2GB), PGBIN (the newest /usr/lib/postgresql/*/bin)
 set -euo pipefail
 
@@ -41,7 +47,7 @@ fi
 mkdir -p "$work/bin" "$work/sock" "$work/run"
 mark() { echo "MARK $(date -u +%FT%TZ) $*"; }
 mark "r7.sh: source $source_dir at $commit, scale ${R7_SCALE:-1}, now $now, node ${NODE_NAME:-unknown}"
-echo "RESULT r7 head=$commit node=${NODE_NAME:-unknown} scale=${R7_SCALE:-1} ten_times=1 after=${R7_AFTER:-5m} arms=[${R7_ARMS:-stated recorded control}]"
+echo "RESULT r7 head=$commit node=${NODE_NAME:-unknown} scale=${R7_SCALE:-1} ten_times=1 after=${R7_AFTER:-5m} arms=[${R7_ARMS:-stated recorded sleep}]"
 
 server_pid=""
 cleanup() {
@@ -59,28 +65,33 @@ url="postgres://postgres@127.0.0.1:$port/r7?sslmode=disable"
 psql "$admin_url" -Atc 'select version()'
 psql "$admin_url" -Atc 'create database r7'
 
-# The server, the loader and the measurement's test binary, from this checkout; and the control's
-# server, from a worktree of it whose drainBatch is 10,000.
+# The server, the loader and the measurement's test binary, from this checkout; and the sleep
+# control's server, from a worktree of it whose drain sleeps 150 ms under the lock.
 cd "$source_dir/packages/envoy"
 go build -ldflags "-X main.buildCommit=$commit" -o "$work/bin/server" ./cmd/dispatch
 go build -o "$work/bin/legionbench" ./internal/dispatch/legion/legionbench/cmd
 go test -c -tags farm -o "$work/bin/legionbench.test" ./internal/dispatch/legion/legionbench
-case " ${R7_ARMS:-stated recorded control} " in
-  *" control "*)
-    git -C "$source_dir" worktree add --detach "$work/control-src" "$commit" >/dev/null
-    changes=$work/control-src/packages/envoy/internal/dispatch/delivery/changes.go
-    before=$(grep -c '^const drainBatch = 250$' "$changes" || true)
-    sed -i 's/^const drainBatch = 250$/const drainBatch = 10000/' "$changes"
-    after=$(grep -c '^const drainBatch = 10000$' "$changes" || true)
+case " ${R7_ARMS:-stated recorded sleep} " in
+  *" sleep "*)
+    git -C "$source_dir" worktree add --detach "$work/sleep-src" "$commit" >/dev/null
+    changes=$work/sleep-src/packages/envoy/internal/dispatch/delivery/changes.go
+    # The drain's statement becomes the drain followed by a sleep in the same statement, so in its
+    # transaction. The sleep is a lateral call on the drain's answer, so it runs after the drain
+    # took the lock, and it sleeps only where the drain moved rows: a drain that finds none pending
+    # takes no lock, and its callers' passes are not slowed for nothing.
+    before=$(grep -cF '`select delivery_changes_drain($1)`, drainBatch)' "$changes" || true)
+    sed -i 's/`select delivery_changes_drain(\$1)`, drainBatch)/`select drained.moved from (select delivery_changes_drain($1) as moved offset 0) drained cross join lateral pg_sleep(case when drained.moved > 0 then 0.15 else 0 end)`, drainBatch)/' "$changes"
+    slept='`select drained.moved from (select delivery_changes_drain($1) as moved offset 0) drained cross join lateral pg_sleep(case when drained.moved > 0 then 0.15 else 0 end)`, drainBatch)'
+    after=$(grep -cF "$slept" "$changes" || true)
     if [ "$before" != 1 ] || [ "$after" != 1 ]; then
-      echo "FAIL r7 control: the edit of drainBatch did not take (lines at 250 before: $before, at 10000 after: $after)"
+      echo "FAIL r7 sleep: the edit of the drain's statement did not take (lines of the drain before: $before, of the drain with its sleep after: $after)"
       exit 1
     fi
-    echo "RESULT r7 control $(grep -n '^const drainBatch' "$changes")"
-    (cd "$work/control-src/packages/envoy" && go build -ldflags "-X main.buildCommit=$commit" -o "$work/bin/server-control" ./cmd/dispatch)
+    echo "RESULT r7 sleep edit delivery/changes.go:$(grep -nF "$slept" "$changes" | tr -d '\t')"
+    (cd "$work/sleep-src/packages/envoy" && go build -ldflags "-X main.buildCommit=$commit" -o "$work/bin/server-sleep" ./cmd/dispatch)
     ;;
 esac
-mark "built the server, the control's server, legionbench and its test binary at $commit"
+mark "built the server, the sleep control's server, legionbench and its test binary at $commit"
 
 # The migration: the server booted once on the empty database. It refuses to start without an
 # agent token, and nothing sends one: a value drawn for this run is enough.
@@ -112,12 +123,12 @@ mark "loaded"
 
 status=0
 first=1
-for arm in ${R7_ARMS:-stated recorded control}; do
+for arm in ${R7_ARMS:-stated recorded sleep}; do
   server=$work/bin/server rate=1 gate=$arm
   case "$arm" in
     stated) ;;
     recorded) rate=1.5 ;;
-    control) server=$work/bin/server-control ;;
+    sleep) server=$work/bin/server-sleep ;;
     *)
       echo "FAIL r7 no arm is named $arm"
       status=1
@@ -137,6 +148,16 @@ for arm in ${R7_ARMS:-stated recorded control}; do
     LEGIONBENCH_READ_TIMEOUT="${R7_READ_TIMEOUT:-30m}" \
     "$work/bin/legionbench.test" -test.run '^TestFarmChangeLockHolds$' -test.v -test.count=1 -test.timeout 3h || rc=$?
   mark "arm $arm exits $rc"
+  if [ "$arm" = sleep ]; then
+    # The sleep gate passes the test only when the drain missed R7's hold bound over at least 40
+    # takes, so the control's verdict is the test's exit; a test that stopped before it judged the
+    # holds (a failed setup, which prints no FAIL line of its own) is a control that did not fail.
+    if [ "$rc" -eq 0 ]; then
+      echo "RESULT r7 sleep control failed on the hold as it must (the arm's lines above say by how much)"
+    else
+      echo "FAIL r7 sleep control did not fail on the drain's hold alone (the test exits $rc; the arm's lines above say why)"
+    fi
+  fi
   if [ "$rc" -ne 0 ]; then status=1; fi
 done
 mark "r7.sh exits $status"

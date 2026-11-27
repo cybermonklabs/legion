@@ -67,9 +67,13 @@ import (
 // LEGIONBENCH_GATE says what the run is held to: `stated` (k27's run at the stated load: each of
 // the four writers' p99 hold at most 100 ms, the intake's median wait at most 20 ms, the drain at
 // least 40 holds and each other writer at least 150), `recorded` (the run at one and a half times
-// the load: recorded, not gated), or `control` (k27's negative control, a server whose drainBatch
-// is 10,000: its drain's p99 hold must be above 100 ms, or the measurement cannot see the hold it
-// bounds). Every measurement prints a RESULT line and every miss a FAIL line, which fails the test.
+// the load: recorded, not gated), or `sleep` (k27's negative control, a server whose drain sleeps
+// 150 ms after it takes the lock and before its transaction commits). The sleep arm is judged as a
+// control: its drain must miss R7's hold bound, a p99 hold above 100 ms, while it still takes the
+// lock at least 40 times, so the miss is the hold's alone. That miss is a RESULT line and passes
+// the test; a drain held within the bound, or taken fewer than 40 times, is a FAIL line, since the
+// measurement then cannot see the hold it bounds. Every measurement prints a RESULT line and every
+// miss a FAIL line, which fails the test.
 func TestFarmChangeLockHolds(t *testing.T) {
 	o := farmOptionsFromEnv(t)
 	ctx := t.Context()
@@ -179,8 +183,8 @@ func farmOptionsFromEnv(t *testing.T) farmOptions {
 	if o.database == "" || o.server == "" || o.work == "" || o.arm == "" {
 		t.Fatal("set LEGIONBENCH_DATABASE_URL, LEGIONBENCH_SERVER, LEGIONBENCH_WORK and LEGIONBENCH_ARM (r7.sh does)")
 	}
-	if !slices.Contains([]string{"stated", "recorded", "control"}, o.gate) {
-		t.Fatalf("LEGIONBENCH_GATE is stated, recorded or control, not %q", o.gate)
+	if !slices.Contains([]string{"stated", "recorded", "sleep"}, o.gate) {
+		t.Fatalf("LEGIONBENCH_GATE is stated, recorded or sleep, not %q", o.gate)
 	}
 	if value := os.Getenv("LEGIONBENCH_PORT"); value != "" {
 		port, err := strconv.Atoi(value)
@@ -880,12 +884,26 @@ func judgeFarmHolds(r *farmReport, o farmOptions, writers map[string]*farmWriter
 		} else if waitMedian > farmWaitBound {
 			r.fail("the intake's median wait %.1f ms is above %s", ms(waitMedian), farmWaitBound)
 		}
-	case "control":
+	case "sleep":
+		// The control works when the drain, which sleeps under the lock, misses the bound the stated
+		// run is held to, and takes the lock as often as that run must for its p99 to be read.
 		held := byWriter["drain"]
 		p99 := durationPercentile(held, 0.99)
-		r.result("control drain holds=%d p99_ms=%.1f bound_ms=%.0f", len(held), ms(p99), ms(farmHoldBound))
+		r.result("control drain takes=%d holds_seen=%d p99_ms=%.1f bound_ms=%.0f floor=%d", takes["drain"], len(held), ms(p99),
+			ms(farmHoldBound), farmDrainFloor)
+		failedAsItMust := true
+		if takes["drain"] < farmDrainFloor {
+			failedAsItMust = false
+			r.fail("control did not fail on the hold alone: the drain took the lock %d times, fewer than %d", takes["drain"], farmDrainFloor)
+		}
 		if p99 <= farmHoldBound {
-			r.fail("control: the drain's p99 hold %.1f ms is not above %s, so the measurement cannot see the hold it bounds", ms(p99), farmHoldBound)
+			failedAsItMust = false
+			r.fail("control did not fail: the drain's p99 hold %.1f ms is not above %s, so the measurement cannot see the hold it bounds",
+				ms(p99), farmHoldBound)
+		}
+		if failedAsItMust {
+			r.result("control failed on the hold as it must: the drain's p99 hold %.1f ms is above %s over %d takes", ms(p99),
+				farmHoldBound, takes["drain"])
 		}
 	}
 }

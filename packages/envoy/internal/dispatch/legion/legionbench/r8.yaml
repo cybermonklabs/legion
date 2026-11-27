@@ -1,23 +1,26 @@
 # R8's Job (dispatch://INFRA-5577, check k14) on the build farm: legionbench/r8.sh, whole, in one
 # pod, `main`'s tip and then this head one after the other (r8.sh says what each arm runs). The code
 # arrives as a git bundle in the build farm's input bucket, so the Job needs no GitHub token and no
-# pushed branch: the pod clones the public repository, fetches the bundle's commits into it and
-# checks out BENCH, the commit holding legionbench, whose r8.sh it runs with MAIN and HEAD as its
-# two arms (MAIN may be `origin/main`, which r8.sh resolves and records). The bundle holds the
-# commits the public repository lacks:
-#   git bundle create legion.bundle <branches> --not origin/main
+# pushed branch: the pod clones the public repository, fetches every head the bundle lists into it
+# and checks out BENCH, the commit holding legionbench, whose r8.sh it runs with MAIN and HEAD as
+# its two arms (MAIN may be `origin/main`, which r8.sh resolves and records). The bundle holds the
+# commits the public repository lacks, under whatever heads it lists (one of a jj workspace's HEAD
+# lists no branch):
+#   git bundle create legion.bundle HEAD --not origin/main
 #   gcloud storage cp legion.bundle gs://<input bucket>/in/builds/infra-5577/<RUN>/legion.bundle
 # The log is the evidence: judge it by its RESULT and FAIL lines and its closing VERDICT line, never
 # by the Job's phase. The container exits 0 once it has printed that verdict, FAIL lines or not, so
 # a failed check never runs the measurement again; only a pod that ends before its verdict (a lost
 # machine, an eviction, a failed clone) is retried. Each run's output goes to
-# gs://<bucket>/out/builds/infra-5577/<RUN>/. Fill the ${…} variables (and only those, so the
-# script's own variables are left for the shell). LABEL_DOMAIN is the build farm's label domain and
-# BUCKET its input and output bucket, the deployment's own; this public file names neither, so the
-# render refuses when one is unset, as it refuses any variable unset:
-#   export RUN=<run> BENCH=<commit> MAIN=origin/main HEAD=<commit> SCALE=1 HEAD_FACTS=1 DURATION=10m \
+# gs://<bucket>/out/builds/infra-5577/<RUN>/. PROFILE=1 adds a CPU profile of each arm's server
+# over the drive's window to the record, as work/out/main.cpu.pprof and work/out/head.cpu.pprof
+# (r8.sh's R8_PROFILE); 0 takes none. Fill the ${…} variables (and only those, so the script's own
+# variables are left for the shell). LABEL_DOMAIN is the build farm's label domain and BUCKET its
+# input and output bucket, the deployment's own; this public file names neither, so the render
+# refuses when one is unset, as it refuses any variable unset:
+#   export RUN=<run> BENCH=<commit> MAIN=origin/main HEAD=<commit> SCALE=1 HEAD_FACTS=1 DURATION=10m PROFILE=0 \
 #     OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain> BUCKET=<bucket>
-#   python3 -c 'import os, re, sys; names = ("RUN", "BENCH", "MAIN", "HEAD", "SCALE", "HEAD_FACTS", "DURATION", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN", "BUCKET"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("r8.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
+#   python3 -c 'import os, re, sys; names = ("RUN", "BENCH", "MAIN", "HEAD", "SCALE", "HEAD_FACTS", "DURATION", "PROFILE", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN", "BUCKET"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("r8.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < r8.yaml > "$TMPDIR/r8.yaml"
 #   kubectl -n builds create --dry-run=server -f "$TMPDIR/r8.yaml" && kubectl -n builds create -f "$TMPDIR/r8.yaml"
 apiVersion: batch/v1
@@ -87,6 +90,7 @@ spec:
         - {name: SCALE, value: "${SCALE}"}
         - {name: HEAD_FACTS, value: "${HEAD_FACTS}"}
         - {name: DURATION, value: "${DURATION}"}
+        - {name: PROFILE, value: "${PROFILE}"}
         - {name: BUCKET, value: "${BUCKET}"}
         - name: NODE_NAME
           valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
@@ -97,22 +101,22 @@ spec:
         - |
           set -euo pipefail
           mkdir -p "$HOME" "$TMPDIR" "$GOCACHE" "$GOMODCACHE" "$BUN_INSTALL_CACHE_DIR"
-          echo "MARK start $(date -u +%FT%TZ) run=$RUN bench=$BENCH main=$MAIN head=$HEAD scale=$SCALE head_facts=$HEAD_FACTS duration=$DURATION node=$NODE_NAME"
+          echo "MARK start $(date -u +%FT%TZ) run=$RUN bench=$BENCH main=$MAIN head=$HEAD scale=$SCALE head_facts=$HEAD_FACTS duration=$DURATION profile=$PROFILE node=$NODE_NAME"
           gcloud storage cp "gs://$BUCKET/in/builds/infra-5577/$RUN/legion.bundle" /scratch/legion.bundle
           git clone --filter=blob:none --no-checkout https://github.com/cybermonklabs/legion /scratch/src
           cd /scratch/src
           git bundle verify /scratch/legion.bundle
-          git fetch /scratch/legion.bundle 'refs/heads/*:refs/bundle/*'
+          git fetch /scratch/legion.bundle $(git bundle list-heads /scratch/legion.bundle | awk '{print "+" $2 ":refs/bundle/" NR}')
           git checkout --detach "$BENCH"
           echo "MARK checkout $(git rev-parse HEAD) main=$(git rev-parse "$MAIN^{commit}") head=$(git rev-parse "$HEAD^{commit}")"
           rc=0
           R8_WORK=/scratch/work R8_SOURCE=/scratch/src R8_MAIN="$MAIN" R8_HEAD="$HEAD" R8_SCALE="$SCALE" \
-            R8_HEAD_FACTS="$HEAD_FACTS" R8_DURATION="$DURATION" \
+            R8_HEAD_FACTS="$HEAD_FACTS" R8_DURATION="$DURATION" R8_PROFILE="$PROFILE" \
             bash packages/envoy/internal/dispatch/legion/legionbench/r8.sh 2>&1 | tee /scratch/out.txt || rc=${PIPESTATUS[0]}
           echo "MARK failures:"; grep '^FAIL' /scratch/out.txt || echo "MARK none"
           echo "MARK end $(date -u +%FT%TZ) rc=$rc"
-          # The record: the log, the arms' summaries, the probe's frames, the facts read and the
-          # servers' logs.
+          # The record: the log, the arms' summaries, the probe's frames, the facts read, the CPU
+          # profiles (PROFILE=1), and the drives' and the servers' logs.
           tar -C /scratch -czf /scratch/record.tgz out.txt work/out $(cd /scratch && ls work/*.log 2>/dev/null) || true
           gcloud storage cp /scratch/record.tgz "gs://$BUCKET/out/builds/infra-5577/$RUN/r8-record.tgz" || echo "MARK the record did not reach the bucket"
           # The verdict: a pass is r8.sh exiting 0 with no FAIL line. The run is over once it is
