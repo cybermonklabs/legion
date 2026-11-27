@@ -27,6 +27,7 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -220,12 +221,20 @@ func openBucketAt(ctx context.Context, name string, repo ghrepo.Repository, at g
 		})
 	}
 	identity := metadata.NewWithOptions(&metadata.Options{})
-	email, err := identity.EmailWithContext(ctx, "default")
+	// The metadata request carries no credential, so its error is read by the rule with nothing
+	// to redact: the rule's reading of the metadata server's words.
+	read := oauth2call.Scope[string](ctx)
+	email, err := oauth2call.Call(read.Read(identity.EmailWithContext(read.Context(), "default")))
 	if err != nil {
 		return nil, fmt.Errorf("read the cache's Google service account from the metadata server: %w", err)
 	}
 	if email == "" {
 		return nil, errors.New("the metadata server names no Google service account for the cache")
+	}
+	// The account is signed as and named in each refusal of a signature, so one the rule does not
+	// print as it came is refused here, in words that name none of it.
+	if oauth2call.Field(email) != email {
+		return nil, errors.New("the metadata server names a Google service account the rule does not print as it came (not printed)")
 	}
 	tokens := option.WithTokenSource(oauth2.ReuseTokenSourceWithExpiry(nil, metadataTokens{identity}, tokenEarlyExpiry))
 	// The address's Hostname is set, so that no environment variable moves a production address
