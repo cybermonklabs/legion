@@ -379,6 +379,7 @@ esac
 	// The shim dies outright, and with it, as role-init's kill of the role's namespace ends them,
 	// its agent and its build. Each signal goes to one pid alone, never to a group: the first shim
 	// shares this test binary's own group.
+	time.Sleep(61 * time.Second) // PLANT, never merged: the kills delayed past the stand-ins' 60 s, as a stalled machine could.
 	for _, pid := range []int{first.Process.Pid, agent, build} {
 		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 			t.Fatal(err)
