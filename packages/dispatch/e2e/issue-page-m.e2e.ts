@@ -5190,6 +5190,60 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
   );
 });
 
+// Decision 581, the phone case of c-replies (3) (part L's row "what the reader sends from the box
+// as a reply to a turn of the daemon's thread is drawn in the panel's history under that turn"):
+// at 390 px Details is a sheet over the page, and the Reply of a turn of the daemon's thread in
+// its history shuts it, so that the box at the foot takes the caret. The reply the box then sends
+// is the history's to land, so the page opens Details on the history again, the reply drawn under
+// the turn it answers, focused and wholly in Details' view. The send left Details shut, and the
+// history unlanded, before the writer opened Details for that landing (`outline-writer.tsx`'s
+// `land`, `HeldLanding.opensDetails`). It carries `@phone-only`: wider than a phone Reply leaves
+// Details open, which part L's row reads. The daemon writes as its project's session
+// (`seedHistoryTurns`), which is what puts its thread in the history.
+// SLOW(>=2s): an issue with three entries written, a sign-in, one load of the issue at 390 px,
+// Details opened, shut by Reply and opened again, and one reply sent.
+test("on a phone, a reply sent from a turn of the daemon's thread in the history reopens Details on the history and lands on the reply, focused @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedHistoryTurns, async (page, seeded) => {
+    await page.setViewportSize(PHONE);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+    await expectIssuePageDrawn(page);
+    await openDetails(page);
+    const turn = historyItem(page, seeded.daemon.id);
+    await expect(turn, "the panel's history draws no turn of the daemon's thread").toHaveCount(1);
+    await turn.locator(`[data-history-reply="${seeded.daemon.id}"]`).click();
+    await expect(marginShell(page), "Reply left Details over the box at the foot").toBeHidden();
+    await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
+    const words = "A reply to the daemon's turn, sent from the box on a phone.";
+    await sendFromComposer(page, words);
+    await expect(
+      marginShell(page),
+      "the reply sent with Details shut did not open Details again"
+    ).toBeVisible();
+    const reply = historyPanel(page)
+      .locator(`[data-history-entry="thread:${seeded.daemon.id}"] [data-history-item]`)
+      .filter({ hasText: words });
+    await expect(
+      reply,
+      "the reply is not drawn in the panel's history under the daemon's turn"
+    ).toHaveCount(1);
+    await expect
+      .poll(() => focusInside(reply), { message: "the focus is not on the reply in the history" })
+      .toBe(true);
+    await expect
+      .poll(
+        async () => {
+          const drawn = await reply.boundingBox();
+          const view = await historyViewport(page);
+          return drawn !== null && drawn.y >= view.top && drawn.y + drawn.height <= view.bottom;
+        },
+        { message: "the reply in the history is not wholly in Details' view" }
+      )
+      .toBe(true);
+  });
+});
+
 /** The lines of the long comment the references row's seed writes, its first citing the
  *  statement at `reference`: eight paragraphs, far more than five lines in Details. */
 function longCitingLines(reference: string): string[] {

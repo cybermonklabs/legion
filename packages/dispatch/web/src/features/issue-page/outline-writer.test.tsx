@@ -4,10 +4,16 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 
 import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
-import type { Comment, IssueAskRow, IssueDetails, MessageRead } from "../../api/types";
+import type { Actor, Comment, IssueAskRow, IssueDetails, MessageRead } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
-import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
+import {
+  type Landing,
+  newOwnNode,
+  type OutlineWriter,
+  OutlineWriterProvider,
+  useOutlineWriter,
+} from "./outline-writer";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -267,4 +273,59 @@ test("with the asks read out, a reply to an agent's comment under an open approv
     page.unmount();
     asksRead.mockRestore();
   }
+});
+
+// Review finding 2: the outline and the history found the reader's new node for a `newest`
+// landing by two copies of one rule, which had drifted apart: the outline noted only the reader's
+// own nodes under what the write answered, the history every node there. One rule serves both
+// (`newOwnNode`). Its first look for a landing notes every node there, whoever wrote it, so a
+// reader whose login is read after that look takes none of their earlier nodes for new; each look
+// after it takes the first node the reader wrote that the first look did not note, none until a
+// read draws one, and never a new node another author wrote or a node that names no author.
+test("a landing's first look notes every node under it, and each later look takes the reader's first node it did not note, never another author's", () => {
+  const alice: Actor = { id: "alice", kind: "user" };
+  const landing: Landing = { to: "newest", under: { id: "m-root", kind: "message" } };
+  const earlier = { author: alice, id: "m-earlier" };
+  const agents = { author: { id: "planner", kind: "session" } as Actor, id: "m-agent" };
+  const first = newOwnNode(landing, undefined, [earlier, agents], "alice");
+  if (!("sight" in first)) throw new Error("the first look took a node rather than noting them");
+  expect(
+    [...first.sight.before],
+    "the first look did not note every node there, whoever wrote it"
+  ).toEqual([earlier.id, agents.id]);
+  expect(first.sight.landing, "the first look noted another landing").toBe(landing);
+
+  expect(
+    newOwnNode(landing, first.sight, [earlier, agents], "alice"),
+    "the reader's node noted before the read took it for the new one"
+  ).toEqual({ made: undefined });
+  const bobs = { author: { id: "bob", kind: "user" } as Actor, id: "m-bob" };
+  const unnamed = { id: "m-unnamed" };
+  expect(
+    newOwnNode(landing, first.sight, [earlier, agents, bobs, unnamed], "alice"),
+    "a new node another author wrote, or one that names no author, was taken"
+  ).toEqual({ made: undefined });
+  // The server matches a login in any casing (`isViewer`), and the first new node of the
+  // reader's is taken before a later one.
+  const mine = { author: { id: "Alice", kind: "user" } as Actor, id: "m-mine" };
+  const later = { author: alice, id: "m-later" };
+  expect(
+    newOwnNode(landing, first.sight, [earlier, agents, bobs, unnamed, mine, later], "alice"),
+    "the reader's first new node was not taken"
+  ).toEqual({ made: mine });
+
+  // A first look made before the reader's login is read still notes their earlier node.
+  const unsigned = newOwnNode(landing, undefined, [earlier], undefined);
+  if (!("sight" in unsigned)) throw new Error("the first look took a node rather than noting them");
+  expect(
+    newOwnNode(landing, unsigned.sight, [earlier], "alice"),
+    "the reader's node from before the first look was taken once their login was read"
+  ).toEqual({ made: undefined });
+
+  // Another landing looks afresh, whatever the last one noted.
+  const next: Landing = { ...landing };
+  expect(
+    "sight" in newOwnNode(next, first.sight, [earlier, mine], "alice"),
+    "a later landing went on from the last one's look"
+  ).toBe(true);
 });

@@ -2,9 +2,10 @@ import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -13,6 +14,7 @@ import { api } from "../../api/client";
 import type { EventPages } from "../../api/event-feed";
 import type {
   Artifact,
+  Comment,
   DispatchEvent,
   DisplayTree,
   Handoff,
@@ -22,6 +24,7 @@ import type {
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
+import { stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -32,6 +35,8 @@ import { historyLogKey } from "./history-log";
 import { arriveInHistoryLog } from "./history-log-fixture";
 import { HISTORY_EXCLUDED_TYPES } from "./history-model";
 import { type AddressedTurn, IssueHistory } from "./IssueHistory";
+import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
+import { type MarginDrawer, MarginSlotProvider, useMarginDrawer } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
@@ -73,19 +78,21 @@ function claim(seq: number): DispatchEvent {
   } as DispatchEvent;
 }
 
-/** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events` and the
- *  issue's messages read `messages`, with no comment and no ask; the read of the first event past
- *  the reader's read mark answers `boundary`. Returns what restores them. */
+/** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events`, the
+ *  issue's messages read `messages` and its comments read `comments`, none unless given, with no
+ *  ask; the read of the first event past the reader's read mark answers `boundary`. Returns what
+ *  restores them. */
 function stubHistoryReads(
   events: readonly DispatchEvent[],
   messages: readonly MessageRead[] = [],
-  boundary: readonly DispatchEvent[] = []
+  boundary: readonly DispatchEvent[] = [],
+  comments: readonly Comment[] = []
 ): () => void {
   const reads = [
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
       options?.after === undefined ? [...events] : [...boundary]
     ),
-    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listComments").mockResolvedValue([...comments]),
     spyOn(api, "listIssueMessages").mockResolvedValue([...messages]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
   ];
@@ -2783,6 +2790,267 @@ test("a landing under a row of the outline is left to the outline, and the histo
       document.activeElement,
       "the history moved the focus for a landing under a row of the outline"
     ).toBe(field);
+  } finally {
+    restore();
+  }
+});
+
+/** Whether the shell holds Details open (`ShellDetails`), as its last render read it. */
+interface HeldDetails {
+  open?: boolean;
+}
+
+/** Details as the shell holds it (`MarginDrawer`) around `children`: open as a case starts, and
+ *  open or shut by its own `setOpen` from then on, which `held` reads. */
+function ShellDetails({ children, held }: { children: ReactNode; held: HeldDetails }): ReactNode {
+  const [open, setOpen] = useState(true);
+  held.open = open;
+  const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
+  return <MarginSlotProvider drawer={drawer}>{children}</MarginSlotProvider>;
+}
+
+/** The history of `issue` as Details draws it (`details-more.tsx`'s `DetailsHistory`): only
+ *  while Details is open, so a case that shuts Details takes the history off the page. */
+function HistoryInDetails({ issue }: { issue: IssueDetails }): ReactNode {
+  return useMarginDrawer()?.open === true ? (
+    <IssueHistory
+      activityFollowing={undefined}
+      issue={issue}
+      item={undefined}
+      state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
+      visitMark={99999}
+    />
+  ) : null;
+}
+
+/**
+ * The landing cases' history - ten claims and `daemonThread` under them, with `comments` where
+ * given - at 390 px, a phone's width, in Details' own box, under the page's writer with alice
+ * signed in. Details is open, and the history is drawn in it only while it is
+ * (`HistoryInDetails`); the line at the foot (`FOOT_BOX`) stands outside Details, and a Reply
+ * puts the caret in its field. Returns the box, that field, whether Details is open, the query
+ * client, the writer, and what puts everything back.
+ */
+async function drawPhoneLandingHistory(comments: readonly Comment[] = []): Promise<{
+  box: HTMLElement;
+  detailsOpen: () => boolean | undefined;
+  field: HTMLElement;
+  queryClient: QueryClient;
+  restore: () => void;
+  writer: () => OutlineWriter | undefined;
+}> {
+  await warmMarkdownRenderer();
+  const restoreViewport = stubViewport(390);
+  const restoreReads = stubHistoryReads(
+    Array.from({ length: 10 }, (_, index) => claimAgo(20 - index, index + 1)),
+    [daemonThread()],
+    [],
+    comments
+  );
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const turnHeight = (turn: Element) =>
+    TURN_HEIGHTS[turn.getAttribute("data-history-item") ?? ""] ?? ROW_HEIGHT;
+  const restoreLayout = installDetailsLayout(
+    box,
+    (row) => {
+      const turns = [...row.querySelectorAll("[data-history-item]")];
+      return turns.length === 0
+        ? ROW_HEIGHT
+        : turns.reduce((sum, turn) => sum + turnHeight(turn), 0);
+    },
+    turnHeight
+  );
+  const foot = document.body.appendChild(document.createElement("section"));
+  foot.setAttribute(FOOT_BOX_ATTRIBUTE, "");
+  foot.setAttribute("data-testid", FOOT_BOX_TEST_ID);
+  const field = foot.appendChild(document.createElement("textarea"));
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  queryClient.setQueryData(["whoami"], { kind: "user", login: ALICE.id });
+  const issue = { artifacts: [], key: KEY, last_seq: 100000 } as unknown as IssueDetails;
+  const details: HeldDetails = {};
+  const held: HeldWriter = {};
+  const { unmount } = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ShellDetails held={details}>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+            <WriterProbe held={held} />
+            <HistoryInDetails issue={issue} />
+          </OutlineWriterProvider>
+        </ShellDetails>
+      </QueryClientProvider>
+    </MemoryRouter>,
+    { container: box }
+  );
+  const restore = () => {
+    unmount();
+    restoreLayout();
+    foot.remove();
+    box.remove();
+    restoreReads();
+    restoreViewport();
+  };
+  try {
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "the thread is not drawn"
+      ).not.toBeNull()
+    );
+    return {
+      box,
+      detailsOpen: () => details.open,
+      field,
+      queryClient,
+      restore,
+      writer: () => held.writer,
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+/** Presses the Reply of the history's turn `id`, which on a phone shuts Details for the line at
+ *  the foot (`history-entries.tsx`), and waits for that line's field to take the caret. */
+async function replyOnPhone(
+  box: HTMLElement,
+  id: string,
+  field: HTMLElement,
+  detailsOpen: () => boolean | undefined
+): Promise<void> {
+  const reply = await waitFor(() => {
+    const drawn = box.querySelector<HTMLElement>(`[data-history-reply="${id}"]`);
+    if (drawn === null) throw new Error(`the history's turn ${id} draws no Reply`);
+    return drawn;
+  });
+  await userEvent.click(reply);
+  expect(detailsOpen(), "Reply on a phone left Details open over the line at the foot").toBe(false);
+  expect(
+    box.querySelector('[data-testid="issue-history"]'),
+    "the history is drawn with Details shut"
+  ).toBeNull();
+  await waitFor(() =>
+    expect(document.activeElement, "the line at the foot did not take the caret").toBe(field)
+  );
+}
+
+// Decision 581: on a phone Details is a sheet over the page, and a turn's Reply shuts it so that
+// the line at the foot can take the focus (`history-entries.tsx`). The reply the line then sent
+// was the history's to land, but the history was no longer drawn, so the landing ended at once:
+// the reader neither saw where their reply went nor had the focus on it. The writer opens Details
+// for that landing as it is asked for it, Details draws the history again, and the history takes
+// the reader to their new turn under the turn it answers, focused and wholly in Details' view, as
+// it does where Details stays open.
+test("on a phone, a reply sent from a turn of the history with Details shut opens Details on the history and focuses the reader's new turn, wholly in Details' view", async () => {
+  const { box, detailsOpen, field, queryClient, restore, writer } = await drawPhoneLandingHistory();
+
+  try {
+    await replyOnPhone(box, "m-root", field, detailsOpen);
+
+    // The line sends, and asks the page to land its reply (`IssueComposer.tsx`'s `finish`).
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
+      writer()?.clear();
+    });
+    expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
+      true
+    );
+    expect(
+      writer()?.landing,
+      "the reply's landing is not the history's, or is not marked as opening Details"
+    ).toMatchObject({ in: "history", opensDetails: true });
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "Details opened without the history"
+      ).not.toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the history moved the focus before the reader's new turn was drawn"
+    ).toBe(field);
+
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    const turn = await waitFor(() => {
+      const drawn = box.querySelector<HTMLElement>('[data-history-item="m-mine"]');
+      expect(
+        drawn?.contains(document.activeElement) === true,
+        "the landing did not move the focus to the reader's new turn in the history"
+      ).toBe(true);
+      return drawn as HTMLElement;
+    });
+    expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
+      turn.querySelector("a[href], button:not(:disabled)")
+    );
+    expect(
+      turn.closest('[data-history-entry="thread:m-root"]'),
+      "the reader's new turn is not drawn under the turn it answers"
+    ).not.toBeNull();
+    expect(
+      writer()?.landing,
+      "the landing did not end once it took the reader there"
+    ).toBeUndefined();
+    const at = turn.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reader's new turn stood at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+  } finally {
+    restore();
+  }
+});
+
+// Decision 573, which decision 581 leaves as it is: a person's reply to an agents' comment tied
+// to no text takes its thread out of the history, so the outline lands it, under the comment it
+// answers. On a phone a turn's Reply shuts Details, and such a reply leaves it shut: the outline
+// under the sheet is where the reader is taken.
+test("on a phone, a reply sent from a turn of the history that lands in the outline leaves Details shut", async () => {
+  // An agents' post, the planner's comment tied to no text, which the history holds until a
+  // person writes in it (`agents-only.ts`).
+  const agent: Comment = {
+    ...commentDeliveryFields(),
+    anchor: null,
+    ask_id: null,
+    author: { id: "planner", kind: "session" },
+    body: "The plan is drafted and waits on its review.",
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    edited_at: null,
+    id: "c-agent",
+    issue_key: KEY,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+  const { box, detailsOpen, field, restore, writer } = await drawPhoneLandingHistory([agent]);
+
+  try {
+    await replyOnPhone(box, "c-agent", field, detailsOpen);
+
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: agent.id, kind: "comment" } });
+      writer()?.clear();
+    });
+    expect(
+      writer()?.landing,
+      "the reply to the agents' comment is not the outline's, or is marked as opening Details"
+    ).toMatchObject({ in: "outline", leavesHistory: true, opensDetails: false });
+    expect(detailsOpen(), "a reply that lands in the outline opened Details on a phone").toBe(
+      false
+    );
+    expect(document.activeElement, "the reply that lands in the outline moved the focus").toBe(
+      field
+    );
   } finally {
     restore();
   }

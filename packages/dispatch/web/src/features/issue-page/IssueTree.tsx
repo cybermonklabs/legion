@@ -37,7 +37,13 @@ import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
-import { conversationItem, LANDING_WAIT_MS, useOutlineWriter } from "./outline-writer";
+import {
+  conversationItem,
+  LANDING_WAIT_MS,
+  type LandingSight,
+  newOwnNode,
+  useOutlineWriter,
+} from "./outline-writer";
 import { editWords, NoteOwnAct, noteAfterDraw, type OwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
@@ -1200,8 +1206,8 @@ export function IssueTree({
   // node under what the write answered - the reply, the comment, the question - its branch
   // unfolded, inside the viewport and focused, or, for a `self` landing, `under`'s own row. The
   // send has landed when the line asks, but the read that draws it is still out, so the nodes
-  // of theirs already under it are noted first and the one that is new is gone to once a read
-  // draws it. A read that never draws one where it was looked for - a filter's view that holds
+  // already under it are noted first (`newOwnNode`) and their one that is new is gone to once a
+  // read draws it. A read that never draws one where it was looked for - a filter's view that holds
   // no such row - leaves the reader on their newest node there, or on the row they wrote under,
   // unless they have acted since the landing (`READER_ACTS`): the focus is then where they put
   // it, and the fallback only ends the landing. A landing the writer already holds as the tree
@@ -1222,9 +1228,7 @@ export function IssueTree({
   // is.
   const landing = writer?.landing?.in === "outline" ? writer.landing : undefined;
   const heldAtMount = useRef(landing);
-  const landedFrom = useRef<
-    { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
-  >(undefined);
+  const landedFrom = useRef<LandingSight | undefined>(undefined);
   const reachWritten = useCallback(
     (id: string) => {
       landedOn.current = { node: id, presses: presses.current };
@@ -1251,16 +1255,14 @@ export function IssueTree({
       if (parent !== undefined) reachWritten(parent.id);
       return;
     }
-    const own = (parent?.children ?? []).filter((child) => readerWrote(child, reader));
-    const held = landedFrom.current;
-    if (held?.landing !== landing) {
-      landedFrom.current = { before: new Set(own.map((child) => child.id)), landing };
+    const look = newOwnNode(landing, landedFrom.current, parent?.children ?? [], reader);
+    if ("sight" in look) {
+      landedFrom.current = look.sight;
       return;
     }
-    const made = own.find((child) => !held.before.has(child.id));
-    if (made === undefined) return;
+    if (look.made === undefined) return;
     line.landed();
-    reachWritten(made.id);
+    reachWritten(look.made.id);
   }, [landing, reachWritten, reader, root]);
   useEffect(() => {
     if (landing === undefined || landing === heldAtMount.current) return;

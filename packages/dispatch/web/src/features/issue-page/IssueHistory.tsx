@@ -4,7 +4,15 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -17,7 +25,6 @@ import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
-import { isViewer } from "../refs/actor";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
 import { issueAsks } from "./agents-only";
@@ -30,6 +37,7 @@ import {
   comparePlaces,
   HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
+  type HistoryDay,
   type HistoryPlace,
   type HistoryTurn,
   historyBlocks,
@@ -39,7 +47,7 @@ import {
   turnPlace,
 } from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
-import { LANDING_WAIT_MS, useOutlineWriter } from "./outline-writer";
+import { LANDING_WAIT_MS, type LandingSight, newOwnNode, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { nearestScroll, scrollingAncestor } from "./scroll-box";
@@ -98,7 +106,9 @@ export interface AddressedTurn {
  * On a phone Details is a sheet over the page, and a link followed in it closes it
  * (`Margin.tsx`), so a link of the history that leaves it - a file, a document, a row of the
  * outline - closes it. A turn's own time is that turn's address, which opens Details here, so
- * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself.
+ * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself,
+ * so that the line at the foot can take the focus, and what the line then sends opens it again
+ * to land here (`HeldLanding.opensDetails`).
  */
 export function IssueHistory({
   activityFollowing,
@@ -511,9 +521,9 @@ export function IssueHistory({
   useEffect(() => () => focusKept.current?.abort(), []);
   // Brings `element` wholly into Details' view by the least scroll, the one `block: "nearest"`
   // makes (`nearestScroll`): each hand-on of a press below (`handTo`), and the landing of a write
-  // that answered a turn here (`landing`), which brings the turn there before its control takes
-  // the focus. The scroll is of Details' box alone, never of the page under it, and the history's
-  // anchor takes it for its own (`scrollBox`), so its event records no place.
+  // that answered a turn here (`useHistoryLanding`), which brings the turn there before its
+  // control takes the focus. The scroll is of Details' box alone, never of the page under it, and
+  // the history's anchor takes it for its own (`scrollBox`), so its event records no place.
   const bringIntoBox = (element: HTMLElement) => {
     const box = scroller.current;
     if (box === null) return;
@@ -601,67 +611,8 @@ export function IssueHistory({
     anchor.current?.keepRow(null);
   });
   // A write from the line at the foot that answered a turn of a thread this history holds is the
-  // history's to land (`HeldLanding.in`), as every other write's is the outline's: the reader is
-  // taken to their new turn in that thread - or, for a `self` landing, back to the turn they
-  // answered - focused, and wholly in Details' view by the least scroll of Details' box, never of
-  // the page, as a hand-on brings what it focuses there (`handTo`), the turn first and then its
-  // first control, which takes the focus. The send has landed when the line asks, but the read
-  // that draws the new turn is still out, so the turns the thread holds are noted first, and the
-  // reader's turn that is new is gone to once a read has brought it and the list has drawn it, as
-  // the outline goes to their new row (`IssueTree.tsx`). A landing the writer already holds as the
-  // history mounts was asked for while it was not drawn, with Details shut, and the reader has
-  // been elsewhere since; one asked for while Details is shut around the list has no turn on
-  // screen to go to, and nor has one whose thread this history no longer holds, as an agents' post
-  // a person wrote in, which the outline draws from then on. Each of these ends with the focus
-  // where it is, as the outline ends a landing under a node it draws no row of, but for one whose
-  // reply takes that node out of this history (`HeldLanding.leavesHistory`), and so does one
-  // whose new turn no read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
-  const writer = useOutlineWriter();
-  const drawer = useMarginDrawer();
-  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
-  const endLanding = writer?.landed;
-  const landingAtMount = useRef(landing);
-  const landingFrom = useRef<
-    { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
-  >(undefined);
-  // The reader, whose own new turn a landing goes to, as the outline reads them: read only while
-  // a landing waits, and answered by the shell's own read of them.
-  const signedIn = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH, enabled: landing !== undefined });
-  const reader = signedIn.data?.login;
-  useLayoutEffect(() => {
-    if (landing === undefined || endLanding === undefined) return;
-    const answered = landing.under?.id;
-    const thread = answered === undefined ? undefined : threadOf(days, answered);
-    if (landing === landingAtMount.current || drawer?.open === false || thread === undefined) {
-      endLanding();
-      return;
-    }
-    const turns = [thread.root, ...thread.replies];
-    let to: HistoryTurn | undefined;
-    if (landing.to === "self") {
-      to = turns.find((turn) => turn.id === answered);
-    } else {
-      const held = landingFrom.current;
-      if (held?.landing !== landing) {
-        landingFrom.current = { before: new Set(turns.map((turn) => turn.id)), landing };
-        return;
-      }
-      to = turns.find((turn) => !held.before.has(turn.id) && isViewer(turn.author, reader));
-    }
-    const landedOn = to === undefined ? undefined : drawnTurn(anchorRoot.current, to.id);
-    if (landedOn === undefined) return;
-    endLanding();
-    bringIntoBox(landedOn);
-    const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
-    if (control !== null) handTo(control);
-  });
-  useEffect(() => {
-    if (landing === undefined || landing === landingAtMount.current || endLanding === undefined) {
-      return;
-    }
-    const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
-    return () => window.clearTimeout(late);
-  }, [endLanding, landing]);
+  // history's to land (`useHistoryLanding`).
+  useHistoryLanding({ bringIntoBox, days, handTo, list: anchorRoot });
   // The history draws the log it holds whatever the last read's outcome. The log's own line
   // stands under the heading, in place of the loading line, while the log stands failed
   // (`standsFailed`). A failed next page is said where Show more is, below the pages held, and
@@ -824,10 +775,87 @@ interface HeldParts {
 
 /** The turn `id` as the history drawn under `root` draws it, where it has a box: undefined where
  *  it is not drawn yet, and where Details is still closed around the list, which gives it none.
- *  The address's landing finds it (`item`) and so does a write's (`landing`). */
+ *  The address's landing finds it (`item`) and so does a write's (`useHistoryLanding`). */
 function drawnTurn(root: ParentNode | null, id: string): HTMLElement | undefined {
   const turn = root?.querySelector<HTMLElement>(`[data-history-item="${CSS.escape(id)}"]`);
   return turn == null || turn.getClientRects().length === 0 ? undefined : turn;
+}
+
+/**
+ * Lands a write from the line at the foot that answered a turn of a thread the history drawn in
+ * `list` holds, which is the history's to land (`HeldLanding.in`), as every other write's is the
+ * outline's: the reader is taken to their new turn in that thread - or, for a `self` landing, back
+ * to the turn they answered - focused, and wholly in Details' view by the least scroll of
+ * Details' box, never of the page, as a hand-on brings what it focuses there (`handTo`), the turn
+ * first (`bringIntoBox`) and then its first control, which takes the focus. The send has landed
+ * when the line asks, but the read that draws the new turn is still out, so the turns the thread
+ * holds are noted first, and the reader's turn that is new is gone to once a read has brought it
+ * and the list has drawn it, by the one rule the outline goes to their new row by
+ * (`newOwnNode`). A landing the writer already holds as the history mounts was asked for while it
+ * was not drawn, with Details shut, and the reader has been elsewhere since, unless the writer
+ * opened Details for it, on a phone, where a turn's Reply shut it (`HeldLanding.opensDetails`):
+ * the history is drawn from the commit that holds that landing, and lands it as one asked for
+ * while it is drawn. One asked for while Details is shut around the list has no turn on screen to
+ * go to, and nor has one whose thread this history no longer holds, as an agents' post a person
+ * wrote in, which the outline draws from then on. Each of these ends with the focus where it is,
+ * as the outline ends a landing under a node it draws no row of, but for one whose reply takes
+ * that node out of this history (`HeldLanding.leavesHistory`), and so does one whose new turn no
+ * read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
+ */
+function useHistoryLanding({
+  bringIntoBox,
+  days,
+  handTo,
+  list,
+}: {
+  readonly bringIntoBox: (element: HTMLElement) => void;
+  readonly days: readonly HistoryDay[];
+  readonly handTo: (element: HTMLElement) => void;
+  readonly list: RefObject<HTMLElement | null>;
+}): void {
+  const writer = useOutlineWriter();
+  const drawer = useMarginDrawer();
+  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
+  const endLanding = writer?.landed;
+  const landingAtMount = useRef(landing);
+  const heldAtMount = landing === landingAtMount.current && landing?.opensDetails !== true;
+  const landingFrom = useRef<LandingSight | undefined>(undefined);
+  // The reader, whose own new turn a landing goes to, as the outline reads them: read only while
+  // a landing waits, and answered by the shell's own read of them.
+  const signedIn = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH, enabled: landing !== undefined });
+  const reader = signedIn.data?.login;
+  useLayoutEffect(() => {
+    if (landing === undefined || endLanding === undefined) return;
+    const answered = landing.under?.id;
+    const thread = answered === undefined ? undefined : threadOf(days, answered);
+    if (heldAtMount || drawer?.open === false || thread === undefined) {
+      endLanding();
+      return;
+    }
+    const turns = [thread.root, ...thread.replies];
+    let to: HistoryTurn | undefined;
+    if (landing.to === "self") {
+      to = turns.find((turn) => turn.id === answered);
+    } else {
+      const look = newOwnNode(landing, landingFrom.current, turns, reader);
+      if ("sight" in look) {
+        landingFrom.current = look.sight;
+        return;
+      }
+      to = look.made;
+    }
+    const landedOn = to === undefined ? undefined : drawnTurn(list.current, to.id);
+    if (landedOn === undefined) return;
+    endLanding();
+    bringIntoBox(landedOn);
+    const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    if (control !== null) handTo(control);
+  });
+  useEffect(() => {
+    if (landing === undefined || heldAtMount || endLanding === undefined) return;
+    const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
+    return () => window.clearTimeout(late);
+  }, [endLanding, heldAtMount, landing]);
 }
 
 /**
