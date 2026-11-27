@@ -67,10 +67,8 @@ interface View {
 
 /** The space `element` takes in its list, in pixels: from its own top to the top of the element
  *  after it, the gap between them included, else to its own bottom. What a row a press of the
- *  reader's takes away frees for the rows after it (`ViewportAnchor`'s `leaving`), and what the
- *  selection bar's hand-off reads to tell where each row will stand once such rows have gone
- *  (`components/SelectionBar.tsx`), so the two agree. */
-export function spaceTaken(element: Element): number {
+ *  reader's takes away frees for the rows after it (`ViewportAnchor`'s `leaving`). */
+function spaceTaken(element: Element): number {
   const box = element.getBoundingClientRect();
   const after = element.nextElementSibling;
   return (after === null ? box.bottom : after.getBoundingClientRect().top) - box.top;
@@ -191,13 +189,14 @@ function focusedControl(): Element | null {
  * keeps its place once it has gone (`standInFor`) is held the same way: the row after it, which
  * moves up into its place, else the row before it. A current row that holds the focus and is left
  * partly in sight is then brought whole into sight at its nearest edge, and a focus left wholly
- * out of sight is not scrolled to: the selection bar's hand-off has put the focus on a row that
- * will stand in sight once those rows have gone (`useLastMarkedPlace`). The browser's own scroll
- * anchoring is turned off on the box that scrolls the rows in every commit in which a row above
- * the current one is named as leaving, and in every commit in which the current row itself is
- * named: a thread's own Dismiss takes away the row the reader's hand is on, and the browser
- * holds the view against its going as much as against a row's above. The snapshot taken before
- * the commit cannot tell whether that row goes in it, and the browser would hold the view
+ * out of sight is not scrolled to: while such rows are leaving, the selection bar's hand-off parks
+ * the focus, and it lands only once they have gone and the foot's pass has run, by the least
+ * scroll of its own (`useLastMarkedPlace`'s `parkOrLand` and `landAfterFootPass`). The browser's
+ * own scroll anchoring is turned off on the box that scrolls the rows in every commit in which a
+ * row above the current one is named as leaving, and in every commit in which the current row
+ * itself is named: a thread's own Dismiss takes away the row the reader's hand is on, and the
+ * browser holds the view against its going as much as against a row's above. The snapshot taken
+ * before the commit cannot tell whether that row goes in it, and the browser would hold the view
  * against that going. It is turned back on as soon as this component has kept its place. Where
  * the window scrolls the rows and moved in such a commit all the same, it is put back where the
  * press found it (`keepPlace`). A row that goes in the same commit without the reader's press,

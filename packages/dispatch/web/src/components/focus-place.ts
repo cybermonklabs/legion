@@ -1511,7 +1511,7 @@ function walkBack(
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). A
  *  component's hand-off (`useFocusPlace`) reads it of each control its walk back reaches, as it
  *  reaches it, and of its fallback too. */
-export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
+function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
   return inSight(element, clippingBoxes(element, clips));
 }
 

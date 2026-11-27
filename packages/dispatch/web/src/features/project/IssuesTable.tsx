@@ -329,8 +329,9 @@ export function IssuesTable({
   // The List's own stop: its named table, which is drawn with no row as well.
   const tableStop = () => model.layout.scrollRef.current?.querySelector("table") ?? null;
   // The bar's hand-off (`useLastMarkedPlace`): the checkbox of the issue marked last while the
-  // table draws its row, out of sight or not. After a press that took that issue out of the view
-  // - off the list, or out of what the filters show, as Take out of epic does under the Epic
+  // table lists it, drawing its row first where the window has not (`drawRow`, below), out of
+  // sight or not. After a press that took that issue out of the view - off the list, or out of
+  // what the filters show, as Take out of epic does under the Epic
   // filter: a row with any part of its mark in sight at its place, else the nearest before it,
   // else the nearest after it. With no issue marked, as after a select-all from the table's head:
   // the first row the reader can see below the sticky head. Each mark is shown whole at its

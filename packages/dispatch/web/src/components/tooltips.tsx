@@ -97,8 +97,8 @@ export function withoutEllipsis(words: string): string {
  * with `[overflow-wrap:anywhere]`, draws a glyph the page's typeface lacks as an inline svg, and
  * keeps the focus on a control whose own write is out (`aria-disabled`, never `disabled`); the
  * cases of `features/issue-page/shared-controls.tooltips.test.tsx` and
- * `shared-controls.options.test.tsx` hold each rule. No control imports a module of
- * `features/issue-page/`, so the page's word list loads with that page alone.
+ * `shared-controls.options.test.tsx` hold each rule. No control imports the page's word list, so
+ * that list loads with the page alone.
  */
 const SurfaceContext = createContext<PageWords | null>(null);
 
