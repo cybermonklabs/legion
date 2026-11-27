@@ -425,6 +425,11 @@ func (w *revocableSocketWriter) WriteHeader(code int) {
 	}
 }
 
+// Write writes ygo's answer, which before an upgrade is only ever plain text (http.Error's), as
+// plain text: it sets Content-Type text/plain and X-Content-Type-Options nosniff on the inner
+// writer first, so no answer this writer carries is read as HTML, even one written before any
+// WriteHeader fixed its headers. ygo writes through http.Error, which has sent those same two
+// headers by then, so the bytes the socket's peer reads do not change.
 func (w *revocableSocketWriter) Write(body []byte) (int, error) {
 	if w.hidden() {
 		return len(body), nil

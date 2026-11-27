@@ -357,7 +357,7 @@ func (p *Passkeys) FinishSignIn(ctx context.Context, ceremony PasskeyCeremony, b
 		return "", "", fmt.Errorf("%w: %w", ErrPasskeyRefused, err)
 	}
 	if credential.Authenticator.CloneWarning {
-		slog.Warn("dispatch: a passkey sign-in was refused: its signature counter did not advance", "email", stored.Email,
+		slog.Warn("dispatch: a passkey sign-in was refused: its signature counter did not advance", "login_hash", model.LoginHash(stored.Email),
 			"stored_count", stored.SignCount, "answered_count", parsed.Response.AuthenticatorData.Counter)
 		return "", "", store.ErrPasskeySignCount
 	}

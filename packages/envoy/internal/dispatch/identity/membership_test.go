@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -236,15 +238,18 @@ func (s failingWrites) EndSubject(context.Context, string, string, string, auth.
 	return false, s.err
 }
 
-// A Google rule's confirmation whose write fails logs a WARN line naming the person and the
-// write's error, as a Workspace Directory check's failed write does: the write of a refresh Google
-// confirmed, and the end of a refresh Google refused (invalid_grant). Either refresh records
-// nothing, so the request is refused (RefreshFailed, with the write's error) and the next
-// confirmation asks Google again. The membership pass drops the error and counts the person
-// unasked, so the WARN line is the only record of the failure.
+// A Google rule's confirmation whose write fails logs a WARN line naming the person by their
+// login's hash and the write's failure by its kind, as a Workspace Directory check's failed write
+// does: the write of a refresh Google confirmed, and the end of a refresh Google refused
+// (invalid_grant). Either refresh records nothing, so the request is refused (RefreshFailed, with
+// the write's error) and the next confirmation asks Google again. The membership pass drops the
+// error and counts the person unasked, so the WARN line is the only record of the failure. The
+// write's error quotes the address, as the people store's do ("confirm membership of %q"), and the
+// line holds neither the address, in any letter case, nor any word of that error.
 //
 // Control: remove either slog.Warn (Membership.refresh's after WriteConfirm, endSubject's after
-// EndSubject) and its row fails, naming what was logged.
+// EndSubject) and its row fails, naming what was logged; log "email", email or "error", err there
+// again and the row fails on the address.
 func TestDomainMembershipLogsAFailedWriteAtWarn(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -255,27 +260,49 @@ func TestDomainMembershipLogsAFailedWriteAtWarn(t *testing.T) {
 		{"the end of a refresh Google refused", true, "dispatch: a failed confirmation could not end the sign-in, as its write failed"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			var logs bytes.Buffer
+			var logs logtest.Buffer
 			logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 			rig := newDomainMembershipRig(t)
 			if c.refuse {
 				rig.issuer.RevokeGrants()
 			}
-			down := errors.New("the database is down")
+			down := fmt.Errorf("confirm membership of %q: %w", memberEmail, &pgconn.PgError{Severity: "FATAL", Code: "57P01", Message: "the database is down"})
 			rig.membership.People = failingWrites{testPeopleStore: rig.people, err: down}
 			rig.now = rig.now.Add(2 * time.Hour)
 			if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, down) || outcome != RefreshFailed {
 				t.Fatalf("ConfirmFor with the write failing: outcome %d, err = %v; want RefreshFailed and the write's error", outcome, err)
 			}
-			warned := false
-			for line := range strings.Lines(logs.String()) {
-				warned = warned || strings.Contains(line, "level=WARN") && strings.Contains(line, c.message) &&
-					strings.Contains(line, "email="+memberEmail) && strings.Contains(line, `error="the database is down"`)
+			line := loggedLine(t, &logs, c.message)
+			for _, want := range []string{"level=WARN", "login_hash=" + model.LoginHash(memberEmail), `error_kind="database SQLSTATE 57P01"`} {
+				if !strings.Contains(line, want) {
+					t.Errorf("the line %q does not hold %s", line, want)
+				}
 			}
-			if !warned {
-				t.Fatalf("logged %q; want a WARN line %q with the email and the write's error", strings.TrimSpace(logs.String()), c.message)
-			}
+			holdsNone(t, logs.String(), memberEmail, "confirm membership", "the database is down")
 		})
+	}
+}
+
+// loggedLine is the one line of logs that holds message, failing t when none or more than one does.
+func loggedLine(t *testing.T, logs *logtest.Buffer, message string) string {
+	t.Helper()
+	lines := logs.Lines(message)
+	if strings.Count(lines, "\n") != 1 {
+		t.Fatalf("logged %q; want one line holding %q", logs.String(), message)
+	}
+	return strings.TrimSpace(lines)
+}
+
+// holdsNone fails t when logged holds the address email in any letter case, or any of words.
+func holdsNone(t *testing.T, logged, email string, words ...string) {
+	t.Helper()
+	if strings.Contains(strings.ToLower(logged), strings.ToLower(email)) {
+		t.Errorf("the log holds the address %s:\n%s", email, logged)
+	}
+	for _, word := range words {
+		if strings.Contains(logged, word) {
+			t.Errorf("the log holds %q, a word of the error's own text:\n%s", word, logged)
+		}
 	}
 }
 

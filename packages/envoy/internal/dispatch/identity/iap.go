@@ -52,8 +52,9 @@ type IAPIdentity struct {
 // A refused assertion is logged by its class alone (oidc.Reason), never its error: for an
 // assertion whose signature failed, the error quotes the token's own unverified iss or aud
 // (oidc.Verifier's classify), and Login runs before any authorization, so anyone who reaches
-// Dispatch around IAP would choose that text on every request. The person refusals log the email
-// and hd of a verified assertion, which IAP wrote.
+// Dispatch around IAP would choose that text on every request. The person refusals log the
+// login's hash and the hd of a verified assertion, which IAP wrote, and the refusal's words
+// (RefusalReason), never its text, which names the address.
 func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	raw := r.Header.Get(IAPAssertionHeader)
 	if raw == "" {
@@ -72,7 +73,7 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	}
 	signedIn, refused := i.Rule.Person(r.Context(), claims)
 	if refused != nil {
-		slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(claims), "reason", refused)...)
+		slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(claims), "reason", RefusalReason(refused))...)
 		return "", ErrNoIdentity
 	}
 	if expired != nil {

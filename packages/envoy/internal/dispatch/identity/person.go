@@ -76,8 +76,9 @@ type SignInRule interface {
 	// RestrictedAdmission asks whether the rule admits a restricted member, by address alone, for
 	// a credential that acts for one.
 	RestrictedAdmission
-	// RefusalLogFields names the slog fields a sign-in refusal's log line carries. Callers append
-	// "reason", err to what this returns.
+	// RefusalLogFields names the slog fields a sign-in refusal's log line carries, which name the
+	// person by their login's hash, never the address. Callers append "reason",
+	// RefusalReason(err) to what this returns, never err itself, whose text names the address.
 	RefusalLogFields(claims oidc.Claims) []any
 	// Subject is the account a sign-in under this rule records with the person
 	// (auth.PeopleStore.SignInSubject's subject); empty for a rule that records none.

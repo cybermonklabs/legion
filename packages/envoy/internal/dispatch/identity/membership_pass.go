@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -117,7 +119,10 @@ func (p MembershipPass) checkSignedOut(ctx context.Context, began time.Time, cou
 		outlives, err := p.Outliving.Holds(askCtx, email)
 		cancel()
 		if err != nil {
-			slog.Warn("dispatch: the membership pass could not ask whether a signed-out person has access that outlives the browser; keeping their refresh token", "email", email, "error", err)
+			// The person by their login's hash, the question by its kind: the broker client's and
+			// the store's errors name the address (model.LoginHash, errkind.Of).
+			slog.Warn("dispatch: the membership pass could not ask whether a signed-out person has access that outlives the browser; keeping their refresh token",
+				"login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 			continue
 		}
 		if outlives {

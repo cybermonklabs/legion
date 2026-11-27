@@ -15,6 +15,9 @@ import (
 	"net/url"
 	"strings"
 	"unicode"
+
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // DevSignInOrigin returns the host:port of serverURL, the dashboard origin, when it names this
@@ -97,14 +100,14 @@ func (r *router) authDevSignIn(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := r.ctx.People.Record(req.Context(), email); err != nil {
-		slog.Error("dispatch: dev sign-in could not record the person", "email", email, "error", err)
+		slog.Error("dispatch: dev sign-in could not record the person", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 		writeError(w, http.StatusInternalServerError, "record person")
 		return
 	}
 	if !r.issueSession(w, req, email, "") {
 		return
 	}
-	slog.Warn("dispatch: dev sign-in minted a session cookie", "email", email, "remote_addr", req.RemoteAddr)
+	slog.Warn("dispatch: dev sign-in minted a session cookie", "login_hash", model.LoginHash(email), "remote_addr", req.RemoteAddr)
 	w.Header().Set("Cache-Control", "no-store")
 	// The origin is the configured dashboard origin, never anything the request sent, and the "/"
 	// after it ends the authority: whatever page holds, the browser stays on that origin.

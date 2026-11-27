@@ -601,7 +601,8 @@ func (p *PgPasskeys) Enroll(ctx context.Context, ceremony UsedCeremony, tokenHas
 		return fmt.Errorf("enroll the passkey: %w", err)
 	}
 	recorded.log(login)
-	slog.Info("dispatch: a restricted member enrolled a passkey with an owner's invitation", "email", login, "project", invitation.Project)
+	// The person by their login's hash, never the address (model.LoginHash).
+	slog.Info("dispatch: a restricted member enrolled a passkey with an owner's invitation", "login_hash", model.LoginHash(login), "project", invitation.Project)
 	return nil
 }
 
@@ -750,7 +751,7 @@ func (p *PgPasskeys) settle(ctx context.Context, email, subject string, end bool
 		if err := tx.Commit(ctx); err != nil {
 			return false, fmt.Errorf("end the passkey sign-in of %q: %w", login, err)
 		}
-		slog.Warn("dispatch: the hourly confirmation ended the account of a person no list names and deleted their passkeys", "email", login, "passkeys_deleted", deleted)
+		slog.Warn("dispatch: the hourly confirmation ended the account of a person no list names and deleted their passkeys", "login_hash", model.LoginHash(login), "passkeys_deleted", deleted)
 		return false, nil
 	}
 	switch {
@@ -771,7 +772,7 @@ func (p *PgPasskeys) settle(ctx context.Context, email, subject string, end bool
 		if err := tx.Commit(ctx); err != nil {
 			return false, fmt.Errorf("end the passkey sign-in of %q: %w", login, err)
 		}
-		slog.Warn("dispatch: the hourly confirmation ended a passkey sign-in with no passkey left", "email", login)
+		slog.Warn("dispatch: the hourly confirmation ended a passkey sign-in with no passkey left", "login_hash", model.LoginHash(login))
 		return false, nil
 	}
 }

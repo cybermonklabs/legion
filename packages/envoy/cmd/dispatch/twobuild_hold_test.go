@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The hold of a person whom Google refused, across a roll (c-two-builds). The previous release and
@@ -106,9 +108,13 @@ func TestTwoBuildsHoldAcrossARoll(t *testing.T) {
 		if issuer.Refreshes() == refreshes {
 			t.Fatalf("the %s answered carol's request without asking the issuer to refresh her sign-in", builds.previousName())
 		}
+		// The end's line names carol as the previous build logs a person: by her address up to the
+		// release before the one that logs a login's hash in its place (model.LoginHash), and by her
+		// hash from then on. The same-build job runs this tree as the previous build, so either
+		// form is the previous build's own.
 		const ended = `msg="dispatch: sign-in ended: the sign-in pool did not confirm the person's membership"`
-		if !previous.logged(ended, "email="+carolEmail) {
-			t.Fatalf("the %s did not log %s email=%s:\n%s", builds.previousName(), ended, carolEmail, previous.Output.String())
+		if !previous.logged(ended, "email="+carolEmail) && !previous.logged(ended, "login_hash="+model.LoginHash(carolEmail)) {
+			t.Fatalf("the %s did not log %s with email=%s or login_hash=%s:\n%s", builds.previousName(), ended, carolEmail, model.LoginHash(carolEmail), previous.Output.String())
 		}
 		if row := reader.row(t, carolEmail); row.refreshToken || row.heldSince != nil {
 			t.Fatalf("after the %s ended carol's sign-in her row = %+v, want no refresh token and no held_since", builds.previousName(), row)

@@ -41,9 +41,14 @@ func (r GroupRule) AdmitsRestricted(_ context.Context, email string) error {
 	return fmt.Errorf("%s: %w", email, ErrOutsideSignInOff)
 }
 
-// RefusalLogFields names the pool username a refusal's log line carries.
+// RefusalLogFields names the person the pool's token carried by their login's hash: the email its
+// username carries (`login_hash`), or, for a username that carries none, the same hash of the
+// username itself (`username_hash`), since a username is `<provider>_<email>`.
 func (r GroupRule) RefusalLogFields(claims oidc.Claims) []any {
-	return []any{"username", claims.Username}
+	if email, ok := providerEmail(claims); ok {
+		return []any{"login_hash", refusedLoginHash(email)}
+	}
+	return []any{"username_hash", refusedLoginHash(claims.Username)}
 }
 
 // Subject is always empty under a group: Dispatch records no account subject for a pool sign-in.

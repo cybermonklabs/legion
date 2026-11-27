@@ -10,6 +10,8 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // Under IAP identity (DISPATCH_IDENTITY=iap) Identity-Aware Proxy signs people in and Dispatch
@@ -147,6 +149,11 @@ func (m *Membership) directoryFlight(ctx context.Context, email string) <-chan s
 // earlier one, confirms and releases a hold. The question shares ctx, the check's one deadline,
 // with the write after it, so a question that runs past the deadline leaves a Held whose write
 // misses it: Failed, as any check's is.
+//
+// Each line it logs names the person by their login's hash, never the address (model.LoginHash),
+// and a failed write or a failed question by its kind, never the store's or the broker client's
+// error, which quotes the address (errkind.Of). A Directory check's own error is a *DirectoryError,
+// a class and a status, and is logged as it is.
 func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome RefreshOutcome, err error) {
 	m.started.Store(email, time.Now())
 	defer func() {
@@ -159,7 +166,7 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 	}()
 	people, ok := m.People.(DirectoryPeople)
 	if !ok {
-		slog.Error("dispatch: a Workspace Directory check cannot record its outcome; the person is not confirmed", "email", email, "error", errNoDirectoryPeople)
+		slog.Error("dispatch: a Workspace Directory check cannot record its outcome; the person is not confirmed", "login_hash", model.LoginHash(email), "error", errNoDirectoryPeople)
 		return RefreshFailed, errNoDirectoryPeople
 	}
 	read, found, err := m.People.Membership(ctx, email)
@@ -178,24 +185,24 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 		if err == nil && !outlives {
 			until, err := people.RecordDirectoryRebound(ctx, email, userID, read.ReadAt)
 			if err != nil {
-				slog.Warn("dispatch: the Workspace Directory answered a recreated address's new account, and its write failed; the check is Failed", "email", email, "error", err)
+				slog.Warn("dispatch: the Workspace Directory answered a recreated address's new account, and its write failed; the check is Failed", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 				return RefreshFailed, err
 			}
 			if until.IsZero() {
 				return activeUnwritten(email), nil
 			}
-			slog.Info("dispatch: the Workspace Directory answered a recreated address's new account, and the address holds no access that outlives the browser; the new account is confirmed", "email", email)
+			slog.Info("dispatch: the Workspace Directory answered a recreated address's new account, and the address holds no access that outlives the browser; the new account is confirmed", "login_hash", model.LoginHash(email))
 			return RefreshConfirmed, nil
 		}
 		slog.Warn("dispatch: the Workspace Directory answered a recreated address's new account while the address may still hold the earlier person's access; held until it holds none",
-			"email", email, "outlives", outlives, "error", err)
+			"login_hash", model.LoginHash(email), "outlives", outlives, "error_kind", errkind.Of(err))
 		answered = DirectoryHeld
 	}
 	switch answered {
 	case DirectoryActive:
 		until, err := people.RecordDirectoryActive(ctx, email, userID, read.ReadAt)
 		if err != nil {
-			slog.Warn("dispatch: a Workspace Directory check answered Active, and its write failed; the check is Failed", "email", email, "error", err)
+			slog.Warn("dispatch: a Workspace Directory check answered Active, and its write failed; the check is Failed", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 			return RefreshFailed, err
 		}
 		if until.IsZero() {
@@ -204,13 +211,13 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 		return RefreshConfirmed, nil
 	case DirectoryHeld:
 		if err := people.RecordDirectoryHeld(ctx, email); err != nil {
-			slog.Warn("dispatch: a Workspace Directory check answered Held, and its write failed; the check is Failed", "email", email, "error", err)
+			slog.Warn("dispatch: a Workspace Directory check answered Held, and its write failed; the check is Failed", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 			return RefreshFailed, err
 		}
-		slog.Info("dispatch: the Workspace Directory reports a person's account suspended, archived, missing or another's; their credentials are held", "email", email)
+		slog.Info("dispatch: the Workspace Directory reports a person's account suspended, archived, missing or another's; their credentials are held", "login_hash", model.LoginHash(email))
 		return RefreshHeld, nil
 	}
-	slog.Warn("dispatch: a Workspace Directory check failed; the person's confirmation, deadline and hold stay as they were", "email", email, "error", err)
+	slog.Warn("dispatch: a Workspace Directory check failed; the person's confirmation, deadline and hold stay as they were", "login_hash", model.LoginHash(email), "error", err)
 	if recordErr := people.RecordDirectoryFailed(ctx, email); recordErr != nil {
 		err = errors.Join(err, fmt.Errorf("record the failed check: %w", recordErr))
 	}
@@ -224,7 +231,7 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 // answer or an earlier one, and stands either way (checkDirectory says why). The person stays
 // held, so it counts RefreshHeld, which the membership pass counts held.
 func activeUnwritten(email string) RefreshOutcome {
-	slog.Info("dispatch: a Workspace Directory check answered Active, and wrote nothing: the person's row holds a hold another check recorded after this one read it; they stay held", "email", email)
+	slog.Info("dispatch: a Workspace Directory check answered Active, and wrote nothing: the person's row holds a hold another check recorded after this one read it; they stay held", "login_hash", model.LoginHash(email))
 	return RefreshHeld
 }
 

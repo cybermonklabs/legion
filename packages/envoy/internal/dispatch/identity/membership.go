@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -235,18 +236,21 @@ func (m *Membership) confirmPasskey(ctx context.Context, email string, membershi
 }
 
 // confirmLapsedPasskey asks Rule again whether it admits email, whose passkey sign-in under
-// subject is past MembershipMaxAge, and ends or confirms it (confirmPasskey).
+// subject is past MembershipMaxAge, and ends or confirms it (confirmPasskey). Its lines name the
+// person by their login's hash, and a refusal by its words (RefusalReason): AdmitsRestricted's
+// errors name the address.
 func (m *Membership) confirmLapsedPasskey(ctx context.Context, email, subject string) error {
 	err := m.Rule.AdmitsRestricted(ctx, email)
 	if errors.Is(err, ErrMembershipUnreadable) {
-		slog.Warn("dispatch: the access lists could not be read to confirm a lapsed passkey sign-in; the request is refused and the sign-in kept", "email", email, "error", err)
+		slog.Warn("dispatch: the access lists could not be read to confirm a lapsed passkey sign-in; the request is refused and the sign-in kept",
+			"login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 		return err
 	}
 	if err != nil {
 		if _, endErr := m.Passkeys.End(ctx, email, subject); endErr != nil {
 			return endErr
 		}
-		slog.Warn("dispatch: sign-in ended: the hourly confirmation no longer admits the person", "email", email, "reason", err.Error())
+		slog.Warn("dispatch: sign-in ended: the hourly confirmation no longer admits the person", "login_hash", model.LoginHash(email), "reason", RefusalReason(err))
 		return ErrNoIdentity
 	}
 	confirmed, err := m.Passkeys.Confirm(ctx, email, subject)
@@ -330,25 +334,26 @@ func (m *Membership) refresh(ctx context.Context, email string) (outcome Refresh
 		return m.end(ctx, email, membership, err.Error(), m.endMode())
 	}
 	if err != nil {
-		slog.Warn("dispatch: the sign-in issuer could not confirm a lapsed membership; the request is refused and the sign-in kept", "email", email, "error", err)
+		slog.Warn("dispatch: the sign-in issuer could not confirm a lapsed membership; the request is refused and the sign-in kept", "login_hash", model.LoginHash(email), "error", err)
 		return RefreshFailed, fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
 	}
 	// Under a Google rule the refreshed token must name the address and the account the row
 	// records, compared before the rule runs, so the end's reason names that change whatever the
 	// rule would say of the new sign-in. The sign-in pool's rule takes the address from the pool's
-	// username and records no subject, so it compares neither.
+	// username and records no subject, so it compares neither. A reason is logged (endSubject), so
+	// it names the refreshed sign-in's address by its hash (model.LoginHash), never as written.
 	if m.Rule.Holds() {
 		if login := model.CanonicalLogin(session.Claims.Email); login != email || session.Claims.Subject != membership.Subject {
-			err := fmt.Errorf("%w: the refreshed sign-in is %q under Google account %q, and the address's sign-in recorded %q", errOtherAccount, login, session.Claims.Subject, membership.Subject)
+			err := fmt.Errorf("%w: the refreshed sign-in is login_hash %s under Google account %q, and the address's sign-in recorded %q", errOtherAccount, model.LoginHash(login), session.Claims.Subject, membership.Subject)
 			return m.end(ctx, email, membership, err.Error(), m.endMode())
 		}
 	}
 	person, err := m.Rule.Person(ctx, session.Claims)
 	if err != nil {
-		return m.end(ctx, email, membership, err.Error(), m.endMode())
+		return m.end(ctx, email, membership, refusedReason(err, person, session.Claims), m.endMode())
 	}
 	if person.Email != email {
-		err := fmt.Errorf("%w: the refreshed sign-in names %s", errOtherAccount, person.Email)
+		err := fmt.Errorf("%w: the refreshed sign-in names login_hash %s", errOtherAccount, model.LoginHash(person.Email))
 		return m.end(ctx, email, membership, err.Error(), m.endMode())
 	}
 	subject, err := m.Rule.ConfirmSubject(session.Claims, membership.Subject)
@@ -356,10 +361,40 @@ func (m *Membership) refresh(ctx context.Context, email string) (outcome Refresh
 		return m.end(ctx, email, membership, err.Error(), m.endMode())
 	}
 	if err := m.Rule.WriteConfirm(ctx, m.People, membership, person, subject, session.RefreshToken); err != nil {
-		slog.Warn("dispatch: the sign-in issuer confirmed a lapsed membership, and its write failed; the request is refused and the confirmation stays lapsed", "email", email, "error", err)
+		slog.Warn("dispatch: the sign-in issuer confirmed a lapsed membership, and its write failed; the request is refused and the confirmation stays lapsed",
+			"login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 		return RefreshFailed, err
 	}
 	return RefreshConfirmed, nil
+}
+
+// refusals are the errors a rule refuses a person with (SignInRule.Person,
+// SignInRule.AdmitsRestricted), in the order RefusalReason tries them.
+var refusals = []error{ErrNoPerson, ErrNoEmail, ErrNotInDomain, ErrEmailNotVerified, ErrNotMember,
+	ErrWorkspaceAddress, ErrNotListed, ErrOutsideSignInOff, ErrMembershipUnreadable}
+
+// RefusalReason is a rule's refusal err as a log line prints it: the words of the refusal it
+// matches, never err's own text, which names the address it refused (googleRefusal,
+// OutsideRule.AdmitsRestricted) or the pool username that carries one (GroupRule.Person); and
+// "unclassified (<kind>)" for an error it matches none of (errkind.Of).
+func RefusalReason(err error) string {
+	for _, known := range refusals {
+		if errors.Is(err, known) {
+			return known.Error()
+		}
+	}
+	return "unclassified (" + errkind.Of(err) + ")"
+}
+
+// refusedReason is the end's reason for a refreshed sign-in the rule refused with err: the
+// refusal's own words (RefusalReason), the address it names by its hash, and the Workspace domain
+// (`hd`) the refreshed token carried. The reason is logged (endSubject).
+func refusedReason(err error, person SignedIn, claims oidc.Claims) string {
+	refusal := "the rule refused the refreshed sign-in: " + RefusalReason(err)
+	if person.Email != "" {
+		refusal += " (login_hash " + model.LoginHash(person.Email) + ")"
+	}
+	return fmt.Sprintf("%s, hd %q", refusal, claims.HostedDomain)
 }
 
 // end ends email's sign-in in mode under m.Rule's end policy (SignInRule.End), naming read, the
@@ -493,7 +528,7 @@ func graceRule(answer Standing, read auth.PersonMembership) Standing {
 func (m *Membership) signedOut(ctx context.Context, email string) error {
 	reason, err := m.Rule.SignedOutReason(ctx, m.People, email)
 	if err != nil {
-		slog.Warn("dispatch: could not read why a person's session ended; the request is refused without a reason", "email", email, "error", err)
+		slog.Warn("dispatch: could not read why a person's session ended; the request is refused without a reason", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 		return ErrNoIdentity
 	}
 	if reason == "" {

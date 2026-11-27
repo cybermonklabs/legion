@@ -7,6 +7,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -143,7 +145,9 @@ const accountBindingCatchUpPoll = 10 * time.Second
 // off for, since the fleet is then off for every address, and answers whether any address still
 // has something to catch up. A deployment whose sign-in records no account holds no credential to
 // an account, and catches nothing up. Each address caught up is logged at WARN; a read or write
-// that fails is logged at ERROR, and the address is tried again at the next pass.
+// that fails is logged at ERROR, and the address is tried again at the next pass. Each line names
+// the address by its login's hash and a failure by its kind, never the address or the store's
+// error, which quotes it (model.LoginHash, errkind.Of).
 func (s *server) catchUpAccountBindings(ctx context.Context) (pending bool) {
 	if s.deps.Store == nil || s.deps.SignInIssuer == "" {
 		return false
@@ -160,10 +164,15 @@ func (s *server) catchUpAccountBindings(ctx context.Context) (pending bool) {
 		issuer = s.deps.SignInIssuer
 	}
 	for _, email := range emails {
-		held, caught, err := store.CatchUpAccountBindingOf(ctx, s.deps.Store.Pool, email, issuer)
+		var caught store.AccountBindingCatchUp
+		held, err := revocationStoreCall(s, callCatchUp, func() (held bool, err error) {
+			held, caught, err = store.CatchUpAccountBindingOf(ctx, s.deps.Store.Pool, email, issuer)
+			return held, err
+		})
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Error("dispatch: catch up what the account binding did not revoke while it was off; the next pass tries again", "email", email, "error", err)
+				slog.Error("dispatch: catch up what the account binding did not revoke while it was off; the next pass tries again",
+					"login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 			}
 			pending = true
 			continue
@@ -178,7 +187,9 @@ func (s *server) catchUpAccountBindings(ctx context.Context) (pending bool) {
 	return pending
 }
 
-// payOwedBrokerCredentials pays the owed broker revocations (revokeOwedBrokerCredentials).
+// payOwedBrokerCredentials pays the owed broker revocations (revokeOwedBrokerCredentials). Each
+// line names the address by its login's hash and a failure by its kind, never the address or the
+// store's or the broker client's error, each of which quotes it (model.LoginHash, errkind.Of).
 func (s *server) payOwedBrokerCredentials(ctx context.Context) time.Time {
 	client := s.deps.AgentSecrets
 	if client == nil || s.deps.Store == nil {
@@ -198,24 +209,25 @@ func (s *server) payOwedBrokerCredentials(ctx context.Context) time.Time {
 	// most calls that fit in that window.
 	sendWithin := brokerRevocationRetry - client.HTTP.Timeout
 	for _, revocation := range owed {
-		held, err := revocations.SettleHeld(ctx, revocation)
+		person := model.LoginHash(revocation.Email)
+		held, err := revocationStoreCall(s, callSettleHeld, func() (bool, error) { return revocations.SettleHeld(ctx, revocation) })
 		if err != nil {
-			slog.Error("dispatch: read whether a claimed broker revocation's account holds its address again; the next claim reads it again", "email", revocation.Email, "error", err)
+			slog.Error("dispatch: read whether a claimed broker revocation's account holds its address again; the next claim reads it again", "login_hash", person, "error_kind", errkind.Of(err))
 			continue
 		}
 		if held {
 			slog.Warn("dispatch: a claimed broker revocation names the account its address records again, which took the address back with no settlement (a build without the account binding signed it in); it is settled, not sent",
-				"email", revocation.Email, "subject", revocation.Subject)
+				"login_hash", person, "subject", revocation.Subject)
 			continue
 		}
-		sendable, err := revocations.Sendable(ctx, revocation, sendWithin)
+		sendable, err := revocationStoreCall(s, callSendable, func() (bool, error) { return revocations.Sendable(ctx, revocation, sendWithin) })
 		if err != nil {
-			slog.Error("dispatch: read whether a claimed broker revocation may still be sent; the next claim sends it", "email", revocation.Email, "error", err)
+			slog.Error("dispatch: read whether a claimed broker revocation may still be sent; the next claim sends it", "login_hash", person, "error_kind", errkind.Of(err))
 			continue
 		}
 		if !sendable {
 			slog.Info("dispatch: a claimed broker revocation was not sent: its claim is older than a call may start, or another pass settled it; the next claim sends what is owed",
-				"email", revocation.Email, "send_within", sendWithin, "retry_in", brokerRevocationRetry)
+				"login_hash", person, "send_within", sendWithin, "retry_in", brokerRevocationRetry)
 			continue
 		}
 		revoked, err := client.RevokePersonSubject(ctx, wire.RevokePersonSubjectRequest{
@@ -224,7 +236,7 @@ func (s *server) payOwedBrokerCredentials(ctx context.Context) time.Time {
 		})
 		if err != nil {
 			slog.Error(revokedLog(s.passkeyAccount(revocation), "did not revoke", "; trying again"),
-				"email", revocation.Email, "retry_in", brokerRevocationRetry, "error", err)
+				"login_hash", person, "retry_in", brokerRevocationRetry, "error_kind", errkind.Of(err))
 			continue
 		}
 		if revoked.State == "superseded" {
@@ -249,30 +261,33 @@ func (s *server) payOwedBrokerCredentials(ctx context.Context) time.Time {
 			still, err := revocations.StillOwed(ctx, revocation)
 			if err == nil && !still {
 				slog.Warn("dispatch: the secrets broker answered a revocation superseded that another pass has settled since; nothing to recover",
-					"email", revocation.Email, "subject", revocation.Subject, "session_generation", sent, "superseded_by", *revoked.SupersededBy)
+					"login_hash", person, "subject", revocation.Subject, "session_generation", sent, "superseded_by", *revoked.SupersededBy)
 				continue
 			}
 			var current any
-			if generation, found, err := store.NewPgSessionStore(s.deps.Store.Pool).CurrentSessionGeneration(ctx, revocation.Email); err != nil {
-				current = "unread: " + err.Error()
-			} else if found {
-				current = generation
+			if read, err := revocationStoreCall(s, callSessionGeneration, func() (sessionGeneration, error) {
+				generation, found, err := store.NewPgSessionStore(s.deps.Store.Pool).CurrentSessionGeneration(ctx, revocation.Email)
+				return sessionGeneration{generation: generation, found: found}, err
+			}); err != nil {
+				current = "unread: " + errkind.Of(err)
+			} else if read.found {
+				current = read.generation
 			}
 			s.deps.BrokerRevocationsSuperseded.Inc()
 			slog.Error("dispatch: the secrets broker answered a revocation superseded: Dispatch's session generation for the address is below the one the broker recorded, so the replaced account's broker credentials were not ended; the revocation stays owed until an operator settles it, and a lone Dispatch restore requires the runbook's reset before that (after-a-restore.md)",
-				"email", revocation.Email, "issuer", revocation.Issuer, "subject", revocation.Subject,
+				"login_hash", person, "issuer", revocation.Issuer, "subject", revocation.Subject,
 				"session_generation", sent, "superseded_by", *revoked.SupersededBy, "address_session_generation", current,
 				"still_owed_unread", err != nil, "retry_in", brokerRevocationRetry)
 			continue
 		}
-		settled, err := revocations.Settle(ctx, revocation)
+		settled, err := revocationStoreCall(s, callSettle, func() (bool, error) { return revocations.Settle(ctx, revocation) })
 		if err != nil {
 			slog.Error(revokedLog(s.passkeyAccount(revocation), "revoked", ", and the revocation could not be settled; it is paid again"),
-				"email", revocation.Email, "error", err)
+				"login_hash", person, "error_kind", errkind.Of(err))
 			continue
 		}
 		slog.Warn(revokedLog(s.passkeyAccount(revocation), "revoked", ""),
-			"email", revocation.Email, "signins", revoked.SignIns, "machine_logins", revoked.MachineLogins, "tokens_ended", revoked.TokensEnded, "settled", settled)
+			"login_hash", person, "signins", revoked.SignIns, "machine_logins", revoked.MachineLogins, "tokens_ended", revoked.TokensEnded, "settled", settled)
 	}
 	wait, due, err := revocations.NextDue(ctx, brokerRevocationRetry)
 	return nextPassAt(ctx, wait, due, err, "broker revocation")
@@ -293,6 +308,38 @@ func nextPassAt(ctx context.Context, wait time.Duration, due bool, err error, wh
 	}
 	return time.Now().Add(wait)
 }
+
+// revocationStoreCall runs call, the store call of the broker revocation loop named name whose
+// failure the loop logs naming the person, and answers what it answers; when the server's
+// beforeRevocationStoreCall answers an error for name, that error stands in for the call's and the
+// call does not run.
+func revocationStoreCall[T any](s *server, name string, call func() (T, error)) (T, error) {
+	if s.beforeRevocationStoreCall != nil {
+		if err := s.beforeRevocationStoreCall(name); err != nil {
+			var none T
+			return none, err
+		}
+	}
+	return call()
+}
+
+// sessionGeneration is an address's session generation as store.PgSessionStore.CurrentSessionGeneration
+// reads it: the generation, and whether the address has a session row.
+type sessionGeneration struct {
+	generation int64
+	found      bool
+}
+
+// The names revocationStoreCall gives the broker revocation loop's store calls, which a test's
+// beforeRevocationStoreCall reads.
+const (
+	callCatchUp           = "catch-up"
+	callSettleHeld        = "settle-held"
+	callSendable          = "sendable"
+	callSessionGeneration = "session-generation"
+	callSettle            = "settle"
+	callMachineSettle     = "machine-settle"
+)
 
 // passkeyAccount reports whether revocation ends a passkey's account (its issuer the outside
 // origin, Deps.PasskeyAccounts), which the project owner's Reset or a removal replaces, rather than

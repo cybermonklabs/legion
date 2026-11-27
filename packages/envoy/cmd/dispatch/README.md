@@ -762,7 +762,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Anyone else gets a 403 page with the reason: not in the domain, email not verified, or no email.
   The code flow reads those claims from the verified token in domain mode alone;
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
-  A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
+  A refusal logs `msg="dispatch: sign-in refused" login_hash=<hash> hd=<hd> reason=<refusal>`, where a pool refusal logs `login_hash=<hash>` of the email its username carries, or `username_hash=<hash>` of a username that carries none; `reason` is the refusal's own words, never the error's text (A person in the access log and the sign-in lines).
 
   Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
@@ -779,7 +779,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 - A person is their email, so an address passed from one account to another is one person.
   In domain mode `people.sub` records the Google account (`sub`, never reused) that last signed in to the address:
-  a sign-in under another `sub` ends every session of the address in the transaction that records the new one (a failed revoke records nothing, so the retry revokes again), logged `msg="dispatch: a sign-in under another Google account ended every session of the address"` at WARN with the email, and the hourly confirmation ends them when the refreshed token's `sub` is not the recorded one.
+  a sign-in under another `sub` ends every session of the address in the transaction that records the new one (a failed revoke records nothing, so the retry revokes again), logged `msg="dispatch: a sign-in under another Google account ended every session of the address"` at WARN with the address's `login_hash`, and the hourly confirmation ends them when the refreshed token's `sub` is not the recorded one.
   A sign-in whose address another account signs in to between its record and its cookie gets `409 SIGNIN_SUPERSEDED` and no cookie:
   after reading the session generation the callback checks that the row still records its `sub`.
   Group mode neither reads nor writes `sub`, so there the old holder of a reassigned address keeps the cookies they have until their cookie expires, 30 days after it was issued, unless the pool user is removed from `DISPATCH_SIGNIN_GROUP` or disabled.
@@ -789,15 +789,15 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   A value is opened under each key of the set in turn, the GCM tag refusing a key it was not sealed under;
   it names no key, so the `v1:` format is byte for byte the one earlier releases write and read.
   A stored value that does not open (sealed under a key the set does not hold, moved from another person's row, or in plain text) counts as no refresh token:
-  each read of it logs `msg="dispatch: a stored refresh token did not open; the person signs in again"` at WARN with the email and never the value, and writes nothing;
+  each read of it logs `msg="dispatch: a stored refresh token did not open; the person signs in again"` at WARN with the person's `login_hash` and never the value, and writes nothing;
   the person's request answers `401 NO_IDENTITY`, and their next sign-in replaces the value.
 
 - A refresh token stored in plain text (by the release before sealing, or by a task of it still serving during a roll or after a rollback) can be redeemed by anyone holding a copy of the row and the app client's secret until it expires, and forgetting it does not end it, so Dispatch retires it:
   at every boot, after migrations, it revokes each plain-text token at the pool's revocation endpoint (the `revocation_endpoint` the issuer's discovery document names) as the app client, then clears it and its confirmation while the row still holds that value.
   A sign-in that replaces a plain-text token retires it the same way first.
   A sealed value is never sent to the pool, and a redirect from the revocation endpoint is a failure, never followed.
-  A token the boot cannot revoke, the issuer's discovery document not yet read included, stays in its row for the next boot and logs `msg="dispatch: the sign-in pool did not revoke a refresh token stored in plain text"` at ERROR with the email and the error (the pool's HTTP status, when it answered), never the token.
-  A sign-in that cannot revoke the token it replaces goes on, since the person just signed in at the pool, and logs `msg="dispatch: a sign-in replaced a refresh token the pool did not revoke; sign this person out at the pool"` at ERROR with the email and the error:
+  A token the boot cannot revoke, the issuer's discovery document not yet read included, stays in its row for the next boot and logs `msg="dispatch: the sign-in pool did not revoke a refresh token stored in plain text"` at ERROR with the person's `login_hash` and the error (the pool's HTTP status, when it answered), never the token.
+  A sign-in that cannot revoke the token it replaces goes on, since the person just signed in at the pool, and logs `msg="dispatch: a sign-in replaced a refresh token the pool did not revoke; sign this person out at the pool"` at ERROR with the person's `login_hash` and the error (read the address it stands for from the people table, A person in the access log and the sign-in lines):
   no later boot will see that token, so signing the person out at the pool is the only way to end it.
   The boot's retirement stops after 30 seconds, failing each token it has not revoked, and the start goes on;
   it logs `msg="dispatch: retired the refresh tokens stored in plain text" retired=<n> failed=<n>`.
@@ -832,7 +832,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
   Each person admitted is recorded in `people`.
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
-  a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
+  a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" login_hash=<hash> hd=<hd> reason=<refusal>`, read from an assertion IAP signed; both at WARN.
   An expired assertion logs `msg="dispatch: IAP assertion expired"` at DEBUG alone (below).
   Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
   An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
@@ -4576,6 +4576,7 @@ Each item below names a field of the line, then what it holds.
 - `path`
 
   The request path as it was sent, still escaped (`a%2Fb` stays `a%2Fb`), without its query string.
+  A segment the route names `{login}` or `{email}` (`/api/v1/people/{login}/nodes`, `/api/v1/projects/{key}/access/people/{email}`), and any segment that holds an `@` once unescaped (an `unmatched` path's included), is written `login_hash:<value>`, the hash of the text it holds, so the path names no address.
 
 - `caller_kind`
 
@@ -4583,8 +4584,15 @@ Each item below names a field of the line, then what it holds.
 
 - `caller`
 
-  Who that is: the person's lowercase email, the session id, the personal token's owner, the service-account subject, or the person a broker-issued token acts for.
+  Who that is, for a caller that is no person: the session id, the service-account subject, or `service:<service>` for a broker-issued token that acts for no person.
+  A person, on a `user` or `token` line or a `broker-token` line whose token acts for a person, is named by `login_hash` in its place.
   `shared-token` and `anonymous` name nobody.
+
+- `login_hash`
+
+  Only on a `user` or `token` line, and on a `broker-token` line whose token acts for a person, in place of `caller`: the hash of the signed-in person's login, of the personal token's owner's, or of the person the broker-issued token acts for (`model.LoginHash`).
+  A broker-issued token that acts for no person keeps `caller=service:<service>`.
+  To find a person's requests, hash their address, or read the address a value stands for from the people table, as [A person in the access log and the sign-in lines](#a-person-in-the-access-log-and-the-sign-in-lines) says.
 
 - `address`
 
@@ -4618,7 +4626,7 @@ Each item below names a field of the line, then what it holds.
 - `credential`
 
   Only on a `session` line: the credential behind the session.
-  `token:<owner>`, `service:<subject>`, `shared-token`, or, for a broker-issued token, `broker-token:<person>`, which is `broker-token:service:<service>` for a token that names no person (a machine's, or a job's, whose service is the identity its job entry lists).
+  `token:<login_hash>` (the token's owner), `service:<subject>`, `shared-token`, or, for a broker-issued token, `broker-token:<login_hash>` (the person the token acts for), which is `broker-token:service:<service>` for a token that names no person (a machine's, or a job's, whose service is the identity its job entry lists).
   For every one but a broker-issued token's, that session id is the caller's own text; under a broker-issued token the credential itself named it.
 
 - `aborted`
@@ -4626,8 +4634,8 @@ Each item below names a field of the line, then what it holds.
   Only when the handler panicked (an artifact download whose store fails mid-stream aborts this way): `true`.
   The line is still written, and the panic still reaches the server.
 
-The line never carries a token, a cookie, a query string, a request body or a response body.
-The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes.
+The line never carries a token, a cookie, a query string, a request body or a response body, and names every person it names by `login_hash`.
+The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes; a session id is that text as the caller wrote it.
 
 A websocket resolves its caller again on every heartbeat, and that resolution does not change the line: it names the caller the connection was admitted as.
 
@@ -4639,6 +4647,29 @@ Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
+
+## A person in the access log and the sign-in lines
+
+The access log (`login_hash`, and a `credential` or `path` that names a person, above) and the sign-in and membership lines name a person by `login_hash`: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`), never their address.
+Those are the lines `internal/dispatch/identity` and `internal/dispatch/routes` write, of a sign-in, a dev sign-in, a sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in (a passkey's among them), the membership pass, a Workspace Directory check under IAP identity, and a passkey sign-in or ceremony refused; the API's line of a decision, mint or scope change refused because whether Dispatch holds its caller could not be read; and the broker revocation loop's lines, of an account-binding catch-up, a replaced account's broker revocation and a restricted member's machine-login revocation.
+The people store's lines of a sign-in name the address by `login_hash` too: the account binding's catch-up, ended sessions and revoked tokens, a plain refresh token the pool did not revoke, and a stored refresh token that does not open; and so do the passkey store's lines of an enrollment and of the hourly confirmation's ends.
+A refusal's or an end's `reason` gives the refusal's words, and names the address a refreshed sign-in carried by its `login_hash`.
+One login has one value in every process and every build.
+To find a person's lines, the requests they made among them, hash their canonical login: their address with its ASCII capitals lowered and no white space around it, as `tr` does here:
+
+```
+printf %s 'Alice@Example.com' | tr A-Z a-z | sha256sum | cut -c1-16
+```
+
+To read the address a value stands for, ask the people table, which holds the canonical login of every person who signed in (`TestTheLoginHashResolveQueryFindsThePerson` holds this statement to `model.LoginHash`):
+
+```sql
+select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'hex'), 16) = '<value>';
+```
+
+The same lines name a failed store or broker call by `error_kind`, never by its error, whose text quotes the address (`errkind.Of`):
+`canceled`, `deadline exceeded`, `database connection`, `database SQLSTATE <code>`, `broker HTTP <status>`, `broker account token`, `network timeout`, `network`, or else the Go type of the innermost error (the last, where an error wraps several).
+The sign-in pool's revoke of a plain refresh token and the issuer's refresh of a lapsed membership keep `error`: its text is the issuer's address, the HTTP status and the error the issuer answered, never a login Dispatch put in it.
 
 ## Routes
 
@@ -4711,7 +4742,7 @@ Each item below names a path with its method and identity, then its purpose.
   Sign in the person `login` names, lowercased, without the sign-in issuer: `302` with the session cookie to the page `next` names on the dashboard origin, as an absolute URL of that origin (default its `/`).
   `next` is a path, or an absolute URL of the dashboard origin.
   `400 DEV_SIGNIN_INPUT` without `login`, or for a `next` off the dashboard origin (another host, port or scheme, `//host`, userinfo, a relative path, a backslash), before anyone is recorded or any cookie minted; `403 DEV_SIGNIN_FORBIDDEN` for a non-loopback peer or a request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`.
-  Each mint logs at WARN with the email and the peer.
+  Each mint logs at WARN with the person's `login_hash` and the peer.
   Not mounted otherwise.
 
 - `/api/github/rest/...` (GET; cookie or trusted header)

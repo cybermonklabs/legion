@@ -535,11 +535,11 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 
 // A machine login's decision writes no Dispatch event - the broker records it - so the agent that
 // decided for its person is named on Dispatch's own access-log line: the session the caller named,
-// and otherwise the token, by its owner, with the credential beside it either way. The decision
-// Dispatch relays names the token's owner as the approver, which the broker takes on Dispatch's
-// word (credential_requests.go), with the session generation its check read (0: alice holds no
-// session row here), which every approve to a broker that takes the approver fields carries, as
-// the fake broker's settings say it does.
+// and otherwise the token, by its owner's login's hash, with the credential beside it either way.
+// The decision Dispatch relays names the token's owner as the approver, which the broker takes on
+// Dispatch's word (credential_requests.go), with the session generation its check read (0: alice
+// holds no session row here), which every approve to a broker that takes the approver fields
+// carries, as the fake broker's settings say it does.
 func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -547,10 +547,10 @@ func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T
 		want    []string
 	}{
 		{name: "a caller that names its session", session: actingSession, want: []string{
-			"caller_kind=session", "caller=" + actingSession, "credential=token:alice",
+			"caller_kind=session", "caller=" + actingSession, "credential=token:" + model.LoginHash("alice"),
 		}},
 		{name: "a caller that names none", session: "", want: []string{
-			"caller_kind=token", "caller=alice",
+			"caller_kind=token", "login_hash=" + model.LoginHash("alice"),
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -120,8 +121,13 @@ func TestDevSignInIssuesTheSessionCookieAndRecordsThePerson(t *testing.T) {
 		t.Fatal("the dev sign-in did not record the person, so they could not be assigned")
 	}
 	logged := logs.String()
-	if !strings.Contains(logged, "level=WARN") || !strings.Contains(logged, "email=alice@d.example") || !strings.Contains(logged, "remote_addr=127.0.0.1:40000") {
-		t.Fatalf("the mint was not logged at WARN with its person and peer: %q", logged)
+	if !strings.Contains(logged, "level=WARN") || !strings.Contains(logged, "login_hash="+model.LoginHash("alice@d.example")) || !strings.Contains(logged, "remote_addr=127.0.0.1:40000") {
+		t.Fatalf("the mint was not logged at WARN with its person's login hash and peer: %q", logged)
+	}
+	// No line names the address: the mint's own, and the access log's lines of the sign-in and of
+	// whoami. Control: log "email", email on the mint's line again, and this fails.
+	if strings.Contains(strings.ToLower(logged), "alice@d.example") {
+		t.Fatalf("the log holds the address alice@d.example: %q", logged)
 	}
 }
 

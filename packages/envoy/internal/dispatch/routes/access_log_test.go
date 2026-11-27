@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -62,7 +63,8 @@ func TestAnUnknownAPIPathWritesOneAccessLogLine(t *testing.T) {
 	}
 }
 
-// A sign-in that succeeds names the person it signed in on its callback's line.
+// A sign-in that succeeds names the person it signed in, by their login's hash, on its callback's
+// line.
 func TestASignInCallbackNamesThePersonItSignedIn(t *testing.T) {
 	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
 	// captureAccessLog).
@@ -75,7 +77,7 @@ func TestASignInCallbackNamesThePersonItSignedIn(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("one callback wrote %d access-log lines", len(lines))
 	}
-	for _, want := range []string{`caller_kind=user`, `caller=` + rigEmail, `status=302`} {
+	for _, want := range []string{`caller_kind=user`, `login_hash=` + model.LoginHash(rigEmail), `status=302`} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("access-log line %q does not carry %q", lines[0], want)
 		}

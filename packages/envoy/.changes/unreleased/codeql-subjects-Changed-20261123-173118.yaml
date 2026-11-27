@@ -1,0 +1,34 @@
+kind: Changed
+body: |-
+  Dispatch's access log and its sign-in and membership log lines name a person by their login's
+  hash, not their address. The access log names a person caller (`user`, `token`, and a
+  `broker-token` that acts for a person) by `login_hash` in place of `caller`, the first 16 hex
+  digits of the SHA-256 of their canonical login; a broker token that acts for no person keeps
+  `caller=service:<service>`. A session's `credential` is `token:<login_hash>`,
+  `broker-token:<login_hash>` or `broker-token:service:<service>`, and a path
+  segment a route names `{login}` or `{email}`, or one that holds an `@`, is written
+  `login_hash:<value>`. A line that reads `caller` for a person now reads `login_hash`. The lines
+  `internal/dispatch/identity` and `internal/dispatch/routes` write, of a sign-in, a dev sign-in, a
+  sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in,
+  the membership pass, a Workspace Directory check under IAP identity and a passkey sign-in or
+  ceremony refused, the API's line of a decision, mint or scope change refused because a caller's
+  standing could not be read, the broker revocation loop's lines (an account-binding catch-up, a
+  replaced account's broker revocation and a restricted member's machine-login revocation), the
+  people store's lines of a sign-in (the account binding's catch-up, ended sessions and revoked
+  tokens, a plain refresh token the pool did not revoke, and a stored refresh token that does not
+  open) and the passkey store's lines of an enrollment and of the hourly confirmation's ends name
+  the person as `login_hash` where they named `email`; a refusal's or an end's `reason` gives the
+  refusal's words, never its text, and names the address a refreshed sign-in carried by its hash.
+  Each failed store or broker call on those lines is named by `error_kind` (`database SQLSTATE
+  <code>`, `broker HTTP <status>`, `deadline exceeded` and others) in place of `error`, whose text
+  quoted the address; the sign-in pool's revoke and the issuer's refresh keep `error`, the issuer's
+  own answer, which carries no login Dispatch put in it.
+  The Dispatch server README's section "A person in the access log and the sign-in lines" gives
+  the command that hashes an address and the statement that reads the address a value stands for
+  from the people table. A document socket's answer before its upgrade is now sent as `text/plain`
+  with `X-Content-Type-Options: nosniff` whatever wrote it; ygo's own answers, which already were,
+  reach the peer unchanged. CodeQL's `go/clear-text-logging` and `go/reflected-xss` queries
+  reported these lines and that writer.
+time: 2026-11-23T17:31:18Z
+custom:
+    Issue: codeql-subjects

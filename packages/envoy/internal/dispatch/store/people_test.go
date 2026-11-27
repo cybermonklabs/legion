@@ -219,9 +219,11 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 
 // A refresh token that does not open is no refresh token: one sealed under another signing key (the
 // key rotated), one sealed for another person (a value moved between rows), and one stored in plain
-// text. Each read answers none, so the person signs in again, and logs that, naming the person and
-// never the value; the read writes nothing and asks the pool nothing. The person's next sign-in
-// replaces the value, revoking one in plain text first; a sealed value is never sent to the pool.
+// text. Each read answers none, so the person signs in again, and logs that, naming the person by
+// their login's hash (model.LoginHash), never by their address, and never the value; the read
+// writes nothing and asks the pool nothing. The person's next sign-in replaces the value, revoking
+// one in plain text first; a sealed value is never sent to the pool. Control: log "email", email on
+// that line again, and each row fails on the address.
 func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t)
@@ -274,8 +276,11 @@ func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
 				t.Errorf("the reads sent %q to the sign-in pool, want nothing", got)
 			}
 			out := logs.String()
-			if count := strings.Count(out, "a stored refresh token did not open"); count != 2 || !strings.Contains(out, email) {
-				t.Errorf("logged %d lines naming the unopened token, want one per read naming %s:\n%s", count, email, out)
+			if count := strings.Count(out, "a stored refresh token did not open"); count != 2 || strings.Count(out, "login_hash="+model.LoginHash(email)) != 2 {
+				t.Errorf("logged %d lines naming the unopened token, want one per read naming login_hash=%s:\n%s", count, model.LoginHash(email), out)
+			}
+			if strings.Contains(strings.ToLower(out), email) {
+				t.Errorf("the log holds the address %s:\n%s", email, out)
 			}
 			if strings.Contains(out, token) || strings.Contains(out, *stored) {
 				t.Errorf("the log carries the stored value:\n%s", out)
@@ -348,8 +353,8 @@ func TestRetirePlainRefreshTokensRevokesEachThenForgetsIt(t *testing.T) {
 }
 
 // A token the sign-in pool does not revoke stays in its row, for the next boot to try again: the
-// boot logs one ERROR naming the person and the pool's HTTP status, never the value, and counts
-// it. The next boot the pool answers retires it.
+// boot logs one ERROR naming the person by their login's hash and the pool's HTTP status, never the
+// value or the address, and counts it. The next boot the pool answers retires it.
 func TestRetirePlainRefreshTokensLeavesATokenThePoolDidNotRevoke(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -367,8 +372,11 @@ func TestRetirePlainRefreshTokensLeavesATokenThePoolDidNotRevoke(t *testing.T) {
 		t.Fatalf("the row holds %v after a revocation the pool refused, want the token kept for the next attempt", kept)
 	}
 	out := logs.String()
-	if retireLines(logs) != 1 || !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "email="+email) || !strings.Contains(out, "HTTP 503") {
-		t.Errorf("logged, want one ERROR naming %s and HTTP 503:\n%s", email, out)
+	if retireLines(logs) != 1 || !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "login_hash="+model.LoginHash(email)) || !strings.Contains(out, "HTTP 503") {
+		t.Errorf("logged, want one ERROR naming login_hash=%s and HTTP 503:\n%s", model.LoginHash(email), out)
+	}
+	if strings.Contains(out, email) {
+		t.Errorf("the log carries the address %s:\n%s", email, out)
 	}
 	if strings.Contains(out, "plain-token") {
 		t.Errorf("the log carries the token:\n%s", out)
@@ -422,8 +430,8 @@ func TestRetirePlainRefreshTokensRetiresATokenStoredAfterTheLastBoot(t *testing.
 // A sign-in replaces the refresh token a row holds; one in plain text is retired first, so the
 // replacement never forgets a token the pool still accepts without revoking it. When the pool does
 // not revoke it, the sign-in proceeds (the person just signed in at the pool) and logs a line of its
-// own, apart from the boot's, naming the person to sign out at the pool and the status, never the
-// value: no later boot will see that token.
+// own, apart from the boot's, naming the person to sign out at the pool by their login's hash and
+// the status, never the value or the address: no later boot will see that token.
 func TestPgPeopleStoreSignInRetiresThePlainTokenItReplaces(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t)
@@ -452,8 +460,11 @@ func TestPgPeopleStoreSignInRetiresThePlainTokenItReplaces(t *testing.T) {
 		if status == 0 && (replaced != 0 || retireLines(logs) != 0) {
 			t.Errorf("pool answering 0: logged, want nothing:\n%s", out)
 		}
-		if status != 0 && (replaced != 1 || retireLines(logs) != 0 || !strings.Contains(out, "email="+email) || !strings.Contains(out, "HTTP 400")) {
-			t.Errorf("pool answering %d: logged, want one sign-in line naming %s and HTTP 400, and no boot line:\n%s", status, email, out)
+		if status != 0 && (replaced != 1 || retireLines(logs) != 0 || !strings.Contains(out, "login_hash="+model.LoginHash(email)) || !strings.Contains(out, "HTTP 400")) {
+			t.Errorf("pool answering %d: logged, want one sign-in line naming login_hash=%s and HTTP 400, and no boot line:\n%s", status, model.LoginHash(email), out)
+		}
+		if strings.Contains(out, email) {
+			t.Errorf("pool answering %d: the log carries the address %s:\n%s", status, email, out)
 		}
 		if strings.Contains(out, plain) {
 			t.Errorf("pool answering %d: the log carries the token:\n%s", status, out)
@@ -548,8 +559,8 @@ func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t 
 	if got := membership(); got.Subject != "subject-2" || got.RefreshToken != "refresh-3" {
 		t.Fatalf("membership after another subject's sign-in = %#v, want subject-2 with refresh-3", got)
 	}
-	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "another Google account") || !strings.Contains(out, "email="+email) {
-		t.Errorf("the revoke was not logged at WARN with the address:\n%s", out)
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "another Google account") || !strings.Contains(out, "login_hash="+model.LoginHash(email)) || strings.Contains(out, email) {
+		t.Errorf("the revoke was not logged at WARN with the address's login hash and no address:\n%s", out)
 	}
 
 	if err := people.SignIn(ctx, email, "refresh-4"); err != nil {
@@ -1330,8 +1341,8 @@ func tokenRevokedAt(t *testing.T, database *Store, id string) *time.Time {
 // member's first sign-in leaves none of that account's tokens acting as the member, and an address
 // Google gave to another account leaves none of the old one's. A token's owner is compared with its
 // letters folded, as people.email stores the address; a token of another address, and one revoked
-// before, keep the revoked_at they had. The revoke is logged once, at WARN, with the address and
-// how many tokens it revoked.
+// before, keep the revoked_at they had. The revoke is logged once, at WARN, with the address's
+// login hash and how many tokens it revoked, never the address.
 //
 // A row that recorded no Google account (Record: header identity, a dev sign-in; or a Cognito
 // pool's sign-in) replaces no account, but its tokens record none either: they were minted before
@@ -1407,8 +1418,8 @@ func TestSignInSubjectRevokesThePersonalTokensOfTheAccountItReplaces(t *testing.
 				t.Errorf("%s: the token of %s was revoked at %s, want it live: only the address's own tokens end", test.email, test.other, got)
 			}
 			out := logs.String()
-			if strings.Count(out, test.logged) != 1 || !strings.Contains(out, "level=WARN") || !strings.Contains(out, "email="+test.email) || !strings.Contains(out, "tokens_revoked=3") {
-				t.Errorf("%s: the revoke was not logged once at WARN as %s, with the address and tokens_revoked=3:\n%s", test.email, test.logged, out)
+			if strings.Count(out, test.logged) != 1 || !strings.Contains(out, "level=WARN") || !strings.Contains(out, "login_hash="+model.LoginHash(test.email)) || !strings.Contains(out, "tokens_revoked=3") || strings.Contains(out, test.email) {
+				t.Errorf("%s: the revoke was not logged once at WARN as %s, with the address's login hash, tokens_revoked=3 and no address:\n%s", test.email, test.logged, out)
 			}
 		})
 	}

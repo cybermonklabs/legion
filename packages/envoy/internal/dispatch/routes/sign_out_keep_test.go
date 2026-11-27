@@ -37,12 +37,28 @@ type signOutRig struct {
 
 func newSignOutRig(t *testing.T, rule identity.SignInRule, answers map[string]http.HandlerFunc) *signOutRig {
 	t.Helper()
+	return newSignOutRigOver(t, rule, answers, nil, nil)
+}
+
+// newSignOutRigOver is newSignOutRig whose router reaches the people store through people and the
+// session store through sessions, when either is set, each given the rig's own store.
+func newSignOutRigOver(t *testing.T, rule identity.SignInRule, answers map[string]http.HandlerFunc,
+	people func(*store.PgPeopleStore) auth.PeopleStore, sessions func(*store.PgSessionStore) auth.SessionStore) *signOutRig {
+	t.Helper()
 	database := storetest.Open(t)
 	rig := &signOutRig{
 		database: database,
 		people:   store.NewPgPeopleStore(database.Pool, testSigningKey, nil),
 		sessions: store.NewPgSessionStore(database.Pool),
 		rule:     rule,
+	}
+	var routerPeople auth.PeopleStore = rig.people
+	if people != nil {
+		routerPeople = people(rig.people)
+	}
+	var routerSessions auth.SessionStore = rig.sessions
+	if sessions != nil {
+		routerSessions = sessions(rig.sessions)
 	}
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		person := r.URL.Query().Get("person")
@@ -67,8 +83,8 @@ func newSignOutRig(t *testing.T, rule identity.SignInRule, answers map[string]ht
 	}
 	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:            testSigningKey,
-		People:                rig.people,
-		Sessions:              rig.sessions,
+		People:                routerPeople,
+		Sessions:              routerSessions,
 		Identity:              identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions},
 		SignInRule:            rule,
 		Store:                 database,
@@ -165,9 +181,10 @@ func personAccess(body string) http.HandlerFunc {
 	}
 }
 
-// warned answers whether logged holds a WARN line naming email.
+// warned answers whether logged holds a WARN line naming email, by its login's hash as the
+// sign-out's lines name a person (model.LoginHash).
 func warned(logged *logtest.Buffer, email string) bool {
-	for line := range strings.Lines(logged.Lines(email)) {
+	for line := range strings.Lines(logged.Lines(`"login_hash":"` + model.LoginHash(email) + `"`)) {
 		if strings.Contains(line, `"level":"WARN"`) {
 			return true
 		}
@@ -179,10 +196,11 @@ func warned(logged *logtest.Buffer, email string) bool {
 // access outlives the browser, and forgets everyone else's (c-sign-out, Dispatch's half). Ada,
 // holding a dsp_ token, keeps hers, and the broker is not asked. Bob, holding nothing, has his
 // forgotten. Carol, holding a machine login, keeps hers. A broker answering 500 or 404 cannot be
-// asked, so erin and frank keep theirs, and the sign-out logs a WARN naming the person. A sign-in
-// that commits while the broker delays its answer keeps its own token, not signed out, whether the
-// answer would have forgotten the old one (dave) or kept it (gail). Under the sign-in pool's rule,
-// hana's token is forgotten as before, though she holds a dsp_ token, and the broker is not asked.
+// asked, so erin and frank keep theirs, and the sign-out logs a WARN naming the person by their
+// login's hash. A sign-in that commits while the broker delays its answer keeps its own token, not
+// signed out, whether the answer would have forgotten the old one (dave) or kept it (gail). Under
+// the sign-in pool's rule, hana's token is forgotten as before, though she holds a dsp_ token, and
+// the broker is not asked.
 func TestSignOutKeepsTheTokenOfAPersonWhoseAgentsStillAct(t *testing.T) {
 	logged := &logtest.Buffer{}
 	logtest.SetDefault(t, slog.NewJSONHandler(logged, nil))

@@ -320,18 +320,26 @@ broker database restored alone, with `-infinity` for the backup's moment
 
 `envoy_dispatch_broker_revocations_superseded_total` counts each answer `superseded` the broker
 gives a revocation still owed, which Dispatch leaves owed, so the owed gauges above show it too,
-and logs at ERROR with the address, the replaced account's `sub`, both generations the broker
-compared and the address's generation at Dispatch now; the loop tries it again after its retry
-window. Alert on the counter being above zero (`envoy_dispatch_broker_revocations_superseded_total
-> 0`), not on its `rate()`: it writes no sample until its first count, and any count is a broken
-pair. While the two databases agree, Dispatch's loop never hears that answer for a row still owed.
-It means the broker applied a later replacement at the address than the one the row names: a
-Dispatch database recreated or restored alone, or a generation written by hand at either. Outside
-a reset, run the reset ([After a restore](/legion/dispatch/after-a-restore/)). After one, the
-reset has already ended every credential the row would end and settled every restored debt, so
-settle a later `superseded` row with
+and logs at ERROR with the address's `login_hash` (never the address), the replaced account's
+`sub`, both generations the broker compared and the address's generation at Dispatch now; the
+loop tries it again after its retry window. Alert on the counter being above zero
+(`envoy_dispatch_broker_revocations_superseded_total > 0`), not on its `rate()`: it writes no
+sample until its first count, and any count is a broken pair. While the two databases agree,
+Dispatch's loop never hears that answer for a row still owed. It means the broker applied a later
+replacement at the address than the one the row names: a Dispatch database recreated or restored
+alone, or a generation written by hand at either. Outside a reset, run the reset
+([After a restore](/legion/dispatch/after-a-restore/)). After one, the reset has already ended
+every credential the row would end and settled every restored debt, so settle a later
+`superseded` row with
 `envoy-dispatch clear-broker-revocation '<address>' '<subject>:<generation>'`, naming it as the
-command's list prints it.
+command's list prints it. The address a line's `login_hash` stands for is the one this block reads
+from Dispatch's database:
+
+```sh
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v hash='<login_hash>' <<'SQL'
+select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'hex'), 16) = :'hash';
+SQL
+```
 
 ### A person Google refuses
 

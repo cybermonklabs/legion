@@ -80,7 +80,8 @@ func (s *PgPeopleStore) Record(ctx context.Context, email string) error {
 // retirePlainBeforeSignIn retires email's refresh token when the row holds it in plain text, so a
 // sign-in that replaces it (SignIn or SignInSubject) never forgets one the pool still accepts.
 // When the pool does not revoke it, this logs that at ERROR, naming the person to sign out at the
-// pool since no later boot will see the token, and proceeds.
+// pool by their login's hash (model.LoginHash) since no later boot will see the token, and the
+// pool's error, which names no person (retire), and proceeds.
 func (s *PgPeopleStore) retirePlainBeforeSignIn(ctx context.Context, email string) error {
 	var stored *string
 	err := s.pool.QueryRow(ctx, `select refresh_token from people where email = $1`, email).Scan(&stored)
@@ -90,7 +91,7 @@ func (s *PgPeopleStore) retirePlainBeforeSignIn(ctx context.Context, email strin
 	if stored != nil && !strings.HasPrefix(*stored, sealedRefreshTokenPrefix) {
 		switch err := s.retire(ctx, email, *stored); {
 		case errors.Is(err, errNotRevoked):
-			slog.Error("dispatch: a sign-in replaced a refresh token the pool did not revoke; sign this person out at the pool", "email", email, "error", err)
+			slog.Error("dispatch: a sign-in replaced a refresh token the pool did not revoke; sign this person out at the pool", "login_hash", model.LoginHash(email), "error", err)
 		case err != nil:
 			return err
 		}
@@ -305,24 +306,25 @@ type signInRecorded struct {
 
 // log logs, once the sign-in's transaction committed, what it caught up, ended and revoked, in the
 // words the README's account-binding section quotes (a passkey's account included, so the log has
-// one line for each event whoever's account it is).
+// one line for each event whoever's account it is). Each line names the address by its login's
+// hash (model.LoginHash), never as written.
 func (r signInRecorded) log(email string) {
 	if r.caught.Found() {
 		LogAccountBindingCatchUp(email, r.caught)
 	}
 	switch {
 	case !r.revoked && r.replaced:
-		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address and revoked nothing: a build without the account binding is in the fleet", "email", email, "replaced_subject", r.stored)
+		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address and revoked nothing: a build without the account binding is in the fleet", "login_hash", model.LoginHash(email), "replaced_subject", r.stored)
 	case !r.revoked && r.firstRecording:
-		slog.Warn("dispatch: the first Google account recorded for the address revoked nothing of it: a build without the account binding is in the fleet", "email", email, "subject", r.subject)
+		slog.Warn("dispatch: the first Google account recorded for the address revoked nothing of it: a build without the account binding is in the fleet", "login_hash", model.LoginHash(email), "subject", r.subject)
 	case r.replaced:
-		slog.Warn("dispatch: a sign-in under another Google account ended every session and revoked every personal token of the address", "email", email, "tokens_revoked", r.tokensRevoked)
+		slog.Warn("dispatch: a sign-in under another Google account ended every session and revoked every personal token of the address", "login_hash", model.LoginHash(email), "tokens_revoked", r.tokensRevoked)
 	case r.tokensRevoked > 0:
-		slog.Warn("dispatch: the first Google account recorded for the address revoked every personal token of it that records another account or none", "email", email, "tokens_revoked", r.tokensRevoked, "accounts", r.owed)
+		slog.Warn("dispatch: the first Google account recorded for the address revoked every personal token of it that records another account or none", "login_hash", model.LoginHash(email), "tokens_revoked", r.tokensRevoked, "accounts", r.owed)
 	case r.existed && r.firstRecording:
 		// A row this sign-in's own insert created had no cookie of its own to end, so only a row
 		// that existed is logged; the database ended the sessions either way.
-		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address", "email", email)
+		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address", "login_hash", model.LoginHash(email))
 	}
 }
 
@@ -483,12 +485,13 @@ func (s *PgPeopleStore) revocationIssuer(issuer string) string {
 
 // LogAccountBindingCatchUp logs, at WARN, a catch-up of what the account binding did not revoke at
 // email while it was off (CatchUpAccountBinding), by a sign-in or by the revocation loop: the
-// accounts its kept changes replaced, whether one was the address's first recording, whether a
-// personal token the binding refuses outlived the address's recording, how many personal tokens it
-// revoked, the accounts it owes the broker a revocation of, and the holder.
+// address by its login's hash (model.LoginHash), the accounts its kept changes replaced, whether
+// one was the address's first recording, whether a personal token the binding refuses outlived the
+// address's recording, how many personal tokens it revoked, the accounts it owes the broker a
+// revocation of, and the holder.
 func LogAccountBindingCatchUp(email string, caught AccountBindingCatchUp) {
 	slog.Warn("dispatch: the account binding holds and caught up what it did not revoke at the address while it was off: it revoked the personal tokens of the address a sign-in with the binding on would have, and owes the broker a revocation of each account they replaced",
-		"email", email, "replaced_subjects", caught.Replaced, "first_recording", caught.FirstRecording, "refused_live", caught.RefusedLive,
+		"login_hash", model.LoginHash(email), "replaced_subjects", caught.Replaced, "first_recording", caught.FirstRecording, "refused_live", caught.RefusedLive,
 		"tokens_revoked", caught.TokensRevoked, "owed", caught.Owed, "holder", caught.Holder)
 }
 
@@ -666,7 +669,9 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 	}
 	refreshToken, err := s.seal.open(email, *sealed)
 	if err != nil {
-		slog.Warn("dispatch: a stored refresh token did not open; the person signs in again", "email", email, "reason", err.Error())
+		// The person by their login's hash, never the address (model.LoginHash); reason is the
+		// seal's own fixed words (refreshTokenSeal.open).
+		slog.Warn("dispatch: a stored refresh token did not open; the person signs in again", "login_hash", model.LoginHash(email), "reason", err.Error())
 		membership.Unopenable, membership.ConfirmedAge = true, *age
 		return membership, true, nil
 	}
@@ -781,9 +786,9 @@ func (s *PgPeopleStore) ForgetAfterSignOut(ctx context.Context, email string, si
 // RetirePlainRefreshTokens retires every refresh token people holds in plain text (retire): one
 // stored before Dispatch sealed them, or by a task of that earlier release since, during a roll or
 // after a rollback. Dispatch runs it at every boot. It returns how many the pool revoked and how
-// many it did not, each of those logged at ERROR naming the person and left in its row for the next
-// boot; once ctx is done, each token not yet revoked fails at once. The error is the database's,
-// and stops the sweep.
+// many it did not, each of those logged at ERROR naming the person by their login's hash
+// (model.LoginHash) and left in its row for the next boot; once ctx is done, each token not yet
+// revoked fails at once. The error is the database's, and stops the sweep.
 func (s *PgPeopleStore) RetirePlainRefreshTokens(ctx context.Context) (retired, failed int, err error) {
 	rows, err := s.pool.Query(ctx, `select email, refresh_token from people where refresh_token is not null and refresh_token not like '`+sealedRefreshTokenPrefix+`%' order by email`)
 	if err != nil {
@@ -800,7 +805,7 @@ func (s *PgPeopleStore) RetirePlainRefreshTokens(ctx context.Context) (retired, 
 	for _, p := range tokens {
 		switch err := s.retire(ctx, p.email, p.token); {
 		case errors.Is(err, errNotRevoked):
-			slog.Error("dispatch: the sign-in pool did not revoke a refresh token stored in plain text", "email", p.email, "error", err)
+			slog.Error("dispatch: the sign-in pool did not revoke a refresh token stored in plain text", "login_hash", model.LoginHash(p.email), "error", err)
 			failed++
 		case err != nil:
 			return retired, failed, err

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -65,7 +66,7 @@ func TestAPanickingHandlerStillWritesItsLine(t *testing.T) {
 		}()
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/artifacts/x/files", nil))
 	}()
-	carries(t, line(t, logged), `caller_kind=user`, `caller=alice`, `status=200`, `bytes=7`, `aborted=true`)
+	carries(t, line(t, logged), `caller_kind=user`, `login_hash=`+model.LoginHash("alice"), `status=200`, `bytes=7`, `aborted=true`)
 }
 
 // A handler that panics before it writes anything is logged as 500, though the client gets a
@@ -135,10 +136,10 @@ func TestASessionKeepsTheCredentialThatNamedIt(t *testing.T) {
 		want           []string
 		absent         string
 	}{
-		"personal token":    {first: KindToken, firstID: "ada@example.com", session: true, want: []string{`caller_kind=session`, `credential=token:ada@example.com`}},
+		"personal token":    {first: KindToken, firstID: "ada@example.com", session: true, want: []string{`caller_kind=session`, `credential=token:` + model.LoginHash("ada@example.com")}},
 		"service":           {first: KindService, firstID: "system:serviceaccount:ns:sa", session: true, want: []string{`caller_kind=session`, `credential=service:system:serviceaccount:ns:sa`}},
 		"shared token":      {first: KindSharedToken, session: true, want: []string{`caller_kind=session`, `credential=shared-token`}},
-		"token, no session": {first: KindToken, firstID: "ada@example.com", want: []string{`caller_kind=token`, `caller=ada@example.com`}, absent: "credential="},
+		"token, no session": {first: KindToken, firstID: "ada@example.com", want: []string{`caller_kind=token`, `login_hash=` + model.LoginHash("ada@example.com")}, absent: "credential="},
 	} {
 		t.Run(name, func(t *testing.T) {
 			logged := capture(t)
@@ -200,4 +201,59 @@ func TestANamedSessionIsClipped(t *testing.T) {
 	if strings.Contains(got, strings.Repeat("s", fieldBytes+1)) {
 		t.Fatalf("access-log line keeps more than %d bytes of the named session", fieldBytes)
 	}
+}
+
+// A person on the line is named by their login's hash, never their address: a signed-in person,
+// a personal token's owner and the person a broker-issued token acts for, as the caller and as the
+// credential a session was named under, and a login a path carries, in a segment the route names
+// {login} or {email} or in any segment that holds an '@' (an unmatched path's). Every other
+// segment, the caller of every other kind, and a broker-issued token's service, which is no
+// person, are as they were.
+//
+// Control: write `caller`, the credential and the path as they came, and every person row fails on
+// the '@' they bring back to the line; hash every broker-token caller, and the service rows fail.
+func TestTheLineNamesAPersonByTheirLoginsHash(t *testing.T) {
+	const ada = "Ada@Example.com"
+	hash := model.LoginHash(ada)
+	for _, row := range []struct {
+		name, route, path string
+		notes             [][2]string
+		want              []string
+	}{
+		{"a signed-in person", "/r", "/r", [][2]string{{KindUser, ada}}, []string{`caller_kind=user`, `login_hash=` + hash}},
+		{"a personal token's owner", "/r", "/r", [][2]string{{KindToken, ada}}, []string{`caller_kind=token`, `login_hash=` + hash}},
+		{"a broker-issued token's person", "/r", "/r", [][2]string{{KindBrokerToken, ada}}, []string{`caller_kind=broker-token`, `login_hash=` + hash}},
+		{"a session a personal token named", "/r", "/r", [][2]string{{KindToken, ada}, {KindSession, "session-1"}},
+			[]string{`caller_kind=session`, `caller=session-1`, `credential=token:` + hash}},
+		{"a session a broker-issued token named", "/r", "/r", [][2]string{{KindBrokerToken, ada}, {KindSession, "session-1"}},
+			[]string{`caller_kind=session`, `caller=session-1`, `credential=broker-token:` + hash}},
+		{"a login in the path", "/api/v1/people/{login}/nodes", "/api/v1/people/Ada@Example.com/nodes", [][2]string{{KindSession, "session-1"}},
+			[]string{`path=/api/v1/people/login_hash:` + hash + `/nodes `, `caller=session-1`}},
+		{"an escaped email in the path", "/api/v1/projects/{key}/access/people/{email}", "/api/v1/projects/CORE/access/people/Ada%40Example.com", [][2]string{{KindUser, "owner@example.com"}},
+			[]string{`path=/api/v1/projects/CORE/access/people/login_hash:` + hash + ` `, `login_hash=` + model.LoginHash("owner@example.com")}},
+		{"an address in an unmatched path", "unmatched", "/api/v1/projects/CORE/access/people/Ada@Example.com/extra", nil,
+			[]string{`path=/api/v1/projects/CORE/access/people/login_hash:` + hash + `/extra `, `route=unmatched `}},
+		{"a broker-issued token's service", "/r", "/r", [][2]string{{KindBrokerToken, "service:fleet-a"}}, []string{`caller_kind=broker-token`, `caller=service:fleet-a`}},
+		{"a session a service's broker-issued token named", "/r", "/r", [][2]string{{KindBrokerToken, "service:fleet-a"}, {KindSession, "session-1"}},
+			[]string{`caller=session-1`, `credential=broker-token:service:fleet-a`}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			logged := capture(t)
+			Handler(row.route, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				for _, note := range row.notes {
+					Note(r.Context(), note[0], note[1])
+				}
+			})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, row.path, nil))
+			got := line(t, logged)
+			carries(t, got, row.want...)
+			if strings.Contains(got, "@") || strings.Contains(strings.ToLower(got), "%40") {
+				t.Errorf("access-log line %q holds an address", got)
+			}
+		})
+	}
+	logged := capture(t)
+	Handler("/r", http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		Note(r.Context(), KindService, "system:serviceaccount:ns:sa")
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/r", nil))
+	carries(t, line(t, logged), `caller_kind=service`, `caller=system:serviceaccount:ns:sa`)
 }

@@ -2,6 +2,8 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -345,6 +347,22 @@ func sameName(left, right string) bool {
 // the people table holds.
 func CanonicalLogin(login string) string {
 	return fold.Login(login)
+}
+
+// LoginHash is what a log line prints, as `login_hash`, in place of a person's login: the first 16
+// hex digits (64 bits) of the SHA-256 of the login's canonical form (CanonicalLogin). Every spelling
+// of one login, in every process and build, prints the same value, and the line holds no address.
+// An operator finds a person's lines by hashing their canonical login the same way, the address
+// with its ASCII capitals lowered and no white space around it
+// (`printf %s 'Alice@Example.com' | tr A-Z a-z | sha256sum | cut -c1-16`), and reads the address a
+// value stands for from the people table, which holds every signed-in person's canonical login:
+//
+//	select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'hex'), 16) = '<value>';
+//
+// store.TestTheLoginHashResolveQueryFindsThePerson holds that statement to this function.
+func LoginHash(login string) string {
+	sum := sha256.Sum256([]byte(CanonicalLogin(login)))
+	return hex.EncodeToString(sum[:8])
 }
 
 // ActorOrigin describes the client environment of a session actor.

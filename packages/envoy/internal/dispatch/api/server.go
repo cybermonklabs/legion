@@ -651,6 +651,14 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeRevocationStoreCall runs before each store call of the broker revocation loop whose
+	// failure the loop logs naming the person (revocationStoreCall: the account-binding catch-up, a
+	// claimed revocation's SettleHeld, Sendable and Settle, the address's session generation, and a
+	// machine-login revocation's Settle), with the call's name, and its error stands in for that
+	// call failing; nil, which every server the deployment builds leaves it, runs nothing. Only a
+	// test sets it: it is how a case makes one of those calls fail, with an error that quotes the
+	// address as the store's own do, while every other call runs as it runs in production.
+	beforeRevocationStoreCall func(call string) error
 	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
 	// every event it appended are written and before its transaction commits, with those events;
 	// its error stands in for the commit failing, so the route answers it and rolls the write
