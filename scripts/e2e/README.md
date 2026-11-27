@@ -6683,6 +6683,7 @@ The release's version bump (its "Set release version" step) is not a step: the t
 The tarball holds the files, modes, manifest, notices and skills an in-place pack makes, and the bundles' code is the same.
 Only bun's source-path comments above each inlined module differ: bun writes them from the stage to the module's real path, so they name the checkout by its absolute path.
 The stage is removed on every way out, `SIGHUP`/`SIGINT`/`SIGTERM` included (each routed through `exit`), and the script ignores SIGPIPE, so this holds when whoever read its stderr has gone too.
+The run's exit status is the pack's own: a stage the script cannot remove leaves a message on stderr and does not change it.
 Nothing is written inside the checkout, so `jj status` is as it was before the run, and two runs in one checkout need no lock.
 `packages/pi-legion/scripts/prepack.test.ts`'s row "packs from a copy" holds the checkout's manifest to its bytes and its change time across a pack.
 

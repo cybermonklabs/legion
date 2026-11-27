@@ -6236,6 +6236,7 @@ When the wait ends, the kills that the watch named no process for have one `kill
   to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
   and to the launcher's test-database script at its bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
   `WaitDelay` sends it to the CodeGraph warm-up's `codegraph` (`runCodegraph`, `packages/daemon/internal/workspace/codegraph.go`) once the shim has stopped the warm-up, which it does while its agent still runs: that process is a direct child of the shim, so a session process, and it is named with the `kernel-protected` cause with no departure to set it aside.
+  The CodeGraph warm-up's memory cap sends it to the build's whole process group at its first read above the cap (`watchCodegraphMemory`, `packages/daemon/internal/workspace/codegraph.go`), which does not depend on the guard and so runs in a microVM pod too: the build's leader is a direct child of the shim, so its kill is named with the `kernel-protected` cause, as `WaitDelay`'s is.
 
 - The same limit leaves a kill unnamed, and names no process wrongly, where a pass counts a process that no kill of the wait reached.
   Its known case is a process of a role whose session has ended, as in the third case of the item above, that the watch counts already.
@@ -6984,6 +6985,9 @@ The roles of an issue share one scratch, the state homes under its `state` direc
 — the four the issue's roles share, plus the shared Go pair
 — before Oh My Pi starts (`podsafety.EnsureScratch`), since a role told a temporary directory nothing created cannot run;
 `podsafety.EnsureStateHome` makes Oh My Pi's profile directory under the state home.
+The volume's directories carry the set-group-ID bit, which the kubelet sets with the pod's `fsGroup`, and Linux gives that bit to every directory made under one:
+so the shim clears it on `TMPDIR`, one it makes and one it finds on a retained volume, and a directory a role's tool makes `0700` in its temporary directory is exactly `0700`.
+It changes nothing else: not `TMPDIR`'s access bits, owner or group, not its parent, and not the other directories of the scratch.
 What puts them off the container's own filesystem is the ephemeral-storage bound:
 on GKE Autopilot an issue pod is admitted with at most 10Gi for all six roles together (Warden caps a pod's main containers' summed ephemeral-storage requests at 10Gi and clamps each container's limit to its request;
 [Issue sizing](#issue-sizing-one-reservation-per-pod)), while ordinary work measurably needs more:
@@ -7014,13 +7018,32 @@ Six role shims share one workspace, so the warm-up holds a lease at `.codegraph/
 When a build finishes, the shim's warm-up logs one line in the `roles` container's log, prefixed `<role>: `, `codegraph warm-up for <workspace> built the index: codegraph init took
 <duration>, done <duration> after launch` — the build's own duration and the time since the role's launch (`codegraph index` in place of `init` for a repair)
 — which stage 4b's `repository-tools` checkpoint reads (`kubectl logs <pod> --all-containers`).
-A stop mid-build — the launcher's one SIGTERM to the role's process group
-— ends Oh My Pi and the `codegraph` child together, and the shim exits only once the warm-up has released its lease:
+A stop mid-build — role-init's one SIGTERM to every process of the role, its `kill(-1)` as the role's PID 1 —
+ends Oh My Pi and the `codegraph` build together, the build in its own process group included, and the shim, which also ends the warm-up, exits only once the warm-up has released its lease:
 it waits for that release at least 3 s and at most what the pod's `terminationGracePeriodSeconds` (`worker_stop_timeout_seconds`, which the launcher passes the shim as `--stop-grace`) leaves once the agent's 5 s grace and the 1 s stdout drain are spent (4 s with the default 10 s).
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
 An index that another CLI version built on a kept volume is rebuilt once, by the first warm-up that finds a version in its `index.builtWithVersion` other than the CLI's own `version`, and by no later one; an index with no version there, which a build that indexed no file leaves, counts as current.
+
+Each build runs in a process group of its own, with CodeGraph's parse pool at one worker (`CODEGRAPH_PARSE_WORKERS=1`), and the warm-up reads that group every 250 ms as the launcher's memory guard reads a process:
+above 3,328 MiB it sends the group SIGKILL and logs `codegraph <subcommand> for <workspace> ended at its memory cap: its process group read <size> MiB, over the cap of 3328 MiB`.
+The cap was measured in a Job of an issue pod's shape (2 CPUs, 8Gi, gVisor, the worker image's CodeGraph 1.6.4): `codegraph init` of cybermonklabs/legion, 12,651 indexed files, peaked at 2,792 MiB and of a second repository of 5,412 indexed files at 2,264 MiB, each at one parse worker.
+The cap is the larger plus a quarter, rounded up to a multiple of 256 MiB, unless that is above the guard's 85% mark less the median of the guard's hourly `reading_high` in INFRA's issue pods over the last day; then it is the largest multiple of 256 MiB under that bound.
+With the median at 3,616 MiB over the 24 hours to 2026-11-27T08:17Z, the bound is 3,347 MiB, so the cap is 3,328 MiB, and a pod whose six roles hold their median stays under the mark: a warm-up no longer takes the pod's sandbox down by itself.
+
+Each build, and every other process of the pod, runs with `CODEGRAPH_NO_WAL_DEFER=1`, which the worker image sets and the warm-up's minimal environment carries: CodeGraph then keeps SQLite's own checkpoint interval during `sync` and an `index` over an existing index.
+Without it, a `sync` of 500 changed files of cybermonklabs/legion grew `.codegraph/codegraph.db-wal` to 1,190 MiB on CodeGraph 1.6.4 and past 1 GiB in 9 s on 1.5.0; with it, to 165 MiB, in 254 s against 137 s.
+
+Beside the lease, the warm-up keeps the record of its last build at `.codegraph/legion-warm.build`, one JSON line: the subcommand, its start, how it ended, and the CodeGraph version (read from `/opt/codegraph/package.json`) and the cap it ran under.
+It is written, and synced, before the build starts, and removed when the build exits 0, when a stop of the role ended the build, when the build never started, and when a warm-up finds the index current.
+A stop's SIGTERM can reach the build before the warm-up's own stop, so the warm-up waits up to 2 s for that stop before it reads a signal or a non-zero exit as the build's own end.
+A build that died otherwise — at the cap, on a signal no stop of the role sent (the kernel's out-of-memory kill, the memory guard), at the 30-minute timeout, or with its pod, which leaves the record saying `running` — holds every later warm-up of that workspace on that disk, each of which runs `status` alone and logs `codegraph warm-up for <workspace> skipped: its last build, codegraph <subcommand> started <instant>, ended "<outcome>", …`.
+A build that exited non-zero holds only after a second such exit in a row: the record counts them, and the first allows one more build at the next warm-up, since an exit can be one that does not repeat, such as the `database is locked` below.
+A warm-up that finds the index current removes the record, whoever built it.
+A new workspace (`.jj/legion-created` after the recorded build's start), or another CodeGraph version or cap in the image, allows one new attempt; an agent's own `codegraph index` is never held by the record.
+The cap, the parse-worker count and the record are the issue pod's: the daemon's warm-up of a tmux host's workspace keeps its build in the daemon's process group, lets CodeGraph pick its parse pool and keeps no record, since a host's workspace never gets a new disk.
+
 The roles' CodeGraph queries (`impact`, `callers`, `affected`, `explore`) answer once `codegraph status --json` reports `index.state: "complete"`;
 before that, or when an answer is empty, a role reads the source itself, as its prompt says.
 Before its first query and before each `status`, a role checks the lease with `find <workspace>/.codegraph/legion-warm.lock -mmin -1 2>/dev/null`, and while that prints the path it reads the source and makes no `codegraph` call: a `status` during a whole-repository `init` or `index` made that build fail with `database is locked` (measured on CodeGraph 1.6.4).

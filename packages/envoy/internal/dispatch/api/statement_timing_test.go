@@ -42,12 +42,13 @@ const (
 //   - Protocol 1 pairs, whose two sides one schema runs: the issue list unpaged and paged, the
 //     project list, agentLastActivity, the issue's children, the five statements of search's
 //     document arm - searchQuery, searchQueryMeaning, relatedKeywordQuery, relatedMeaningQuery
-//     and relatedProbeSQL - the newest event under each priority (priorityNewestEventQuery),
-//     with a report of the same statement with its walk keyed
-//     (priorityNewestEventKeyedWalkQuery) and one of main's text with its walk keyed
-//     (keyedWalkOverMainsNewestEventQuery), and the move into backlog or icebox
-//     (backlogMoveLateral) in the second fault and in the listing with ?moved=true, each without
-//     and with events_backlog_moves, with a reading of each walk over the members alone: main's
+//     and relatedProbeSQL - the newest event under each priority, which the priorities read's
+//     statement (priorityReadQuery) reads among its parts, with a report of the newest event
+//     alone with its walk keyed (priorityNewestEventKeyedWalkQuery) and one of main's text with
+//     its walk keyed (keyedWalkOverMainsNewestEventQuery), and the move into backlog or icebox
+//     (backlogMoveLateral) in the second fault of the read's statement and in the listing with
+//     ?moved=true, each without and with
+//     events_backlog_moves, with a reading of each walk over the members alone: main's
 //     (memberWalkQuery) and the walk keyed through issues_parent_key (keyedMemberWalkQuery). The
 //     listing and the project list add no migration, agentLastActivity reads
 //     events_session_actor_created_at_idx, which migration 0026 built, the children read walks
