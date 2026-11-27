@@ -2774,6 +2774,75 @@ test("a claim chip whose holder's title holds a separator starts no line with it
   }
 });
 
+// dispatch://INFRA-3221 (the architect's decision of comment 8b253417, item 5: "A line that opens
+// with '·' is a defect in a component this change draws (`ClaimChip`)"), found by INFRA-3221's
+// tester. The chip's tooltip is drawn by this change, 288 px wide at most, and its first sentence
+// reads "Claimed by <the holder's title> · since <the moment>.": a holder whose title takes
+// the sentence near the end of the tooltip's first line must not push the "·" to the start of
+// the next. At 1440 by 900, on the none tab, each chip's tooltip is read off the characters it
+// draws, for the titles Legion gives its roles and for 21 titles whose second word grows one
+// letter at a time, so one of them ends the first line just where only the " ·" overflows it: no
+// line of the tooltip starts with "·".
+// SLOW(>=2s): 28 issues written and claimed, and 28 tooltips opened in turn.
+test("a claim chip's tooltip on a fault tab at 1440 starts no line with its separator", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await createProject({ key: "OPS", name: "Ops" });
+  const sweep = "strictly".repeat(4);
+  const titles = [
+    "Legion architect · INFRA-3320",
+    "Legion implementer · INFRA-3221",
+    "Legion tester · INFRA-3221",
+    "Legion reviewer · INFRA-1192",
+    "Legion planner · INFRA-455",
+    "Legion merger · INFRA-14",
+    "Legion controller · INFRA",
+    ...Array.from({ length: 21 }, (_, at) => `Legion ${sweep.slice(0, at + 4)} · INFRA-455`),
+  ];
+  const keys: string[] = [];
+  for (const [index, title] of titles.entries()) {
+    const made = await createIssue({ project: "OPS", title: `Claim tooltip ${index + 1}` });
+    await patchIssue(made.key, { status: "in_progress" });
+    await claimIssue(made.key, {
+      actor: {
+        id: `019a1c12-9a7e-7bb3-8c6d-7d4e8f1a2d${String(index).padStart(2, "0")}`,
+        kind: "session" as const,
+        origin: { session_title: title },
+      },
+      as: "agent",
+    });
+    keys.push(made.key);
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    await page.setViewportSize(WIDE);
+    await page.goto(PRIORITIES_PATH);
+    await chooseTab(page, "none");
+    const table = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
+    const tooltip = page.getByRole("tooltip");
+    for (const [index, key] of keys.entries()) {
+      const chip = table.locator(`tr[data-issue-row="${key}"]`).getByTestId("issue-claim");
+      await chip.scrollIntoViewIfNeeded();
+      await chip.hover();
+      await expect(tooltip).toContainText("Claimed by");
+      const lines = await settledValue(`${key}'s claim tooltip`, () =>
+        chipLines(tooltip.locator("p").first())
+      );
+      soft(
+        lines.filter((line) => line.startsWith("·")),
+        `no line of the tooltip of ${titles[index]}'s chip starts with "·" (${lines.join(" | ")})`
+      ).toEqual([]);
+      await page.mouse.move(0, 0);
+      await expect(tooltip).toHaveCount(0);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
 // outside the priorities pages this change reaches. At 1280 by 800 the search box, Group by,
 // Columns and Filters each stand 34 px high; at 900 px wide the search box takes a row of its
