@@ -46,29 +46,36 @@ func multiset(findings []Finding) []string {
 }
 
 // steLintRerun names the environment variable that makes TestPortMatchesSteLintOnTheCorpus run
-// the Python program again.
+// the Python program again outside GitHub Actions.
 const steLintRerun = "STE_LINT_RERUN"
+
+// rerunsSteLint reports whether TestPortMatchesSteLintOnTheCorpus runs the Python program again:
+// on GitHub Actions always, as every CI job that runs this package has python3, and elsewhere
+// when STE_LINT_RERUN is set.
+func rerunsSteLint() bool {
+	return os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv(steLintRerun) != ""
+}
 
 // TestPortMatchesSteLintOnTheCorpus holds the port's hard findings on every corpus line to those
 // of the pinned Python program, with no tolerance: the same findings, and in the same order. The
 // program is scripts/ste-lint.py of github.com/danyuchn/asd-ste100-skill at commit
 // 32511c6992ecb5f1971e46a2943f2e6adceedafe, kept verbatim as testdata/ste-lint.py. Its findings
-// on the corpus are golden data, testdata/corpus-findings.jsonl, so the test needs no python3.
-// `python3 testdata/run_corpus.py --write` writes that file again; run it after a change to the
-// corpus or to the program. A missing golden file fails the test, and so does a golden file
-// whose count of lines is not the corpus's. With STE_LINT_RERUN=1 the test also runs the program
-// through testdata/run_corpus.py, and it fails unless the program prints the golden data byte for
-// byte, or when python3 is not on PATH.
+// on the corpus are golden data, testdata/corpus-findings.jsonl, so the test needs no python3 on a
+// developer's machine. `python3 testdata/run_corpus.py --write` writes that file again; run it
+// after a change to the corpus or to the program. A missing golden file fails the test, and so
+// does a golden file whose count of lines is not the corpus's. On GitHub Actions, and elsewhere
+// with STE_LINT_RERUN=1, the test also runs the program through testdata/run_corpus.py, and it
+// fails unless the program prints the golden data byte for byte, or when python3 is not on PATH.
 func TestPortMatchesSteLintOnTheCorpus(t *testing.T) {
 	texts := corpusLines(t)
 	golden, err := os.ReadFile("testdata/corpus-findings.jsonl")
 	if err != nil {
 		t.Fatalf("read ste-lint's findings on the corpus (python3 testdata/run_corpus.py --write writes them): %v", err)
 	}
-	if os.Getenv(steLintRerun) != "" {
+	if rerunsSteLint() {
 		python, err := exec.LookPath("python3")
 		if err != nil {
-			t.Fatalf("%s is set, and python3 is not on PATH, so ste-lint cannot run: %v", steLintRerun, err)
+			t.Fatalf("ste-lint must run here (GITHUB_ACTIONS or %s is set), and python3 is not on PATH: %v", steLintRerun, err)
 		}
 		command := exec.Command(python, "testdata/run_corpus.py", "testdata/corpus.jsonl")
 		var stderr bytes.Buffer

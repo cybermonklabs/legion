@@ -257,6 +257,7 @@ packages/envoy:
     # Dispatch's commands and the lighter half of its packages.
     3:
       - cmd/dispatch                            # 316 s
+      - internal/dispatch/specform              # 84 s (a dev box's run, not CI's)
       - cmd/dispatch-seed                       # 83 s
       - internal/dispatch/duty                  # 31 s
       - internal/dispatch/architecture          # 31 s
@@ -284,6 +285,7 @@ packages/envoy:
       - dispatchblocks
       - internal/dispatch/legion/legiontest
       - internal/dispatch/legionfacts/independent
+      - internal/dispatch/specform/ste
     # Dispatch's heavier packages.
     4:
       - internal/dispatch/outbox                # 320 s
