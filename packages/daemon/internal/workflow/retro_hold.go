@@ -58,9 +58,6 @@ func (e *Engine) retroHold(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 			return record.HoldForFix, []string{fix.Check, fix.Head}, nil
 		}
 	}
-	if e.noEndHold {
-		return "", nil, nil
-	}
 	_, waits, err := e.ciWaits(ctx, tx, issue.Key)
 	if err != nil || len(waits) == 0 {
 		return "", nil, err

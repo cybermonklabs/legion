@@ -216,9 +216,8 @@ var rawSuccess = settledRunsAt(fixHead, 1, []record.AttemptRun{{Name: "k-ci", ID
 
 // A raw success authorizes nothing: at the end of a task held for its CI while k-ci's job runs,
 // the listener's settlement that k-ci succeeded changes no state the daemon holds, ends no hold and
-// starts no fix, and assigns nothing: only Dispatch's state of the check decides. The control:
-// with a state written from the settlement (the seam stateFromSettlement) the held state reads
-// yes, which the subtest asserts.
+// starts no fix, and assigns nothing: only Dispatch's state of the check decides. Its red is a
+// state written from the settlement (reportRuns): the held state then reads yes.
 func TestARawSuccessAuthorizesNothing(t *testing.T) {
 	t.Run("the held state stands", func(t *testing.T) {
 		r := heldAtTheEnd(t)
@@ -231,15 +230,6 @@ func TestARawSuccessAuthorizesNothing(t *testing.T) {
 		assertStrings(t, "the fixes", r.fixes(), nil)
 		assertStrings(t, "the assignments", r.assignments(), nil)
 	})
-
-	t.Run("the control: a state written from the settlement reads yes", func(t *testing.T) {
-		r := heldAtTheEnd(t)
-		r.engine.stateFromSettlement = true
-		r.settles(rawSuccess)
-		if after := r.heldState("k-ci"); after.State != stateYes {
-			t.Fatalf("k-ci after the raw success with a state written from it = %+v, want yes", after)
-		}
-	})
 }
 
 // sameHeld says whether a and b are one held state: its state, reason, CI case and sequence.
@@ -250,8 +240,8 @@ func sameHeld(a, b record.CheckState) bool {
 // Dispatch's state decides against a raw success: where Dispatch holds k-ci skipped, unreadable,
 // or no for a pass and a fail at one commit, the listener's settlement that k-ci succeeded leaves
 // the state Dispatch published, and the end stays held as that state holds it (for the fix a
-// failure starts, or for CI while the read waits). The control: with a state written from the
-// settlement (the seam stateFromSettlement) the held state reads yes in each case.
+// failure starts, or for CI while the read waits). Its red is a state written from the settlement
+// (reportRuns): the held state then reads yes in each case.
 func TestDispatchsStateDecidesAgainstARawSuccess(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -273,23 +263,13 @@ func TestDispatchsStateDecidesAgainstARawSuccess(t *testing.T) {
 			}
 			r.assertEndHold(tc.hold)
 		})
-
-		t.Run("the control: "+tc.name+" overwritten by a state written from the settlement", func(t *testing.T) {
-			r := heldAtTheEnd(t)
-			r.at(fixHead, tc.state)
-			r.engine.stateFromSettlement = true
-			r.settles(rawSuccess)
-			if after := r.heldState("k-ci"); after.State != stateYes {
-				t.Fatalf("k-ci after the raw success with a state written from it = %+v, want yes", after)
-			}
-		})
 	}
 }
 
 // A failed rerun with no state event is reported: run 2 of unit fails again at the head, the
 // settlement's text is the text before, and Dispatch publishes no state, yet each receiver gets
-// one report carrying run 2 alone. The control: with the text compared first (the seam
-// textDedupe) run 2 is reported to nobody, which the subtest asserts.
+// one report carrying run 2 alone. Its red is the text compared first (tellChecks): run 2 is then
+// reported to nobody.
 func TestARerunThatFailsAgainIsReportedWithNoStateEvent(t *testing.T) {
 	rerun := settledRunsAt(fixHead, 2, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "unit", ID: 2}}, "unit")
 	t.Run("run 2 is reported", func(t *testing.T) {
@@ -300,21 +280,12 @@ func TestARerunThatFailsAgainIsReportedWithNoStateEvent(t *testing.T) {
 		assertStrings(t, "the reports of run 2", r.reportedRuns(), []string{"architect [2]", "implementer [2]", "reviewer [2]"})
 		assertStrings(t, "the prompts", r.news(record.CINewsState), nil)
 	})
-
-	t.Run("the control: with the text compared first run 2 reaches nobody", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.textDedupe = true
-		r.settles(settledAt(fixHead, 1, "unit"))
-		r.delivered()
-		r.settles(rerun)
-		assertStrings(t, "the reports of run 2 with the text compared", r.reportedRuns(), nil)
-	})
 }
 
 // One settlement gives one row to each receiver: a passing rerun of unit, and a first run at the
-// merge, each reach each receiver once as a report, and no role message beside it. The control:
-// with main's settlement message kept beside the report (the seam alsoRoleMessage) the reviewer
-// gets two rows of one settlement, which the subtest asserts.
+// merge, each reach each receiver once as a report, and no role message beside it. Its red is
+// main's settlement message kept beside the report (tellChecks): the reviewer then gets two rows of
+// one settlement.
 func TestOneSettlementGivesOneRowToEachReceiver(t *testing.T) {
 	t.Run("a passing rerun", func(t *testing.T) {
 		r := reviewing(t)
@@ -335,15 +306,6 @@ func TestOneSettlementGivesOneRowToEachReceiver(t *testing.T) {
 			assertStrings(t, "the "+string(role)+"'s role messages", r.told(role), nil)
 		}
 	})
-
-	t.Run("the control: main's message beside the report is a second row", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.alsoRoleMessage = true
-		r.settles(settledAt(fixHead, 1, "unit"))
-		if reports, told := r.news(record.CINewsRuns), r.told(claim.RoleReviewer); !slices.Contains(reports, "reviewer "+r.stepReader(claim.RoleReviewer, phase.Reviewing)) || len(told) != 1 {
-			t.Fatalf("the reviewer's rows with main's message kept = reports %q and messages %q, want one of each", reports, told)
-		}
-	})
 }
 
 // mixedSettlement is a settlement at fixHead of three runs: unit, the fix's failed job, lint, a
@@ -353,9 +315,8 @@ var mixedSettlement = settledRunsAt(fixHead, 1, []record.AttemptRun{{Name: "unit
 // A mixed settlement reaches each receiver whole: beside a running fix, the fix's failure, a
 // failure no check names and a success each reach each receiver in one report, with no run mapped
 // to a check, and a fix that names no job (still reading it, or its read failed) holds nothing
-// back. The controls: with the settlement dropped while a fix is open (the seam dropBesideFix), and
-// with the report waiting for the fix's job (the seam waitForJobName), nobody gets it, which the
-// subtests assert.
+// back. Its reds are the settlement dropped while a fix is open, and the report waiting for the
+// fix's job (reportRuns): nobody then gets it.
 func TestAMixedSettlementReachesEachReceiverWhole(t *testing.T) {
 	whole := []string{"architect [1 2 3]", "implementer [1 2 3]", "reviewer [1 2 3]"}
 	t.Run("beside a running fix", func(t *testing.T) {
@@ -365,14 +326,6 @@ func TestAMixedSettlementReachesEachReceiverWhole(t *testing.T) {
 		assertStrings(t, "the reports beside the fix", r.reportedRuns(), whole)
 		assertStrings(t, "the reports' readers", r.news(record.CINewsRuns), []string{"architect next=fix-runs",
 			"implementer " + r.fixReader() + " next=fix-runs", "reviewer " + r.stepReader(claim.RoleReviewer, phase.Reviewing) + " next=fix-runs"})
-	})
-
-	t.Run("the control: dropped while a fix is open", func(t *testing.T) {
-		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
-		r.engine.dropBesideFix = true
-		r.delivered()
-		r.settles(mixedSettlement)
-		assertStrings(t, "the reports with the settlement dropped beside the fix", r.reportedRuns(), nil)
 	})
 
 	for _, tc := range []struct {
@@ -390,23 +343,13 @@ func TestAMixedSettlementReachesEachReceiverWhole(t *testing.T) {
 			r.settles(mixedSettlement)
 			assertStrings(t, "the reports beside "+tc.name, r.reportedRuns(), whole)
 		})
-
-		t.Run("the control: "+tc.name+", the report waiting for the job's name", func(t *testing.T) {
-			r := reviewing(t)
-			r.fails(fixHead, "k-ci")
-			tc.start(r)
-			r.engine.waitForJobName = true
-			r.delivered()
-			r.settles(mixedSettlement)
-			assertStrings(t, "the reports waiting for the job's name", r.reportedRuns(), nil)
-		})
 	}
 }
 
 // The same runs are reported once: the settlement delivered again under its fact id, again under
 // a new fact id, and afresh at a later generation with the same runs, each reports nothing more.
-// The control: with the runs the record held before the settlement thrown away (the seam
-// runsBeforeLost) the settlement afresh is reported a second time, which the subtest asserts.
+// Its red is the runs the record held before the settlement thrown away (reportRuns): the
+// settlement afresh is then reported a second time.
 func TestTheSameRunsAreReportedOnce(t *testing.T) {
 	afresh := settledRunsAt(fixHead, 2, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "unit", ID: 1}}, "unit")
 	reported := []string{"architect [1 1]", "implementer [1 1]", "reviewer [1 1]"}
@@ -419,15 +362,6 @@ func TestTheSameRunsAreReportedOnce(t *testing.T) {
 		apply("settled-again", settledAt(fixHead, 1, "unit"))
 		apply("settled-afresh", afresh)
 		assertStrings(t, "the reports after the same runs again", r.reportedRuns(), reported)
-	})
-
-	t.Run("the control: with the runs before thrown away the same runs are reported again", func(t *testing.T) {
-		r := reviewing(t)
-		apply := applyFacts(t, r.pool, r.engine)
-		apply("settled", settledAt(fixHead, 1, "unit"))
-		r.engine.runsBeforeLost = true
-		apply("settled-afresh", afresh)
-		assertStrings(t, "the reports with the runs before lost", r.reportedRuns(), slices.Sorted(slices.Values(slices.Concat(reported, reported))))
 	})
 }
 
@@ -517,8 +451,8 @@ func TestOnlyAnAcceptedChangeOfStatePrompts(t *testing.T) {
 
 // A state at a former head prompts nobody: Dispatch keeps publishing states at a head the pull
 // request has left, and the prompt is of the task's head alone; the same state at the head prompts
-// the reviewer. The control: with the head fence taken out (the seam noHeadFence) the former
-// head's state prompts the reviewer, which the subtest asserts.
+// the reviewer. Its red is the head fence taken out of promptReaders: the former head's state then
+// prompts the reviewer.
 func TestAStateAtAFormerHeadPromptsNobody(t *testing.T) {
 	t.Run("nobody at a former head", func(t *testing.T) {
 		r := reviewing(t)
@@ -527,47 +461,33 @@ func TestAStateAtAFormerHeadPromptsNobody(t *testing.T) {
 		r.at(fixHead, ciPassing("k-ci"))
 		assertStrings(t, "the prompts of the head", r.news(record.CINewsState), []string{"reviewer " + r.stepReader(claim.RoleReviewer, phase.Reviewing)})
 	})
-
-	t.Run("the control: with no head fence a former head prompts", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.noHeadFence = true
-		r.at(formerHead, ciPassing("k-ci"))
-		assertStrings(t, "the prompts of a former head with no fence", r.news(record.CINewsState), []string{"reviewer " + r.stepReader(claim.RoleReviewer, phase.Reviewing)})
-	})
 }
 
 // A step that starts between the two sources misses nothing: the listener's settlement comes
 // while the implementer works, the review starts, and then Dispatch's state changes: the prompt
-// goes to the reviewer, the reader when the state changed. The control: with the readers chosen at
-// the settlement only (the seam readersAtSettlement) the prompt goes to the implementer and the
-// reviewer misses it, which the subtest asserts.
+// goes to the reviewer, the reader when the state changed. Its red is the readers chosen at the
+// settlement only (reportRuns, promptReaders): the prompt then goes to the implementer and the
+// reviewer misses it.
 func TestAStepThatStartsBetweenTheSourcesMissesNothing(t *testing.T) {
-	between := func(t *testing.T, seam bool) (*fixRig, string) {
+	between := func(t *testing.T) *fixRig {
 		r := newFixRig(t, returnEngine(), []string{"implementer", "reviewer"})
-		r.engine.readersAtSettlement = seam
-		implementer := "implementer " + r.stepReader(claim.RoleImplementer, phase.Implementing)
 		r.settles(settledAt(fixHead, 1))
 		r.move(TriggerImplementationReady, "", record.PhaseRow{})
 		assertPhase(t, r.pool, phase.Reviewing)
 		r.delivered()
 		r.at(fixHead, ciPassing("k-ci"))
-		return r, implementer
+		return r
 	}
 	t.Run("the reviewer is prompted", func(t *testing.T) {
-		r, _ := between(t, false)
+		r := between(t)
 		assertStrings(t, "the prompts", r.news(record.CINewsState), []string{"reviewer " + r.stepReader(claim.RoleReviewer, phase.Reviewing)})
-	})
-
-	t.Run("the control: readers chosen at the settlement miss the reviewer", func(t *testing.T) {
-		r, implementer := between(t, true)
-		assertStrings(t, "the prompts to the settlement's readers", r.news(record.CINewsState), []string{implementer})
 	})
 }
 
 // An end hold prompts no retro that was never made: the task held before its retro for its CI
 // runs no step, so a change of what Dispatch holds there prompts nobody; the hold's own release
-// decides. The control: with the readers chosen as the report's receivers (the seam
-// readersAsReceivers) the retro's implementer is prompted, which the subtest asserts.
+// decides. Its red is the readers chosen as the report's receivers (ciReaders): the retro's
+// implementer is then prompted.
 func TestAnEndHoldPromptsNoRetroThatWasNeverMade(t *testing.T) {
 	absent := inCI(stateOf("k-ci", "no", reasonNoResult, "ci"), "absent")
 	t.Run("nobody is prompted", func(t *testing.T) {
@@ -576,21 +496,12 @@ func TestAnEndHoldPromptsNoRetroThatWasNeverMade(t *testing.T) {
 		r.assertEndHold(record.HoldForCI)
 		assertStrings(t, "the prompts at the end hold", r.news(record.CINewsState), nil)
 	})
-
-	t.Run("the control: readers chosen as the receivers prompt the retro", func(t *testing.T) {
-		r := heldAtTheEnd(t)
-		r.engine.readersAsReceivers = true
-		r.at(fixHead, absent)
-		if prompts := r.news(record.CINewsState); !slices.Contains(prompts, "implementer "+r.stepReader(claim.RoleImplementer, phase.Retro)) {
-			t.Fatalf("the prompts with the readers chosen as receivers = %q, want one to the retro's implementer", prompts)
-		}
-	})
 }
 
 // A failure at the merge reaches the merger and starts no fix: its failure is the merger's, the
 // merger, which runs the merge, is prompted to read Dispatch, and nothing is assigned, on a task
-// with an implementation step and on one with none. The control: with a fix started in merging
-// (the seam fixInMerging) the same failure opens a fix, which the subtest asserts.
+// with an implementation step and on one with none. Its red is a fix started in merging
+// (fixFailure): the same failure then opens a fix.
 func TestAFailureAtTheMergeReachesTheMergerAndStartsNoFix(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -609,20 +520,13 @@ func TestAFailureAtTheMergeReachesTheMergerAndStartsNoFix(t *testing.T) {
 			assertStrings(t, "the assignments", r.assignments(), nil)
 		})
 	}
-
-	t.Run("the control: a fix started in merging", func(t *testing.T) {
-		r := mergingOn(t, []string{"implementer", "reviewer"}, TriggerImplementationReady)
-		r.engine.fixInMerging = true
-		r.fails(fixHead, "k-ci")
-		assertStrings(t, "the fixes with a fix started in merging", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
-	})
 }
 
 // The report goes to main's receivers: the owner, the role of the step the issue stands in and the
 // implementer, each once by its token; the owner once at acceptance, where it runs the step; the
 // retro's implementer once; and no implementer in merging. Each receiver that is a current reader
-// names its work. The control: with the implementer told in merging too (the seam
-// implementerInMerging) the implementer gets a report there, which the subtest asserts.
+// names its work. Its red is the implementer told in merging too (ciReceivers): the implementer then
+// gets a report there.
 func TestTheReportGoesToMainsReceivers(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -660,15 +564,6 @@ func TestTheReportGoesToMainsReceivers(t *testing.T) {
 			assertStrings(t, "the reports' receivers", r.news(record.CINewsRuns), tc.want(r))
 		})
 	}
-
-	t.Run("the control: the implementer told in merging", func(t *testing.T) {
-		r := mergingOn(t, []string{"implementer", "reviewer"}, TriggerImplementationReady)
-		r.engine.implementerInMerging = true
-		r.settles(settledAt(fixHead, 1, "unit"))
-		if reports := r.news(record.CINewsRuns); !slices.Contains(reports, "implementer") {
-			t.Fatalf("the reports in merging with the implementer told = %q, want one to the implementer", reports)
-		}
-	})
 }
 
 // actsNext is one case of Legion acting next for LEGION-208's task when a settlement comes: the
@@ -735,11 +630,10 @@ var actsNextCases = []actsNext{
 // fix 1, where the implementer, which runs the fix, has fix-runs and the owner end-hold-fix; held
 // for fix 1 from the review (a hold beside the fix), where every receiver has fix-runs; and in
 // testing, with the tester completed at a head no pull request heads and that holds no set, where
-// the row names the pull request's head and the tested head. The controls, each a subtest: with no
-// read of what Legion does next (the seam noNextRead) no row names an act, and a task that takes no
-// fix gets main's role message; with the act read from a hold for the fix alone (the seam
-// nextByHoldAlone) the fix's own row and the rows beside the hold from the review name
-// end-hold-fix; and with no tested head read (the seam noTestedHeadRead) the row names none.
+// the row names the pull request's head and the tested head. Its reds (ciNext): with no read of
+// what Legion does next no row names an act, and a task that takes no fix gets main's role message;
+// with the act read from a hold for the fix alone the fix's own row and the rows beside the hold
+// from the review name end-hold-fix; and with no tested head read the row names none.
 func TestASettlementWhileLegionActsNextNamesItsActAndNoOther(t *testing.T) {
 	settle := func(r *fixRig, fixesCI bool) {
 		if !fixesCI {
@@ -770,51 +664,11 @@ func TestASettlementWhileLegionActsNextNamesItsActAndNoOther(t *testing.T) {
 			}
 		}
 	})
-
-	t.Run("the control: with no read of the next act", func(t *testing.T) {
-		for _, fixesCI := range []bool{true, false} {
-			r := actsNextCases[0].rig(t)
-			r.engine.noNextRead = true
-			settle(r, fixesCI)
-			if fixesCI {
-				assertStrings(t, "the reports with no next act read", r.news(record.CINewsRuns), []string{"architect", "implementer"})
-				continue
-			}
-			assertStrings(t, "the reports of a task that takes no fix with no next act read", r.news(record.CINewsRuns), nil)
-			if len(r.told(claim.RoleArchitect)) != 1 || len(r.told(claim.RoleImplementer)) != 1 {
-				t.Fatalf("the role messages with no next act read = %q and %q, want main's one to each", r.told(claim.RoleArchitect), r.told(claim.RoleImplementer))
-			}
-		}
-	})
-
-	t.Run("the control: the next act read from a hold for the fix alone", func(t *testing.T) {
-		r := runningAtTheEnd(t)
-		r.engine.nextByHoldAlone = true
-		settle(r, true)
-		assertStrings(t, "the reports at the end hold for the fix", r.news(record.CINewsRuns), []string{"architect next=end-hold-fix", "implementer fix-1@2 next=end-hold-fix"})
-
-		r = heldForTheFixFromReview(t)
-		r.engine.nextByHoldAlone = true
-		settle(r, true)
-		assertStrings(t, "the reports beside the hold from the review", r.news(record.CINewsRuns), []string{"architect next=end-hold-fix",
-			"implementer " + r.fixReader() + " next=end-hold-fix", "reviewer next=end-hold-fix"})
-	})
-
-	t.Run("the control: with no tested head read", func(t *testing.T) {
-		r := testedOffHead(t)
-		r.engine.noTestedHeadRead = true
-		settle(r, true)
-		for _, n := range r.newsOf() {
-			if n.Purpose == record.CINewsRuns && n.Tested != "" {
-				t.Fatalf("the report %+v with no tested head read names tested head %q, want none", n, n.Tested)
-			}
-		}
-	})
 }
 
 // Ten checks of one run changing before the prompt is delivered give the reviewer one prompt,
-// holding each check's state and the head's set. The control: with the join taken out (the seam
-// noPromptJoin) they give ten, which the subtest asserts.
+// holding each check's state and the head's set. Its red is the join taken out of promptReaders:
+// they then give ten.
 func TestTenChecksOfOneRunGiveOneWaitingPrompt(t *testing.T) {
 	checks := make([]string, 10)
 	for i := range checks {
@@ -834,29 +688,19 @@ func TestTenChecksOfOneRunGiveOneWaitingPrompt(t *testing.T) {
 			t.Fatalf("the prompts of ten checks = %+v, want one holding ten states and the head's set", prompts)
 		}
 	})
-
-	t.Run("the control: with no join, ten prompts", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.noPromptJoin = true
-		tenChanges(r)
-		if prompts := r.news(record.CINewsState); len(prompts) != 10 {
-			t.Fatalf("the prompts of ten checks with no join = %q, want ten", prompts)
-		}
-	})
 }
 
 // The settlement's wake names what Legion does next: a released tester in testing, its row
 // completed, on a task that takes no fix, and a settlement whose runs all succeeded: the
 // settlement wakes the tester once, and the tester's report of that settlement names testing-move,
-// the act its wake's detail is built from too. The control: with no read of the next act (the
-// seam noNextRead) the wake stands and the tester gets no report naming testing-move, since main
-// tells no role this settlement woke.
+// the act its wake's detail is built from too. Its red is no read of the next act (ciNext): the
+// wake then stands and the tester gets no report naming testing-move, since main tells no role this
+// settlement woke.
 func TestTheSettlementWakeNamesWhatLegionDoesNext(t *testing.T) {
-	woken := func(t *testing.T, seam bool) *fixRig {
+	woken := func(t *testing.T) *fixRig {
 		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
 		r.releaseBefore()
 		r.testerCompletedAt(fixHead)
-		r.engine.noNextRead = seam
 		r.engine.cfg.Pods = wakePods(t, r.pool)
 		r.releasedBesideTheFix(claim.RoleTester)
 		r.settles(settledAt(fixHead, 1))
@@ -867,16 +711,9 @@ func TestTheSettlementWakeNamesWhatLegionDoesNext(t *testing.T) {
 		return r
 	}
 	t.Run("the tester's report names testing-move", func(t *testing.T) {
-		r := woken(t, false)
+		r := woken(t)
 		if reports := r.news(record.CINewsRuns); !slices.Contains(reports, "tester next=testing-move") {
 			t.Fatalf("the reports = %q, want the tester's naming testing-move", reports)
-		}
-	})
-
-	t.Run("the control: with no read of the next act", func(t *testing.T) {
-		r := woken(t, true)
-		if reports := r.news(record.CINewsRuns); slices.Contains(reports, "tester next=testing-move") {
-			t.Fatalf("the reports with no next act read = %q, want none to the tester naming testing-move", reports)
 		}
 	})
 }

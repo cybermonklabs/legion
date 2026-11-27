@@ -97,7 +97,9 @@ func TestARestartAfterAStopBesideAReviewMovesOn(t *testing.T) {
 
 // A stop after the fix ended beside a review, its way pending, takes no way: the fix keeps its
 // result and its end, and takes way 4; after a todo the restarted implementer's end moves to the
-// tester, and no return is counted.
+// tester, and no return is counted. This test, TestAStopDropsAStoredReturnToThePlanner and
+// TestAStopWhileTheFixReadsItsJob share one red: the way's mark written only for a running fix
+// (dropFixWay), which leaves an ended fix and a fix that reads its job unmarked.
 func TestAStopAfterTheFixEndedBesideAReviewTakesNoWay(t *testing.T) {
 	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
 	r.pushed(headTwo)
@@ -281,51 +283,4 @@ func TestAFailedFixClaimLeavesTheEndToTheOwnersMoveBack(t *testing.T) {
 	if counts := r.counts(); counts.Pass != 1 {
 		t.Fatalf("the task counts %+v, want one return", counts)
 	}
-}
-
-// The control of the three stop tests whose fix is not running, kept: with the way's mark written
-// only for a running fix (the seam wayMarkRunningOnly), an ended fix whose way is pending and a
-// fix that reads its job keep no mark, and each test's own claim fails. The fix that ended with
-// commits takes its way after the restarted implementer's end instead of the row's move; the fix
-// that failed back to the planner returns the task there and counts it; the fix that read its job
-// after the stop starts the implementer on the stopped task.
-func TestTheStopControlsWithTheMarkOnlyOnARunningFix(t *testing.T) {
-	markRunningOnly := func(r *fixRig) { r.engine.wayMarkRunningOnly = true }
-
-	t.Run("an ended fix's pending way is taken after the restart", func(t *testing.T) {
-		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
-		markRunningOnly(r)
-		r.pushed(headTwo)
-		r.apply("fix-done", fixCompletion(headTwo))
-		r.stop()
-		r.todo()
-		r.move(TriggerImplementationReady, "", record.PhaseRow{})
-		if fix := r.latestFix(); fix.Way == 4 {
-			t.Fatalf("the fix = %+v, want no mark of no way: the seam writes the mark only for a running fix", fix)
-		}
-	})
-
-	t.Run("a stored return to the planner is taken and counted", func(t *testing.T) {
-		r := planningFix(t)
-		markRunningOnly(r)
-		r.apply("fix-back", fixMoveBack(phase.Planning))
-		r.stop()
-		r.todo()
-		r.move(TriggerPlannerCompleted, "", record.PhaseRow{})
-		r.move(TriggerImplementationReady, "", record.PhaseRow{})
-		if counts := r.counts(); len(counts.BackwardMoves) == 0 {
-			t.Fatalf("the task counts %+v, want the fix's stored return counted", counts)
-		}
-	})
-
-	t.Run("a fix that reads its job starts the implementer after the stop", func(t *testing.T) {
-		r := reviewing(t)
-		markRunningOnly(r)
-		r.fails(fixHead, "k-ci")
-		r.stop()
-		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
-		if starts := r.fixStarts(); len(starts) != 1 {
-			t.Fatalf("the starts of a fix after the stopped fix's read = %+v, want the one the unmarked fix makes", starts)
-		}
-	})
 }

@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -157,31 +155,18 @@ func assertToldOnceNaming(t *testing.T, what string, messages []string, facts ..
 // A check that a CI job runs failing at the head while the review runs starts the task's first
 // implementation step again as a fix: the fix reads its failed job first (state reading, at the
 // implementer's place), the failure names it, and one read of the job is queued. Nothing is told
-// to the implementer yet: the fix's task tells it. The control: with the rule taken out of the
-// tail of every fact (the seam noFixRule) the same failure starts nothing.
+// to the implementer yet: the fix's task tells it. Its red is the rule taken out of the tail of
+// every fact (applyAndFix): the same failure then starts nothing.
 func TestAFailureWhileTheReviewRunsStartsAFix(t *testing.T) {
-	t.Run("the failure starts a fix", func(t *testing.T) {
-		r := reviewing(t)
-		r.fails(fixHead, "k-ci")
-		assertPhase(t, r.pool, phase.Reviewing)
-		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
-		assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1)})
-		if got := r.jobReads(); !reflect.DeepEqual(got, oneJobRead("a", "k-ci")) {
-			t.Fatalf("the job reads = %+v, want %+v", got, oneJobRead("a", "k-ci"))
-		}
-		assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
-	})
-
-	t.Run("the control: with the rule taken out the failure starts nothing", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.noFixRule = true
-		r.fails(fixHead, "k-ci")
-		assertStrings(t, "the fixes with no rule", r.fixes(), nil)
-		assertStrings(t, "the failures with no rule", r.failures(), nil)
-		if got := r.jobReads(); len(got) != 0 {
-			t.Fatalf("the job reads with no rule = %+v, want none", got)
-		}
-	})
+	r := reviewing(t)
+	r.fails(fixHead, "k-ci")
+	assertPhase(t, r.pool, phase.Reviewing)
+	assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
+	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1)})
+	if got := r.jobReads(); !reflect.DeepEqual(got, oneJobRead("a", "k-ci")) {
+		t.Fatalf("the job reads = %+v, want %+v", got, oneJobRead("a", "k-ci"))
+	}
+	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 }
 
 // A task that takes a fix gets one repair assignment of a failure, whichever of Dispatch's state
@@ -189,10 +174,10 @@ func TestAFailureWhileTheReviewRunsStartsAFix(t *testing.T) {
 // fix reads its job, and once the read answers the fix starts with the failure in its task; no
 // assignment row is written beside it. The settlement is reported to each of the reviewer, the
 // implementer and the owner once, which assigns nothing, and the implementer gets no role message
-// of the failure. The controls, each a subtest: with an assignment derived from the settlement's
-// raw conclusion (the seam assignFromSettlement) the implementer gets an assignment row beside the
-// fix, a second repair; and with the failed CI job told to a task that takes a fix as to any other
-// (the seam tellCIFailureBesideFix) the implementer gets that message beside the fix.
+// of the failure. Its reds are an assignment derived from the settlement's raw conclusion
+// (reportRuns), which gives the implementer an assignment row beside the fix, a second repair; and
+// the failed CI job told to a task that takes a fix as to any other (tellCIFailure), which gives
+// the implementer that message beside the fix.
 func TestAFixesCITaskGetsOneRepairAssignmentInBothOrders(t *testing.T) {
 	settle := func(r *fixRig) { applyRefusingNothing(r.t, r.pool, r.engine, settledAt(fixHead, 1, "unit")) }
 	fail := func(r *fixRig) { r.fails(fixHead, "k-ci") }
@@ -221,28 +206,6 @@ func TestAFixesCITaskGetsOneRepairAssignmentInBothOrders(t *testing.T) {
 			assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 		})
 	}
-
-	t.Run("the control: an assignment from the settlement's raw conclusion is a second repair", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.assignFromSettlement = true
-		settle(r)
-		fail(r)
-		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
-		if assigned := r.assignments(); len(assigned) != 1 {
-			t.Fatalf("the assignments with one derived from the settlement = %q, want one beside the fix", assigned)
-		}
-	})
-
-	t.Run("the control: the failed CI job told as to any task reaches the implementer beside the fix", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.tellCIFailureBesideFix = true
-		fail(r)
-		settle(r)
-		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
-		if told := r.told(claim.RoleImplementer); len(told) != 1 {
-			t.Fatalf("the implementer's messages with the failed job told = %q, want that one beside the fix", told)
-		}
-	})
 }
 
 // An issue with no plan its owner gave walks the default steps this release writes at its first
@@ -293,7 +256,8 @@ func TestAFailureAtAFormerHeadStartsNothing(t *testing.T) {
 // A second check failing at the head while the fix reads its job joins that fix, never a second
 // one: its failure names fix 1, one job is read, and the implementer is told nothing, since the
 // fix's task names each failure it holds. Two failures the daemon holds at once start one fix
-// holding both.
+// holding both: their states are written to the store before any fact's rule reads them, and the
+// next fact's rule finds both.
 func TestASecondFailureAtTheHeadJoinsTheFixThatIsStarting(t *testing.T) {
 	t.Run("in a later event", func(t *testing.T) {
 		r := reviewing(t)
@@ -309,9 +273,20 @@ func TestASecondFailureAtTheHeadJoinsTheFixThatIsStarting(t *testing.T) {
 
 	t.Run("in one pass", func(t *testing.T) {
 		r := reviewing(t)
-		r.engine.noFixRule = true
-		r.fails(fixHead, "k-ci", "k-ci2")
-		r.engine.noFixRule = false
+		seedRecord(t, r.pool, func(tx pgx.Tx) error {
+			store := record.NewStore()
+			if _, err := store.PutCheckSet(t.Context(), tx, "LEGION-208", statesRepo, fixHead, fixChecks, 1); err != nil {
+				return err
+			}
+			for _, check := range []string{"k-ci", "k-ci2"} {
+				if _, err := store.PutCheckState(t.Context(), tx, record.CheckState{Issue: "LEGION-208", Repo: statesRepo, Head: fixHead, Check: check,
+					State: "no", Reason: "fail", CICase: "failure", Roles: []string{"ci"}, Seq: 1}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		assertStrings(t, "the fixes before any rule read the two failures", r.fixes(), nil)
 		r.fails(fixHead, "k-ci2")
 		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
 		assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1), failureOf("k-ci2", "fix", 1)})
@@ -342,8 +317,8 @@ func runningAtTheEnd(t *testing.T) *fixRig {
 
 // A check failing at the head of a task held for its fix at its end joins the fix that runs:
 // one fix holds both failures, the implementer gets one repair assignment of the new one for the
-// fix it runs, and the issue read names the one fix that runs. The control, kept: with the join
-// taken out (the seam noFixJoin) the end's branch starts a second fix, which the store refuses
+// fix it runs, and the issue read names the one fix that runs. Its red is the join taken out of the
+// fix rule (fixFailure): the end's branch then starts a second fix, which the store refuses
 // (record.ErrFixOpen), and the fact fails.
 func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 	r := runningAtTheEnd(t)
@@ -357,22 +332,6 @@ func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.RunningFix != 1 {
 		t.Fatalf("the issue read names running fix %d, want 1", issue.RunningFix)
 	}
-
-	t.Run("the control: with the join taken out the store refuses a second fix and the fact fails", func(t *testing.T) {
-		r := runningAtTheEnd(t)
-		r.engine.noFixJoin = true
-		r.serial++
-		state := ofSet(inCI(stateOf("k-ci2", "no", "fail", "ci"), "failure"), fixChecks...)
-		state.Serial = r.serial
-		fact, id := checkstatetest.Decoded(t, "LEGION-208", statesRepo, fixHead, state)
-
-		_, err := intake.ApplyFact(t.Context(), r.pool, "dispatch", id, fact, r.engine, admissionStub{})
-
-		if !errors.Is(err, record.ErrFixOpen) {
-			t.Fatalf("the failure with the join taken out = %v, want the store's refusal of a second open fix", err)
-		}
-		assertStrings(t, "the fixes after the failed fact", r.fixes(), []string{fixOf(1, "running", "k-ci")})
-	})
 }
 
 // A task with no implementation step takes no fix: held for CI at its end, its check failing

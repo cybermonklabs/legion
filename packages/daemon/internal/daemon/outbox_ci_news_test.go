@@ -502,7 +502,7 @@ func TestTenChecksOfOneRunGiveOneWake(t *testing.T) {
 // it through a later change of a check's state alone that joins it, and is delivered to its
 // current reader once. A prompt with neither a snapshot nor a set is refused.
 //
-// The control, a kept subtest: the slice encoding (omitEmptyCheckSet), a set of no checks left out
+// The control, a kept subtest: the slice encoding, a set of no checks left out
 // as an empty slice is, either fails the strict decoding where the row holds no snapshot or loses
 // the replacement where it holds one, which the subtest asserts.
 func TestAnEmptyReplacementSetSurvivesTheOutbox(t *testing.T) {
@@ -556,7 +556,7 @@ func TestAnEmptyReplacementSetSurvivesTheOutbox(t *testing.T) {
 			t.Fatal("a prompt with neither a snapshot nor a set was taken, want it refused")
 		}
 	})
-	t.Run("control: omitEmptyCheckSet loses the replacement", func(t *testing.T) {
+	t.Run("control: the slice encoding loses the replacement", func(t *testing.T) {
 		t.Parallel()
 		sliceEncoded := func(n record.CINews) []byte {
 			t.Helper()

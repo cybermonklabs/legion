@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -174,12 +173,9 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	}
 	failure := record.CIFailure{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Check: state.Check, Head: pass.head, At: e.now()}
 	switch {
-	case pass.open != nil && !e.noFixJoin:
+	case pass.open != nil:
 		return e.joinFix(ctx, tx, pass, state, row, failure)
 	case record.StandsIn(issue, phase.Retro, phase.Merging) && !atTaskEnd(issue):
-		if first, ok := firstImplementation(w); e.fixInMerging && ok && w.Stored && pass.fixesCI && row == nil && record.StandsIn(issue, phase.Merging) {
-			return e.openFix(ctx, tx, pass, state.Check, first, failure, nil)
-		}
 		if row != nil {
 			return nil
 		}
@@ -304,11 +300,6 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 // (refuseFixName), and every other fact of the issue goes on.
 func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check string, place int, failure record.CIFailure, row *record.CIFailure) error {
 	issue, w := pass.issue, pass.w
-	if e.waitForOwedMerge && owedMerge(pass.pr, pass.head) != nil {
-		e.logOnCommit(ctx, "workflow: a failed CI check waits for the merge forward its implementer owes", "issue", issue.Key, "task", w.Task,
-			"check", check, "head", pass.head)
-		return nil
-	}
 	latest, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil {
 		return err
@@ -317,7 +308,7 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 	// end (afterFix). A fix opened now could not take that step's commits, which stay on its
 	// branch beside the last fix until its run ends, so the failure waits with no row written: the
 	// fix rule reads it again at the fact that takes the way.
-	if latest != nil && latest.State == record.FixEnded && latest.Way == 0 && !e.openBesidePendingWay {
+	if latest != nil && latest.State == record.FixEnded && latest.Way == 0 {
 		e.logOnCommit(ctx, "workflow: a failed CI check waits for the way after the last fix", "issue", issue.Key, "task", w.Task,
 			"fix", latest.Fix, "check", check, "head", pass.head)
 		return nil
@@ -327,9 +318,6 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 		number = latest.Fix + 1
 	}
 	_, err = claim.BesideBranch(issue.Key, issue.Generation, w.Task, number, claim.RoleImplementer)
-	if err == nil && e.failFixName {
-		err = fmt.Errorf("the seam failFixName names no branch beside fix %d", number)
-	}
 	if err != nil {
 		return e.refuseFixName(ctx, tx, pass, check, failure, row, err)
 	}
@@ -681,14 +669,15 @@ func (e *Engine) besideFacts(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // keptFacts is the start facts of a step at place of w's task of issue that a way 2 runs again
 // after the task's latest fix ended (startFacts, while no fix of the task is open): where the
 // daemon holds a push of the step's own branch beside that fix (record.TaskFix.Pushed), the way kept
-// that branch (deletesAtWay), and the start takes its commits from it (Kept). The fix's Way, which
-// afterFix writes before the way's start, is the record that the way ran, so no step start's moment
-// is read: no step of the task runs when the way is taken (taskStepRuns), so every start and resume
-// of a step after the fix's place from then on comes after the fix's end. The way's own start is
-// among them, and its task is composed before that start is counted (start, stepStanding), when the
-// step's latest start is still its start from before the fix ended. The role is the role of the
-// step's phase, a phase of a step of the plan, which admitted never is; the implementer's branch
-// beside the fix is the fix's own, which its end push took whole. false for every other start.
+// that branch, as every way keeps the branches beside its fix (queueBesideDelete), and the start
+// takes its commits from it (Kept). The fix's Way, which afterFix writes before the way's start, is
+// the record that the way ran, so no step start's moment is read: no step of the task runs when the
+// way is taken (taskStepRuns), so every start and resume of a step after the fix's place from then
+// on comes after the fix's end. The way's own start is among them, and its task is composed before
+// that start is counted (start, stepStanding), when the step's latest start is still its start from
+// before the fix ended. The role is the role of the step's phase, a phase of a step of the plan,
+// which admitted never is; the implementer's branch beside the fix is the fix's own, which its end
+// push took whole. false for every other start.
 func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (startFacts, bool, error) {
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil || fix == nil || fix.Way != wayAfterFix || place <= fix.Place {
@@ -772,7 +761,7 @@ func (e *Engine) fixFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		}
 	}
 	ours := record.MergeForwardFix{Generation: issue.Generation, Task: w.Task, Number: fix.Fix}
-	if owed := owedMerge(pr, fix.Head); owed != nil && !e.mergeOutsideFix && (owed.Fix == nil || *owed.Fix == ours) {
+	if owed := owedMerge(pr, fix.Head); owed != nil && (owed.Fix == nil || *owed.Fix == ours) {
 		facts.MergeHead, facts.MergeBase = owed.Head, owed.Base
 	}
 	return facts, nil
@@ -878,16 +867,6 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return err
 	}
-	var opened time.Time
-	if e.toldByClock {
-		failure, err := e.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, w.Task, fix.Check, fix.Head)
-		if err != nil {
-			return err
-		}
-		if failure != nil {
-			opened = failure.At
-		}
-	}
 	for i, at := range w.steps() {
 		role := RoleFor(at)
 		if i+1 == fix.Place || role == "" {
@@ -927,7 +906,7 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 				reader = &record.CIReader{Phase: at, Entry: row.Entry}
 			}
 		}
-		if e.toldByStart(start, fix, opened) {
+		if e.toldByStart(start, fix) {
 			continue
 		}
 		branch, err := e.toldBranch(ctx, tx, issue, place, start, fix, role)
@@ -1444,23 +1423,16 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	}
 	_, head := taskHead(pr)
 	way, place := fixWayOf(*fix, len(w.Steps), head)
-	if !e.noWayKept {
-		fix.Way = way
-		if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
-			return err
-		}
-	}
-	if e.deletesAtWay(*fix, way) {
-		if err := e.queueBesideDelete(ctx, tx, issue, w.Task, fix.Fix); err != nil {
-			return err
-		}
+	fix.Way = way
+	if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
+		return err
 	}
 	// The head the started step's working copy moves to is the fix's own end where it made commits:
 	// its completion reports the commit it pushed, and it reaches the engine before the synchronize
 	// of that push may have moved the record's head. Where the record's head is further on, it is
 	// that head, which holds the fix's commits and every commit pushed after them.
 	moveTo := head
-	if fix.EndHead != "" && fix.EndHead != fix.Head && head == fix.Head && !e.wayFromRecordedHead {
+	if fix.EndHead != "" && fix.EndHead != fix.Head && head == fix.Head {
 		moveTo = fix.EndHead
 	}
 	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
@@ -1484,23 +1456,6 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	return e.mergeForwardAfterFix(ctx, tx, issue.Key)
-}
-
-// deletesAtWay says whether the way after fix, way, deletes the branches beside it
-// (queueBesideDelete): never. A step beside the fix can push to its branch after the fix's end
-// push, and nothing records what that push took, so each branch stays until no step of the task
-// can run again (queueTaskEnd, a leave, a new generation, a version that removes the task), and the
-// step a way 2 runs again takes its commits from its own (keptFacts). The seams:
-// besideDeleteAsBefore deletes after every way 2 or 3, and deleteAfterEveryCompletion after every
-// way 2 or 3 of the fix's own completion.
-func (e *Engine) deletesAtWay(fix record.TaskFix, way int) bool {
-	switch {
-	case way != wayAfterFix && way != wayOn:
-		return false
-	case e.besideDeleteAsBefore:
-		return true
-	}
-	return e.deleteAfterEveryCompletion && fix.ClaimFailed == "" && fix.Result == string(ResultPassed)
 }
 
 // moveFromHold is the one move that returns a held task, and the move of the way after a fix

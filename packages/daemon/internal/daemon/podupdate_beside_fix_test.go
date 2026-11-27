@@ -462,8 +462,8 @@ func (p *besidePod) remove() {
 // the command its row's branch names (workspace.BesidePushCommand), the pod goes, and a new pod's
 // clone, which holds nothing of B, fetches B and finds that work.
 //
-// It was run red with the engine's seam updateByRunningFix, which answers a branch only from a
-// fix that reads or runs: after the fix ended, both open steps' rows lost B.
+// Its red is the workflow's UpdatePushes answering a branch only from a fix that reads or runs:
+// after the fix ended, both open steps' rows lose B.
 //
 // The controls, kept: a start with no fix binds no branch, so every row holds the zero push; the
 // run of the tester that ended keeps its bound branch on its row, and no row names it; and a

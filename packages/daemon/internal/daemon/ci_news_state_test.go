@@ -100,8 +100,8 @@ func emptySetOf(t *testing.T, what string, payload []byte) {
 // queues one prompt to read Dispatch for the reviewer, whose stored payload names `checks: []`,
 // which the strict decoder takes as a present empty set, and which encodes so again; the outbox
 // delivers it once to the reviewer, under the row's key. The same empty set again changes nothing
-// and prompts nobody. The control, a kept subtest: with the empty set omitted by the producer (the
-// seam omitEmptyCheckSet, WithoutEmptyCheckSet) the removal queues no prompt, the replacement lost.
+// and prompts nobody. Its red is the empty set dropped by the producer (the workflow's checkState):
+// the removal then queues no prompt, the replacement lost.
 func TestRemovalOfTheLastCheckDeliversAnEmptySet(t *testing.T) {
 	t.Parallel()
 	t.Run("the removal is a present empty set, delivered once", func(t *testing.T) {
@@ -142,16 +142,6 @@ func TestRemovalOfTheLastCheckDeliversAnEmptySet(t *testing.T) {
 		s.setOf()
 		if rows := s.stored(); len(rows) != 0 {
 			t.Fatalf("the prompts after the same empty set again = %d rows, want none", len(rows))
-		}
-	})
-
-	t.Run("the control: with the empty set omitted the removal prompts nobody", func(t *testing.T) {
-		t.Parallel()
-		s := newCIStateRig(t)
-		s.engine.WithoutEmptyCheckSet()
-		s.setOf()
-		if rows := s.stored(); len(rows) != 0 {
-			t.Fatalf("the prompts after the removal of k with the empty set omitted = %d rows, want none, the replacement lost", len(rows))
 		}
 	})
 }

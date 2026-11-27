@@ -83,11 +83,9 @@ func (r *fixRig) fixWay(n int) int {
 // 1 runs the steps after it again at Y (way 2, the tester first), and the fix rule at the tail of
 // that fact opens fix 2 for the failure at Y.
 //
-// The control, kept: with the seam openBesidePendingWay, the failure at Y opens fix 2 while the way
-// after fix 1 waits. Fix 2 reads its job and has not started, so the latest fix ran beside no
-// review: the commit beside the fix is "", and the approval of X is refused at Y. The handler leaves
-// its fact spent, not unspent, so the same fact applied again is a duplicate: also once fix 2 starts
-// and the read takes the approval of X again, the approval never decides.
+// Its red is openFix's wait taken out: the failure at Y then opens fix 2 while the way after fix 1
+// waits, fix 2 reads its job and has not started, so the latest fix ran beside no review, the
+// commit beside the fix is "", and the approval of X is refused at Y.
 func TestAListedReviewOfXDecidesAfterAFailureAtTheFixsHead(t *testing.T) {
 	// beside is LEGION-208 with its review step open at X beside fix 1, which pushed Y and ended
 	// while the review ran, its way pending, and the listed approval of X, which the read's
@@ -133,41 +131,5 @@ func TestAListedReviewOfXDecidesAfterAFailureAtTheFixsHead(t *testing.T) {
 		}
 		assertPhase(t, r.pool, phase.Testing)
 		assertStrings(t, "the fixes after the review's end", r.fixes(), []string{fixOf(1, "ended", "k-ci"), fix2})
-	})
-
-	t.Run("the control: openBesidePendingWay opens fix 2, and the approval is refused and spent", func(t *testing.T) {
-		r, review := beside(t)
-		r.engine.openBesidePendingWay = true
-
-		r.fails(headTwo, "k-ci")
-
-		assertStrings(t, "the fixes after the failure at Y", r.fixes(), []string{fixOf(1, "ended", "k-ci"), fix2})
-		if besideFix, refusal := r.listRead(review); besideFix != "" || refusal.Reason == "" {
-			t.Fatalf("with fix 2 reading its job the commit beside the fix is %q and the judgement refuses %q, want none and a refusal", besideFix, refusal.Reason)
-		}
-
-		if result := r.apply(listedReviewID, review); result.Refusal != nil || result.Unspent || result.Duplicate {
-			t.Fatalf("the listed approval of %s applied as %+v, want it applied and spent, not unspent", fixHead, result)
-		}
-		r.assertRefusedAt(fixHead)
-		if result := r.apply(listedReviewID, review); !result.Duplicate {
-			t.Fatalf("the listed approval applied again as %+v, want a duplicate: its first application spent it", result)
-		}
-
-		// Fix 2 starts, so it runs beside the review, and the read takes the approval of X again.
-		applyRefusingNothing(t, r.pool, r.engine, intake.FixJobRead{Key: "LEGION-208", Generation: 1, Task: "a", Fix: 2, Name: "unit", URL: fixPage})
-		if fix := r.latestFix(); fix.Fix != 2 || fix.State != record.FixRunning || fix.StartedAt == nil {
-			t.Fatalf("the latest fix after its job's read = %+v, want fix 2 running", fix)
-		}
-		if besideFix, refusal := r.listRead(review); besideFix != fixHead || refusal.Reason != "" {
-			t.Fatalf("with fix 2 running the commit beside the fix is %q and the judgement refuses %q, want %s and no refusal", besideFix, refusal.Reason, fixHead)
-		}
-		if result := r.apply(listedReviewID, review); !result.Duplicate {
-			t.Fatalf("the listed approval applied once fix 2 runs as %+v, want a duplicate", result)
-		}
-		if decision := reviewerDecision(t, r.pool); decision == nil || decision.State != "" {
-			t.Fatalf("the reviewer's decision = %+v, want none: the spent approval decides nothing", decision)
-		}
-		assertPhase(t, r.pool, phase.Reviewing)
 	})
 }

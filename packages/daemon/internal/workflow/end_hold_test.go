@@ -193,36 +193,24 @@ func (r *fixRig) assertToldOwnerOnce(check string) {
 // A task whose last step passed while its CI job runs at its head is not done: the approval holds
 // it before its retro for its CI, from retro, its task at its retro, the review's run ended passed,
 // no retro started, and its owner told once by a retro-held notice naming the check and the head.
-// The control, kept: with the end hold taken out (the seam noEndHold) the same approval starts
-// the retro while the job runs, which the subtest asserts.
+// Its red is the hold for CI taken out of retroHold: the same approval then starts the retro while
+// the job runs.
 func TestATaskIsNotDoneWhileItsJobRuns(t *testing.T) {
-	t.Run("the approval holds the task for its CI", func(t *testing.T) {
-		r := reviewing(t)
-		r.ciRunsAtTheEnd()
+	r := reviewing(t)
+	r.ciRunsAtTheEnd()
 
-		r.approves()
+	r.approves()
 
-		r.assertEndHold(record.HoldForCI)
-		r.assertTaskAtItsRetro()
-		if result := lastStepEnd(t, r.pool, "LEGION-208", "reviewer"); result != "passed" {
-			t.Fatalf("the reviewer's step ended %q, want passed", result)
-		}
-		held := r.retroHeld()
-		if len(held) != 1 {
-			t.Fatalf("the retro-held notices = %q, want one", held)
-		}
-		assertNames(t, "the retro-held notice", held[0], []string{"k-ci", fixHead}, "k-ci2", "k-unit")
-	})
-
-	t.Run("the control: with the end hold taken out the approval starts the retro while the job runs", func(t *testing.T) {
-		r := reviewing(t)
-		r.engine.noEndHold = true
-		r.ciRunsAtTheEnd()
-
-		r.approves()
-
-		r.assertRetroStarted()
-	})
+	r.assertEndHold(record.HoldForCI)
+	r.assertTaskAtItsRetro()
+	if result := lastStepEnd(t, r.pool, "LEGION-208", "reviewer"); result != "passed" {
+		t.Fatalf("the reviewer's step ended %q, want passed", result)
+	}
+	held := r.retroHeld()
+	if len(held) != 1 {
+		t.Fatalf("the retro-held notices = %q, want one", held)
+	}
+	assertNames(t, "the retro-held notice", held[0], []string{"k-ci", fixHead}, "k-ci2", "k-unit")
 }
 
 // A check of the head's set that holds no state at the head is not known to pass: the end waits

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,8 +21,7 @@ import (
 // open start keeps it (record.StepStart.PushBranch), an update round's ask names it
 // (UpdatePushes), the daemon keeps the head each push left (RecordBesidePush, basePush), and the
 // fix takes the commits from there before its one push to the task's branch. The daemon deletes
-// the branches once the fix took their commits, or once no step of the task can run again
-// (queueBesideDelete).
+// the branches once no step of the task can run again (queueBesideDelete).
 
 // offHeadWaitReason is why the testing move waits where the tester's completion named head, at
 // which Legion holds no set of check states, and the open pull request stands at prHead, another
@@ -91,9 +89,6 @@ func (e *Engine) refuseFixName(ctx context.Context, tx pgx.Tx, pass *fixPass, ch
 // commit, and a step whose start no fix named. An issue with no fix, and one whose run has no plan
 // rows, gets nothing but zero pushes. The role of each step is the role of its phase, a phase of a
 // step of the plan, which admitted, the architect's phase of the tree's design, never is.
-//
-// The seam updateByRunningFix reads no binding: a step's branch comes from the fix that reads its
-// job or runs alone, so once that fix ended each step beside it gets the zero push.
 func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[claim.Role]supervise.UpdatePush, error) {
 	pushes := map[claim.Role]supervise.UpdatePush{}
 	issue, err := e.store.Issue(ctx, tx, key)
@@ -118,12 +113,6 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 			continue
 		}
 		branch := start.PushBranch
-		if e.updateByRunningFix {
-			branch = ""
-			if fix != nil && fix.Place != i+1 {
-				branch, _ = e.besideBranchOf(*issue, w.Task, fix.Fix, role)
-			}
-		}
 		if branch != "" {
 			pushes[role] = supervise.UpdatePush{Branch: branch}
 		}
@@ -142,33 +131,11 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 	return pushes, nil
 }
 
-// UpdateByRunningFix sets the seam updateByRunningFix on e: an update round's ask reads no step's
-// binding to a branch beside a fix, only the fix that reads its job or runs (UpdatePushes), so after
-// the fix ends each step beside it gets the zero push. Only tests call it, as the control of the
-// binding on an engine another package builds.
-func (e *Engine) UpdateByRunningFix() { e.updateByRunningFix = true }
-
-// WithoutEndBesideDelete sets the seam noEndBesideDelete on e: a task's move into its retro with no
-// hold, at a transition and at the release of an end hold, queues no deletion of the branches beside
-// its fixes (queueTaskEnd). Only tests call it, as the control of that deletion on an engine another
-// package builds.
-func (e *Engine) WithoutEndBesideDelete() { e.noEndBesideDelete = true }
-
-// FixBranchFromRecordedPush sets the seam fixBranchFromRecordedPush on e: a start or a resume of a
-// fix names the fix's own branch only where the daemon holds a push of it (fixBranchOf). Only tests
-// call it, as the control of the fix's branch on a new pod on an engine another package builds.
-func (e *Engine) FixBranchFromRecordedPush() { e.fixBranchFromRecordedPush = true }
-
 // fixBranchOf is the fix's own branch F (claim.BesideBranch of the implementer) that every start and
 // resume of fix carries (startMarks.fixBranch), whether or not a push of it is recorded: the shim
 // reads origin for it, and makes the fix's working copy at its head where origin holds it, so a fix
-// that pushed at an update round's ask goes on from its own commits on a new pod. The seam
-// fixBranchFromRecordedPush names it only where the daemon holds the implementer's push of it
-// (record.TaskFix.Pushed).
+// that pushed at an update round's ask goes on from its own commits on a new pod.
 func (e *Engine) fixBranchOf(issue record.Issue, fix record.TaskFix) string {
-	if e.fixBranchFromRecordedPush && fix.Pushed[string(claim.RoleImplementer)] == "" {
-		return ""
-	}
 	branch, _ := e.besideBranchOf(issue, fix.Task, fix.Fix, claim.RoleImplementer)
 	return branch
 }
@@ -206,16 +173,9 @@ func (e *Engine) bindBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issu
 // already: it named fix (record.StepStart.BesideFix, written in the transaction that counted the
 // start), so the fix's start sends that step no fix-started row. A start before the fix opened, in
 // an earlier fact or earlier in the fact that opened it, named none; the fix's start marks it beside
-// the fix only after this has read it (tellStepsOfFix). The seams: tellEveryStepOfFix reads no
-// start, and toldByClock reads the clock instead, a start at or after the moment the fix opened
-// (opened) taken as told, which a fixed clock or one shared microsecond confuses.
-func (e *Engine) toldByStart(start record.StepStart, fix record.TaskFix, opened time.Time) bool {
-	switch {
-	case e.tellEveryStepOfFix:
-		return false
-	case e.toldByClock:
-		return start.Starts > 0 && !start.StartedAt.Before(opened)
-	}
+// the fix only after this has read it (tellStepsOfFix). It reads no clock: under a fixed clock, or
+// with the start and the fix's opening in one microsecond, a start before the fix reads as one after.
+func (e *Engine) toldByStart(start record.StepStart, fix record.TaskFix) bool {
 	return start.BesideFix == fix.Fix
 }
 
@@ -239,18 +199,20 @@ func (e *Engine) toldBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return branch, e.store.SetStepPushBranch(ctx, tx, issue.Key, place, start.Starts, branch)
 }
 
-// queueBesideDelete queues the deletion of the branches beside fix of task in issue's generation,
-// or, where fix is 0, beside each fix the task holds now, through its latest
-// (record.BesideBranchesDelete's Through), in the caller's transaction: after the way of a fix
-// whose own completion made commits (afterFix), and where no step of the task can run again (the
-// move into its retro, the release of an end hold into it, a leave, a new generation, a version
-// that removes the task). The row names the latest fix and not the whole task, because the row
-// can wait on GitHub while the same task runs again in the generation: a later version adds it
-// again, or a move back takes it out of its retro. Each fix it opens then numbers above that latest
-// fix (record.Store.PutFix), so the row never deletes the branches of a fix it did not see. A task
-// that never had a fix writes nothing, and so does one whose branches cannot be named
-// (besideBranchOf). It takes the task's id, so it names a task a version removes.
-func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, fix int) error {
+// queueBesideDelete queues the deletion of the branches beside each fix of task in issue's
+// generation that the task holds now, through its latest (record.BesideBranchesDelete's Through), in
+// the caller's transaction, where no step of the task can run again (the move into its retro, the
+// release of an end hold into it, a leave, a new generation, a version that removes the task). No
+// way after a fix and no stop deletes them: a step beside the fix can push to its branch after the
+// fix's end push, and nothing records what that push took, so each branch stays until then; the step
+// a way 2 runs again takes its commits from its own (keptFacts), and after a stop that work can be
+// the only copy. The row names the latest fix and not the whole task, because the row can wait on
+// GitHub while the same task runs again in the generation: a later version adds it again, or a move
+// back takes it out of its retro. Each fix it opens then numbers above that latest fix
+// (record.Store.PutFix), so the row never deletes the branches of a fix it did not see. A task that
+// never had a fix writes nothing, and so does one whose branches cannot be named (besideBranchOf). It
+// takes the task's id, so it names a task a version removes.
+func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.Issue, task string) error {
 	latest, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil || latest == nil {
 		return err
@@ -260,26 +222,23 @@ func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.
 			"generation", issue.Generation, "task", task, "error", err)
 		return nil
 	}
-	deletion := record.BesideBranchesDelete{Generation: issue.Generation, Task: task, Fix: fix}
-	if fix == 0 {
-		deletion.Through = latest.Fix
-	}
+	deletion := record.BesideBranchesDelete{Generation: issue.Generation, Task: task, Through: latest.Fix}
 	if err := e.enqueue(ctx, tx, issue.Key, deletion); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: the branches beside a fix are to be deleted", "issue", issue.Key, "generation", issue.Generation,
-		"task", task, "fix", fix, "through", deletion.Through)
+		"task", task, "through", deletion.Through)
 	return nil
 }
 
 // queueTaskEnd queues the deletion of the branches beside each fix w's task holds now
-// (queueBesideDelete, fix 0) where no step of the task can run again because it moves into its
-// retro with no hold (transition, startHeldRetro). The seam noEndBesideDelete takes these two out.
+// (queueBesideDelete) where no step of the task can run again because it moves into its retro with
+// no hold (transition, startHeldRetro).
 func (e *Engine) queueTaskEnd(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
-	if !w.Stored || e.noEndBesideDelete {
+	if !w.Stored {
 		return nil
 	}
-	return e.queueBesideDelete(ctx, tx, issue, w.Task, 0)
+	return e.queueBesideDelete(ctx, tx, issue, w.Task)
 }
 
 // recordBesidePush keeps the head a push left a branch beside a fix at (record.Store.RecordBesidePush),
