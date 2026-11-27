@@ -8175,6 +8175,33 @@ test("a handoff page address opens its entry in the history @phone", async ({ br
   }
 });
 
+// The tester's red row for R3 (the check b-c-address): "An id that is no handoff of the issue
+// opens the panel and says that no such handoff exists." An address whose id is not in the form
+// of a handoff's id, mistyped or cut short to its first part, is such an id, as the addresses of
+// an ask, a comment and a message open the issue's page for any id they name.
+// SLOW(>=2s): an issue and a handoff written, then two loads of the page.
+test("a handoff page address whose id is not a UUID opens Details and says no such handoff exists", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "An address that names no handoff" });
+  await createHandoff(issue.key, "plan", { summary: "The one handoff of the issue." }, implementer);
+  const alice = await reader(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    for (const id of ["not-a-handoff", "0195f3a4"]) {
+      await gotoIssue(page, `/issues/${issue.key}/handoffs/${id}`);
+      await expect(marginShell(page), `the address of ${id} did not open Details`).toBeVisible();
+      await expect(
+        historyPanel(page).locator("[data-handoff-missing]"),
+        `the address of ${id} does not say that no such handoff exists`
+      ).toHaveText(ANSWER_LINES.handoff_missing);
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
 /** The index of the read of the runs that came 9 seconds or more after the one before it: the
  *  catch-up's 15-second read, after its reads at once, at 2 s and at 5 s, of the newest start of
  *  the history's catch-up; undefined until the page has sent it. */
