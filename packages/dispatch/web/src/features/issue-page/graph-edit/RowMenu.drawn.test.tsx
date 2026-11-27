@@ -75,6 +75,7 @@ import {
   signedIn,
 } from "./graph-edit-fixtures";
 import { newRowsOf } from "./new-rows";
+import { readOutlinesAgain } from "./node-writes";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
 import { GRAPH_EDIT_META } from "./room-writes";
 
@@ -2863,6 +2864,90 @@ test("a new row under a comment keeps its row and its caret until a read holds i
   expect(document.activeElement, "the placed node's row lost the caret").toBe(editable);
   typeInEditor(view, "i");
   expect(fragmentOf(tree).filter((block) => block.includes(id))).toEqual([`paragraph ${id}: Qui`]);
+});
+
+// R3: the same new row under the comment, with a read of Graph's tree out as its one placing PATCH
+// goes: made again from the first page before the page read the node's next pages, it reads those
+// pages again too, its first page answered before the move put the node under the comment and its
+// third after the move took the node from there, so it answers with the node on no page, here only
+// once the PATCH's answer is taken and the new row let go. The page gives that read up before the
+// PATCH goes, so it never takes the place of the read the answer was written into: every render
+// from the answer on draws a row of the node with the caret in it, and the letter the reader types
+// goes into its block.
+test("a new row under a comment keeps its row and its caret when a read out as its PATCH went answers after it", async () => {
+  const user = userEvent.setup();
+  const read = commentRead();
+  // The new row's node, once the page has chosen its block id: the third page holds it until the
+  // PATCH moves it.
+  let written: TreeAnswerNode | undefined;
+  let moved = false;
+  // The read out as the PATCH goes, held until the case lets it answer, and the signal it went
+  // with. Every read from the first page after it is the one after the answer (R7), which never
+  // answers here.
+  const spanning = Promise.withResolvers<void>();
+  const signals: AbortSignal[] = [];
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}, init = {}) => {
+    if (query.cursor !== undefined) {
+      if (query.cursor === PAGE_CURSORS[0]) return read.second;
+      return read.third(moved ? undefined : written);
+    }
+    if (!isOutline(query) || init.signal === undefined || signals.length > 0) return NEVER;
+    signals.push(init.signal);
+    await spanning.promise;
+    return read.first;
+  });
+  const out = Promise.withResolvers<void>();
+  const sent = answerNodeRoutes({
+    patches: [
+      {
+        body: { after: null, parent: COMMENT_ROUTE, placement_seq: PLACED_SEQ },
+        gate: out.promise,
+        status: 200,
+      },
+    ],
+  });
+  // Whether each commit of the outline from the PATCH's answer on drew a row of the node with the
+  // caret in it.
+  const commits: boolean[] = [];
+  let heard: (() => void) | undefined;
+  const live = drawLive(undefined, undefined, read.first, () => heard?.());
+  const tree = live.rooms.get(TREE_ID);
+  await pickOn(live, user, nodeOf(read.first, COMMENT), CONTROL_LABELS.edit_new_under);
+  const { editable, row } = await caretInNewRow(live);
+  const id = row.dataset.nodeId ?? "";
+  written = writtenNode(id);
+  act(() => readOutlinesAgain(live.client, KEY, ["graph"]));
+  expect(signals, "Graph's read was not read again").toHaveLength(1);
+  pressIn(editable, "Q");
+  await waitFor(() => expect(sent.patches).toHaveLength(1));
+  const view = tree?.editor?.view;
+  if (view === undefined) throw new Error("the tree artifact's editor was never made");
+  heard = () =>
+    commits.push(
+      live.view.container
+        .querySelector(`[data-node-row][data-node-id="${CSS.escape(id)}"]`)
+        ?.contains(document.activeElement) === true
+    );
+  moved = true;
+  out.resolve();
+  await waitFor(() =>
+    expect(heldSeq(live, id), "the page took no answer of the PATCH").toBe(PLACED_SEQ)
+  );
+  await waitFor(() =>
+    expect(newRowsOf(live.client, KEY), "the new row stayed once the answer placed it").toEqual([])
+  );
+  await act(async () => {
+    spanning.resolve();
+  });
+  await waitInAct(50);
+  expect(commits, "a render after the answer drew no row of the node with the caret").not.toContain(
+    false
+  );
+  expect(signals[0]?.aborted, "the read out as the PATCH went was not given up").toBe(true);
+  expect(row.isConnected, "the placed node is drawn in another row").toBe(true);
+  expect(document.activeElement, "the row lost the caret").toBe(editable);
+  typeInEditor(view, "u");
+  expect(fragmentOf(tree).filter((block) => block.includes(id))).toEqual([`paragraph ${id}: Qu`]);
 });
 
 // R3: Enter in the middle of a block's text is the editor's own key - in a statement's paragraph

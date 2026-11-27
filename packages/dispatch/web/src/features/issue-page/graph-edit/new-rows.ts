@@ -37,17 +37,19 @@ import { ownPathTo } from "./row-reveal";
  * leaves the node where its answer puts it in the held read, where that read holds the node. The
  * row stays `placing` until the held read holds the node under another `placement_seq` than the
  * one its `PATCH` went under: at once where the answer was written into it, else at the first
- * read after that which holds it so. A read of several pages that was out as the `PATCH` went,
- * beside the page's own reads of the next pages, can read its first page before the move puts the
- * node under its new parent and its last page after the move takes it from the end of the issue's
- * own blocks, and so hold the node on no page; until a read holds it, the row is drawn from the
- * words the reader left in it, its editing and its caret kept. It then leaves this store in the
- * flush after the outline has been told of that read, its node drawn there by the read itself. A
- * refused one leaves it where the server keeps it, with the row's line, and tells the outline
- * (`subscribeRefusedPlacings`), which keeps the focus on it. Past the 2 minutes the row is
- * `waited`: no read and no `PATCH` goes for it, then or later, and it says that the block is saved
- * and not yet placed, drawn where it was until a read holds the node, and then where the server
- * keeps it.
+ * read after that which holds it so. A read of several pages out as the `PATCH` goes, beside the
+ * page's own reads of the next pages, can read its first page before the move puts the node under
+ * its new parent and its last page after the move takes it from the end of the issue's own blocks,
+ * and so hold the node on no page: Graph's own read is given up before the `PATCH` goes
+ * (`giveUpGraphRead`), so its answer never lands over the answer written into the held read. Where
+ * the held read holds the node on no page all the same, until a read holds it, the row is drawn
+ * from the words the reader left in it, its editing and its caret kept. It then leaves this store
+ * in the flush after the outline has been told of that read, its node drawn there by the read
+ * itself. A refused `PATCH` leaves the node where the server keeps it, with the row's line, and
+ * tells the outline (`subscribeRefusedPlacings`), which keeps the focus on it. Past the 2 minutes
+ * the row is `waited`: no read and no `PATCH` goes for it, then or later, and it says that the
+ * block is saved and not yet placed, drawn where it was until a read holds the node, and then
+ * where the server keeps it.
  *
  * The rows, their timers and their watch of the cache are one client's, as the node writes are
  * (`node-writes.ts`), by issue: the outline of an issue holds that issue's rows while it is drawn
@@ -396,6 +398,7 @@ function placeHeld(client: QueryClient, issue: string): void {
     if (placing.kind !== "send") continue;
     stopWait(held, blockId);
     change(client, issue, blockId, (each) => ({ ...each, stage: "placing" }));
+    giveUpGraphRead(client, issue);
     void placeNode(client, issue, node.id, placing.body, row.entry).then((outcome) => {
       if (outcome.status !== "taken") {
         for (const heard of [...held.refused]) heard(node.id, blockId);
@@ -412,6 +415,24 @@ function placeHeld(client: QueryClient, issue: string): void {
   if (missing && !owesTree(answer) && nextTreeCursor(answer) !== undefined) {
     readNextPage(client, issue, held);
   }
+}
+
+/**
+ * Gives up Graph's read of `issue` where one is out, as a placing `PATCH` is about to go: a read
+ * of several pages out then can read its first page before the move puts the node under its new
+ * parent and a later one after the move takes it from the end of the issue's own blocks, and so
+ * answer with the node on no page, in place of the read the `PATCH`'s answer was written into.
+ * TanStack's `cancelQueries` ends it at once - its request aborted, the answer held before it put
+ * back (`revert`) - so the `PATCH` goes in the same turn, and nothing is done where no read is out.
+ * The read given up stays owed, marked stale: the read after a taken answer (R7) reads the tree
+ * again, and so does the read the settle of the issue's writes makes after a refused one
+ * (`subscribeTreeFreshness`).
+ */
+function giveUpGraphRead(client: QueryClient, issue: string): void {
+  const { queryKey } = outlineQuery(issue, "graph");
+  if ((client.getQueryState(queryKey)?.fetchStatus ?? "idle") === "idle") return;
+  void client.cancelQueries({ exact: true, queryKey });
+  void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
 }
 
 /**

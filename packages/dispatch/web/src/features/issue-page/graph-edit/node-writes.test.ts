@@ -38,7 +38,7 @@ import {
   typeNewRow,
   useNewRows,
 } from "./new-rows";
-import { type NodeWrites, refusalLine, useNodeWrites } from "./node-writes";
+import { type NodeWrites, readOutlinesAgain, refusalLine, useNodeWrites } from "./node-writes";
 import { placementOf } from "./placement";
 
 /**
@@ -1101,5 +1101,66 @@ test("a refused next page does not retry on its own and leaves the row waiting",
   expect(cursors).toEqual([firstPage.cursor, firstPage.cursor]);
   await act(async () => {
     out.resolve();
+  });
+});
+
+// A read of Graph's tree out as the placing PATCH goes, made again from the first page before the
+// page read the node's next page, reads that page again too: its first page answered before the
+// move put the node under the first statement and its next page after the move took the node from
+// the end of the issue's own blocks, it answers with the node on no page. The page gives that read
+// up before the PATCH goes, its request aborted and the answer held before it kept, and owes it,
+// so it never takes the place of the read the PATCH's answer was written into.
+test("a tree read out as the placing PATCH goes is given up and never lands over its answer", async () => {
+  const { ask, out, patches } = pagedPlacing();
+  const never = Promise.withResolvers<TreeAnswer>().promise;
+  const leftEnd: TreeAnswer = {
+    ...secondPage,
+    nodes: (secondPage.nodes ?? []).filter((node) => node.id !== PAGED),
+  };
+  // Whether the PATCH has moved the node: a next page read since lacks it.
+  let moved = false;
+  // The read out as the PATCH goes, held until the case lets it answer, and the signal it went
+  // with. Every read from the first page after it is the one after the answer (R7), which never
+  // answers here.
+  const spanning = Promise.withResolvers<void>();
+  const signals: AbortSignal[] = [];
+  spies.push(
+    spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}, init = {}) => {
+      if (query.cursor !== undefined) return moved ? leftEnd : secondPage;
+      if (init.signal === undefined || signals.length > 0) return never;
+      signals.push(init.signal);
+      await spanning.promise;
+      return firstPage;
+    })
+  );
+  const { queryKey } = outlineQuery(KEY, "graph");
+  const { client } = mountNewRows(firstPage);
+  act(() => readOutlinesAgain(client, KEY, ["graph"]));
+  expect(signals, "Graph's read was not read again").toHaveLength(1);
+  typed(client, ask);
+  await waitFor(() => expect(patches.calls).toHaveLength(1));
+  const state = client.getQueryState(queryKey);
+  const asPatchWent = { fetchStatus: state?.fetchStatus, isInvalidated: state?.isInvalidated };
+  moved = true;
+  await act(async () => {
+    out.resolve();
+  });
+  await waitFor(() =>
+    expect<unknown>(heldNode(client, PAGED)?.placement_seq, "the answer was not taken").toBe(
+      "<seq:tree/paragraph>@2"
+    )
+  );
+  await act(async () => {
+    spanning.resolve();
+  });
+  await waitInAct(50);
+  expect(heldNode(client, PAGED)?.parent?.id, "the held read lost the placed node").toBe(
+    "<statement-1>"
+  );
+  expect<unknown>(heldNode(client, PAGED)?.placement_seq).toBe("<seq:tree/paragraph>@2");
+  expect(signals[0]?.aborted, "the read out as the PATCH went was not given up").toBe(true);
+  expect(asPatchWent, "the read given up is not owed").toEqual({
+    fetchStatus: "idle",
+    isInvalidated: true,
   });
 });
