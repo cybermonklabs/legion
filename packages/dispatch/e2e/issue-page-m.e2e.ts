@@ -128,6 +128,7 @@ import {
   historyPanel,
   historyShowMore,
   historyShowMoreState,
+  isReadMarkRead,
   newestHistoryEntry,
   olderPageAnswered,
   putPlan,
@@ -1555,11 +1556,16 @@ test("the history leaves the comments of people out of its read of the log, so i
   try {
     const page = await context.newPage();
     // Each read of a page of the log that the page sends: 200 events long, as the history reads
-    // them, so the read of the first event past the read mark (`after`) is none of them.
+    // them, so the read of the first event past the read mark (`after`) is none of them, and nor
+    // is the read mark's read of the newest event (`isReadMarkRead`), which is no read of Details.
     const logReads: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
-      if (url.pathname === `/api/v1/issues/${issue.key}/events` && !url.searchParams.has("after")) {
+      if (
+        url.pathname === `/api/v1/issues/${issue.key}/events` &&
+        !url.searchParams.has("after") &&
+        !isReadMarkRead(url, issue.key)
+      ) {
         logReads.push(url.search);
       }
     });
@@ -3446,8 +3452,13 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
       return { first: first.id, key: issue.key, second: second.id };
     },
     async (page, seeded) => {
+      // Every request's path but the read mark's read of the newest event (`isReadMarkRead`),
+      // which the new page sends to mark the issue read and which is no read of Details.
       const read: string[] = [];
-      page.on("request", (request) => read.push(new URL(request.url()).pathname));
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (!isReadMarkRead(url, seeded.key)) read.push(url.pathname);
+      });
       const settling = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expect(tree(page)).toBeVisible();

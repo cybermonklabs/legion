@@ -129,6 +129,19 @@ export function isOlderPageRead(url: URL, key: string): boolean {
   return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
 }
 
+/** Whether `url` is the read mark's read of issue `key`'s log (`IssueReadMark.tsx`, part L, on
+ *  `main`): the issue's newest event, `limit=1&order=desc` and nothing else, which the new page
+ *  sends to mark the issue read once the reader reaches the outline's end. It is no read of
+ *  Details, so a row that counts Details' reads leaves it out. */
+export function isReadMarkRead(url: URL, key: string): boolean {
+  return (
+    url.pathname === `/api/v1/issues/${key}/events` &&
+    [...url.searchParams.keys()].sort().join(",") === "limit,order" &&
+    url.searchParams.get("limit") === "1" &&
+    url.searchParams.get("order") === "desc"
+  );
+}
+
 /** The answer to the history's read of a page of issue `key`'s log older than the first, the
  *  read the history sends before it draws where it holds too few entries, and the one Show more
  *  sends where its press reads the next page first (`historyNextPage`), waited for from the call
