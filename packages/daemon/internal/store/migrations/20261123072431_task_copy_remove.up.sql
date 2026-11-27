@@ -41,18 +41,12 @@
 -- $$;
 -- delete from schema_version where version = 20261123072431;
 -- commit;
-do $$
-declare
-  kinds text[] := array(select k.m[1] from pg_constraint c,
-    regexp_matches(pg_get_constraintdef(c.oid), '''([^'']+)''::text', 'g') with ordinality k(m, n)
-    where c.conrelid = 'outbox'::regclass and c.conname = 'outbox_kind_check' order by k.n);
-begin
-  if cardinality(kinds) = 0 then
-    raise exception 'outbox_kind_check names no kind, so this migration has no list to add task_copy_remove to';
-  end if;
-  alter table outbox drop constraint outbox_kind_check;
-  execute format('alter table outbox add constraint outbox_kind_check check (kind in (%s))',
-    (select string_agg(quote_literal(u.kind), ', ' order by u.n)
-      from unnest(array_remove(kinds, 'task_copy_remove') || 'task_copy_remove'::text) with ordinality u(kind, n)));
-end
-$$;
+alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in (
+  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
+  'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
+  'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
+  'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
+  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
+  'task_branch', 'task_pull_requests_close', 'task_copy_remove'));
