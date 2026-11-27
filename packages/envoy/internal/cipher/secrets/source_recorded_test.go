@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,8 +58,10 @@ var recordedSecrets = []struct {
 }
 
 // TestSourceFormatRecordedOnMain: each store lists each secret with the source main listed it
-// with, and the policy serves it by the source main served it by. With -record it writes the
-// records instead, which the head comment allows on main alone.
+// with, and the policy serves it by the source main served it by, both on a load (List, Load) and
+// on a reread of the one secret (Describe, LoadOne), which is how the broker serves a secret after
+// a reread and so the source a grant made then stores. With -record it writes the records instead,
+// which the head comment allows at a commit of main alone.
 func TestSourceFormatRecordedOnMain(t *testing.T) {
 	for _, row := range []struct {
 		store  string
@@ -90,11 +93,12 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			set, err := policy.Loader{Store: store, Prefix: row.prefix}.Load(ctx)
+			loader := policy.Loader{Store: store, Prefix: row.prefix}
+			set, err := loader.Load(ctx)
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			got := map[string]recordedSource{}
+			got, reread := map[string]recordedSource{}, map[string]recordedSource{}
 			for _, ls := range listings {
 				slug, ok := strings.CutPrefix(ls.ID, row.prefix)
 				if !ok {
@@ -106,11 +110,30 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 					t.Fatalf("%s is not served (refused: %+v); want each recorded secret served", name, set.Refused)
 				}
 				got[name] = recordedSource{Listed: ls.Source, Source: secret.Source}
+				described, err := store.Describe(ctx, ls.ID)
+				if err != nil {
+					t.Fatalf("Describe %s: %v", ls.ID, err)
+				}
+				lookup, err := loader.LoadOne(ctx, name)
+				if err != nil {
+					t.Fatalf("LoadOne %s: %v", name, err)
+				}
+				if !lookup.Served {
+					t.Fatalf("%s is not served on a reread (reason %s); want each recorded secret served", name, lookup.Reason)
+				}
+				reread[name] = recordedSource{Listed: described.Source, Source: lookup.Secret.Source}
 			}
 			if len(got) != len(recordedSecrets) {
 				t.Fatalf("List answered %d secrets, want the %d this test holds: %+v", len(got), len(recordedSecrets), listings)
 			}
 			if *recordSources {
+				// A record holds one listed and one served source for each secret, so a reread
+				// that answers other sources than the load cannot be recorded.
+				for name, g := range got {
+					if r := reread[name]; r != g {
+						t.Fatalf("%s: the reread lists %q and serves %q, the load lists %q and serves %q; a record holds one of each", name, r.Listed, r.Source, g.Listed, g.Source)
+					}
+				}
 				raw, err := json.MarshalIndent(got, "", "  ")
 				if err != nil {
 					t.Fatal(err)
@@ -135,25 +158,44 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			if len(want) == 0 {
 				t.Fatalf("UNKNOWN: %s records no secret, so the check compares nothing", record)
 			}
-			var names []string
-			for name := range got {
-				names = append(names, name)
-			}
-			for name := range want {
-				if _, both := got[name]; !both {
-					names = append(names, name)
-				}
-			}
-			slices.Sort(names)
-			for _, name := range names {
-				g, w := got[name], want[name]
-				if g.Listed != w.Listed {
-					t.Errorf("%s: listed source %q, recorded on main %q", name, g.Listed, w.Listed)
-				}
-				if g.Source != w.Source {
-					t.Errorf("%s: source %q, recorded on main %q", name, g.Source, w.Source)
-				}
-			}
+			compareSources(t, "List", "Load", got, want)
+			compareSources(t, "Describe, a reread", "LoadOne, a reread", reread, want)
 		})
 	}
+}
+
+// compareSources fails t for each secret whose sources in got differ from the record want: the
+// secret, which source, the reads that answered it (listedBy, servedBy), and both values, with
+// "absent" for a secret the store answered and the record does not hold, or the reverse.
+func compareSources(t *testing.T, listedBy, servedBy string, got, want map[string]recordedSource) {
+	t.Helper()
+	var names []string
+	for name := range got {
+		names = append(names, name)
+	}
+	for name := range want {
+		if _, both := got[name]; !both {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		g, answered := got[name]
+		w, recorded := want[name]
+		if answered != recorded || g.Listed != w.Listed {
+			t.Errorf("%s: listed source (%s) %s, recorded on main %s", name, listedBy, sourceText(g.Listed, answered), sourceText(w.Listed, recorded))
+		}
+		if answered != recorded || g.Source != w.Source {
+			t.Errorf("%s: source (%s) %s, recorded on main %s", name, servedBy, sourceText(g.Source, answered), sourceText(w.Source, recorded))
+		}
+	}
+}
+
+// sourceText is a source as a failure prints it: quoted, or "absent" for a secret that side does
+// not hold, which an empty source would otherwise print the same as.
+func sourceText(source string, present bool) string {
+	if !present {
+		return "absent"
+	}
+	return strconv.Quote(source)
 }

@@ -18,13 +18,18 @@
 // changes is recorded again by the commands above at that commit of main, and the change that does
 // so names the commit here and says which lines of the records moved and which change of main moved
 // them. A change that means to move one of these texts for the AWS or the GCP store changes what a
-// deployment's CLI prints: it edits the record by hand, where its review shows it.
+// deployment's CLI prints: it edits the record by hand, where its review shows it. The usage record
+// holds every row from AWS_PROFILE to the blank line above "exit codes:", and the refusal record the
+// whole refusal, so a later store that adds its own row or clause changes them too: that change may
+// write them again with -record, and its review must then find, in the records' diff, only that
+// store's lines added and every AWS and GCP line as it was.
 package main
 
 import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,10 +71,52 @@ func readRecord(t *testing.T, name string) []byte {
 	return data
 }
 
+// firstDifference says where got first differs from want, the record, so a failure names what
+// moved before it prints both texts whole: the line, from 1, the byte of that line where they part,
+// and each side's line from 20 bytes before that byte to 40 after it, or "absent" for a line one
+// side does not have.
+func firstDifference(got, want string) string {
+	gotLines, wantLines := strings.Split(got, "\n"), strings.Split(want, "\n")
+	for i := 0; i < len(gotLines) || i < len(wantLines); i++ {
+		g, w := "", ""
+		gotHas, wantHas := i < len(gotLines), i < len(wantLines)
+		if gotHas {
+			g = gotLines[i]
+		}
+		if wantHas {
+			w = wantLines[i]
+		}
+		if gotHas == wantHas && g == w {
+			continue
+		}
+		at := 0
+		for at < len(g) && at < len(w) && g[at] == w[at] {
+			at++
+		}
+		from := max(at-20, 0)
+		side := func(line string, has bool) string {
+			if !has {
+				return "absent"
+			}
+			to := min(at+40, len(line))
+			shown := fmt.Sprintf("%q", line[from:to])
+			if from > 0 {
+				shown = "…" + shown
+			}
+			if to < len(line) {
+				shown += "…"
+			}
+			return shown
+		}
+		return fmt.Sprintf("line %d differs from byte %d: %s, recorded on main %s", i+1, at, side(g, gotHas), side(w, wantHas))
+	}
+	return "no line differs"
+}
+
 // TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
 // byte, the refusal main printed, which names the variables each store's own tools read.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
-	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:73); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:120); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
 	var stdout, stderr bytes.Buffer
@@ -82,7 +129,7 @@ func TestProfileRefusalRecordedOnMain(t *testing.T) {
 		return
 	}
 	if want := readRecord(t, "profile-refusal.txt"); !bytes.Equal(stderr.Bytes(), want) {
-		t.Errorf("secret list --profile x printed\n%q\nrecorded on main\n%q", stderr.String(), want)
+		t.Errorf("secret list --profile x printed a refusal other than main's: %s\nprinted\n%q\nrecorded on main\n%q", firstDifference(stderr.String(), string(want)), stderr.String(), want)
 	}
 }
 
@@ -125,7 +172,7 @@ func TestUsageStoreRowsRecordedOnMain(t *testing.T) {
 		return
 	}
 	if want := string(readRecord(t, "usage-store-rows.txt")); rows != want {
-		t.Errorf("usage()'s store rows are\n%s\nrecorded on main\n%s", rows, want)
+		t.Errorf("usage()'s store rows are not main's: %s\nprinted\n%s\nrecorded on main\n%s", firstDifference(rows, want), rows, want)
 	}
 }
 
