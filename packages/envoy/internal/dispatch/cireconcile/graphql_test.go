@@ -174,6 +174,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		limit, f.graphQLLimits = &f.graphQLLimits[0], f.graphQLLimits[1:]
 	}
 	stall := f.graphQLStalls[queryKey(repository, at.page)]
+	stalled := f.stalled
 	takes := f.queryTakes
 	pulls := append([]fakePull(nil), f.pulls[repository]...)
 	refusedPage := false
@@ -185,6 +186,9 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	if limit != nil {
 		f.answerQueryLimit(w, *limit)
 		return
+	}
+	if stall > 0 && stalled != nil {
+		stalled()
 	}
 	for _, wait := range []time.Duration{stall, takes} {
 		if wait <= 0 {
@@ -671,6 +675,7 @@ func (f *fakeGitHub) answerQueryWith(repository, body string) {
 // client's own errors do (githubapp.StatusText): the status and GitHub's body, and the status
 // alone, with no `: ` after it, when GitHub answered no body.
 func TestAQueryGitHubAnsweredWithNoBodyEndsItsErrorAtTheStatus(t *testing.T) {
+	t.Parallel()
 	for _, answer := range []string{"", `{"message":"Server Error"}`} {
 		name := "no body"
 		if answer != "" {

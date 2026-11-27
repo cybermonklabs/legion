@@ -326,10 +326,10 @@ const (
 	// (LauncherVolumeSize.Refused), each path of SizesMissing and its reason, and each refused
 	// /proc read. Of the directories this layout makes two levels under the volume root, the fixed
 	// ones are at most 26 runes (`/legion/scratch/leak-check`) and a repository owner's, under
-	// `/legion/workspaces` or `/legion/repos`, at most 58 under GitHub's 39-character owner, and
-	// the paths a reader acts on are of that order, while one directory component may be 255 bytes
-	// and a role may make it: a few hundred runes keeps every real path whole and cuts a made-up one.
-	// A reason takes the same bound (unreadReason, volumewalk.go).
+	// `/legion/workspaces`, at most 58 under GitHub's 39-character owner, and the paths a reader
+	// acts on are of that order, while one directory component may be 255 bytes and a role may
+	// make it: a few hundred runes keeps every real path whole and cuts a made-up one. A reason
+	// takes the same bound (unreadReason, volumewalk.go).
 	volumeReportPathRunes = 200
 	// volumeReportStopReasonRunes bounds the sweep's own reason, which names at most the first
 	// shimwire.VolumeReportRefusedReads refused /proc reads and how many more there were

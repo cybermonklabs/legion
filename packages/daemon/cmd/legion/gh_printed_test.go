@@ -37,6 +37,7 @@ func ghPrinted(err error) string {
 // rule finds no user info, is named by its git name alone; and a marker naming acme/widgets with a
 // token after it, beside an upstream of another owner, prints none of it in the two-owner refusal.
 func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
+	t.Parallel()
 	at := "@"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
 	with := func(extra map[string]string) map[string]string {
@@ -138,6 +139,7 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 // `-Z<secret>`, `--body <secret>` as one argument), and a header given to gh api without -H. Real
 // gh, refusing each, prints none of it.
 func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
+	t.Parallel()
 	const secret = "ghp_zqtoken0123"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
 	for name, tc := range map[string]struct {
@@ -169,6 +171,7 @@ func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
 // An ssh URL glued to a URL holding a token goes through the URL rule with it, so no part of the
 // token prints.
 func TestPrintGhRefusalLeavesNoLoginGluedToAToken(t *testing.T) {
+	t.Parallel()
 	at := "@"
 	for _, text := range []string{
 		`"https://u:` + madeUpGhToken + "ssh://git" + at + `h.example/o/r" names another host than github.com`,
@@ -184,6 +187,7 @@ func TestPrintGhRefusalLeavesNoLoginGluedToAToken(t *testing.T) {
 // that URL prints in no part of the line legion gh writes, though the refusal names the key twice
 // (the advice to unset it among them). Real git sets the key.
 func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on PATH")
 	}
@@ -215,6 +219,7 @@ func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
 // before a space and an "@", a token holding a space, an scp-like remote with a token user and a
 // space, and a URL followed by a second one. Real git writes each remote.
 func TestReadGitRemotesNamesAnUnreadableLineByItsRemoteAlone(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on PATH")
 	}
@@ -262,6 +267,7 @@ func TestReadGitRemotesNamesAnUnreadableLineByItsRemoteAlone(t *testing.T) {
 // remote on another host, which the alias-host rule refuses, is named by its git name alone: its
 // path is no checked OWNER/REPO.
 func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
+	t.Parallel()
 	at := "@"
 	for raw, want := range map[string]string{
 		"git" + at + "gh-work:sjawhar/legion.git":                  "ssh://[a URL with credentials]/sjawhar/legion.git",
@@ -291,6 +297,7 @@ func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
 // with a query, an ssh URL whose user holds a password, and an ssh URL whose user is a name alone,
 // each lose their user info and query.
 func TestPrintGhRefusalWritesEveryURLThroughTheRule(t *testing.T) {
+	t.Parallel()
 	at := "@"
 	text := "a https://u:" + madeUpGhToken + at + "h.example/x, b https://h.example/x?t=" + madeUpGhToken +
 		", c ssh://u:" + madeUpGhToken + at + "h.example/x, d ssh://" + madeUpGhToken + at + "h.example/o/r.git and e ssh://git" + at + "h.example/o?t=" + madeUpGhToken

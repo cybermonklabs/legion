@@ -15,18 +15,19 @@ import (
 // dispatch://INFRA-979's corpus cannot check that invariant on the observed timeline. Every one of
 // its 289 finished issues carries a single trailing `done` mark, so every timeline the A2
 // comparison exercises is the event-log fallback. The observed timeline is the one production
-// runs on from the sampler's first pass, and it is reached by fixtures alone. This holds the
-// invariant over the observed shapes a sampler actually produces, and asserts nothing about how
-// the hours are split between the bars, which the spec's other rules decide: a shape that
-// disagreed with this test would be losing or double-counting an hour of an issue's life.
+// runs on from Dispatch's first observation of an issue, and it is reached by fixtures alone.
+// This holds the invariant over the observed shapes Dispatch's records actually take, and asserts
+// nothing about how the hours are split between the bars, which the spec's other rules decide: a
+// shape that disagreed with this test would be losing or double-counting an hour of an issue's
+// life.
 func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 	cases := []struct {
 		name  string
 		issue *Issue
 	}{
 		{
-			// The sampler meets the issue after its first worker event: two hours of work time
-			// stand before the first observation, which the event log names (the spec's
+			// Dispatch first observes the issue after its first worker event: two hours of work
+			// time stand before the first observation, which the event log names (the spec's
 			// "Statuses before observations": an issue in flight takes its phases from
 			// observations only from its first observation on).
 			name: "the first observation follows the first worker event",
@@ -255,7 +256,7 @@ func TestANullPhaseMarkEndsNoWaitOnAPerson(t *testing.T) {
 	}
 }
 
-// TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue: the sampler writes a `null` slot
+// TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue: Dispatch writes a `null` slot
 // mark for two facts. A read that carries the issue observes its slot, `null` where it holds none
 // (legion.State's Observations), so a slot released is a `null` slot mark beside a phase that still
 // names one, and the rest of the admitted stretch is queue time: the spec's "Queue time, one

@@ -143,6 +143,112 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	}
 }
 
+// roleHolderEvent is one issue.role_holders_changed entry of an issue's event log, as GET
+// /api/v1/issues/{key}/events serves it.
+type roleHolderEvent struct {
+	Seq   int `json:"seq"`
+	Actor struct {
+		Kind string `json:"kind"`
+		ID   string `json:"id"`
+	} `json:"actor"`
+	Notify    bool                   `json:"notify"`
+	CreatedAt time.Time              `json:"created_at"`
+	Payload   issueRoleHoldersChange `json:"payload"`
+}
+
+// roleHolderEvents reads the issue's issue.role_holders_changed events off its event log, oldest
+// first.
+func roleHolderEvents(t *testing.T, handler http.Handler, issueKey string) []roleHolderEvent {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issueKey+"/events", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the events of %s: status=%d body=%s", issueKey, response.Code, response.Body.String())
+	}
+	var changes []roleHolderEvent
+	for _, raw := range decodeBody[[]json.RawMessage](t, response) {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			t.Fatalf("decode an event of %s: %v", issueKey, err)
+		}
+		if head.Type != "issue.role_holders_changed" {
+			continue
+		}
+		var change roleHolderEvent
+		if err := json.Unmarshal(raw, &change); err != nil {
+			t.Fatalf("decode a role-holder event of %s: %v (%s)", issueKey, err, raw)
+		}
+		changes = append(changes, change)
+	}
+	return changes
+}
+
+// Each publication that changes the set appends one issue event, issue.role_holders_changed, that
+// names the set before it and the set it stored, as the daemon's session and at the time of the
+// write, so a reader of the issue's events can tell who held each role at a past time. A
+// publication of the set already stored, as each boot sends, appends none.
+func TestEachChangeOfTheRoleHoldersIsOneIssueEvent(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+
+	first := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "architect", Session: "ses-a"}})
+	publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "architect", Session: "ses-a"}})
+	second := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "implementer", Session: "ses-c"}, {Role: "architect", Session: "ses-b"}})
+	third := publishRoleHolders(t, handler, issue, []issueRoleHolder{})
+	publishRoleHolders(t, handler, issue, []issueRoleHolder{})
+
+	changes := roleHolderEvents(t, handler, issue)
+	want := []struct{ previous, holders []issueRoleHolderRecord }{
+		{[]issueRoleHolderRecord{}, first.Holders},
+		{first.Holders, second.Holders},
+		{second.Holders, third.Holders},
+	}
+	if len(changes) != len(want) {
+		t.Fatalf("%s has %d role-holder events after five publications of three changes, want %d: %+v", issue, len(changes), len(want), changes)
+	}
+	for i, change := range changes {
+		if change.Payload.Key != issue {
+			t.Errorf("event %d names the issue %q, want %s", i, change.Payload.Key, issue)
+		}
+		if !reflect.DeepEqual(change.Payload.PreviousHolders, want[i].previous) || !reflect.DeepEqual(change.Payload.Holders, want[i].holders) {
+			t.Errorf("event %d moved %+v to %+v, want %+v to %+v", i, change.Payload.PreviousHolders, change.Payload.Holders, want[i].previous, want[i].holders)
+		}
+		if change.Actor.Kind != "session" || change.Actor.ID != "legion-daemon:ACME" {
+			t.Errorf("event %d was written by %s:%s, want session:legion-daemon:ACME", i, change.Actor.Kind, change.Actor.ID)
+		}
+		if change.Notify {
+			t.Errorf("event %d notifies, want it to wake nobody", i)
+		}
+		if change.CreatedAt.IsZero() || (i > 0 && (change.CreatedAt.Before(changes[i-1].CreatedAt) || change.Seq <= changes[i-1].Seq)) {
+			t.Errorf("event %d is seq %d at %s, after seq %d at %s", i, change.Seq, change.CreatedAt, changes[max(i-1, 0)].Seq, changes[max(i-1, 0)].CreatedAt)
+		}
+	}
+	// A new pair is stored in the transaction of the event that names it, so its recorded time is
+	// no later than the event's.
+	if holder := changes[1].Payload.Holders[0]; holder.RecordedAt.After(changes[1].CreatedAt) {
+		t.Errorf("the architect ses-b was recorded at %s, after its event at %s", holder.RecordedAt, changes[1].CreatedAt)
+	}
+}
+
+// A refused publication stores nothing and so appends no event.
+func TestARefusedRoleHoldersPublicationAppendsNoEvent(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	holders := []issueRoleHolder{{Role: "architect", Session: "ses-a"}}
+
+	forbidden := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": holders, "actor": map[string]any{"kind": "session", "id": "ses-a"}})
+	invalid := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": []issueRoleHolder{{Role: "controller", Session: "ses-a"}}, "actor": daemonSessionOf("ACME")})
+	if forbidden.Code != http.StatusForbidden || invalid.Code != http.StatusBadRequest {
+		t.Fatalf("the refusals answered %d and %d, want 403 and 400", forbidden.Code, invalid.Code)
+	}
+	if changes := roleHolderEvents(t, handler, issue); len(changes) != 0 {
+		t.Fatalf("%s has %d role-holder events after two refused publications, want 0: %+v", issue, len(changes), changes)
+	}
+}
+
 // Under a credential that proves no session, only the daemon's own session for the issue's project
 // writes the set. A role session, the daemon of another project and a person are each refused, and
 // no row is written.

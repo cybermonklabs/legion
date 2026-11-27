@@ -543,10 +543,17 @@ or, when the controller parked it for a hold of its own, once the controller jud
 person's decision gives its work a next step or its walk finds the hold's cause gone or its event
 happened. The controller marks such a park with a comment on the root that begins
 `Parked by Legion while it waits on:`. First find whether the daemon relayed the decision. Its
-JSON log names the issue and the root on each of these lines:
+JSON log names the issue and the root on each of these lines but one, which the list says:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
-  tree goes to the controller`: the controller received the decision.
+  tree goes to the controller`: the daemon queued the decision for the controller, which receives
+  it once a session holds the controller's claim. A changes request's publish first asks again
+  whether the person's approval followed it; when it did, the row ends with `outbox relayed changes
+  request finished without publishing: the person's approval followed it`, which names the
+  approved version, and the controller is not told. When that approval sets the root back to
+  `todo` before the row runs, the re-admission's clear of the tree's generation ends the row
+  instead, with `workflow: a queued changes request finished unpublished at its generation's
+  clear: the person's approval followed it`, which names the approved version too.
 - `workflow: a person's approval of a parked root is older than a change of the root's status; the
   root is not queued as their handover` (a warning with `approval_seq`, `status_change_seq` and
   `controller_told`): the root's status changed after a person approved its spec, so the approval
@@ -554,6 +561,17 @@ JSON log names the issue and the root on each of these lines:
   the later event that changed the status. `controller_told=true` says that the controller also
   got a parked decision whose reason says this. For a root the daemon does not record,
   `controller_told` is `false` and the warning is the only notice. Set the root to `todo` to run it.
+- `outbox parked decision not relayed: the person's approval followed it`: the person approved
+  that version or a later one after the decision, so the controller is not told of a decision the
+  approval replaced. The line names the approved version. The same rule ends a changes request
+  queued for a tree's own architect, with `outbox changes request finished without publishing:
+  the person's approval followed it`, the one line here that names the issue and not the root.
+- `outbox parked decision not relayed: the gate no longer holds the approval it reports`: the
+  decision is an approval, and the gate holds it no more: a later changes request cleared it, or
+  another document was registered on its step. The line names the approval's version.
+- `outbox parked decision not relayed: a newer changes request of its document replaced it`: a
+  later changes request of the same document is kept under the same reference, so the controller
+  is told that one and not this one. The line names the reference and the version.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
 - `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
@@ -1238,11 +1256,18 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     phase twice.
   - **`suspendedBy: operator`, otherwise:** deliver its phase's resume task. An operator's
     delivery resumes the claim and hands it the task. The task is the one the workflow gives a
-    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them:
+    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them,
+    and it opens with its working copy line, which ends with a line break before the continue
+    line. An operator's delivery names no phase, so the daemon writes no working copy line into
+    it: write the line yourself. `<dir>` is the issue's workspace, where `<owner>/<repo>` is the
+    issue's repository: under tmux `<state_dir>/workspaces/<owner>/<repo>/<issue in lower case>`,
+    and under Kubernetes the pod's `/legion/workspaces/<owner>/<repo>/<issue in lower case>`. The
+    shell's `$'…'` quoting turns the `\n` into that line break; inside it, write each `'` of the
+    title or of `<dir>` as `\'`, and each `\` as `\\`:
 
     ```sh
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \
-      --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
+      --task $'Working copy: branch legion/WIDGETS-12, directory <dir>.\nContinue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work.'
     ```
   - **`suspendedBy: controller`** (the project's controller suspended it through its `legion`
     tool): it is the controller's move, and it waits for the controller's `resume_agent`. Ask the
@@ -1947,14 +1972,97 @@ back and no state there moves it. Read on GitHub what the base branch requires a
 checks say: that pair is what decides whether the pull request can merge, and the merger waits on
 GitHub for it.
 
-## A repository change was not applied
+## A repository change is not applied yet
 
-The issue says `Legion keeps <owner/name> as this issue's repository; the change to <other> in
-Dispatch is not applied`. An issue's repository is fixed when Legion first records it: its branch,
-workspace and pull request live there, so a later change of the issue's own repository, or its
-parent's in its own project or the project's default it inherited, does not move it. Create a new
-issue on the other repository for the work that belongs there. The daemon says it once for each
-repository the issue is changed to.
+The issue says `Legion did not move this issue off <owner/name>: <why>. <what to do> <when>`.
+`<why>` names the GitHub App not installed on `<other>`, as `the implement App is not installed on
+<other>` (or the review App's, or `the implement and review Apps are not installed on <other>`),
+and `<what to do>` is `Install it on <other>, or set another repository (…).`
+A repository GitHub does not have reads the same way, because GitHub answers its installation
+read as it answers an App not installed.
+A name that is no `owner/name` is said with what is wrong with the name in place of `<why>`, and,
+since no App can be installed on such a name, `<what to do>` is `Set its repository (…).`
+`<when>` is `Legion moves the issue at its next event or at Legion's next boot, once both Legion
+Apps are installed on <other>.`, and for a name that is no `owner/name` `Legion moves the issue at
+its next event or at Legion's next boot, once Dispatch resolves it to a repository both Legion Apps
+are installed on.`
+
+An issue's repository is the one Dispatch resolves for it: the issue's own, else its nearest
+ancestor's in its own project, else the project's default.
+The record follows that resolution.
+A change of it moves the record onto the new repository in the next pass that reads the
+resolution:
+an event of the issue from Dispatch,
+the hand-over that completes a child handed to Legion,
+or the pass over every recorded issue that the daemon makes once a boot is over.
+When GitHub does not answer that pass's reads of the repository (a failure, its rate limit, or no
+answer in time), the issue is told nothing and nothing waits on the record:
+the daemon reads the issue again from Dispatch's listing and GitHub until GitHub answers,
+and then moves it, or says why not with the line above, with no event of the issue and no restart.
+That read comes at once unless one already owed covers the issue (one owed for it, or the read of
+every recorded issue a boot asks for);
+otherwise, and after each read GitHub still does not answer, it comes at the latest at the next
+run of one backoff all owed reads share, 30 s doubling to 10 min, which starts again at 30 s only
+once no read is owed.
+A pass that read the record before another pass moved it moves nothing either, since two reads of
+Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrives late, after a
+pass over the listing):
+the daemon owes that issue the same read of Dispatch's listing and GitHub, and the record ends on
+what Dispatch resolves then.
+The move sends nothing to the backlog, reruns nothing and starts no new generation, so the issue keeps its phase
+and whatever runs for it.
+
+A repository a role App is not installed on, or one GitHub does not have, is the one case the
+daemon does not move the record onto.
+The record keeps the repository it has, the daemon writes the line above on the issue once, and the
+record carries the change that waits:
+
+```sh
+legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {repo, repoChangePending, repoChangeReason}'
+```
+
+`repoChangePending` is the repository Dispatch resolves the issue to now, and `repoChangeReason` is
+why the daemon has not applied it, the `<why>` of the line above.
+Install both Apps on it, as for any repository the daemon leaves out
+([The daemon will not start](/legion/legion/troubleshooting/#the-daemon-will-not-start)), or set
+the issue's repository to one they are installed on.
+When you install a missing App, nothing tells the daemon, and nothing it reads again on a timer
+moves the issue.
+The daemon uses no read kept from an earlier pass to write the correction: it reads both Apps, the
+repository's name and its default branch from GitHub afresh at the issue's preparation, so the
+issue moves at the issue's next event from Dispatch or at the daemon's next boot.
+The boot's own listing writes nothing for the change; the boot asks for the pass over every
+recorded issue instead, which reads GitHub once the boot is over.
+Installing the App starts no pass by itself.
+Before #4493 the daemon read Dispatch's repository mapping, and a read that served a mapped
+repository again moved the issues waiting on it; the daemon reads no mapping now, so every waiting
+change, on a mapped repository or not, waits for the issue's next event or the next boot.
+To move the issue at once, restart the daemon.
+Create no new issue for the work.
+
+Dispatch resolving the issue to no repository is said the same way, as `Legion did not move this
+issue off <owner/name>: its repository resolves to none. Set its repository (…).` followed by
+`Legion moves the issue at its next event or at Legion's next boot, once Dispatch resolves it to a
+repository both Legion Apps are installed on.`,
+and leaves nothing waiting on the record:
+there is no repository to move to until the issue, an ancestor or the project names one.
+
+Under `runtime: kubernetes`, once the daemon has moved the record it replaces the issue's pod,
+because that pod holds the clone, the gh directories and the token of the repository the issue has
+left.
+Every role in the pod is asked to push its work and to answer the update round, as for any other
+pod replacement.
+The issue's branch and its pull request are on the repository the issue left, and the
+replacement makes no rescue: work a role has not pushed by the round's bound goes with the pod,
+except on a kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), where it stays in the
+old repository's workspace on the volume, beside the workspace the next pod makes of the new
+repository, until a reset or the issue's close deletes the volume.
+A deployment on `runtime: tmux` reaches none of that: a pane is in no pod, so nothing is replaced
+and no update round is opened, and each pane works the repository the issue left until its next
+launch, which provisions it a workspace of the new repository on the daemon's host.
+The next task of each worker of the issue names the new repository, the one the issue left and the
+moment of the move, which `legion state --json` also shows on the issue as `repoBefore` and
+`repoCorrectedAt`.
 
 ## A status change did not stick
 
@@ -2038,6 +2146,17 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
   says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
+- **A wake held for a release.** An Envoy listener's wake report that comes while an idle release
+  of its pod runs waits on the wake consumer (`legion-go-<project>-wake`) until the release ends,
+  for at most 15 minutes after the report. It counts in that consumer's `waiting`. Every 30 s the
+  daemon applies it again and logs `an intake fact waits and is applied again after its delay` at
+  INFO, with `retry_in` and an `error` that names the issue, the role, when the release was marked
+  and the deadline. A report sent back to wait is not handled, so the consumer shows `stalled` after
+  60 s when no other wake report is handled in that time. Past 5 minutes it also shows in the
+  warning `intake: a durable consumer is behind its stream; …` with `delivered` above 1. Nothing
+  to do: it ends when the release ends. A report the release does not end for within 15 minutes is
+  dropped with the warning `wake: a wake that came during a release was dropped: the release did not
+  end within 15 minutes of the report`.
 - **`unavailable`** names what NATS did not answer in time, or refused; the rest of the state is
   served all the same. Every consumer is read at the same time, each within two seconds,
   so one consumer's read that does not answer leaves the others' as they are. `read the consumer's
@@ -2284,7 +2403,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   after failures, not a backlog: a retried event keeps the time it was first stored. It can also
   be a second delivery of one event, which raises `delivered` with no failure of its own ([a
   handling that outlives its window](#a-handling-that-outlives-its-window)); the line `an intake
-  fact was delivered again and dropped as already applied` is what names one.
+  fact was delivered again and dropped as already applied` is what names one. On the wake
+  consumer it can also be a wake report held for a release, which is expected
+  ([GitHub events wait](#github-events-wait)).
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the

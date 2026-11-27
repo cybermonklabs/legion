@@ -817,27 +817,28 @@ describe("the calls it refuses", () => {
     expect(broker.trades).toHaveLength(0);
   });
 
-  test.each(
-    REWRITTEN
-  )("a route holding %s is refused naming the path, and in the query it is sent as the URL parser writes it", async (character) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const env = jobEnvironment(broker.url, server.url, tempDir());
-    const path = `/api/v1/issues/a${character}b`;
-    const refused = await dispatch(["api", "--path", path], env);
-    expect(refused.code).toBe(2);
-    expect(refused.stdout).toContain(
-      `path ${JSON.stringify(path)} holds before its query a character a URL parser rewrites in a path`
-    );
-    expect(refused.stdout).toContain("percent-encode it");
-    expect(server.sent).toHaveLength(0);
+  test.each(REWRITTEN)(
+    "a route holding %s is refused naming the path, and in the query it is sent as the URL parser writes it",
+    async (character) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const env = jobEnvironment(broker.url, server.url, tempDir());
+      const path = `/api/v1/issues/a${character}b`;
+      const refused = await dispatch(["api", "--path", path], env);
+      expect(refused.code).toBe(2);
+      expect(refused.stdout).toContain(
+        `path ${JSON.stringify(path)} holds before its query a character a URL parser rewrites in a path`
+      );
+      expect(refused.stdout).toContain("percent-encode it");
+      expect(server.sent).toHaveLength(0);
 
-    const taken = await dispatch(["api", "--path", `/api/v1/whoami?q=a${character}b`], env);
-    expect(taken.code, taken.stdout).toBe(0);
-    expect(server.sent.map((sent) => sent.url.pathname)).toEqual(["/api/v1/whoami"]);
-    // The rule leaves the query alone; the URL parser percent-encodes ", < and > in it.
-    expect(server.sent[0]?.url.search).toBe(`?q=a${QUERY_WRITTEN[character] ?? character}b`);
-  });
+      const taken = await dispatch(["api", "--path", `/api/v1/whoami?q=a${character}b`], env);
+      expect(taken.code, taken.stdout).toBe(0);
+      expect(server.sent.map((sent) => sent.url.pathname)).toEqual(["/api/v1/whoami"]);
+      // The rule leaves the query alone; the URL parser percent-encodes ", < and > in it.
+      expect(server.sent[0]?.url.search).toBe(`?q=a${QUERY_WRITTEN[character] ?? character}b`);
+    }
+  );
 });
 
 describe("with no host", () => {
@@ -957,31 +958,33 @@ describe("the host and the session", () => {
     expect(server.sent).toHaveLength(0);
   });
 
-  test.each([
-    "DISPATCH_SESSION_ID",
-    "ENVOY_SESSION_ID",
-    "CLAUDE_CODE_SESSION_ID",
-  ])("with no host, a write with a session id sessionDirectory refuses is a usage error naming its variable, and a GET is sent: %s", async (variable) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    const env = { ...jobEnvironment(broker.url, server.url, stateDir), [variable]: "../elsewhere" };
-    const ran = await dispatch(
-      ["api", "--method", "POST", "--path", "/api/v1/issues/ACME-1/claim"],
-      env
-    );
-    expect(ran.code).toBe(2);
-    expect(ran.stdout).toStartWith("dispatch api was not called: ");
-    expect(ran.stdout).toContain(variable);
-    expect(ran.stdout).not.toContain("../elsewhere");
-    expect(server.sent).toHaveLength(0);
-    // A GET reads no AskGate record, so no session id stops it.
-    const read = await dispatch(["api", "--path", "/api/v1/whoami"], env);
-    expect(read.code, read.stdout).toBe(0);
-    expect(server.sent.map((sent) => sent.method)).toEqual(["GET"]);
-    // The session the refusal would be recorded for is the id refused, so no ledger is written.
-    expect(existsSync(join(stateDir, "sessions"))).toBe(false);
-  });
+  test.each(["DISPATCH_SESSION_ID", "ENVOY_SESSION_ID", "CLAUDE_CODE_SESSION_ID"])(
+    "with no host, a write with a session id sessionDirectory refuses is a usage error naming its variable, and a GET is sent: %s",
+    async (variable) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      const env = {
+        ...jobEnvironment(broker.url, server.url, stateDir),
+        [variable]: "../elsewhere",
+      };
+      const ran = await dispatch(
+        ["api", "--method", "POST", "--path", "/api/v1/issues/ACME-1/claim"],
+        env
+      );
+      expect(ran.code).toBe(2);
+      expect(ran.stdout).toStartWith("dispatch api was not called: ");
+      expect(ran.stdout).toContain(variable);
+      expect(ran.stdout).not.toContain("../elsewhere");
+      expect(server.sent).toHaveLength(0);
+      // A GET reads no AskGate record, so no session id stops it.
+      const read = await dispatch(["api", "--path", "/api/v1/whoami"], env);
+      expect(read.code, read.stdout).toBe(0);
+      expect(server.sent.map((sent) => sent.method)).toEqual(["GET"]);
+      // The session the refusal would be recorded for is the id refused, so no ledger is written.
+      expect(existsSync(join(stateDir, "sessions"))).toBe(false);
+    }
+  );
 
   test("a CODEX_THREAD_ID sessionDirectory refuses is Codex's session, refused as the other commands refuse it", async () => {
     const broker = stubBroker(300);
@@ -1091,20 +1094,23 @@ describe("the session's ledger", () => {
       { DISPATCH_URL: undefined, DISPATCH_SESSION_ID: "job-run-1" },
       "job-run-1",
     ],
-  ])("a refusal before any request is recorded for the session the call knows: %s", async (_, argv, named, session) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    const ran = await dispatch(["api", ...argv], {
-      ...jobEnvironment(broker.url, server.url, stateDir),
-      ...named,
-    });
-    expect(ran.code).toBe(2);
-    expect(server.sent).toHaveLength(0);
-    expect(ledgerOf(stateDir, session)).toEqual([
-      { at: expect.any(String), tool: "dispatch_api", error: ran.stdout.trimEnd() },
-    ]);
-  });
+  ])(
+    "a refusal before any request is recorded for the session the call knows: %s",
+    async (_, argv, named, session) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      const ran = await dispatch(["api", ...argv], {
+        ...jobEnvironment(broker.url, server.url, stateDir),
+        ...named,
+      });
+      expect(ran.code).toBe(2);
+      expect(server.sent).toHaveLength(0);
+      expect(ledgerOf(stateDir, session)).toEqual([
+        { at: expect.any(String), tool: "dispatch_api", error: ran.stdout.trimEnd() },
+      ]);
+    }
+  );
 });
 
 describe("AskGate", () => {
@@ -1114,31 +1120,34 @@ describe("AskGate", () => {
     ["PUT", "/api/v1/projects/ACME/settings", "dispatch --help"],
     ["PATCH", "/api/v1/projects/ACME/settings", "dispatch --help"],
     ["DELETE", "/api/v1/projects/ACME/settings", "dispatch --help"],
-  ])("in a session AskGate gates, GET is sent and each other method is refused with nothing sent: %s %s", async (method, path, names) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    writeRecord(stateDir, SESSION);
-    const ran = await dispatch(
-      [
-        "api",
-        "--path",
-        path,
-        ...(method === "GET" ? [] : ["--method", method, "--body-file", bodyFile(COMMENT)]),
-      ],
-      sessionEnvironment(broker.url, server.url, stateDir)
-    );
-    if (names === null) {
-      expect(ran.code, ran.stdout).toBe(0);
-      expect(server.sent).toHaveLength(1);
-      return;
+  ])(
+    "in a session AskGate gates, GET is sent and each other method is refused with nothing sent: %s %s",
+    async (method, path, names) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      writeRecord(stateDir, SESSION);
+      const ran = await dispatch(
+        [
+          "api",
+          "--path",
+          path,
+          ...(method === "GET" ? [] : ["--method", method, "--body-file", bodyFile(COMMENT)]),
+        ],
+        sessionEnvironment(broker.url, server.url, stateDir)
+      );
+      if (names === null) {
+        expect(ran.code, ran.stdout).toBe(0);
+        expect(server.sent).toHaveLength(1);
+        return;
+      }
+      expect(ran.code).toBe(1);
+      expect(ran.stdout).toStartWith(GATED);
+      expect(ran.stdout).toContain(names);
+      expect(server.sent).toHaveLength(0);
+      expect(broker.trades).toHaveLength(0);
     }
-    expect(ran.code).toBe(1);
-    expect(ran.stdout).toStartWith(GATED);
-    expect(ran.stdout).toContain(names);
-    expect(server.sent).toHaveLength(0);
-    expect(broker.trades).toHaveLength(0);
-  });
+  );
 
   test("POST to a document's comments names dispatch comment and dispatch suggest", async () => {
     const broker = stubBroker(300);
@@ -1219,32 +1228,31 @@ describe("AskGate", () => {
     ]);
   });
 
-  test.each([
-    "DISPATCH_SESSION_ID",
-    "ENVOY_SESSION_ID",
-    "CLAUDE_CODE_SESSION_ID",
-  ])("with no host, a gated %s refuses POST and sends nothing", async (variable) => {
-    const broker = stubBroker(300);
-    const server = stubDispatch();
-    const stateDir = tempDir();
-    writeRecord(stateDir, SESSION);
-    const ran = await dispatch(
-      [
-        "api",
-        "--method",
-        "POST",
-        "--path",
-        "/api/v1/issues/ACME-1/comments",
-        "--body-file",
-        bodyFile(COMMENT),
-      ],
-      { ...jobEnvironment(broker.url, server.url, stateDir), [variable]: SESSION }
-    );
-    expect(ran.code).toBe(1);
-    expect(ran.stdout).toStartWith(GATED);
-    expect(server.sent).toHaveLength(0);
-    expect(broker.trades).toHaveLength(0);
-  });
+  test.each(["DISPATCH_SESSION_ID", "ENVOY_SESSION_ID", "CLAUDE_CODE_SESSION_ID"])(
+    "with no host, a gated %s refuses POST and sends nothing",
+    async (variable) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      writeRecord(stateDir, SESSION);
+      const ran = await dispatch(
+        [
+          "api",
+          "--method",
+          "POST",
+          "--path",
+          "/api/v1/issues/ACME-1/comments",
+          "--body-file",
+          bodyFile(COMMENT),
+        ],
+        { ...jobEnvironment(broker.url, server.url, stateDir), [variable]: SESSION }
+      );
+      expect(ran.code).toBe(1);
+      expect(ran.stdout).toStartWith(GATED);
+      expect(server.sent).toHaveLength(0);
+      expect(broker.trades).toHaveLength(0);
+    }
+  );
 
   test("with no host and no record, POST is sent", async () => {
     const broker = stubBroker(300);

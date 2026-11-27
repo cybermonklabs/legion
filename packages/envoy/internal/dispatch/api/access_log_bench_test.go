@@ -28,7 +28,7 @@ func BenchmarkARouteWithAndWithoutItsAccessLogLine(b *testing.B) {
 
 	plain := http.NewServeMux()
 	for _, route := range served.routes() {
-		plain.HandleFunc(route.Method+" "+route.Pattern, trackTransactions(served.refuseUnstorableParameters(route.Pattern, route.Handler)))
+		plain.HandleFunc(route.Method+" "+route.Pattern, routeContext(served.refuseUnstorableParameters(route.Pattern, route.Handler)))
 	}
 
 	for _, bench := range []struct {
