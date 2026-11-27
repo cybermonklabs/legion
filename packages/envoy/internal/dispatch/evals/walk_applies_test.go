@@ -81,13 +81,18 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	}
 	prsRead, deploysRead, earlierRead, checksRead, pushesRead, shipped := 0, 0, 0, 0, 0, 0
 	for _, days := range [][]time.Time{every, others} {
-		prs, err := delivery.ListPullRequestsOnDays(ctx, pool, days)
+		prs, refused, err := delivery.ListPullRequestsOnDays(ctx, pool, days)
 		if err != nil {
 			t.Fatalf("read the pull requests of %d days: %v", len(days), err)
 		}
 		deploys, err := delivery.ReadDaysDeploys(ctx, pool, settings, days, true)
 		if err != nil {
 			t.Fatalf("read the deploys of %d days: %v", len(days), err)
+		}
+		for i, day := range days {
+			if refused[i] != nil || deploys.Refused[i] != nil {
+				t.Fatalf("%s: the read of %d days refused the day (%v, %v), whose windows hold far fewer pull requests than the bound", day.Format(time.DateOnly), len(days), refused[i], deploys.Refused[i])
+			}
 		}
 		ci, err := delivery.ReadCIDays(ctx, pool, settings.DeployRepo, days, cards)
 		if err != nil {

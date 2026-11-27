@@ -122,14 +122,15 @@ func (p *pageDays) projects() []string {
 }
 
 // nameDelivery adds project's delivery and CI day of read to days, where days holds it not yet, as
-// the day's reads build it.
+// the day's reads build it, with the zero rows of its series but those of the evals a refused
+// window of the day's read drops (deliveryRead.zeros).
 func (r *refresh) nameDelivery(days *pageDays, read deliveryRead, project string) {
 	if _, found := days.days[projectDay{project: project, day: read.Day}]; found {
 		return
 	}
 	days.add(&namedDay{
 		project: project, day: read.Day, raw: read.Rows(project),
-		zeros: ZeroDeliveryDay(*r.settings, project, read.Day, read.repos).Rows,
+		zeros: read.zeros(*r.settings, project),
 	})
 }
 

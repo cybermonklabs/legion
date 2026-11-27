@@ -650,6 +650,9 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 	// On a day the delivery walk has not made whole yet, no other owner key holds rows of it in
 	// eval_days: naming every owner key the day's read builds rows of ensures the page writes all
 	// of the day's keys in one commit, never half of a day while a later page holds its other runs.
+	// A day a window of whose read the bound refused (deliveryRead.refused) is named for every owner,
+	// so its write deletes the rows of the evals the refusal drops wherever the day held them, and
+	// the day reads "no data" for them in every project and owner key.
 	whole := map[time.Time]bool{}
 	days.name = func(ctx context.Context, project string, day time.Time) error {
 		read, err := r.readDelivery(ctx, day, nil)
@@ -657,10 +660,11 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 			return err
 		}
 		r.nameDelivery(days, read, project)
-		if (served == nil || !read.Day.Before(*served)) && !whole[read.Day] {
+		refused := len(read.refused) > 0
+		if (refused || served == nil || !read.Day.Before(*served)) && !whole[read.Day] {
 			whole[read.Day] = true
 			for _, owner := range r.owners {
-				if len(read.Rows(owner).Rows) > 0 {
+				if refused || len(read.Rows(owner).Rows) > 0 {
 					r.nameDelivery(days, read, owner)
 				}
 			}
@@ -1059,7 +1063,15 @@ func (r *refresh) readDeliveries(ctx context.Context, days []time.Time) error {
 }
 
 // readDays reads, in one read (readDeliveryDays), each of days the page has not read yet, and
-// keeps each read for the page (refresh.reads) and its owner keys (noteOwners).
+// keeps each read for the page (refresh.reads) and its owner keys (noteOwners). A day a window of
+// whose read the bound of a window's read refused costs that day alone: it is kept like any other,
+// with no row of the evals the window decides (deliveryRead.refused, DeliveryDay.refuse), whose
+// write deletes those rows (applyDelivery names it for every owner), and each refused window is
+// logged at WARN, naming the day, the window, the evals it drops and the reason. The cursors of
+// the page that wrote the day pass the change that named it, so it stands so until a change names
+// it again, or a walk or a rebuild reaches it, whose read refuses it again while the window holds
+// more than the bound, and builds it whole once it holds no more; a settings rewrite or a span,
+// which read the whole history with no such bound (delivery.HistoryRows), build it from every row.
 func (r *refresh) readDays(ctx context.Context, days []time.Time, applies map[string]*delivery.ApplyRows) error {
 	unread := make([]time.Time, 0, len(days))
 	for _, day := range days {
@@ -1082,6 +1094,11 @@ func (r *refresh) readDays(ctx context.Context, days []time.Time, applies map[st
 		return err
 	}
 	for i, read := range reads {
+		for _, window := range read.refused {
+			slog.Warn("dispatch: the eval day-row refresher drops a delivery day's rows of the evals a window past the bound decides",
+				"day", read.Day.Format(time.DateOnly), "window", window.Window(), "repo", window.Repo, "bound", window.Bound,
+				"evals", strings.Join(refusedEvals(window), ","), "reason", window.String())
+		}
 		r.noteOwners(read.owners())
 		r.reads[unread[i]] = read
 	}
@@ -1151,12 +1168,14 @@ type ownerDay struct {
 // those of the evals that read the deploy repository once for each repository read held: the rows
 // the day builds, less each lead time that counts no pull request before its series' first input
 // day (dropUnshipped), and the zero row of every series the day has no input of whose first input
-// day is on or before it (zerosFrom), by the walk's own first input days (firstOf); nil where the
-// batch wrote the day already (refresh.done). A project the day counts nothing for and holds no
-// series of before that day writes nothing unless the walk finds the day holding rows of it
-// (walkHeld): its write deletes what the day held. The walk writes its days in order, from the
-// first input day or from the days it built, so it finds each series' first input day as it goes
-// (noteBuilt, once the day is written). A page writes its days by writeNamed.
+// day is on or before it (zerosFrom), by the walk's own first input days (firstOf), but those of
+// the evals a refused window of the day's read drops (deliveryRead.zeros); nil where the batch
+// wrote the day already (refresh.done). A project the day counts nothing for and holds no series
+// of before that day writes nothing unless the walk finds the day holding rows of it (walkHeld):
+// its write deletes what the day held, a refused day's rows of the evals the refusal drops among
+// them. The walk writes its days in order, from the first input day or from the days it built, so
+// it finds each series' first input day as it goes (noteBuilt, once the day is written). A page
+// writes its days by writeNamed.
 func (r *refresh) buildDelivery(ctx context.Context, read deliveryRead, project string) (*ownerDay, error) {
 	key := builtDay{family: walkDelivery, project: project, day: read.Day}
 	if r.done[key] {
@@ -1170,7 +1189,7 @@ func (r *refresh) buildDelivery(ctx context.Context, read deliveryRead, project 
 	built.Rows = dropUnshipped(built.Rows, first, read.Day)
 	var zeros []DayRow
 	if begunBy(first, read.Day) {
-		zeros = zerosFrom(ZeroDeliveryDay(*r.settings, project, read.Day, read.repos).Rows, first, read.Day)
+		zeros = zerosFrom(read.zeros(*r.settings, project), first, read.Day)
 	}
 	day := built.WithZeros(zeros)
 	if len(day.Rows) == 0 && !r.walkHeld[key] {
