@@ -21,11 +21,21 @@ func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // stubDispatch is the stand-in for the dispatch command that the tests hand ci-report through
 // --dispatch-cli. It is this test's own program, not the real command. Each call writes its
-// arguments, NUL-separated, to <n>.args, its standard input to <n>.stdin and the value of
-// AGENT_SECRETS_MACHINE_IDENTITY to <n>.identity, in the directory CI_REPORT_STUB_DIR names, n
-// counting from 0. With CI_REPORT_STUB_MODE=refuse it prints the broker's refusal of an exchange
-// on standard output and exits 1, as the real command prints every refusal of Dispatch or of the
-// broker (packages/envoy-client/src/dispatch-cli.ts, `print`, which writes to standard output).
+// arguments, NUL-separated, to <n>.args, its standard input to <n>.stdin, the value of
+// AGENT_SECRETS_MACHINE_IDENTITY to <n>.identity, the value of DISPATCH_RESULTS_TOKEN to <n>.token
+// and the names of the DISPATCH_TOKEN* variables set, one a line, to <n>.bearers, in the directory
+// CI_REPORT_STUB_DIR names, n counting from 0. With CI_REPORT_STUB_MODE=refuse it prints the
+// airlock proxy's refusal of a request with no placeholder on standard output and exits 1, as the
+// real command prints every refusal of Dispatch or of the airlock (`refuse` in
+// packages/envoy-client/src/dispatch-commands/job-result.ts, which writes to standard output).
+// The modes of the result grant print what the real command prints for an airlock that answers a
+// grant that is not live, and exit 1: grant-ended its 407 at the CONNECT (tunnelRefused407Line),
+// grant-refused its own GRANT_NOT_LIVE inside an open tunnel (grantRefusedLine), and
+// grant-ended-unknown {"write_outcome_unknown":"GRANT_NOT_LIVE"}, its answer after the write may
+// have left it. With ends-after-first the first call stores its row and each later one prints
+// tunnelRefused407Line and exits 1, as when the grant ends between two calls; tunnel-503 prints
+// the airlock's 503 at the CONNECT (tunnelRefused503Line), another refusal of the tunnel, and
+// exits 1.
 // With CI_REPORT_STUB_MODE=landed it prints what the real command prints for a write that landed
 // with its answer lost, {"landed_without_answer":"KEY_COMMITTED"}, and exits 0; with
 // CI_REPORT_STUB_MODE=answer-lost it prints {"landed_without_answer":"ANSWER_LOST"}, what the real
@@ -43,13 +53,31 @@ while [ -e "$calls/$n.args" ]; do n=$((n + 1)); done
 printf '%s\0' "$@" > "$calls/$n.args"
 cat > "$calls/$n.stdin"
 printf '%s' "${AGENT_SECRETS_MACHINE_IDENTITY-unset}" > "$calls/$n.identity"
+printf '%s' "${DISPATCH_RESULTS_TOKEN-unset}" > "$calls/$n.token"
+env | sed -n 's/^\(DISPATCH_TOKEN[A-Za-z0-9_]*\)=.*/\1/p' > "$calls/$n.bearers"
 check=
 while [ $# -gt 0 ]; do
   if [ "$1" = --check ]; then check=$2; fi
   shift
 done
 if [ "$CI_REPORT_STUB_MODE" = refuse ]; then
-  echo "` + brokerRefusal + `"
+  echo "` + airlockRefusal + `"
+  exit 1
+fi
+if [ "$CI_REPORT_STUB_MODE" = grant-ended ] || { [ "$CI_REPORT_STUB_MODE" = ends-after-first ] && [ "$n" -ge 1 ]; }; then
+  echo "` + tunnelRefused407Line + `"
+  exit 1
+fi
+if [ "$CI_REPORT_STUB_MODE" = grant-refused ]; then
+  echo "` + grantRefusedLine + `"
+  exit 1
+fi
+if [ "$CI_REPORT_STUB_MODE" = grant-ended-unknown ]; then
+  echo '{"write_outcome_unknown":"GRANT_NOT_LIVE"}'
+  exit 1
+fi
+if [ "$CI_REPORT_STUB_MODE" = tunnel-503 ]; then
+  echo "` + tunnelRefused503Line + `"
   exit 1
 fi
 if [ "$CI_REPORT_STUB_MODE" = landed ]; then
@@ -92,9 +120,29 @@ cat <<EOF
 EOF
 `
 
-// brokerRefusal is what the stub prints in refuse mode: the broker's refusal of
-// an exchange for a ref that no result entry admits.
-const brokerRefusal = "BROKER_EXCHANGE_REFUSED: the broker refused the exchange of the job's token: invalid_request: no result entry admits ref refs/heads/a/b/c/d"
+// airlockRefusal is what the stub prints in refuse mode: the airlock proxy's refusal, before it
+// sent anything on, of a request that does not carry the grant's placeholder as its one
+// Authorization header, as the real command prints it (packages/envoy-client/src/__tests__/
+// dispatch-job-result.test.ts, "the airlock's refusal inside an open connection prints its code
+// and its words").
+const airlockRefusal = "NO_PLACEHOLDER: airlock: a request to this host carries the grant's [redacted] as its one Authorization header, DPoP ; this one does not…; nothing was stored"
+
+// tunnelRefused407Line is what the real command prints when the airlock refused its tunnel 407 at
+// the CONNECT, its answer to a placeholder whose result grant is not live: the tunnel's status and
+// no code (dispatch-job-result.test.ts, "a CONNECT the proxy refuses with 407 ends the write at
+// once").
+const tunnelRefused407Line = "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication Required); nothing was sent to Dispatch"
+
+// tunnelRefused503Line is what the real command prints when the airlock refused its tunnel 503 at
+// the CONNECT, a grant it could not read just then, which is no end of the grant
+// (dispatch-job-result.test.ts, "a CONNECT the proxy refuses with 503 is asked again within the
+// bound").
+const tunnelRefused503Line = "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (503 Service Unavailable); nothing was sent to Dispatch"
+
+// grantRefusedLine is what the real command prints for the airlock's own GRANT_NOT_LIVE inside an
+// open tunnel, before the write left it: "<code>: <words>; nothing was stored" (`refuse` of an
+// AirlockRefusedError in job-result.ts), with the airlock's words of dispatch-job-result.test.ts.
+const grantRefusedLine = "GRANT_NOT_LIVE: airlock: grant is expired, revoked, or its session ended (answer 7f3a); nothing was stored"
 
 // quickReadCheck is a spec file's one check of the job go-checks whose test ran and passed in
 // testdata/report.jsonl: a file of it that the reporter reads gives one more line and one more
@@ -139,10 +187,13 @@ type line struct {
 	Why      string `json:"why"`
 }
 
-// call is one call of the stub: its arguments, its standard input and its identity variable.
+// call is one call of the stub: its arguments, its standard input, its identity variable, its
+// DISPATCH_RESULTS_TOKEN ("unset" when it had none) and the names of its DISPATCH_TOKEN*
+// variables.
 type call struct {
-	args            []string
-	stdin, identity string
+	args                   []string
+	stdin, identity, token string
+	bearers                []string
 }
 
 // TestTheBuiltBinary runs ci-report as a process over a checkout of testdata/spec and the report
@@ -544,7 +595,7 @@ Failing example: A read that waits for a lock that nobody holds.
 		}
 	})
 
-	t.Run("a refused exchange prints the broker's words on each recorded check and exits 1", func(t *testing.T) {
+	t.Run("a write the airlock refused prints its words on each recorded check and exits 1", func(t *testing.T) {
 		t.Parallel()
 		dir, commit := checkout(t, filepath.Join("testdata", "spec"))
 		stub := newStub(t)
@@ -554,13 +605,74 @@ Failing example: A read that waits for a lock that nobody holds.
 		}
 		exits, whys := map[string]*int{}, map[string]string{}
 		for _, check := range recordedChecks {
-			exits[check], whys[check] = new(1), brokerRefusal
+			exits[check], whys[check] = new(1), airlockRefusal
 		}
 		expectLines(t, got.stdout, lines(exits, nil, whys))
 		if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
 			t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
 		}
 		if want := "; 0 results written, 3 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
+			t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
+		}
+	})
+
+	// The result grant lasts at most 15 minutes from the step's start, and the airlock refuses each
+	// write after its end GRANT_NOT_LIVE, 407 at the CONNECT, which the command prints with the
+	// tunnel's status and no code. The line of such a call names the grant's end and the code, and
+	// so does the line of the airlock's own GRANT_NOT_LIVE inside an open tunnel and of a write
+	// whose outcome GRANT_NOT_LIVE left unknown. The airlock's 503 at the CONNECT is a grant it
+	// could not read just then, no end of the grant, and its line holds the command's words alone.
+	grantEndedWhy := func(printed string) string { return grantEnded + " The dispatch command printed: " + printed }
+	for _, row := range []struct{ mode, why string }{
+		{"grant-ended", grantEndedWhy(tunnelRefused407Line)},
+		{"grant-refused", grantEndedWhy(grantRefusedLine)},
+		{"grant-ended-unknown", grantEndedWhileOut},
+		{"tunnel-503", tunnelRefused503Line},
+	} {
+		t.Run("a write after the grant's end names the end and GRANT_NOT_LIVE on its line, and a 503 of the tunnel does not ("+row.mode+")", func(t *testing.T) {
+			t.Parallel()
+			dir, commit := checkout(t, filepath.Join("testdata", "spec"))
+			stub := newStub(t)
+			got := runReporter(t, binary, dir, stub.env(row.mode), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+			if got.code != 1 {
+				t.Errorf("exit %d, want 1; stderr:\n%s", got.code, got.stderr)
+			}
+			exits, whys := map[string]*int{}, map[string]string{}
+			for _, check := range recordedChecks {
+				exits[check], whys[check] = new(1), row.why
+			}
+			expectLines(t, got.stdout, lines(exits, nil, whys))
+			if named := strings.HasPrefix(row.why, "GRANT_NOT_LIVE: ") && strings.Contains(row.why, "result grant") && strings.Contains(row.why, "ended"); named == (row.mode == "tunnel-503") {
+				t.Errorf("the line of %s is %q, which names the grant's end and GRANT_NOT_LIVE: %t", row.mode, row.why, named)
+			}
+			if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
+				t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
+			}
+			if want := "; 0 results written, 3 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
+				t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
+			}
+		})
+	}
+
+	t.Run("a grant that ends after the first call keeps that call's result and names the end on each later line", func(t *testing.T) {
+		t.Parallel()
+		dir, commit := checkout(t, filepath.Join("testdata", "spec"))
+		stub := newStub(t)
+		got := runReporter(t, binary, dir, stub.env("ends-after-first"), append(slices.Clone(args), "--dispatch-cli", stub.path)...)
+		if got.code != 1 {
+			t.Errorf("exit %d, want 1; stderr:\n%s", got.code, got.stderr)
+		}
+		// The first call is the first recorded check in the tree's order.
+		first := recordedChecks[0]
+		exits, ids, whys := map[string]*int{first: new(0)}, map[string]string{first: "row-" + first}, map[string]string{}
+		for _, check := range recordedChecks[1:] {
+			exits[check], whys[check] = new(1), grantEndedWhy(tunnelRefused407Line)
+		}
+		expectLines(t, got.stdout, lines(exits, ids, whys))
+		if calls := stub.calls(t); !slices.EqualFunc(calls, wantCalls(commit), equalCall) {
+			t.Errorf("the stub got %+v\nwant %+v", calls, wantCalls(commit))
+		}
+		if want := "; 1 results written, 2 calls failed\n"; !strings.HasSuffix(got.stderr, want) {
 			t.Errorf("stderr does not end with %q:\n%s", want, got.stderr)
 		}
 	})
@@ -839,19 +951,24 @@ func (s stub) calls(t *testing.T) []call {
 		} else if err != nil {
 			t.Fatal(err)
 		}
-		stdin, err := os.ReadFile(filepath.Join(s.dir, fmt.Sprintf("%d.stdin", n)))
-		if err != nil {
-			t.Fatal(err)
+		read := func(part string) string {
+			t.Helper()
+			content, err := os.ReadFile(filepath.Join(s.dir, fmt.Sprintf("%d.%s", n, part)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(content)
 		}
-		identity, err := os.ReadFile(filepath.Join(s.dir, fmt.Sprintf("%d.identity", n)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		calls = append(calls, call{args: strings.Split(strings.TrimSuffix(string(args), "\x00"), "\x00"), stdin: string(stdin), identity: string(identity)})
+		calls = append(calls, call{
+			args:  strings.Split(strings.TrimSuffix(string(args), "\x00"), "\x00"),
+			stdin: read("stdin"), identity: read("identity"), token: read("token"),
+			bearers: strings.Fields(read("bearers")),
+		})
 	}
 }
 
-// equalCall reports whether two calls are the same.
+// equalCall reports whether two calls have the same arguments, standard input and identity
+// variable. The token and the bearers are TestTheActionRunsTheReporter's to read.
 func equalCall(a, b call) bool {
 	return slices.Equal(a.args, b.args) && a.stdin == b.stdin && a.identity == b.identity
 }
