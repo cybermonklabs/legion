@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /**
  * Reads the shell script at `path` once and returns `fn`, which gives the definition of the
@@ -39,12 +39,30 @@ export function scriptAssignments(path: string): (name: string) => string {
 
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
-// A library a script sources, as every stage script and library writes it: `. "$root/<path>"`,
-// whose path is the checkout's, or the older `. "…/lib/<name>.sh"`, which names a library of
-// scripts/e2e/lib alone.
-const sourced = /^\s*\. "(?:\$root\/([^"]+\.sh)|.*\/lib\/([A-Za-z0-9_.-]+\.sh))"\s*$/gm;
+// A library a script sources: `. "<path>"` at the start of a line. The path is a shell word, and
+// every script here writes it against a directory a variable names: `$root`, the checkout, or one
+// the sourcing file sets to its own directory. It can hold `..`, as #4296's loopback-dsn.sh does
+// (`. "$psql_env_dir/../../../packages/envoy/scripts/lib/pg-url.sh"`), so the path is resolved
+// whole rather than read by its last segments: by its tail that line names scripts/e2e/lib's
+// pg-url.sh, which is a different file, and a library read under the wrong name hides what the
+// real one holds.
+const sourced = /^\s*\. "([^"]+\.sh)"\s*$/gm;
 /** The checkout, from this file in scripts/e2e/lib. */
 const checkout = join(import.meta.dir, "..", "..", "..");
+
+/** The file `written` names, as the script at `from` writes it. A path against `$root` is the
+ *  checkout's. Any other variable names either the script's own directory or the checkout, and
+ *  which one it is differs by script, so both are resolved, `..` and all, and the one that exists
+ *  is the file; where neither does, the script's own directory's is kept, so the read that fails
+ *  names a path the script could have meant. */
+function sourcedPath(from: string, written: string): string {
+  const against = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.+)$/.exec(written);
+  if (against === null) return isAbsolute(written) ? written : resolve(dirname(from), written);
+  const [, name, rest = ""] = against;
+  if (name === "root") return resolve(checkout, rest);
+  const beside = resolve(dirname(from), rest);
+  return existsSync(beside) ? beside : resolve(checkout, rest);
+}
 
 /**
  * Every script among `paths`, and every library under scripts/e2e/lib one of them sources
@@ -58,12 +76,7 @@ export function sourcedLibraries(...paths: string[]): string[] {
     if (read.has(path)) continue;
     read.add(path);
     for (const found of readFileSync(path, "utf8").matchAll(sourced)) {
-      const [, fromCheckout, inLib] = found;
-      pending.push(
-        fromCheckout === undefined
-          ? join(import.meta.dir, inLib ?? "")
-          : join(checkout, fromCheckout)
-      );
+      pending.push(sourcedPath(path, found[1] ?? ""));
     }
   }
   return [...read];
