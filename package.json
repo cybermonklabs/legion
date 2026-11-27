@@ -16,7 +16,7 @@
     "docs:dev": "cd docs/site && bun run dev",
     "docs:build": "cd docs/site && bun run build",
     "docs:media": "bun docs/site/media/shots.ts",
-    "test:e2e-lib": "bun test --timeout 200000 scripts/e2e/lib"
+    "test:e2e-lib": "bun test --parallel=8 --timeout 200000 scripts/e2e/lib"
   },
   "workspaces": [
     "packages/cipher-client",

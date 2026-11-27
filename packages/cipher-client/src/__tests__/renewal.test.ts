@@ -367,9 +367,9 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
   }
 });
 
-// An outage (a 408, a 429, a 5xx: `outage` in oauth-refusal.ts) is no refusal a trade ends on,
-// whatever OAuth error its body names: the token in hand stays, and the next trade is tried. A
-// 400 or a 403 refusal is final, and drops the token in hand.
+// An outage (a 408, a 429, a 5xx: `outage` of `@legion/contracts/http-status`) is no refusal a
+// trade ends on, whatever OAuth error its body names: the token in hand stays, and the next trade
+// is tried. A 400 or a 403 refusal is final, and drops the token in hand.
 test.each([
   [408, false],
   [429, false],
