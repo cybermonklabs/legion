@@ -156,6 +156,7 @@ on:
       - 'packages/envoy/dispatchbody/**'
       - 'packages/envoy/fileerr/**'
       - 'packages/envoy/going/*'
+      - 'packages/envoy/httpoutage/**'
       - 'packages/envoy/internal/buildversion/**'
       - 'packages/envoy/internal/bus/*'
       - 'packages/envoy/internal/bus/signedrecord/**'

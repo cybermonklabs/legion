@@ -159,10 +159,11 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		// of for the process. This rig needs one because the handler refuses a config without
 		// it; nothing here keeps a role message.
 		roleKeepDrains: newRoleKeepGuards(),
-		// The listener's clock, and its dead letter's publish, as main.go sets them.
-		now:               time.Now,
-		publishDeadLetter: d.client.PublishStoredAs,
-		keepPublish:       d.client.PublishStoredAck,
+		// The listener's clock, and its dead letter's and expiry notice's publishes, as main.go sets them.
+		now:                 time.Now,
+		publishDeadLetter:   d.client.PublishStoredAs,
+		publishExpiryNotice: d.client.PublishKeptCopyExpiry,
+		keepPublish:         d.client.PublishStoredAck,
 		// Whether the rig's NATS user holds the session consumers' calls: the answer of the
 		// session delivery opened below, set there as main.go sets it.
 		consumerGrant: &consumerGrantAnswer{},

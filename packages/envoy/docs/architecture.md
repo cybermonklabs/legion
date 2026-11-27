@@ -571,9 +571,11 @@ copy's payload holds, or by the copy's event id alone where that event names no 
 (`keptCopyNamed`). The stream
 holds one dead letter for each copy, however many walks send it. A copy whose hour ended more
 than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead
-letter. While a lane holds a copy the listener kept with at least twenty minutes of its hour
-left, and no live session holds the role, each sweep raises the role's wake report again, at
-most once for a role in each five-minute interval across every listener. `GET /v1/roles/<role>`
+letter. A copy Dispatch's outbox kept gets no dead letter at all: whatever its age, the walk tells
+Dispatch with an expiry notice instead (below). While a lane holds a copy the listener kept with
+at least twenty minutes of its hour left, and no live session holds the role, each sweep raises
+the role's wake report again, at most once for a role in each five-minute interval across every
+listener. `GET /v1/roles/<role>`
 still answers 404 for an unheld or lapsed role: only the publish route gained the kept answer, and
 the send route's for a send Dispatch marks with its role, whose role moved before it arrived. A
 sender that keeps a queue of its own and redelivers from it asks not to be kept (`keep: false` in
@@ -706,7 +708,11 @@ role message costs the read of its topic and role and nothing
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was
-chosen for is stored inside the window a takeover's passes read. Delivery stays at least once: a
+chosen for is stored inside the window a takeover's passes read. The outbox judges the stream's
+acknowledgement of its forward the same way: one stored later than that fence and its
+acknowledgement window (`roleForwardAckTimeout`, 5 s) after the resolution is no delivery
+(`roles.ForwardStoredTooLate`), and the event stays pending for the next read to resolve the
+holder again. Delivery stays at least once: a
 frame the previous holder was being handed at the takeover, one it acknowledged out of order above
 its floor, and every role message of the hour before a takeover whose holder's floor is unknown
 can reach both sessions.
@@ -756,12 +762,80 @@ holder through the one resolution the listener's routes and its lane use (`roles
 Dispatch's events no longer cross `notifications.role.*`. That resolution writes nothing to the
 role bucket here either. A role with no claim, and one whose holder is `gone`, is kept on that
 role's kept lane for one hour for the holder that claims it next, as the listener's own copies
-are, and the `gone` holder's claim is left where it is for the role claim reaper. The listener's
-walk drops an outbox copy at the end of its hour and sends nobody a dead letter for it, so the
-person or session that wrote the Dispatch event is not told. An `unresponsive` holder's event
-stays pending and is retried, as a read that failed is, until that session answers or its
-record passes the gone horizon. A copy kept for it would wait one hour at most, and its end would
-tell nobody. The outbox raises no exception.
+are, and the `gone` holder's claim is left where it is for the role claim reaper. When an outbox
+copy's hour ends with no session taking it, the walk that drops it sends no dead letter: it stores
+an expiry notice on `notifications.envoy.kept.expired.<role>` instead (`bus.KeptCopyExpiry`: the
+event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, and when
+it was kept and dropped), one per copy under the message id `envoy.kept-expired.<role>.<sequence>`,
+counted on `envoy_role_kept_expiry_notices_total`. The subject lies under the listener's own kept
+lane. So only a NATS user whose grant publishes every notification topic writes it: `Listener`,
+`Dispatch` (its envoy-listener runs beside envoy-dispatch), and the legacy `ListenerHost` and
+`Host` sets built on the listener's (`natsgrant/natsgrant.go`). Dispatch reads it with the
+stream's stored-message read its grant holds; `ListenerHost` and `Host` also subscribe every
+notification topic, so they receive it. No session's own set (`Session`, `SessionPattern`) can
+read it: no consumer filter takes it, no session may register an interest reaching it, those sets
+hold no stream read, and the publish route refuses it. A legacy host's sessions that share its
+`Host` user share that user's reach. Dispatch's outbox reads the notices from the stream every
+30 seconds, and after every scan, with the stored-message read it already holds
+(`readKeptExpiries`). Its cursor in `outbox_kept_expiry_cursor` names the stream it counts in by
+the stream's identity (`bus.StreamIDMetadataKey`), which the outbox reads at most every 30
+seconds: a stream created again numbers its notices below a cursor of the one before it, so the
+outbox sets such a cursor back to the new stream's start, with one Error line, and reads its
+notices from the first. It passes over a notice whose role is no valid role name, that was stored
+on another role's expiry subject, whose event was never routed to that role, or that does not
+name that event's copy: the notice's sequence is not below its own; the role's kept lane holds a
+message there that no read can decode, or another copy than Dispatch's copy of that event under
+the notice's dedupe key; or the lane holds nothing there, and the sequence is at or past the
+first message the stream still holds, so the stream's retention did not remove a copy there: the
+stream removes messages oldest first by its age alone, since it discards new messages at its byte
+limit, and this assumes it has no per-subject limit, which would remove older messages mid-stream. A
+passed-over notice writes no row, so nothing is kept again and nothing is recorded undelivered.
+It records each other notice in `outbox_role_copy_expiries`, keyed by the event, the role and
+the attempt, which is the outbox's own next attempt for that pair (the notice's own attempt is
+logged), so a repeated notice reopens the event's delivery to that role once. It then keeps the
+event's copy again, read
+back from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or
+forwards it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else
+of the event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops
+and appends a `role.undelivered` event on the event's own issue, document or project, written by
+a system actor so it reaches no role, which a person reads in that owner's history. It stops the
+same way, with fewer keeps, when a copy cannot be kept again: the stream's retention has removed
+it; the stream holds at its sequence a message no read can decode or another event's copy, which
+only a stream created again since the notice's record can hold there; or NATS refused its keep or
+its forward for good. Where the bound
+is reached or no other copy carries its delivery on, every expiry of the event still owed a keep
+is settled, and its one `role.undelivered` record is appended, so nothing keeps it again. A copy
+that cannot be kept again ends nothing while another copy of the event carries its delivery on,
+that is, while another expiry of it is still owed a keep or was kept, forwarded or skipped after
+this one was recorded; its row is settled `carried`, and nothing else is written. The outbox also
+notes the event in
+`outbox_role_undelivered_notes` for a message on the event's issue, or on the issue of the
+document a document event is about: the first such note of a role on an issue opens a one-hour
+window, every later note of that role there joins it, and once the hour has ended the outbox
+posts one message naming every event of the window, through the issue message route's own writer
+(`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route either.
+The window is kept in Postgres, and its message is written under an id derived from the issue,
+the role, the moment the window opened and the events it names. So a restart does not lose the
+window, and a post made again after a crash between the post and its mark writes no second
+message. A note joins only a window whose message is not posted yet. A long window's events go in
+several lists, each at most 50 events and 16,000 UTF-16 units, so no block of the message passes
+the writer's 32,000-unit block bound. A reference over 4,096 units, which only a document kept
+from before the name bound can have, is named by the document's id and the reference's length
+instead. Only the publisher hold's holder records a notice, claims an expiry or posts a window.
+Each write that may append a `role.undelivered` record - a notice's record, and a record of a
+copy that cannot be kept again - is one holder transaction: it reads the hold's row first with
+no lock, and locks it for share only as its last statement before the commit, rolling back when
+the hold is no longer its own. So a takeover of the hold either lands before that lock and makes
+the record roll back, or waits for its commit, and the new holder reads every write it made; and
+the hold's renewal never waits behind a record that is itself waiting on an issue's lock. The
+pass's other writes to `outbox_role_copy_expiries` are single statements that check the hold
+themselves. An event of
+no issue and
+of no issue's document never has a copy kept for a role, since the route is read from the issue
+alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An
+`unresponsive` holder's event stays pending and is retried, as a read that failed is, until that
+session answers or its record passes the gone horizon: a copy kept for it would spend one of
+those three keeps on a session that is still alive. The outbox raises no exception.
 That forward is stored only: one copy on the holder's agent subject under its own
 `Nats-Msg-Id` (`bus.ForwardMsgID` of the forward's dedupe key and that subject), counted
 reached on the stream's acknowledgement of the copy and on nothing else, with no receipt from

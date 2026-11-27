@@ -369,8 +369,8 @@ func hasCapability(capabilities []string, value string) bool {
 const listenerNotConfiguredText = "envoy listener: ENVOY_URL is not configured"
 
 // listenerUnreachablePrefix begins the failure deliveryErrorText records for a listener nothing
-// answered (dispatchenvoy.ErrUnreachable): a connection refused, reset or timed out, a 502, 503 or
-// 504.
+// answered (dispatchenvoy.ErrUnreachable): a connection refused, reset or timed out, or an outage
+// status (a 408, a 429, a 502, 503 or 504, any other 5xx but the listener's own 500).
 const listenerUnreachablePrefix = "envoy listener: "
 
 // listenerAnsweredPrefix begins the failure deliveryErrorText records for every other
@@ -422,18 +422,19 @@ const (
 )
 
 // retryableDeliveryFailure reports whether a failure a try recorded is one a later try can
-// outlast: a listener take-over's - the listener unreachable (listenerUnreachablePrefix - a
-// connection refused, reset or timed out, a 502, 503 or 504 - but never
-// listenerNotConfiguredText), a receipt timeout, a send whose store the listener could not confirm
-// (storeUnconfirmedText), or the listener holding no record of the session yet - "no live session"
-// (contracts.NoLiveSession), as the registry read is recorded and as the send's own 404 words it -
-// and an account token Dispatch could not present (listenerAccountTokenPrefix), which the next try
-// reads again. A receipt timeout and an unconfirmed store are safe to repeat because the retry
-// carries the same idempotency key, which the listener recognises as a repeat
-// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). Anything else is the listener's answer - a
-// session that does not take this mode, a send it refused, a status it chose such as a 401 for a
-// token it refuses (listenerAnsweredPrefix) - which no successor answers differently, and the
-// attempt settles with it at once.
+// outlast: a listener take-over's or outage's - the listener unreachable
+// (listenerUnreachablePrefix: a connection refused, reset or timed out, or an outage status, a
+// 408, a 429 or a 5xx but 500, but never listenerNotConfiguredText), a receipt timeout, a send
+// whose store the listener could not confirm (storeUnconfirmedText), or the listener holding no
+// record of the session yet - "no live session" (contracts.NoLiveSession), as the registry read is
+// recorded and as the send's own 404 words it - and an account token Dispatch could not present
+// (listenerAccountTokenPrefix), which the next try reads again. A receipt timeout and an
+// unconfirmed store are safe to repeat because the retry carries the same idempotency key, which
+// the listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts).
+// Anything else is the listener's answer - a session that does not take this mode, a send it
+// refused, a status it chose such as a 401 for a token it refuses or a 500 for a record it cannot
+// decode (listenerAnsweredPrefix) - which no successor answers differently, and the attempt
+// settles with it at once.
 //
 // It reads the recorded text rather than the error behind it because a resumed mention's first
 // try sends with the resolve error its row already holds (mentionResolutionFor), which survives

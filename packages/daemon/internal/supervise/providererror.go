@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -296,11 +297,11 @@ type providerErrorClass struct {
 // status, so it is the last of these.
 //
 // The error fails the claim for a cyber-policy refusal (codeCyberPolicy), whatever its status,
-// under CauseCyberPolicy, and for a client error, 400 to 499, that is none of 401, 403, 408 and
-// 429, under CauseProviderError. A malformed request is the case the second exists for. Every other
-// error sends the task again:
+// under CauseCyberPolicy, and for a client error, 400 to 499, that is neither a credential (401
+// or 403) nor an outage (httpoutage.Is), under CauseProviderError. A malformed request is the
+// case the second exists for. Every other error sends the task again:
 //
-//   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
+//   - an outage (httpoutage.Is), is the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
 //     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
 //     whose turn hits one is worse than sending the task again: the notice at
@@ -339,8 +340,11 @@ func classifyProviderError(status int, code string) providerErrorClass {
 	if code == codeCostCap {
 		class.cause = "the session's cost cap (Oh My Pi's session.maxCost, cost_cap)"
 	}
+	if httpoutage.Is(status) {
+		return class
+	}
 	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return class
 	}
 	if status >= 400 && status <= 499 {

@@ -772,7 +772,8 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
+		PostSystemMessage: s.postSystemMessage}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -794,6 +795,13 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// PostSystemMessage posts message on its issue under its own id (model.SystemMessage), written
+	// by actor, a system actor of Dispatch's own, through the one writer every issue message goes
+	// through (postSystemMessage, createStoredMessage), and answers the message's id; a post made
+	// again under the same id writes no second message. Dispatch's outbox posts the message that
+	// says a role-routed event was recorded undelivered with it (internal/dispatch/outbox,
+	// postUndeliveredNotes).
+	PostSystemMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past

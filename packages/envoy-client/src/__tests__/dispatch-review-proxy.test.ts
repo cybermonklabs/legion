@@ -284,20 +284,53 @@ test("the proxy's refusal that echoes the placeholder is told without it", async
   expect(refusal.message).not.toContain(PLACEHOLDER);
 });
 
-test("the proxy's own failure, before anything left it, is asked again under the write's key", async () => {
-  const fetchImpl = scriptedFetch([
-    () => proxyAnswer(502, "UPSTREAM_UNREACHABLE", "false"),
-    () => Response.json(REVIEW, { status: 201 }),
-  ]);
-  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
-    writeRetry: NO_WAIT,
+// The proxy's own answer before anything left it is read by the one outage rule
+// (`@legion/contracts/http-status`'s `outage`): a 408, a 429 or a 5xx is asked again under the key,
+// and any other status is the proxy's refusal, sent once. The proxy writes a 408 or a 429 itself
+// only where it passes on a token endpoint's status (`TOKEN_EXCHANGE_REFUSED`).
+for (const [status, code] of [
+  [408, "TOKEN_EXCHANGE_REFUSED"],
+  [429, "TOKEN_EXCHANGE_REFUSED"],
+  [500, "TOKEN_EXCHANGE_REFUSED"],
+  [502, "UPSTREAM_UNREACHABLE"],
+  [503, "TOKEN_EXCHANGE_REFUSED"],
+] as const) {
+  test(`the proxy's own ${status} ${code}, before anything left it, is asked again under the write's key`, async () => {
+    const fetchImpl = scriptedFetch([
+      () => proxyAnswer(status, code, "false"),
+      () => Response.json(REVIEW, { status: 201 }),
+    ]);
+    const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+      writeRetry: NO_WAIT,
+    });
+    const review = await client.reviewArtifact("artifact-1", 3, { state: "approved" });
+    expect(review as unknown).toEqual(REVIEW);
+    const keys = fetchImpl.sent.map((sent) =>
+      new Headers(sent.init.headers).get("Idempotency-Key")
+    );
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
   });
-  const review = await client.reviewArtifact("artifact-1", 3, { state: "approved" });
-  expect(review as unknown).toEqual(REVIEW);
-  const keys = fetchImpl.sent.map((sent) => new Headers(sent.init.headers).get("Idempotency-Key"));
-  expect(keys).toHaveLength(2);
-  expect(keys[1]).toBe(keys[0]);
-});
+}
+
+for (const status of [400, 403, 409]) {
+  test(`the proxy's own ${status}, before anything left it, is its refusal, sent once`, async () => {
+    const fetchImpl = scriptedFetch([
+      () => proxyAnswer(status, "TOKEN_EXCHANGE_REFUSED", "false"),
+      () => Response.json(REVIEW, { status: 201 }),
+    ]);
+    const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+      writeRetry: NO_WAIT,
+    });
+    const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(fetchImpl.sent).toHaveLength(1);
+    expect(refused).toBeInstanceOf(DispatchServiceError);
+    expect((refused as DispatchServiceError).status).toBe(status);
+  });
+}
 
 test("the proxy's answer after the review may have reached Dispatch leaves the review unsettled, with its key", async () => {
   const fetchImpl = scriptedFetch([() => proxyAnswer(407, "GRANT_NOT_LIVE", "unknown")]);

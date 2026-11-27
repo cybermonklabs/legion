@@ -16,14 +16,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
 // the attempt, on each request; adds the endpoint's own query parameters to it; takes the run's
 // Final schema out of a Messages API body that offers the model a tool and puts it in every other
-// body back in the order its caller wrote it (inFinalOrder); and makes the run's one retry, on a
-// 429, a 5xx or a transport error, within the run's time.
+// body back in the order its caller wrote it (inFinalOrder); and makes the run's one retry, on an
+// outage status (a 408, a 429, a 5xx) or a transport error, within the run's time.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
@@ -392,17 +393,18 @@ func jsonParts(value []byte, kind jsontext.Kind) (all []jsonPart, ok bool) {
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,
-// 429 or a 5xx, after the wait the response names, read through serverwait.Read, or a second when
-// it names none. A wait of an hour is one a run bounded under an hour, such as the judge's 20 s
-// modelBound, has no time for, so the call is not made again (waitable). The providers this
-// package speaks to name their own limits under other headers (OpenAI's
-// x-ratelimit-reset-requests and -tokens, Anthropic's anthropic-ratelimit-*), which Read does not
-// read, so for them the wait is Retry-After's or the second.
+// or an outage (httpoutage.Is, RFC 9110: a 408, a 429 or a 5xx), after the wait the response
+// names, read through serverwait.Read, or a second when it names none. A wait of an hour is one a
+// run bounded under an hour, such as the judge's 20 s modelBound, has no time for, so the call is
+// not made again (waitable). The providers this package speaks to name their own limits under
+// other headers (OpenAI's x-ratelimit-reset-requests and -tokens, Anthropic's
+// anthropic-ratelimit-*), which Read does not read, so for them the wait is Retry-After's or the
+// second.
 func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if err != nil {
 		return defaultRetryWait, !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	}
-	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+	if !httpoutage.Is(resp.StatusCode) {
 		return 0, false
 	}
 	if wait, named := serverwait.Read(resp.Header, time.Now()); named {

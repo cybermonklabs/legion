@@ -2134,6 +2134,49 @@ type CheckResultRetractedEventPayload struct {
 	Reason       string `json:"reason"`
 }
 
+// RoleUndeliveredEventType is the event Dispatch's outbox appends on an event's own owner when its
+// copy for a role reached no session: every copy the outbox kept for the role on the role's kept
+// lane ended its hour with no session holding the role (RoleUndeliveredExpired), or Envoy no longer
+// held the last copy to keep it again (RoleUndeliveredCopyGone). The outbox writes it as a system
+// actor, so it wakes no route and reaches no role (events.Broker.Notify); a person reads it in the
+// owner's history, and a session that follows the owner's topic is sent it.
+const RoleUndeliveredEventType = "role.undelivered"
+
+// SystemMessage is a message Dispatch itself writes on an issue, as one of its own system actors
+// (api.Background.PostSystemMessage): ID is the id it is stored under, which its writer chooses so
+// that a post made again writes no second message, IssueKey the issue it is posted on, and Body
+// its markdown. Dispatch's outbox posts the message that names the events a role did not take
+// with it.
+type SystemMessage struct {
+	ID       string
+	IssueKey string
+	Body     string
+}
+
+// The reasons a role.undelivered event gives (RoleUndeliveredEventPayload.Reason).
+const (
+	// RoleUndeliveredExpired: each of the copy's keeps ended its hour with no session taking it.
+	RoleUndeliveredExpired = "expired"
+	// RoleUndeliveredCopyGone: the stream no longer held the copy that expired - its retention
+	// passed it, or a stream created again since holds another message at its sequence - so the
+	// outbox had nothing to keep again.
+	RoleUndeliveredCopyGone = "copy_gone"
+)
+
+// RoleUndeliveredEventPayload is the payload of role.undelivered (RoleUndeliveredEventType): the
+// event whose copy reached no session (EventID, EventType), the role it was routed to, how many
+// times its copy was kept on the role's kept lane, when the last copy was kept and when Envoy
+// dropped it, and why the outbox stopped.
+type RoleUndeliveredEventPayload struct {
+	EventID   int64     `json:"event_id"`
+	EventType string    `json:"event_type"`
+	Role      string    `json:"role"`
+	Keeps     int       `json:"keeps"`
+	KeptAt    time.Time `json:"kept_at"`
+	DroppedAt time.Time `json:"dropped_at"`
+	Reason    string    `json:"reason"`
+}
+
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
 // once a document has been quiet for a while after a person's settled browser edit: the versions
 // the quiet window spans (FromVersion is the one before the window's first person's version,
