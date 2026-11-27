@@ -5,7 +5,7 @@ import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Artifact } from "../web/src/api/types";
 import { COPY_REF_SELECTOR } from "../web/src/features/refs/CopyRefButton";
 
-import { setLiveSessions } from "./agents";
+import { openAgents, setLiveSessions } from "./agents";
 import {
   answerAsk,
   createArtifactAsk,
@@ -68,11 +68,7 @@ async function approvalCard(page: Page, askId: string): Promise<Locator> {
 
 /** Opens the Inbox drawer with `i` over the Agents page. */
 async function openDrawer(page: Page): Promise<void> {
-  // The key waits for the page's heading: pressed as the page loads, before the shell has
-  // registered its keys, it can open nothing.
-  await page.goto("/agents");
-  await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
-  await page.locator("body").focus();
+  await openAgents(page);
   await page.keyboard.press("i");
   await expect(drawer(page)).toBeVisible();
 }
@@ -1730,11 +1726,7 @@ test("the approval mark stands at one place on every row", async ({ browser }) =
     // Below its width: the two cards. The Inbox page lists short rows there too (INFRA-5200), so
     // the cards are the drawer's, opened over a page that draws no Inbox list of its own.
     await page.setViewportSize({ height: 768, width: 1024 });
-    await page.goto("/agents");
-    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
-    await page.locator("body").focus();
-    await page.keyboard.press("i");
-    await expect(drawer(page)).toBeVisible();
+    await openDrawer(page);
     for (const row of cards) {
       await expect(
         row.renderer === "ask card"

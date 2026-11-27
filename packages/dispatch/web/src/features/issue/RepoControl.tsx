@@ -262,11 +262,11 @@ export function RepoControl({
  *
  * The item renders whenever the issue can carry a repository, which is always: a project with no
  * default repository has nothing to suggest, and its issues still take any repository. The
- * default comes from the project list (`projectsQuery`), the read the sidebar and the issue
- * header share, as the box reads it, so the control reads no route of its own. The list reads it
+ * default comes from the project list (`projectsQuery`), the read the sidebar and the search
+ * palette share, as the box reads it, so the control reads no route of its own. The list reads it
  * once the reader reaches for the control (pointer over it, a touch on it, or focus), and at once
  * while the issue resolves to no repository at all, which is the issue most likely to be given
- * one; where the sidebar or the header has read it, its answer is there already. Until it
+ * one; where the sidebar or the search palette has read it, its answer is there already. Until it
  * answers, the list says the repositories are loading where a typed word matches no option. A
  * read that fails costs the suggestion and nothing else: the failure shows beside the trigger
  * with a Retry, and in the list, which still takes a typed repository.
@@ -434,8 +434,8 @@ function RepositoryList({
  *
  * The item renders whenever the issue can carry a repository, which is always: a project with no
  * default repository has nothing to suggest, and its issues still take any repository. The
- * default comes from the project list (`projectsQuery`), the read the sidebar and the issue
- * header share, so the control reads no route of its own. A failed project list costs the
+ * default comes from the project list (`projectsQuery`), the read the sidebar and the search
+ * palette share, so the control reads no route of its own. A failed project list costs the
  * suggestion and nothing else: the box takes a typed repository as ever.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the same box says that

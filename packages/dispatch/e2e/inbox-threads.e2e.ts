@@ -1,4 +1,4 @@
-import { setLiveSessions } from "./agents";
+import { openAgents, setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
 import { openFilterPanel } from "./filters";
 import { inboxPane, inboxRow, selectRow } from "./inbox-pane";
@@ -32,9 +32,7 @@ test("the drawer's own bar filters the drawer alone, and the Inbox page keeps it
 
     // The drawer is offered on every page but the Inbox itself, so the reader opens it with `i`
     // from a page of its own.
-    await page.goto("/agents");
-    await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
-    await page.locator("body").focus();
+    await openAgents(page);
     await page.keyboard.press("i");
     const drawer = page.getByTestId("inbox-drawer");
     await expect(drawer).toBeVisible();
@@ -129,11 +127,7 @@ test("a long reply shows whole in the reading pane and on a card @phone", async 
     await selectRow(page, replyRowId(thread));
     await expectWholeReply(inboxPane(page).locator("[data-inbox-thread-body]"));
 
-    await page.goto("/agents");
-    // The key waits for the page's heading: pressed as the page loads, before the shell has
-    // registered its keys, `i` opens nothing.
-    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
-    await page.locator("body").focus();
+    await openAgents(page);
     await page.keyboard.press("i");
     const drawer = page.getByRole("dialog", { name: "Inbox" });
     await expect(drawer).toBeVisible();

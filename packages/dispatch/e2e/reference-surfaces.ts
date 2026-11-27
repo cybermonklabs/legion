@@ -2,7 +2,7 @@ import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { Issue } from "../web/src/api/types";
-import { type FakeSession, setLiveSessions } from "./agents";
+import { type FakeSession, openAgents, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -423,8 +423,7 @@ export function answeredQuestionPreview(page: Page, askId: string): Locator {
  *  title alone: the Inbox page draws short rows at every width and reads one row at a time
  *  (`e2e/inbox-pane.ts`). The drawer opens over another page, so this navigates to one. */
 export async function openInboxReplies(page: Page): Promise<void> {
-  await page.goto("/agents");
-  await page.locator("body").focus();
+  await openAgents(page);
   await page.keyboard.press("i");
   await expect(page.getByRole("dialog", { name: "Inbox" })).toBeVisible();
 }
