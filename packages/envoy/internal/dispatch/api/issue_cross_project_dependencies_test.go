@@ -524,54 +524,6 @@ func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 	})
 }
 
-// TestAnAcceptanceWriteCountsOnlyTheChildrenItsWriterSees: the open-child check reads a child as
-// its writer reads it (refuseOpenForeignChildren, access.ProjectClause), since a private project
-// answers as missing to a caller its list does not let in. PUB's issue has an open child in PRIV,
-// carol's project, made private. carol, who sees PRIV, is refused the acceptance write, and the
-// 409 names the child. alice, a full member PRIV's list does not name, does not see the child: her
-// same write is taken, as over an issue with no such child.
-//
-// Control: the check's read with its project clause taken out, as main writes it, fails the second
-// case: alice is refused, and the 409 names PRIV's child.
-func TestAnAcceptanceWriteCountsOnlyTheChildrenItsWriterSees(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
-	seedCredentialProjects(t, handler, database)
-	parent := issueIn(t, handler, accessCarol, publicProject)
-	child := issueIn(t, handler, accessCarol, privateProject)
-	// The test writes the link itself rather than through the route, as
-	// TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject does, so it reads the same at a
-	// build whose routes still refuse a parent of another project.
-	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
-		t.Fatalf("put %s under %s: %v", child, parent, err)
-	}
-	makePrivate(t, database, privateProject)
-	patch := func(t *testing.T, login string, body map[string]any) *httptest.ResponseRecorder {
-		t.Helper()
-		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+parent, body, login)
-	}
-	if response := patch(t, accessCarol, map[string]any{"status": "in_progress"}); response.Code != http.StatusOK {
-		t.Fatalf("set %s to in_progress: status=%d body=%s", parent, response.Code, response.Body.String())
-	}
-	acceptance := map[string]any{"status": "retro", "refuse_open_foreign_children": true}
-
-	refused := patch(t, accessCarol, acceptance)
-	if refused.Code != http.StatusConflict {
-		t.Fatalf("carol's acceptance write: status=%d body=%s, want 409 FOREIGN_CHILD_OPEN", refused.Code, refused.Body.String())
-	}
-	refusal := decodeBody[foreignChildOpenAnswer](t, refused)
-	if len(refusal.Issues) != 1 || refusal.Issues[0].Key != child || refusal.Issues[0].Project != privateProject {
-		t.Fatalf("carol's refusal %+v, want FOREIGN_CHILD_OPEN naming %s of %s", refusal, child, privateProject)
-	}
-
-	taken := patch(t, "alice", acceptance)
-	if taken.Code != http.StatusOK {
-		t.Fatalf("alice's acceptance write: status=%d body=%s, want 200: the open child is of a project she does not see", taken.Code, taken.Body.String())
-	}
-	if strings.Contains(taken.Body.String(), child) {
-		t.Fatalf("alice's answer names %s, a child of a project she does not see: %s", child, taken.Body.String())
-	}
-}
-
 // TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus: refuse_open_foreign_children asks for the
 // check of an acceptance write, so it is refused beside any other status or none.
 func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {

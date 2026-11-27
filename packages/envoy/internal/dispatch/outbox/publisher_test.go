@@ -126,6 +126,9 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err != nil {
 		return err
 	}
+	if err := found.settleSight(ctx, deps); err != nil {
+		return err
+	}
 	// As a batch does before it reads any destination, and the roles it resolved there are the
 	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
 	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
@@ -183,6 +186,9 @@ func routeTopics(t *testing.T, database *store.Store, event model.Event, add fun
 	found, err := loadLookups(context.Background(), database.Pool, want)
 	if err != nil {
 		t.Fatalf("read the lookups: %v", err)
+	}
+	if err := found.settleSight(context.Background(), Deps{}); err != nil {
+		t.Fatalf("settle the lookups' sight: %v", err)
 	}
 	d := &destinations{seen: map[string]struct{}{}}
 	if err := add(event, routing{}, found, d); err != nil {

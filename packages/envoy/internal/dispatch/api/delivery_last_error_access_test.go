@@ -23,6 +23,7 @@ import (
 // timeline, measures and snapshot name the failure) or in verdictLocked (bob is sent a freshness
 // frame naming the later one); either fails the test.
 func TestTheReconcilesFailureIsToldOnlyToAReaderOfTheDeployment(t *testing.T) {
+	t.Parallel()
 	seed := seedDeliveryReads(t, true, true)
 	pool := seed.database.Pool
 	failure := "the installation lacks Actions: read on acme/widgets"

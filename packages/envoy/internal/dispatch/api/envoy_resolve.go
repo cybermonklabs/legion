@@ -346,8 +346,9 @@ const (
 // connection refused, reset or timed out, a 502, 503 or 504 - but never
 // listenerNotConfiguredText), a receipt timeout, a send whose store the listener could not confirm
 // (storeUnconfirmedText), or the listener holding no record of the session yet - "no live session",
-// as the registry read is recorded and as the send's own 404 words it - and an account token
-// Dispatch could not present (listenerAccountTokenPrefix), which the next try reads again. A
+// as the registry read is recorded and as the send's own 404 words it - an account token
+// Dispatch could not present (listenerAccountTokenPrefix), which the next try reads again, and a
+// read of the session's sight that failed (sightUnreadPrefix), which the next try makes again. A
 // receipt timeout and an unconfirmed store are safe to repeat because the retry carries the same
 // idempotency key, which the listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in
 // packages/contracts). Anything else is the listener's answer - a session that does not take this
@@ -366,6 +367,7 @@ func retryableDeliveryFailure(failure string) bool {
 		failure == storeUnconfirmedText,
 		strings.HasPrefix(failure, listenerUnreachablePrefix),
 		strings.HasPrefix(failure, listenerAccountTokenPrefix),
+		strings.HasPrefix(failure, sightUnreadPrefix),
 		strings.HasPrefix(failure, noLiveSessionPrefix):
 		return true
 	}

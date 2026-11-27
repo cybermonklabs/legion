@@ -72,10 +72,10 @@ func TestASessionSeesWhatItsPersonAndItsCredentialSee(t *testing.T) {
 		"ses_bob_listed":      {"PRIV"},
 		"ses_alice_listed":    {"PUB"},
 	})
-	if one, err := SessionSeesProject(ctx, database.Pool, "ses_bob", "PUB"); err != nil || one {
+	if one, _, err := SessionSeesProject(ctx, database.Pool, "ses_bob", "PUB"); err != nil || one {
 		t.Errorf("SessionSeesProject(ses_bob, PUB) = %v, %v; want false: a restricted member's session sees no public project its person's lists do not name", one, err)
 	}
-	if one, err := SessionSeesProject(ctx, database.Pool, "ses_bob", "PRIV"); err != nil || !one {
+	if one, _, err := SessionSeesProject(ctx, database.Pool, "ses_bob", "PRIV"); err != nil || !one {
 		t.Errorf("SessionSeesProject(ses_bob, PRIV) = %v, %v; want true", one, err)
 	}
 

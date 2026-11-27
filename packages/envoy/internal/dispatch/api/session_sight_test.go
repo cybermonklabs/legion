@@ -2,13 +2,17 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -307,5 +311,178 @@ func TestAQueuedSendWhoseSessionDoesNotSeeTheProjectIsWithheld(t *testing.T) {
 	}
 	if published := publishedBy(t, seed.deps); len(published) != 1 || published[0].Topic != contracts.LegacyAgentSubject(sessionOfBob) {
 		t.Fatalf("Dispatch published %+v for PRIV's queued send, want one envelope on %s", published, contracts.LegacyAgentSubject(sessionOfBob))
+	}
+}
+
+// TestAWriteAsksTheListenerAgainBeforeItJudgesAnExpiredList holds each write that gives a session
+// work to the session's sight as the listener answers now (refreshedSessionSight,
+// refreshRosterBeforeSight, sessionSightRefusal): a session route set on PRIV's issue, judged before
+// the write, and a follower added to its ask and a message to the session, judged in the write's
+// transaction. carol writes each with the stored listener record expired. session-listed is tied
+// to nobody and its token lists PRIV; session-carol is carol's, and its token lists PUB alone. Once
+// the refresh renews the record, session-listed is given each and session-carol is refused 403
+// SESSION_OUTSIDE_PROJECT, where the expired record's ties alone answer each the other way. With
+// the listener not answering, each write to session-carol is refused 503 ENVOY_UNAVAILABLE, naming
+// the listener, and writes nothing. Last, with PRIV public and bob a full member, no verdict
+// depends on a list: each write to session-carol is made and the listener is not asked.
+func TestAWriteAsksTheListenerAgainBeforeItJudgesAnExpiredList(t *testing.T) {
+	t.Parallel()
+	const listed, carols = "session-listed", "session-carol"
+	// silent makes the listener's session list answer 503, as a listener that does not answer, and
+	// listings counts the times it was asked for that list.
+	var silent atomic.Bool
+	var listings atomic.Int32
+	listener, _ := newBroadcastListener(t, `[`+
+		`{"session_id":"`+listed+`","title":"An agent of nobody's","capabilities":["btw","steer"],"projects":["`+seedPrivate+`"]},`+
+		`{"session_id":"`+carols+`","title":"Carol's agent","capabilities":["btw","steer"],"projects":["`+seedPublic+`"]}]`,
+		func(w http.ResponseWriter, r *http.Request) bool {
+			if r.Method != http.MethodGet || r.URL.Path != "/v1/sessions" {
+				return false
+			}
+			listings.Add(1)
+			quiet := silent.Load()
+			if quiet {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+			return quiet
+		})
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := seed.database.Pool.Exec(t.Context(), sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	exec(`insert into session_owners (session_id, login) values ($1, $2)`, carols, seedCarol)
+	exec(`insert into session_projects (session_id, project_key) values ($1, $3), ($2, $3)`, listed, carols, seedPrivate)
+	issue := seed.issue[seedPrivate]
+	ask := createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{"question": "Who works this?"}))
+	writes := []struct {
+		write, method string
+		path          func(session string) string
+		body          func(session string) map[string]any
+		ok            int
+		// given reads whether the write gave session the work.
+		given func(session string) bool
+	}{
+		{
+			write: "a session route on the issue", method: http.MethodPatch, ok: http.StatusOK,
+			path: func(string) string { return "/api/v1/issues/" + issue },
+			body: func(session string) map[string]any { return map[string]any{"route": "session:" + session} },
+			given: func(session string) bool {
+				return rowText(t, seed.database, `select (coalesce(route, '') = $2)::text from issues where key = $1`, issue, "session:"+session) == "true"
+			},
+		},
+		{
+			write: "a follower added on the ask", method: http.MethodPut, ok: http.StatusNoContent,
+			path: func(session string) string { return "/api/v1/asks/" + ask + "/followers/" + session },
+			body: func(string) map[string]any { return nil },
+			given: func(session string) bool {
+				return rowText(t, seed.database, `select exists (select 1 from ask_followers where ask_id = $1 and session_id = $2)::text`, ask, session) == "true"
+			},
+		},
+		{
+			write: "a message to the session", method: http.MethodPost, ok: http.StatusCreated,
+			path: func(string) string { return "/api/v1/issues/" + issue + "/messages" },
+			body: func(session string) map[string]any {
+				return map[string]any{"body": "A note for " + session + ".", "target": "session:" + session, "delivery": "btw"}
+			},
+			given: func(session string) bool {
+				return rowText(t, seed.database, `select exists (select 1 from messages where issue_key = $1 and target = $2)::text`, issue, "session:"+session) == "true"
+			},
+		},
+	}
+	expire := func() { exec(`update route_roster set expires_at = now() - interval '1 minute'`) }
+
+	for _, row := range writes {
+		expire()
+		asked := listings.Load()
+		accepted := seed.request(t, callerCarol, row.method, row.path(listed), row.body(listed))
+		if accepted.Code != row.ok || !row.given(listed) || listings.Load() == asked {
+			t.Errorf("%s naming %s, whose renewed list names PRIV, with the record expired: %d %s after %d reads of the listener's sessions; want %d, the work given and the record refreshed",
+				row.write, listed, accepted.Code, strings.TrimSpace(accepted.Body.String()), listings.Load()-asked, row.ok)
+		}
+		expire()
+		asked = listings.Load()
+		refused := seed.request(t, callerCarol, row.method, row.path(carols), row.body(carols))
+		if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != codeSessionOutsideProject ||
+			row.given(carols) || listings.Load() == asked {
+			t.Errorf("%s naming %s, whose renewed list names PUB alone, with the record expired: %d %s after %d reads of the listener's sessions; want 403 %s, nothing given and the record refreshed",
+				row.write, carols, refused.Code, strings.TrimSpace(refused.Body.String()), listings.Load()-asked, codeSessionOutsideProject)
+		}
+	}
+
+	silent.Store(true)
+	for _, row := range writes {
+		expire()
+		unread := seed.request(t, callerCarol, row.method, row.path(carols), row.body(carols))
+		if unread.Code != http.StatusServiceUnavailable || decodeBody[refusalAnswer](t, unread).Code != "ENVOY_UNAVAILABLE" ||
+			!strings.Contains(unread.Body.String(), "listener") || row.given(carols) {
+			t.Errorf("%s naming %s with the record expired and the listener silent: %d %s; want 503 ENVOY_UNAVAILABLE naming the listener and nothing given",
+				row.write, carols, unread.Code, strings.TrimSpace(unread.Body.String()))
+		}
+	}
+
+	exec(`update projects set visibility = 'public' where key = $1`, seedPrivate)
+	exec(`update people set member_kind = 'full' where member_kind = 'restricted'`)
+	asked := listings.Load()
+	for _, row := range writes {
+		expire()
+		if made := seed.request(t, callerCarol, row.method, row.path(carols), row.body(carols)); made.Code != row.ok || !row.given(carols) {
+			t.Errorf("%s naming %s with no private project and no restricted member, the record expired and the listener silent: %d %s; want %d and the work given",
+				row.write, carols, made.Code, strings.TrimSpace(made.Body.String()), row.ok)
+		}
+	}
+	if listings.Load() != asked {
+		t.Errorf("with no private project and no restricted member, the writes read the listener's sessions %d times, want none", listings.Load()-asked)
+	}
+	awaitBackgroundWrites(t, seed.server)
+}
+
+// sightReadFailer is a tracer that, armed, fails the next read of a session's sight
+// (access.SessionSightSQL) before it is sent, as a dropped connection would, by handing pgx a
+// context that is already done; every other statement passes.
+type sightReadFailer struct{ armed atomic.Bool }
+
+func (f *sightReadFailer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if data.SQL != access.SessionSightSQL || !f.armed.CompareAndSwap(true, false) {
+		return ctx
+	}
+	done, cancel := context.WithCancelCause(ctx)
+	cancel(errors.New("the read of the session's sight fails"))
+	return done
+}
+
+func (f *sightReadFailer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// TestASendWhoseSightReadFailsIsTriedAgain holds a failed read of a send's sight to a failure a
+// later try outlasts (withheldFromSession, sightUnreadPrefix, retryableDeliveryFailure): a database
+// error of one moment withholds nothing for good. The read of whether bob's session sees PRIV
+// fails once, as a dropped connection would (sightReadFailer); the sender's take-over loop
+// (takeoverRetry.retry) tries again, and that try sends.
+func TestASendWhoseSightReadFailsIsTriedAgain(t *testing.T) {
+	t.Parallel()
+	failer := &sightReadFailer{}
+	listener, sends := newBroadcastListener(t, sightSessions)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, tracer: failer})
+	seedSessionOfBob(t, seed.database)
+	session := sessionOfBob
+	target := ResolvedMention{Target: "session:" + session, Delivery: "btw", SessionID: &session}
+	var tries []sendOutcome
+	failer.armed.Store(true)
+	takeover := seed.server.newTakeoverRetry()
+	if err := takeover.retry(t.Context(), func() string {
+		tries = append(tries, seed.server.sendResolvedDelivery(t.Context(), target, target.Target, "body", "m1:btw", nil,
+			contracts.ExpectsReplyOptional, []byte(`{}`), false, seedPrivate))
+		return tries[len(tries)-1].failure
+	}, nil); err != nil {
+		t.Fatalf("the sender's tries: %v", err)
+	}
+	if len(tries) != 2 || !strings.HasPrefix(tries[0].failure, sightUnreadPrefix) || tries[1].failure != "" || tries[1].envelopeID == nil {
+		t.Fatalf("a send of PRIV's to %s whose first read of its sight failed tried %+v; want a first try failed for a later one to outlast, and a second that sent",
+			sessionOfBob, tries)
+	}
+	if sent := sends.targets(); !slices.Equal(sent, []string{sessionOfBob}) {
+		t.Fatalf("the listener was sent %v, want %s once", sent, sessionOfBob)
 	}
 }

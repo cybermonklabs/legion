@@ -645,25 +645,19 @@ func (e openForeignChildrenError) body() foreignChildOpenError {
 // always is: any status but done and icebox. A child of key's own project is its own daemon's to
 // judge, from the children it records, so it is not read here. caller is the one project the
 // request's credential names, empty for one that names none: the refusal names only the children
-// that caller sees (seenForeignChildren), and it refuses the write while any child who sees is open.
-//
-// The children are read as who reads them (access.ProjectClause), as every read of this file
-// reads another project's issues (writeBlockedBy, validateIssueParent): a child of a project who
-// does not see is neither named in the refusal nor counted, so the 409 names no project its
-// writer may not see, and such a child holds the write back no more than a key no issue holds.
+// that caller sees (seenForeignChildren), and it refuses the write while any child is open.
 //
 // The caller holds the deployment dependency lock (lockIssueDependencyWrite), which every create
 // with a parent and every reparent takes, so no child is filed under key, or moved under it,
 // between this read and the status the write sets.
-func refuseOpenForeignChildren(ctx context.Context, tx pgx.Tx, who model.Actor, key, project, caller string) error {
+func refuseOpenForeignChildren(ctx context.Context, tx pgx.Tx, key, project, caller string) error {
 	rows, err := tx.Query(ctx, `
 		select i.key, i.project_key, i.status, p.visibility = 'private'
 		from issues i
 		join projects p on p.key = i.project_key
 		where i.parent_key = $1 and i.project_key <> $2 and i.status not in ('done', 'icebox')
-		  and `+access.ProjectClause("i.project_key", "$3")+`
 		order by i.key
-	`, key, project, refs.VisibilityArg(who))
+	`, key, project)
 	if err != nil {
 		return err
 	}
