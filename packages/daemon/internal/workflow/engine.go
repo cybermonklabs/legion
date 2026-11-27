@@ -272,11 +272,9 @@ func (e *Engine) applyAndFix(ctx context.Context, tx pgx.Tx, fact intake.Fact) (
 	if !ok && *resolved != "" {
 		key, ok = *resolved, true
 	}
-	if ok {
-		if err := e.fixRule(ctx, tx, key); err != nil {
-			return intake.Result{}, err
-		}
-	}
+	// CONTROL (fb8-vfix): the fix rule is taken out of the tail of every fact, so no failed check
+	// opens a fix and the implementer's step starts only after the review ended.
+	_, _ = key, ok
 	return result, nil
 }
 
