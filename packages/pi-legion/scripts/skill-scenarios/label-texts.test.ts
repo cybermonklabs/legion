@@ -25,8 +25,9 @@ const tests = [
   ["daemon", "rig_daemon_test.go", "TestRigDaemon"],
   ["daemon", "rig_daemon_live_test.go", "TestRigDaemonLive"],
 ] as const;
-// The tests whose own cases build runs: every test but TestRigDaemonLive, which has none.
-const ownCases = tests.filter(([, , name]) => name !== "TestRigDaemonLive");
+// The tests whose own cases build runs: the three that read a request. TestRigDaemonLive has none,
+// and TestRigDaemon is a check of its own (CI's daemon-go job), never a step of a label's build.
+const ownCases = tests.filter(([, , name]) => name !== "TestRigDaemonLive" && name !== "TestRigDaemon");
 
 const directory = temporaryDirectories("label-texts");
 
@@ -233,6 +234,9 @@ test("build compiles into RIG_TEXTS_BIN and leaves the label's checkout as it wa
   });
   for (const [, , name] of ownCases) expect(built.stdout).toContain(`--- PASS: ${name} (`);
   expect(built.stdout).not.toContain("TestRigDaemonLive");
+  // Catches: a build that runs the daemon rig, whose shared NATS or missing route then makes a label
+  // that compiles read red.
+  expect(built.stdout).not.toContain("--- PASS: TestRigDaemon (");
   expect(git("status", "--porcelain", "--untracked-files=all", "--ignored")).toBe("");
   expect(existsSync(path.join(out, commit, "built"))).toBe(true);
 
