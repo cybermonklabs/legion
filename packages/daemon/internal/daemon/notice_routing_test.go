@@ -139,12 +139,18 @@ func noticeTree(t *testing.T, pool *store.Pool, records record.Store, lingers bo
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &child, Title: "Grandchild", Phase: phase.Testing, Generation: 1, Status: "testing"})
 }
 
+// architectClaim creates issue's architect claim in state. A claim registered or suspended has
+// been launched, so it is at its first launch's generation, as supervise's writeTry gives each
+// launch try one: the role-wait gate publishes nothing to a claim in either state with no launch
+// (roleWaitGate).
 func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise.ClaimState) claim.Token {
 	t.Helper()
 	token := mustClaimToken(t, issue, claim.RoleArchitect)
-	if _, _, err := sup.Create(context.Background(), supervise.Claim{
-		Token: token, Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect, State: state,
-	}, ""); err != nil {
+	c := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect, State: state}
+	if state == supervise.StateRegistered || state == supervise.StateSuspended {
+		c.Generation = 1
+	}
+	if _, _, err := sup.Create(context.Background(), c, ""); err != nil {
 		t.Fatalf("create the architect claim of %s: %v", issue, err)
 	}
 	return token

@@ -80,8 +80,8 @@ func (h *roleWaitHarness) ready(w *workflowRuntime, machine *supervise.Machine) 
 	return h.clock.Now()
 }
 
-// queueWaiting enqueues a second row of h.tc's kind, due at at, that waits for key as a row a run
-// of its own left waiting does (record.OutboxWait.WaitFor), and answers its id.
+// queueWaiting enqueues a row of h.tc's kind, due at at, that waits for key as a row a run of its
+// own left waiting does (record.OutboxWait.WaitFor), and answers its id.
 func (h *roleWaitHarness) queueWaiting(key string, at time.Time) int64 {
 	h.t.Helper()
 	row := mustOutboxRow(h.t, "LEGION-208", h.payload(), at)
@@ -265,7 +265,12 @@ func TestRoleWaitReadyMakesEveryWaitingRowDue(t *testing.T) {
 					t.Fatalf("row %d waits at step %d after the ready, want 0", id, step)
 				}
 			}
-			lines := loggedMessages(t, rig.logs.String(), wantReadyReleasedLine)
+			// The release writes its line once its transaction has committed, after the rows it
+			// made due read as due.
+			lines := testwait.Until(t, "the ready's release line", func() ([]map[string]any, bool) {
+				lines := loggedMessages(t, rig.logs.String(), wantReadyReleasedLine)
+				return lines, len(lines) > 0
+			})
 			if len(lines) != 1 || !slices.Contains(lines[0]["claims"].([]any), any(string(h.token))) ||
 				!slices.Equal(lines[0]["rows"].([]any), []any{float64(rig.id), float64(held)}) {
 				t.Fatalf("release lines %v, want one naming claim %s and rows %d and %d", lines, h.token, rig.id, held)
@@ -477,8 +482,12 @@ func TestRoleWaitReadyRestartsTheBackoff(t *testing.T) {
 // S11 (R1): a ready that lands while a lane holds the row, its publish in flight, marks the row
 // woken, so the run's retry makes it due at the moment of that retry with its step back at 0
 // rather than at the backoff the run asked for; the run after it publishes to the ready claim.
-// An update_ask is published under its claim's own lock (supervise.Machine.PublishUpdateAsk), so
-// no ready can land while its publish is in flight, and it has no such case.
+// The row is one that waits for its claim (record.WaitForClaim), as a row the gate held while the
+// claim's launch came up does when that launch registers and the row publishes to it: a ready
+// makes due the rows that wait for its claim, and a row that never ran waits for nothing yet
+// (record.Store.ExpediteWaits). An update_ask is published under its claim's own lock
+// (supervise.Machine.PublishUpdateAsk), so no ready can land while its publish is in flight, and it
+// has no such case.
 func TestRoleWaitReadyDuringARunMakesTheRowDueAtOnce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range roleWaitCases {
@@ -488,7 +497,7 @@ func TestRoleWaitReadyDuringARunMakesTheRowDueAtOnce(t *testing.T) {
 		t.Run(string(tc.kind), func(t *testing.T) {
 			t.Parallel()
 			h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
-			rig := h.queue()
+			rig := newRoleWaitRig(t, h.runner, h.pool, h.clock, h.queueWaiting(record.WaitForClaim(h.token), h.start))
 			w := h.readyHooks(false)
 			h.loops(w)
 			machine := h.claim(supervise.StateRegistered, nil)

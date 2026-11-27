@@ -55,9 +55,10 @@ func (r laneReport) envelope(t *testing.T) []byte {
 }
 
 // architectClaimOn creates issue's architect claim in state, registered as session. A claim
-// registered or suspended has been launched, so it is at its first launch's generation, as
-// supervise's writeTry gives each launch one: the role-wait gate publishes nothing to a claim in
-// either state with no launch (roleWaitGate).
+// launching, shim connected, registered or suspended has been launched, so it is at its first
+// launch's generation, as supervise's writeTry gives each launch try one: the role-wait gate
+// publishes nothing to a registered or suspended claim with no launch (roleWaitGate), and a
+// launch in progress registers at the generation it was launched at (comesUp).
 func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervise.ClaimState, session string) {
 	t.Helper()
 	token := mustClaimToken(t, issue, claim.RoleArchitect)
@@ -65,10 +66,11 @@ func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervi
 		Token: token, Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect,
 		State: state, Session: session,
 	}
-	if state == supervise.StateRegistered || state == supervise.StateSuspended {
+	launching := state == supervise.StateLaunching || state == supervise.StateShimConnected
+	if launching || state == supervise.StateRegistered || state == supervise.StateSuspended {
 		c.Generation = 1
 	}
-	if state == supervise.StateLaunching || state == supervise.StateShimConnected {
+	if launching {
 		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "1:1",
 			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
 	}
