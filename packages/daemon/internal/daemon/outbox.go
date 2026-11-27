@@ -710,7 +710,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			return r.records.Enqueue(ctx, tx, notice)
 		}
 		told = func() {
-			r.log.Error("outbox issue branch refused by GitHub for good and dropped; its architect is told once a generation",
+			r.log.Error("outbox issue branch refused for good and dropped, and its architect is told once a generation",
 				"row", row.ID, "issue", row.Issue, "write", refusal.Write, "refusal", refusal.Kind, "told", first, "error", kept)
 		}
 	}

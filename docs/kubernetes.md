@@ -3133,10 +3133,13 @@ Rolling forward again also costs the window the other way: an issue the earlier 
 
 #### Rolling back the release that ends a branch row GitHub refuses for good
 
-This release's migration `20261127215416_branch_refusals.up.sql` adds the table `branch_refusals`, the record of each issue's branch row that GitHub refused in a way a retry meets again, and the notice kind `branch-refused`.
-An earlier release names the table in no statement, and it decodes an outbox row strictly, so it fails an unsent `branch-refused` notice at every attempt.
+This release's migration `20261127215416_branch_refusals.up.sql` adds the table `branch_refusals` and the notice kind `branch-refused`.
+The table records each issue's branch row that GitHub refused in a way a retry meets again.
+An earlier release names the table in no statement.
+It decodes an outbox row strictly, so it fails an unsent `branch-refused` notice at every attempt.
 
-Run the way back below at the rollback, with every project's daemon on that database stopped, before the way back of [Rolling back the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue).
+Run the way back below at the rollback, with every project's daemon on that database stopped.
+Run it before the way back of [the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue).
 Run it with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
 It is one transaction, and each of its statements runs again with no error.
 
@@ -3150,7 +3153,7 @@ commit;
 
 The header of `20261127215416_branch_refusals.up.sql` carries this same block.
 
-What the way back costs is each unsent `branch-refused` notice, a refusal its architect is never told of, and the state's `branchRefused` of each refused branch.
+The way back costs each unsent `branch-refused` notice, a refusal its architect is never told of, and the state's `branchRefused` of each refused branch.
 Under the earlier release a branch row GitHub refuses retries on its backoff again, and the starts of its issue wait behind it.
 
 #### Rolling back the release that starts a next change for a request on a merged issue
@@ -4520,7 +4523,8 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261126223725_done_by_checks adds the phase `verifying`, the merge snapshot and the close wait's columns of `issues`, two columns of `production_checks`, one of `pending_task_deliveries`, the tables `defects` and `close_reads` and two outbox kinds, and writes `step_run_witness` again, which reads `phases.entry`, and it writes none of the six, so the block holds over it; a rollback past it runs the two blocks of its own section first, [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass), which put the function back as 20261117004117_step_starts wrote it, drop what the migration adds and delete its version row, while `phases.entry` stands.
 20261127135256_merged_new_work adds the kind `request` to `defects`, the outbox kind `merge_read` and the column `issues.never_merged_confirmed`, and it writes none of the six, so the block holds over it; a rollback past it runs the block of its own section first, [Rolling back the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue), before the blocks of the release that closes an issue when its checks pass.
-20261127215416_branch_refusals adds the table `branch_refusals` and the notice kind `branch-refused`, and it writes none of the six, so the block holds over it; a rollback past it runs the block of its own section first, [Rolling back the release that ends a branch row GitHub refuses for good](#rolling-back-the-release-that-ends-a-branch-row-github-refuses-for-good), before the block of the release that starts a next change for a request on a merged issue.
+20261127215416_branch_refusals adds the table `branch_refusals` and the notice kind `branch-refused`, and it writes none of the six, so the block holds over it.
+A rollback past it first runs the block of [its own section](#rolling-back-the-release-that-ends-a-branch-row-github-refuses-for-good).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
