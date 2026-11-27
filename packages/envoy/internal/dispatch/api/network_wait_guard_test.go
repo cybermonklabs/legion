@@ -40,6 +40,11 @@ var networkWaitInPlace = []string{"api.givenBackAlready"}
 // no admission ticket (detachedFromRequest).
 const detachedContextMaker = "api.detachedFromRequest"
 
+// readWorkerLauncher starts a read stage's goroutine counted for a test's barrier
+// (server.goReadWorker): in production it is a plain go statement, so the guard reads a call of it
+// as a go statement of the function literal it hands over (walk, awaitedAway).
+const readWorkerLauncher = "api.server.goReadWorker"
+
 // outboundDeps are the fields of Deps that hold a client of another server, by the server each
 // one calls. Every exported method of the field's type is an outbound call (outboundMethods).
 var outboundDeps = map[string]string{
@@ -669,6 +674,10 @@ func (g *networkWaitGuard) walk(fn *lockFunction, step networkWaitStep) {
 			return false
 		case *ast.GoStmt:
 			fired[n.Call] = true
+		case *ast.CallExpr:
+			if g.isReadWorker(n) {
+				fired[n] = true
+			}
 		case *ast.Ident:
 			if called, ok := g.graph.info.Uses[n].(*types.Func); ok && g.honourWaits && g.inPlace[g.graph.declared[called.Origin()]] {
 				g.offend(fn, g.graph.line(fn.source, n),
@@ -712,20 +721,40 @@ type channelReceive struct {
 	beside       []types.Object
 }
 
-// awaitedAway reports whether call, a go statement's in fn, starts a goroutine whose waiter gives
-// its unit back around the wait on it alone: a function literal that hands its answer over on
-// channels of fn's (a send or a close, handsOver), at least one receive of which is inside a
-// network wait, and every other receive of which, in fn, is polled or is a case of a select that
-// also receives what one of fn's own goroutines hands over - a goroutine of fn's no network wait
-// waits for, the request's own work, which the guard follows. The request then waits on the
-// goroutine holding its unit only while it waits on its own work too, and holds none once the
-// goroutine is all it has left to wait on: the related-item check's embedding, beside its keyword
-// stage (runRelatedCheck). Such a goroutine's outbound calls hold no unit of the request, and the
-// walk does not follow it. Any other goroutine - one fn waits on alone holding its unit, beside a
-// clock or a context alone, or nowhere - is followed as the request's own.
+// isReadWorker reports whether call is a call of readWorkerLauncher.
+func (g *networkWaitGuard) isReadWorker(call *ast.CallExpr) bool {
+	fn, ok := g.callee(call).(*types.Func)
+	return ok && fn.Pkg() != nil && functionName(fn) == readWorkerLauncher
+}
+
+// goroutineLiteral is the function literal call starts on a goroutine of its own: call.Fun for a
+// go statement's call, or call.Args[0] for a call of readWorkerLauncher.
+func (g *networkWaitGuard) goroutineLiteral(call *ast.CallExpr, goStmt bool) *ast.FuncLit {
+	if goStmt {
+		literal, _ := ast.Unparen(call.Fun).(*ast.FuncLit)
+		return literal
+	}
+	if g.isReadWorker(call) && len(call.Args) == 1 {
+		literal, _ := ast.Unparen(call.Args[0]).(*ast.FuncLit)
+		return literal
+	}
+	return nil
+}
+
+// awaitedAway reports whether call, a go statement's or a readWorkerLauncher call in fn, starts a
+// goroutine whose waiter gives its unit back around the wait on it alone: a function literal that
+// hands its answer over on channels of fn's (a send or a close, handsOver), at least one receive
+// of which is inside a network wait, and every other receive of which, in fn, is polled or is a
+// case of a select that also receives what one of fn's own goroutines hands over - a goroutine of
+// fn's no network wait waits for, the request's own work, which the guard follows. The request then
+// waits on the goroutine holding its unit only while it waits on its own work too, and holds none
+// once the goroutine is all it has left to wait on: the related-item check's embedding, beside its
+// keyword stage (runRelatedCheck). Such a goroutine's outbound calls hold no unit of the request,
+// and the walk does not follow it. Any other goroutine - one fn waits on alone holding its unit,
+// beside a clock or a context alone, or nowhere - is followed as the request's own.
 func (g *networkWaitGuard) awaitedAway(fn *lockFunction, call *ast.CallExpr) bool {
-	aside, ok := ast.Unparen(call.Fun).(*ast.FuncLit)
-	if !ok {
+	aside := g.goroutineLiteral(call, !g.isReadWorker(call))
+	if aside == nil {
 		return false
 	}
 	answers := g.handsOver(aside)
@@ -735,12 +764,14 @@ func (g *networkWaitGuard) awaitedAway(fn *lockFunction, call *ast.CallExpr) boo
 	receives := g.receives(fn, aside)
 	workers := map[types.Object]bool{}
 	ast.Inspect(fn.body, func(node ast.Node) bool {
-		statement, ok := node.(*ast.GoStmt)
-		if !ok {
-			return true
+		var literal *ast.FuncLit
+		switch n := node.(type) {
+		case *ast.GoStmt:
+			literal = g.goroutineLiteral(n.Call, true)
+		case *ast.CallExpr:
+			literal = g.goroutineLiteral(n, false)
 		}
-		literal, ok := ast.Unparen(statement.Call.Fun).(*ast.FuncLit)
-		if !ok || literal == aside {
+		if literal == nil || literal == aside {
 			return true
 		}
 		channels := g.handsOver(literal)
