@@ -1532,7 +1532,7 @@ user, a password, a query or a fragment is refused, and no refusal quotes it.
 The broker accepts that token only once its own configuration names it, so the broker's
 deployment changes in the same deploy as this component's:
 
-- `BROKER_K8S_OIDC_AUDIENCE` is the value given here as `agentSecretsAudience`;
+- `BROKER_K8S_OIDC_AUDIENCE` lists the value given here as `agentSecretsAudience`;
 - `BROKER_K8S_OIDC_ISSUER` is the issuer of this component's cluster, which GKE gives as
   `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster name>`,
   the `serviceAccountIssuer` output (below);
