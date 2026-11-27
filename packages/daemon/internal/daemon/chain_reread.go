@@ -17,10 +17,10 @@ import (
 )
 
 // chainRereadFirst and chainRereadMost bound the backoff of the re-read of one chain the copy
-// cannot read to its top (rereadChains): its first read follows the pass that found it at once,
-// and each read that leaves it unknown doubles the wait before the next, up to five minutes
-// (decision 20 of dispatch://INFRA-4730). The controller tick, an hour apart, is too slow for R16
-// of dispatch://INFRA-3320's "until the chain is known".
+// cannot read to its top (rereadChains): its first read follows the note of it at once, and each
+// read that leaves it unknown doubles the wait before the next, up to five minutes (decision 20 of
+// dispatch://INFRA-4730). The controller tick, an hour apart, is too slow for R16 of
+// dispatch://INFRA-3320's "until the chain is known".
 const (
 	chainRereadFirst = time.Second
 	chainRereadMost  = 5 * time.Minute
@@ -35,12 +35,13 @@ type chainReread struct {
 	logged map[string]bool
 }
 
-// rereadChains reads Dispatch again, until ctx ends, for every issue an admission pass found on a
-// chain the copy cannot read to its top — a row missing, a key repeated, more than
-// record.MaxChainLinks links (R16 of dispatch://INFRA-3320, admit.Admission.UnknownChains) — outside
-// any transaction, until each chain is known: woken by the pass that notes a key (chainWake), and
-// again at the due time of the first key it holds, each key on a backoff of its own from
-// chainRereadFirst to chainRereadMost (rereadDue).
+// rereadChains reads Dispatch again, until ctx ends, for every key noted on a chain the copy cannot
+// read to its top — a row missing, a key repeated, more than record.MaxChainLinks links (R16 of
+// dispatch://INFRA-3320, admit.Admission.UnknownChains): an issue an admission pass found on one,
+// and the parent a waiting re-parent seed waits on, which the outbox notes (seedReparent) — outside
+// any transaction, until each chain is known: woken by each note (chainWake), and again at the due
+// time of the first key it holds, each key on a backoff of its own from chainRereadFirst to
+// chainRereadMost (rereadDue).
 func (w *workflowRuntime) rereadChains(ctx context.Context) {
 	pending := map[string]*chainReread{}
 	timer := time.NewTimer(time.Hour)
@@ -61,10 +62,10 @@ func (w *workflowRuntime) rereadChains(ctx context.Context) {
 	}
 }
 
-// rereadDue is one turn of the re-read: it takes the keys the admission pass noted since the last
-// turn into pending, reads again each key due by now (rereadChain), drops each whose chain is known
-// after its read, and puts each other one off by its backoff. It answers when the next key is due,
-// the zero time for none.
+// rereadDue is one turn of the re-read: it takes the keys noted since the last turn
+// (admit.Admission.UnknownChains) into pending, holding each key once, reads again each key due by
+// now (rereadChain), drops each whose chain is known after its read, and puts each other one off
+// by its backoff. It answers when the next key is due, the zero time for none.
 func (w *workflowRuntime) rereadDue(ctx context.Context, pending map[string]*chainReread, now time.Time) time.Time {
 	for _, key := range w.admission.UnknownChains() {
 		if _, held := pending[key]; !held {

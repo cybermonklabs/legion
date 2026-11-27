@@ -254,10 +254,13 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 // issue has been told of no later one (a later move supersedes the seed, and its own seed tells
 // it) and while it is of the issue's project (record.InProjectParent: a parent of another project
 // ends the chain, which is then known), "" for none. The wait holds whatever the issue's phase:
-// R16 of dispatch://INFRA-3320 reads Dispatch again for every recorded issue whose chain is
-// unknown, in Legion's work or out of it, until the chain is known (admit's noteUnknownChains, the
-// controller tick's re-read), so the telling owed since the move waits for that read, out of work
-// as in it.
+// R16 of dispatch://INFRA-3320 reads Dispatch again for a chain that is unknown, in Legion's work
+// or out of it, until the chain is known. The issue's own chain need not reach this parent any
+// more (a close that landed with the move took the issue to phase done, which no admission pass
+// reads, or a move made out of Legion's work put it under another parent and told nobody), so the
+// outbox has R16's re-read read this parent itself at each attempt that waits (the daemon's
+// seedReparent, through ReparentChainPending), and the telling owed since the move waits for that
+// read, out of work as in it.
 func reparentWaitParent(issue record.Issue, seed record.ReparentSeed) string {
 	if issue.ToldParent != seed.Parent {
 		return ""
@@ -267,6 +270,9 @@ func reparentWaitParent(issue record.Issue, seed record.ReparentSeed) string {
 
 // ReparentChainPending lets the outbox keep the same seed on backoff while R16's re-read
 // repairs the copy, rather than running the Dispatch read and queuing a replacement every time.
+// It answers true only for the issue's latest owed seed (ToldParent is the seed's parent) whose
+// parent is of the issue's project and whose chain the copy holds unknown (reparentWaitParent), so
+// the parent the seed waits on is then seed.Parent, which the outbox notes for that re-read.
 func ReparentChainPending(ctx context.Context, tx pgx.Tx, store record.Store, key string, seed record.ReparentSeed) (bool, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {

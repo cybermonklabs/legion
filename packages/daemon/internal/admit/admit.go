@@ -87,10 +87,11 @@ type Admission struct {
 	// has applied its window and releases it (ReleaseCatchUp). Unlike pending, a release's own
 	// pass does not lift it.
 	catchingUp map[string]struct{}
-	// unknownChains is every key a pass found on a Dispatch chain the copy cannot read to its top
-	// since the daemon last took them (noteUnknownChain, UnknownChains), guarded by mu, and
-	// unknownWake what the daemon wakes its re-read with when a key is noted (OnUnknownChain), nil
-	// for none.
+	// unknownChains is every key noted on a Dispatch chain the copy cannot read to its top since
+	// the daemon last took them (NoteUnknownChain, UnknownChains): an issue a pass found on one
+	// (noteUnknownChain), and the parent a waiting re-parent seed waits on, which the outbox notes
+	// (the daemon's seedReparent). It is guarded by mu, and unknownWake is what the daemon wakes
+	// its re-read with when a key is noted (OnUnknownChain), nil for none.
 	unknownChains map[string]struct{}
 	unknownWake   func()
 	// keeper keeps the tree lifecycles the stored trees name open for the release before, once a
@@ -553,27 +554,35 @@ func passFact(fact intake.Fact) bool {
 	return false
 }
 
-// noteUnknownChain adds key to the issues whose Dispatch chain the copy cannot read to its top
-// (UnknownChains), once the fact that found it commits: a fact rolled back found nothing. The
-// daemon's re-read is woken then (OnUnknownChain).
+// noteUnknownChain notes key for the daemon's re-read (NoteUnknownChain) once the fact that found
+// it commits: a fact rolled back found nothing.
 func (a *Admission) noteUnknownChain(ctx context.Context, key string) {
-	store.OnCommit(ctx, func() {
-		a.mu.Lock()
-		a.unknownChains[key] = struct{}{}
-		wake := a.unknownWake
-		a.mu.Unlock()
-		if wake != nil {
-			wake()
-		}
-	})
+	store.OnCommit(ctx, func() { a.NoteUnknownChain(key) })
+}
+
+// NoteUnknownChain adds key to the keys whose Dispatch chain the copy cannot read to its top
+// (UnknownChains) and wakes the daemon's re-read (OnUnknownChain). A pass notes the issue it found
+// on such a chain once its fact commits (noteUnknownChain). The outbox notes the parent that a
+// waiting re-parent seed waits on (the daemon's seedReparent, workflow's ReparentChainPending)
+// after the read-only transaction that found the wait: the seed's issue can stand where no pass
+// reaches that parent, at phase done after the close that landed with its move, or under another
+// parent after a later move made out of Legion's work.
+func (a *Admission) NoteUnknownChain(key string) {
+	a.mu.Lock()
+	a.unknownChains[key] = struct{}{}
+	wake := a.unknownWake
+	a.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
 }
 
 // noteUnknownChains notes for the daemon's re-read (noteUnknownChain) each of issues, the pass's
 // records, whose Dispatch chain chains, the pass's own reading (record.ReadLineFacts, which walks
 // from every one of them), holds unknown, in Legion's work or out of it: R16 of
 // dispatch://INFRA-3320 reads Dispatch again for an issue on an unknown chain until the chain is
-// known, whatever the issue's phase, and what waits on that chain waits for that read, the telling
-// a re-parent seed owes among them (workflow's ReparentChainPending). It sends no statement.
+// known, whatever the issue's phase. It sends no statement. A re-parent seed's wait parent need not
+// be on the chain of any of issues, so the outbox notes that parent itself (NoteUnknownChain).
 func (a *Admission) noteUnknownChains(ctx context.Context, issues []record.Issue, chains *record.Chains) {
 	for _, issue := range issues {
 		if !chains.Chain(issue.Key).Known() {
@@ -582,7 +591,7 @@ func (a *Admission) noteUnknownChains(ctx context.Context, issues []record.Issue
 	}
 }
 
-// OnUnknownChain sets what a noted key wakes (noteUnknownChain): the daemon's re-read of the
+// OnUnknownChain sets what a noted key wakes (NoteUnknownChain): the daemon's re-read of the
 // chains the copy cannot read to their top, which takes them (UnknownChains). wake must not block.
 func (a *Admission) OnUnknownChain(wake func()) {
 	a.mu.Lock()
@@ -590,11 +599,12 @@ func (a *Admission) OnUnknownChain(wake func()) {
 	a.unknownWake = wake
 }
 
-// UnknownChains takes every key an admission pass found on a Dispatch chain the copy cannot read to
-// its top (R16 of dispatch://INFRA-3320: a row missing, a key repeated, or more than 32 links) since
-// the last take, in key order, and empties the set: the daemon reads Dispatch again for each, the
-// issue and each link of its chain, outside any decision, until the chain is known. A key found
-// again after a take is noted again.
+// UnknownChains takes every key noted since the last take (NoteUnknownChain) on a Dispatch chain
+// the copy cannot read to its top (R16 of dispatch://INFRA-3320: a row missing, a key repeated, or
+// more than 32 links), an issue an admission pass found or a parent a waiting re-parent seed waits
+// on, in key order, and empties the set: the daemon reads Dispatch again for each, the key and
+// each link of its chain, outside any decision, until the chain is known. A key noted again after
+// a take is taken again.
 func (a *Admission) UnknownChains() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

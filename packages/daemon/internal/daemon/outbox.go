@@ -152,6 +152,11 @@ type outbox struct {
 	// pod update's ReplacePod, which starts the next pod at once. Set by attach after newOutbox; a
 	// test that builds the outbox by hand leaves it nil, and the end of a pod then runs nothing.
 	podEnded func(context.Context, []string)
+	// noteUnknownChain has R16's re-read read a key's Dispatch chain (admit.Admission's
+	// NoteUnknownChain, which wakes rereadChains): a re-parent seed that waits on its parent's
+	// chain notes that parent (seedReparent). attach sets it; nil, in an outbox a test builds by
+	// hand, notes nothing.
+	noteUnknownChain func(key string)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
@@ -4685,6 +4690,13 @@ func basisReadFound(read intake.BasisRead) string {
 // INFRA-4728's shape is read and applied the same way, and the handler reads what it lacks from
 // the record. The fact's id is the row's, so a run of the same row again is a duplicate, and the
 // seed of a later move is a fact of its own.
+//
+// While the seed waits on the chain of its new parent (workflow.ReparentChainPending), each
+// attempt notes that parent for R16's re-read (noteUnknownChain), which reads it and the links
+// above it from Dispatch and applies what it read, so a later attempt finds the chain known: no
+// admission pass need reach that parent, since the issue may stand at phase done or under a later
+// parent. The re-read holds a noted key once, on its own backoff, so a note at each attempt adds
+// no Dispatch read.
 func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload record.ReparentSeed) error {
 	if r.dispatch == nil {
 		return errors.New("re-parent seed executor has no Dispatch client")
@@ -4702,6 +4714,9 @@ func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload
 			return fmt.Errorf("read the chain for the re-parent seed of %s: %w", row.Issue, err)
 		}
 		if pending {
+			if r.noteUnknownChain != nil {
+				r.noteUnknownChain(payload.Parent)
+			}
 			return wait.Errorf("re-parent seed of %s waits for the chain of %s: %w", row.Issue, payload.Parent, record.ErrChainUnknown)
 		}
 		var err error

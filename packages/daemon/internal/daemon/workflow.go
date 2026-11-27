@@ -242,8 +242,9 @@ type workflowRuntime struct {
 	heldReads                                              map[string]limitedRead
 	backfillPending                                        atomic.Bool
 	// chainWake is the re-read of the Dispatch chains the copy cannot read to their top
-	// (rereadChains), one wake held at most: the admission pass that notes such a chain sends it
-	// (admit.Admission.OnUnknownChain).
+	// (rereadChains), one wake held at most: a note of such a chain sends it
+	// (admit.Admission.OnUnknownChain), the admission pass's and the waiting re-parent seed's
+	// (outbox.noteUnknownChain) alike.
 	chainWake chan struct{}
 	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot), each
 	// repository a record first names, a launch works or the refresher's backfill writes on a
@@ -829,7 +830,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	w.admission = workflowAdmission(w.records, w.engine, cfg, clock, log)
 	// A chain the copy cannot read to its top is read again from Dispatch by a wake of its own
 	// (rereadChains, decision 20 of dispatch://INFRA-4730), as soon as the pass that found it
-	// commits.
+	// commits, or the outbox's re-parent seed that waits on it notes it (attach).
 	w.admission.OnUnknownChain(func() { wake(w.chainWake) })
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
@@ -2092,11 +2093,12 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
 // (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
-// (privateNameRules). All are set before the records' wake can reach the outbox
-// (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
-// unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
-// and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
-// which also drops that repository (podEndsOn).
+// (privateNameRules). A re-parent seed that waits on its parent's chain notes that parent for
+// this runtime's re-read (noteUnknownChain, admission's NoteUnknownChain). All are set before the
+// records' wake can reach the outbox (outboxWake). Whether an issue still holds its workspace,
+// which a repository kept for an unrecorded issue is answered while (keptRepository), is read
+// from the runtime (workspaceHeldBy), and so is the rule the end of an issue's pod runs the rename
+// pass under, the outbox's podEnded, which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -2109,6 +2111,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.prepare = w.prepareObserved
+	w.outbox.noteUnknownChain = w.admission.NoteUnknownChain
 	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
