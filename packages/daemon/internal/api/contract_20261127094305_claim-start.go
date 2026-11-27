@@ -27,38 +27,27 @@ package api
 // operator's routes, the deliver included, answer 202 with the claim launching, the controller's
 // route 200, and `read_state` and `legion claims list` show how the start ended. A request that
 // writes no launch, such as one whose launch the wake pacing parks, is answered as before. A
-// caller whose contract (the one it states, else its pod's lowest) is below 266 is answered the
-// first and the second as before: no sentence for a start that waits for a slot, and the refusal
-// itself (answersAsBefore, which follows restore as processReadContract's decision does), and the
-// agent actions' answer without `phaseNotRestarted` (shapeAnswer's agent actions' row, which
-// follows strip, and placedByPod places the caller of an answer that carries the key by its pod).
-// The third is served to every caller, since its shape does not move and holding it back would
-// keep the caller waiting past its own timeout. The sentences are values of `phaseNotRestarted`, a
-// string no reader enumerates.
-// (This entry takes 266, the number INFRA-3118's architect, which allocates its tree's contract
-// numbers, gave it at 2026-11-24T17:09:45Z. It had taken 248, which a reading of every open head
-// between 2026-11-24T14:05:55Z and 14:09:16Z found free, and #3993, #4049, #4065 and #4392 declared
-// 248 since. A reading of `const DaemonAPIVersion` at the head commit of each open pull request
-// whose file list names this file or was cut short, made between 2026-11-24T17:29:02Z and
-// 17:32:37Z, listed 483 open pull requests, read 142 heads, and found the highest number declared
-// to be 261 (#5332), with none at 266; #5399 declares no number. The forward merge of 2026-11-24
-// that brought in 5fc8b422 brought main's 246 (#4960, the pod hold's entry above), and the one
-// that brought in 5df00e2f brought main's 250 (#5365, the waiting line's priority's entry above),
-// and the one that brought in b530b5a220 brought main's 256 (#5349, the claim views' cause
-// times' entry above), all below 266, so this entry kept 266. From this entry the last number of
-// answers.go's SupportedContracts is `api.claimStartContract`, after `causeTimesContract`. Read main's own
-// number and every open head again at the next merge rather than from this line.)
+// caller whose contract (the one it states, else its pod's lowest) is below this entry's number
+// (entryNumber(claimStartContract)) is answered the first and the second as before: no sentence
+// for a start that waits for a slot, and the refusal itself (answersAsBefore, which follows
+// restore as processReadContract's decision does), and the agent actions' answer without
+// `phaseNotRestarted` (shapeAnswer's agent actions' row, which follows strip, and placedByPod
+// places the caller of an answer that carries the key by its pod). The third is served to every
+// caller, since its shape does not move and holding it back would keep the caller waiting past
+// its own timeout. The sentences are values of `phaseNotRestarted`, a string no reader enumerates.
+// Since #5399 no branch picks a number: this entry's number is its rank in main's merge order.
 //
 // claimStartContract is the daemon contract at which the operator's and the controller's claim
 // routes name a start that waits for its issue's admission slot, answer a start refused after a
 // fresh session's forget with 200, and answer a retry or a resume once its start is under way
 // (dispatch://INFRA-5649). It added one key path, the agent actions' `phaseNotRestarted`, which a
-// caller below it is served without (shapeAnswer). It changed what two answers mean, and a caller below it is served each as before (answersAsBefore): no
-// `phaseNotRestarted` for a start that waits for a slot (waitNamed), and the refusal itself, as
-// the error it was, for a start refused after the forget (refusedAfterTheForget), because its
-// `legion` tool description reads an empty answer as a start that ran. The earlier answer of a
-// start under way is served to every caller: its shape is the one it was, and holding it back
-// would keep the caller waiting past its own timeout.
+// caller below it is served without (shapeAnswer). It changed what two answers mean, and a caller
+// below it is served each as before (answersAsBefore): no `phaseNotRestarted` for a start that
+// waits for a slot (waitNamed), and the refusal itself, as the error it was, for a start refused
+// after the forget (refusedAfterTheForget), because its `legion` tool description reads an empty
+// answer as a start that ran. The earlier answer of a start under way is served to every caller:
+// its shape is the one it was, and holding it back would keep the caller waiting past its own
+// timeout.
 const claimStartContract = 20261127094305
 
 func init() {

@@ -119,9 +119,9 @@ export const LegionClaimRequest = z.strictObject({
  * session asked again is what starts it, and a claim in any other state is read in `read_state`
  * before anything more is asked of it. Each rides a success answer, because the request changed
  * the claim either way. A reader of the claim cannot tell the first three, since the state
- * records nowhere that the restart did not run or that the start waits. A plugin below daemon
- * contract 266 is answered the second and the third as before: no sentence, and the refusal as
- * an error. */
+ * records nowhere that the restart did not run or that the start waits. A plugin below the daemon
+ * contract entry claim-start (dispatch://INFRA-5649) is answered the second and the third as
+ * before: no sentence, and the refusal as an error. */
 export const LegionFreshSessionResponse = z.object({
   phaseNotRestarted: nonEmptyString.optional(),
 });

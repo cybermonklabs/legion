@@ -451,9 +451,14 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	case holdRefusal(err):
 		// Only an agent this request found suspended comes here (a refusal after this request's
 		// own suspension is answered above), so the hold took over a suspension that was already
-		// there, and the forget, when there was one, has dropped the session.
-		s.refuseHold(w, r, token, freshSessionOp, by, err, outcome)
-		return 0, "", freshStarted, false
+		// there. Where the forget has dropped the session, the claim changed, and the hold is
+		// answered as every refusal after the forget is, 200 with it in the sentence, in the words
+		// that name who lifts it (refusedAfterTheForget, dispatch://INFRA-5649 R2); with no forget,
+		// or to a caller below claimStartContract, it is the hold's own refusal (refuseHold).
+		_, heldBy, lifts, _ := holdSentences(token, err)
+		status, notRestarted, _, ok := s.refusedAfterTheForget(w, r, m, token, forgot, "it is "+heldBy+". "+lifts,
+			func() { s.refuseHold(w, r, token, freshSessionOp, by, err, outcome) })
+		return status, notRestarted, freshLeft, ok
 	case err != nil:
 		status, notRestarted, _, ok := s.refusedAfterTheForget(w, r, m, token, forgot, err.Error(),
 			func() { s.operationFailure(w, r, by, "resume", token, err) })
