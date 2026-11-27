@@ -1,6 +1,6 @@
 // packages/envoy-client/src/__tests__/dispatch-proxy-url.test.ts
 //
-// What `dispatch proxy` says of the configured Dispatch URL.
+// What `dispatch proxy` says of the configured Dispatch URL, and where it sends each request.
 //
 // `dispatch proxy --dry-run` and the proxy's own answers name the Dispatch server as `urlForText`
 // names a configured URL: whole where it is a plain http(s) URL, and as a fixed phrase where it
@@ -11,6 +11,10 @@
 // check is the designated assertion of cmd/redact-gate's mutation gate: it prints the output it
 // read as `REDACT-CAPTURE <capture> <base64>` and fails with a message that begins
 // `REDACT-ASSERT <capture>`.
+//
+// Each request goes to its target joined onto the configured URL's path, the URL's query kept
+// ahead of the target's own (`joinUrl`). It went to a copy of the URL with the path and the query
+// set from the target, so a configured query was dropped.
 //
 // Each run is `runDispatchCli(["proxy", …])` in this process, in a pod's environment under
 // `DISPATCH_TOKEN_BROKER=1`, as dispatch-proxy.test.ts runs it. The proxy starts its command only
@@ -328,6 +332,51 @@ describe("the proxy's answer when Dispatch does not answer names the configured 
     const answer = await rawGet(run.socket, "/api/v1/issues");
     expect(answer.status).toBe(502);
     expect(refusalOf(answer).error).toBe(`Dispatch at ${url} did not answer: ECONNREFUSED`);
+    expect(await finish(run)).toBe(0);
+  }, 15_000);
+});
+
+describe("the proxy sends each request to its target joined onto the configured Dispatch URL's path", () => {
+  for (const [name, path, target, asked] of [
+    ["query", "/dispatch?key=v", "/api/v1/issues?scope=open", "?key=v&scope=open"],
+    ["query-no-target-query", "/dispatch?key=v", "/api/v1/issues", "?key=v"],
+    ["no-query", "/dispatch", "/api/v1/issues?scope=open", "?scope=open"],
+  ] as const) {
+    test(name, async () => {
+      const broker = stubBroker(3600);
+      const dispatch = recordingDispatch();
+      const run = await startedProxy(proxyEnvironment(broker.url, `${dispatch.url}${path}`));
+      const answer = await rawGet(run.socket, target);
+      expect(answer.status).toBe(200);
+      expect(dispatch.asked).toEqual([["/dispatch/api/v1/issues", asked]]);
+      expect(await finish(run)).toBe(0);
+    }, 15_000);
+  }
+
+  // The configured path is cleaned as the target's join cleans it, so the request is sent below
+  // it, and the URL's own check (its path under Dispatch's own path) passes it.
+  test("path-repeated-slash", async () => {
+    const broker = stubBroker(3600);
+    const dispatch = recordingDispatch();
+    const run = await startedProxy(proxyEnvironment(broker.url, `${dispatch.url}/dispatch//v2`));
+    const answer = await rawGet(run.socket, "/api/v1/issues");
+    expect(answer.status).toBe(200);
+    expect(dispatch.asked).toEqual([["/dispatch/v2/api/v1/issues", ""]]);
+    expect(await finish(run)).toBe(0);
+  }, 15_000);
+
+  // A `%` that starts no escape is no path `joinUrl` takes: the proxy refuses it and sends
+  // nothing, where it sent the path as the target wrote it.
+  test("percent-not-escape", async () => {
+    const broker = stubBroker(3600);
+    const dispatch = recordingDispatch();
+    const run = await startedProxy(proxyEnvironment(broker.url, dispatch.url));
+    const answer = await rawGet(run.socket, "/api/v1/issues/100%");
+    expect(answer.status).toBe(405);
+    const { code, error } = refusalOf(answer);
+    expect(code).toBe("PROXY_METHOD_REFUSED");
+    expect(error).toContain('The target "/api/v1/issues/100%" is no path the proxy can join');
+    expect(dispatch.asked).toEqual([]);
     expect(await finish(run)).toBe(0);
   }, 15_000);
 });
