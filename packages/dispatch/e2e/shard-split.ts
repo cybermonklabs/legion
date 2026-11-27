@@ -24,7 +24,8 @@
  *
  * A unit's weight is its rows times the seconds one of its rows took on main
  * (`e2e/shard-weights.json`, which `e2e/tools/shard-weights.ts` writes from main's merged
- * reports). Its rows are counted now, not when the weights were read, so a file that grew is
+ * reports; its `--run <id>` adds a named full-lane run's report).
+ * Its rows are counted now, not when the weights were read, so a file that grew is
  * heavier at once. A file the table has no entry for - a file added since, or renamed - takes
  * the median row of its project, and a project the table has none for takes the median of every
  * project's: an estimate from the same measurements, never nothing, so a new file is placed on
