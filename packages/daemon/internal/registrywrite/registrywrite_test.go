@@ -3,6 +3,7 @@ package registrywrite
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -216,6 +217,111 @@ func TestAWritesOutcomeIsItsAnswersStatus(t *testing.T) {
 	}
 	if lines := log.lines("legion daemon could not write to the agent registry; trying again"); len(lines) != 1 {
 		t.Errorf("a write whose context ended was logged as a failure (%d lines), want no line of its own", len(lines))
+	}
+}
+
+// The listener's 500 for a stored entry it cannot decode carries the code
+// listenerwire.CodeMalformedRecord, and a write it answers so is Refused, so the mirror drops that
+// one entry and goes on with the rest. A session's own write, one PUT of its entry or a batch of
+// that entry alone, is logged at ERROR the first time, naming the session's key, the listener's
+// cause and the count, and is counted once however often the listener refuses it; another session
+// is a line and a count of its own. A batch of several entries is Refused and logged as a 400 or
+// 409 is, and counted never: the mirror sends each of its entries alone, and the bad one is counted
+// there. The controls are each other answer, a 500 with no code, with another code or with a body
+// that is not JSON, and a 503 with no code or this one: each is Failed, logged as a write to try
+// again, and counted never. A writer that read no code fails the first half; one that refused every
+// 500, or read the code on any status, fails the controls.
+func TestAStoredEntryTheListenerCannotDecodeIsRefusedLoggedOnceAndCounted(t *testing.T) {
+	l, server := newListener(t)
+	writer, log := newWriter(server, "envoy-bearer")
+	ctx := context.Background()
+	entry := func(id string) listenerwire.LegionAgentEntry { return listenerwire.LegionAgentEntry{SessionID: id} }
+	answer := func(code, message string) string {
+		encoded, err := json.Marshal(listenerwire.APIError{Code: code, Error: message})
+		if err != nil {
+			t.Fatalf("encode the answer: %v", err)
+		}
+		return string(encoded)
+	}
+	const head = "envoy: the legion agent registry holds a record it cannot decode: "
+	cause := func(id string) string {
+		return "malformed legion agent registry record: legion agent " + id + ": invalid character 'o' in literal null (expecting 'u')"
+	}
+	errorLines := func(id string) []string {
+		return log.lines("level=ERROR", "the Envoy listener holds an agent registry entry it cannot decode", "session="+id+" ", "key=session."+id+" ")
+	}
+
+	// ses-bad's write as a batch of itself alone, as the mirror sends a refused batch's entries,
+	// then twice as its own PUT: Refused each time, logged and counted the first.
+	l.set("/v1/legion/agents", listenerwire.FaultStatus, answer(listenerwire.CodeMalformedRecord, head+"wrote 0 of 1 legion agents, then entries[0]: "+cause("ses-bad")))
+	if got := writer.Batch(ctx, listenerwire.LegionAgentBatch{Entries: []listenerwire.LegionAgentEntry{entry("ses-bad")}}); got != Refused {
+		t.Fatalf("a batch of ses-bad alone answered 500 %s came to %v, want Refused", listenerwire.CodeMalformedRecord, got)
+	}
+	l.set("/v1/legion/agents/sessions/ses-bad", listenerwire.FaultStatus, answer(listenerwire.CodeMalformedRecord, head+cause("ses-bad")))
+	for range 2 {
+		if got := writer.Entry(ctx, entry("ses-bad")); got != Refused {
+			t.Fatalf("ses-bad's write answered 500 %s came to %v, want Refused", listenerwire.CodeMalformedRecord, got)
+		}
+	}
+	if lines := errorLines("ses-bad"); len(lines) != 1 || !strings.Contains(lines[0], "count=1 ") || !strings.Contains(lines[0], cause("ses-bad")) {
+		t.Errorf("ses-bad was logged at ERROR as %q, want one line naming its key, the count 1 and the listener's cause:\n%s", lines, strings.Join(log.lines(), "\n"))
+	}
+	if got := writer.MalformedRecords(); got != 1 {
+		t.Errorf("after three refused writes of ses-bad the count is %d, want 1: one session", got)
+	}
+
+	// Another session is its own line and its own count.
+	l.set("/v1/legion/agents/sessions/ses-worse", listenerwire.FaultStatus, answer(listenerwire.CodeMalformedRecord, head+cause("ses-worse")))
+	if got := writer.Entry(ctx, entry("ses-worse")); got != Refused {
+		t.Fatalf("ses-worse's write answered 500 %s came to %v, want Refused", listenerwire.CodeMalformedRecord, got)
+	}
+	if lines := errorLines("ses-worse"); len(lines) != 1 || !strings.Contains(lines[0], "count=2 ") || !strings.Contains(lines[0], cause("ses-worse")) {
+		t.Errorf("ses-worse was logged at ERROR as %q, want one line naming its key, the count 2 and the listener's cause:\n%s", lines, strings.Join(log.lines(), "\n"))
+	}
+	if got := writer.MalformedRecords(); got != 2 {
+		t.Errorf("after ses-worse's refused write the count is %d, want 2", got)
+	}
+
+	// A batch of several: Refused, logged as a refusal, counted never.
+	l.set("/v1/legion/agents", listenerwire.FaultStatus, answer(listenerwire.CodeMalformedRecord, head+"wrote 0 of 2 legion agents, then entries[1]: "+cause("ses-third")))
+	if got := writer.Batch(ctx, listenerwire.LegionAgentBatch{Entries: []listenerwire.LegionAgentEntry{entry("ses-ok"), entry("ses-third")}}); got != Refused {
+		t.Fatalf("a batch of two answered 500 %s came to %v, want Refused, so the mirror sends each alone", listenerwire.CodeMalformedRecord, got)
+	}
+	if lines := log.lines("level=WARN", "the Envoy listener refused an agent registry write", "path=/v1/legion/agents status=500"); len(lines) != 1 {
+		t.Errorf("the batch of two was logged as %q, want one refusal line:\n%s", lines, strings.Join(log.lines(), "\n"))
+	}
+	if lines := log.lines("level=ERROR"); len(lines) != 2 {
+		t.Errorf("ERROR lines after the batch of two = %d, want ses-bad's and ses-worse's alone:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if got := writer.MalformedRecords(); got != 2 {
+		t.Errorf("after the batch of two the count is %d, want 2: its entries are counted when each is sent alone", got)
+	}
+
+	// The controls: every other 500, and a 503 whatever its code, is Failed.
+	for _, tc := range []struct {
+		id, answer string
+		status     int
+	}{
+		{"ses-plain", `{"error":"internal error"}`, listenerwire.FaultStatus},
+		{"ses-other-code", answer(listenerwire.CodeMaybeStored, head+cause("ses-other-code")), listenerwire.FaultStatus},
+		{"ses-not-json", "internal error", listenerwire.FaultStatus},
+		{"ses-unavailable", answer("", "envoy: the legion agent registry did not answer: nats: timeout"), http.StatusServiceUnavailable},
+		{"ses-unavailable-code", answer(listenerwire.CodeMalformedRecord, head+cause("ses-unavailable-code")), http.StatusServiceUnavailable},
+	} {
+		path := "/v1/legion/agents/sessions/" + tc.id
+		l.set(path, tc.status, tc.answer)
+		if got := writer.Entry(ctx, entry(tc.id)); got != Failed {
+			t.Errorf("%s's write answered %d %s came to %v, want Failed: worth trying again", tc.id, tc.status, tc.answer, got)
+		}
+		if lines := log.lines("level=WARN", "the Envoy listener failed an agent registry write; trying again", "path="+path+" "); len(lines) != 1 {
+			t.Errorf("%s's %d was logged as %q, want one line of a write to try again:\n%s", tc.id, tc.status, lines, strings.Join(log.lines(), "\n"))
+		}
+		if lines := errorLines(tc.id); len(lines) != 0 {
+			t.Errorf("%s's %d was logged at ERROR as a record the listener cannot decode: %q", tc.id, tc.status, lines)
+		}
+	}
+	if got := writer.MalformedRecords(); got != 2 {
+		t.Errorf("after the controls the count is %d, want 2: none of them is a record the listener cannot decode", got)
 	}
 }
 

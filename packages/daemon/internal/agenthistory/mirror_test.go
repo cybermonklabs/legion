@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -111,14 +112,20 @@ type beat struct {
 // INFRA-204's plan 2.1 give it: PUT /v1/legion/agents/sessions/{id} with one full entry whose
 // session_id is the path's, PUT /v1/legion/agents with at most 256 entries in at most 1 MiB, each
 // validated before any is written (400 naming the index), a re-put changing a session's binding
-// refused 409, and PUT /v1/legion/projects/{project} {answering, updated_at}; every route behind the
-// listener's bearer. status answers a route in place of all that (0 for none).
+// refused 409, a session whose stored entry does not decode answered 500, and PUT
+// /v1/legion/projects/{project} {answering, updated_at}; every route behind the listener's bearer.
+// status answers a route in place of all that (0 for none).
 type standIn struct {
 	t      *testing.T
 	mu     sync.Mutex
 	status map[string]int
 	// conflict is a session whose stored binding every put of it changes.
 	conflict string
+	// unreadable is a session whose stored entry the listener cannot decode: every put of it, alone
+	// or in a batch, is answered 500 with the code listenerwire.CodeMalformedRecord, or with no
+	// code when uncoded is set.
+	unreadable string
+	uncoded    bool
 
 	batches [][]Entry
 	puts    []Entry
@@ -193,6 +200,10 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, `{"error":"legion agent `+entry.SessionID+` is recorded for another issue"}`, http.StatusConflict)
 				return
 			}
+			if entry.SessionID == s.unreadable {
+				s.answerUnreadable(w)
+				return
+			}
 			entries = append(entries, entry)
 		}
 		for _, entry := range entries {
@@ -210,6 +221,10 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"legion agent `+entry.SessionID+` is recorded for another issue"}`, http.StatusConflict)
 			return
 		}
+		if entry.SessionID == s.unreadable {
+			s.answerUnreadable(w)
+			return
+		}
 		s.stored[entry.SessionID] = entry
 		s.puts = append(s.puts, entry)
 	case "project":
@@ -223,6 +238,24 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{}`))
+}
+
+// answerUnreadable is the listener's answer to a put of the session whose stored entry it cannot
+// decode (writeLegionAgentError of legionagents.ErrMalformedRecord): 500 with no Retry-After,
+// naming the record, and the code listenerwire.CodeMalformedRecord unless uncoded leaves it out.
+func (s *standIn) answerUnreadable(w http.ResponseWriter) {
+	answer := listenerwire.APIError{Error: "envoy: the legion agent registry holds a record it cannot decode: malformed legion agent registry record: legion agent " +
+		s.unreadable + ": invalid character 'o' in literal null (expecting 'u')"}
+	if !s.uncoded {
+		answer.Code = listenerwire.CodeMalformedRecord
+	}
+	body, err := json.Marshal(answer)
+	if err != nil {
+		s.t.Errorf("encode the unreadable answer: %v", err)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(listenerwire.FaultStatus)
+	_, _ = w.Write(body)
 }
 
 // entry is raw as the contract's entry: exactly its eight fields, the role one of the six, the
@@ -394,6 +427,96 @@ func TestARefusedBatchIsSentAgainAnEntryAtATime(t *testing.T) {
 	if lines := log.lines("refused an agent registry write", "status=409"); len(lines) != 2 {
 		t.Errorf("refusal lines = %d, want the batch's and ses-1's own:\n%s", len(lines), strings.Join(log.lines(), "\n"))
 	}
+}
+
+// A stored entry the listener cannot decode costs only itself. The listener answers every put of
+// that session, alone or in a batch, 500 with the code listenerwire.CodeMalformedRecord: the boot's
+// batch holding it is sent again an entry at a time, every other entry of it is written, and the
+// bad one is logged once at ERROR naming its key and the listener's cause, counted, and not sent
+// again, with nothing left to try on a backoff. A later registration of that session is refused
+// the same way, neither logged nor counted a second time, and leaves nothing waiting behind it: the
+// next registration is written at once. The control is the same listener answering that 500 with
+// no code, as a fault it does not name: the batch is Failed and tried again whole on the backoff,
+// no entry of it is written or sent alone, and nothing is logged at ERROR or counted.
+func TestAStoredEntryTheListenerCannotDecodeCostsOnlyItself(t *testing.T) {
+	history := func(t *testing.T) *fakeStore {
+		return &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1), testerRow(t, "ses-2", 2)}}
+	}
+	t.Run("the code names the record", func(t *testing.T) {
+		listener, server := newStandIn(t)
+		listener.unreadable = "ses-1"
+		log := &logs{}
+		m, clock := runMirror(t, server, history(t), log)
+		if w := clock.wait(t); w.d != time.Minute {
+			t.Fatalf("after the boot the mirror waits %s, want the heartbeat's minute: nothing is left to try again", w.d)
+		}
+		batches, _, _ := listener.snapshot()
+		var written []string
+		for _, batch := range batches {
+			if len(batch) != 1 {
+				t.Errorf("a written batch of %d entries, want each alone after the refusal", len(batch))
+			}
+			written = append(written, batch[0].SessionID)
+		}
+		if !slices.Equal(written, []string{"ses-0", "ses-2"}) {
+			t.Errorf("wrote %v, want ses-0 and ses-2", written)
+		}
+		malformed := log.lines("level=ERROR", "the Envoy listener holds an agent registry entry it cannot decode",
+			"session=ses-1 ", "key=session.ses-1 ", "count=1 ", "legion agent ses-1: invalid character")
+		if len(malformed) != 1 {
+			t.Errorf("ses-1 was logged at ERROR as %q, want one line naming its key, the count and the listener's cause:\n%s", malformed, strings.Join(log.lines(), "\n"))
+		}
+		if lines := log.lines("level=WARN", "refused an agent registry write", "path=/v1/legion/agents ", "status=500"); len(lines) != 1 {
+			t.Errorf("the batch's refusal was logged %d times, want once:\n%s", len(lines), strings.Join(log.lines(), "\n"))
+		}
+		if got := m.writer.MalformedRecords(); got != 1 {
+			t.Errorf("after the boot the count is %d, want 1: ses-1", got)
+		}
+
+		m.Put(testerRow(t, "ses-1", 3))
+		if w := clock.wait(t); w.d != time.Minute {
+			t.Fatalf("after ses-1's registration the mirror waits %s, want the heartbeat's minute: its refusal is not tried again", w.d)
+		}
+		m.Put(testerRow(t, "ses-3", 4))
+		if w := clock.wait(t); w.d != time.Minute {
+			t.Fatalf("after ses-3's registration the mirror waits %s, want the heartbeat's minute", w.d)
+		}
+		if _, puts, _ := listener.snapshot(); len(puts) != 1 || puts[0].SessionID != "ses-3" {
+			t.Errorf("puts = %+v, want ses-3's alone: ses-1's is refused and ses-3's waits on nothing", puts)
+		}
+		if lines := log.lines("level=ERROR"); len(lines) != 1 {
+			t.Errorf("ERROR lines = %d, want ses-1's one from the boot:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+		if got := m.writer.MalformedRecords(); got != 1 {
+			t.Errorf("after ses-1's registration was refused again the count is %d, want 1: one session", got)
+		}
+	})
+	t.Run("control: a 500 with no code", func(t *testing.T) {
+		listener, server := newStandIn(t)
+		listener.unreadable, listener.uncoded = "ses-1", true
+		log := &logs{}
+		m, clock := runMirror(t, server, history(t), log)
+		w := clock.wait(t)
+		if w.d < time.Second || w.d > 2*time.Second {
+			t.Fatalf("after a 500 with no code the mirror waits %s, want the backoff's first step: the batch is tried again", w.d)
+		}
+		clock.fire(w)
+		if w := clock.wait(t); w.d < 2*time.Second || w.d > 4*time.Second {
+			t.Fatalf("after a second 500 with no code the mirror waits %s, want the backoff's second step", w.d)
+		}
+		if batches, _, _ := listener.snapshot(); len(batches) != 0 {
+			t.Errorf("wrote %+v, want nothing: the batch is tried again whole, never an entry at a time", batches)
+		}
+		if lines := log.lines("level=WARN", "failed an agent registry write; trying again", "path=/v1/legion/agents ", "status=500"); len(lines) != 2 {
+			t.Errorf("the batch's failure was logged %d times, want once for each try:\n%s", len(lines), strings.Join(log.lines(), "\n"))
+		}
+		if lines := log.lines("level=ERROR"); len(lines) != 0 {
+			t.Errorf("a 500 with no code was logged at ERROR: %q", lines)
+		}
+		if got := m.writer.MalformedRecords(); got != 0 {
+			t.Errorf("after a 500 with no code the count is %d, want 0", got)
+		}
+	})
 }
 
 // Each registration is one PUT of its session with exactly the contract's fields: the role's

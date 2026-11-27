@@ -104,7 +104,9 @@ type MirrorConfig struct {
 // hands it, in the order handed. Nothing it does blocks the boot or a registration. Its writes go
 // through a registrywrite.Writer: a route an older listener answers 404 is logged once and tried
 // again each minute; any other failure is tried again on a backoff. A write the listener refuses
-// (400 or 409: an entry it will never take) is logged and dropped; a refused batch is sent again an
+// (400 or 409: an entry it will never take; or a 500 with the code
+// listenerwire.CodeMalformedRecord: a stored entry of the session it cannot decode, which the
+// writer logs once at ERROR and counts) is logged and dropped; a refused batch is sent again an
 // entry at a time, so one bad entry costs only itself.
 type Mirror struct {
 	cfg  MirrorConfig

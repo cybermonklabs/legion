@@ -202,8 +202,10 @@ const legionAgentBodyLimit = 1 << 20
 
 // legionAgentBatchFailure is a batch write that failed after some entries may have been written
 // (legionagents.PartialWriteError): written counts those, and every write is idempotent, so the
-// caller sends the batch again once the failure is one to retry.
+// caller sends the batch again once the failure is one to retry. Code is listenerwire.APIError's,
+// listenerwire.CodeMalformedRecord for a stored entry that does not decode and absent otherwise.
 type legionAgentBatchFailure struct {
+	Code    string `json:"code,omitempty"`
 	Error   string `json:"error"`
 	Written int    `json:"written"`
 }
@@ -281,26 +283,30 @@ func legionAgentErrorStatus(err error) int {
 
 // writeLegionAgentError answers a registry call that failed with legionAgentErrorStatus's status. A
 // 503 carries `Retry-After: 1` and says the registry did not answer; a record that does not decode
-// (listenerwire.FaultStatus) carries no Retry-After, since asking again reads the same record, and
-// says the registry holds a record it cannot decode, which the error names. A batch that failed
-// after its checks (legionagents.PartialWriteError) answers how many entries it wrote whole as
-// `written`, whatever its status.
+// (listenerwire.FaultStatus) carries no Retry-After, since asking again reads the same record, says
+// the registry holds a record it cannot decode, which the error names, and carries the code
+// listenerwire.CodeMalformedRecord, so a writer tells it from every other 500 and drops that one
+// entry's write rather than send it again. A batch that failed after its checks
+// (legionagents.PartialWriteError) answers how many entries it wrote whole as `written`, whatever
+// its status.
 func writeLegionAgentError(w http.ResponseWriter, err error) {
 	status := legionAgentErrorStatus(err)
 	message := err.Error()
+	code := ""
 	switch status {
 	case http.StatusServiceUnavailable:
 		w.Header().Set("Retry-After", "1")
 		message = "envoy: the legion agent registry did not answer: " + message
 	case listenerwire.FaultStatus:
 		message = "envoy: the legion agent registry holds a record it cannot decode: " + message
+		code = listenerwire.CodeMalformedRecord
 	}
 	var partial *legionagents.PartialWriteError
 	if errors.As(err, &partial) {
-		writeJSON(w, status, legionAgentBatchFailure{Error: message, Written: partial.Written})
+		writeJSON(w, status, legionAgentBatchFailure{Code: code, Error: message, Written: partial.Written})
 		return
 	}
-	writeJSONError(w, status, message)
+	writeJSON(w, status, listenerwire.APIError{Code: code, Error: message})
 }
 
 // decodeLegionAgentBody decodes a registry write's body into into, answering a body past

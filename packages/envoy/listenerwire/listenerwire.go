@@ -101,9 +101,10 @@ type TmuxPlace struct {
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
-// have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
-// request fields the refusal is about.
+// status (the list routes' refilling 503, code refilling, a send's or publish's 503 that may have
+// stored the message, CodeMaybeStored, and the Legion agent registry's 500 for a record it cannot
+// decode, CodeMalformedRecord); every other answer leaves it out. Expected names the request
+// fields the refusal is about.
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
@@ -117,6 +118,16 @@ type APIError struct {
 // same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
 // those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
+
+// CodeMalformedRecord is the code of the Legion agent registry routes' FaultStatus for a record
+// the legion_agents bucket holds that the listener cannot decode (a session's entry, an index
+// key's or a project's answering record): on a read that meets it, and on an entry write, PUT
+// /v1/legion/agents/sessions/<session_id> or a batch of PUT /v1/legion/agents, whose session's
+// stored entry it is, since each write reads that entry first. Asking again reads the same
+// record, so a writer drops the write of that one entry rather than send it again; the Legion
+// daemon's registry writer logs it once at ERROR, counts it, and goes on with the rest of its
+// mirror. Every other 500 of those routes leaves the code out.
+const CodeMalformedRecord = "malformed_record"
 
 // ReadsHeader is the request header in which a client of the send and the publish routes names
 // the answers it reads beyond the whole envelope every client release reads, as a comma-separated

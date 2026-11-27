@@ -16,13 +16,14 @@ import (
 const unreadableLegionRecord = "not a registry record"
 
 // A record the legion_agents bucket holds and the listener cannot decode is answered
-// listenerwire.FaultStatus with no Retry-After, naming the record: a session's entry, an issue
-// listing's key and a project's answering record on the reads, and a session's stored entry on
-// the two entry writes, which read it before they write, the batch answering that it wrote none.
-// The bucket answered, and will answer the same record again, so a Retry-After would only send the
-// caller back for it, and the bus-unavailable 503 would send an operator after an outage that never
-// happened. The records are left as they were. The control is the same reads once NATS has
-// stopped: a read the bucket does not answer is still the 503 with Retry-After: 1.
+// listenerwire.FaultStatus with no Retry-After and the code listenerwire.CodeMalformedRecord,
+// naming the record: a session's entry, an issue listing's key and a project's answering record on
+// the reads, and a session's stored entry on the two entry writes, which read it before they write,
+// the batch answering that it wrote none. The bucket answered, and will answer the same record
+// again, so a Retry-After would only send the caller back for it, and the bus-unavailable 503 would
+// send an operator after an outage that never happened; the code is what tells a writer this 500
+// from any other. The records are left as they were. The control is the same reads once NATS has
+// stopped: a read the bucket does not answer is still the 503 with Retry-After: 1, and no code.
 func TestALegionRegistryRecordThatDoesNotDecodeIsAServerError(t *testing.T) {
 	t.Parallel()
 	server, uri := testnats.Start(t)
@@ -66,11 +67,15 @@ func TestALegionRegistryRecordThatDoesNotDecodeIsAServerError(t *testing.T) {
 			t.Fatalf("%s: Retry-After = %q, want none: a retry reads the same record", tc.name, got)
 		}
 		failure := decodeLegion[struct {
+			Code    string `json:"code"`
 			Error   string `json:"error"`
 			Written *int   `json:"written"`
 		}](t, recorder.Body.String())
 		if !strings.HasPrefix(failure.Error, head) || !strings.Contains(failure.Error, tc.names) {
 			t.Fatalf("%s: the answer reads %q, want it to begin %q and name %q", tc.name, failure.Error, head, tc.names)
+		}
+		if failure.Code != listenerwire.CodeMalformedRecord {
+			t.Fatalf("%s: the answer's code is %q, want %q: a writer tells this 500 from any other by it", tc.name, failure.Code, listenerwire.CodeMalformedRecord)
 		}
 		if tc.batch && (failure.Written == nil || *failure.Written != 0) {
 			t.Fatalf("%s: the answer is %s, want written 0: the batch read the stored entry before its first write", tc.name, recorder.Body.String())
@@ -95,8 +100,12 @@ func TestALegionRegistryRecordThatDoesNotDecodeIsAServerError(t *testing.T) {
 		if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" {
 			t.Fatalf("%s with NATS stopped: %d (Retry-After %q) %s, want a 503 to retry", tc.name, recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
 		}
-		if failure := decodeLegion[listenerwire.APIError](t, recorder.Body.String()); !strings.HasPrefix(failure.Error, "envoy: the legion agent registry did not answer: ") {
+		failure := decodeLegion[listenerwire.APIError](t, recorder.Body.String())
+		if !strings.HasPrefix(failure.Error, "envoy: the legion agent registry did not answer: ") {
 			t.Fatalf("%s with NATS stopped: the answer reads %q, want the registry that did not answer", tc.name, failure.Error)
+		}
+		if failure.Code != "" {
+			t.Fatalf("%s with NATS stopped: the answer's code is %q, want none: a read the bucket did not answer is retried", tc.name, failure.Code)
 		}
 	}
 }

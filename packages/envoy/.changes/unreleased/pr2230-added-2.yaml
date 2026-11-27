@@ -56,11 +56,16 @@ body: |-
   that is no Legion workflow role keep the listener's own no-holder answer, recorded against no
   session; Dispatch does not ask the registry about the last.
   The registry routes answer a record the `legion_agents` bucket holds that does not decode, a
-  session's entry, an index key's or a project's answering record, `500` with no `Retry-After`,
-  naming the session, the key or the project (`envoy: the legion agent registry holds a record it
-  cannot decode: …`): on each read that meets it, and on both entry PUTs, which read the session's
-  stored entry before they write. Asking again reads the same record, so it is no longer the
-  `503` with `Retry-After: 1` that a read or write the bucket did not answer still gets.
+  session's entry, an index key's or a project's answering record, `500` with no `Retry-After`
+  and `code: "malformed_record"` (`listenerwire.CodeMalformedRecord`), naming the session, the
+  key or the project (`envoy: the legion agent registry holds a record it cannot decode: …`): on
+  each read that meets it, and on both entry PUTs, which read the session's stored entry before
+  they write. Asking again reads the same record, so it is no longer the `503` with
+  `Retry-After: 1` that a read or write the bucket did not answer still gets. The Legion daemon's
+  registry mirror drops the write of that one entry on that code, logs it once at ERROR naming
+  the session's key and the cause, counts it, and goes on with the rest of the mirror, a batch
+  holding it being sent again an entry at a time; every other `500`, and every `503`, it sends
+  again.
 time: 2026-11-08T10:01:00.000000000Z
 custom:
     Issue: pr2230
