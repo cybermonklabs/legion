@@ -94,11 +94,12 @@ type Options struct {
 	// reads, and the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)
 	// and the two reads of what a push's destination holds (Guard.advertised, Guard.negotiated),
-	// which keep only the entries lsRemoteInherits allows, and the read through curl
-	// (Guard.CurlGet), which keeps only those TokenChildKeeps allows. The guard adds to it the
-	// names that make a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked,
-	// and each child's own names on top of those. It is also where the guard reads RulesFileVar
-	// (Guard.rules).
+	// which keep only the entries lsRemoteInherits allows, the read through curl
+	// (Guard.CurlGet), which keeps only those TokenChildKeeps allows, and StaysLocal's read of
+	// git's own exec path (Guard.ownExecPath), which keeps all of it but GIT_EXEC_PATH
+	// (withoutExecPath). The guard adds to it the names that make a credential prompt fail closed
+	// (promptsNothing) and RunByRealGhVar blanked, and each child's own names on top of those. It
+	// is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string
 	// Curl is the curl the guard's reads through curl run (Guard.CurlGet). Empty is the ordinary
 	// case, curlProgram: the system's own curl at a fixed path, never the first curl on the

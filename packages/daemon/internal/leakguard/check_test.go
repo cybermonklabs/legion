@@ -658,23 +658,10 @@ func TestEveryReadOfTheGuardAnswersFromItsStandardOutputAlone(t *testing.T) {
 	standIn := func(t *testing.T, name, script string, env ...string) *Guard {
 		t.Helper()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		guard := New(Options{Env: append(append(fixtureenv.Isolated(t.TempDir()), env...), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+		writeProgram(t, dir, name, script)
+		guard := New(Options{Env: append(append(fixtureenv.Isolated(t.TempDir()), env...), pathWith(dir))})
 		guard.curl = filepath.Join(dir, "curl")
 		return guard
-	}
-	fixture := func(t *testing.T, name string) string {
-		t.Helper()
-		abs, err := filepath.Abs(filepath.Join("testdata", "gh-rest-read", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(abs); err != nil {
-			t.Fatal(err)
-		}
-		return abs
 	}
 	diagnostics := printsToStderr(
 		"* Request at 2026-11-27 19:18:13.000000000 +0000 UTC",
@@ -697,8 +684,8 @@ func TestEveryReadOfTheGuardAnswersFromItsStandardOutputAlone(t *testing.T) {
 		{
 			name:    "the gh REST read",
 			program: "gh",
-			stdout:  "cat " + shQuote(fixture(t, "debug.stdout")) + "\n",
-			stderr:  "cat " + shQuote(fixture(t, "debug.stderr")) + " >&2\n",
+			stdout:  "cat " + shQuote(capturedRead(t, "debug", "stdout")) + "\n",
+			stderr:  "cat " + shQuote(capturedRead(t, "debug", "stderr")) + " >&2\n",
 			read: func(g *Guard) (string, error) {
 				v, err := g.ghVisibility(bound(t), slug)
 				return string(v), err

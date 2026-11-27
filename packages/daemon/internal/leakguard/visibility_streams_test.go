@@ -207,12 +207,7 @@ func TestAPushUnderGitTraceIsJudgedAsWithoutIt(t *testing.T) {
 		if from != "" {
 			fixture.Run(repo, "git", "checkout", "--quiet", "-B", branch, from)
 		}
-		if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		fixture.Run(repo, "git", "add", "-A")
-		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
-		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+		return commitFiles(t, fixture, repo, map[string]string{"README.md": content}, message)
 	}
 	base := commit(t, "main", "", "one\n", "the commit the destination holds")
 	// The destination holds the base commit on a remote-tracking ref of this repository, and

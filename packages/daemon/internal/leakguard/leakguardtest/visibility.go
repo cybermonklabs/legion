@@ -6,22 +6,32 @@ package leakguardtest
 //	PUBLIC_LEAK_CHECK_VISIBILITY_READ=<repo> GH_HOST=github.com NO_COLOR=1 CLICOLOR_FORCE=0 \
 //	  gh api --hostname github.com repos/<repo> --include --jq .visibility
 //
-// for a repository that does not exist. It is gh's standard output and standard error as the two
-// print together, byte for byte: the status line, ended by a bare line feed; each header, ended by
-// CRLF; a blank line; the body, with no line end of its own, so gh's error line follows it on the
-// same line. Nothing in it is replaced: the capture names no repository and no account. A stand-in
-// gh prints it and exits 1, as gh did.
+// for a repository that does not exist, byte for byte: the status line, ended by a bare line feed;
+// each header, ended by CRLF; a blank line; the body, with no line end of its own; and gh's own
+// line, `gh: Not Found (HTTP 404)`. The real gh writes the status line, the headers and the body
+// on its standard output and its own line on its standard error, as the leakguard package's
+// testdata/gh-rest-read/not-found shows, so this text is the two streams one after the other. A
+// stand-in gh that prints the whole constant on one stream, and exits 1 as gh did, prints both
+// streams on that one, so a read of gh's standard output alone, as the guard's is, finds gh's own
+// line after the body and nothing on standard error. Nothing in it is replaced: the capture names
+// no repository and no account.
 const GhReadNotFound = "HTTP/2.0 404 Not Found\n" + ghReadHeaders +
 	`{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/repos#get-a-repository","status":"404"}` +
 	"gh: Not Found (HTTP 404)\n"
 
 // GhReadServerError is GhReadNotFound turned into a 500, which GitHub cannot be made to answer on
-// demand: the status line `HTTP/2.0 500 Internal Server Error`, the same headers, the body
-// `{"message":"Server Error"}`, and gh's error line for it, `gh: Server Error (HTTP 500)`. A stand-in
-// gh prints it and exits 1.
+// demand: the status line `HTTP/2.0 500 Internal Server Error`, the same headers and the body
+// `{"message":"Server Error"}`, which the real gh writes on its standard output, and gh's own line
+// for it, GhReadServerErrorLine, which it writes on its standard error. A stand-in gh that prints
+// the whole constant on one stream, and exits 1, prints both streams on that one, as a stand-in
+// that prints GhReadNotFound does.
 const GhReadServerError = "HTTP/2.0 500 Internal Server Error\n" + ghReadHeaders +
 	`{"message":"Server Error"}` +
-	"gh: Server Error (HTTP 500)\n"
+	GhReadServerErrorLine
+
+// GhReadServerErrorLine is gh's own line for GhReadServerError's 500, which the real gh writes on
+// its standard error, and the end of GhReadServerError.
+const GhReadServerErrorLine = "gh: Server Error (HTTP 500)\n"
 
 // ghReadHeaders are the headers of GhReadNotFound's capture, each ended by CRLF, and the blank line
 // after them, which GhReadServerError shares.

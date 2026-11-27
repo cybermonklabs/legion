@@ -420,8 +420,10 @@ type child struct {
 	// can depend on another, as ALL_PROXY does on what HTTPS_PROXY names (TokenChildKeeps). The
 	// guard's own names and env go on top either way. Nil keeps the whole base, which is what
 	// every child keeps but the visibility read made with no credential (Guard.lsRemote), the
-	// read through curl (Guard.CurlGet), and the two reads of what a push's destination holds
-	// (Guard.advertised, Guard.negotiated), which keep what the read with no credential keeps.
+	// read through curl (Guard.CurlGet), the two reads of what a push's destination holds
+	// (Guard.advertised, Guard.negotiated), which keep what the read with no credential keeps,
+	// and StaysLocal's read of git's own exec path (Guard.ownExecPath), which keeps all of the
+	// base but GIT_EXEC_PATH (withoutExecPath).
 	inherit func(base []string) func(name, value string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader

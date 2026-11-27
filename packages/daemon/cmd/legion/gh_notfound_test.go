@@ -56,9 +56,8 @@ func visibilityReadGh(t *testing.T, read string) (stub, record string) {
 	return stub, record
 }
 
-// ghAnswers is a REST read of the stand-in real gh that prints answer, a text of gh's standard
-// output and standard error as the two print together (leakguardtest.GhReadNotFound is one), and
-// exits 1.
+// ghAnswers is a REST read of the stand-in real gh that prints answer on standard output alone
+// (leakguardtest.GhReadNotFound is one, gh's own line after its body) and exits 1.
 func ghAnswers(t *testing.T, answer string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "answer")

@@ -2,9 +2,7 @@ package leakguard
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,10 +36,9 @@ func init() {
 var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 
 // readsNoConfigFile is the environment of a read that must read neither the machine's git
-// configuration nor the user's (Guard.advertised, Guard.negotiated, and Guard.lsRemote, which
-// spells the same two): GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL=/dev/null take away the system
-// file and the user's, the second also the one under XDG_CONFIG_HOME, and with them every file
-// either includes.
+// configuration nor the user's (Guard.advertised, Guard.negotiated, Guard.lsRemote):
+// GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the user's,
+// the second also the one under XDG_CONFIG_HOME, and with them every file either includes.
 var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
 
 // destinationHolds is what a push's destination says it holds, read once a push
@@ -49,6 +46,8 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // commit of each read that answered, which Guard.commits feeds rev-list, and negotiated, whether
 // the fetch negotiation answered. tips are the local commits of the push's updates, which the
 // negotiation walks (Guard.negotiated); the advertised refs are read whole (Guard.advertised).
+// The two reads run at the same time, the negotiation in a goroutine of its own, so a destination
+// that answers neither holds the push for one heldReadBound, not two.
 //
 // Where the negotiation answers, the remote-tracking refs bound nothing (Guard.commits): they can
 // be stale, since the clone may not have fetched the destination since it moved; no remote may
@@ -66,21 +65,33 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 //
 // A read that fails refuses nothing. A stop by ctx itself, the caller's deadline or its cancel,
 // is the answer, as it is of every git a push's read runs (Guard.git): the push is then refused
-// as a setup failure naming the stop, never bounded as though the read had failed.
+// as a setup failure naming the stop, never bounded as though the read had failed. Where the
+// advertised read failed with ctx already ended, the stop it names is that read's, and otherwise
+// the negotiation's.
 func (g *Guard) destinationHolds(ctx context.Context, dir, url string, tips []string) (not string, negotiated bool, err error) {
+	var common []string
+	var negotiatedErr error
+	done := make(chan struct{})
+	go func() {
+		common, negotiatedErr = g.negotiated(ctx, dir, url, tips)
+		close(done)
+	}()
 	advertised, advertisedErr := g.advertised(ctx, dir, url)
-	if advertisedErr != nil && ctx.Err() != nil {
+	stopped := advertisedErr != nil && ctx.Err() != nil
+	<-done
+	if stopped {
 		return "", false, advertisedErr
 	}
-	common, negotiatedErr := g.negotiated(ctx, dir, url, tips)
 	if negotiatedErr != nil && ctx.Err() != nil {
 		return "", false, negotiatedErr
 	}
 	var lines strings.Builder
-	for _, id := range slices.Concat(common, advertised) {
-		lines.WriteString("^")
-		lines.WriteString(id)
-		lines.WriteString("\n")
+	for _, ids := range [][]string{common, advertised} {
+		for _, id := range ids {
+			lines.WriteString("^")
+			lines.WriteString(id)
+			lines.WriteString("\n")
+		}
 	}
 	return lines.String(), negotiatedErr == nil, nil
 }
@@ -155,7 +166,7 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	types, err := g.gitFed(bounded, dir, fetchesNothing, shas.String(), "cat-file", "--batch-check")
+	types, err := g.gitFed(bounded, dir, fetchesNothing, strings.NewReader(shas.String()), "cat-file", "--batch-check")
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +187,7 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 // advertised refs name nothing dir has (Guard.advertised), and the negotiation still finds the
 // commits beneath them that dir has:
 //
-//	git [--shallow-file <dir's shallow file>] -c credential.helper= fetch --negotiate-only \
+//	git -c credential.helper= --shallow-file <dir's shallow file> fetch --negotiate-only \
 //	    --negotiation-tip=<tip>... -- <url>
 //
 // run in an empty bare repository that the guard makes for the read in a private temporary
@@ -191,11 +202,13 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 // it prints each commit the destination acknowledged as one it holds, one a line, and stops. A
 // line that is no object id (isObjectID) holds nothing.
 //
-// Where dir is shallow, git is named dir's shallow file (`--git-path shallow`), so that its walk
-// stops at dir's shallow commits as a walk in dir does: without it, git 2.47.3 printed `error:
-// Could not read <parent>` for a shallow commit's parent the alternate does not hold, and still
-// answered. The bare repository's object format is dir's (`--show-object-format`), so that the
-// two read one another's ids.
+// git is named dir's shallow file (`--git-path shallow`) whether or not dir is shallow. Where dir
+// is shallow, its walk stops at dir's shallow commits as a walk in dir does: without it, git
+// 2.47.3 printed `error: Could not read <parent>` for a shallow commit's parent the alternate
+// does not hold, and still answered. Where dir is not, the file does not exist, and git reads a
+// missing shallow file as a repository that is not shallow and creates none (measured with git
+// 2.47.3 on 2026-11-27). The bare repository's object format is dir's (`--show-object-format`),
+// so that the two read one another's ids.
 //
 // The negotiation needs protocol v2: a destination served on v0 or v1 fails it (git 2.47.3 printed
 // `warning: --negotiate-only requires protocol v2` and `fatal: the remote end hung up
@@ -220,13 +233,7 @@ func (g *Guard) negotiated(ctx context.Context, dir, url string, tips []string) 
 		return nil, fmt.Errorf("git rev-parse printed %q, want the object directory, the shallow file and the object format", paths)
 	}
 	objects, shallow, format := answer[0], answer[1], answer[2]
-	var args []string
-	switch _, err := os.Stat(shallow); {
-	case err == nil:
-		args = append(args, "--shallow-file", shallow)
-	case !errors.Is(err, fs.ErrNotExist):
-		return nil, err
-	}
+	args := []string{"--shallow-file", shallow}
 	scratch, err := os.MkdirTemp("", "legion-negotiation-")
 	if err != nil {
 		return nil, fmt.Errorf("the repository for git fetch --negotiate-only could not be made: %w", err)

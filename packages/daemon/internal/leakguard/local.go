@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -149,14 +150,15 @@ func withoutExecPath([]string) func(name, value string) bool {
 }
 
 // remoteNames are the remotes of the repository in dir: the names `git remote` prints, and the
-// name of every file in the legacy directories `git rev-parse --git-path remotes` and `--git-path
-// branches` name, under the common directory a linked worktree shares, where a missing directory
-// holds none. `git remote` lists no remote such a file defines, while `git remote get-url` prints
-// its URL and a push by its name goes there (measured with git 2.47.3 on 2026-11-27: a
-// .git/remotes/gh holding `URL: https://example.invalid/o/n.git` and a .git/branches/br each
-// printed their URL, and `git remote` printed neither). Every entry but a directory is taken, as
-// legacyFetchDestinations takes them: a name that is no remote fails its URL read, which keeps the
-// push guarded.
+// name of every file in the legacy directories that one `git rev-parse --git-path remotes
+// --git-path branches` names, a line each, under the common directory a linked worktree shares,
+// where a missing directory holds none. An answer of any other count of lines is an error, which
+// keeps the push guarded. `git remote` lists no remote such a file defines, while `git remote
+// get-url` prints its URL and a push by its name goes there (measured with git 2.47.3 on
+// 2026-11-27: a .git/remotes/gh holding `URL: https://example.invalid/o/n.git` and a
+// .git/branches/br each printed their URL, and `git remote` printed neither). Every entry but a
+// directory is taken, as legacyFetchDestinations takes them: a name that is no remote fails its
+// URL read, which keeps the push guarded.
 func (g *Guard) remoteNames(ctx context.Context, dir string) ([]string, error) {
 	out, err := g.git(ctx, dir, "remote")
 	if err != nil {
@@ -164,12 +166,16 @@ func (g *Guard) remoteNames(ctx context.Context, dir string) ([]string, error) {
 	}
 	// One name a line; a remote's name holds no space (heldRemotes).
 	names := strings.Fields(out)
-	for _, legacy := range []string{"remotes", "branches"} {
-		path, err := g.git(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", legacy)
-		if err != nil {
-			return nil, err
-		}
-		entries, err := os.ReadDir(strings.TrimSuffix(path, "\n"))
+	paths, err := g.git(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", "remotes", "--git-path", "branches")
+	if err != nil {
+		return nil, err
+	}
+	legacy := strings.Split(strings.TrimSuffix(paths, "\n"), "\n")
+	if len(legacy) != 2 {
+		return nil, fmt.Errorf("git rev-parse printed %q, want the remotes and the branches directories", paths)
+	}
+	for _, path := range legacy {
+		entries, err := os.ReadDir(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -191,11 +197,10 @@ func (g *Guard) remoteNames(ctx context.Context, dir string) ([]string, error) {
 // read one a line, as heldRemotes reads them, and an empty line is an empty URL, which is none.
 func (g *Guard) remoteStaysLocal(ctx context.Context, dir, name string) bool {
 	urls := 0
-	for _, push := range []bool{false, true} {
-		args := []string{"remote", "get-url", "--all", "--", name}
-		if push {
-			args = []string{"remote", "get-url", "--push", "--all", "--", name}
-		}
+	for _, args := range [][]string{
+		{"remote", "get-url", "--all", "--", name},
+		{"remote", "get-url", "--push", "--all", "--", name},
+	} {
 		out, err := g.git(ctx, dir, args...)
 		if err != nil {
 			return false

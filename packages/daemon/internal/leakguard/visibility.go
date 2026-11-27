@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -749,7 +750,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 			"ls-remote", url, "HEAD"),
 		dir:     "/",
 		inherit: func([]string) func(name, value string) bool { return lsRemoteInherits },
-		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
+		env:     slices.Concat([]string{"HOME=" + home}, readsNoConfigFile, []string{"LC_ALL=C"}),
 	})
 	if err != nil {
 		return "", procgroup.Said(err, printed)

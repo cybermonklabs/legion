@@ -17,8 +17,9 @@ import (
 // that could not run (*SetupFailure), and a person who reads either marker looks for the wrong
 // fault. Every other failure of the read keeps the setup failure it was, a 500 among them.
 
-// ghPrints is a gh REST read that prints answer, gh's standard output and standard error as the
-// two print together, and exits 1.
+// ghPrints is a gh REST read that prints answer on standard output alone and exits 1. Where answer
+// holds gh's own line after the body, as leakguardtest's GhReadNotFound does, the guard's read of
+// standard output finds that line there too and nothing on standard error.
 func ghPrints(answer string) string {
 	return "printf '%s' " + shQuote(answer) + "\nexit 1\n"
 }
@@ -153,8 +154,8 @@ func TestAVisibilityRead500IsASetupFailure(t *testing.T) {
 	// gh prints the answer on standard output and its own line on standard error, as it printed
 	// the 404 (testdata/gh-rest-read/not-found), so the stand-in prints GhReadServerError so too:
 	// the guard quotes gh's standard error alone.
-	const serverErrorLine = "gh: Server Error (HTTP 500)"
-	ghServerError := "printf '%s' " + shQuote(strings.TrimSuffix(leakguardtest.GhReadServerError, serverErrorLine+"\n")) + "\n" +
+	serverErrorLine := strings.TrimSuffix(leakguardtest.GhReadServerErrorLine, "\n")
+	ghServerError := "printf '%s' " + shQuote(strings.TrimSuffix(leakguardtest.GhReadServerError, leakguardtest.GhReadServerErrorLine)) + "\n" +
 		printsToStderr(serverErrorLine) + "exit 1\n"
 	for _, tc := range []struct {
 		name       string

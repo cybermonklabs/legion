@@ -369,6 +369,17 @@ func TestTheGitWrapperMarksAPushThatCanNameItsReceivePack(t *testing.T) {
 	}
 }
 
+// noVerifySpellings are every prefix of `--no-verify`, from `--n` to the whole option, and
+// `--no-verify=1`: the spellings the wrapper's tests and the real git's are driven over.
+func noVerifySpellings() []string {
+	const full = "no-verify"
+	spellings := make([]string, 0, len(full)+1)
+	for n := 1; n <= len(full); n++ {
+		spellings = append(spellings, "--"+full[:n])
+	}
+	return append(spellings, "--"+full+"=1")
+}
+
 // The spellings git reads as `--no-verify` on a push, which on git 2.47.3 are `--no-veri`,
 // `--no-verif` and `--no-verify`, are taken out wherever they stand after the subcommand: git
 // takes any prefix of a long option that names it alone, and the two shorter ones skipped the hook
@@ -378,14 +389,8 @@ func TestTheGitWrapperMarksAPushThatCanNameItsReceivePack(t *testing.T) {
 // into one it makes.
 func TestTheGitWrapperTakesEverySpellingOfNoVerifyOutOfAPush(t *testing.T) {
 	const hooksPath = "core.hooksPath=/opt/legion/githooks"
-	const full = "no-verify"
-	spellings := make([]string, 0, len(full)+1)
-	for n := 1; n <= len(full); n++ {
-		spellings = append(spellings, "--"+full[:n])
-	}
-	spellings = append(spellings, "--"+full+"=1")
 	takenOut := []string{"--no-veri", "--no-verif", "--no-verify"}
-	for _, spelling := range spellings {
+	for _, spelling := range noVerifySpellings() {
 		t.Run(spelling, func(t *testing.T) {
 			dir := t.TempDir()
 			log := filepath.Join(dir, "argv")
@@ -429,11 +434,8 @@ func newGitPushRig(t *testing.T) gitPushRig {
 		t.Fatal(err)
 	}
 	hookLog := filepath.Join(dir, "hook-log")
-	hookScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\t%%s\\t%%s\\n' \"$1\" \"$2\" \"${%s-unset}\" >> %s\nexit 0\n",
-		PushNamesReceivePackVar, shQuote(hookLog))
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-push"), []byte(hookScript), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeProgram(t, hooksDir, "pre-push", fmt.Sprintf("printf '%%s\\t%%s\\t%%s\\n' \"$1\" \"$2\" \"${%s-unset}\" >> %s\nexit 0\n",
+		PushNamesReceivePackVar, shQuote(hookLog)))
 	legionLog := filepath.Join(dir, "legion-ran")
 	legion := logging(t, filepath.Join(dir, "stand-in-legion"), legionLog)
 	wrapper := wrapperCopy(t, dir, "git",
@@ -496,14 +498,7 @@ func (r gitPushRig) remoteRefs(t *testing.T) string {
 // the hook and land the push unchecked. Driving the real git over every prefix of `no-verify` and
 // `--no-verify=1` also catches any newer git that comes to accept one more spelling.
 func TestEverySpellingGitReadsAsNoVerifyStillRunsTheHook(t *testing.T) {
-	const full = "no-verify"
-	spellings := make([]string, 0, len(full)+1)
-	for n := 1; n <= len(full); n++ {
-		spellings = append(spellings, "--"+full[:n])
-	}
-	spellings = append(spellings, "--"+full+"=1")
-
-	for _, spelling := range spellings {
+	for _, spelling := range noVerifySpellings() {
 		t.Run(spelling, func(t *testing.T) {
 			rig := newGitPushRig(t)
 			out, err := rig.run.Try(rig.repo, rig.wrapper, "push", spelling, rig.remote, "main")
@@ -564,9 +559,7 @@ func TestEverySpellingGitReadsAsReceivePackOrExecMarksThePush(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newGitPushRig(t)
 			program := filepath.Join(rig.dir, "my-receive-pack")
-			if err := os.WriteFile(program, []byte("#!/bin/sh\nexec "+shQuote(rig.git)+" receive-pack \"$@\"\n"), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			writeProgram(t, rig.dir, "my-receive-pack", "exec "+shQuote(rig.git)+" receive-pack \"$@\"\n")
 			argv := append([]string{rig.wrapper, "push"}, tc.args(program)...)
 			argv = append(argv, rig.remote, "main")
 			out, err := rig.run.Try(rig.repo, argv...)

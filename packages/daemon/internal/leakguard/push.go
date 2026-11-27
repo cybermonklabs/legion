@@ -211,13 +211,7 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			if named {
 				from = req.Remote
 			}
-			var tips []string
-			for _, update := range req.Updates {
-				if addsCommits(update) && !slices.Contains(tips, update.LocalSHA) {
-					tips = append(tips, update.LocalSHA)
-				}
-			}
-			if not, negotiated, err = g.destinationHolds(ctx, req.Dir, req.URL, tips); err != nil {
+			if not, negotiated, err = g.destinationHolds(ctx, req.Dir, req.URL, pushTips(req.Updates)); err != nil {
 				return err
 			}
 			if negotiated {
@@ -240,6 +234,18 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 		}
 	}
 	return nil
+}
+
+// pushTips are the local commits of updates that add commits, each once, in the updates' order:
+// the tips the destination's fetch negotiation walks (Guard.destinationHolds).
+func pushTips(updates []Update) []string {
+	var tips []string
+	for _, update := range updates {
+		if addsCommits(update) && !slices.Contains(tips, update.LocalSHA) {
+			tips = append(tips, update.LocalSHA)
+		}
+	}
+	return tips
 }
 
 // addsCommits is whether update can add a commit to the destination: whether its local side is a
@@ -467,7 +473,7 @@ func (g *Guard) commits(ctx context.Context, dir string, held []string, not, fro
 	if has {
 		fed += "^" + update.RemoteSHA + "\n"
 	}
-	out, err := g.gitFed(ctx, dir, nil, fed+not, argv...)
+	out, err := g.gitFed(ctx, dir, nil, io.MultiReader(strings.NewReader(fed), strings.NewReader(not)), argv...)
 	if err != nil {
 		return nil, err
 	}
@@ -800,19 +806,15 @@ func (g *Guard) gitWith(ctx context.Context, dir string, stdout func(io.Reader) 
 	return out, nil
 }
 
-// gitFed runs one git command in dir under env, with input on its standard input, none where
-// input is empty, and answers its standard output alone, failing where git itself does, as
+// gitFed runs one git command in dir under env, with stdin on its standard input, none where
+// stdin is nil, and answers its standard output alone, failing where git itself does, as
 // Guard.git does: a record this package could not read is a setup failure, never a push read as
 // clean. What it answers is read as data, a list of commits or of objects' types, so a warning
 // git writes to its standard error must not land in it, and that error is what a failure carries
 // (gitExited). The rev-list of a push's commits is fed the commits it starts from and the ones it
 // stops at (Guard.commits), and the batch check of which advertised ids the repository has as
 // commits is fed those ids and runs under an env that fetches nothing (Guard.advertised).
-func (g *Guard) gitFed(ctx context.Context, dir string, env []string, input string, args ...string) (string, error) {
-	var stdin io.Reader
-	if input != "" {
-		stdin = strings.NewReader(input)
-	}
+func (g *Guard) gitFed(ctx context.Context, dir string, env []string, stdin io.Reader, args ...string) (string, error) {
 	var stderr strings.Builder
 	status, out, err := g.run(ctx, child{
 		argv:   gitArgv(args...),
