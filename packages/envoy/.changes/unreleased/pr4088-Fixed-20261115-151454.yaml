@@ -1,5 +1,5 @@
 kind: Fixed
-body: The listener gives up a message on the agent subject of a session that has no registry record after its retry window, and reports the agent wake, also when the interest row of the session still names this listener. Before, it failed the message as `delivery_failed` on every redelivery and reported no wake until the interest row was reaped, minutes later.
+body: The listener reports the agent wake for a message on the agent subject of a session that has no registry record, also when the interest row of the session still names this listener. It waits once for `ENVOY_UNPLACEABLE_RETRY_WINDOW` and then reports the wake, as for a session with no interest row. Before, it failed the message as `delivery_failed` on every redelivery and reported no wake until the interest row was reaped, minutes later.
 time: 2026-11-15T15:14:54.79750333Z
 custom:
     Issue: pr4088

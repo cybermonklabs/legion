@@ -24,6 +24,13 @@ type Publisher interface {
 	PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error
 }
 
+// BodyTooLarge is the text every listener route answers, with 413, to a body past its limit: the
+// limit in bytes and in MiB. Every limit is a whole number of MiB. The webhook routes answer it as
+// text and the /v1 routes as their JSON error, so both name the limit in the same words.
+func BodyTooLarge(limit int64) string {
+	return fmt.Sprintf("body too large: the limit is %d bytes (%d MiB)", limit, limit>>20)
+}
+
 // deliveryFailed answers a delivery whose envelope the listener did not publish, and logs
 // `<action> refused`, `<action> in process` or `<action> failed` (failureOutcome). Slack and Ghost
 // Wispr deliveries log it on every attempt; a GitHub delivery logs it once (failedDeliveries).

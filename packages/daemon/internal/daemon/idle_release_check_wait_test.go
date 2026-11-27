@@ -33,12 +33,12 @@ func (s *releaseCheckFaults) IssueReleaseCheck(ctx context.Context, project, iss
 }
 
 func (s *releaseCheckFaults) DeclineIssueRelease(ctx context.Context, project, issue string, decline store.IdleReleaseDecline,
-	resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause) (store.ReleaseCancelled, error) {
+	woken store.ReleaseWokenRow, outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause) (store.ReleaseCancelled, error) {
 	s.declineTried = true
 	if s.declineErr != nil {
 		return store.ReleaseCancelled{}, s.declineErr
 	}
-	return s.outboxTrees.DeclineIssueRelease(ctx, project, issue, decline, resume, outOfWorkflow, paused)
+	return s.outboxTrees.DeclineIssueRelease(ctx, project, issue, decline, woken, outOfWorkflow, paused)
 }
 
 // pendingCheck is the release's workspace check as the drain left it after one failed attempt:
