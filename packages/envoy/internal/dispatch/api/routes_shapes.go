@@ -598,6 +598,14 @@ type issueAsksQuery struct {
 	// (asks.go) refuses every other value with 400 INVALID_ASK_THREAD, so a client that sent
 	// `true` would be refused.
 	Thread string `query:"thread" enum:"1"`
+	// Order, `activity`, answers a page instead of the list. The keys below require it.
+	Order string `query:"order" enum:"activity"`
+	// Limit is the page size, 1 to 100, default 20.
+	Limit int `query:"limit"`
+	// Before is the previous page's position: UTC time with six fractional digits, then a comma and a lower-case UUID.
+	Before string `query:"before"`
+	// Author keeps threads the login or session ID wrote in.
+	Author string `query:"author"`
 }
 
 // artifactAsksQuery is GET /api/v1/artifacts/{id}/asks's query.
@@ -658,6 +666,31 @@ type openAsksQuery struct {
 type issueCommentsQuery struct {
 	// Artifact scopes the comments to one document of the issue.
 	Artifact string `query:"artifact"`
+	// Order, `activity`, answers a page instead of the list. The keys below require it.
+	Order string `query:"order" enum:"activity"`
+	// Limit is the page size, 1 to 100, default 20.
+	Limit int `query:"limit"`
+	// Before is the previous page's position: UTC time with six fractional digits, then a comma and a lower-case UUID.
+	Before string `query:"before"`
+	// Author keeps threads the login or session ID wrote in.
+	Author string `query:"author"`
+	// Person, `in`, keeps threads involving a person or on text.
+	Person string `query:"person" enum:"in"`
+}
+
+// issueMessagesQuery is GET /api/v1/issues/{key}/messages's query.
+type issueMessagesQuery struct {
+	// Order, `activity`, answers a page instead of the list. The keys below require it.
+	Order string `query:"order" enum:"activity"`
+	// Limit is the page size, 1 to 100, default 20.
+	Limit int `query:"limit"`
+	// Before is the previous page's position: UTC time with six fractional digits, then a comma and a lower-case UUID.
+	Before string `query:"before"`
+	// Author keeps threads the login or session ID wrote in.
+	Author string `query:"author"`
+	// Person, `in`, keeps threads involving a person or with no target. `none` keeps targeted
+	// threads with no person. Both omit roots from the issue project's Legion daemon.
+	Person string `query:"person" enum:"in,none"`
 }
 
 // credentialApproverQuery is the query GET /api/v1/credential-requests and

@@ -2940,6 +2940,35 @@ A run of a step that was open at the rollback stays open in `step_starts`, which
 Nothing ends such a run: Dispatch keeps its start with no end, which `dispatch steps --issue <KEY>` lists, so read it as a run the rollback stopped.
 While it stands open, the earlier release reads its agent as the agent of a running step of the issue, so each request of that agent on the issue, and each that names no issue, waits up to 5 seconds for the agent's stream before it applies (`RunsAStepOn` and `RunsAStep` in `api/fact_apply.go`).
 
+#### Rolling back the release that records each task's needs
+
+This release writes the tasks each task needs on every `plan_record` row: each task of the row's `tasks` carries `needs`, the ids of the tasks it needs, `[]` for none (`PlanRecordTask` in `record/outbox.go`).
+The release before decodes a `plan_record` row strictly (`DisallowUnknownFields` in `record/outbox.go`) and its `PlanRecordTask` has no `needs`.
+A decode error is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so each such row still queued at the rollback fails at every attempt and is retried on its backoff until the roll forward, and that run's plan never reaches Dispatch.
+This change runs no migration and changes no column, so no dump and no `alter table` belong here.
+
+Deploy Dispatch first, then the daemon.
+A Dispatch of the release before ignores `needs`, a member its plan write does not declare (`decodeJSON` in `packages/envoy/internal/dispatch/api/server.go`), so it stores each plan this release's daemon writes to it with every task's needs not recorded.
+A later write of that plan at the same version changes nothing (`PutPlan` in `workflowstore/plans.go`), so the steps read, the Steps tab and `dispatch steps` show that run's tasks with their needs not recorded until Legion takes a later version of the owner's plan, and for the whole run under a default plan, whose version is 0.
+That happens when the daemon deploys before Dispatch, and while Dispatch's own rolling deploy still serves the release before beside this one.
+With Dispatch first, the daemon that writes plans during Dispatch's deploy is the release before, which writes no needs, and every plan this release's daemon writes reaches a Dispatch that stores its needs.
+
+At the rollback, with the project's daemon stopped and before the earlier image is pinned, run the statement below once in `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`, with `<PROJECT>` the key of the project whose daemon rolls back.
+It takes `needs` off each task of each queued `plan_record` row of that project and leaves the rest of the row as it was.
+The outbox is shared by every project's daemon on the database, so the statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen).
+A second run changes nothing.
+
+```sql
+update outbox set payload = jsonb_set(payload, '{tasks}',
+    (select jsonb_agg(task - 'needs' order by place) from jsonb_array_elements(payload->'tasks') with ordinality as t(task, place)))
+  where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>' and jsonb_path_exists(payload, '$.tasks[*].needs');
+```
+
+The statement strips the member rather than deleting the rows because each row is a write of a run's plan to Dispatch, the first one at the start of the run's work, not a copy Dispatch already holds.
+A deleted row would leave the run with no plan in Dispatch until Legion takes a later version of the owner's plan.
+A stripped row is the write the release before would have made: Dispatch takes it and records that plan's needs as not recorded, and the steps read and `dispatch steps` show each task of that plan with its needs not recorded.
+A row whose write already reached Dispatch, which the daemon runs again after a stop before it marked the row done, then writes that plan again without its needs at the same version, and Dispatch keeps the needs it already holds, since a write at or below the version it holds changes nothing.
+
 #### Rolling back the release whose experiment sets how each issue is done
 
 This release lets a variant of an experiment name `plan` (`projects.<KEY>.experiments.<name>.variants[].plan`), and its migration `20261123165139_experiment_assignment_plan.up.sql` adds the column `experiment_assignments.plan`, where each draw records the word of the arm it drew.
@@ -10865,7 +10894,7 @@ Such a write writes nothing, and the token gets the answer of a target that does
 Dispatch still refuses such a token a write to a target that resolves to no project or to nothing (`packages/envoy/internal/dispatch/api/project_scope.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
 Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
-It serves a read-only token, one that holds `read`, on the reads of its read class (`readClasses` in `packages/envoy/internal/dispatch/api/read_classes.go`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
+It serves a read-only token, one that holds `read`, on the reads of its read class (each route's `Read`, in its file under `packages/envoy/internal/dispatch/api`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.

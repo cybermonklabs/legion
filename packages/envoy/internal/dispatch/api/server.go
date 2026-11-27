@@ -1766,9 +1766,7 @@ var approveOnlyRefusal = sync.OnceValue(func() string {
 			listed = append(listed, route)
 		}
 	}
-	slices.SortFunc(listed, func(left, right routeDecl) int {
-		return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
-	})
+	slices.SortFunc(listed, byPatternThenMethod)
 	names := make([]string, len(listed))
 	for index, route := range listed {
 		names[index] = route.Method + " " + route.Pattern
