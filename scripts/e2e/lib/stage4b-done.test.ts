@@ -25,7 +25,7 @@ test("the done checkpoint waits for the merge to close tree 1 at once", () => {
 test("the done checkpoint fails on a close that waits and on a pr-merged notice for tree 1", () => {
   const waits = "workflow: a merged issue's close waits for the issues beneath it";
   expect(done).toContain(`log_lines "${waits}"`);
-  expect(done).toContain('[ "$merge_waits" = 0 ]');
+  expect(done).toContain('[ "$waited" = 0 ]');
   expect(done).toContain(
     'notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")"'
   );
