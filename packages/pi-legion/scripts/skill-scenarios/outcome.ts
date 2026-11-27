@@ -4,10 +4,12 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { recordWorkspace, translateCommits } from "./git-world";
-import { type OutcomeRecord, parseOutcome } from "./heldout-case";
+import { type OutcomeRecord, parseOutcome, T0_ACTION_KINDS } from "./heldout-case";
 import { parseInstant } from "./production-dispatch";
 import {
+  childSessions,
   dispatchFirstInjected,
+  envoySends,
   resultText,
   type SessionEntry,
   session,
@@ -15,6 +17,7 @@ import {
   sessionId,
   skillReads,
   subagentSessions,
+  taskAgents,
 } from "./transcript";
 
 type Action = OutcomeRecord["actions"][number];
@@ -31,7 +34,9 @@ const DaemonLine = z.object({
 });
 /** One line of calls.jsonl: gh-standin.ts's record of a gh call, with the request gh makes for it
  * as gh reads its arguments (`request`) and the change it kept to a pull request or a review
- * (`pull`), which it writes only for a call it took; or a line of rig.sh's other stand-ins. */
+ * (`pull`), which it writes only for a call it took; dispatch-recorder.ts's record of a `dispatch`
+ * command (its exit, the requests it sent and the CLI's own reading of it); or a line of rig.sh's
+ * other stand-ins. */
 const Call = z.object({
   at: z.string(),
   as: z.string(),
@@ -44,8 +49,20 @@ const Call = z.object({
     })
     .optional(),
   pull: z.object({ action: z.string() }).catchall(z.json()).optional(),
+  exit: z.number().optional(),
+  requests: z
+    .array(z.object({ method: z.string(), path: z.string() }))
+    .nullable()
+    .optional(),
+  call: z.object({ command: z.string(), flags: Fields, dryRun: z.boolean() }).nullable().optional(),
 });
-const StageLine = z.object({ at: z.string(), tree: z.string(), files: z.array(z.string()) });
+const StageLine = z.object({
+  at: z.string(),
+  tree: z.string(),
+  files: z.array(z.string()),
+  job: z.string().optional(),
+  source: z.string().optional(),
+});
 const Readback = z.object({
   seedThrough: z.number(),
   events: z.array(
@@ -312,6 +329,34 @@ function githubAction(call: z.infer<typeof Call>): Pending[] {
   return [{ ...common, command }];
 }
 
+/** A `dispatch` command as dispatch-recorder.ts recorded it: a `dispatch-read` where the command
+ * exited 0 and sent Dispatch at least one request, every request a GET or a HEAD, and it was no
+ * dry run, which sends nothing. Any other method makes it a write, which is a `dispatch` action
+ * from Dispatch's own events and is never recorded twice; a command whose requests are unknown (no
+ * proxy ran), or that the CLI reads as no call (a help, a usage error), is no read. `target` is
+ * what it reads, its `--issue`, else its `--ref`, else its `--project`, and, for a command that
+ * names none of the three (`open-asks`, `search`), the path of its first request. */
+function dispatchReadAction(call: z.infer<typeof Call>): Pending[] {
+  if (call.as !== "dispatch" || call.exit !== 0) return [];
+  const { requests, call: read } = call;
+  if (!requests?.length || !read || read.dryRun) return [];
+  if (!requests.every(({ method }) => method === "GET" || method === "HEAD")) return [];
+  const key = ["issue", "ref", "project"].find((flag) => {
+    const value = read.flags[flag];
+    return typeof value === "string" && value.trim() !== "";
+  });
+  const { [key ?? ""]: named, ...fields } = read.flags;
+  return [
+    {
+      kind: "dispatch-read",
+      at: call.at,
+      command: read.command,
+      target: typeof named === "string" ? named : (requests[0]?.path ?? read.command),
+      fields,
+    },
+  ];
+}
+
 function nanos(at: string): bigint {
   const parsed = parseInstant(at);
   if (parsed === undefined) throw new Error(`not an RFC 3339 timestamp: ${at}`);
@@ -333,10 +378,10 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const parent = session(dir);
   if (parent.length === 0) throw new Error(`${dir}: no session transcript`);
   const subagents = subagentSessions(dir);
-  const role =
-    agent === undefined
-      ? parent
-      : (subagents.find(({ name }) => name === agent)?.entries ?? parent);
+  const roleAgent = agent === undefined ? undefined : subagents.find(({ name }) => name === agent);
+  const role = roleAgent?.entries ?? parent;
+  // The task agents the role started: the session's own, or, in an A case, those the agent has.
+  const started = roleAgent === undefined ? subagents : childSessions(roleAgent.file);
   const own = new Set(
     [parent, ...subagents.map(({ entries }) => entries)].flatMap(
       (entries) => sessionId(entries) ?? []
@@ -351,11 +396,15 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
     own
   );
   const daemonLog = jsonLines(file("daemon.log"), DaemonLine);
+  const callLog = jsonLines(file("calls.jsonl"), Call);
   const actions: Pending[] = [
     ...daemonLog.flatMap(daemonAction),
     ...daemonReadActions(parent, daemonLog),
     ...dispatch.actions,
-    ...jsonLines(file("calls.jsonl"), Call).flatMap(githubAction),
+    ...callLog.flatMap(githubAction),
+    ...callLog.flatMap(dispatchReadAction),
+    ...envoySends(role),
+    ...taskAgents(role, started),
     ...lines(file("pushes.log")).map((line): Pending => {
       const hit = /^(\S+) (\S+) [0-9a-f]{40} ([0-9a-f]{40})$/.exec(line);
       if (!hit?.[1] || !hit[2] || !hit[3]) throw new Error(`bad pushes.log row: ${line}`);
@@ -436,8 +485,30 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const ordered = timed.map(({ action, ns }, i) => ({
     ...action,
     at: shifted(ns, offset),
+    ...(action.kind === "agent" && action.endedAt !== undefined
+      ? { endedAt: shifted(nanos(action.endedAt), offset) }
+      : {}),
     seq: i + 1,
   }));
+  // The jj operation record of the run's workspace, beside the other records lane D's replay
+  // places against the run's calls: the workspace's own moves are recorded nowhere else. Each
+  // operation is at the time it ended, the commits it left `@-` on are the world's where the world
+  // names them, and the operations are in the order they ended.
+  if (existsSync(file("workspace/.jj"))) recordWorkspace(file("workspace"), dir);
+  const operations = file("workspace-ops.jsonl");
+  const workspace = existsSync(operations)
+    ? jsonLines(
+        operations,
+        z.object({ end: z.string(), description: z.string(), standingOn: z.array(z.string()) })
+      )
+        .map(({ end, description, standingOn }) => ({ ns: nanos(end), description, standingOn }))
+        .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0))
+        .map(({ ns, description, standingOn }) => ({
+          at: shifted(ns, offset),
+          description,
+          standingOn,
+        }))
+    : undefined;
   const others = dispatch.others
     .map((write) => ({ write, ns: nanos(write.at) }))
     .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0))
@@ -454,16 +525,18 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
       actions: translateCommits(ordered, inverse),
       ...(others.length === 0 ? {} : { otherWrites: translateCommits(others, inverse) }),
       ...(agentReport === undefined ? {} : { agentReport: translateCommits(agentReport, inverse) }),
-      // A read is before the first scored action by the host clock both records share: the time
-      // of the outcome's first action, before it moves onto the case's timeline.
-      skillReads: skillReads(role, timed[0]?.ns),
+      // A read is before the first scored action of a T0 kind by the host clock both records
+      // share: the time of the outcome's first such action, before it moves onto the case's
+      // timeline. An Envoy message, a Dispatch read or a task agent's start moves no read.
+      skillReads: skillReads(
+        role,
+        timed.find(({ action }) => (T0_ACTION_KINDS as readonly string[]).includes(action.kind))?.ns
+      ),
       dispatchFirstInjected: dispatchFirstInjected(role, onWire),
       lastText: translateCommits(lastText, inverse),
+      ...(workspace === undefined ? {} : { workspace: translateCommits(workspace, inverse) }),
     })
   );
-  // The jj operation record of the run's workspace, beside the other records lane D's replay
-  // places against the run's calls: the workspace's own moves are recorded nowhere else.
-  if (existsSync(file("workspace/.jj"))) recordWorkspace(file("workspace"), dir);
   writeFileSync(file("outcome.json.new"), `${JSON.stringify(result, null, 2)}\n`);
   renameSync(file("outcome.json.new"), file("outcome.json"));
   return result;

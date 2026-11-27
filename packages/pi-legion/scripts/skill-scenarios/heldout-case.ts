@@ -166,51 +166,109 @@ const Source = z.strictObject({
 /** The handoff words of the file-backed phases (pi-shared's handoff-record.ts FILE_BACKED). */
 const HandoffWord = z.enum(["plan", "implement", "test", "review"]);
 
-/** The scratch Dispatch issue the role works, with everything recorded on it. */
-const DispatchWorld = z.strictObject({
-  issue: z.strictObject({
-    key: IssueKey,
-    title: Text,
-    status: Name,
-    spec: z.string(),
-    parent: IssueKey.nullable(),
-  }),
-  /** The issue's documents besides its spec, by file name (`verification.md`). */
-  documents: z.array(z.strictObject({ name: Text, body: z.string() })),
-  /** Each handoff record, as `dispatch handoff-write` stores it under its writer's session. */
-  handoffs: z.array(
-    z.strictObject({
-      id: Text,
-      phase: HandoffWord,
-      version: Count,
-      author: Text,
-      at: Instant,
-      body: Fields,
-    })
-  ),
-  comments: z.array(z.strictObject({ id: Text, author: Text, at: Instant, body: Text })),
-  asks: z.array(
-    z.strictObject({
-      id: Text,
-      author: Text,
-      at: Instant,
-      question: Text,
-      options: z.array(Text),
-      state: z.enum(["open", "answered", "dismissed"]),
-      answer: Text.nullable(),
-    })
-  ),
-  /** Each result recorded against a check of the Verification document (`dispatch result`). */
-  results: z.array(
-    z.strictObject({
-      check: Name,
-      role: Name,
-      verdict: z.enum(["pass", "fail"]),
-      commit: Commit,
-      at: Instant,
-    })
-  ),
+/** One Dispatch issue of the world other than the case's own: its status, its parent, its place
+ * on its project's board (rank 1 is first, null for none), its labels, the issues its `blocked_by`
+ * links name and the session that holds its claim (null for none). A title the world does not state
+ * is the seeder's: `Parent of <child>` for a parent of the case's issue, else the key. */
+const DispatchIssue = z.strictObject({
+  key: IssueKey,
+  title: Text.optional(),
+  status: Name,
+  parent: IssueKey.nullable(),
+  rank: Count.nullable(),
+  labels: z.array(Name),
+  blockedBy: z.array(IssueKey),
+  claimedBy: Text.nullable(),
 });
+
+/** One step run of the issue as `dispatch steps` lists it: the plan task it belongs to (`default`
+ * for the project's default steps), its place in that task (1 or more for a `step`, exactly 0 for a
+ * `retro` and a `merge`, as base steprecord.PlaceHolds holds it), its role, its result and end
+ * (both null while it runs), and, on a retro that ended alone, the rating it gave the plan. */
+const StepRun = z
+  .strictObject({
+    task: Text,
+    step: z.number().int(),
+    kind: z.enum(["step", "retro", "merge"]),
+    role: Name.nullable(),
+    result: z.enum(["passed", "failed", "stopped"]).nullable(),
+    startedAt: Instant,
+    endedAt: Instant.nullable(),
+    planRating: z.number().int().min(1).max(5).optional(),
+    planReason: Text.optional(),
+  })
+  .superRefine((run, context) => {
+    if (run.kind === "step" ? run.step < 1 : run.step !== 0)
+      refuse(context, ["step"], "a step run's place is 1 or more, and a retro's or a merge's is 0");
+    if ((run.result === null) !== (run.endedAt === null))
+      refuse(
+        context,
+        ["endedAt"],
+        "a run that has ended has a result and an end, and one that runs neither"
+      );
+    const rated = run.planRating !== undefined || run.planReason !== undefined;
+    if (rated && (run.kind !== "retro" || run.endedAt === null))
+      refuse(context, ["planRating"], "only a retro that ended rates its plan");
+  });
+
+/** The scratch Dispatch issue the role works, with everything recorded on it, and, where a case's
+ * world states them, the project's other issues (`issues`) and the issue's step runs (`steps`). */
+const DispatchWorld = z
+  .strictObject({
+    issue: z.strictObject({
+      key: IssueKey,
+      title: Text,
+      status: Name,
+      spec: z.string(),
+      parent: IssueKey.nullable(),
+      labels: z.array(Name).optional(),
+    }),
+    /** The issue's documents besides its spec, by file name (`verification.md`). */
+    documents: z.array(z.strictObject({ name: Text, body: z.string() })),
+    /** Each handoff record, as `dispatch handoff-write` stores it under its writer's session. */
+    handoffs: z.array(
+      z.strictObject({
+        id: Text,
+        phase: HandoffWord,
+        version: Count,
+        author: Text,
+        at: Instant,
+        body: Fields,
+      })
+    ),
+    comments: z.array(z.strictObject({ id: Text, author: Text, at: Instant, body: Text })),
+    asks: z.array(
+      z.strictObject({
+        id: Text,
+        author: Text,
+        at: Instant,
+        question: Text,
+        options: z.array(Text),
+        state: z.enum(["open", "answered", "dismissed"]),
+        answer: Text.nullable(),
+      })
+    ),
+    /** Each result recorded against a check of the Verification document (`dispatch result`). */
+    results: z.array(
+      z.strictObject({
+        check: Name,
+        role: Name,
+        verdict: z.enum(["pass", "fail"]),
+        commit: Commit,
+        at: Instant,
+      })
+    ),
+    issues: z.array(DispatchIssue).optional(),
+    steps: z.array(StepRun).optional(),
+  })
+  .superRefine((dispatch, context) => {
+    const keys = (dispatch.issues ?? []).map((other) => other.key);
+    refuseRepeats(context, keys, (index) => ["issues", index, "key"]);
+    keys.forEach((key, index) => {
+      if (key === dispatch.issue.key)
+        refuse(context, ["issues", index, "key"], "the case's own issue is no other issue");
+    });
+  });
 
 /** The git remote and the role's jj workspace. `commits` holds every commit either names;
  * `localOnly` is each commit only the workspace holds, never a remote branch's head. */
@@ -299,45 +357,149 @@ const PullRequest = z
             refuse(context, ["conclusion"], "a check run has a conclusion exactly once completed");
         })
     ),
+    /** What GitHub's GraphQL names the pull request's merge state (`CLEAN`, `BLOCKED`), its
+     * auto-merge request (null for none), its node id, what `gh pr diff` answers for it, and what a
+     * merge of it answers; each read and the merge answer from these where the world states them. */
+    mergeStateStatus: Text.optional(),
+    autoMergeRequest: z.json().optional(),
+    nodeId: Text.optional(),
+    diff: Text.optional(),
+    mergeResult: z.json().optional(),
   })
   .superRefine((pull, context) => {
     if ((pull.state === "merged") !== (pull.mergeCommit !== null))
       refuse(context, ["mergeCommit"], "a pull request has a merge commit exactly once merged");
   });
 
-/** GitHub as the run's `gh` stand-in answers it. */
-const GitHubWorld = z.strictObject({
-  repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repository as owner/name"),
-  pullRequests: z.array(PullRequest),
-  /** What the merge queue answers each request the role may make of it. */
-  mergeQueue: z.array(
-    z.strictObject({
-      pullRequest: Count,
-      request: Text,
-      answer: z.enum(["queued", "merged", "refused", "removed"]),
-      detail: z.string(),
-    })
-  ),
+/** GitHub as the run's `gh` stand-in answers it. `settings` is the repository's settings as
+ * `GET repos/<repository>` answers them, and `branchRules` what
+ * `GET repos/<repository>/rules/branches/<branch>` answers for each branch it names (an array of
+ * rule objects, `[]` for a branch it does not name). */
+const GitHubWorld = z
+  .strictObject({
+    repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repository as owner/name"),
+    pullRequests: z.array(PullRequest),
+    /** What the merge queue answers each request the role may make of it. */
+    mergeQueue: z.array(
+      z.strictObject({
+        pullRequest: Count,
+        request: Text,
+        answer: z.enum(["queued", "merged", "refused", "removed"]),
+        detail: z.string(),
+      })
+    ),
+    settings: z.record(z.string(), z.json()).optional(),
+    branchRules: z.array(z.strictObject({ branch: Text, rules: z.array(z.json()) })).optional(),
+  })
+  .superRefine((github, context) => {
+    refuseRepeats(
+      context,
+      (github.branchRules ?? []).map((rules) => rules.branch),
+      (index) => ["branchRules", index, "branch"]
+    );
+  });
+
+/** An architect claim as `read_record` names its state (`suspended`). */
+const ArchitectClaim = z.strictObject({ state: Name });
+
+/** The daemon's record of an issue other than the case's, as `read_record` and `read_state` answer
+ * it, with the state of its architect claim (null for none). */
+const DaemonRecord = z.strictObject({
+  key: IssueKey,
+  tree: IssueKey,
+  parent: IssueKey.nullable(),
+  phase: Phase,
+  status: Name,
+  generation: Count,
+  architect: ArchitectClaim.nullable(),
 });
 
 /** The daemon's record of the issue. `task` holds the text fields of the issue's task, by name.
- * `step` is the task step the phase is on, null where none runs (a done issue). */
-const DaemonWorld = z.strictObject({
-  phase: Phase,
-  step: z.strictObject({ place: Count, name: Text }).nullable(),
-  task: z.record(z.string(), z.string()),
-  /** The issue's open production check: the look the role works, whether no look follows it,
-   * when the check opened, the bound its last look starts at, and the merge it waits for. */
-  productionCheck: z
-    .strictObject({
-      look: Count,
-      last: z.boolean(),
-      openedAt: Instant,
-      boundAt: Instant,
-      mergeCommit: Commit,
-    })
-    .nullable(),
-});
+ * `step` is the task step the phase is on, null where none runs (a done issue). Each part after
+ * `productionCheck` is optional, and a world without it means what it meant before the part:
+ * - claim: the role's claim, the issue its grant names (a root architect's is the tree's root),
+ *   its tree, and, where a record of the world names it, the session the world's records name as
+ *   the role's (the `author` of its own handoff); absent, the case's issue in its parent's tree or
+ *   its own;
+ * - issue: the daemon's record of the case's issue where it differs from the default (the tree of
+ *   its Dispatch parent or its own, that parent, generation 1, no linger);
+ * - entry: the entry of the phase the role's phases row names, the entry of the task this turn
+ *   holds, the task the daemon queued for the claim at the phase's entry (null for none), and
+ *   whether a move back raised the phase's entry (false where absent; base api/handoff.go
+ *   behindEntryClause), after which a completion of an earlier turn is HANDOFF_STALE_ENTRY;
+ * - architect: the state of the architect claim of the case's issue, null for none;
+ * - records: the daemon's record of each other issue;
+ * - admission: `read_state`'s admission, its cap and its active, waiting and blocked issues;
+ * - gate: the design gate's steps of the claim's tree as `read_record` answers them, each with
+ *   the file name of its document, its newest version, the version a person approved (null for
+ *   none) and, where the case's records or traces name the document by an id, that id. */
+const DaemonWorld = z
+  .strictObject({
+    phase: Phase,
+    step: z.strictObject({ place: Count, name: Text }).nullable(),
+    task: z.record(z.string(), z.string()),
+    /** The issue's open production check: the look the role works, whether no look follows it,
+     * when the check opened, the bound its last look starts at, and the merge it waits for. */
+    productionCheck: z
+      .strictObject({
+        look: Count,
+        last: z.boolean(),
+        openedAt: Instant,
+        boundAt: Instant,
+        mergeCommit: Commit,
+      })
+      .nullable(),
+    claim: z.strictObject({ issue: IssueKey, tree: IssueKey, session: Text.optional() }).optional(),
+    issue: z
+      .strictObject({
+        tree: IssueKey,
+        parent: IssueKey.nullable(),
+        generation: Count,
+        lingerUntil: Instant.nullable(),
+      })
+      .optional(),
+    entry: z
+      .strictObject({
+        phase: Count,
+        turn: Count,
+        owedTask: Text.nullable(),
+        movedBack: z.boolean().optional(),
+      })
+      .optional(),
+    architect: ArchitectClaim.nullable().optional(),
+    records: z.array(DaemonRecord).optional(),
+    admission: z
+      .strictObject({
+        cap: z.number().int().nonnegative(),
+        active: z.array(IssueKey),
+        waiting: z.array(IssueKey),
+        blocked: z.array(IssueKey),
+      })
+      .optional(),
+    gate: z
+      .array(
+        z.strictObject({
+          step: Name,
+          document: Text,
+          current: Count,
+          approved: Count.nullable(),
+          artifactId: Text.optional(),
+        })
+      )
+      .optional(),
+  })
+  .superRefine((daemon, context) => {
+    refuseRepeats(
+      context,
+      (daemon.records ?? []).map((record) => record.key),
+      (index) => ["records", index, "key"]
+    );
+    refuseRepeats(
+      context,
+      (daemon.gate ?? []).map((step) => step.step),
+      (index) => ["gate", index, "step"]
+    );
+  });
 
 /** What production runs: the command or address that reports its revision, and that revision. */
 const ProductionWorld = z.strictObject({ probe: Text, revision: Commit });
@@ -353,6 +515,14 @@ export const World = z
     production: ProductionWorld.nullable(),
   })
   .superRefine((world, context) => {
+    (world.daemon?.records ?? []).forEach((record, index) => {
+      if (record.key === world.dispatch.issue.key)
+        refuse(
+          context,
+          ["daemon", "records", index, "key"],
+          "the case's own issue is daemon.issue, no other issue's record"
+        );
+    });
     const check = world.daemon?.productionCheck;
     if (!check) return;
     if (earlier(world.clock, check.openedAt) === true)
@@ -390,7 +560,24 @@ const Actor = z.strictObject({ kind: Name, id: Text });
  *   that changes a pull request or a review, that change as it kept it (`change`: its `action`, as
  *   gh-standin.ts names them, and that action's members);
  * - push: a ref the run pushed and the commit it pushed there;
- * - staging: a staged build Job, its snapshot's tree hash and its files. */
+ * - staging: a staged build Job, its snapshot's tree hash and its files, the name given to
+ *   `stage-job` (`job`) and the checkout root the snapshot was taken from, the run's own
+ *   directories written by the names the role was given for them (`source`: `$TMPDIR/stage-a`,
+ *   `$LEGION_WORKSPACE`); both absent from a record written before outcome.ts kept them;
+ * - envoy: an Envoy message the role sent with its Envoy tool and the tool answered without error,
+ *   `publish` (envoy_publish) or `send` (envoy_send), by the tool's name or as a `write` to its
+ *   `xd://` device: the topic it published to or the session it sent to (`target`), and the call's
+ *   other arguments as the tool names them (`fields`: `message`, `expects_reply`);
+ * - dispatch-read: a `dispatch` command the role ran that wrote nothing: its subcommand, what it
+ *   read (`target`: its `--issue`, else its `--ref`, else its `--project`; for a command that
+ *   names none of the three, such as `open-asks` or `search`, the path of the first request it
+ *   sent Dispatch, and the subcommand where lane R knows no request), and its other flags by name
+ *   without the dashes (`fields`: `handoff-id` for `--handoff-id`); a write is a `dispatch`
+ *   action, from Dispatch's own events;
+ * - agent: one task agent the role started with its `task` tool, one for each item of the call's
+ *   `tasks`: the item's agent (`task` where it names none), its name, its other members
+ *   (`fields`: `task`, `solutionSpace`), and the time of the last entry of that agent's own
+ *   transcript (`endedAt`, absent where it wrote none). */
 const DETAILS = {
   daemon: {
     op: Name,
@@ -406,9 +593,24 @@ const DETAILS = {
     change: z.object({ action: Name }).catchall(z.json()).optional(),
   },
   push: { ref: Text, commit: Commit },
-  staging: { tree: TreeHash, files: z.array(Text).min(1) },
+  staging: {
+    tree: TreeHash,
+    files: z.array(Text).min(1),
+    job: Text.optional(),
+    source: Text.optional(),
+  },
+  envoy: { tool: z.enum(["publish", "send"]), target: Text, fields: Fields },
+  "dispatch-read": { command: Name, target: Text, fields: Fields },
+  agent: { agent: Name, name: Text, fields: Fields, endedAt: Instant.optional() },
 };
-export const ACTION_KINDS = ["daemon", "dispatch", "github", "push", "staging"] as const;
+/** The kinds of the T0 schema: a skill read's `beforeFirstAction` is relative to the first action
+ * of one of these. */
+export const T0_ACTION_KINDS = ["daemon", "dispatch", "github", "push", "staging"] as const;
+/** The kinds lane D carries into its receipt as the run or the trace recorded them, and never
+ * replays. */
+export const CARRIED_KINDS = ["envoy", "dispatch-read", "agent"] as const;
+/** Every kind of action: the T0 kinds, then the carried ones. */
+export const ACTION_KINDS = [...T0_ACTION_KINDS, ...CARRIED_KINDS] as const;
 const SCORED = { seq: z.number().int().nonnegative(), at: Instant };
 
 const OutcomeAction = z.discriminatedUnion("kind", [
@@ -428,10 +630,15 @@ const OutcomeAction = z.discriminatedUnion("kind", [
     }),
   z.strictObject({ kind: z.literal("push"), ...SCORED, ...DETAILS.push }),
   z.strictObject({ kind: z.literal("staging"), ...SCORED, ...DETAILS.staging }),
+  z.strictObject({ kind: z.literal("envoy"), ...SCORED, ...DETAILS.envoy }),
+  z.strictObject({ kind: z.literal("dispatch-read"), ...SCORED, ...DETAILS["dispatch-read"] }),
+  z.strictObject({ kind: z.literal("agent"), ...SCORED, ...DETAILS.agent }),
 ]);
 
 /** One `skill://` read: the skill, the file the read named (`SKILL.md` for `skill://<name>`),
- * whether it resolved, the bytes it returned, and whether it came before the first scored action. */
+ * whether it resolved, the bytes it returned, and whether it came before the first scored action
+ * of a T0 kind (T0_ACTION_KINDS): an Envoy message, a Dispatch read or a task agent's start before
+ * it does not move that point. */
 const SkillRead = z.strictObject({
   skill: Name,
   path: Text,
@@ -440,12 +647,23 @@ const SkillRead = z.strictObject({
   beforeFirstAction: z.boolean(),
 });
 
+/** One jj operation of the run's workspace (git-world.ts recordWorkspace's workspace-ops.jsonl):
+ * when it ended, its description, and the commits `@-` named in its view, each the world's commit
+ * id where the world names that commit. */
+const WorkspaceOperation = z.strictObject({
+  at: Instant,
+  description: Text,
+  standingOn: z.array(Commit),
+});
+
 /** What a run did, as outcome.json records it, and the shape of every trace. `id` is a fresh UUID
  * that names neither the case nor the arm; no field holds prompt text, an arm, a route or a token
- * count. `seq` rises strictly along `actions`. `agentReport` is an A case's returned report.
- * `otherWrites` are the Dispatch writes after the seed that an actor other than the role made
- * (Dispatch itself, a seeded person, another session), each in the shape of a dispatch action with
- * its writer: no action of the role's, so none is scored, and each is kept, in time order. */
+ * count. `seq` rises strictly along `actions`, across every kind, in time order. `agentReport` is
+ * an A case's returned report. `otherWrites` are the Dispatch writes after the seed that an actor
+ * other than the role made (Dispatch itself, a seeded person, another session), each in the shape
+ * of a dispatch action with its writer: no action of the role's, so none is scored, and each is
+ * kept, in time order. `workspace` is each jj operation of the run's workspace, in time order: the
+ * workspace's commit order, absent from a record written before outcome.ts kept it. */
 export const OutcomeRecord = z
   .strictObject({
     id: z.uuid(),
@@ -457,6 +675,7 @@ export const OutcomeRecord = z
     skillReads: z.array(SkillRead),
     dispatchFirstInjected: z.boolean(),
     lastText: z.string(),
+    workspace: z.array(WorkspaceOperation).optional(),
   })
   .superRefine((outcome, context) => {
     outcome.actions.forEach((action, index) => {
@@ -466,6 +685,15 @@ export const OutcomeRecord = z
           context,
           ["actions", index, "seq"],
           `seq ${action.seq} does not rise above seq ${before.seq} of the action before it`
+        );
+    });
+    outcome.workspace?.forEach((operation, index) => {
+      const before = outcome.workspace?.[index - 1];
+      if (before !== undefined && earlier(operation.at, before.at) === true)
+        refuse(
+          context,
+          ["workspace", index, "at"],
+          `${operation.at} is before ${before.at}, the end of the operation before it`
         );
     });
   });
