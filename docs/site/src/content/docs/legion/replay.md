@@ -63,7 +63,7 @@ A recorded window is a directory.
 | `log.jsonl` | The daemon's lines in the reach, the span and the run-out, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
 | `events/<KEY>.jsonl` | Each issue's Dispatch events, oldest first, as Dispatch's issue event log serves them. |
 | `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads, each at GitHub's merge event or, where GitHub records none, at its committer date, with its committer date beside it. |
-| `git/<owner>__<name>.jsonl` | Git's reading of the repository's pull requests: their heads, the paths that each head and each first-parent commit of the base branch change, and git's verdict of merging each head with each later commit of the base that changes one of its paths ([Add git's verdicts of each repository](#add-gits-verdicts-of-each-repository)). |
+| `git/<owner>__<name>.jsonl` | Git's reading of the repository's pull requests: their heads, the paths that each head and each first-parent commit of the base branch change, and git's verdict of merging each head with each later commit of the base that changes one of its paths, with the count of the paths in conflict ([Add git's verdicts of each repository](#add-gits-verdicts-of-each-repository)). |
 | `signals/provider.jsonl` | The deployment's record of the model provider, one line a minute. |
 | `launcher/log.jsonl` | The launcher's lines of the project's issue pods, whose memory guard lines are the record of its kills. |
 | `queue/<owner>__<name>.jsonl` | The merge queue's events of the repository's pull requests. |
@@ -436,36 +436,58 @@ It writes the file's new sha256 into `window.json`.
 The pull requests are those that `collect-queue` reads.
 It reads the merges file that `collect-merges` wrote of `--branch`, and refuses a window that holds no merges file of `--repo`.
 It reads the window one line at a time and checks it as every command does.
-It writes only its file and `window.json`, each to a temporary file that it renames into place: once the commits are read, and again as it finishes each pull request.
+It writes only its file and `window.json`.
+The file grows by appending: as a phase finishes a pull request, `collect-git` appends that pull request's block to the file, and it appends the commits' block once the git phase has read them.
+It writes again no block that the file already holds, but where a block before it changed, as a run on a window whose file exists says below.
+After each block it writes `window.json` to a temporary file that it renames into place.
 
-Each line of the file is one JSON object, in this order:
+Each line of the file is one JSON object.
+The lines stand in blocks, and each block ends with `{"kind":"done","pr"}`, the done line of its pull request, with `pr` 0 for the commits' block.
+First comes the GitHub phase's block of each pull request, in ascending number:
 
-- `{"kind":"commit","sha","paths"}`: each first-parent commit of `--branch` that the merges file holds, in that file's order, then each base commit that a read of a merge state names and the merges file does not hold.
-  `paths` is the paths that the commit changes against its first parent (`git diff-tree -r --no-commit-id --name-only <sha>^1 <sha>`), sorted.
-
-- `{"kind":"pull","pr","merge","base","baseChanges","heads"}`: each pull request, in ascending number, each followed by its head lines.
+- `{"kind":"pull","pr","merge","base","baseChanges","heads"}`, where GitHub gave the pull request, followed by its head lines.
   `merge` is the commit that GitHub records as its merge into `--branch` (`merge_commit_sha`, where `merged` is true and `base.ref` is `--branch`), where the merges file holds that commit, and empty where it does not.
   `base` is the current base branch from GitHub's `base.ref`.
   `baseChanges` lists the times of the timeline's `base_ref_changed` events, oldest first, or `[]` when there are none.
   A read can use the stored verdicts only if `base` is the collected branch and the recorded read is at or after the last base change.
   Otherwise the read is unanswered with kind `missing`.
-  Collect the git file again if it predates these required fields.
   `heads` counts the pull request's head lines.
 
-- `{"kind":"head","pr","sha","at","from","tip","mergeBase","paths","verdicts"}`: each head of the pull request, by `at` and then `sha`.
+- `{"kind":"head","pr","sha","at","from"}`: each head of the pull request, by `at` and then `sha`.
   `from` is `commit` for a committed event of the pull request's timeline, at its committer's time, `force-push` for the new tip of a `head_ref_force_pushed` event, at the event's time, and `read` for a head that a read of a merge state names and the timeline does not give, at the read's time.
   A committer's time only estimates when the commit was pushed.
+
+- Then each missing line of the pull request whose reason is GitHub's: `pull-not-found`, `pull-unread` or `timeline-unread`.
+
+Then, once the git phase has read anything, come git's blocks.
+The first is the commits' block:
+
+- `{"kind":"commit","sha","paths"}`: each first-parent commit of `--branch` that the merges file holds, in that file's order, then each base commit that a read of a merge state names and the merges file does not hold.
+  `paths` is the paths that the commit changes against its first parent (`git diff-tree -r --no-commit-id --name-only <sha>^1 <sha>`), sorted.
+
+- Then each missing line with `pr` 0, of a commit that git did not give.
+
+Git's block of each pull request comes next, in ascending number, for each pull request whose block holds a line:
+
+- `{"kind":"reading","pr","sha","tip","mergeBase","paths","verdicts"}`: git's reading of each head that git read, in the order of the pull request's head lines.
   `tip` is the base commit that the head's verdicts run to: the first parent of the pull request's own merge commit, where it merged in the window's inputs, and otherwise the last commit of the merges file.
   `mergeBase` is `git merge-base <head> <tip>`, and `paths` is `git diff --no-renames --name-only <mergeBase> <head>`, sorted: the paths that the head changes, which are its profile.
-  `verdicts` holds `{"base","conflict","paths"}` for each first-parent commit of the merges file after the merge base, up to the tip (`git rev-list --first-parent <tip> ^<head>`, oldest first), whose commit line shares a path with the head's `paths`.
-  Each is git's verdict of merging the head with the base as it stands at that commit (`git merge-tree --write-tree --no-messages --name-only <base> <head>`): clean on exit 0, and a conflict in the `paths` that git names on exit 1.
+  `verdicts` holds `{"base","conflict","pathCount"}` for each first-parent commit of the merges file after the merge base, up to the tip (`git rev-list --first-parent <tip> ^<head>`, oldest first), whose commit line shares a path with the head's `paths`.
+  Each is git's verdict of merging the head with the base as it stands at that commit (`git merge-tree --write-tree --no-messages --name-only <base> <head>`, or the same merge as a line of `git merge-tree --stdin`): clean, or a conflict.
   So the first verdict that conflicts names its cause, and each later verdict holds the earlier commits.
-  A head that git did not read has no `tip`, `mergeBase`, `paths` or `verdicts`.
+  `pathCount` counts the distinct paths that git names in the conflict: 0 for a clean merge and at least 1 for a conflict.
+  A merge that git calls a conflict and that names no path gives no verdict, and nor does a clean merge that names one: either is a `git-error` missing input.
+  The file does not list those paths, since no read of the replay asks which paths conflict, and on a real repository the lists held most of the file.
+  A head that git did not read has no reading line.
 
-- `{"kind":"missing","pr","head","base","reason","detail"}`: each input that the collector could not get, sorted by `pr`, `head`, `base` and `reason`, with `pr` 0 for a commit of the base branch.
-  `reason` is `pull-not-found`, `pull-unread`, `timeline-unread`, `head-unreachable`, `base-unreachable`, `git-error`, `memory-cap` or `timeout`.
-  A missing input is never written as a clean verdict.
-  A verdict that git cannot give ends the head's verdicts, since each later one would rest on it.
+- Then each missing line of the pull request whose reason is git's.
+
+A missing line is `{"kind":"missing","pr","head","base","reason","detail"}`: an input that the collector could not get, with `pr` 0 for a commit of the base branch.
+The missing lines of a block are sorted by `head`, `base`, `reason` and `detail`.
+`reason` is `pull-not-found`, `pull-unread`, `timeline-unread`, `head-unreachable`, `base-unreachable`, `git-error`, `memory-cap` or `timeout`.
+A missing input is never written as a clean verdict.
+A verdict that git cannot give ends the head's verdicts, since each later one would rest on it.
+A read refuses a file that is not in this form, so collect the git file again if it predates a member that the form names.
 
 The command runs in two phases.
 The GitHub phase reads, with `GET` alone, each pull request (`GET /repos/<owner>/<name>/pulls/<n>`) and its whole timeline (`GET /repos/<owner>/<name>/issues/<n>/timeline`).
@@ -476,26 +498,49 @@ A pull request that GitHub still refuses to read after the tries, with the `422`
 A timeline page or event that does not read, a force push that names no commit among them, is a `timeline-unread` missing input: the collector never guesses a head.
 
 The git phase reads no GitHub API.
-It clones `--repo` once into `--clones`, as `git clone --filter=blob:none --no-checkout --bare` of `--branch` alone, from `https://github.com/<owner>/<name>.git`.
+It clones `--repo` once into `--clones`, as `git clone --no-checkout --bare --single-branch` of `--branch` alone, from `https://github.com/<owner>/<name>.git`.
+The clone is whole: it holds every blob of the branch, and each fetch brings the blobs of what it fetches.
 Git takes the credential that your git credential helper gives, and `collect-git` never reads, prints or stores it.
 It tests which commits the clone holds with lazy fetching off (`GIT_NO_LAZY_FETCH=1 git cat-file --batch-check`), and fetches the commits that it lacks.
 It first asks the remote which of the pull requests whose heads the clone lacks have a head ref, `refs/pull/<n>/head` (`git ls-remote`, 200 refs at a time), and fetches each such ref into `refs/pulls/<n>`, 40 at a time.
 It then fetches each commit that it still lacks into a ref of its own, `refs/fetched/<sha>`, in batches of up to 40.
 A batch whose fetch does not bring all its commits splits in two, and each half is fetched in turn, down to a commit alone.
-These refs tell each later fetch which commits the clone holds, so the remote sends no commit or tree twice.
+These refs tell each later fetch which commits the clone holds, so the remote sends no object twice.
 A commit that the remote does not give is a `head-unreachable` or `base-unreachable` missing input.
-`git merge-tree` fetches the blobs that it needs as it merges.
+Since the clone holds every blob that it reads, each command that reads it runs with lazy fetching off (`GIT_NO_LAZY_FETCH=1`), and never fetches from the remote.
+Git merges a head with each base commit that it reads a verdict at in one `git merge-tree --stdin --write-tree --no-messages --name-only -z`, whose stdin holds a line `<base> <head>` for each base, 200 bases at most.
+Where that command fails, or gives fewer verdicts than it has lines, the collector keeps each verdict that it gave whole.
+It then merges each base after those alone (`git merge-tree --write-tree --no-messages --name-only -z <base> <head>`), up to the first that git does not give.
+Each merge-tree writes the trees and blobs that it merges into an object directory of its own, under `merge-objects` in the clone beside its `objects` (`GIT_OBJECT_DIRECTORY`), and reads the commits from the clone's `objects` (`GIT_ALTERNATE_OBJECT_DIRECTORIES`); no other git command gets these two variables.
+Git splits `GIT_ALTERNATE_OBJECT_DIRECTORIES` on `:`, so where the clone's path holds a `:` or a `"`, the collector gives git that path quoted, as `git help git` describes.
+The collector removes each merge-tree's directory once the command ends, however it ended, and `merge-objects` whole before the first merge-tree, whatever a stopped run left there, and after the last, so the clone does not grow with the merges.
 Git reads a head that several pull requests hold once: each merge base, each list of paths and each verdict that it gives serves every pull request that rests on it.
+Under `--parallel`, two pull requests can read the same head at once, and git then gives each the same answer.
 
-Each git command runs alone, under a memory guard: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
-The guard also kills a command past its time: 180 seconds for the clone and for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.
+Each git command runs under a memory guard of its own: as the command starts and every 200 ms after, the guard reads from `/proc` the summed resident memory of the command's process group, and kills the group once it passes `--memory-cap`, 1.5 GiB by default.
+The guard also kills a command past its time: 15 minutes for the clone, 180 seconds for a fetch of a batch, 90 seconds for a fetch of one commit, 120 seconds for a merge-tree, and 60 seconds for any other.
+A `merge-tree --stdin` writes each verdict as it makes it, so its 120 seconds are those of one merge, counted from the last verdict that it wrote, or from its start before the first.
+So a batch that goes on giving verdicts finishes, and a merge that hangs is killed, while the collector keeps the verdicts that its batch gave before it.
 A kill is a `memory-cap` or a `timeout` missing input, any other failure of git a `git-error` one, and the run goes on.
 The guard reads Linux's `/proc`, so the git phase runs on Linux.
+
+`--parallel <n>` runs the git reads and merges of up to n heads at once, 1 by default.
+Each of n workers takes the next head in the file's order, across its pull requests, so a window of many small pull requests and a few large ones keeps all n busy.
+The collector still finishes the pull requests in the file's order: it writes a pull request and prints its line once all its heads are read, never before an earlier one.
+So the file, the lines and a run that goes on after a kill are those of `--parallel 1`, byte for byte.
+Memory grows with `--parallel`: each of the n git commands can hold up to `--memory-cap`, and a merge of a real repository holds about 350 MiB.
+`--github-only` and `--fetch-only` run none of the reads and merges, so they refuse a `--parallel` above 1.
 
 A run on a window whose git file of `--repo` exists asks GitHub and git for nothing that the file holds.
 The GitHub phase keeps each pull request that the file holds and no missing input of GitHub's names.
 The git phase keeps each commit's paths, each head's merge base where its tip is the same, its paths where its merge base is the same, and each verdict of the same head at the same base commit.
-So a run that the pod's release killed goes on where it stopped.
+A run writes nothing while each block that it would write is the block that the file holds in its place.
+At the first block that differs, it cuts the file there and appends that block and each block after it.
+Before it reads the window, a run but `--fetch-only` cuts the file after its last done line, so it drops a block that a write which stopped left without its done line, and that pull request is read again.
+It then writes the sha256 of the file as cut into `window.json`, whatever `window.json` named before.
+So a run that the pod's release killed goes on where it stopped, from the file as it stood or from a copy of the file taken at any moment.
+A run refuses a file whose lines after its last done line do not read in this form, or belong to more than one block, since no write that stopped leaves them.
+So a run refuses a git file of an older form that holds more than one block's lines, rather than cut it away.
 
 A build job holds no GitHub token, and the clone of a private repository needs your git credential.
 So run the GitHub phase alone with `--github-only` where a GitHub token is, and the git phase alone with `--git-only`, which takes the pull requests and heads from the file that the GitHub phase wrote.
@@ -514,21 +559,54 @@ legion replay collect-git \
   --out windows/acme-2026-10-05
 ```
 
+A private repository's merges take hours of CPU, which belong on a machine that holds no git credential.
+So the git phase also runs in two halves.
+`--fetch-only` runs its fetches alone: it makes or opens the clone in `--clones`, and fetches every commit that the merges will read, as the git phase does.
+It reads no head, merges nothing and writes nothing into the window, so it does not cut the git file either: it reads the file only as a run that ended left it.
+It prints one line: the commits that the merges read that the clone holds, and the heads and base commits that the remote did not give.
+`--merge-only` runs the git phase's reads and merges alone, on the clone that `--clones` holds, and opens no connection to the remote.
+It runs no `git clone`, `git fetch` or `git ls-remote`, each git command that it runs has lazy fetching off, and it needs no `origin` remote.
+It refuses a `--clones` that holds no clone of `--repo`.
+A head or a base commit that the clone does not hold is a `head-unreachable` or `base-unreachable` missing input, whose detail says that the clone does not hold the commit and that this run asks the remote for nothing.
+So run `--fetch-only` where your git credential is, and copy the clone's directory, `<clones>/<owner>__<name>`, to a machine that holds no credential and holds the window.
+Then run `--merge-only` there.
+The two in turn write the same file as `--git-only`.
+
+```sh
+legion replay collect-git \
+  --repo <owner>/<name> --branch main --fetch-only \
+  --clones <dir outside the window> \
+  --out windows/acme-2026-10-05
+
+tar -C <dir outside the window> -cf clone.tar <owner>__<name>
+# Copy clone.tar to the machine with no credential, and unpack it there.
+tar -C <dir outside the window> -xf clone.tar
+
+legion replay collect-git \
+  --repo <owner>/<name> --branch main --merge-only --parallel 4 \
+  --clones <dir outside the window> \
+  --out windows/acme-2026-10-05
+```
+
 `collect-git` prints one line for each pull request that a phase finishes, then a summary: the pull requests, heads, verdicts and conflicts, the missing inputs by reason, git's peak memory and the time taken.
+`--fetch-only` prints its one line instead, with git's peak memory and the time taken.
 
 | Flag | What it gives |
 | --- | --- |
 | `--repo <owner>/<name>` | The repository (required). |
 | `--branch <name>` | The base branch, whose merges file `collect-merges` wrote (required). |
-| `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-git` never prints (required, but refused with `--git-only`). |
-| `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default; refused with `--git-only`). |
-| `--github-reserve <n>` | The requests of the shared quota left to the daemon and the other roles (3000 by default; 0 for none; refused with `--git-only`). |
-| `--github-rate <n>` | The most requests a second sent to GitHub (0.6 by default; 0 for no pacing; refused with `--git-only`). |
+| `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-git` never prints (required, but refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-api <url>` | GitHub's REST API (`https://api.github.com` by default; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-reserve <n>` | The requests of the shared quota left to the daemon and the other roles (3000 by default; 0 for none; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
+| `--github-rate <n>` | The most requests a second sent to GitHub (0.6 by default; 0 for no pacing; refused with `--git-only`, `--fetch-only` and `--merge-only`). |
 | `--out <dir>` | The directory of the window that `collect` wrote (required). |
-| `--clones <dir>` | The directory that the repository is cloned into, never inside the window (`clones/` beside the window by default). |
+| `--clones <dir>` | The directory that the repository is cloned into, never inside the window (`clones/` beside the window by default), where `--merge-only` reads the clone and makes none. |
 | `--memory-cap <bytes>` | The memory that one git command's processes may hold before the guard kills them (1610612736, 1.5 GiB, by default). |
+| `--parallel <n>` | The heads whose git reads and merges run at once, each git command under its own `--memory-cap`, with no change to the file written (1 by default; refused below 1, and above 1 with `--github-only` and `--fetch-only`). |
 | `--github-only` | Run the GitHub phase alone. |
 | `--git-only` | Run the git phase alone, from the file that the GitHub phase wrote. |
+| `--fetch-only` | Run the git phase's fetches alone, where your git credential is: fill the clone in `--clones` with every commit that the merges read, and write nothing into the window. |
+| `--merge-only` | Run the git phase's reads and merges alone, on the clone that `--clones` holds, with no connection to the remote. |
 
 ### Neutralize a window for test data
 
@@ -587,6 +665,7 @@ Each run makes a database of its own there and drops it at the end.
 The run copies its database from a template that holds the daemon's migrations and the replay's own tables, `legion_replay_template_<key>`.
 The key is a hash of those migrations and tables, so a `legion` binary with other migrations uses a template of its own.
 The first run on a server makes the template from `template1`, and every later run copies it.
+The template and each run's database run with PostgreSQL's JIT compilation off, as the daemon's store on Cloud SQL runs.
 `run --keep-db` keeps the database of its run.
 No run writes to the database that `--pg-dsn` names.
 Use a test server.
@@ -1114,6 +1193,7 @@ The backtest passes when both of these hold:
 A backtest that fails either, or that reads no span, says that the tool cannot tell a change of the cap.
 A span of a cap that the daemon served for a few hours can give out as few as about five slots, and there a miss of one slot fails the span.
 So the backtest names each span in which one slot is more than 10% of the record's count.
+It also names each span whose cap is not `--cap` in which the record gave out no slot and the replay at `--cap` gave out none either: that replay did not miss the record there by more than 10%, so the span fails.
 Collect the window of a cap backtest with no run-out, so that its replays end at `--to`.
 `--json` gives the backtest as `capBacktest`, with each span's `from`, `to`, `cap`, `recorded`, `atRecordedCaps`, `atFlatCap`, `recordedPass`, `flatRead` and `flatPass`.
 

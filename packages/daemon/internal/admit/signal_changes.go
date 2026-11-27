@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -17,7 +18,7 @@ import (
 // fact it is applied as (keepSignalSetting, store.ChangeSignalSettingTx), before that fact's pass,
 // so each change is kept with who made it and why even while the project is paused, and the pass
 // that follows computes the limit and the switch the newest entry of each holds. Each admission
-// pass then writes, from its own reading of the six series (the reading its gate read, Read) and
+// pass then writes, from its own reading of the five series (the reading its gate read, Read) and
 // whether it gave out or took back a slot, the entries of what it computed against the newest
 // entry of each series and kind (writeSignalChanges, passChanges): each hold that changed, with the
 // value of that series beside it, and each other value that moved by its series' step from the
@@ -91,7 +92,7 @@ func valueEntryDue(series SeriesReading, newest store.SeriesEntries) bool {
 // signalsMoved is the series-moved pass rule, which decides whether a report of model requests or
 // the edge of a slot holder's turn runs an admission pass: whether reading moved what the last
 // committed pass recorded (newest, the record's newest entries of each series): a series whose
-// hold differs from the hold that pass recorded, or one of the five series but the provider's
+// hold differs from the hold that pass recorded, or one of the four series beside the provider's
 // headroom whose value qualifies for a value entry against its last written value
 // (valueEntryDue). It compares with the last committed pass and never with the state before the
 // fact at the same moment, so a crossing that came with no event since that pass moves it.
@@ -107,12 +108,12 @@ func signalsMoved(reading LiveReading, newest map[string]store.SeriesEntries) bo
 
 // passChanges is the entries a pass whose gate read reading writes against newest, the record's
 // newest entries of each series, where moved says the pass gave out or took back a slot (S6): for
-// each series in the order of signals.Names(), its value where its hold changed (once, whatever
+// each series in the order of store.LiveSeries(), its value where its hold changed (once, whatever
 // its step) or where it qualifies by its step (valueEntryDue), the provider's headroom only at a
 // pass that moved a slot or changed its hold, and then its hold where it changed. A hold is 0
 // while admission by signals is off and for a value the daemon cannot compute (SeriesReading.Holds).
 // The switch and the limits are written with their change (keepSignalSetting), so a pass writes
-// at most two entries of each of the six series, within the 19 of S6.
+// at most two entries of each of the five series, within the 16 of S6.
 func passChanges(reading LiveReading, moved bool, newest map[string]store.SeriesEntries) []store.SignalChange {
 	var entries []store.SignalChange
 	for _, series := range reading.Series {
@@ -205,7 +206,8 @@ func (a *Admission) keepSignalSetting(ctx context.Context, tx pgx.Tx, change sto
 // whole minutes of the hour before the minute under way.
 func (l *LiveSignals) State(ctx context.Context, tx pgx.Tx, at time.Time) (store.SignalsReading, error) {
 	a := l.admission
-	reading, minutes, settings, err := l.read(ctx, tx, at)
+	current := at.Truncate(time.Minute)
+	reading, minutes, settings, err := l.read(ctx, tx, at, current.Add(-claim.ModelRequestsSpan))
 	if err != nil {
 		return store.SignalsReading{}, err
 	}
@@ -237,12 +239,11 @@ func (l *LiveSignals) State(ctx context.Context, tx pgx.Tx, at time.Time) (store
 		}
 		state.Series = append(state.Series, row)
 	}
-	current := at.Truncate(time.Minute)
-	state.Provider.Minutes = make([]store.ProviderMinuteReading, 0, int(signals.RefusalSpan/time.Minute))
-	for start := current.Add(-signals.RefusalSpan); start.Before(current); start = start.Add(time.Minute) {
+	state.Provider.Minutes = make([]store.ProviderMinuteReading, 0, int(claim.ModelRequestsSpan/time.Minute))
+	for start := current.Add(-claim.ModelRequestsSpan); start.Before(current); start = start.Add(time.Minute) {
 		minute, held := minutes.Read(start)
 		state.Provider.Minutes = append(state.Provider.Minutes, store.ProviderMinuteReading{At: start.UTC(), Held: held,
-			UncachedInputTokens: minute.Uncached, TokenLimit: minute.Limit, OwnRefusals: minute.Own, ProviderRefusals: minute.Provider})
+			UncachedInputTokens: minute.Uncached, TokenLimit: minute.Limit})
 	}
 	return state, nil
 }

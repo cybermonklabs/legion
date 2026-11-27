@@ -338,7 +338,7 @@ once for each repository of the project's issues.`,
 // newReplayCollectGitCommand is `legion replay collect-git` (replay.CollectGit).
 func newReplayCollectGitCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "collect-git --repo <owner/name> --branch <name> --github-token-env <VAR> --out <dir> [--github-only | --git-only]",
+		Use:   "collect-git --repo <owner/name> --branch <name> --github-token-env <VAR> --out <dir> [--github-only | --git-only | --fetch-only | --merge-only]",
 		Short: "add each pull request's heads, read from GitHub, and git's verdict of merging each head with its base, to a collected window",
 		Long: `Write into the window collect wrote in --out, as git/<owner>__<name>.jsonl, with window.json's
 digest of the file written again, what git says of each pull request of --repo of the window's
@@ -353,15 +353,27 @@ reach's start, and each head a read of a merge state in the window's log names, 
 timeline does not give at the read's time. The token is read from the environment variable
 --github-token-env names, and is never printed.
 
-The git phase reads no GitHub API. It clones --repo once into --clones, the base branch alone with
-no blob (git clone --filter=blob:none --bare), with the credential your git credential helper
-gives, which collect-git never reads, prints or stores, and fetches each commit it needs that the
-clone lacks. It writes the paths each commit of the base branch changes, and for each head the
-paths it changes since its merge base and git's verdict of merging it with the base as it stands
-at each later commit of the base that changes one of those paths, up to the pull request's own
-merge (git merge-tree). Each git command runs alone, its process group killed once its memory
-passes --memory-cap or it runs past its time; a kill, and anything git cannot give, is a missing
-input of the file, never a clean verdict, and the run goes on.
+The git phase reads no GitHub API. It clones --repo once into --clones, the base branch alone and
+every blob it reaches (git clone --no-checkout --bare --single-branch), with the credential your
+git credential helper gives, which collect-git never reads, prints or stores, and fetches each
+commit it needs that the clone lacks, its blobs with it, so no merge fetches. It writes the paths
+each commit of the base branch changes, and for each head the paths it changes since its merge
+base and git's verdict of merging it with the base as it stands at each later commit of the base
+that changes one of those paths, up to the pull request's own merge (git merge-tree --stdin, up to
+200 merges to a command). Each merge-tree writes the objects it merges into a directory of its
+own in the clone, under merge-objects, which collect-git removes as the command ends, so the clone
+does not grow with the merges. Each git command runs under a guard of its own, its process group
+killed once its memory passes --memory-cap or it runs past its time, a merge-tree --stdin's time
+that of one merge, counted from the last verdict it wrote; a kill, and anything git cannot give,
+is a missing input of the file, never a clean verdict, and the run goes on.
+
+--parallel <n> runs the git reads and merges of up to n heads at once, taken in the file's order
+across its pull requests, so the git phase uses n CPUs. The file it writes and the lines it prints
+do not depend on --parallel: they are those of --parallel 1, byte for byte, and a run that was
+killed goes on where it stopped as one of --parallel 1 does. But git's memory grows with --parallel:
+each of the n git commands may hold up to --memory-cap, and a real merge holds about 350 MiB.
+--github-only and --fetch-only run none of the reads and merges, so they refuse a --parallel
+above 1.
 
 --github-only runs the GitHub phase alone, where a GitHub token is and no git credential need be;
 --git-only runs the git phase alone, from the file the GitHub phase wrote, and takes no token: a
@@ -369,40 +381,72 @@ public repository's git phase runs in a build job, a private one's where your gi
 A run on a window whose git file exists asks GitHub and git for nothing that file holds, so a run
 that was killed goes on where it stopped. It prints a line as it finishes each pull request.
 
-` + githubShareHelp + ` --git-only takes neither.`,
+The git phase also runs in two halves, so that a private repository's merges run where no
+credential is. --fetch-only runs its fetches alone: it makes or opens the clone in --clones,
+fetches every commit the merges will read, reads no head, merges nothing, writes nothing into the
+window, and prints one line of what the clone holds and what the remote did not give.
+--merge-only runs its reads and merges alone on the clone --clones holds, and opens no connection
+to the remote: it runs no git clone, fetch or ls-remote, needs no origin remote, and refuses a
+--clones with no clone; a head or base commit the clone lacks is a missing input. So run
+--fetch-only where your git credential is, copy the clone's directory, <clones>/<owner>__<name>,
+to a machine with no credential that holds the window, and run --merge-only there: the two write
+the file --git-only writes.
+
+` + githubShareHelp + ` --git-only, --fetch-only and --merge-only take neither.`,
 		Args: noArguments,
 	}
 	flags := cmd.Flags()
 	repo := flags.String("repo", "", "the repository as owner/name (required)")
 	branch := flags.String("branch", "", "the base branch, whose merges file collect-merges wrote (required)")
-	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required but with --git-only)")
+	tokenEnv := flags.String("github-token-env", "", "the environment variable that holds the GitHub token (required but with --git-only, --fetch-only or --merge-only)")
 	api := flags.String("github-api", replay.DefaultGitHubAPI, "GitHub's REST API")
 	out := flags.String("out", "", "the directory of the window collect wrote (required)")
 	clones := flags.String("clones", "", "the directory the repository is cloned into, outside the window (else clones/ beside the window)")
 	memoryCap := flags.Int64("memory-cap", replay.DefaultGitMemoryCap, "the bytes of resident memory one git command's processes may hold before they are killed")
+	parallel := flags.Int("parallel", 1,
+		"how many heads' git reads and merges run at once, each git command up to --memory-cap; the file written does not depend on it")
 	githubOnly := flags.Bool("github-only", false, "run the GitHub phase alone: the pull requests and their heads")
 	gitOnly := flags.Bool("git-only", false, "run the git phase alone, from the heads the GitHub phase wrote, reading no GitHub API")
+	fetchOnly := flags.Bool("fetch-only", false,
+		"run the git phase's fetches alone, where the git credential is: fill the clone in --clones with every commit the merges read, and write nothing into the window")
+	mergeOnly := flags.Bool("merge-only", false,
+		"run the git phase's reads and merges alone, on the clone --clones holds, opening no connection to the remote")
 	reserve, rate := githubShareFlags(cmd)
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "repo", "branch", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
 		}
+		var alone []string
+		for _, part := range []struct {
+			run  bool
+			flag string
+		}{{*githubOnly, "--github-only"}, {*gitOnly, "--git-only"}, {*fetchOnly, "--fetch-only"}, {*mergeOnly, "--merge-only"}} {
+			if part.run {
+				alone = append(alone, part.flag)
+			}
+		}
+		gitAlone := *gitOnly || *fetchOnly || *mergeOnly
 		switch {
-		case *githubOnly && *gitOnly:
-			return refuse(cmd, "--github-only and --git-only exclude each other; give neither to run both phases")
-		case *gitOnly && (cmd.Flags().Changed("github-token-env") || cmd.Flags().Changed("github-api") ||
+		case len(alone) > 1:
+			return refuse(cmd, "%s exclude each other; give one of --github-only, --git-only, --fetch-only and --merge-only, or none to run both phases",
+				strings.Join(alone, " and "))
+		case gitAlone && (cmd.Flags().Changed("github-token-env") || cmd.Flags().Changed("github-api") ||
 			cmd.Flags().Changed("github-reserve") || cmd.Flags().Changed("github-rate")):
-			return refuse(cmd, "--git-only reads no GitHub API, so it takes none of --github-token-env, --github-api, --github-reserve and --github-rate")
-		case !*gitOnly && *tokenEnv == "":
-			return refuse(cmd, "--github-token-env is required but with --git-only")
+			return refuse(cmd, "%s reads no GitHub API, so it takes none of --github-token-env, --github-api, --github-reserve and --github-rate", alone[0])
+		case !gitAlone && *tokenEnv == "":
+			return refuse(cmd, "--github-token-env is required but with --git-only, --fetch-only or --merge-only")
 		case *memoryCap <= 0:
 			return refuse(cmd, "--memory-cap %d: name the bytes git's processes may hold, above zero", *memoryCap)
+		case *parallel < 1:
+			return refuse(cmd, "--parallel %d: at least one git command runs at a time", *parallel)
+		case *parallel > 1 && (*githubOnly || *fetchOnly):
+			return refuse(cmd, "%s runs none of the git phase's reads and merges, so it takes no --parallel above 1", alone[0])
 		}
 		if err := replay.CheckGitHubShare(*reserve, *rate); err != nil {
 			return refuse(cmd, "--github-reserve %d, --github-rate %v: %v", *reserve, *rate, err)
 		}
-		config := replay.GitConfig{Repo: *repo, Branch: *branch, Window: *out, Clones: *clones, MemoryCap: *memoryCap,
-			GitHubOnly: *githubOnly, GitOnly: *gitOnly, Finished: func(done replay.GitPullFinished) {
+		config := replay.GitConfig{Repo: *repo, Branch: *branch, Window: *out, Clones: *clones, MemoryCap: *memoryCap, Parallel: *parallel,
+			GitHubOnly: *githubOnly, GitOnly: *gitOnly, FetchOnly: *fetchOnly, MergeOnly: *mergeOnly, Finished: func(done replay.GitPullFinished) {
 				if done.Kept {
 					fmt.Fprintf(stdout, "legion replay collect-git: %s phase: #%d kept as the window's git file holds it\n", done.Phase, done.PR)
 					return
@@ -410,7 +454,7 @@ that was killed goes on where it stopped. It prints a line as it finishes each p
 				fmt.Fprintf(stdout, "legion replay collect-git: %s phase: #%d: %d heads, %d verdicts, %d conflicts, %d missing inputs\n",
 					done.Phase, done.PR, done.Heads, done.Verdicts, done.Conflicts, done.Missing)
 			}}
-		if !*gitOnly {
+		if !gitAlone {
 			if config.Token = strings.TrimSpace(os.Getenv(*tokenEnv)); config.Token == "" {
 				fmt.Fprintf(stderr, "legion replay collect-git: the environment variable %s holds no token\n", *tokenEnv)
 				return 1
@@ -421,6 +465,12 @@ that was killed goes on where it stopped. It prints a line as it finishes each p
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay collect-git: %v\n", err)
 			return 1
+		}
+		if *fetchOnly {
+			fmt.Fprintf(stdout, "legion replay collect-git: fetched what the merges of %s %s read into the clone: it holds %d commits they read; "+
+				"the remote did not give %d heads and %d base commits, which --merge-only writes as missing inputs; git's peak memory %d MiB; took %s\n",
+				*repo, *branch, collected.Held, collected.LackingHeads, collected.LackingBases, collected.PeakMemory>>20, collected.Took.Round(time.Second))
+			return 0
 		}
 		missing := "none"
 		if len(collected.Missing) > 0 {
@@ -1018,7 +1068,9 @@ window's start to its end into --out's cap-<n>, and it prints the slots each giv
 of one cap the daemon served against the record's: under the recorded caps each span within 10%,
 and under --cap each span whose cap is not --cap more than 10% off, a span at --cap not read. A
 backtest that fails either says that the tool cannot tell a change of the cap. A span of fewer than
-10 slots fails on a miss of one slot, and the backtest names each such span.
+10 slots fails on a miss of one slot, and the backtest names each such span. It also names each
+span not at --cap in which neither the record nor the run at --cap gave out a slot: that run did
+not miss the record there by more than 10%, so the span fails.
 
 --token-limit gives every run the project's token limit in uncached input tokens a minute, which
 each takes in each minute whose provider record holds no limit of the project's own (legion replay

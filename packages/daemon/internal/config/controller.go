@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // ControllerConfigExample is the example every refusal of the operator-side file points at.
@@ -22,7 +23,6 @@ var controllerKeys = []string{
 	"project", "daemon_url", "operator_token_file", "envoy_url", "envoy_token_file", "nats_urls",
 	"nats_nkey_seed_file", "dispatch_url", "dispatch_token_file", "dispatch_token_broker",
 	"instructions", "omp_invocation", "omp_launch_prefix", "state_dir",
-	"signal_own_refusal_pattern", "signal_provider_refusal_pattern",
 }
 
 // ControllerConfig is `legion controller start`'s operator-side file, settled. Every path is
@@ -57,14 +57,6 @@ type ControllerConfig struct {
 	// StateDir is "" when the file sets none; the command then picks the default under
 	// `$XDG_STATE_HOME/legion`.
 	StateDir string
-	// OwnRefusalPattern and ProviderRefusalPattern are `signal_own_refusal_pattern` and
-	// `signal_provider_refusal_pattern`, the project's two refusal patterns as legion.yaml's
-	// project entry names them (SignalProvider), held to the same subset; "" where the file names
-	// one none. The controller's host classes the refusals of its own session by them, as a
-	// role's host does, so the start tells it each one that is set (runtime.RefusalEnvironment) and none
-	// that is not. They are the operator's to keep equal to the project's: this file is read on the
-	// operator's machine, which reads no legion.yaml.
-	OwnRefusalPattern, ProviderRefusalPattern string
 }
 
 // LoadController reads the operator-side file strictly: a YAML mapping whose every key is one of
@@ -80,9 +72,10 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	if err != nil {
 		return ControllerConfig{}, fmt.Errorf("controller configuration %s could not be read: %w", path, err)
 	}
+	// yamlerr: the file's URLs can carry userinfo, and yaml.v3's text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %w", err)
+		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %s", yamlerr.Reason(err))
 	}
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
 		return ControllerConfig{}, errors.New("controller.yaml must be a mapping")
@@ -93,8 +86,12 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key := root.Content[i].Value
 		if !slices.Contains(controllerKeys, key) {
-			unknown = append(unknown, fmt.Sprintf("unknown key %q in the controller configuration; legion controller start reads only %s — see %s",
-				key, strings.Join(controllerKeys, ", "), ControllerConfigExample))
+			shown := fmt.Sprintf("unknown key %q", key)
+			if !keyShape(key) {
+				shown = unknownKeyAt(root.Content[i], "")
+			}
+			unknown = append(unknown, fmt.Sprintf("%s in the controller configuration; legion controller start reads only %s — see %s",
+				shown, strings.Join(controllerKeys, ", "), ControllerConfigExample))
 			continue
 		}
 		values[key] = root.Content[i+1]
@@ -198,9 +195,6 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 		}
 	}
 	if cfg.StateDir, err = optionalPath("state_dir"); err != nil {
-		return ControllerConfig{}, err
-	}
-	if cfg.OwnRefusalPattern, cfg.ProviderRefusalPattern, err = readRefusalPatterns(values, ""); err != nil {
 		return ControllerConfig{}, err
 	}
 	if daemonURL != "" {

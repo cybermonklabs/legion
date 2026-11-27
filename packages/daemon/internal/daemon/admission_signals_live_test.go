@@ -105,14 +105,16 @@ const (
 
 // The limits of the merge queue's wait the proof sets, in hours: one and two under the queue's
 // 3.46, so the queue holds; four above it, so it does not; and 200, outside the queue's range,
-// which tops out at 168. The kills take a whole number, which 2.5 is not.
+// which tops out at 168. The kills take a whole number, which 2.5 is not. The provider's one part
+// is its headroom, so a limit on its refusals, 3, is refused whatever its value.
 const (
-	queueLimitLow     = 1.0
-	queueLimitLower   = 2.0
-	queueLimitRaised  = 4.0
-	queueLimitRefused = 200.0
-	killsLimit        = 5.0
-	killsLimitRefused = 2.5
+	queueLimitLow        = 1.0
+	queueLimitLower      = 2.0
+	queueLimitRaised     = 4.0
+	queueLimitRefused    = 200.0
+	killsLimit           = 5.0
+	killsLimitRefused    = 2.5
+	refusalsLimitRefused = 3.0
 )
 
 // admissionSignalsLive is one run of the proof: the booted daemon, the `legion` binary it is
@@ -612,6 +614,7 @@ const (
 	reasonQueueRaised  = "the owner raised the merge queue's limit to 4 hours"
 	reasonQueueRefused = "the owner asked for a limit of 200 hours"
 	reasonKillsRefused = "the owner asked for a limit of 2.5 kills"
+	reasonRefusals     = "the owner asked for a limit on the provider's refusals"
 	reasonQueueAgain   = "the owner set the merge queue's limit back at 1 hour"
 	reasonKills        = "the owner set the kills' limit at 5"
 	reasonKillsCleared = "the owner took the kills' limit away"
@@ -638,8 +641,8 @@ func (r *admissionSignalsLive) freshStateOffWithNoLimits() {
 			t.Fatalf("series %+v has a limit, a setter or a hold; want a fresh project with no limit", series)
 		}
 	}
-	if len(reading.Series) != len(signals.Names()) {
-		t.Fatalf("admission.signals carries %d series; want the six of signals.Names()", len(reading.Series))
+	if len(reading.Series) != len(store.LiveSeries()) {
+		t.Fatalf("admission.signals carries %d series; want the five of store.LiveSeries()", len(reading.Series))
 	}
 	queue := seriesOf(t, state, signals.Queue, "")
 	if !r.queueReads(queue) {
@@ -827,26 +830,42 @@ func (r *admissionSignalsLive) aRestartKeepsTheSettingsAndTheRecord() {
 }
 
 // Step 7. A limit outside its signal's range is refused with the reason, and changes nothing:
-// neither the settings nor the record.
+// neither the settings nor the record. So is a limit on the provider's refusals, a part the
+// provider does not have, which the state shows no series of.
 func (r *admissionSignalsLive) aLimitOutsideItsRangeIsRefused() {
 	t := r.t
 	before := r.legionState("before-refusal")
 	for _, refused := range []struct {
-		signal, reason, why string
-		limit               float64
+		signal, part, reason, why string
+		limit                     float64
 	}{
-		{signals.Queue, reasonQueueRefused, "which is not above 0 and at most 168", queueLimitRefused},
-		{signals.Kills, reasonKillsRefused, "which is no whole number from 1 to 1000000", killsLimitRefused},
+		{signals.Queue, "", reasonQueueRefused, "which is not above 0 and at most 168", queueLimitRefused},
+		{signals.Kills, "", reasonKillsRefused, "which is no whole number from 1 to 1000000", killsLimitRefused},
+		{signals.Provider, "refusals", reasonRefusals, "provider (part headroom)", refusalsLimitRefused},
 	} {
-		out, err := r.signals("set-limit", "--signal", refused.signal, "--limit", strconv.FormatFloat(refused.limit, 'g', -1, 64), "--reason", refused.reason)
+		flags := []string{"--signal", refused.signal, "--limit", strconv.FormatFloat(refused.limit, 'g', -1, 64), "--reason", refused.reason}
+		if refused.part != "" {
+			flags = append(flags, "--part", refused.part)
+		}
+		out, err := r.signals("set-limit", flags...)
 		if err == nil || !strings.Contains(out, refused.why) || !strings.Contains(out, "nothing changed") {
-			t.Fatalf("legion project signals set-limit --signal %s --limit %v exited %v with %q; want it refused, saying %q and that nothing changed",
-				refused.signal, refused.limit, err, out, refused.why)
+			t.Fatalf("legion project signals set-limit %v exited %v with %q; want it refused, saying %q and that nothing changed",
+				flags, err, out, refused.why)
 		}
 	}
 	state := r.legionState("after-refusal")
 	if mustJSON(t, state.Admission.Signals.Switch) != mustJSON(t, before.Admission.Signals.Switch) {
 		t.Fatalf("the refusals moved the switch from %+v to %+v", before.Admission.Signals.Switch, state.Admission.Signals.Switch)
+	}
+	for _, series := range state.Admission.Signals.Series {
+		if series.Signal == signals.Provider && (series.Part == nil || *series.Part != store.PartHeadroom) {
+			t.Fatalf("the state serves the provider's series %+v; want its headroom alone", series)
+		}
+	}
+	for _, entry := range state.Admission.SignalChanges {
+		if entry.Signal != nil && *entry.Signal == signals.Provider && (entry.Part == nil || *entry.Part != store.PartHeadroom) {
+			t.Fatalf("the record holds %+v; want no entry of a provider's part but its headroom's", entry)
+		}
 	}
 	for _, name := range []string{signals.Queue, signals.Kills} {
 		was, is := seriesOf(t, before, name, ""), seriesOf(t, state, name, "")
@@ -860,7 +879,7 @@ func (r *admissionSignalsLive) aLimitOutsideItsRangeIsRefused() {
 			t.Fatalf("the record gained %+v after the refusals; want no change of a limit or the switch", entry)
 		}
 	}
-	r.note("read back: both refused with their reasons; the switch, the queue's and the kills' limits and the record stand as before")
+	r.note("read back: the three refused with their reasons; the switch, the queue's and the kills' limits and the record stand as before, and no series of the provider's refusals exists")
 }
 
 // Step 8. With the queue's limit at 1 hour again, holding, and the kills' limit set, a person

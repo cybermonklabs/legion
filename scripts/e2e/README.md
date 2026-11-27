@@ -314,6 +314,15 @@ Each item below names a script, then what it proves.
   this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
   Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
 
+- `hook-prompt-two-builds.sh`
+
+  the daemon that keeps a hook prompt's row waiting while no live session holds its role ships before the listener that refuses to keep a role publish naming no source session, driven through `TestIdleReleaseAndWake/TheHookPromptsOfAReleasedRoleReachItsWokenSessionOnce` (a real daemon, a real listener binary, a `nats-server` container and a loopback PostgreSQL the caller names) from two trees — the tree of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, which for this proof is `legion-v23.21.0`, the daemon release before that change, and this checkout — with the listener of either tree (`LEGION_E2E_REPO_ROOT`):
+  the base tree's test passes with the base tree's listener, which is the negative control;
+  with this checkout's listener the base tree's test fails on the line that says no message reached the released role's woken session, since that daemon ends each prompt's row at the listener's 404;
+  and this checkout's test passes with this checkout's listener, each prompt reaching the woken session once.
+  Run by hand from a full checkout with go, git, tar and docker.
+  Each case reads its subtest's own result: PASS only with the subtest's `--- PASS` line and `go test` exiting 0, FAIL only with its `--- FAIL` line and a non-zero exit, and SKIP or UNKNOWN, which no case takes, for a skip or anything else; [`lib/hook-prompt-two-builds.test.ts`](lib/hook-prompt-two-builds.test.ts) (`bun test scripts/e2e/lib`) drives that reader over a stand-in `go`
+
 - `verification-results.sh`
 
   a recorded check result says where its commit stands against the commits and branches its check compares with, and the head it is compared with moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:
@@ -343,7 +352,7 @@ Each item below names a script, then what it proves.
   with the merge queue's wait over its limit, which the daemon reads from a recorded GitHub timeline, and the rule on, a P0 issue starts as it does with the rule off, the two issues below P0 wait, `legion state --json` names the queue holding with its value and its limit, and the daemon logs each start it held;
   a lower limit still under the value holds the first of them again at its own pass, the proof's negative control, and the limit raised above the value starts it with no restart;
   a restart over the same store reads back the switch, the limit, who set them, why and every entry of the record of changes;
-  a limit outside its signal's range is refused with its reason and changes nothing, and a limit cleared while the rule is on takes that limit alone away;
+  a limit outside its signal's range is refused with its reason and changes nothing, as is a limit on the provider's part `refusals`, which the provider does not have, and a limit cleared while the rule is on takes that limit alone away;
   and with the rule off the cap starts the second issue once its Dispatch link is gone, though the queue still reads over its limit, while no write of an admission reading reached Dispatch
 
 - `sub-architect.sh`
@@ -4604,13 +4613,13 @@ Each step also reads `GET /legion/v1/state` while it waits, and the daemon's own
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `fresh-state-off-with-no-limits` | the boot | `admission.signals` off, `switch` null, each of the six series with no limit, no setter and no hold; the queue reading 3.46 hours; no switch or limit entry in `admission.signalChanges`; cap 4 with no slot taken |
+| `fresh-state-off-with-no-limits` | the boot | `admission.signals` off, `switch` null, each of the five series with no limit, no setter and no hold; the queue reading 3.46 hours; no switch or limit entry in `admission.signalChanges`; cap 4 with no slot taken |
 | `limit-and-switch-before-the-candidates` | `legion project signals set-limit --signal queue --limit 1 --reason …`, then `legion project signals on --reason …` | on, its `switch` set by the operator with the reason; the queue holding under its limit 1, its hold dated; the daemon's `admission: a signal's hold changed` line for the queue |
 | `the-p0-starts-and-the-others-wait` | the `issue.updated` envelopes of A, B and C, each todo and labelled | A in `admission.active`; B and C in `admission.waiting` and on no slot; C in `admission.blocked` waiting on D; the queue holding at 3.46 hours over its limit 1; the daemon's `admission: a signal held a start` line naming B, the queue, its value and its limit; and `legion state`'s `signals:` line printed |
 | `negative-control-a-lower-limit-keeps-the-candidate-waiting` | `legion project signals set-limit --signal queue --limit 2 --reason …` | the daemon's held-start line naming B at the limit 2, from that change's own pass; over three seconds, B on no slot; the queue still holding |
 | `the-raised-limit-starts-the-candidate` | `legion project signals set-limit --signal queue --limit 4 --reason …` | B in `admission.active` with no restart (the daemon's boot count as at the first step); the queue at 3.46 hours under its limit 4, holding nothing; C still on no slot, waiting on D |
 | `a-restart-keeps-the-settings-and-the-record` | the daemon stopped and booted again over the same store | on, its `switch` set by the operator with its reason; the queue's limit 4 with its `limitSet` (the operator, a moment, the reason); every entry of `admission.signalChanges` read before the stop read back the same, ids rising by one; the one switch entry and the queue's three limit entries (1, 2 and 4), each with `setBy` the operator, its moment and its reason; the queue's holds entries 1 at the switch and 0 at the raised limit, with no setter; A and B on their slots |
-| `a-limit-outside-its-range-is-refused` | `legion project signals set-limit --signal queue --limit 200 --reason …`, then `--signal kills --limit 2.5` | each command exits non-zero with the daemon's reason (`which is not above 0 and at most 168`, `which is no whole number from 1 to 1000000`) and `nothing changed`; the switch and the queue's and the kills' limits and setters as before, and no new limit or switch entry |
+| `a-limit-outside-its-range-is-refused` | `legion project signals set-limit --signal queue --limit 200 --reason …`, then `--signal kills --limit 2.5`, then `--signal provider --part refusals --limit 3` | each command exits non-zero with the daemon's reason (`which is not above 0 and at most 168`, `which is no whole number from 1 to 1000000`, `provider (part headroom)`) and `nothing changed`; the switch and the queue's and the kills' limits and setters as before; no new limit or switch entry; and no series or entry of the provider's but its headroom's |
 | `a-limit-cleared-while-another-holds` | `set-limit --signal queue --limit 1`, `set-limit --signal kills --limit 5`, then `legion project signals clear-limit --signal kills --reason …` | the kills with no limit and a `limitSet` naming the operator's clear and its reason; the kills' two limit entries, 5 and then null, each with its setter and reason; on, the queue holding under its limit 1; A and B still on their slots, since a pass takes no slot back for a signal; ids rising by one |
 | `off-lets-the-cap-start-the-held-candidate` | `legion project signals off --reason …`, then C's envelope with no `blocked_by` | off, with the switch's second entry 0 by the operator; the queue at 3.46 hours, over its limit 1, holding nothing; C in `admission.active`, started by the cap alone; no write of an admission reading taken by the Dispatch stand-in |
 
@@ -6458,7 +6467,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Twelve call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Thirteen call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6473,6 +6482,7 @@ The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prere
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
 The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_env` in `services_up`, checks there with `run_database_url_env` that a run's connection string can carry it, and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
+The thirteenth is `hook-prompt-two-builds.sh`'s `prerequisites` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it takes the base commit's tree, sourcing [`lib/loopback-dsn.sh`](#libloopback-dsnsh) itself.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database, through `run_database_url_env`, which takes the variable's name in the same way.
 They create and drop that database with `psql_env`, which takes the name in the same way too, and hand Dispatch the connection string `run_database_url_env` rebuilt from a subshell that turns xtrace off before it expands that string, so a run of either under `bash -x` traces no part of the DSN.
@@ -6528,11 +6538,12 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing, and a fourth, `psql_env`, runs `psql` on the DSN a variable holds.
-[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
+[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
 The sixth, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_env` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_env` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_env` in its own `arguments` check as well, before it builds or extracts anything.
+The thirteenth, `hook-prompt-two-builds.sh`, sources it on its own, and calls `require_loopback_env` in its `prerequisites` check, before it takes the base commit's tree.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -7214,7 +7225,7 @@ a file it can open takes both, which still reach the reader, and a file whose di
 A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
 Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh` and `hook-prompt-two-builds.sh` source it themselves.
 
 ```sh
 . "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
@@ -7281,10 +7292,11 @@ It also drives the script, both parts and `--control`, from a branch merged forw
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
+Eight of the thirteen call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
 `envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) is the ninth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 `busy-relaunch-delivery.sh` is the tenth and `approved-version-news.sh` the eleventh: each has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
+`hook-prompt-two-builds.sh` is the thirteenth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run

@@ -728,7 +728,7 @@ type Admission struct {
 	// none.
 	Slots *SlotsReading `json:"slots,omitempty"`
 	// Signals is admission by signals (S2 of dispatch://INFRA-5899): whether it is on and who set
-	// the switch, and each of the six series as the live signals read it at the state's moment,
+	// the switch, and each of the five series as the live signals read it at the state's moment,
 	// its value or why the daemon cannot compute it, its limit and who set it, whether it holds
 	// admission and since when, with the provider's minutes of the last hour (SignalsReading).
 	// Absent where the daemon runs no workflow, which admits nothing.

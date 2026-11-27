@@ -124,7 +124,7 @@ func printResumeAnswer(w io.Writer, answer []byte) error {
 }
 
 // projectSignals is `legion project signals <action>`: on and off turn admission by signals on or
-// off, set-limit sets one signal's limit (--signal, --part for the provider's headroom or refusals,
+// off, set-limit sets one signal's limit (--signal, --part for the provider's headroom,
 // --limit) and clear-limit clears it; each takes the person's cited word (--reason), which the
 // daemon records with the change and the operator as who made it. The daemon refuses a limit
 // outside its signal's range, a name of no signal and a blank reason with the reason, changing
@@ -137,12 +137,12 @@ func projectSignals(act string) func(c *projectCall) action {
 		var limit *float64
 		if act == api.SignalsSetLimit || act == api.SignalsClearLimit {
 			signal = c.flags.String("signal", "", "the signal: idle, queue, provider, kills or approvals (required)")
-			part = c.flags.String("part", "", "the provider's part, headroom or refusals: required for provider, and no other signal takes one")
+			part = c.flags.String("part", "", "the provider's part, headroom: required for provider, and no other signal takes one")
 			required = append(required, "signal")
 		}
 		if act == api.SignalsSetLimit {
 			limit = c.flags.Float64("limit", 0, "the limit, which the signal holds admission at or over: idle above 0 to 1, queue above 0 to 168 hours, "+
-				"provider headroom above 0 to 10, and provider refusals, kills and approvals a whole number from 1 to 1000000 (required)")
+				"provider headroom above 0 to 10, and kills and approvals a whole number from 1 to 1000000 (required)")
 		}
 		return func(ctx context.Context, _ []string) int {
 			if code, ok := c.check(required...); !ok {

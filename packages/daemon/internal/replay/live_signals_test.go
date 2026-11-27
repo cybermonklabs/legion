@@ -41,29 +41,42 @@ type liveReplaySeries struct {
 	next func(r *SignalRecord, at time.Time, limit float64) (time.Time, bool)
 }
 
-// liveReplayRows is the replay's reader of each series: each definition of SignalDefinitions, the
-// provider's headroom among them, and the provider's refusals, which the record reads beside it.
+// liveNotComputed is each signal of the tool's definitions (signals.Names()) that the live daemon
+// does not compute, with why. The replay's historical refusal measurements (SignalRecord.Refusals,
+// SignalRecord.NextRefusals) stay in the tool, and the live daemon has no refusal series: its
+// settings, its state and its record of changes carry none. A signal of the tool's that is in
+// neither this table nor the daemon's series fails TestLiveAndReplaySignalInventory until someone
+// classes it.
+var liveNotComputed = map[string]string{
+	signals.Refusals: "the provider's refusals are a historical measurement of the replay: the live daemon reads no model request's refusal",
+}
+
+// liveReplayRows is the replay's reader of each series the live daemon computes: each definition
+// of SignalDefinitions, taken as data, that liveNotComputed does not class as one it does not.
 func liveReplayRows() []liveReplaySeries {
 	var rows []liveReplaySeries
 	for _, def := range SignalDefinitions() {
-		rows = append(rows, liveReplaySeries{name: def.Name, at: def.At, next: def.Next})
+		if _, notLive := liveNotComputed[def.Name]; !notLive {
+			rows = append(rows, liveReplaySeries{name: def.Name, at: def.At, next: def.Next})
+		}
 	}
-	return append(rows, liveReplaySeries{name: signals.Refusals,
-		at:   func(r *SignalRecord, at time.Time) signals.Value { return r.Refusals(at).Value() },
-		next: (*SignalRecord).NextRefusals})
+	return rows
 }
 
-// The replay's readers are matched to the six series the daemon reads (signals.Names()), each once:
-// the definitions of SignalDefinitions and the refusals reader beside them. It fails where a series
-// of the daemon's has no reader of the replay's, and where a reader names no series of the
-// daemon's.
+// The replay's readers are matched to the five series the daemon reads (store.LiveSeries()), each
+// once, and every signal of the tool's definitions (signals.Names() and SignalDefinitions) is
+// either one of them or classed as one the live daemon does not compute (liveNotComputed). It
+// fails where a series of the daemon's has no reader of the replay's, where a reader names no
+// series of the daemon's, where a signal of the tool's is neither, and where a class names a
+// signal the daemon does compute or the tool does not define.
 func TestLiveAndReplaySignalInventory(t *testing.T) {
 	t.Parallel()
 	rows := map[string]int{}
 	for _, row := range liveReplayRows() {
 		rows[row.name]++
 	}
-	for _, name := range signals.Names() {
+	live := store.LiveSeries()
+	for _, name := range live {
 		if rows[name] != 1 {
 			t.Errorf("the series %s has %d readers of the replay's, want 1", name, rows[name])
 		}
@@ -72,11 +85,31 @@ func TestLiveAndReplaySignalInventory(t *testing.T) {
 	for _, name := range slices.Sorted(maps.Keys(rows)) {
 		t.Errorf("the replay's reader %s names no series of the daemon's", name)
 	}
+	defined := signals.Names()
+	for _, def := range SignalDefinitions() {
+		if !slices.Contains(defined, def.Name) {
+			t.Errorf("the definition %s of SignalDefinitions is no signal of the tool's (signals.Names())", def.Name)
+		}
+	}
+	for _, name := range defined {
+		_, notLive := liveNotComputed[name]
+		switch {
+		case notLive && slices.Contains(live, name):
+			t.Errorf("the signal %s is classed as one the live daemon does not compute, and it computes it", name)
+		case !notLive && !slices.Contains(live, name):
+			t.Errorf("the signal %s is neither a series of the live daemon nor classed as one it does not compute (liveNotComputed)", name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(liveNotComputed)) {
+		if !slices.Contains(defined, name) {
+			t.Errorf("liveNotComputed names %s, which the tool does not define", name)
+		}
+	}
 }
 
 // The limits each series is compared at.
 var liveReplayLimits = map[string]float64{
-	signals.Idle: 0.5, signals.Queue: 1, signals.Provider: 0.5, signals.Refusals: 2, signals.Kills: 2, signals.Approvals: 1,
+	signals.Idle: 0.5, signals.Queue: 1, signals.Provider: 0.5, signals.Kills: 2, signals.Approvals: 1,
 }
 
 // liveReplayEnd is where the spans of the window's record end, past every moment compared: an edge
@@ -199,12 +232,11 @@ type liveReplayFact struct {
 	live   func(d *liveDaemon)
 }
 
-// tokensAt is the provider's requests of the record: each one's moment, uncached input tokens and
-// refusal.
+// requestAt is the provider's requests of the record: each one's moment and uncached input
+// tokens.
 type requestAt struct {
-	at      time.Time
-	tokens  int64
-	refusal claim.RefusalClass
+	at     time.Time
+	tokens int64
 }
 
 // liveReplayRecord is the record both read, from the daemon's boot at 05:00: ACME-1 takes a slot
@@ -213,8 +245,7 @@ type requestAt struct {
 // pull request 2 from 09:00 on; a question on ACME-2 opens at 08:00 and waits on the default
 // assignee, and one on ACME-3 opens at 08:30 and is asked of another person at 08:40; and the
 // provider's minute at 08:10 spends 4,000 uncached input tokens of the project's 6,000, its minute
-// at 08:20 holds two refusals by the project's own limit, one of them unknown, and its minute at
-// 08:25 one by the provider.
+// at 08:20 3,000 and its minute at 08:25 1,500.
 func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 	kill := func(at time.Time, pid int, sequence uint64) liveReplayFact {
 		return liveReplayFact{at: at, what: fmt.Sprintf("the kill of pid %d", pid),
@@ -239,16 +270,13 @@ func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 					{ID: int64(id), Repo: builtRepository, PullRequest: n, At: at, Enters: kind == intake.QueueAdded}}})
 			}}
 	}
-	// The record's host reports every refusal, the 429s its transport retried among them, so the
-	// daemon's refusals count each of the record's as the replay does.
 	request := func(id string, r requestAt) liveReplayFact {
 		return liveReplayFact{at: r.at, what: "the model request " + id,
 			window: func(*windowBuilder) { *requests = append(*requests, r) },
 			live: func(d *liveDaemon) {
 				tokens := r.tokens
 				d.apply(r.at, intake.ModelRequests{Claim: builtToken(d.t, "ACME-1", claim.RoleArchitect), Generation: 1, Requests: []claim.ModelRequest{
-					{ID: id, Session: "ses_1", Model: "acme-model", EndedAt: r.at, UncachedInputTokens: &tokens, Refusal: r.refusal}},
-					RetriedRefusalsReported: true})
+					{ID: id, Session: "ses_1", Model: "acme-model", EndedAt: r.at, UncachedInputTokens: &tokens}}})
 			}}
 	}
 	ask := func(at time.Time, key, id, kind string, payload map[string]any) liveReplayFact {
@@ -273,9 +301,8 @@ func liveReplayRecord(requests *[]requestAt) []liveReplayFact {
 		ask(clock(8, 0), "ACME-2", "A1", "ask.opened", nil),
 		request("r1", requestAt{at: clock(8, 10).Add(30 * time.Second), tokens: 4000}),
 		queue(clock(8, 15), 2, 1, intake.QueueMerged),
-		request("r2", requestAt{at: clock(8, 20).Add(10 * time.Second), refusal: claim.RefusalOwn}),
-		request("r3", requestAt{at: clock(8, 20).Add(20 * time.Second), refusal: claim.RefusalUnknown}),
-		request("r4", requestAt{at: clock(8, 25), refusal: claim.RefusalProvider}),
+		request("r2", requestAt{at: clock(8, 20).Add(10 * time.Second), tokens: 3000}),
+		request("r3", requestAt{at: clock(8, 25), tokens: 1500}),
 		ask(clock(8, 30), "ACME-3", "A2", "ask.opened", nil),
 		ask(clock(8, 40), "ACME-3", "A2", "ask.asked_of", map[string]any{"asked_of": acmeOther, "asked_of_by": acmeOwner}),
 		queue(clock(9, 0), 3, 2, intake.QueueAdded),
@@ -319,12 +346,6 @@ func liveReplayAt(t *testing.T, at time.Time) (*SignalRecord, *liveDaemon) {
 		for _, r := range requests {
 			if r.at.Truncate(time.Minute).Equal(minute) {
 				line.Uncached += r.tokens
-				switch r.refusal {
-				case claim.RefusalOwn, claim.RefusalUnknown:
-					line.Own++
-				case claim.RefusalProvider:
-					line.Provider++
-				}
 			}
 		}
 		b.window.Provider = append(b.window.Provider, line)
@@ -373,11 +394,11 @@ func liveReplayAt(t *testing.T, at time.Time) (*SignalRecord, *liveDaemon) {
 
 // The live signals and the replay give one value of each series and one next crossing of its
 // limit, from the same facts: before the first fact, at each fact, after the last, and on both
-// sides of each next crossing the daemon finds; the provider's headroom and its refusals each, an
-// unknown refusal counted as the project's own, the edges where the kills' hour and the queue's 6
-// hours become whole, and the approvals, which move only at events. The rule of admission by
-// signals decides one start alike on either's snapshot, for a pass with admission by signals off,
-// at an event, at the tick, at a deadline, under a full cap, and where a signal holds the start.
+// sides of each next crossing the daemon finds; the provider's headroom, the edges where the
+// kills' hour and the queue's 6 hours become whole, and the approvals, which move only at events.
+// The rule of admission by signals decides one start alike on either's snapshot, for a pass with
+// admission by signals off, at an event, at the tick, at a deadline, under a full cap, and where a
+// signal holds the start.
 func TestLiveAndReplaySignals(t *testing.T) {
 	moments := []time.Time{clock(6, 59)}
 	var none []requestAt
@@ -387,6 +408,7 @@ func TestLiveAndReplaySignals(t *testing.T) {
 	moments = append(moments, clock(11, 30))
 	compared := map[time.Time]bool{}
 	verdicts := map[signals.Verdict]bool{}
+	rows := liveReplayRows()
 	var compare func(at time.Time, crossings bool)
 	compare = func(at time.Time, crossings bool) {
 		if compared[at] {
@@ -399,8 +421,11 @@ func TestLiveAndReplaySignals(t *testing.T) {
 		for _, series := range reading.Series {
 			live[series.Name] = series
 		}
+		if len(live) != len(rows) {
+			t.Errorf("at %s the daemon reads %d series, want the %d the replay reads", at.Format(time.TimeOnly), len(live), len(rows))
+		}
 		replaySnapshot := signals.Snapshot{Mode: signals.Ceiling, At: at, Readings: map[string]signals.Reading{}}
-		for _, row := range liveReplayRows() {
+		for _, row := range rows {
 			got, want := live[row.name], row.at(r, at)
 			limit := liveReplayLimits[row.name]
 			replaySnapshot.Readings[row.name] = signals.Reading{Value: want, Limit: &limit}

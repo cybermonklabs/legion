@@ -377,7 +377,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     part: {
       type: "string",
-      enum: ["headroom", "refusals"],
+      enum: ["headroom"],
       description:
         "The provider's part for set_signal_limit and clear_signal_limit; no other signal takes one",
     },
@@ -2608,7 +2608,9 @@ test("the controller stops, retries, suspends and resumes an agent it names by i
         "/legion/v1/agents/resume",
         409,
         "SUSPENDED_BY_OPERATOR",
-        "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts"
+        "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts",
+        true,
+        0
       ),
     },
   });
@@ -2674,7 +2676,9 @@ test("the controller asks for the replacement of an issue's pod with its own gra
         "/legion/v1/issues/pod-update",
         409,
         "POD_UPDATE_LIMITED",
-        "the project's pod_update_max_open_rounds (2) holds back the update round of LEGION-209"
+        "the project's pod_update_max_open_rounds (2) holds back the update round of LEGION-209",
+        true,
+        0
       ),
     },
   });
@@ -2936,8 +2940,8 @@ test("the controller changes admission by signals on a person's cited word and r
       { action: "on", reason },
     ],
     [
-      { op: "set_signal_limit", signal: "provider", part: "refusals", limit: 2, reason },
-      { action: "set-limit", signal: "provider", part: "refusals", limit: 2, reason },
+      { op: "set_signal_limit", signal: "provider", part: "headroom", limit: 2, reason },
+      { action: "set-limit", signal: "provider", part: "headroom", limit: 2, reason },
     ],
     [
       { op: "clear_signal_limit", signal: "kills", reason },
@@ -3249,7 +3253,9 @@ test("resume_agent resumes an agent, resume names no issue, and a paused project
         "/legion/v1/agents/resume",
         409,
         "PROJECT_PAUSED",
-        sentence
+        sentence,
+        true,
+        0
       ),
     },
   });
@@ -3498,7 +3504,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 });
 
 // The controller files a clear defect only on a repository both role GitHub Apps are installed on
-// (finding-asks.md, step 1 of "File a clear defect no tree owns"), and its role prompt tells it
+// (finding-asks.md, step 1 of "File a clear defect"), and its role prompt tells it
 // that the summary prints the repository lines an operator's `legion state` prints
 // (packages/daemon/internal/prompts/roles/controller-root.md). No filter answers for
 // repositories, so the summary prints, after the capabilities, cmd/legion's repositoryLines for

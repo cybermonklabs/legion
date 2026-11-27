@@ -1,5 +1,5 @@
 # legion controller start --config controller.yaml [--daemon-url http://127.0.0.1:13370]
-# The operator-side file: the same key names as legion.yaml, only the sixteen keys the controller
+# The operator-side file: the same key names as legion.yaml, only the fourteen keys the controller
 # needs; any other key is refused naming it. Relative paths resolve against this file's directory
 # (no ~ expansion). The command also writes the controller's gh files (the review App's read-only
 # token for every owner that App is installed on, and for each owner a configured rename moved a
@@ -59,7 +59,3 @@ instructions: ./instructions.md
 # Where the controller's secret, gh shim, legion launcher, and instructions live
 # (default: $XDG_STATE_HOME/legion/<project>-controller, i.e. ~/.local/state/legion/demo-controller).
 # state_dir: ./state
-# Optional patterns for classifying the controller's refused model requests.
-# Set them to the same values as the project in legion.yaml.
-# signal_own_refusal_pattern: 'project tokens per minute'
-# signal_provider_refusal_pattern: 'upstream.*rate limit'

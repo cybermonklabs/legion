@@ -266,8 +266,8 @@ The windows `git-store-verdicts`, `git-unanswered-reads`, `merge-event-time`, `d
 - **A read.**
   On `conflicts=git` the replay reads an issue's head at each end of a stretch (each move that ends one, the later end of a stretch that went on past a passed-over loop among them) and at each boot inside a stretch.
   The head is the one of the issue's pull request that stands at the read's recorded moment, the latest `at` at or before it: for an end, the recorded time of the move that ends the stretch.
-  The touching merges at the read are the commits that the replay's base holds at the read, that the head does not hold (after its merge base on the record's first-parent chain), and whose `commit` line's paths meet the head's `paths`, in the order in which the replay's base took them.
-  The record's touching merges of the head are the bases of its `verdicts`, in their order; they stop before the pull request's own merge.
+  The touching merges at the read are the commits that the replay's base holds at the read, that the head does not hold (after its merge base on the record's first-parent chain), and whose `commit` line's paths meet the `paths` of the head's `reading` line, in the order in which the replay's base took them.
+  The record's touching merges of the head are the bases of the `verdicts` of its `reading` line, in their order; they stop before the pull request's own merge.
 
 - **An answered read.**
   The store answers a read where the replay's touching merges are the first n of the record's: git's verdict at the nth, and clean at n = 0.
@@ -294,7 +294,7 @@ The windows `git-store-verdicts`, `git-unanswered-reads`, `merge-event-time`, `d
 
 - **The generator.**
   On `conflicts=drawn`, and for an unanswered read, a stretch draws as "Conflicts" above says, with M the stretch's touching merges where the repository holds git input.
-  An issue's profile is the `paths` of its head that stands at the draw, and the touching merges are the commits of the replay's base at the draw that change a path of the profile and came after that head's merge base.
+  An issue's profile is the `paths` of the `reading` line of its head that stands at the draw, and the touching merges are the commits of the replay's base at the draw that change a path of the profile and came after that head's merge base.
   A stretch with no touching merge draws no conflict: its chance is 0, and its draw's line says `merges` 0 and `chance` 0.
   The model is fitted on the window's recorded stretches, with M counted the same way on the record's base before each stretch's end; a stretch with M = 0 is left out of the fit.
   Work that the record never ran has no head: it takes the profile of the issue that its scenario drew its work from, and its touching merges are those that the replay's base took after the later of the replay's start of its first implementing segment and the landing of its last merge forward.

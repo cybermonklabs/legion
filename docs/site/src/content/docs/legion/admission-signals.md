@@ -45,8 +45,8 @@ This page uses the words of [Admission and the `legion` label](/legion/legion/co
 Each signal has one definition, in the daemon's package `internal/signals`, which both the admission pass and `legion replay` call (`replay.SignalDefinitions()` lists the five).
 Lower is better for each.
 
-The provider's signal has two parts, its headroom and its refusals, and each part takes a limit of its own.
-So admission by signals reads six series: `idle`, `queue`, `provider` `headroom`, `provider` `refusals`, `kills` and `approvals`.
+The provider's signal has one part, its headroom.
+So admission by signals reads five series, one for each signal: `idle`, `queue`, `provider` `headroom`, `kills` and `approvals`.
 Every surface names a series by its signal and, for the provider, by its part: the `legion` command, the controller's tool, `legion state --json` and the record of changes.
 
 A series is not recorded, never zero, where the daemon cannot compute it.
@@ -92,9 +92,13 @@ Uncached input tokens are the fresh input and the cache writes of a request, nev
 Only the models that `signal_token_model_pattern` selects count, and every model counts where it is unset.
 The headroom can read above 1 in a burst, and the daemon cuts no reading.
 
-Each host of a session of the project reports each of its model requests to the daemon: Oh My Pi through the `pi-legion` plugin, and Claude Code through `legion claude-bridge`.
+Each host of a session of the project reports to the daemon each model request that the provider answered: Oh My Pi through the `pi-legion` plugin, and Claude Code through `legion claude-bridge`.
 The sessions are each role's, each subagent's that a role starts, and the project controller's.
 A host reports a request within 15 seconds of its end, and at the end of the turn at the latest.
+
+The headroom counts the uncached input tokens of the requests that the hosts report, and no others.
+Oh My Pi reports no request made outside its agent loop, such as a title, a classifier, a compaction's summary or a memory extraction, so the headroom does not count those tokens.
+The production check of admission by signals still compares the daemon's uncached input tokens of each hour, the sum of `uncachedInputTokens` over the `provider.minutes` of `legion state --json`, with the deployment's full token totals for the same hour.
 
 **Not recorded**:
 
@@ -103,24 +107,6 @@ A host reports a request within 15 seconds of its end, and at the end of the tur
 - where a request of the minute before was not reported: a host of the project reports none, which is any host on a plugin before admission by signals, or the daemon began to keep the requests after the minute began;
 
 - before the daemon began to keep the model requests (`the daemon has not begun keeping the project's model requests`).
-
-### `provider` `refusals`
-
-**What it is**: the count of the project's refused model requests in the hour before the moment, those that the project's own limit refused and those that the provider refused.
-A host classes each request refused with HTTP 429 by its text, with the two refusal patterns of the configuration ([below](#the-providers-configuration)): the project's own limit where `signal_own_refusal_pattern` matches, else the provider where `signal_provider_refusal_pattern` matches, else unknown.
-The count takes an unknown refusal as the project's own.
-A request that failed with any other status is no refusal.
-
-**Not recorded**:
-
-- where a minute of the hour was not wholly reported (`the minute at <t> of the hour before was not wholly reported: …`);
-
-- while a session of a host that cannot report the 429s that its transport retries by itself had a request in the hour, until an hour after the end of that request's minute.
-  The pinned Oh My Pi host is such a host: it gives its extension no event for such a 429, so its count would be known to be short.
-  The Claude Code bridge reports each one.
-  The headroom counts every host's tokens alike.
-
-- before the daemon began to keep the model requests.
 
 ### `kills`
 
@@ -159,7 +145,6 @@ The daemon refuses a limit outside its series' range and changes nothing.
 | `idle` | a share of the slot holders | above 0, at most 1 | 0.05 |
 | `queue` | hours | above 0, at most 168 (one week) | 0.25 (15 minutes) |
 | `provider` `headroom` | a share of the token limit a minute | above 0, at most 10 | 0.10 |
-| `provider` `refusals` | refused requests in the hour | a whole number from 1 to 1,000,000 | 5 |
 | `kills` | kills in the hour | a whole number from 1 to 1,000,000 | 5 |
 | `approvals` | open asks | a whole number from 1 to 1,000,000 | 5 |
 
@@ -169,10 +154,10 @@ The step is for [the record of changes](#the-record-of-changes) and changes no d
 
 ### `legion state`
 
-`legion state` prints one line for admission by signals, right after the `slots` line:
+`legion state` prints one line for admission by signals, after the `slots` line and the `P0` line where it prints one:
 
 ```text
-signals: admission by signals on; idle 0 limit none does not hold; queue 3.462083333333333 limit 1 holds since 2026-11-26T09:22:24Z; provider/headroom not recorded limit none does not hold; provider/refusals not recorded limit none does not hold; kills not recorded limit none does not hold; approvals not recorded limit none does not hold
+signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded limit none does not hold; provider/headroom 0.42 limit 0.9 does not hold; kills 3 limit 2 holds since 2026-11-26T07:00:00Z; approvals 1 limit none does not hold
 ```
 
 The line gives the switch, and then each series by its signal and part: its value, or `not recorded`; its limit, or `limit none`; and whether it holds admission.
@@ -189,10 +174,10 @@ A daemon that runs no workflow prints no such line, and neither does a daemon be
 
 - `switch`: the last change of the switch, `{setBy, at, reason}`, and null before a person first set it.
 
-- `series`: the six series, in the order `idle`, `queue`, `provider` `headroom`, `provider` `refusals`, `kills`, `approvals`.
-  Each has `signal`; `part`, `headroom` or `refusals` for the provider and null for every other signal; `value`, null where the daemon cannot compute it; `absent`, the reason it cannot, null where it can; `limit`, null for none; `limitSet`, the last change of the limit, `{setBy, at, reason}`, a clear among them, null before a person first set or cleared it; `holds`, whether it holds admission now, never while the rule is off and never where it is not recorded; and `since`, the moment it began to stand as it does, as the record's newest holds entry of the series dates it, null where no committed pass recorded it so.
+- `series`: the five series, in the order `idle`, `queue`, `provider` `headroom`, `kills`, `approvals`.
+  Each has `signal`; `part`, `headroom` for the provider and null for every other signal; `value`, null where the daemon cannot compute it; `absent`, the reason it cannot, null where it can; `limit`, null for none; `limitSet`, the last change of the limit, `{setBy, at, reason}`, a clear among them, null before a person first set or cleared it; `holds`, whether it holds admission now, never while the rule is off and never where it is not recorded; and `since`, the moment it began to stand as it does, as the record's newest holds entry of the series dates it, null where no committed pass recorded it so.
 
-- `provider.minutes`: each whole minute of the hour before the minute under way, oldest first, as the provider's two series read them: `at`; `held`, whether every request of the minute is known to have been reported, since a minute that is not is absent from both series; `uncachedInputTokens`; `tokenLimit`, the limit in force when the minute began, 0 for none; `ownRefusals`, the unknown refusals among them; and `providerRefusals`.
+- `provider.minutes`: each whole minute of the hour before the minute under way, oldest first: `at`; `held`, whether every request of the minute is known to have been reported, since the headroom is not recorded while the minute before is not held; `uncachedInputTokens`, of the models that `signal_token_model_pattern` selects; and `tokenLimit`, the limit in force when the minute began, 0 for none.
   It names no request and no session, so you can compare the daemon's input with another record of the provider.
 
 `setBy` names who made a change in the form in which the state names who paused the project: `{"kind": "operator"}`, or `{"kind": "controller", "session": "<session>"}`.
@@ -215,7 +200,7 @@ Each entry has exactly nine members:
 
 - `signal`: `idle`, `queue`, `provider`, `kills` or `approvals`, and null for a change of the switch.
 
-- `part`: `headroom` or `refusals` for the provider, and null for every other signal and for the switch.
+- `part`: `headroom` for the provider, and null for every other signal and for the switch.
 
 - `what`: `value`, `limit`, `holds` or `switch`.
 
@@ -247,7 +232,7 @@ Each admission pass then writes entries of what it computed:
 - for `provider` `headroom`, a value entry only at a pass that gives out or takes back a slot, and at a pass where its hold changes, so the series records the headroom at each slot decision rather than at every minute.
 
 A pass writes these entries while the rule is off too, each hold then 0, so the record shows each signal before a person turns the rule on.
-No entry is written because a clock reached a time, and one pass writes at most 19 entries: six series, three kinds, and the switch.
+No entry is written because a clock reached a time, and one pass writes at most 16 entries: five series, three kinds, and the switch.
 A restart keeps the record and the settings.
 
 ### The daemon's log
@@ -279,7 +264,7 @@ legion project signals set-limit --signal queue --limit 2 \
   --config legion.yaml --operator-token-file operator-token
 legion project signals on --reason "the owner turned admission by signals on in the weekly plan" \
   --config legion.yaml --operator-token-file operator-token
-legion project signals set-limit --signal provider --part refusals --limit 20 --reason "<who said it, and what they said>" \
+legion project signals set-limit --signal provider --part headroom --limit 0.9 --reason "<who said it, and what they said>" \
   --config legion.yaml --operator-token-file operator-token
 legion project signals clear-limit --signal provider --part headroom --reason "<who said it, and what they said>" \
   --config legion.yaml --operator-token-file operator-token
@@ -289,17 +274,17 @@ legion project signals off --reason "<who said it, and what they said>" \
 
 - `on` turns the rule on, and `off` turns it off; each takes `--reason` alone.
 
-- `set-limit` sets one series' limit: `--signal` (`idle`, `queue`, `provider`, `kills` or `approvals`), `--part` for the provider (`headroom` or `refusals`; no other signal takes one), `--limit`, and `--reason`.
+- `set-limit` sets one series' limit: `--signal` (`idle`, `queue`, `provider`, `kills` or `approvals`), `--part` for the provider (`headroom`, its one part; no other signal takes one), `--limit`, and `--reason`.
 
 - `clear-limit` clears one series' limit, so it holds nothing: `--signal`, `--part` for the provider, and `--reason`.
 
 - Each takes the flags of every operator command: `--operator-token-file` (required), and `--config` or `--port` to find the daemon.
   `--json` prints the daemon's answer as it served it.
 
-Each answers with the settings as they stand after it, in one line:
+Each answers with the settings as they stand after it, in one line, as here for a project with three limits set:
 
 ```text
-admission by signals changed: admission by signals on; limits idle limit none, queue limit 2, provider/headroom limit none, provider/refusals limit none, kills limit none, approvals limit none
+admission by signals changed: admission by signals on; limits idle limit 0.5, queue limit none, provider/headroom limit 0.9, kills limit 2, approvals limit none
 ```
 
 `unchanged, as it stood` takes the place of `changed` where the change asked for what the setting already held, which writes no entry.
@@ -322,15 +307,13 @@ Each answers `changed`, whether the change moved the setting, and `settings`, as
 
 ## The provider's configuration
 
-The provider's two series read four optional keys of the project in `legion.yaml` ([`legion.yaml`](/legion/legion/running-legion/#legionyaml)):
+The provider's headroom reads two optional keys of the project in `legion.yaml` ([`legion.yaml`](/legion/legion/running-legion/#legionyaml)):
 
 ```yaml
 projects:
   WIDGETS:
     signal_token_limit_per_minute: 5500000
     signal_token_model_pattern: '^claude-'
-    signal_own_refusal_pattern: 'project (token|request) limit'
-    signal_provider_refusal_pattern: '[Oo]verloaded'
 ```
 
 - `signal_token_limit_per_minute` is the uncached input tokens that the project's sessions may spend in a minute.
@@ -338,22 +321,16 @@ projects:
   Each minute is read against the limit in force when it began, so a daemon restarted with another limit reads no earlier minute again.
 
 - `signal_token_model_pattern` selects the models whose tokens count against the limit; every model counts where it is unset.
-  A request of another model is still kept, and its refusal still counted.
+  A request of another model is still kept, and its tokens count nowhere.
 
-- `signal_own_refusal_pattern` and `signal_provider_refusal_pattern` class each refused request by its text: the project's own limit first, the provider second, else unknown.
-  The text decides because the project's own limit and its provider can both answer HTTP 429 with nothing else that tells them apart, so each deployment writes its own two patterns.
-  They reach every host of the project's sessions, each role's pane or pod and the controller, as `LEGION_SIGNAL_OWN_REFUSAL` and `LEGION_SIGNAL_PROVIDER_REFUSAL`, and a pattern left unset sends no variable.
-  The controller file of `legion controller start` takes the two under the same names; keep them equal to the project's.
-
-Each pattern is a regular expression of the subset that Go and JavaScript read alike, since a Claude Code host matches it with Go and an Oh My Pi host with JavaScript:
-characters, `\` before a metacharacter, `.`, `^`, `$`, `\b`, `\B`, `\d`, `\D`, `\w`, `\W`, `\t`, `\n`, `\r`, classes such as `[a-z]` and `[^0-9]`, groups `(…)` and `(?:…)`, `|`, and the repetitions `*`, `+`, `?` and `{n,m}` up to 1000.
-The loader refuses every other construct, naming the key and why: lookarounds, back references, named groups, inline flags such as `(?i)`, `\p`, `\s`, POSIX classes, `\A`, `\Q`, `[]`, a lone `{` or `]`, and an empty pattern.
+The model pattern is a Go regular expression (RE2 syntax), and a model counts where the pattern matches anywhere in the name a host gives it, so `^claude-` and `opus` both select `claude-opus-5-5`, and only an anchored pattern such as `^claude-opus-5-5$` matches the whole name.
+The loader refuses, naming the key and why, an empty pattern, which would count every model as leaving the key out does, and a pattern that Go does not compile, with Go's own reason.
 A refused file is refused whole, so none of its keys takes effect.
 
 ## Before you turn it on
 
 - Read the signals with the rule off for a while: `legion state` shows each against its limit, and the record of changes keeps each value by its step, each hold 0.
 
-- Make sure every host reports its model requests: a session on a plugin before admission by signals leaves each minute of its turns not recorded, and so the provider's two series.
+- Make sure every host reports its model requests: a session on a plugin before admission by signals leaves each minute of its turns not recorded, and so the provider's headroom.
 
 - The value of each limit is the owner's decision: [the comparison of `legion replay`](/legion/legion/replay/#the-signals) reads what each limit would have done over a recorded window.

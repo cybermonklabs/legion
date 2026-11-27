@@ -1,20 +1,14 @@
 package claudebridge
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -28,16 +22,13 @@ const requestWindow = 15 * time.Second
 // requests go again under the same ids.
 const requestReportTimeout = 10 * time.Second
 
-// requestKeepWindow bounds the age of a report: the daemon reads an hour of request history.
-const requestKeepWindow = time.Hour
-
 var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the report's bound of %s", requestReportTimeout)
 
 // modelRequests is the bridge as the Claude Code backend's producer of model requests (POST
-// /legion/v1/claims/model-requests): each request Claude Code made for the role's session or for
-// a subagent the role started is reported with the moment it ended, its uncached input tokens
-// and, for one a limit refused, who refused it, for the provider's headroom and refusals. The Oh
-// My Pi plugin's half is packages/pi-legion/src/model-requests.ts.
+// /legion/v1/claims/model-requests): each request Claude Code answered for the role's session or
+// for a subagent the role started is reported with the moment it ended and its uncached input
+// tokens, for the provider's headroom. The Oh My Pi plugin's half is
+// packages/pi-legion/src/model-requests.ts.
 //
 // What the stream says of a request, measured on Claude Code 2.1.311 in this bridge's print mode
 // against an Anthropic-shaped stand-in (testdata/subagent-turn.jsonl, testdata/api-retry-answered.jsonl)
@@ -49,16 +40,12 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 //   - a subagent's lines are the same, with `parent_tool_use_id` naming the Task call and
 //     `agent_id` the subagent, which is the session reported for them; the role's own lines carry
 //     `parent_tool_use_id` null and the session's id;
-//   - each attempt Claude Code retries is a `system` `api_retry` line with its `error_status`,
-//     and no text of the refusal (its `error` is Claude Code's own category, `rate_limit`), so a
-//     refused retry is unknown: never classed by what a later attempt said;
-//   - the last attempt of a request refused for good is Claude Code's synthetic answer (model
-//     `<synthetic>`) with `api_error_status` and the refusal's text as its content, classed by
-//     that text: the own pattern first, the provider's second, else unknown.
+//   - an attempt Claude Code retries is a `system` `api_retry` line, and the last attempt of a
+//     request refused for good is Claude Code's synthetic answer (model `<synthetic>`). Neither is
+//     an answered request, so neither is reported: a retry the next attempt answered is reported
+//     as the answer alone.
 //
-// A retry line and a synthetic answer name no model, so they are reported under the model the
-// session's `init` line names. Uncached input is `input_tokens + cache_creation_input_tokens`,
-// never the cache reads; a refused attempt counts none the stream names.
+// Uncached input is `input_tokens + cache_creation_input_tokens`, never the cache reads.
 //
 // The first request arms a window of requestWindow. A result sends any pending requests now.
 // Overflow drains on an answer that keeps at least one request. Otherwise a failed or incomplete
@@ -67,13 +54,10 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 // Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
 type modelRequests struct {
 	*daemonPoster
-	// own and provider are the project's two refusal patterns, nil where the launch set none.
-	own, provider *regexp.Regexp
 
 	mu      sync.Mutex
 	open    *claim.ModelRequest
 	counted map[string]bool
-	model   string
 	// pending holds requests until they are kept or dropped. due records a window or result
 	// that called for another send while one was underway.
 	pending []claim.ModelRequest
@@ -83,76 +67,32 @@ type modelRequests struct {
 	window, windows uint64
 }
 
-func startModelRequests(cfg Config, poster *daemonPoster) *modelRequests {
-	return &modelRequests{
-		daemonPoster: poster,
-		own:          refusalPattern(runtime.OwnRefusalVariable, cfg.OwnRefusal, poster.log),
-		provider:     refusalPattern(runtime.ProviderRefusalVariable, cfg.ProviderRefusal, poster.log),
-		counted:      map[string]bool{},
-	}
-}
-
-// refusalPattern is pattern compiled as every Go reader of it does (config.SharedPattern), nil
-// where the launch set none. One the loader would not have taken is said once and classes nothing.
-func refusalPattern(variable, pattern string, logger *log.Logger) *regexp.Regexp {
-	if pattern == "" {
-		return nil
-	}
-	compiled, err := config.SharedPattern(pattern)
-	if err != nil {
-		logger.Printf("%s does not compile, so it classes no refusal: %v", variable, err)
-		return nil
-	}
-	return compiled
-}
-
-// classOf is who refused a request whose refusal said text: the own pattern first, the
-// provider's second, else unknown.
-func (r *modelRequests) classOf(text string) claim.RefusalClass {
-	switch {
-	case r.own != nil && r.own.MatchString(text):
-		return claim.RefusalOwn
-	case r.provider != nil && r.provider.MatchString(text):
-		return claim.RefusalProvider
-	}
-	return claim.RefusalUnknown
+func startModelRequests(poster *daemonPoster) *modelRequests {
+	return &modelRequests{daemonPoster: poster, counted: map[string]bool{}}
 }
 
 // streamLine is what read takes of one stream-json line of Claude Code's.
 type streamLine struct {
-	kind, subtype string
-	message       json.RawMessage
+	kind    string
+	message json.RawMessage
 	// parent is the Task call a subagent's line serves, "" on the role's own; agent the
-	// subagent's id; session the session's id; uuid the line's own id.
-	parent, agent, session, uuid string
-	// timestamp is when the line was written, "" where it names none; model the model an init
-	// line names.
-	timestamp, model string
-	// apiErrorStatus is a synthetic answer's (and a result's) api_error_status, errorStatus a
-	// retry line's error_status, each 0 where the line names none.
-	apiErrorStatus, errorStatus int
+	// subagent's id; session the session's id.
+	parent, agent, session string
+	// timestamp is when the line was written, "" where it names none.
+	timestamp string
 }
 
 // read acts on one line of the stream, on the bridge's loop: it closes the request whose lines
-// were being read at the first line that is not one of its own, opens the next, reports each
-// refused attempt, and at a `result` sends what is pending.
+// were being read at the first line that is not one of its own, opens the next, and at a `result`
+// sends what is pending.
 func (r *modelRequests) read(line streamLine) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	switch {
-	case line.kind == "assistant":
+	if line.kind == "assistant" {
 		r.assistant(line)
-		return
-	case line.kind == "system" && line.subtype == "init":
-		if line.model != "" {
-			r.model = line.model
-		}
-	case line.kind == "system" && line.subtype == "api_retry" && line.errorStatus == http.StatusTooManyRequests:
-		r.closeLocked()
-		r.refused(line, "", claim.RefusalUnknown)
 		return
 	}
 	r.closeLocked()
@@ -162,8 +102,8 @@ func (r *modelRequests) read(line streamLine) {
 	}
 }
 
-// assistant reads the request's metadata, or the refusal text of a synthetic answer.
-// The caller holds r.mu.
+// assistant reads the request's metadata. The synthetic answer Claude Code gives a request it
+// could not have answered is no request. The caller holds r.mu.
 func (r *modelRequests) assistant(line streamLine) {
 	var m struct {
 		ID    string `json:"id"`
@@ -176,9 +116,6 @@ func (r *modelRequests) assistant(line streamLine) {
 	_ = json.Unmarshal(line.message, &m)
 	if m.Model == shimwire.SyntheticModel {
 		r.closeLocked()
-		if line.apiErrorStatus == http.StatusTooManyRequests {
-			r.refused(line, m.ID, r.classOf(textOf(blocksOf(line.message))))
-		}
 		return
 	}
 	if r.open != nil && r.open.ID == m.ID {
@@ -208,25 +145,6 @@ func (r *modelRequests) closeLocked() {
 	r.pending = append(r.pending, request)
 }
 
-// refused queues the report of one refused attempt, under the line's own id (`uuid`), else the
-// synthetic answer's message id, else one of the bridge's own: a refused attempt is one line, and
-// counts once. The caller holds r.mu.
-func (r *modelRequests) refused(line streamLine, messageID string, class claim.RefusalClass) {
-	model := r.model
-	if model == "" {
-		r.log.Printf("a refused model request goes unreported: the session's init line named no model")
-		return
-	}
-	at := endOf(line)
-	id := cmp.Or(line.uuid, messageID, fmt.Sprintf("refused-%s-%d", sessionOfLine(line), at.UnixNano()))
-	if r.counted[id] {
-		return
-	}
-	r.counted[id] = true
-	r.pending = append(r.pending, claim.ModelRequest{ID: id, Session: sessionOfLine(line), Model: model, EndedAt: at, Refusal: class})
-	r.armLocked()
-}
-
 // sessionOfLine is the session a line's request ran in: the subagent's where the line serves a
 // Task call, else the session's own.
 func sessionOfLine(line streamLine) string {
@@ -237,7 +155,7 @@ func sessionOfLine(line streamLine) string {
 }
 
 // endOf is when a line was written, as the line says, and the bridge's own time for a line that
-// says none (a retry line).
+// says none.
 func endOf(line streamLine) time.Time {
 	if at, err := time.Parse(time.RFC3339Nano, line.timestamp); err == nil {
 		return at
@@ -275,7 +193,7 @@ func (r *modelRequests) sendLocked() {
 		r.due = true
 		return
 	}
-	cutoff := r.clock.Now().Add(-requestKeepWindow)
+	cutoff := r.clock.Now().Add(-claim.ModelRequestsSpan)
 	r.pending = slices.DeleteFunc(r.pending, func(request claim.ModelRequest) bool {
 		if !request.EndedAt.Before(cutoff) {
 			return false
@@ -323,15 +241,12 @@ func (r *modelRequests) post(batch []claim.ModelRequest, overflow bool) {
 }
 
 // call posts batch and answers the ids the daemon holds, and whether the rest go again: not for a
-// report the daemon refused, which no retry passes. Every batch says that its host reports each
-// 429 its HTTP transport retries, since Claude Code writes an `api_retry` line for each such
-// attempt and the bridge reports each as a refused request of its own (refused).
+// report the daemon refused, which no retry passes.
 func (r *modelRequests) call(batch []claim.ModelRequest) (map[string]struct{}, bool) {
 	body, err := json.Marshal(claim.ModelRequestsRequest{
-		BootCaller:              claim.BootCaller{BootToken: r.bootToken},
-		Generation:              r.generation,
-		Requests:                batch,
-		RetriedRefusalsReported: true,
+		BootCaller: claim.BootCaller{BootToken: r.bootToken},
+		Generation: r.generation,
+		Requests:   batch,
 	})
 	if err != nil {
 		r.log.Printf("could not encode a report of %d model requests: %v", len(batch), err)

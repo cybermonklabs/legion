@@ -142,6 +142,9 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 	if _, err := admin.Exec(ctx, "alter database "+pgx.Identifier{name}.Sanitize()+" set synchronous_commit = off"); err != nil {
 		return db, nil, errors.Join(fmt.Errorf("replay: set the replay's database %s to commit without waiting for the disk: %w", name, err), db.drop(ctx))
 	}
+	if err := db.WithoutJIT(ctx, admin); err != nil {
+		return db, nil, errors.Join(err, db.drop(ctx))
+	}
 	st, err := store.Open(ctx, target)
 	if err != nil {
 		return db, nil, errors.Join(fmt.Errorf("replay: open the replay's database %s: %w", name, err), db.drop(ctx))
@@ -222,6 +225,9 @@ func replayTemplate(ctx context.Context, admin *pgx.Conn, dsn, key string) (stri
 	if _, err := admin.Exec(ctx, "create database "+pgx.Identifier{name}.Sanitize()+" template template1 strategy file_copy"); err != nil {
 		return "", fmt.Errorf("replay: the server of %s refuses to make the template %s: %w", redacted(dsn), template, err)
 	}
+	if err := build.WithoutJIT(ctx, admin); err != nil {
+		return "", errors.Join(err, build.drop(ctx))
+	}
 	if err := migrateTemplate(ctx, buildURL); err != nil {
 		return "", errors.Join(fmt.Errorf("replay: make the template %s in %s: %w", template, name, err), build.drop(ctx))
 	}
@@ -281,6 +287,22 @@ func randomName(prefix string) string {
 	// crypto/rand.Read fills the buffer whole and never returns an error.
 	_, _ = rand.Read(suffix[:])
 	return prefix + hex.EncodeToString(suffix[:])
+}
+
+// WithoutJIT turns PostgreSQL's JIT compilation off for every session that connects to the
+// replay's database from then on, over admin, a connection to the DSN's own database. The daemon's
+// store on a Kubernetes deployment is Cloud SQL, which has no LLVM JIT (docs/testing.md, "A
+// database a Go test creates"), so with it on a replay's statements would pay a compilation the
+// daemon's never pay; no decision reads it. The setting is the database's, and a copy takes none
+// of its template's, so each database takes it when it is made: a run's own, and the template's
+// build before it is migrated. It has the name of internal/testpg/testdb's WithoutJIT, which
+// textcheck's TestEveryCreatedDatabaseRunsWithoutJIT reads a function that creates a database
+// for; that package imports testing, so the legion binary does not import it.
+func (db replayDatabase) WithoutJIT(ctx context.Context, admin *pgx.Conn) error {
+	if _, err := admin.Exec(ctx, "alter database "+pgx.Identifier{db.name}.Sanitize()+" set jit = off"); err != nil {
+		return fmt.Errorf("replay: turn JIT off on the replay's database %s: %w", db.name, err)
+	}
+	return nil
 }
 
 // drop drops the replay's database, from a connection to the DSN's own, which it writes nothing

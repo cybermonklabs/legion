@@ -398,7 +398,7 @@ func (s *server) reportBySecret(w http.ResponseWriter, r *http.Request, caller c
 // modelRequests is a host's report of the model requests of the sessions it runs for one launch of
 // a claim (claim.ModelRequestsRequest): the role's own session, each subagent's it starts, or the
 // controller's. The daemon keeps each request once, by the claim, the launch generation and the
-// request's own id, in the minute it ended, for the provider's headroom and refusals, and answers
+// request's own id, in the minute it ended, for the provider's headroom, and answers
 // every id of the batch kept once its fact applied: each is held, new or held already, or ended
 // before the hour of minutes any read reaches again, which the store keeps as nothing
 // (record.Store.KeepModelRequests), so the host sends none of them again. A host whose reports could
@@ -417,9 +417,7 @@ func (s *server) reportBySecret(w http.ResponseWriter, r *http.Request, caller c
 //
 // The batch is one fact (intake.ModelRequests) under an id that names the claim, the generation
 // and the batch's ids, so a batch sent again is a duplicate that keeps nothing twice; a batch
-// carrying an id already held keeps that id's first report. The fact carries the batch's word on
-// whether its host reports each 429 its transport retries, false where the body says nothing of
-// it, as a host of a contract before the member's says nothing.
+// carrying an id already held keeps that id's first report.
 func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 	var req claim.ModelRequestsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireGeneration(w, r, req.Generation) {
@@ -442,7 +440,7 @@ func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 		ids[i] = request.ID
 	}
 	result, err := s.apply(r.Context(), "api", modelRequestsFactID(token, generation, ids),
-		intake.ModelRequests{Claim: token, Generation: generation, Requests: req.Requests, RetriedRefusalsReported: req.RetriedRefusalsReported})
+		intake.ModelRequests{Claim: token, Generation: generation, Requests: req.Requests})
 	if err != nil {
 		s.logFailure("api: keep a report of model requests", "claim", token, "generation", generation, "error", err)
 		s.refuse(w, r, http.StatusInternalServerError, "report of model requests failed: the daemon could not keep it")
@@ -517,8 +515,7 @@ func (s *server) modelRequestsByController(w http.ResponseWriter, r *http.Reques
 
 // modelRequestsProblem is why a batch of model requests cannot be read as one, "" where it can:
 // it holds 1 to claim.MaxModelRequests requests, each with an id no other request of it has, a
-// session, a model and the moment it ended, its uncached input tokens absent or at least 0, and
-// its refusal absent or one of the three classes.
+// session, a model and the moment it ended, and its uncached input tokens absent or at least 0.
 func modelRequestsProblem(requests []claim.ModelRequest) string {
 	if len(requests) == 0 || len(requests) > claim.MaxModelRequests {
 		return fmt.Sprintf("requests holds %d requests; a report carries 1 to %d", len(requests), claim.MaxModelRequests)
@@ -539,11 +536,6 @@ func modelRequestsProblem(requests []claim.ModelRequest) string {
 		}
 		if request.UncachedInputTokens != nil && *request.UncachedInputTokens < 0 {
 			return fmt.Sprintf("requests[%d].uncachedInputTokens is %d; it counts tokens from 0", i, *request.UncachedInputTokens)
-		}
-		switch request.Refusal {
-		case "", claim.RefusalOwn, claim.RefusalProvider, claim.RefusalUnknown:
-		default:
-			return fmt.Sprintf("requests[%d].refusal %q is none of %q, %q and %q", i, request.Refusal, claim.RefusalOwn, claim.RefusalProvider, claim.RefusalUnknown)
 		}
 	}
 	return ""

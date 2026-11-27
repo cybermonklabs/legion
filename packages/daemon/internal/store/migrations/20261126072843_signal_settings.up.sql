@@ -2,16 +2,16 @@
 -- record of the changes a reader of the signals sees (S3 and S6 of dispatch://INFRA-5899).
 --
 --   - signal_settings is one row per project and setting: the switch ('switch', value 1 on and 0
---     off) and the limit of each of the six series by its name of signals.Names() (value null for a
---     limit a person cleared), each with who set it last (the controller with its session, or the
---     operator with none, as project_pauses holds a pause's actor), when, and the person's cited
+--     off) and the limit of each of the five series by its name of store.LiveSeries() (value null
+--     for a limit a person cleared), each with who set it last (the controller with its session, or
+--     the operator with none, as project_pauses holds a pause's actor), when, and the person's cited
 --     reason. A project with no row is a fresh project: admission by signals off and no limit.
 --     Admission writes a row in the transaction of the fact a person's change applies as, where the
 --     change moves it (store.ChangeSignalSettingTx), and each pass reads the rows in its own.
 --   - signal_changes is one row per entry of the project's record of changes: its id, which rises
 --     by one for each entry of the project so a reader sees a lost entry as a gap, its moment, the
---     signal and part it is of (both null for the switch, the part set for the provider's two
---     series alone), what changed ('value', 'limit', 'holds' or 'switch'), the new value (1 or 0 for
+--     signal and part it is of (both null for the switch, the part set for the provider's headroom
+--     alone), what changed ('value', 'limit', 'holds' or 'switch'), the new value (1 or 0 for
 --     a hold and the switch, null for a cleared limit and for a value the daemon cannot compute),
 --     the reason it cannot (set for such a value alone), and who changed a limit or the switch and
 --     why (set for those two alone). The setting's change writes its entry in the same transaction
@@ -45,7 +45,7 @@
 -- commit;
 create table signal_settings (
     project    text             not null check (project <> ''),
-    setting    text             not null check (setting in ('switch', 'idle', 'queue', 'provider', 'refusals', 'kills', 'approvals')),
+    setting    text             not null check (setting in ('switch', 'idle', 'queue', 'provider', 'kills', 'approvals')),
     value      double precision,
     set_at     timestamptz      not null,
     by_kind    text             not null check (by_kind in ('controller', 'operator')),
@@ -60,7 +60,7 @@ create table signal_changes (
     id         bigint           not null check (id >= 1),
     at         timestamptz      not null,
     signal     text             check (signal in ('idle', 'queue', 'provider', 'kills', 'approvals')),
-    part       text             check (part in ('headroom', 'refusals')),
+    part       text             check (part in ('headroom')),
     what       text             not null check (what in ('value', 'limit', 'holds', 'switch')),
     value      double precision,
     absent     text,

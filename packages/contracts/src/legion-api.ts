@@ -1203,9 +1203,9 @@ const legionSignalSet = z.object({
 });
 
 /** A series of admission by signals as every surface names it: its signal (`idle`, `queue`,
- * `provider`, `kills`, `approvals`), and for the provider its part (`headroom`, `refusals`), `null`
- * for every other signal. Each is read as a plain string, since the daemon declares no enumerated
- * field of them and no plugin code reads them. */
+ * `provider`, `kills`, `approvals`), and for the provider its part (`headroom`), `null` for every
+ * other signal. Each is read as a plain string, since the daemon declares no enumerated field of
+ * them and no plugin code reads them. */
 const legionSignalName = nonEmptyString;
 const legionSignalPart = nonEmptyString.nullable();
 
@@ -1224,21 +1224,19 @@ const legionSignalSeries = z.object({
   since: timestamp.nullable().optional(),
 });
 
-/** `store.ProviderMinuteReading` — one whole minute of the provider's record the provider's two
- * series read: whether every request of it was reported (`held`), its uncached input tokens, the
- * token limit in force when it began (0 for none), and its refused requests by class. */
+/** `store.ProviderMinuteReading` — one whole minute of the provider's record the provider's
+ * headroom reads: whether every request of it was reported (`held`), its uncached input tokens,
+ * and the token limit in force when it began (0 for none). */
 const legionProviderMinute = z.object({
   at: timestamp.optional(),
   held: z.boolean().optional(),
   uncachedInputTokens: z.number().int().nonnegative().optional(),
   tokenLimit: z.number().int().nonnegative().optional(),
-  ownRefusals: z.number().int().nonnegative().optional(),
-  providerRefusals: z.number().int().nonnegative().optional(),
 });
 
 /** `api.SignalsReading` (`store.SignalsReading`) — admission by signals at the state's moment:
- * whether it is `on`, the `switch`'s last change (`null` before the first), each of the six
- * series in the order of the daemon's signal names, and the provider's minutes of the last hour.
+ * whether it is `on`, the `switch`'s last change (`null` before the first), each of the five
+ * series in the order of the daemon's live series, and the provider's minutes of the last hour.
  * A caller below the admission-signals entry is served none (`withoutAdmissionSignals`). */
 const legionSignalsReading = z.object({
   on: z.boolean().optional(),
@@ -1893,30 +1891,20 @@ export const LEGION_MAX_MODEL_REQUESTS = 200;
  * kept once. `session` is the session the request ran in (the role's own, a subagent's or the
  * controller's), `model` the model the host called, and `endedAt` when the request ended, which
  * places it in its UTC minute. `uncachedInputTokens` is its fresh input plus its cache writes,
- * never its cache reads, and absent where the host did not learn it. `refusal` is who refused a
- * refused request, as the host classed its text by the project's two patterns
- * (`LEGION_SIGNAL_OWN_REFUSAL`, then `LEGION_SIGNAL_PROVIDER_REFUSAL`, else `unknown`), and absent
- * for one no limit refused. */
+ * never its cache reads, and absent where the host did not learn it. */
 export const LegionModelRequest = z.strictObject({
   id: nonEmptyString,
   session: nonEmptyString,
   model: nonEmptyString,
   endedAt: timestamp,
   uncachedInputTokens: z.number().int().nonnegative().optional(),
-  refusal: z.enum(["own", "provider", "unknown"]).optional(),
 });
 
 export type LegionModelRequestBody = z.output<typeof LegionModelRequest>;
 
 /** The half of `claim.ModelRequestsRequest` that is the report rather than the caller: the launch
- * generation the requests are kept under, which must be the authenticated launch's own, 1 to
- * `LEGION_MAX_MODEL_REQUESTS` requests whose ids no two share, and `retriedRefusalsReported`,
- * whether the host reports each HTTP 429 its transport retries by itself as a refused request of
- * its own. The Claude Code bridge sends true; the Oh My Pi plugin sends what its host offers, false
- * on a host that gives an extension no event for such an attempt; a body without it, a host's of a
- * contract before it, reads as false. While a request of a batch that said false is in the hour
- * the provider's refusals count, the daemon reads them as not recorded, since that host's count is
- * known to be low. */
+ * generation the requests are kept under, which must be the authenticated launch's own, and 1 to
+ * `LEGION_MAX_MODEL_REQUESTS` requests whose ids no two share. */
 const modelRequestsFields = {
   generation: z.number().int().positive(),
   requests: z
@@ -1926,7 +1914,6 @@ const modelRequestsFields = {
     .refine((requests) => new Set(requests.map((request) => request.id)).size === requests.length, {
       message: "an id names one request of a report",
     }),
-  retriedRefusalsReported: z.boolean().optional(),
 };
 
 /** `claim.AgentCaller`'s report of model requests: the Oh My Pi plugin, which names the claim with
@@ -2155,8 +2142,12 @@ export const LegionControllerCredentialResponse = z.object({
 /** Claim routes refuse with only a sentence; credential and workflow routes add a stable code.
  * One object with an optional `code`, not a union of a sentence-only shape and a coded one: now
  * that the answer side ignores unknown keys, a union matches its first member and drops `code`,
- * and `daemonUnreachable` in `packages/pi-shared/src/daemon-client.ts` reads a 502 with no code as
- * a restarting daemon and retries it for ten minutes, so a coded refusal must keep its code. */
+ * which the daemon client's refusal names and its record read decides by (`RECORD_NOT_FOUND`), so
+ * a coded refusal must keep its code. A body in this shape, coded or not, is the daemon's own
+ * answer: the restart retry of `packages/pi-shared/src/daemon-client.ts`
+ * (`retryWhileDaemonRestarts`, by `daemonUnreachable`) waits out for up to ten minutes only an
+ * outage (a 5xx, a 408 or a 429) whose body is not this shape, such as a proxy's page in front of
+ * the daemon. */
 export const LegionErrorResponse = z.object({
   error: nonEmptyString,
   code: nonEmptyString.optional(),
@@ -2477,7 +2468,7 @@ export const LegionProjectResumeResponse = z.object({
 /** `api.ProjectSignalsResponse`, the answer to a change of admission by signals, the controller's
  * `POST /legion/v1/project/signals` and the operator's `POST
  * /legion/v1/operator/project/signals` alike: whether the change moved the setting, and the
- * project's settings as they stand after it, each of the six series with its limit (`null` for
+ * project's settings as they stand after it, each of the five series with its limit (`null` for
  * none) and that limit's last change. The controller hands the answer on whole. */
 export const LegionProjectSignalsResponse = z.object({
   changed: z.boolean().optional(),
@@ -2721,7 +2712,7 @@ export const LegionProjectResumeRequest = z.strictObject({
 });
 
 export const LEGION_SIGNALS = ["idle", "queue", "provider", "kills", "approvals"] as const;
-export const LEGION_SIGNAL_PARTS = ["headroom", "refusals"] as const;
+export const LEGION_SIGNAL_PARTS = ["headroom"] as const;
 export const LEGION_SIGNAL_ACTIONS = ["on", "off", "set-limit", "clear-limit"] as const;
 
 /** `api.ProjectSignalsRequest`, the controller's change of admission by signals on a person's cited
@@ -3181,8 +3172,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   LegionControllerRegisterResponse: ["claimToken", "generation", "secret"],
   // Every write of the `legion` tool posts the grant id `mintClaimGrant` took.
   LegionGrantResponse: ["grantId"],
-  // `daemon-client.ts` reads both fields of a refusal: the code decides whether a 502 is a
-  // restarting daemon, and the sentence is what the role is shown.
+  // `daemon-client.ts` reads both fields of a refusal: the code is the refusal's stable name, which
+  // its message carries and the record read decides by, and the sentence is what the role is
+  // shown. A body in this shape is the daemon's answer, which the restart retry never waits out.
   LegionErrorResponse: ["error", "code"],
   // `read_release_records` counts the window's rows and measures the time between them. A wake
   // a project pause held carries `pause` and names no release, so the report keeps it under its

@@ -1,0 +1,23 @@
+{"Time":"2026-11-16T23:45:14.714578957Z","Action":"start","Package":"example.com/acme/gotest/cached"}
+{"Time":"2026-11-16T23:45:14.714759253Z","Action":"run","Package":"example.com/acme/gotest/cached","Test":"TestA"}
+{"Time":"2026-11-16T23:45:14.71476289Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.71478722Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"    cached_test.go:9: the answer is kept\n"}
+{"Time":"2026-11-16T23:45:14.7147936Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.714795843Z","Action":"pass","Package":"example.com/acme/gotest/cached","Test":"TestA","Elapsed":0}
+{"Time":"2026-11-16T23:45:14.71480006Z","Action":"run","Package":"example.com/acme/gotest/cached","Test":"TestB"}
+{"Time":"2026-11-16T23:45:14.714801541Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"=== RUN   TestB\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.714803272Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"    cached_test.go:13: not here\n"}
+{"Time":"2026-11-16T23:45:14.71480748Z","Action":"output","Package":"example.com/acme/gotest/cached","Test":"TestB","Output":"--- SKIP: TestB (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.714809243Z","Action":"skip","Package":"example.com/acme/gotest/cached","Test":"TestB","Elapsed":0}
+{"Time":"2026-11-16T23:45:14.714810684Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.714812323Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"ok  \texample.com/acme/gotest/cached\t(cached)\n"}
+{"Time":"2026-11-16T23:45:14.714816054Z","Action":"pass","Package":"example.com/acme/gotest/cached","Elapsed":0}
+{"Time":"2026-11-16T23:45:14.852749799Z","Action":"start","Package":"example.com/acme/gotest/fresh"}
+{"Time":"2026-11-16T23:45:14.874528089Z","Action":"run","Package":"example.com/acme/gotest/fresh","Test":"TestFresh"}
+{"Time":"2026-11-16T23:45:14.874602375Z","Action":"output","Package":"example.com/acme/gotest/fresh","Test":"TestFresh","Output":"=== RUN   TestFresh\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.874614413Z","Action":"output","Package":"example.com/acme/gotest/fresh","Test":"TestFresh","Output":"    fresh_test.go:11: run 2\n"}
+{"Time":"2026-11-16T23:45:14.87462077Z","Action":"output","Package":"example.com/acme/gotest/fresh","Test":"TestFresh","Output":"--- PASS: TestFresh (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.874624339Z","Action":"pass","Package":"example.com/acme/gotest/fresh","Test":"TestFresh","Elapsed":0}
+{"Time":"2026-11-16T23:45:14.874632582Z","Action":"output","Package":"example.com/acme/gotest/fresh","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.879163083Z","Action":"output","Package":"example.com/acme/gotest/fresh","Output":"ok  \texample.com/acme/gotest/fresh\t0.026s\n"}
+{"Time":"2026-11-16T23:45:14.880140288Z","Action":"pass","Package":"example.com/acme/gotest/fresh","Elapsed":0.027}

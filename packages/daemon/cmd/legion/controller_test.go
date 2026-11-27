@@ -295,8 +295,6 @@ type operatorMachine struct {
 type controllerOptions struct {
 	// lines replace the default controller.yaml wholesale.
 	lines []string
-	// extra are lines the default controller.yaml carries after its own.
-	extra []string
 	// tokenMode is the operator token file's mode; tokenContents its contents.
 	tokenMode     os.FileMode
 	tokenContents string
@@ -363,7 +361,6 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 			"omp_launch_prefix: [env, LEGION_TEST_PREFIX_RAN=1]",
 		}
 	}
-	lines = append(lines, opts.extra...)
 	c.write("controller.yaml", strings.Join(lines, "\n")+"\n", 0o600)
 
 	// The Oh My Pi LEGION_OMP_PATH names. As the load probe (`models --extension <probe>`) it
@@ -845,8 +842,10 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		}
 	}
 	// Three lines: the probe, named before it runs so a prompt or a wait can be tied to it; the
-	// no-App line, since this default daemon has no Tokens; then the launch.
-	wantProbe := fmt.Sprintf("[legion] checking the controller's Oh My Pi (env 'LEGION_TEST_PREFIX_RAN=1' %s) in %s before the daemon mints a capability\n",
+	// no-App line, since this default daemon has no Tokens; then the launch. The probe line shows
+	// the launch prefix as its program and how many arguments follow (omplaunch.WithPrefixShown),
+	// never the `LEGION_TEST_PREFIX_RAN=1` it sets.
+	wantProbe := fmt.Sprintf("[legion] checking the controller's Oh My Pi (env (1 argument, not shown) %s) in %s before the daemon mints a capability\n",
 		filepath.Join(c.record, "omp"), filepath.Join(c.defaultDir, "controller"))
 	wantNoApp := "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody\n"
 	wantLog := fmt.Sprintf("[legion] starting the controller for demo against %s; state in %s\n", d.url, c.defaultDir)
@@ -1337,6 +1336,44 @@ func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testin
 	c.wantNothingLaunchedOrWritten(c.defaultDir)
 }
 
+// A daemon_url with a made-up user name and password in its userinfo: the starting line names the
+// daemon without them, and so does the refusal when the daemon cannot be reached (printRefusal), whose
+// *url.Error masks only the password.
+func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
+	const credential = "madeUpDaemonUser0123:madeUpDaemonPassword0123"
+	holdsNone := func(t *testing.T, errb string) {
+		t.Helper()
+		for i := 0; i+10 <= len(credential); i++ {
+			if strings.Contains(errb, credential[i:i+10]) {
+				t.Fatalf("stderr %q holds %q of daemon_url's userinfo", errb, credential[i:i+10])
+			}
+		}
+	}
+	t.Run("the starting line", func(t *testing.T) {
+		d := newControllerDaemon(t)
+		c := newControllerStart(t, d, controllerOptions{lines: []string{
+			"project: demo", "daemon_url: " + strings.Replace(d.url, "http://", "http://"+credential+"@", 1),
+			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		}})
+		code, _, errb := c.run()
+		if want := "[legion] starting the controller for demo against http://[a URL with credentials]; state in "; code != 0 || !strings.Contains(errb, want) {
+			t.Fatalf("legion controller start = %d, stderr %q; want 0 and %q", code, errb, want)
+		}
+		holdsNone(t, errb)
+	})
+	t.Run("an unreachable daemon's refusal", func(t *testing.T) {
+		c := newControllerStart(t, newControllerDaemon(t), controllerOptions{lines: []string{
+			"project: demo", "daemon_url: http://" + credential + "@127.0.0.1:1",
+			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
+		}})
+		code, _, errb := c.run()
+		if want := "could not reach the Legion daemon at http://[a URL with credentials]: "; code != 1 || !strings.Contains(errb, want) {
+			t.Fatalf("legion controller start = %d, stderr %q; want 1 and %q", code, errb, want)
+		}
+		holdsNone(t, errb)
+	})
+}
+
 // Every refusal the operator's machine can find on its own comes before the one request: the
 // daemon revokes the incumbent controller's capability on every mint, so a local failure must
 // never cut it off for nothing.
@@ -1373,7 +1410,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 	t.Run("a missing operator token file", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{omitToken: true})
-		c.refused(fmt.Sprintf("operator_token_file names %s, which could not be read: ", c.tokenFile))
+		c.refused("operator_token_file names a file that could not be read: it does not exist")
 		c.wantNoSecretRequest()
 	})
 	t.Run("a blank operator token file", func(t *testing.T) {
@@ -1401,7 +1438,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
 		os.Remove(filepath.Join(c.dir, "nats-seed"))
-		c.refused(fmt.Sprintf("nats_nkey_seed_file names %s, which could not be read: ", filepath.Join(c.dir, "nats-seed")))
+		c.refused("nats_nkey_seed_file names a file that could not be read: it does not exist")
 		c.wantNoSecretRequest()
 	})
 	t.Run("a NATS nkey seed file holding no user seed", func(t *testing.T) {
@@ -1428,7 +1465,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
 		os.Remove(filepath.Join(c.dir, "dispatch-token"))
-		c.refused(fmt.Sprintf("dispatch_token_file names %s, which could not be read: ", filepath.Join(c.dir, "dispatch-token")))
+		c.refused("dispatch_token_file names a file that could not be read: it does not exist")
 		c.wantNoSecretRequest()
 	})
 	t.Run("a missing instructions file", func(t *testing.T) {
@@ -1469,16 +1506,19 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 	})
 	// Each refusal of the load probe says what Oh My Pi did, launched as the controller launches
 	// it, and the remedy under the controller's environment; none names a profile, which only Oh
-	// My Pi resolves.
+	// My Pi resolves. The default controller.yaml sets omp_launch_prefix, so the check a person
+	// pastes names that setting where the prefix goes, never `env (1 argument, not shown)`.
 	for _, testCase := range []struct {
 		name  string
 		loads func(c *operatorMachine)
 		want  []string
 	}{
 		{"an Oh My Pi that does not load the plugin", (*operatorMachine).loadsNothing,
-			[]string{"did not load pi-legion (not installed, disabled, or unregistered). Install the @sjawhar/pi-legion release built from this daemon's commit into the Oh My Pi the controller runs", "plugin list` under the controller's environment"}},
+			[]string{"did not load pi-legion (not installed, disabled, or unregistered). Install the @sjawhar/pi-legion release built from this daemon's commit into the Oh My Pi the controller runs", " && <your omp_launch_prefix> ", "plugin list` under the controller's environment"}},
 		{"an Oh My Pi that loads the plugin but no pi-envoy", func(c *operatorMachine) { c.loadsEnvoyAt("none") },
-			[]string{"loaded pi-legion but no pi-envoy. Install the @sjawhar/pi-envoy release built from this daemon's commit into the Oh My Pi the controller runs, and check it with `cd ", "plugin list`"}},
+			[]string{"loaded pi-legion but no pi-envoy. Install the @sjawhar/pi-envoy release built from this daemon's commit into the Oh My Pi the controller runs, and check it with `cd ", " && <your omp_launch_prefix> ", "plugin list`"}},
+		// The module URL's query (`?mtime=1`) is kept by the URL rule the refusal is printed through
+		// (printRefusal): a `file:` URL of this machine keeps its query, which holds no credential.
 		{"an Oh My Pi whose pi-envoy publishes another interface", func(c *operatorMachine) { c.loadsEnvoyAt("2") },
 			[]string{"loaded pi-envoy from file://" + "@HOME/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1, which publishes plugin interface 2, and a pi-legion that speaks 1. Install both releases built from this daemon's commit into the Oh My Pi the controller runs, and check them with `cd ", "plugin list`"}},
 		{"an Oh My Pi that still loads the pre-split package", func(c *operatorMachine) { c.loadsLegacyFrom("file:///plugins/legacy/dist/legion.js") },
@@ -1497,6 +1537,9 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 			}
 			if strings.Contains(errb, "OMP profile") {
 				t.Errorf("legion controller start's refusal names a profile, which only Oh My Pi resolves: %q", errb)
+			}
+			if strings.Contains(errb, "&& env (1 argument, not shown)") {
+				t.Errorf("legion controller start's check reads the launch as shown, which no one can paste: %q", errb)
 			}
 			c.wantNoMintRequest()
 			c.wantNothingLaunchedOrWritten(c.defaultDir)

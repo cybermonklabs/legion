@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/httpoutage"
 )
 
 // Client is the Dispatch surface the workflow needs. It deliberately exposes only the reads and
@@ -772,9 +774,7 @@ func PermanentRefusal(err error) (*Error, bool) {
 	switch {
 	case refusal.Code == "ISSUE_CHANGED",
 		refusal.Code == "",
-		refusal.Status < 400 || refusal.Status >= 500,
-		refusal.Status == http.StatusRequestTimeout,
-		refusal.Status == http.StatusTooManyRequests,
+		refusal.Status < 400 || httpoutage.Is(refusal.Status),
 		refusal.Status == http.StatusUnauthorized,
 		refusal.Status == http.StatusForbidden,
 		refusal.Status == http.StatusConflict && refusal.Code == ParentContended,

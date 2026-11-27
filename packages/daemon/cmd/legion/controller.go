@@ -76,7 +76,9 @@ func newControllerStartCommand(stderr, attempts io.Writer) *cobra.Command {
 		}
 		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr, attempts)
 		if err != nil {
-			fmt.Fprintf(stderr, "legion controller start: %v\n", err)
+			// Through the URL rule (printRefusal): a refusal that names the daemon names daemon_url
+			// as written, and a *url.Error masks only its password.
+			printRefusal(stderr, "legion controller start", err)
 			return 1
 		}
 		return code
@@ -216,10 +218,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	// controller hears a project's mentions, and an inherited list is no project's word for this
 	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
 	// told: this controller resumes no recorded session, and an inherited value would stop it where
-	// Oh My Pi would otherwise move a held session to a new id. So are the project's two refusal
-	// patterns a Legion pane is told (runtime.OwnRefusalVariable, runtime.ProviderRefusalVariable):
-	// this controller's are its file's (controllerEnvironment), and one the file leaves unset is
-	// none, never a pane's. A machine that holds its Dispatch
+	// Oh My Pi would otherwise move a held session to a new id. A machine that holds its Dispatch
 	// credential at the broker drops the operator's own Dispatch bearer and pointer as well: either
 	// would be presented in place of the traded token as a bearer Dispatch refuses
 	// (controllerDispatchBroker). The drop is not the whole of it — the
@@ -243,8 +242,6 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	delete(env, runtime.RoleIdentitiesVariable)
 	delete(env, "LEGION_SLACK_CHANNELS")
 	delete(env, runtime.SessionExclusiveVariable)
-	delete(env, runtime.OwnRefusalVariable)
-	delete(env, runtime.ProviderRefusalVariable)
 	if cfg.DispatchTokenBroker {
 		delete(env, "DISPATCH_TOKEN")
 		delete(env, "DISPATCH_TOKEN_FILE")
@@ -265,7 +262,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 		return 0, err
 	}
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
-		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
+		omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
 		Contract: api.DaemonAPIVersion(), Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
@@ -346,7 +343,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	defer func() { _ = os.Remove(promptFile) }()
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(promptFile) +
 		" " + shellprefix.Word(daemon.ControllerStartCommand)
-	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, cfg.DaemonURL, stateDir)
+	// daemon_url without its userinfo (redact.URL, which reads it as a URL, so a "'" in a password
+	// does not end it early): the line is the operator's terminal's, and the scrollback outlives
+	// the run.
+	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, redact.URL(cfg.DaemonURL), stateDir)
 	// Interactive and in the foreground: the operator's terminal is Oh My Pi's. The child is not
 	// bound to ctx — a Ctrl-C reaches Oh My Pi through the terminal's process group and is its to
 	// handle, while this process, whose signals main has already caught, waits for its exit.
@@ -392,9 +392,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 // trade nothing turns Dispatch off saying so rather than falling back to a person's token. Under
 // every configuration PERSON_SIGNIN_TRADE=off (controllerPersonTradeVar) keeps every credential
 // the TypeScript client trades for the controller on this machine's identity and off the sign-in
-// the operator made, which the controller finds under the HOME it keeps. The project's two
-// refusal patterns ride beside them, each the file sets (runtime.RefusalEnvironment), so the
-// controller's host classes a refused request of its session as a role's host does. Later
+// the operator made, which the controller finds under the HOME it keeps. Later
 // pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
@@ -433,10 +431,6 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 	}
 	if cfg.NatsNkeySeedFile != "" {
 		env = append(env, [2]string{natsauth.SeedFileVariable, cfg.NatsNkeySeedFile})
-	}
-	refusals := runtime.RefusalEnvironment(cfg.OwnRefusalPattern, cfg.ProviderRefusalPattern)
-	for _, name := range slices.Sorted(maps.Keys(refusals)) {
-		env = append(env, [2]string{name, refusals[name]})
 	}
 	return env
 }
@@ -520,10 +514,10 @@ func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	defer cancel()
 	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {
-		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
-		return fmt.Errorf("%s/legion/v1/state: the daemon answered %d: %s", daemonURL, status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("%s/legion/v1/state: the daemon answered %d: %s", redact.URL(daemonURL), status, strings.TrimSpace(string(body)))
 	}
 	var state struct {
 		Repositories *api.RepositoriesView `json:"repositories"`
@@ -582,7 +576,7 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 	const route = "/legion/v1/controller/secret"
 	status, body, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
-		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
 		var refused legionclaim.Refusal

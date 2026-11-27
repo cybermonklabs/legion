@@ -428,7 +428,7 @@ Then:
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
-  The listen queue Postgres asks for is twice `max_connections` (`legion-testpg`'s comment gives the number), below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  The listen queue Postgres asks for is twice `max_connections` (`legion-testpg`'s comment gives the number), more than the 1,024 gVisor allows (`net.core.somaxconn`), which caps it at 1,024, and gVisor's network stack drops a burst past that while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
   No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
@@ -1085,9 +1085,9 @@ and a member the mapping does not model is refused by name (`readSessionStore` a
 
 `impersonate_service_account` is optional.
 The loader refuses a value of it that is not a Google service account's email:
-`runtime.kubernetes.session_database.impersonate_service_account "<value>" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`.
+`runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com` (the value is not quoted, since a key pasted there would print).
 When the member is set, the loader also refuses a `user` that is not that account's IAM login:
-`runtime.kubernetes.session_database.user "<user>" must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`.
+`runtime.kubernetes.session_database.user must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com` (the value is not quoted, since a token pasted there would print).
 Both checks use `ompsessions.ServiceAccountLogin` (`internal/ompsessions/store.go`), and the pod's proxy holds to the same rule.
 
 **What a pod signs in as, and what a deployment grants for it.**
@@ -1230,7 +1230,7 @@ A Claude Code start into such a pod is admitted: the launcher matches no agent's
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon never holds the connection string:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
-Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and its keys (`internal/runtime/sandbox/manifest.go`, `providers`).
+Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and the settings whose keys every pod mounts (`runtime.kubernetes.session_dsn_secret` among them), never a key of the Secret (`internal/runtime/sandbox/probe.go`, `providersMountFault`).
 
 With the store settled, every generation a launcher starts gets two variables in its start command (`mainEnvironment`):
 `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/OMP_SESSION_SQL_DSN`.
@@ -2649,8 +2649,10 @@ The given-up records stay as they were, and after the roll forward a replay or a
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
 Seven migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then admission by signals' `20261126190955_outbox_kinds_with_the_queue_timeline_read` (cybermonklabs/legion#5603), and each list keeps the name.
-A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
-The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
+A `role_holders_publish` row publishes the session of each role of one issue whose claim holds it to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
+The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its own, or the claim retires, fails, or is suspended by any source but the idle release.
+A claim whose idle pod the daemon released, or that a project pause's stop suspended, keeps its role, and so does a claim launched again over the session it kept.
+After a suspension by any other source, the resume's first write over the kept session, `queued` or `launching`, queues one too: it puts the session back in the set before the agent registers.
 The migration changes no column.
 
 The daemon and Dispatch deploy in either order.
@@ -2677,8 +2679,8 @@ The airlock closes that case.
 **A row of the new kind can stay through a rollback.**
 An earlier release puts the kind in no outbox lane, so it never runs such a row.
 Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
-At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
-The boot of this release queues each issue with a live claim or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
+At the roll forward, this release runs the row, and it sends the set that it reads then, so the row does no harm.
+The boot of this release queues each issue with a claim that holds its role, a released claim among them, or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
 To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
@@ -3144,6 +3146,26 @@ Nothing else of this release needs a rollback step.
 The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
 This change writes no column and runs no migration, so no dump and no `alter table` belong here.
 
+#### Rolling back the release that names undelivered hook prompts on the issue
+
+This release holds a hook prompt the Envoy listener refuses to keep in the prompt's own outbox row, and names each prompt that ends undelivered in a Dispatch message on the issue, held for an hour so that every prompt to the same role that ends in that hour joins it ([Idle release](#idle-release), the bullet on a message published to the role topic).
+The held message's outbox row carries a new field, `hook_prompts`, beside its `body`: the role and the prompts the message names, which is how the next prompt's end finds it.
+The prompt that opens such a message also queues a notice to the issue's architect of a new kind, `hook-prompt-undelivered`.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows neither the field nor the kind, so a held message or a notice still queued at the rollback fails on its backoff for ever: the issue never gets the message, and the notice fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`).
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'hook_prompts' where kind = 'dispatch_message' and payload ? 'hook_prompts';
+delete from outbox where kind = 'notice' and payload->>'kind' = 'hook-prompt-undelivered';
+```
+
+The strip costs the message nothing: its `body` holds the text this release wrote from the field at its last write, and the earlier release posts that body when the row comes due.
+The delete costs the architect the notice of each message still held, which names nothing the message does not.
+
+Roll the Envoy listener back before the daemon.
+An earlier daemon ends a hook prompt's row, and a phase-ended message's row, at the `404` a listener of this release answers it, and the message is lost (`scripts/e2e/hook-prompt-two-builds.sh` shows it for the hook prompt); an earlier listener keeps either for the role's next holder, as the earlier daemon expects.
+This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
 #### Rolling back the release that frees the slot past review
 
 This release adds two columns to `issues`: `moved_at` (`20261111010031_issue_moved_at`), when the daemon last saw that issue move, and `tree_stalled_told_at` (`20261111041503_tree_stalled_told_at`), the movement a tree's stalled notice was told at.
@@ -3521,7 +3543,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 #### Rolling back the release that admits by signals
 
 This release keeps what the five signals of admission by signals read, a person's settings of the rule and the record of its changes ([Admission by signals](https://cybermonklabs.github.io/legion/legion/admission-signals/)).
-Its eight migrations add tables, a column, a defaulted column and an outbox kind, and change nothing that an earlier release reads:
+Its seven migrations add tables, a column and an outbox kind, and change nothing that an earlier release reads:
 
 - `20261126011110_memory_kills` adds `memory_kills`, one row for each memory kill of a project's issue pods, kept once by the report's guard and sequence at the moment the launcher named it, and `signal_inputs`, the moment the daemon began to keep each input of a signal for each project, which the first boot of this release writes.
 
@@ -3529,40 +3551,36 @@ Its eight migrations add tables, a column, a defaulted column and an outbox kind
 
 - `20261126025927_approval_asks` adds `approval_asks`, `approval_assignees` and `approval_default_assignees`: each ask of a project's issues with the person it was asked of and whose turn it is, each issue's assignee, and the project's default assignee, each at the sequence of Dispatch's event that set it.
 
-- `20261126042544_model_requests` adds `model_requests`, each model request a host reported, `model_request_minutes`, the sums of each minute's requests that the provider's signals read, `signal_token_limits`, the token limit a minute each boot found configured, and `claim_turns`, each turn of each claim with the plugin contract its host registered with.
+- `20261126042544_model_requests` adds `model_requests`, each model request a host reported, `model_request_minutes`, the uncached input tokens of each minute's counted requests, which the provider's headroom reads, `signal_token_limits`, the token limit a minute each boot found configured, and `claim_turns`, each turn of each claim with the plugin contract its host registered with.
 
 - `20261126055316_signal_deadlines` adds `signal_deadlines`, each project's one deadline of the rule with its fence.
-
-- `20261126070017_model_requests_retried_refusals` adds `model_requests.retried_refusals_reported`, whether the batch of a request came from a host that reports the HTTP 429s its transport retries by itself.
 
 - `20261126072843_signal_settings` adds `signal_settings`, each project's switch and limits with who set each, when and why, `signal_changes`, the record of changes, and `signal_change_ids`, the last id each project's record gave out.
 
 - `20261126190955_outbox_kinds_with_the_queue_timeline_read` adds the outbox kind `queue_timeline_read` to `outbox_kind_check`, which it writes whole: the merge-holds release's list of `20261126110259_merge_holds_changed` with `queue_timeline_read` added.
 
 An earlier release runs over the migrated database as it stands, and needs none of the statements below.
-It names none of the tables and none of the two columns, so it keeps nothing in them and moves no row; it puts `queue_timeline_read` in no outbox lane, so it never decodes or runs such a row, and the widened kind check refuses nothing it writes.
+It names none of the tables and not the column, so it keeps nothing in them and moves no row; it puts `queue_timeline_read` in no outbox lane, so it never decodes or runs such a row, and the widened kind check refuses nothing it writes.
 It reads no setting of the rule, so every project admits under the cap alone, whatever a person set, and it arms no deadline's timer.
 It sets no `noRoleKills` on its answer to a launcher, so a launcher of this release sends it no report of a kill of no role ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
 
 The way back is owed to the roll forward.
-Kept in place, the tables would read the time the earlier release ran as kept with nothing in it: `signal_inputs` would say the kills and the queue were kept all along, and the provider's minutes of that time would hold no request, so for up to an hour after the roll forward the kills and the provider's two series would read too low, and the queue for up to six hours could miss a wait, as if each held its whole span.
-The header of each of the first seven migration files in `packages/daemon/internal/store/migrations` ends with its way back, one transaction in its last paragraph (`migrations.WayBack` reads it), which this section names rather than copies.
-`20261126190955_outbox_kinds_with_the_queue_timeline_read` carries no way back of its own: step 6 below deletes the rows of its kind, and its list stays, since it names every kind the earlier release writes.
+Kept in place, the tables would read the time the earlier release ran as kept with nothing in it: `signal_inputs` would say the kills and the queue were kept all along, and the provider's minutes of that time would hold no request, so for up to an hour after the roll forward the kills, and the provider's headroom of a minute the earlier release ran in, would read too low, and the queue for up to six hours could miss a wait, as if each held its whole span.
+The header of each of the first six migration files in `packages/daemon/internal/store/migrations` ends with its way back, one transaction in its last paragraph (`migrations.WayBack` reads it), which this section names rather than copies.
+`20261126190955_outbox_kinds_with_the_queue_timeline_read` carries no way back of its own: step 5 below deletes the rows of its kind, and its list stays, since it names every kind the earlier release writes.
 Run each of them, its comment markers taken off, with every daemon of the database stopped and before the earlier image is pinned, through `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`, one after another, newest first:
 
 1. `20261126072843_signal_settings`, whose drops cost each project's settings, which a person sets again, and its record of changes, which starts again from id 1;
 
-2. `20261126070017_model_requests_retried_refusals`, whose header says it runs before the way back of `20261126042544_model_requests`;
+2. `20261126055316_signal_deadlines`, which also deletes the marks in `processed_events` of the deadline's firings, since each firing is applied once under an event id that names its fence (`signal-deadline:<project>:<fence>`), the fence starts again from 1 at the roll forward, and a mark kept would take each firing of a fence that fired before the rollback for a duplicate that runs no pass;
 
-3. `20261126055316_signal_deadlines`, which also deletes the marks in `processed_events` of the deadline's firings, since each firing is applied once under an event id that names its fence (`signal-deadline:<project>:<fence>`), the fence starts again from 1 at the roll forward, and a mark kept would take each firing of a fence that fired before the rollback for a duplicate that runs no pass;
+3. `20261126042544_model_requests`;
 
-4. `20261126042544_model_requests`;
+4. `20261126025927_approval_asks`;
 
-5. `20261126025927_approval_asks`;
+5. `20261126020201_queue_events`, which also deletes the `queue_timeline_read` rows of the outbox;
 
-6. `20261126020201_queue_events`, which also deletes the `queue_timeline_read` rows of the outbox;
-
-7. `20261126011110_memory_kills` last, since it drops `signal_inputs`, from which the three before it delete their rows.
+6. `20261126011110_memory_kills` last, since it drops `signal_inputs`, from which the three before it delete their rows.
 
 Each transaction deletes its own version row of `schema_version` too, so the newer image's `Migrate` applies each migration again at the roll forward, and the roll forward's first boot writes each project's `signal_inputs` anew: each signal that counts over a span then reads as not recorded until its span is whole, rather than as a count that misses what the earlier release did not keep.
 
@@ -4074,7 +4092,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
-A rollback of a store that the release that admits by signals migrated runs the seven ways back in the headers of its migrations first, newest first, as [Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals) orders them, each of which deletes its own version row alone.
+A rollback of a store that the release that admits by signals migrated runs the six ways back in the headers of its migrations first, newest first, as [Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals) orders them, each of which deletes its own version row alone.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -4182,13 +4200,12 @@ A rollback past it takes `admission_p0_bound` out of `legion.yaml` first, since 
 20261125223008_claim_held_for, of cybermonklabs/legion#5505, adds `claims.held_for` at its default, the empty string, writes `provider_error` in place of each `cyber_policy` that `claims.failure_cause` or `claims.pending_cause` holds and `cyber_policy` in that row's `held_for`, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since the two cause columns then hold only words an earlier release knows, and that release reads a claim held for `cyber_policy` as one failed under `provider_error` and does not hold it.
 The same release writes the outbox key `decided` on each supervise start a person, the controller or the issue's architect decided (`record.SuperviseRequest.Decided`), and an earlier release decodes outbox rows strictly, so a row that carries it fails there on every attempt: before the earlier image boots, with every daemon of the database stopped, run `update outbox set payload = payload - 'decided' where kind = 'supervise' and payload ? 'decided';`, which takes that key off each supervise row and leaves every other key, and every row of another kind, a catch-up notice's own `decided` among them; the earlier release then runs such a start as one of its own.
 That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scratch `outbox` table with the `kind` check and the `payload jsonb` column `0004_record.up.sql` gives it, holding a supervise start that carried `decided` beside `resendEntry`, a supervise start without it and a `notice` row carrying `decided` at the top and under `catch_up`: the first run printed `UPDATE 1` and the second `UPDATE 0`, the first row kept `resendEntry`, and the `notice` row kept both keys.
-20261126011110_memory_kills, of cybermonklabs/legion#5603, adds the tables `memory_kills` and `signal_inputs` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header last of that release's seven ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops both tables and deletes its version row.
+20261126011110_memory_kills, of cybermonklabs/legion#5603, adds the tables `memory_kills` and `signal_inputs` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header last of that release's six ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops both tables and deletes its version row.
 20261126020201_queue_events, of cybermonklabs/legion#5603, adds the table `queue_events` and the column `signal_inputs.read_error` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which deletes the queued `queue_timeline_read` rows, drops the table and the column, deletes the queue's row of `signal_inputs` and deletes its version row.
 20261126025927_approval_asks, of cybermonklabs/legion#5603, adds the tables `approval_asks`, `approval_assignees` and `approval_default_assignees` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables, deletes the approvals' row of `signal_inputs` and deletes its version row.
 20261126042544_model_requests, of cybermonklabs/legion#5603, adds the tables `model_requests`, `model_request_minutes`, `signal_token_limits` and `claim_turns`, fills `claim_turns` with the turn each working claim is in, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the four tables, deletes the provider's row of `signal_inputs` and deletes its version row.
 20261126055316_signal_deadlines, of cybermonklabs/legion#5603, adds the table `signal_deadlines` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the table, deletes the marks in `processed_events` of the deadline's firings and deletes its version row.
-20261126070017_model_requests_retried_refusals, of cybermonklabs/legion#5603, adds `model_requests.retried_refusals_reported` at its default, false, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header before that of 20261126042544_model_requests ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the column and deletes its version row.
-20261126072843_signal_settings, of cybermonklabs/legion#5603, adds the tables `signal_settings`, `signal_changes` and `signal_change_ids` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first of that release's seven ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables and deletes its version row.
+20261126072843_signal_settings, of cybermonklabs/legion#5603, adds the tables `signal_settings`, `signal_changes` and `signal_change_ids` and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first of that release's six ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)), which drops the three tables and deletes its version row.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126190955_outbox_kinds_with_the_queue_timeline_read, of cybermonklabs/legion#5603, writes the outbox's kind check again with `queue_timeline_read` added to the list of 20261126110259 and touches none of the six, so the block holds over it; it carries no way back of its own, and a rollback to a release before it deletes the rows of its kind with the way back of 20261126020201_queue_events ([Rolling back the release that admits by signals](#rolling-back-the-release-that-admits-by-signals)) and deletes no version row of it.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
@@ -4784,7 +4801,7 @@ A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod, a
 Legion adds no key and no settings file for it.
 The credential goes in `provider_keys` (`ANTHROPIC_API_KEY: <the providers Secret's key>`), which the shim exports into the agent's environment and nowhere else;
 the other two, which are not credentials, go in `runtime.kubernetes.pod.env`.
-The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a
+The split is `pod.env`'s own rule: it refuses a credential-shaped name outright (`entry <n> sets a credential-shaped variable: a credential comes from a
 Secret, …`), which is why the key takes the `provider_keys` route.
 A provider key reaches every role's child under this runtime, Oh My Pi's included
 — that is this runtime's standing rule for every provider key, not something a Claude Code role changes:
@@ -4869,6 +4886,19 @@ Every address a pod is handed must be one a pod can reach, so `daemon_url`, `env
 This is a breaking configuration change for a file that names a host in Unicode; write it in its `xn--` form.
 `envoy_url` and each `nats_urls` entry are endpoints, not request URLs: they refuse a query string or fragment.
 This is a breaking configuration change for a file that has either; put credentials in URL userinfo or in a Secret, never in a query.
+`envoy_url`, `dispatch_url`, `daemon_url` and each `nats_urls` entry also refuse an `@` after the host, which is how a token or password holding an unescaped `/`, `?` or `#` written in the userinfo parses; write such a credential percent-encoded (`%2F`, `%3F`, `%23`).
+The check reads the decoded path, so a `%40` in the path is refused as an `@` is; an endpoint's path that holds one has to drop it.
+The refusal names the key, or a `nats_urls` entry by its position, and quotes none of the URL.
+A `runtime.kubernetes.plugins` http(s) source refuses an `@` in its query, in its fragment, or in any path segment other than the plugins' scope `@sjawhar`, which a registry tarball URL holds as a segment of its own (`/@sjawhar/pi-legion/-/pi-legion-<v>.tgz`, Artifactory's `/api/npm/<repo>/@sjawhar/…`, GitHub Packages' `/download/@sjawhar/…`), naming the key alone.
+The fragment and the path are read decoded, so a `%40` in either counts as an `@`; the query is read as written, so a `%40` there loads, and it is no userinfo for a credential to land in.
+A credential pasted as the URL's user lands there when it holds a `/`, `?` or `#`: write it percent-encoded (`%2F`, `%3F`, `%23`); an `@` the path itself holds outside the scope, remove.
+No plugin refusal quotes the source, the version refusal included.
+A `nats_urls` entry with an `@` after its host, or holding a comma, is refused too, and so is one that does not parse, and a websocket entry whose path or host stops parsing once the NATS client's handshake decodes it.
+The NATS client reads a comma as the end of a server URL, so list each server as its own entry.
+A user name or password holding an unescaped `/`, `?`, `#`, space or comma ends the URL's host part early or splits it into two servers, so write such a credential percent-encoded (`%2F`, `%3F`, `%23`, `%20`, `%2C`).
+An unquoted item of a `[...]` list that carries a user name or password, tagged `!!str` or not, is refused: YAML splits such an item at every comma, so quote it or write the list as a block list.
+So is a list that mixes websocket (`ws`, `wss`) and other schemes, an entry that is empty or no string, and an entry whose host and port are not written as an address the NATS client dials (a port past 65535 or of 0, three colons, an IPv6 address with a port and no brackets, a zone among them, though the client would bracket that one itself): write an IPv6 host in brackets (`nats://[::1]:4222`), and a port from 1 to 65535 or none.
+Each refusal names the entry by its position alone (`nats_urls entry 2 …`), never by any of its text.
 `advertise_host` is an IP address or an ASCII DNS name, the host alone, and only `runtime: kubernetes` accepts it.
 A pod's own IP changes on every restart, so a daemon running inside the cluster binds `0.0.0.0` and lets `advertise_host` name the Service DNS name that reaches whichever pod is live.
 Pods dial it at the port the worker stream listens on, so the Service exposes `worker_stream_port` as that same port number.
@@ -4920,7 +4950,7 @@ What it does not do is what boot writes or runs: the state directory, secretsd's
 
 The NATS nkey seed is optional, as on tmux:
 `nats_nkey_seed_file` (relative to `legion.yaml`'s directory), else `NATS_NKEY_SEED_FILE`, else `NATS_NKEY_SEED` in the daemon's environment, is the `legion-pane` user every pod connects as, and the user the daemon's own NATS connection authenticates as when it has no seed of its own (below).
-A set source that is empty, missing, unreadable, blank, readable by more than its owner, or not an nkey user seed refuses boot, naming the key and the path.
+A set source that is empty, missing, unreadable, blank, readable by more than its owner, or not an nkey user seed refuses boot, naming the key; a file that could not be read is named by the key and the system's reason, never by its path, and only a file that was opened is named by its path too.
 One exception: when root owns the file and the daemon is not root, its group may read it, since a daemon running as a non-root uid in a pod reads a mounted Secret
 — always root's — only through the pod's `fsGroup`.
 Mount it with `defaultMode: 0440`, never the kubelet's default `0644`, which others can read;
@@ -6897,7 +6927,7 @@ A role holding any other value is reported `stale_address` rather than `alive` (
 tcp://192.0.2.5:13371, now tcp://192.0.2.7:13371`, `ENVOY_URL https://envoy.internal.example, now
 https://ENVOY.INTERNAL.EXAMPLE`, or `agent-secrets-token audience=agent-secrets expiry=3600s
 path=token, now audience=agent-secrets-next expiry=3600s path=token`).
-The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, adding `xxxxx@` when userinfo is present.
+The supervisor logs that detail, so every printed endpoint is constructed from its scheme, host and port alone, or, when userinfo is present, its scheme and `[a URL with credentials]`, since a password holding an unencoded `@` leaves its tail after the last `@`, where a host would be.
 Path, query and fragment never appear, which also protects a value an earlier daemon accepted before the current endpoint grammar refused queries and fragments, and a value that yields no scheme and host is named only `xxxxx`.
 `ENVOY_NATS_URL` is named entry by entry from the URLs the loader accepted, never by splitting the joined value, since raw commas are valid in userinfo.
 A role this daemon started always compares equal, so only the roles a daemon under another configuration started are ever reported, from the boot that re-adopts them; nobody runs a command for it.
@@ -9060,15 +9090,34 @@ The wakes are these:
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
   Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
   If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+  A publish through Envoy's API (`POST /v1/messages/publish`) that names no sender session is not kept: Envoy answers it `404`, since nothing could tell its sender if the copy expired, and it still wakes the role.
+  Envoy still keeps a copy that names no sender session in two other ways, and drops it at the end of its hour with a WARN line and a count on `envoy_role_kept_expired_total` but no message to anyone: a message published straight onto the role's NATS subject, and a person's message that Dispatch sent to a session whose role moved to another session, or to none, before the send arrived.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
-  The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true`.
+  The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true` and no sender session, so Envoy keeps it for no role with no live holder and the hook prompt's outbox row keeps it instead.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role, except one that a project's pause held for a role that a pause stopped, which it publishes after the resume and sends again until the role's session holds its topic ([Pausing a project](#pausing-a-project)).
   Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
-  A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
-  A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`;
+  A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy answers it `404`, and its row tries again on its backoff until the woken session holds the role and takes it; a merge-queue removal message and a merge-forward message wait the same way until the woken session holds the role.
+
+  - A hook prompt's row waits while its role is being woken: its claim is released and its issue is still in the workflow with a tree that does not linger, so the row's own attempt wakes it, or its claim is launching under that wake or under the wake pacing's hold.
+    Otherwise it waits for one hour from the later of the hook's firing and the role's last ready, so a released role of an issue that has left the workflow gets no wake, and its row ends at that hour; a role whose claim failed or was retired is never published to, and the row ends at once.
+    The waiting row holds the pod from idle release only while its role has a claim on the issue that runs, is starting, or was suspended by an idle release, which the row's own first attempt wakes.
+    A row whose role has no claim, or whose claim was suspended for any other cause, holds no pod: such a role comes back only by a start or a resume, the operator's or the controller's, and either brings a pod of its own.
+    Either way the row tries again about once a minute on its backoff, so a role that does not come costs about 60 attempts in the hour, and Envoy answers each with a `404`, a WARN request line naming the outcome `role_no_source_session`, a refusal exception and a role wake report.
+    The row is kept in the daemon's own database, so a daemon that restarts inside the hour delivers the prompt to a session that holds the role after the restart, and ends it at the hour otherwise.
+    An ended prompt is named in a message on the issue that says, for each prompt, the hook, the move back the prompt was for, why it was not delivered and its words, and that no session received them.
+    That message is held for one hour from the first such end, and every prompt to the same role on the same issue that ends in that hour is added to it, so a role that is not coming gets one message an hour; the held message is the outbox row itself, so a restart of the daemon inside the hour adds to the same message.
+    The prompt that opens such a message also sends the issue's architect a `hook-prompt-undelivered` notice, which names the hook, the role, why, and when the message posts, so a role that is not coming makes one notice an hour as well.
+    A listener of an earlier release kept a hook prompt for the role's next holder and answered `202`, and the row ended there.
+    A daemon of an earlier release ends the row at the `404` of a listener that refuses the keep, so the prompt is lost: the daemon that waits ships to every deployment that publishes to the listener before that listener does (`scripts/e2e/hook-prompt-two-builds.sh` proves both outcomes).
+    Before a listener pin moves to that listener, run `packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>` with the commit that carries the waiting daemon, and move the pin only when it prints `GATE OPEN`: it reads each project's running daemon image and opens only when every one holds that commit.
+
+  - A phase-ended message, which tells a parent's worker that the admission pass ended its phase, is published with keep and names no source session as a hook prompt is, so the listener that refuses such a keep answers it `404` too.
+    Its row waits the same way, for the same hour and under the same pod-hold rule, and reaches a session that holds the role inside it.
+    At its end it finishes with the log line `outbox phase-ended message finished undelivered: no live session holds the role` and a reason, and with no message on the issue, since the role's next task from the daemon names its phase anyway.
+    A listener of an earlier release kept the message on the role's kept lane for the role's next holder, and the row ended there.
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
@@ -9756,7 +9805,7 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   — `RPC failed; …` for a request of the transfer, `unable to access '…': …` for the first request
   — naming 408, 429 or a 5xx, or a connection that could not be made or broke (connect, DNS, reset, timeout, empty reply, a transfer cut short, an HTTP/2 stream reset, a TLS session closed);
   or, with no cause line, a pack stream that ended early.
-  Each retry logs the attempt's error on stdout as one line, a URL's userinfo and query removed whole and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
+  Each retry logs the attempt's error on stdout as one line, a URL's query removed, a URL whose authority carries userinfo shown as its scheme and `[a URL with credentials]`, and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
   four retries at most, so a transfer still failing after the fourth fails the fetch.
   No retry starts past the bound.
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name
@@ -10166,6 +10215,10 @@ each issue's pod (every role of it alike) and the image probe's.
   every link an agent's `dispatch` command prints, which agents repeat in Slack replies, pull requests and comments, then points there, and a pasted dashboard link on either address resolves.
   Load refuses, naming it, a value that is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens (no `xn--` label, no trailing dot, a last label that is not a number), a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535:
   a rule narrower than the agents' URL parser, so a value load accepts never turns Dispatch off in an agent.
+  It refuses an `@` after the host too, in the path, the query or the fragment: that is where a credential holding a `/`, `?` or `#` written as the user lands, its head read as the host every link would name.
+  Percent-encode such a credential's `/`, `?` and `#`, or give the dashboard address with no credential.
+  A refused value with an `@`, a `?` or a `#` is named without its userinfo, query and fragment.
+  A query or a fragment loads: an agent's links then fall back to `dispatch://` references.
   The controller's `slack_post` refuses a reply linking an address inside the cluster.
   Like every `pod.env` variable, it reaches an agent with the start command of its next generation, so set it in the same restart that installs this release, which relaunches the controller once.
   To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
@@ -10754,8 +10807,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The one other key a pod mounts is `NATS_NKEY_SEED`, when the daemon has a NATS nkey seed:
   the operator puts the `legion-pane` seed there, and every pod reads it through `NATS_NKEY_SEED_FILE`, which the shim does not export ([Configuration](#configuration)).
   (The TypeScript daemon's [providers Secret](#the-providers-secret) mounts every key; the Go runtime does not.)
-  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret and keys.
+  A Secret or key the kubelet cannot mount is refused at boot by the image probe, naming the Secret, the settings whose keys every pod mounts (`provider_keys.<VAR>`, `runtime.kubernetes.session_dsn_secret`) and the setting whose key is missing, never a key of the Secret.
   A `provider_keys` variable that anything else in the pod sets is refused at load.
+  A `provider_keys` variable must be upper case (upper-case letters, digits and underscores, not starting with a digit), as every provider's variable is; one with a lowercase letter is refused at load as `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment variable name …`.
 
 - **Settings order.**
   Oh My Pi reads `PI_CONFIG_FILES` in order, each overlay outranking the ones before it and all of them outranking a repository's `.omp/config.yml`.
@@ -11527,9 +11581,8 @@ It is read once at boot, and is never an environment variable or a flag.
 **The operator-side file.**
 `legion controller start` reads a small file of its own, never the daemon's `legion.yaml`, whose loader would run both GitHub Apps' `private_key_command` on your machine and demand keys the controller never uses.
 `deploy/kubernetes/daemon/controller.yaml.example` is the complete shape:
-the same key names as `legion.yaml`, only the sixteen the controller needs (`project`, `daemon_url`, `operator_token_file`, `envoy_url`, `envoy_token_file`, `nats_urls`, `nats_nkey_seed_file`, `dispatch_url`, `dispatch_token_file`, `dispatch_token_broker`, `instructions`, `omp_invocation`, `omp_launch_prefix`, `state_dir`, `signal_own_refusal_pattern`, `signal_provider_refusal_pattern`;
+the same key names as `legion.yaml`, only the fourteen the controller needs (`project`, `daemon_url`, `operator_token_file`, `envoy_url`, `envoy_token_file`, `nats_urls`, `nats_nkey_seed_file`, `dispatch_url`, `dispatch_token_file`, `dispatch_token_broker`, `instructions`, `omp_invocation`, `omp_launch_prefix`, `state_dir`;
 `nats_nkey_seed_file` is the Go CLI's alone, which the TypeScript CLI refuses as unknown).
-The two refusal patterns are the project's own of its `legion.yaml` entry, held to the same subset, which the controller's host classes the refusals of its own session by; keep them equal to the project's, since this file is read on your machine, which reads no `legion.yaml`.
 Any other key is refused naming it and the example (`unknown key "runtime" in the
 controller configuration; legion controller start reads only … — see
 deploy/kubernetes/daemon/controller.yaml.example`);

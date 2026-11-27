@@ -58,8 +58,6 @@
         "admission.signals.provider.minutes.*",
         "admission.signals.provider.minutes.*.at",
         "admission.signals.provider.minutes.*.held",
-        "admission.signals.provider.minutes.*.ownRefusals",
-        "admission.signals.provider.minutes.*.providerRefusals",
         "admission.signals.provider.minutes.*.tokenLimit",
         "admission.signals.provider.minutes.*.uncachedInputTokens",
         "admission.signals.series",
@@ -98,10 +96,8 @@
         "requests.*.endedAt",
         "requests.*.id",
         "requests.*.model",
-        "requests.*.refusal",
         "requests.*.session",
         "requests.*.uncachedInputTokens",
-        "retriedRefusalsReported",
         "secret",
         "sessionId"
       ]

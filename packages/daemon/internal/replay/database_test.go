@@ -86,6 +86,9 @@ func TestATemplateMadeForOtherMigrationsIsNeverCopied(t *testing.T) {
 		t.Fatalf("connect to make the stale template: %v", err)
 	}
 	_, err = admin.Exec(ctx, "create database "+pgx.Identifier{stale.name}.Sanitize()+" template template1 strategy file_copy")
+	if err == nil {
+		err = stale.WithoutJIT(ctx, admin)
+	}
 	_ = admin.Close(ctx)
 	if err != nil {
 		t.Fatalf("make the stale template %s: %v", stale.name, err)
@@ -109,6 +112,10 @@ func TestATemplateMadeForOtherMigrationsIsNeverCopied(t *testing.T) {
 	var path string
 	if err := st.Pool().QueryRow(ctx, "show search_path").Scan(&path); err != nil || path != "public,pg_temp" {
 		t.Fatalf("replay search_path = %q, err = %v; want public and then pg_temp", path, err)
+	}
+	var jit string
+	if err := st.Pool().QueryRow(ctx, "show jit").Scan(&jit); err != nil || jit != "off" {
+		t.Fatalf("replay jit = %q, err = %v; want off, as the daemon's store on Cloud SQL runs", jit, err)
 	}
 	var marked bool
 	if err := st.Pool().QueryRow(ctx, "select to_regclass('replay_stale_template_mark') is not null").Scan(&marked); err != nil {

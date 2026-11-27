@@ -39,19 +39,18 @@ func (s signalsLineState) State(context.Context, pgx.Tx) (api.State, []supervise
 // TestStateSignalLine: `legion state` prints one line for admission by signals right after the
 // slots line, with each series' value, limit and hold as `legion state --json` gives them (S2):
 // a series the daemon cannot compute reads as not recorded, a hold no pass dated reads as undated,
-// and every series of signals.Names() is on it (/series-inventory).
+// and every series of store.LiveSeries() is on it (/series-inventory).
 func TestStateSignalLine(t *testing.T) {
 	since := time.Date(2026, 11, 26, 7, 0, 0, 0, time.UTC)
 	reading := store.SignalsReading{On: true}
 	shapes := map[string]store.SignalSeriesReading{
-		signals.Idle:      {Value: new(0.25), Limit: new(0.5)},
+		signals.Idle:      {Value: new(0.75), Limit: new(0.5), Holds: true},
 		signals.Queue:     {Absent: new("the daemon has not begun keeping the merge queue's events")},
 		signals.Provider:  {Value: new(0.00001)},
-		signals.Refusals:  {Value: new(3.0), Limit: new(2.0), Holds: true, Since: &since},
-		signals.Kills:     {Value: new(6.0), Limit: new(5.0), Holds: true},
+		signals.Kills:     {Value: new(6.0), Limit: new(5.0), Holds: true, Since: &since},
 		signals.Approvals: {Value: new(1.0), Limit: new(1000000.0)},
 	}
-	for _, series := range signals.Names() {
+	for _, series := range store.LiveSeries() {
 		row := shapes[series]
 		signal, part := store.SignalPart(series)
 		row.Signal = signal
@@ -87,9 +86,9 @@ func TestStateSignalLine(t *testing.T) {
 	}
 	// A number is printed as a decimal, never in scientific notation: the largest limit of a count
 	// and a headroom far below 1 read as a person wrote them.
-	want := "signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded limit none does not hold; " +
-		"provider/headroom 0.00001 limit none does not hold; provider/refusals 3 limit 2 holds since 2026-11-26T07:00:00Z; " +
-		"kills 6 limit 5 holds, undated; approvals 1 limit 1000000 does not hold"
+	want := "signals: admission by signals on; idle 0.75 limit 0.5 holds, undated; queue not recorded limit none does not hold; " +
+		"provider/headroom 0.00001 limit none does not hold; kills 6 limit 5 holds since 2026-11-26T07:00:00Z; " +
+		"approvals 1 limit 1000000 does not hold"
 	if lines[at] != want {
 		t.Errorf("legion state's signals line =\n%s\nwant\n%s", lines[at], want)
 	}
@@ -103,7 +102,7 @@ func TestStateSignalLine(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &served); err != nil {
 			t.Fatalf("read legion state --json: %v", err)
 		}
-		for _, series := range signals.Names() {
+		for _, series := range store.LiveSeries() {
 			signal, part := store.SignalPart(series)
 			name := signal
 			if part != "" {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // reportTimeout bounds one report's call. A turn's outcome is a few hundred bytes to a daemon on
@@ -42,12 +43,17 @@ type daemonAnswer struct {
 
 // postJSON bounds the whole call, including reading its answer, on the bridge's clock.
 // attempted distinguishes local request construction errors from failures to reach the daemon.
+// LEGION_DAEMON_URL is the daemon's daemon_url, which can carry a user name and a password: an
+// error that names the request is returned through redact.RequestError, so neither the URL's
+// credential nor the host a dial's error names (a password's tail, when it holds an unencoded "@")
+// reaches either reporter's log line.
 func (p *daemonPoster) postJSON(path string, body []byte, timeout time.Duration, cause error, maxBytes int64) (answer daemonAnswer, attempted bool, err error) {
+	route := p.url + path
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	post, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url+path, bytes.NewReader(body))
+	post, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
 	if err != nil {
-		return daemonAnswer{}, false, err
+		return daemonAnswer{}, false, redact.RequestError("the daemon", route, err)
 	}
 	bound := p.clock.After(timeout)
 	go func() {
@@ -65,7 +71,7 @@ func (p *daemonPoster) postJSON(path string, body []byte, timeout time.Duration,
 	}()
 	response, err := p.client.Do(post)
 	if err != nil {
-		return daemonAnswer{}, true, err
+		return daemonAnswer{}, true, redact.RequestError("the daemon", route, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	content, err := readAnswer(response, maxBytes)

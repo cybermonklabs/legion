@@ -56,10 +56,9 @@ func newModelRequestRig(t *testing.T, answer func(http.ResponseWriter, []string,
 		}
 	}))
 	t.Cleanup(daemon.Close)
-	cfg := Config{DaemonURL: daemon.URL, Generation: 4, Clock: r.clock}
-	r.reporter = startModelRequests(cfg, &daemonPoster{
-		url: daemon.URL, generation: cfg.Generation, bootToken: testBootToken,
-		client: daemon.Client(), clock: cfg.Clock, log: log.New(r.logged, "", 0),
+	r.reporter = startModelRequests(&daemonPoster{
+		url: daemon.URL, generation: 4, bootToken: testBootToken,
+		client: daemon.Client(), clock: r.clock, log: log.New(r.logged, "", 0),
 	})
 	return r
 }

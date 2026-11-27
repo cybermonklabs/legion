@@ -42,8 +42,8 @@
         }
       },
       {
-        "signal": "provider",
-        "part": "refusals",
+        "signal": "kills",
+        "part": null,
         "limit": 2,
         "set": {
           "setBy": {
@@ -53,12 +53,6 @@
           "at": "2026-11-26T06:00:00Z",
           "reason": "the owner set the limit in the weekly plan"
         }
-      },
-      {
-        "signal": "kills",
-        "part": null,
-        "limit": null,
-        "set": null
       },
       {
         "signal": "approvals",

@@ -57,16 +57,15 @@ import (
 //     model requests and the approvals from now on, where no earlier boot recorded it
 //     (record.Store.BeginSignalInput), so each signal that counts over a span is recorded from the
 //     first boot of the release that keeps its input plus that span (signals.KillSpan,
-//     signals.QueueExitSpan), and not before, where nothing was kept. The model requests are one
-//     input of both of the provider's signals, its headroom and its refusals, so they take one
-//     row, under signals.Provider, which both read. The boot records the configured token limit
-//     too (record.Store.KeepTokenLimit), which each minute from then on is read against.
+//     signals.QueueExitSpan), and not before, where nothing was kept. The model requests are the
+//     input of the provider's headroom, under signals.Provider. The boot records the configured
+//     token limit too (record.Store.KeepTokenLimit), which each minute from then on is read
+//     against.
 //   - intake.ModelRequests: one report of a host's model requests, each kept once by the claim,
 //     its launch generation and the request's own id, marked counted where the configured model
-//     selector takes its model and with whether the report said its host reports each 429 its
-//     transport retries (record.Store.KeepModelRequests), with no mark of a write of its own: the
-//     series-moved pass rule decides whether the report runs the pass (signalFactMoved), and the
-//     deadline is set again from it either way.
+//     selector takes its model (record.Store.KeepModelRequests), with no mark of a write of its
+//     own: the series-moved pass rule decides whether the report runs the pass (signalFactMoved),
+//     and the deadline is set again from it either way.
 //   - intake.TurnEdge: the start or end of a turn of a claim, which the claim itself records, so
 //     nothing is kept; where the claim's issue holds a slot, the series-moved pass rule decides whether
 //     it runs the pass, as for a report. A claim of an issue that holds none moves no series.
@@ -109,7 +108,7 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		}
 		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Approvals, fact.ReadError, a.now())
 	case intake.ModelRequests:
-		report := record.ModelRequestsReport{Token: fact.Claim, Generation: fact.Generation, Requests: fact.Requests, RetriedRefusalsReported: fact.RetriedRefusalsReported}
+		report := record.ModelRequestsReport{Token: fact.Claim, Generation: fact.Generation, Requests: fact.Requests}
 		if err := a.store.KeepModelRequests(ctx, tx, a.project, report, a.countsTokens, a.now()); err != nil {
 			return err
 		}

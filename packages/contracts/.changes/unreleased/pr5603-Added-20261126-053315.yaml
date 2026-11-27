@@ -3,17 +3,12 @@ body: |-
   `legion-api.ts` gives the body and the answer of `POST /legion/v1/claims/model-requests` (daemon
   API entry `20261126011643`, `admission-signals`): `LegionModelRequestsRequest`, the union of the
   claim's caller (`claimToken`, `sessionId`, `secret`) and the launch's (`bootToken`), each with
-  `generation`, 1 to 200 `requests` of `{id, session, model, endedAt, uncachedInputTokens?,
-  refusal?}` whose ids no two share, `refusal` one of `own`, `provider` and `unknown`, and
-  `retriedRefusalsReported?`, whether the host reports each HTTP 429 its transport retries by
-  itself, which a body without it reads as false; and `LegionModelRequestsResponse`, `{kept}`,
-  every id of the batch the daemon holds, with its golden `fixtures/daemon-api/model-requests.json`.
-  `fixtures/refusal-classes.json` is the table of refusal texts and the class each host gives them
-  under a project's two refusal patterns, which the Oh My Pi plugin's and the Claude Code bridge's
-  tests both read.
+  `generation` and 1 to 200 `requests` of `{id, session, model, endedAt, uncachedInputTokens?}`
+  whose ids no two share; and `LegionModelRequestsResponse`, `{kept}`, every id of the batch the
+  daemon holds, with its golden `fixtures/daemon-api/model-requests.json`.
 
   `LegionState`'s admission gains `signals`, admission by signals as the daemon reads it at the
-  state's moment (`on`, the `switch`'s last change, each of the six `series` with its `value` or
+  state's moment (`on`, the `switch`'s last change, each of the five `series` with its `value` or
   the reason it is `absent`, its `limit` and `limitSet`, whether it `holds` and `since` when, and the
   provider's `minutes` of the last hour), and `signalChanges`, the newest 50 entries of the record
   of changes, each `{id, at, signal, part, what, value, absent, setBy, reason}`.

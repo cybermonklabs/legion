@@ -144,21 +144,11 @@ func (lt *liveTest) queued(t *testing.T, pool *pgxpool.Pool, number int, entered
 }
 
 // request applies one report of a host's model request id, ended at ended, of tokens uncached
-// input tokens, refused by refusal ("" for none), the host one that reports each 429 its transport
-// retries, as the Claude Code bridge does.
-func (lt *liveTest) request(t *testing.T, pool *pgxpool.Pool, id string, ended time.Time, tokens int64, refusal claim.RefusalClass) {
-	t.Helper()
-	lt.report(t, pool, id, ended, tokens, refusal, true)
-}
-
-// report applies one report of a host's model request as request does, the batch saying retried
-// of whether its host reports each 429 its transport retries: the pinned Oh My Pi host says it
-// does not.
-func (lt *liveTest) report(t *testing.T, pool *pgxpool.Pool, id string, ended time.Time, tokens int64, refusal claim.RefusalClass, retried bool) {
+// input tokens.
+func (lt *liveTest) request(t *testing.T, pool *pgxpool.Pool, id string, ended time.Time, tokens int64) {
 	t.Helper()
 	applyThrough(t, pool, lt.admission, "api", "requests-"+id, intake.ModelRequests{Claim: acmeToken(t, "ACME-9", claim.RoleImplementer), Generation: 1,
-		Requests:                []claim.ModelRequest{{ID: id, Session: "ses_9", Model: "acme-model", EndedAt: ended, UncachedInputTokens: &tokens, Refusal: refusal}},
-		RetriedRefusalsReported: retried})
+		Requests: []claim.ModelRequest{{ID: id, Session: "ses_9", Model: "acme-model", EndedAt: ended, UncachedInputTokens: &tokens}}})
 }
 
 // heldLines is each line the passes logged of a start a signal held, as "<issue> <signal>/<part>
@@ -240,25 +230,15 @@ type absentCase struct {
 }
 
 // providerCoverage is each cause, by the provider's part, for which the gate's table holds that
-// part not recorded: the headroom with no token limit configured, and the refusals over an hour
-// the daemon did not wholly keep and while a request of a host that cannot report the 429s its
-// transport retried is in the hour.
-var providerCoverage = []string{"provider/headroom: no token limit", "provider/refusals: an hour not wholly kept",
-	"provider/refusals: a host that cannot report its retried 429s"}
+// part not recorded: the headroom with no token limit configured.
+var providerCoverage = []string{"provider/headroom: no token limit"}
 
-// seriesRows is one row for each of the six series (signals.Names()), the provider's headroom and
-// its refusals each a row of its own.
+// seriesRows is one row for each of the five series (store.LiveSeries()), the provider's by its
+// headroom.
 func seriesRows() []seriesRow {
 	booted := func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 		t.Helper()
 		lt.boot(t, pool, fixedNow.Add(-7*time.Hour), "acme-owner@example.invalid")
-	}
-	refusals := func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
-		t.Helper()
-		lt.request(t, pool, "r1", fixedNow.Add(-50*time.Minute), 0, claim.RefusalOwn)
-		lt.request(t, pool, "r2", fixedNow.Add(-40*time.Minute), 0, claim.RefusalOwn)
-		lt.request(t, pool, "r3", fixedNow.Add(-30*time.Minute), 0, claim.RefusalUnknown)
-		lt.request(t, pool, "r4", fixedNow.Add(-20*time.Minute), 0, claim.RefusalProvider)
 	}
 	return []seriesRow{
 		{name: signals.Idle, value: 0.5, under: 0.75, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
@@ -279,37 +259,15 @@ func seriesRows() []seriesRow {
 			lt.queued(t, pool, 7, fixedNow.Add(-3*time.Hour), time.Time{})
 			applyThrough(t, pool, lt.admission, "daemon", "queue-read", intake.QueueBootStatus{ReadError: "GitHub answered 502"})
 		}}}},
-		// The headroom counts the tokens of a host that cannot report the 429s its transport
-		// retries as any host's: such a host leaves only the refusals unrecorded.
 		{name: signals.Provider, value: 0.5, under: 0.75, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			booted(t, pool, lt)
-			lt.report(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000, "", false)
+			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000)
 		}, absent: []absentCase{{cause: "no token limit", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
 			lt.admission.UseModelRequests(0, nil)
 			booted(t, pool, lt)
-			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000, "")
-		}}}},
-		{name: signals.Refusals, value: 4, under: 5, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
-			t.Helper()
-			booted(t, pool, lt)
-			refusals(t, pool, lt)
-		}, absent: []absentCase{{cause: "an hour not wholly kept", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
-			t.Helper()
-			// The daemon began keeping the requests 30 minutes ago, so the hour before holds
-			// minutes it did not keep.
-			lt.boot(t, pool, fixedNow.Add(-30*time.Minute), "acme-owner@example.invalid")
-			for i := range 5 {
-				lt.request(t, pool, fmt.Sprintf("r%d", i), fixedNow.Add(-time.Duration(20-i)*time.Minute), 0, claim.RefusalOwn)
-			}
-		}}, {cause: "a host that cannot report its retried 429s", arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
-			t.Helper()
-			// The four refusals stand, and an answered request of a host that cannot report the
-			// 429s its transport retried ended 50 minutes ago, in the hour the refusals read.
-			booted(t, pool, lt)
-			refusals(t, pool, lt)
-			lt.report(t, pool, "unreported", fixedNow.Add(-50*time.Minute), 100, "", false)
+			lt.request(t, pool, "r1", fixedNow.Add(-30*time.Second), 3000)
 		}}}},
 		{name: signals.Kills, value: 2, under: 3, arrange: func(t *testing.T, pool *pgxpool.Pool, lt *liveTest) {
 			t.Helper()
@@ -431,10 +389,10 @@ func startedOf(t *testing.T, pool *pgxpool.Pool, keys []string) []string {
 	return started
 }
 
-// The gate's table has a row for each of the six series, the provider's headroom and its refusals
-// each named by its own part, for each cause for which a part of the provider reads as not
-// recorded (providerCoverage), and for each hold of the line plan section 4 keeps with admission
-// by signals on. It fails where one lacks a row.
+// The gate's table has a row for each of the five series, the provider's named by its headroom,
+// for each cause for which the provider's headroom reads as not recorded (providerCoverage), and
+// for each hold of the line plan section 4 keeps with admission by signals on. It fails where one
+// lacks a row, and where a row is of no series the live daemon computes.
 func TestSignalGateInventory(t *testing.T) {
 	series := map[string]bool{}
 	parts := map[string]bool{}
@@ -446,12 +404,16 @@ func TestSignalGateInventory(t *testing.T) {
 			parts[signal+"/"+part+": "+absent.cause] = true
 		}
 	}
-	for _, name := range signals.Names() {
+	for _, name := range store.LiveSeries() {
 		if !series[name] {
 			t.Errorf("the series %s has no row of TestLiveSignalGate/series", name)
 		}
+		delete(series, name)
 	}
-	for _, part := range append([]string{"provider/headroom", "provider/refusals"}, providerCoverage...) {
+	for name := range series {
+		t.Errorf("the row %s of TestLiveSignalGate/series is of no series the live daemon computes", name)
+	}
+	for _, part := range append([]string{"provider/headroom"}, providerCoverage...) {
 		if !parts[part] {
 			t.Errorf("the provider's part %s has no row of TestLiveSignalGate/series", part)
 		}
@@ -468,7 +430,7 @@ func TestSignalGateInventory(t *testing.T) {
 }
 
 // With admission by signals on, the live signals decide each start below P0 at an event's pass, by
-// the six series as the store keeps their inputs, and with it off nothing changes (plan section 4,
+// the five series as the store keeps their inputs, and with it off nothing changes (plan section 4,
 // the table's rows of TestLiveSignalGate).
 func TestLiveSignalGate(t *testing.T) {
 	// off: admission by signals off, with a limit set and the kills over it, starts the waiting root
@@ -487,7 +449,7 @@ func TestLiveSignalGate(t *testing.T) {
 			t.Errorf("the passes logged starts a signal held %q, want none while admission by signals is off", held)
 		}
 	})
-	// series: each of the six series at its limit holds the start below P0 and logs it with the
+	// series: each of the five series at its limit holds the start below P0 and logs it with the
 	// series, its value and its limit, the holder keeps its slot, and a P0 root still starts; the
 	// series under its limit, with no limit, or not recorded holds nothing.
 	t.Run("series", func(t *testing.T) {

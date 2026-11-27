@@ -34,8 +34,8 @@ const signalSettingInvalid = "SIGNAL_SETTING_INVALID"
 
 // ProjectSignalsRequest is the controller's POST /legion/v1/project/signals: its grant, the action
 // (on, off, set-limit or clear-limit), for a limit the series by its signal and, for the provider,
-// its part (headroom or refusals), the limit to set, and the person's cited reason, which every
-// action requires. It names no project: the daemon acts on its own.
+// its part (headroom), the limit to set, and the person's cited reason, which every action
+// requires. It names no project: the daemon acts on its own.
 type ProjectSignalsRequest struct {
 	GrantID string   `json:"grantId"`
 	Action  string   `json:"action"`
@@ -163,7 +163,7 @@ func signalSettingChangeOf(req OperatorSignalsRequest) (store.SignalSettingChang
 	case SignalsSetLimit, SignalsClearLimit:
 		series, named := store.SignalSeries(req.Signal, req.Part)
 		if !named {
-			return change, fmt.Sprintf("signal %q with part %q names no series: the signals are idle, queue, provider (part headroom or refusals), kills and approvals, and only provider takes a part", req.Signal, req.Part)
+			return change, fmt.Sprintf("signal %q with part %q names no series: the signals are idle, queue, provider (part headroom), kills and approvals, and only provider takes a part", req.Signal, req.Part)
 		}
 		change.Setting = series
 		if req.Action == SignalsClearLimit {

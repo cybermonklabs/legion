@@ -2272,9 +2272,7 @@ test("every request the plugin sends parses and names its required fields", () =
     ],
     ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
     // A host's report of model requests, under the claim's secret and under the launch's boot
-    // token: an answered request with its uncached input tokens, and a refused one classed own.
-    // The Oh My Pi plugin's batch says its host does not report the 429s its transport retries,
-    // and the bridge's that it does.
+    // token: a request with its uncached input tokens, and one whose host did not learn them.
     [
       "model requests",
       LegionModelRequestsRequest,
@@ -2296,10 +2294,8 @@ test("every request the plugin sends parses and names its required fields", () =
             session: "ses_subagent_208",
             model: "standin-model",
             endedAt: "2026-11-25T21:53:19Z",
-            refusal: "own",
           },
         ],
-        retriedRefusalsReported: false,
       },
     ],
     [
@@ -2316,7 +2312,6 @@ test("every request the plugin sends parses and names its required fields", () =
             endedAt: "2026-11-25T21:53:17Z",
           },
         ],
-        retriedRefusalsReported: true,
       },
     ],
     [

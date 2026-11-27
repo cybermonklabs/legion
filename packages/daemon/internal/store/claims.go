@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -311,10 +310,14 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // putClaim writes claim c inside tx, the transaction of a claim write and whatever goes with it,
 // and queues the publication of c's issue's role sessions in the same transaction when the write
 // changes the session the row names as the holder of c's role (storedRoleHolder, roleHolder,
-// EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves a
-// state that holds it — retired, failed, suspended, or launching again. A write that changes no
-// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders), such as
-// a write of a claim of another project's issue, whose row only that project's daemon runs.
+// EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves the
+// states that hold it (supervise.HoldsRole) — it retires, fails, or is suspended by any source but
+// the idle release's — or comes back to them. The idle release's suspension and a pause's stop,
+// which both suspend as released, keep the session and its role, and so does the launch that
+// resumes that session, so none of them queues anything. A write that changes no holder queues
+// nothing, and neither does a write that can queue none
+// (queuesRoleHolders), such as a write of a claim of another project's issue, whose row only that
+// project's daemon runs.
 // A write that queued the publication wakes it once tx commits (wakeRoleHolders), as the hook of
 // tx's commit: no caller wakes it. Every claim write goes through here — PutClaim,
 // PutClaimAndDelivery, RetireDelivery, ReleaseHolds, AdmitClaim, and the pause's stop through
@@ -338,7 +341,7 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 	if err := keepClaimTurn(ctx, tx, c, stamp); err != nil {
 		return err
 	}
-	if !queues || roleHolder(c.State, c.Session) == stored {
+	if !queues || roleHolder(c.State, c.SuspendedBy, c.Session) == stored {
 		return nil
 	}
 	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, s.clockNow().UTC())
@@ -353,8 +356,9 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 
 // claimTurnsKept is how long a turn's row outlives its end: a new turn of a claim deletes the
 // project's turns that ended longer ago than this before it began, since the provider's record is
-// read no further back than its refusals' hour and the minute before it (signals.RefusalSpan).
-const claimTurnsKept = signals.RefusalSpan + time.Minute
+// read no further back than the hour of minutes the state shows and the minute before it
+// (claim.ModelRequestsSpan).
+const claimTurnsKept = claim.ModelRequestsSpan + time.Minute
 
 // keepClaimTurn keeps c's turn edges, as this write carries them, in claim_turns, one row per
 // turn: a claim in a turn (working, its last turn's start after its last turn's end) has the row

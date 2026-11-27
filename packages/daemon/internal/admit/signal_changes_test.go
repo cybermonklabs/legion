@@ -30,22 +30,22 @@ type changeSeries struct {
 	step, base, atStep, below, downBelow float64
 }
 
-// changeRows is one row for each series of signals.Names(), which TestSignalChangeInventory holds
-// to the writer's table.
+// changeRows is one row for each series of store.LiveSeries(), which TestSignalChangeInventory
+// holds to the writer's table.
 var changeRows = map[string]changeSeries{
 	signals.Idle:      {step: 0.05, base: 0.30, atStep: 0.35, below: 0.34, downBelow: 0.31},
 	signals.Queue:     {step: 0.25, base: 0.10, atStep: 0.35, below: 0.34, downBelow: 0.11},
 	signals.Provider:  {step: 0.10, base: 0.20, atStep: 0.30, below: 0.29, downBelow: 0.21},
-	signals.Refusals:  {step: 5, base: 3, atStep: 8, below: 7, downBelow: 4},
 	signals.Kills:     {step: 5, base: 3, atStep: 8, below: 7, downBelow: 4},
 	signals.Approvals: {step: 5, base: 3, atStep: 8, below: 7, downBelow: 4},
 }
 
-// Every series of signals.Names() is a row of the writer's table at S6's step (idle 0.05, queue
-// 0.25 hours, the provider's headroom 0.10, its refusals, the kills and the approvals 5), and a row
-// of changeRows, which every row of TestSignalChanges runs over: a series with no row fails here.
+// Every series of store.LiveSeries() is a row of the writer's table at S6's step (idle 0.05, queue
+// 0.25 hours, the provider's headroom 0.10, the kills and the approvals 5), and a row of
+// changeRows, which every row of TestSignalChanges runs over: a series with no row fails here, and
+// so does a row of the writer's of a series the live daemon does not compute.
 func TestSignalChangeInventory(t *testing.T) {
-	for _, name := range signals.Names() {
+	for _, name := range store.LiveSeries() {
 		row, held := changeRows[name]
 		if !held {
 			t.Errorf("the series %s has no row of changeRows", name)
@@ -55,8 +55,8 @@ func TestSignalChangeInventory(t *testing.T) {
 			t.Errorf("the writer's step of %s is %v (set %t), want S6's %v", name, got, set, row.step)
 		}
 	}
-	if len(signalSteps) != len(signals.Names()) || len(changeRows) != len(signals.Names()) {
-		t.Errorf("the writer's table holds %d series and changeRows %d, want the %d of signals.Names()", len(signalSteps), len(changeRows), len(signals.Names()))
+	if len(signalSteps) != len(store.LiveSeries()) || len(changeRows) != len(store.LiveSeries()) {
+		t.Errorf("the writer's table holds %d series and changeRows %d, want the %d of store.LiveSeries()", len(signalSteps), len(changeRows), len(store.LiveSeries()))
 	}
 }
 
@@ -168,7 +168,7 @@ func TestSignalChanges(t *testing.T) {
 	// first: the first value of each series writes, the headroom's at a pass that moves a slot, and
 	// so does a first value the daemon cannot compute, with its reason.
 	t.Run("first", func(t *testing.T) {
-		for _, name := range signals.Names() {
+		for _, name := range store.LiveSeries() {
 			row := changeRows[name]
 			expect(t, name+"'s first value", pass(nil, true, true, seriesAt(name, row.base, nil, true)), valueWord(name, row.base))
 			expect(t, name+"'s first value not computed", pass(nil, true, true, absentAt(name, "no input", nil)), absentWord(name, "no input"))
@@ -177,7 +177,7 @@ func TestSignalChanges(t *testing.T) {
 	// coverage: a change from a value to one the daemon cannot compute writes, with the reason and
 	// no value, and so does the way back, with the value and no reason.
 	t.Run("coverage", func(t *testing.T) {
-		for _, name := range signals.Names() {
+		for _, name := range store.LiveSeries() {
 			row := changeRows[name]
 			expect(t, name+" losing its input", pass(written(name, &row.base, false), true, true, absentAt(name, "the input stopped", nil)),
 				absentWord(name, "the input stopped"))
@@ -190,7 +190,7 @@ func TestSignalChanges(t *testing.T) {
 	// float holds just under it) and one above it write, in both directions, and the move is from
 	// the last value written, never from a value a pass read and did not write.
 	t.Run("step", func(t *testing.T) {
-		for _, name := range signals.Names() {
+		for _, name := range store.LiveSeries() {
 			row := changeRows[name]
 			from := written(name, &row.base, false)
 			expect(t, name+" moved below its step", pass(from, true, true, seriesAt(name, row.below, nil, true)))
@@ -228,7 +228,7 @@ func TestSignalChanges(t *testing.T) {
 	// though the value moved by less than its step and, for the headroom, though no slot moved:
 	// admission turned on, turned off, the input lost, and the limit raised.
 	t.Run("forced-value", func(t *testing.T) {
-		for _, name := range signals.Names() {
+		for _, name := range store.LiveSeries() {
 			row := changeRows[name]
 			binding := limit(row.base)
 			below := row.base + row.step/10
@@ -242,21 +242,21 @@ func TestSignalChanges(t *testing.T) {
 			expect(t, name+" under a limit raised above it", pass(held, false, true, seriesAt(name, below, limit(row.base+row.step), true)),
 				valueWord(name, below), holdsWord(name, false))
 		}
-		// All six series starting to hold at one pass write twelve entries, within S6's 19 (six
+		// All five series starting to hold at one pass write ten entries, within S6's 16 (five
 		// series, three kinds and the switch); the switch and the limits are their change's own.
 		var all []SeriesReading
-		for _, name := range signals.Names() {
+		for _, name := range store.LiveSeries() {
 			all = append(all, seriesAt(name, changeRows[name].base, limit(changeRows[name].base), true))
 		}
-		if got := passChanges(LiveReading{At: fixedNow, On: true, Series: all}, false, nil); len(got) != 12 || len(got) > 19 {
-			t.Errorf("every series starting to hold wrote %d entries, want 12, at most 19: %q", len(got), entryWords(got))
+		if got := passChanges(LiveReading{At: fixedNow, On: true, Series: all}, false, nil); len(got) != 10 || len(got) > 16 {
+			t.Errorf("every series starting to hold wrote %d entries, want 10, at most 16: %q", len(got), entryWords(got))
 		}
 	})
 	// no-extras: a pass that computes what the record holds writes nothing, at the same moment or
 	// later, since no clock writes; two passes close together that each qualify each write, since
 	// no rate limit holds an entry.
 	t.Run("no-extras", func(t *testing.T) {
-		for _, name := range signals.Names() {
+		for _, name := range store.LiveSeries() {
 			row := changeRows[name]
 			from := written(name, &row.base, true)
 			again := seriesAt(name, row.base, limit(row.base), true)
@@ -272,7 +272,7 @@ func TestSignalChanges(t *testing.T) {
 	// off: while admission by signals is off the passes write each value that qualifies and no hold
 	// of 1, whatever the limits, and the line starts as it always did.
 	t.Run("off", func(t *testing.T) {
-		for _, name := range signals.Names() {
+		for _, name := range store.LiveSeries() {
 			row := changeRows[name]
 			expect(t, name+"'s first value while off", pass(nil, true, false, seriesAt(name, row.base, limit(row.base), false)), valueWord(name, row.base))
 		}
@@ -353,10 +353,16 @@ func TestSignalChanges(t *testing.T) {
 			}
 			before = after
 		}
-		refused := settingChange(signals.Kills, limit(0), operator, at.Add(7*time.Second), "a limit of 0")
-		if _, err := intake.ApplyFact(context.Background(), pool, "api", "setting-refused", intake.SignalSettingChanged{Change: refused},
-			Handlers(record.NewStore(), acmeProject, lt.admission.engine, lt.admission)...); err == nil {
-			t.Fatal("a limit of 0 was written, want it refused")
+		// A limit of 0 is outside the kills' range, and the live daemon computes no series of the
+		// provider's refusals (store.LiveSeries), so neither is a setting it keeps.
+		for i, refused := range []store.SignalSettingChange{
+			settingChange(signals.Kills, limit(0), operator, at.Add(7*time.Second), "a limit of 0"),
+			settingChange(signals.Refusals, limit(2), operator, at.Add(7*time.Second), "a limit of the provider's refusals"),
+		} {
+			if _, err := intake.ApplyFact(context.Background(), pool, "api", fmt.Sprintf("setting-refused-%d", i), intake.SignalSettingChanged{Change: refused},
+				Handlers(record.NewStore(), acmeProject, lt.admission.engine, lt.admission)...); err == nil {
+				t.Fatalf("%s was written, want it refused", refused.Set.Reason)
+			}
 		}
 		failing := handlerOf(func(context.Context, pgx.Tx, intake.Fact) (intake.Result, error) {
 			return intake.Result{}, errors.New("the transaction fails after admission")

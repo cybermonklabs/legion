@@ -56,7 +56,7 @@ const StepRecordsRollForward = 20261117064152
 // comment among the migration's statements. The paragraph is a block when its last line ends with
 // ";"; a header whose last paragraph is prose, and a version not embedded, are errors, so no caller
 // runs an empty block, or prose, against a store. That test is all this reads: what the block
-// does is held by the test of the migration that runs it, where one does.
+// does is held by the test of the migration that runs it.
 //
 // The headers of these migrations carry a way back by that rule:
 //
@@ -82,14 +82,10 @@ const StepRecordsRollForward = 20261117064152
 //   - 20261126025927_approval_asks.up.sql
 //   - 20261126042544_model_requests.up.sql
 //   - 20261126055316_signal_deadlines.up.sql
-//   - 20261126070017_model_requests_retried_refusals.up.sql
 //   - 20261126072843_signal_settings.up.sql
 //
 // internal/textcheck's TestTheWayBackDocNamesEveryHeaderThatCarriesOne holds this list to the
-// headers by name: it reads each migration file name in this comment as a name of the list. The
-// header of 20261115194357_project_pause.up.sql gives the three statements of its rollback, each as
-// a paragraph of its own. So this answers the last of them alone. No test or tool runs that
-// paragraph, and docs/kubernetes.md gives all three.
+// headers by name: it reads each migration file name in this comment as a name of the list.
 func WayBack(version int) (string, error) {
 	all, err := All()
 	if err != nil {

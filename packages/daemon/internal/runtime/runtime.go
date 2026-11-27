@@ -919,6 +919,19 @@ type PluginInstall struct {
 	Contract          int
 }
 
+// PluginScope is the npm scope of the two plugins a launch installs, PiLegionPackage and
+// PiEnvoyPackage (runtime/sandbox's installBlock). A registry tarball URL of one holds it as a
+// path segment of its own, and it is the one segment holding an "@" a plugin source's URL may
+// carry (config's readPluginSource): any other is where a credential pasted as the URL's user
+// lands.
+const PluginScope = "@sjawhar"
+
+// PiLegionPackage and PiEnvoyPackage are the npm names of the plugins PluginInstall pins.
+const (
+	PiLegionPackage = PluginScope + "/pi-legion"
+	PiEnvoyPackage  = PluginScope + "/pi-envoy"
+)
+
 // PromptParts are the pieces of the agent's system prompt, in the one order the runtime
 // concatenates them into exactly one text (ComposePrompt), which the agent reads from the one
 // file its one `--append-system-prompt` names — one, because a second occurrence of the flag
@@ -1079,35 +1092,6 @@ func (id GitIdentity) Env() map[string]string {
 // none. An operator may not set it (PaneVariableRefusal, the pod's own list), and it is no
 // runtime-owned name, since ValidateSpawnSpec refuses a spec.Env name a runtime owns.
 const RoleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"
-
-// OwnRefusalVariable and ProviderRefusalVariable are the launch environment's names of a project's
-// two refusal patterns (`signal_own_refusal_pattern` and `signal_provider_refusal_pattern`,
-// config.SignalProvider), by which the host of a session — the Oh My Pi plugin, the Claude Code
-// bridge — classes each refused model request it reports: the project's own limit's where the own
-// pattern matches, else the provider's where the provider's does, else unknown. Every launch of a
-// role and of the controller carries each pattern the project sets (RefusalEnvironment, which the
-// daemon's SpawnSpec merges into spec.Env and `legion controller start` into the operator's
-// controller's environment), and none it leaves unset. An operator may not set either
-// (PaneVariableRefusal, the pod's own list), and neither is a runtime-owned name, since
-// ValidateSpawnSpec refuses a spec.Env name a runtime owns.
-const (
-	OwnRefusalVariable      = "LEGION_SIGNAL_OWN_REFUSAL"
-	ProviderRefusalVariable = "LEGION_SIGNAL_PROVIDER_REFUSAL"
-)
-
-// RefusalEnvironment is the launch environment's pair of each pattern of own and provider that is
-// set, by OwnRefusalVariable and ProviderRefusalVariable; a pattern that is unset sends no
-// variable.
-func RefusalEnvironment(own, provider string) map[string]string {
-	env := map[string]string{}
-	if own != "" {
-		env[OwnRefusalVariable] = own
-	}
-	if provider != "" {
-		env[ProviderRefusalVariable] = provider
-	}
-	return env
-}
 
 // roleIdentity is one role's identity in the table, as the JSON spells it.
 type roleIdentity struct {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -103,7 +104,7 @@ func newRequestsRig(t *testing.T) *requestsRig {
 // gives it the project's file (config.Project.Provider).
 func (r *requestsRig) configure(limit int64, models string) {
 	r.t.Helper()
-	pattern, err := config.SharedPattern(models)
+	pattern, err := regexp.Compile(models)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -213,25 +214,12 @@ func (r *requestsRig) report(h host, requests ...claim.ModelRequest) (int, strin
 	})
 }
 
-// batch is h's host sending requests in one batch, as its own secret's caller, with the body's
-// retriedRefusalsReported as said gives it: the member set to said[0], as the Oh My Pi plugin
-// sets it, or no member at all where said is empty, as a host of a contract before it sends.
-func (r *requestsRig) batch(h host, requests []claim.ModelRequest, said ...bool) (int, string) {
-	r.t.Helper()
-	body := map[string]any{"claimToken": h.token, "sessionId": h.session, "secret": h.secret, "generation": h.generation, "requests": requests}
-	if len(said) > 0 {
-		body["retriedRefusalsReported"] = said[0]
-	}
-	return r.post(r.server, "/legion/v1/claims/model-requests", body)
-}
-
 // bridgeReport is the Claude Code bridge of h's launch sending requests in one batch, by its boot
-// token, saying that its host reports each 429 its transport retries, as every batch of the bridge
-// does (claudebridge's call).
+// token (claudebridge's call).
 func (r *requestsRig) bridgeReport(h host, requests ...claim.ModelRequest) (int, string) {
 	r.t.Helper()
 	return r.post(r.server, "/legion/v1/claims/model-requests", claim.ModelRequestsRequest{
-		BootCaller: claim.BootCaller{BootToken: h.bootToken}, Generation: h.generation, Requests: requests, RetriedRefusalsReported: true})
+		BootCaller: claim.BootCaller{BootToken: h.bootToken}, Generation: h.generation, Requests: requests})
 }
 
 // kept requires the answer of a report to be 200 naming exactly ids as kept.
@@ -262,10 +250,10 @@ func (r *requestsRig) minutes(from, to time.Time) record.ProviderMinutes {
 	return minutes
 }
 
-// provider is the provider's headroom and refusals at at as admission's live signals read them
-// (admit.LiveSignals, registered as the daemon registers it, its hosts reporting their requests
-// from the admission-signals contract on), admission by signals on with limits.
-func (r *requestsRig) provider(at time.Time, limits map[string]float64) (headroom, refusals admit.SeriesReading) {
+// provider is the provider's headroom at at as admission's live signals read it (admit.LiveSignals,
+// registered as the daemon registers it, its hosts reporting their requests from the
+// admission-signals contract on), admission by signals on with limits.
+func (r *requestsRig) provider(at time.Time, limits map[string]float64) admit.SeriesReading {
 	r.t.Helper()
 	live := admit.NewLiveSignals(r.admission, signalSettings(limits), api.ModelRequestsContract())
 	var reading admit.LiveReading
@@ -277,14 +265,12 @@ func (r *requestsRig) provider(at time.Time, limits map[string]float64) (headroo
 		r.t.Fatalf("read the live signals at %s: %v", at.Format(time.TimeOnly), err)
 	}
 	for _, series := range reading.Series {
-		switch series.Name {
-		case signals.Provider:
-			headroom = series
-		case signals.Refusals:
-			refusals = series
+		if series.Name == signals.Provider {
+			return series
 		}
 	}
-	return headroom, refusals
+	r.t.Fatalf("the live signals read no headroom: %+v", reading.Series)
+	return admit.SeriesReading{}
 }
 
 // wantMinutes requires the record over the minutes of want, from its first to its last, to hold
@@ -306,27 +292,23 @@ func (r *requestsRig) wantMinutes(from, to int, want map[int]signals.Minute) {
 }
 
 // rows is every request the store keeps of the project, by id, as
-// `<id> session=<s> model=<m> tokens=<n|none> refusal=<class|none> counted=<bool>`.
+// `<id> session=<s> model=<m> tokens=<n|none> counted=<bool>`.
 func (r *requestsRig) rows() []string {
 	r.t.Helper()
-	rows, err := r.pool.Query(r.ctx, `select id, session, model, uncached, refusal, counted from model_requests where project = $1 order by id`, requestsProject)
+	rows, err := r.pool.Query(r.ctx, `select id, session, model, uncached, counted from model_requests where project = $1 order by id`, requestsProject)
 	if err != nil {
 		r.t.Fatalf("read the kept requests: %v", err)
 	}
 	kept, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
 		var id, session, model string
 		var uncached *int64
-		var refusal *string
 		var counted bool
-		err := row.Scan(&id, &session, &model, &uncached, &refusal, &counted)
-		tokens, class := "none", "none"
+		err := row.Scan(&id, &session, &model, &uncached, &counted)
+		tokens := "none"
 		if uncached != nil {
 			tokens = fmt.Sprint(*uncached)
 		}
-		if refusal != nil {
-			class = *refusal
-		}
-		return fmt.Sprintf("%s session=%s model=%s tokens=%s refusal=%s counted=%t", id, session, model, tokens, class, counted), err
+		return fmt.Sprintf("%s session=%s model=%s tokens=%s counted=%t", id, session, model, tokens, counted), err
 	})
 	if err != nil {
 		r.t.Fatalf("read the kept requests: %v", err)
@@ -335,9 +317,9 @@ func (r *requestsRig) rows() []string {
 }
 
 // request is one model request of session, of model, ended at, with tokens uncached input tokens
-// (none for a negative count) and refused by refusal ("" for an answered one).
-func request(id, session, model string, at time.Time, tokens int64, refusal claim.RefusalClass) claim.ModelRequest {
-	req := claim.ModelRequest{ID: id, Session: session, Model: model, EndedAt: at, Refusal: refusal}
+// (none for a negative count).
+func request(id, session, model string, at time.Time, tokens int64) claim.ModelRequest {
+	req := claim.ModelRequest{ID: id, Session: session, Model: model, EndedAt: at}
 	if tokens >= 0 {
 		req.UncachedInputTokens = &tokens
 	}
@@ -347,12 +329,10 @@ func request(id, session, model string, at time.Time, tokens int64, refusal clai
 // Each model request a host reports through the daemon's own route is kept once, by the
 // claim, its launch generation and its stable id, in the UTC minute it ended in, and the
 // provider's record of a range of minutes answers each minute's uncached input tokens of the
-// models the project counts, its refusals by the project's own limit (unknown ones among them,
-// as the replay counts them) and by the provider, and the limit in force when it began. A minute
-// some turn of a host that reports no requests overlaps is absent, never zero; a minute every
-// host of which reports its requests is held, zero where none ran. The provider's refusals are
-// not recorded while a request of a host that does not report the 429s its transport retries is
-// in the hour they read, and are recorded again, at a crossing the timer sees, once it leaves it.
+// models the project counts and the limit in force when it began. A minute some turn of a host
+// that reports no requests overlaps is absent, never zero; a minute every host of which reports
+// its requests is held, zero where none ran. The headroom reads the tokens of every host alike,
+// and reads as missing input while a turn of a host that reports none overlaps its minute.
 func TestSignalRequestReports(t *testing.T) {
 	t.Parallel()
 	opus := "claude-opus-5-5"
@@ -363,8 +343,8 @@ func TestSignalRequestReports(t *testing.T) {
 		// One batch of two requests that end either side of a minute's end: each counts in its
 		// own minute, by the moment it ended, and in neither the batch's arrival nor the other's.
 		status, answer := r.report(role,
-			request("req-1", role.session, opus, minute(3).Add(59*time.Second+900*time.Millisecond), 1200, ""),
-			request("req-2", role.session, opus, minute(4).Add(100*time.Millisecond), 800, ""))
+			request("req-1", role.session, opus, minute(3).Add(59*time.Second+900*time.Millisecond), 1200),
+			request("req-2", role.session, opus, minute(4).Add(100*time.Millisecond), 800))
 		r.kept(status, answer, "req-1", "req-2")
 		r.wantMinutes(2, 6, map[int]signals.Minute{
 			2: {Limit: requestsLimit}, 3: {Uncached: 1200, Limit: requestsLimit}, 4: {Uncached: 800, Limit: requestsLimit}, 5: {Limit: requestsLimit},
@@ -375,8 +355,8 @@ func TestSignalRequestReports(t *testing.T) {
 		r := newRequestsRig(t)
 		role := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
 		first := []claim.ModelRequest{
-			request("req-a", role.session, opus, minute(3).Add(10*time.Second), 1000, ""),
-			request("req-b", role.session, opus, minute(3).Add(20*time.Second), 2000, ""),
+			request("req-a", role.session, opus, minute(3).Add(10*time.Second), 1000),
+			request("req-b", role.session, opus, minute(3).Add(20*time.Second), 2000),
 		}
 		// The batch sent again, as a host retries one whose answer it never read, and a batch
 		// that carries one id the daemon holds already beside a new one, as a host that sends the
@@ -385,9 +365,9 @@ func TestSignalRequestReports(t *testing.T) {
 		r.kept(status, answer, "req-a", "req-b")
 		status, answer = r.report(role, first...)
 		r.kept(status, answer, "req-a", "req-b")
-		status, answer = r.report(role, first[1], request("req-c", role.session, opus, minute(3).Add(30*time.Second), 400, claim.RefusalProvider))
+		status, answer = r.report(role, first[1], request("req-c", role.session, opus, minute(3).Add(30*time.Second), 400))
 		r.kept(status, answer, "req-b", "req-c")
-		r.wantMinutes(3, 4, map[int]signals.Minute{3: {Uncached: 3400, Limit: requestsLimit, Provider: 1}})
+		r.wantMinutes(3, 4, map[int]signals.Minute{3: {Uncached: 3400, Limit: requestsLimit}})
 		if got := len(r.rows()); got != 3 {
 			t.Fatalf("the store keeps %d requests, want the 3 ids reported: %q", got, r.rows())
 		}
@@ -398,39 +378,34 @@ func TestSignalRequestReports(t *testing.T) {
 		role := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
 		at := func(s int) time.Time { return minute(5).Add(time.Duration(s) * time.Second) }
 		status, answer := r.report(role,
-			request("clean", role.session, opus, at(1), 1500, ""),
-			request("own", role.session, opus, at(2), -1, claim.RefusalOwn),
-			request("provider", role.session, opus, at(3), -1, claim.RefusalProvider),
-			request("unknown", role.session, opus, at(4), 300, claim.RefusalUnknown),
-			request("untold", role.session, opus, at(5), -1, ""),
-			request("other-model", role.session, "gpt-9", at(6), 7000, ""),
-			request("other-model-refused", role.session, "gpt-9", at(7), -1, claim.RefusalProvider))
-		r.kept(status, answer, "clean", "own", "provider", "unknown", "untold", "other-model", "other-model-refused")
+			request("clean", role.session, opus, at(1), 1500),
+			request("small", role.session, opus, at(2), 300),
+			request("untold", role.session, opus, at(5), -1),
+			request("other-model", role.session, "gpt-9", at(6), 7000))
+		r.kept(status, answer, "clean", "small", "untold", "other-model")
 		// The tokens are the uncached input of the requests of the models the project counts, a
-		// request whose host learnt none counting none; an unknown refusal counts as the project's
-		// own, and a refusal of a model whose tokens count nowhere counts all the same.
-		r.wantMinutes(5, 6, map[int]signals.Minute{5: {Uncached: 1800, Limit: requestsLimit, Own: 2, Provider: 2}})
-		// Storage keeps the unknown refusal apart from the own one, and a request of another model
-		// is kept, counted nowhere.
+		// request whose host learnt none counting none.
+		r.wantMinutes(5, 6, map[int]signals.Minute{5: {Uncached: 1800, Limit: requestsLimit}})
+		// A request of another model is kept, counted nowhere.
 		want := []string{
-			"clean session=ses-implementer model=claude-opus-5-5 tokens=1500 refusal=none counted=true",
-			"other-model session=ses-implementer model=gpt-9 tokens=7000 refusal=none counted=false",
-			"other-model-refused session=ses-implementer model=gpt-9 tokens=none refusal=provider counted=false",
-			"own session=ses-implementer model=claude-opus-5-5 tokens=none refusal=own counted=true",
-			"provider session=ses-implementer model=claude-opus-5-5 tokens=none refusal=provider counted=true",
-			"unknown session=ses-implementer model=claude-opus-5-5 tokens=300 refusal=unknown counted=true",
-			"untold session=ses-implementer model=claude-opus-5-5 tokens=none refusal=none counted=true",
+			"clean session=ses-implementer model=claude-opus-5-5 tokens=1500 counted=true",
+			"other-model session=ses-implementer model=gpt-9 tokens=7000 counted=false",
+			"small session=ses-implementer model=claude-opus-5-5 tokens=300 counted=true",
+			"untold session=ses-implementer model=claude-opus-5-5 tokens=none counted=true",
 		}
 		if got := r.rows(); !slices.Equal(got, want) {
 			t.Fatalf("the store keeps %q, want %q", got, want)
 		}
 		// A host reports the uncached input alone, fresh input and cache writes: a body naming
 		// the cache reads is refused whole, so nothing of them is ever counted, and so is a body
-		// carrying text of the request or a class the daemon does not know.
+		// carrying text of the request, or a member that an earlier build of this change's report
+		// named and this one does not: the route decodes every report strictly, so each is an
+		// unknown member like any other.
 		for _, body := range []string{
 			`{"claimToken":"%s","sessionId":"%s","secret":"%s","generation":%d,"requests":[{"id":"cached","session":"s","model":"claude-opus-5-5","endedAt":"2026-11-26T10:05:09Z","uncachedInputTokens":10,"cacheReadInputTokens":90000}]}`,
 			`{"claimToken":"%s","sessionId":"%s","secret":"%s","generation":%d,"requests":[{"id":"texted","session":"s","model":"claude-opus-5-5","endedAt":"2026-11-26T10:05:09Z","error":"rate limit exceeded"}]}`,
-			`{"claimToken":"%s","sessionId":"%s","secret":"%s","generation":%d,"requests":[{"id":"classed","session":"s","model":"claude-opus-5-5","endedAt":"2026-11-26T10:05:09Z","refusal":"quota"}]}`,
+			`{"claimToken":"%s","sessionId":"%s","secret":"%s","generation":%d,"requests":[{"id":"refused","session":"s","model":"claude-opus-5-5","endedAt":"2026-11-26T10:05:09Z","refusal":"own"}]}`,
+			`{"claimToken":"%s","sessionId":"%s","secret":"%s","generation":%d,"retriedRefusalsReported":true,"requests":[{"id":"retried","session":"s","model":"claude-opus-5-5","endedAt":"2026-11-26T10:05:09Z","uncachedInputTokens":10}]}`,
 		} {
 			if status, answer := r.post(r.server, "/legion/v1/claims/model-requests", []byte(fmt.Sprintf(body, role.token, role.session, role.secret, role.generation))); status != http.StatusBadRequest {
 				t.Errorf("a body %s was answered %d %s, want 400", body, status, answer)
@@ -449,18 +424,18 @@ func TestSignalRequestReports(t *testing.T) {
 		at := minute(7).Add(10 * time.Second)
 		// The role's own session, a subagent's session reported by the role's host, the Claude Code
 		// bridge's role by its boot token, and the controller's session: each counted once.
-		status, answer := r.report(role, request("role-1", role.session, opus, at, 100, ""), request("sub-1", "ses-subagent-7", opus, at, 200, ""))
+		status, answer := r.report(role, request("role-1", role.session, opus, at, 100), request("sub-1", "ses-subagent-7", opus, at, 200))
 		r.kept(status, answer, "role-1", "sub-1")
 		status, answer = r.post(r.server, "/legion/v1/claims/model-requests", claim.ModelRequestsRequest{
 			BootCaller: claim.BootCaller{BootToken: bridge.bootToken}, Generation: bridge.generation,
-			Requests: []claim.ModelRequest{request("bridge-1", "claude-session-9", opus, at, 400, "")}})
+			Requests: []claim.ModelRequest{request("bridge-1", "claude-session-9", opus, at, 400)}})
 		r.kept(status, answer, "bridge-1")
-		status, answer = r.report(controller, request("controller-1", controller.session, opus, at, 800, ""))
+		status, answer = r.report(controller, request("controller-1", controller.session, opus, at, 800))
 		r.kept(status, answer, "controller-1")
 		r.wantMinutes(7, 8, map[int]signals.Minute{7: {Uncached: 1500, Limit: requestsLimit}})
 
 		older := r.launch(claim.RoleReviewer, api.ModelRequestsContract()-1)
-		other := request("refused-1", role.session, opus, at, 5000, "")
+		other := request("refused-1", role.session, opus, at, 5000)
 		for _, tc := range []struct {
 			name   string
 			server *httptest.Server
@@ -507,7 +482,7 @@ func TestSignalRequestReports(t *testing.T) {
 		as := func(token claim.Token, session, secret string, generation uint64, id string) (int, string) {
 			return r.post(r.server, "/legion/v1/claims/model-requests", claim.ModelRequestsRequest{
 				AgentCaller: claim.AgentCaller{ClaimToken: token, SessionID: session, Secret: secret}, Generation: generation,
-				Requests: []claim.ModelRequest{request(id, session, opus, minute(6).Add(10*time.Second), 700, "")}})
+				Requests: []claim.ModelRequest{request(id, session, opus, minute(6).Add(10*time.Second), 700)}})
 		}
 		token := claim.ControllerToken("legion")
 		status, answer := as(token, session, secret, generation, "controller-op-1")
@@ -525,7 +500,7 @@ func TestSignalRequestReports(t *testing.T) {
 			}
 		}
 		r.wantMinutes(6, 7, map[int]signals.Minute{6: {Uncached: 700, Limit: requestsLimit}})
-		if got, want := r.rows(), []string{"controller-op-1 session=ses_operator_controller model=claude-opus-5-5 tokens=700 refusal=none counted=true"}; !slices.Equal(got, want) {
+		if got, want := r.rows(), []string{"controller-op-1 session=ses_operator_controller model=claude-opus-5-5 tokens=700 counted=true"}; !slices.Equal(got, want) {
 			t.Fatalf("the store keeps %q, want only the controller's report", got)
 		}
 	})
@@ -534,9 +509,9 @@ func TestSignalRequestReports(t *testing.T) {
 		r := newRequestsRig(t)
 		role := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
 		status, answer := r.report(role,
-			request("opus", role.session, opus, minute(2).Add(5*time.Second), 2500, ""),
-			request("sonnet", role.session, "claude-sonnet-5", minute(2).Add(6*time.Second), 500, ""),
-			request("excluded", role.session, "gpt-9", minute(2).Add(7*time.Second), 9000, ""))
+			request("opus", role.session, opus, minute(2).Add(5*time.Second), 2500),
+			request("sonnet", role.session, "claude-sonnet-5", minute(2).Add(6*time.Second), 500),
+			request("excluded", role.session, "gpt-9", minute(2).Add(7*time.Second), 9000))
 		r.kept(status, answer, "opus", "sonnet", "excluded")
 		// The daemon restarts at minute 10 with another limit and selector: each minute keeps the
 		// limit in force when it began, and a request kept from then on is counted by the new
@@ -545,8 +520,8 @@ func TestSignalRequestReports(t *testing.T) {
 		r.configure(9000, "^gpt-")
 		r.boot(2)
 		status, answer = r.report(role,
-			request("opus-later", role.session, opus, minute(11).Add(5*time.Second), 2500, ""),
-			request("gpt-later", role.session, "gpt-9", minute(11).Add(6*time.Second), 9000, ""))
+			request("opus-later", role.session, opus, minute(11).Add(5*time.Second), 2500),
+			request("gpt-later", role.session, "gpt-9", minute(11).Add(6*time.Second), 9000))
 		r.kept(status, answer, "opus-later", "gpt-later")
 		r.wantMinutes(2, 12, map[int]signals.Minute{
 			2: {Uncached: 3000, Limit: requestsLimit}, 3: {Limit: requestsLimit}, 4: {Limit: requestsLimit}, 5: {Limit: requestsLimit},
@@ -591,70 +566,33 @@ func TestSignalRequestReports(t *testing.T) {
 		// Before the boot that began keeping the requests, no minute is held.
 		r.wantMinutes(-3, 0, map[int]signals.Minute{})
 	})
-	// The Oh My Pi host gives an extension no event for a 429 its HTTP transport retries by
-	// itself, so it says its batches leave those refusals out, and while a request of its session
-	// is in the hour the refusals read they are not recorded, never counted short; the bridge
-	// reports each such 429 and says so, and its sessions leave them recorded. The headroom counts
-	// every host's tokens alike.
-	t.Run("retried-refusals", func(t *testing.T) {
+	// The headroom counts the tokens of every host alike, the Oh My Pi plugin's by its claim's
+	// secret and the Claude Code bridge's by its boot token, and reads as missing input while a
+	// turn of a host of a contract before the reports overlaps the minute it reads, never as
+	// zero tokens.
+	t.Run("headroom", func(t *testing.T) {
 		t.Parallel()
 		r := newRequestsRig(t)
 		omp := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
 		bridge := r.launch(claim.RoleTester, api.DaemonAPIVersion())
-		limits := map[string]float64{signals.Refusals: 1}
-		// The daemon began keeping the requests at minute 0, so the hour before minute 62 is whole.
+		older := r.launch(claim.RoleReviewer, api.ModelRequestsContract()-1)
+		limits := map[string]float64{signals.Provider: 1}
+		// The daemon began keeping the requests at minute 0, so the minute before minute 62 is whole.
 		r.now = minute(61).Add(15 * time.Second)
-		status, answer := r.bridgeReport(bridge, request("bridge-1", "claude-session-9", opus, minute(61).Add(10*time.Second), -1, claim.RefusalProvider))
-		r.kept(status, answer, "bridge-1")
-		if _, refusals := r.provider(minute(62).Add(5*time.Second), limits); !refusals.Value.Recorded || refusals.Value.Value != 1 || !refusals.Holds {
-			t.Fatalf("after the bridge's refused request the refusals read %+v (%q), want 1 recorded, at its limit", refusals.Value, refusals.Absent)
-		}
-		r.now = minute(65).Add(15 * time.Second)
-		status, answer = r.batch(omp, []claim.ModelRequest{request("omp-1", omp.session, opus, minute(65).Add(10*time.Second), 1200, "")}, false)
+		status, answer := r.report(omp, request("omp-1", omp.session, opus, minute(61).Add(10*time.Second), 1200))
 		r.kept(status, answer, "omp-1")
-		headroom, refusals := r.provider(minute(66).Add(5*time.Second), limits)
-		if !headroom.Value.Recorded || headroom.Value.Value != 0.2 {
-			t.Errorf("with the Oh My Pi host's request in the hour the headroom reads %+v (%q), want its 1200 tokens of 6000 recorded", headroom.Value, headroom.Absent)
+		status, answer = r.bridgeReport(bridge, request("bridge-1", "claude-session-9", opus, minute(61).Add(12*time.Second), 1800))
+		r.kept(status, answer, "bridge-1")
+		if headroom := r.provider(minute(62).Add(5*time.Second), limits); !headroom.Value.Recorded || headroom.Value.Value != 0.5 || headroom.Holds {
+			t.Errorf("with both hosts' requests in the minute before the headroom reads %+v holding %t (%q), want their 3000 tokens of 6000 recorded under the limit of 1",
+				headroom.Value, headroom.Holds, headroom.Absent)
 		}
-		if refusals.Value.Recorded || refusals.Holds || !strings.Contains(refusals.Absent, retriedRefusalsCause) {
-			t.Errorf("with the Oh My Pi host's request in the hour the refusals read %+v holding %t (%q), want not recorded because %s, holding nothing",
-				refusals.Value, refusals.Holds, refusals.Absent, retriedRefusalsCause)
-		}
-		// A refusal the bridge reports meanwhile is kept and keeps the refusals no less absent.
-		r.now = minute(100).Add(15 * time.Second)
-		status, answer = r.bridgeReport(bridge, request("bridge-2", "claude-session-9", opus, minute(100).Add(10*time.Second), -1, claim.RefusalOwn))
-		r.kept(status, answer, "bridge-2")
-		// The minute of the Oh My Pi host's last request leaves the hour the refusals read at
-		// minute 126, when they are recorded again: that end of the gap is their next crossing,
-		// at which the bridge's refusal of minute 100 holds the limit of 1.
-		if _, before := r.provider(minute(125).Add(59*time.Second), limits); before.Value.Recorded || !strings.Contains(before.Absent, retriedRefusalsCause) ||
-			!before.Due || !before.Next.Equal(minute(126)) {
-			t.Errorf("a second before minute 126 the refusals read %+v (%q), next crossing %s due %t, want not recorded with the crossing at minute 126",
-				before.Value, before.Absent, before.Next.Format(time.TimeOnly), before.Due)
-		}
-		if _, after := r.provider(minute(126), limits); !after.Value.Recorded || after.Value.Value != 1 || !after.Holds {
-			t.Errorf("at minute 126 the refusals read %+v holding %t (%q), want the bridge's one refusal recorded, at its limit", after.Value, after.Holds, after.Absent)
-		}
-	})
-	// A batch of a host of a contract before the member says nothing of the 429s its transport
-	// retries, which reads as a host that does not report them; an Oh My Pi host that says it
-	// does leaves the refusals recorded, as the bridge does.
-	t.Run("retried-refusals-untold", func(t *testing.T) {
-		t.Parallel()
-		r := newRequestsRig(t)
-		role := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
-		r.now = minute(61).Add(15 * time.Second)
-		status, answer := r.batch(role, []claim.ModelRequest{request("told-1", role.session, opus, minute(61).Add(10*time.Second), 300, "")}, true)
-		r.kept(status, answer, "told-1")
-		if _, refusals := r.provider(minute(62), nil); !refusals.Value.Recorded || refusals.Value.Value != 0 {
-			t.Fatalf("after a batch that says its host reports each retried 429 the refusals read %+v (%q), want 0 recorded", refusals.Value, refusals.Absent)
-		}
-		r.now = minute(70).Add(15 * time.Second)
-		status, answer = r.batch(role, []claim.ModelRequest{request("untold-1", role.session, opus, minute(70).Add(10*time.Second), 300, "")})
-		r.kept(status, answer, "untold-1")
-		if _, refusals := r.provider(minute(71), nil); refusals.Value.Recorded || !strings.Contains(refusals.Absent, retriedRefusalsCause) {
-			t.Errorf("after a batch that says nothing of the retried 429s the refusals read %+v (%q), want not recorded because %s",
-				refusals.Value, refusals.Absent, retriedRefusalsCause)
+		// A turn of the older host overlapping minute 70 leaves that minute absent, so the
+		// headroom at minute 71 reads no value and holds no start.
+		r.turn(older, minute(70).Add(20*time.Second), minute(70).Add(40*time.Second))
+		if headroom := r.provider(minute(71).Add(5*time.Second), limits); headroom.Value.Recorded || headroom.Holds || headroom.Absent == "" {
+			t.Errorf("with the older host's turn in the minute before the headroom reads %+v holding %t (%q), want missing input with a reason, holding nothing",
+				headroom.Value, headroom.Holds, headroom.Absent)
 		}
 	})
 	// A request that ended before the hour of minutes any read reaches again is answered kept, so
@@ -665,19 +603,15 @@ func TestSignalRequestReports(t *testing.T) {
 		r := newRequestsRig(t)
 		role := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
 		r.now = minute(90).Add(15 * time.Second)
-		status, answer := r.report(role, request("old", role.session, opus, minute(29).Add(59*time.Second), 500, ""),
-			request("fresh", role.session, opus, minute(90).Add(10*time.Second), 700, ""))
+		status, answer := r.report(role, request("old", role.session, opus, minute(29).Add(59*time.Second), 500),
+			request("fresh", role.session, opus, minute(90).Add(10*time.Second), 700))
 		r.kept(status, answer, "old", "fresh")
 		if got := r.rows(); len(got) != 1 || !strings.HasPrefix(got[0], "fresh ") {
 			t.Fatalf("the store keeps %q, want the fresh request alone", got)
 		}
 		// The same batch again is the fact already applied, answered the same.
-		status, answer = r.report(role, request("old", role.session, opus, minute(29).Add(59*time.Second), 500, ""),
-			request("fresh", role.session, opus, minute(90).Add(10*time.Second), 700, ""))
+		status, answer = r.report(role, request("old", role.session, opus, minute(29).Add(59*time.Second), 500),
+			request("fresh", role.session, opus, minute(90).Add(10*time.Second), 700))
 		r.kept(status, answer, "old", "fresh")
 	})
 }
-
-// retriedRefusalsCause is what the reason of the refusals not recorded names while a request of a
-// host that cannot report the 429s its transport retried is in the hour they read.
-const retriedRefusalsCause = "cannot report the 429s its transport retried"
