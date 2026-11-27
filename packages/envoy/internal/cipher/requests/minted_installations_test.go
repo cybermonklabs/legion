@@ -159,6 +159,7 @@ func TestAMintedInstallationsValueSplitsAsAGitHubAppValue(t *testing.T) {
 // keeps it, where strings.ToLower, which the release folded with before, would fold it onto "k"
 // and give it the slot of the ASCII login "kelvin-org".
 func TestAnInstallationsSlotIsTheOneTheProxyReadsForItsOwner(t *testing.T) {
+	t.Parallel()
 	const kelvin = "\u212aelvin-org"
 	if got := GitHubSlot("Acme-Org"); got != SlotGitHubPrefix+"acme-org" {
 		t.Fatalf("GitHubSlot(Acme-Org) = %q; want %q", got, SlotGitHubPrefix+"acme-org")
