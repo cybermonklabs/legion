@@ -24,7 +24,13 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
-import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
+import {
+  absolutePositionToRelativePosition,
+  prosemirrorJSONToYXmlFragment,
+  yCursorPlugin,
+  ySyncPluginKey,
+} from "y-prosemirror";
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protocols/awareness";
 import * as Y from "yjs";
 
 import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
@@ -3249,9 +3255,12 @@ test("a focus the editor drops while the reader writes comes back at their caret
 // The editor can redraw its text while the editable has no focus - the words the reader's caret
 // was in drawn anew - and the caret's points are gone then. The focus came back with no caret put
 // in the editor, and the next key went where the browser puts the caret in an editable it focuses
-// (in Chromium, the editable's start, outside the node's block). It comes back at the start of
-// the node's block instead, as the editor's own in the task that puts it there. The frames are
-// held, so the words are drawn anew before the frame that gives the focus back.
+// (in Chromium, the editable's start, outside the node's block). Where the editor keeps no caret
+// of its own in the node's block - this stand-in is no ProseMirror editor, and the view the row
+// holds draws another element - the focus comes back at the start of that block instead, as the
+// editor's own in the task that puts it there; the document's own editor keeps its caret through
+// a redraw, and the focus comes back at it (below). The frames are held, so the words are drawn
+// anew before the frame that gives the focus back.
 test("a focus the editor drops after it redrew the words of the reader's caret comes back in the node's block, as the editor's own", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -3364,6 +3373,80 @@ test("the caret a dropped focus comes back at is the editor's own in the task th
   } finally {
     restore();
   }
+});
+
+// The editor's change of plugins as its collaborators' cursors go in (`@legion/proof-editor`'s
+// `installCollabCursorsWhenReady`) draws its text again as well as dropping the focus:
+// y-prosemirror's view draws the whole document again from the room, and a collaborator's caret
+// drawn in the words of the reader's caret splits them, which cuts the words the page's caret
+// stood in short. The focus came back at the start of the node's block, away from where the
+// reader had left their caret. The editor keeps its own selection through that drawing, and the
+// focus comes back at it, on the page as in the editor. The frames are held, so the cursors go
+// in before the frame that gives the focus back.
+test("a focus the editor drops as its collaborators' cursors go in comes back at the reader's caret, as the editor's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, room, view } = await editLive(user);
+  const words = wordsOf(editable, "r1");
+  const offset = words.length - 1;
+  // The reader presses a key and moves the caret to one character before the statement's end,
+  // which the editor reads.
+  await user.keyboard("{Shift}");
+  await select(words, offset);
+  const { $head, head: caret } = view.state.selection;
+  expect($head.parentOffset, "the editor did not read the reader's move").toBe(offset);
+  // alice's page, whose caret stands six characters into the statement, and the reader's own.
+  const alice = new Awareness(room.server);
+  const reader = new Awareness(room.browser);
+  const { binding } = ySyncPluginKey.getState(view.state);
+  const at = Y.relativePositionToJSON(
+    absolutePositionToRelativePosition($head.start() + 6, binding.type, binding.mapping)
+  );
+  alice.setLocalState({
+    cursor: { anchor: at, head: at },
+    user: { color: "#f59e0b", name: "alice" },
+  });
+  applyAwarenessUpdate(reader, encodeAwarenessUpdate(alice, [room.server.clientID]), "room");
+  const frames = framesByHand();
+  try {
+    await act(async () => {
+      // Chromium sends the editable a focusout that names nothing as Milkdown's view takes it out
+      // of the page; happy-dom drops the focus alone (`wrapAgain`).
+      editable.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+      view.updateState(
+        view.state.reconfigure({ plugins: view.state.plugins.concat(yCursorPlugin(reader)) })
+      );
+    });
+    expect(
+      editable.contains(words) && words.length >= offset,
+      "the cursors' drawing left the words of the reader's caret as they were"
+    ).toBe(false);
+    await frames.run();
+  } finally {
+    frames.restore();
+    alice.destroy();
+    reader.destroy();
+  }
+  expect(
+    document.activeElement === editable,
+    "the focus the editor dropped did not come back"
+  ).toBe(true);
+  const { anchor, head } = view.state.selection;
+  expect([anchor, head], "the editor's own caret is not where the reader left it").toEqual([
+    caret,
+    caret,
+  ]);
+  const page = window.getSelection();
+  if (page === null || page.anchorNode === null || page.focusNode === null) {
+    throw new Error("the page holds no caret");
+  }
+  expect(
+    [
+      view.posAtDOM(page.anchorNode, page.anchorOffset),
+      view.posAtDOM(page.focusNode, page.focusOffset),
+    ],
+    "the page's caret is not where the reader left it"
+  ).toEqual([caret, caret]);
 });
 
 /** The statement's document with words above the statement and words below it. */

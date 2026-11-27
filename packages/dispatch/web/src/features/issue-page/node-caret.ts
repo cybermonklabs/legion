@@ -66,6 +66,34 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
   return true;
 }
 
+/**
+ * Gives the focus back to the editor `view`, whose editable is `editable`, at the editor's own
+ * selection, where that selection stands inside `blockId`'s block, and answers whether it did.
+ * The editor keeps its selection while it has no focus - it reads no move of the page's then -
+ * and keeps it through a drawing of its text: a change of its plugins makes y-prosemirror's view
+ * again, which draws the whole document again from the room with the selection where it was
+ * (`sync-plugin.js`'s `_forceRerender`), and the collaborators' carets the cursors' plugin draws
+ * split the words they stand in, as read in both libraries' sources. So that selection is the
+ * reader's caret where the page's own points of it are gone with the words they stood in
+ * (`useNodeEditing.ts`). `EditorView.focus` puts it on the page as the editable takes the focus,
+ * as the editor's own. A view torn down, a view whose editable is another, and a selection with
+ * an end outside the block - or in a document that holds no such block - get no focus.
+ */
+export function ownCaretInBlock(
+  view: EditorView | undefined,
+  editable: HTMLElement,
+  blockId: string | undefined
+): boolean {
+  if (view === undefined || view.isDestroyed || view.dom !== editable) return false;
+  const { doc, selection } = view.state;
+  const from = blockStart(doc, blockId, undefined);
+  const block = from === undefined ? null : doc.nodeAt(from);
+  if (from === undefined || block === null) return false;
+  if (selection.from <= from || selection.to >= from + block.nodeSize) return false;
+  view.focus();
+  return true;
+}
+
 /** Whether the editor in `host` draws `blockId`'s block, which is when a caret can go in it
  *  (`caretInBlock`). */
 export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
