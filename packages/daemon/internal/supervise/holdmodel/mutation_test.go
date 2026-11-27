@@ -412,15 +412,19 @@ func assignmentMutants(n *ast.AssignStmt, text func(ast.Node) string, add func(a
 	}
 	add(n, strings.Join(targets, ", "), "drop", "_ = []any{"+strings.Join(operands, ", ")+"}")
 	if len(n.Lhs) > 1 && len(n.Lhs) == len(n.Rhs) {
+		// The left-out member's target becomes the blank identifier, so its
+		// value is still evaluated in place and nothing it used goes unused.
 		for skip := range n.Lhs {
 			if !writesState(n.Lhs[skip], text) {
 				continue
 			}
 			var lhs, rhs []string
 			for j := range n.Lhs {
-				if j != skip {
-					lhs, rhs = append(lhs, text(n.Lhs[j])), append(rhs, text(n.Rhs[j]))
+				target := text(n.Lhs[j])
+				if j == skip {
+					target = "_"
 				}
+				lhs, rhs = append(lhs, target), append(rhs, text(n.Rhs[j]))
 			}
 			add(n, text(n.Lhs[skip]), "member left out", strings.Join(lhs, ", ")+" "+n.Tok.String()+" "+strings.Join(rhs, ", "))
 		}
@@ -449,9 +453,13 @@ func definedValueMutants(n *ast.AssignStmt, text func(ast.Node) string, add func
 	compositeMemberMutants(n.Rhs[0], lhs, lhs+" := ", text, add, n)
 }
 
-// compositeMemberMutants leaves out one member of a struct literal at a time:
-// a keyed member by removing it, a positional one by zeroing it, so that both
-// forms of the literal compile.
+// compositeMemberMutants leaves out one member of a struct literal at a time.
+// A keyed member keeps its key and takes its field's zero value, which is what
+// leaving the key out gives; its value is still evaluated, in place, so a
+// variable only that value used stays used and the mutant compiles (M142 at
+// 87bd6c73 left `retiring` unused). The literal's own type names the field's
+// type, so an untyped constant or nil value compiles too. A positional member
+// is zeroed the same way, with its own value as the type.
 func compositeMemberMutants(rhs ast.Expr, lhs, prefix string, text func(ast.Node) string, add func(ast.Node, string, string, string), n ast.Node) {
 	lit, ok := rhs.(*ast.CompositeLit)
 	if !ok || len(lit.Elts) < 2 || lit.Type == nil {
@@ -461,9 +469,12 @@ func compositeMemberMutants(rhs ast.Expr, lhs, prefix string, text func(ast.Node
 		var kept []string
 		if kv, keyed := elt.(*ast.KeyValueExpr); keyed {
 			for j, other := range lit.Elts {
-				if j != skip {
-					kept = append(kept, text(other))
+				member := text(other)
+				if j == skip {
+					key := text(kv.Key)
+					member = key + ": mutationZero(" + text(lit.Type) + "{}." + key + ", " + text(kv.Value) + ")"
 				}
+				kept = append(kept, member)
 			}
 			add(n, lhs+"."+text(kv.Key), "member left out", prefix+text(lit.Type)+"{"+strings.Join(kept, ", ")+"}")
 			continue
