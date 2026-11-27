@@ -1126,7 +1126,7 @@ const daemonDeletedAct = "the daemon deleted the pod's sandbox"
 // (suspendedMode) among the relabel's operations, in the relabel's one patch (ensureSandbox). The
 // two deletes write theirs (deleteSandbox, deleteFenced).
 func (r *Runtime) suspend(ctx context.Context, s *sandbox) error {
-	r.meanToEndPodOf(s, daemonSuspendedAct)
+	r.meanToEndPodOf(ctx, s, daemonSuspendedAct)
 	return r.sendSuspended(ctx, s)
 }
 
@@ -1545,7 +1545,7 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	}
 	// The pod this Sandbox owns goes with it — the orphan sweep's, a released controller claim's,
 	// a repository cache's — so that end is the daemon's own (meanToEndPod).
-	r.meanToEndPodOf(s, daemonDeletedAct)
+	r.meanToEndPodOf(ctx, s, daemonDeletedAct)
 	name, uid, version := s.Name, s.UID, s.ResourceVersion
 	policy := metav1.DeletePropagationForeground
 	fence := metav1.Preconditions{UID: &uid, ResourceVersion: &version}

@@ -796,9 +796,40 @@ func heldReleaseRecord(event watch.Event) bool {
 	return ok && event.Type == watch.Modified && recordsRelease(u, u.GetUID())
 }
 
+// withHeldPodEvents holds the runtime's pod watch at the first event hold picks until release is
+// closed, and every event behind it with it, as withHeldSandboxEvents holds the Sandbox watch:
+// meanwhile the API holds the pod that event carries and the runtime's pod store does not, as an
+// informer that has not yet delivered a pod the Agent Sandbox controller made a moment ago. Only
+// the informers' watch goes through it; every request reads the tracker.
+func withHeldPodEvents(release <-chan struct{}, hold func(watch.Event) bool) rigOption {
+	return func(g *rig, _ *Options) {
+		g.kube.PrependWatchReactor("pods", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			var opts metav1.ListOptions
+			if w, ok := a.(k8stesting.WatchActionImpl); ok {
+				opts = w.ListOptions
+			}
+			inner, err := g.kube.Tracker().Watch(podsGVR, a.GetNamespace(), opts)
+			if err != nil {
+				return true, nil, err
+			}
+			return true, holdEvents(inner, release, hold), nil
+		})
+	}
+}
+
+// heldPodAdd picks the add of the pod named name, the event that would first put it in the
+// runtime's pod store (withHeldPodEvents).
+func heldPodAdd(name string) func(watch.Event) bool {
+	return func(event watch.Event) bool {
+		pod, ok := event.Object.(*corev1.Pod)
+		return ok && event.Type == watch.Added && pod.Name == name
+	}
+}
+
 // heldEvents is a watch whose events are inner's, in inner's order, the first event hold picks and
-// every one after it held until release is closed (withHeldSandboxEvents). inner is read at once
-// into a queue, so the tracker's bounded fake watcher never fills while the events wait.
+// every one after it held until release is closed (withHeldSandboxEvents, withHeldPodEvents).
+// inner is read at once into a queue, so the tracker's bounded fake watcher never fills while the
+// events wait.
 type heldEvents struct {
 	inner   watch.Interface
 	events  chan watch.Event

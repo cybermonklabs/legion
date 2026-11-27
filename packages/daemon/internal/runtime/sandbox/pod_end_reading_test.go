@@ -9,13 +9,16 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -31,6 +34,25 @@ func runningIssuePod(t *testing.T, options ...rigOption) *rig {
 		sandboxObject(t, name, sandboxUID, modeRunning, labels),
 		podObject(name, recorded, sandboxUID, labels, runningStatus()),
 	}, append([]rigOption{withoutController()}, options...)...)
+}
+
+// unseenIssuePod is runningIssuePod with the tester's pod in the API alone: the pod is made once
+// the informers have synced, and its add, with every pod event behind it, is kept from the
+// runtime's pod store until release is closed (withHeldPodEvents), as an informer that has not yet
+// delivered a pod the Agent Sandbox controller made a moment ago keeps it.
+func unseenIssuePod(t *testing.T, release <-chan struct{}, options ...rigOption) *rig {
+	t.Helper()
+	labels := claimLabels(claim.RoleTester)
+	name := SandboxName(workerToken)
+	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeRunning, labels)},
+		append([]rigOption{withoutController(), withHeldPodEvents(release, heldPodAdd(name))}, options...)...)
+	if err := g.kube.Tracker().Add(podObject(name, recorded, sandboxUID, labels, runningStatus())); err != nil {
+		t.Fatal(err)
+	}
+	if g.pod(name) == nil || g.r.storedPod(name) != nil {
+		t.Fatal("the tester's pod is not in the API alone; this rig is about an act the pod store lags")
+	}
+	return g
 }
 
 // endedPodStatus is a pod the kubelet has failed, its one container ended, carrying reason as the
@@ -322,7 +344,13 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 // failed launch, which name nothing beside the mode (suspendOver, daemonEnd), and a repository
 // cache's own (suspend) end their pod through that patch, and whoever sends it records the end
 // under daemonSuspendedAct first, so that none of them can end a pod without one. The record is
-// consumed by the end it was written for, so the runtime holds none afterwards.
+// consumed by the end it was written for, so the runtime holds none afterwards. The pod store can
+// lag the API: the Agent Sandbox controller may have made the pod a moment ago, and the informer
+// not yet delivered it. The relabel, the suspending patch and a delete of the Sandbox each record
+// the end of such a pod too, which they read from the API (meanToEndPodOf), so its end reads as
+// the daemon's own, in the act's words, when the informer delivers it with the end behind it. CI
+// run 45956159434 caught the relabel's case unrecorded: its row waits for the pod in the API, and
+// the store had not yet caught up when the relabel ran.
 func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 	t.Parallel()
 	t.Run("a suspending patch of the sandbox", func(t *testing.T) {
@@ -419,6 +447,122 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 			t.Errorf("the runtime holds %d records of an intended end, want none: the record goes with the pod it names", held)
 		}
 	})
+	t.Run("a relabel for the issue's new tree, its pod not yet in the store", func(t *testing.T) {
+		orphan := claim.Token("legion-legion-legion-209-architect")
+		name := SandboxName(orphan)
+		oldTree := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
+		release := make(chan struct{})
+		// The controller stand-in makes the old tree's pod once the informers have synced, and the
+		// runtime's pod store hears nothing of it until release is closed.
+		g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-old-tree", modeRunning, oldTree)},
+			withHeldPodEvents(release, heldPodAdd(name)))
+		g.store.running["LEGION-209"] = runningClaim{tree: "LEGION-209", claim: "legion-legion-legion-209-planner:launching"}
+		g.eventually("the old tree's pod in the API", func() bool { return g.pod(name) != nil })
+		old := string(g.pod(name).UID)
+		spec := testSpec(t, orphan, claim.RoleArchitect, "LEGION-209")
+		spec.Tree = "LEGION-209"
+		l, err := g.r.prepare(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g.r.storedPod(name) != nil {
+			t.Fatal("the pod store holds the old tree's pod; this case is about a relabel the store lags")
+		}
+
+		// The launch's own step that relabels the Sandbox and suspends it in the same patch.
+		if _, err := g.r.ensureSandbox(g.ctx, l); err != nil {
+			t.Fatalf("relabel the sandbox: %v", err)
+		}
+		close(release)
+
+		end := g.awaitEndReadingRecord(old)
+		if end.reading != runtime.PodEndOurs || !strings.Contains(end.words, "relabel") {
+			t.Fatalf("read %+v of the pod the relabel suspended before the store held it, want %s naming the relabel: an act whose pod the store lags must read it from the API",
+				end, runtime.PodEndOurs)
+		}
+		if held := g.intendedEnds(); held != 0 {
+			t.Errorf("the runtime holds %d records of an intended end, want none: the record goes with the pod it names", held)
+		}
+	})
+	for _, tc := range []struct {
+		name, act string
+		end       func(g *rig, s *sandbox) error
+	}{
+		{name: "a suspending patch of the sandbox, its pod not yet in the store", act: daemonSuspendedAct,
+			end: func(g *rig, s *sandbox) error { return g.r.suspend(g.ctx, s) }},
+		{name: "a delete of the sandbox, its pod not yet in the store", act: daemonDeletedAct,
+			end: func(g *rig, s *sandbox) error {
+				return g.r.deleteFenced(g.ctx, s, "sandbox runtime: deleted an orphaned sandbox")
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			g := unseenIssuePod(t, release)
+			name := SandboxName(workerToken)
+
+			if err := tc.end(g, g.sandbox(name)); err != nil {
+				t.Fatalf("end the sandbox's pod: %v", err)
+			}
+			// The Agent Sandbox controller, or the garbage collector for a delete, answers the act
+			// by deleting the pod, and the informer then delivers the pod and its end together.
+			deleted := metav1.NewTime(rigNow)
+			g.update(g.pod(name), func(p *corev1.Pod) { p.DeletionTimestamp = &deleted })
+			close(release)
+
+			if end := g.awaitEndReading(recorded); end.reading != runtime.PodEndOurs || end.words != tc.act {
+				t.Fatalf("read %+v of the pod the act ended before the store held it, want %s under the act %q: an act whose pod the store lags must read it from the API",
+					end, runtime.PodEndOurs, tc.act)
+			}
+			if held := g.intendedEnds(); held != 0 {
+				t.Errorf("the runtime holds %d records of an intended end, want none: the record goes with the pod it names", held)
+			}
+		})
+	}
+}
+
+// An act whose pod the store does not yet hold reads the pod from the API (meanToEndPodOf), and a
+// read that fails records nothing: the act goes ahead, the failure is logged at warning level with
+// the Sandbox and the error, and the pod's end then reads as one from outside the pod, which is
+// what a restart that lost the record costs (meanToEndPod).
+func TestAnActThatCannotReadItsUnseenPodRecordsNothingAndWarns(t *testing.T) {
+	t.Parallel()
+	refused := apierrors.NewInternalError(errors.New("etcdserver: request timed out"))
+	log := &logBuffer{}
+	release := make(chan struct{})
+	g := unseenIssuePod(t, release, withLog(log), func(g *rig, _ *Options) {
+		g.kube.PrependReactor("get", "pods", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+			return true, nil, refused
+		})
+	})
+	name := SandboxName(workerToken)
+
+	if err := g.r.suspend(g.ctx, g.sandbox(name)); err != nil {
+		t.Fatalf("suspend the sandbox: %v", err)
+	}
+	if s := g.sandbox(name); s == nil || s.mode() != modeSuspended {
+		t.Fatalf("the sandbox is %+v after the suspension, want it Suspended: a failed read stops no act", s)
+	}
+	if held := g.intendedEnds(); held != 0 {
+		t.Fatalf("the runtime holds %d records of an intended end, want none: no read named the pod", held)
+	}
+	var line string
+	for _, l := range strings.Split(log.String(), "\n") {
+		if strings.Contains(l, "could not read the pod an act of the daemon's is about to end") {
+			line = l
+		}
+	}
+	for _, want := range []string{"level=WARN", "sandbox=" + name, "etcdserver: request timed out"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the failed read's line is %q, want it to hold %q; the log:\n%s", line, want, log.String())
+		}
+	}
+
+	deleted := metav1.NewTime(rigNow)
+	g.update(g.pod(name), func(p *corev1.Pod) { p.DeletionTimestamp = &deleted })
+	close(release)
+	if end := g.awaitEndReading(recorded); end.reading != runtime.PodEndNotOurs || end.words != deletedByAnother {
+		t.Fatalf("read %+v of the pod the unrecorded suspension ended, want %s from its deletion timestamp", end, runtime.PodEndNotOurs)
+	}
 }
 
 // A pod already terminal is read from its status alone, whatever deletion timestamp the event that

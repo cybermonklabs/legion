@@ -793,14 +793,20 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // ensureSandbox's Get, its Create or relabel patch and that relabel's store read, and for a Sandbox
 // being deleted the wait's last Get, past its deadline, and the Get and Create after it (6); the
 // suspension patch, or for a Sandbox already Suspended the patch of the reset mark, which a try
-// sends in its place (1); awaitPodGone's confirming Get, which may begin just before its deadline
-// (1); provision's token mint and its Secret upsert's Get, Delete and Create (4), and its
-// repository cache's ensure (cacheEnsureCalls); the Running patch (1); the stop of an earlier
-// generation (1); the address record patch (1); the Start frame (1) — 16, the cache's ensure apart.
+// sends in its place (1); the Get of the pod the store does not yet hold, which the relabel's or
+// the suspension's record of the daemon's end makes before its patch where the pod store lags the
+// API (meanToEndPodOf), once a try at most, since the relabel leaves the Sandbox Suspended and the
+// patch of a Sandbox already Suspended records nothing (1); awaitPodGone's confirming Get, which
+// may begin just before its deadline (1); provision's token mint and its Secret upsert's Get,
+// Delete and Create (4), and its repository cache's ensure (cacheEnsureCalls); the Running patch
+// (1); the stop of an earlier generation (1); the address record patch (1); the Start frame (1) —
+// 17, the cache's ensure apart.
 // A try that replaces its Sandbox for another disk shape or a reset of its kept volume
-// (replaceSupersededSandbox) still spends one call more, and so sets the count at 17: its
-// deleteStoredSandbox Get, the fenced Delete, awaitSandboxDeleted's confirming Get and the Create
-// (4) against the 3 of the 6 above that ensureSandbox's wait for a Sandbox being deleted spends.
+// (replaceSupersededSandbox) still spends two calls more, and so sets the count at 19: its
+// deleteStoredSandbox Get; deleteSandbox's Get of the pod before its delete (meanToEndPodOf),
+// which it makes every time, since the store holds no pod once awaitPodGone has seen it go; the
+// fenced Delete, awaitSandboxDeleted's confirming Get and the Create (5) against the 3 of the 6
+// above that ensureSandbox's wait for a Sandbox being deleted spends.
 // That try never takes that wait: a Sandbox that ensureSandbox waited out is gone, and the one it
 // creates in its place already has the disk shape that the launch renders (sandboxManifest),
 // carries no reset mark and has no pod, so the launch does not replace it.
@@ -809,21 +815,23 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // Only a try that does not replace its Sandbox sends it, because the Sandbox that a replacement
 // creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
 // for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
-// deleted. It thus spends 14 calls at the most, the cache's ensure apart, under the 17.
+// deleted. It thus spends 15 calls at the most, the cache's ensure apart, under the 19.
 // Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
 // has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
 // Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
 var relaunchCalls = relaunchPodCalls + relaunchRoleCalls*len(claim.Roles)
 
 const (
-	relaunchPodCalls  = 17 + cacheEnsureCalls
+	relaunchPodCalls  = 19 + cacheEnsureCalls
 	relaunchRoleCalls = 9
 	// cacheEnsureCalls is one ensure of a repository's cache (ensureRepositoryCache) at its most:
 	// ensureCacheSandbox's Get and Create, the Get after a Create that found the name taken, and
 	// for a Sandbox being deleted the wait's last Get and the Get and Create after it (6);
 	// writeCacheSecret's token mint, its Secret's Get, and its upsert's Get, Delete and Create (5);
-	// reconcileCachePod's suspension patch, awaitPodGone's confirming Get and the Running patch (3).
-	cacheEnsureCalls = 14
+	// reconcileCachePod's suspension patch, the Get of the pod the store does not yet hold that
+	// suspend's record of the daemon's end makes before it (meanToEndPodOf), awaitPodGone's
+	// confirming Get and the Running patch (4).
+	cacheEnsureCalls = 15
 )
 
 // launchBound is the longest one launch try may run once it holds its pod's launch turn, from the
@@ -1073,7 +1081,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 				// The patch ends the old tree's pod, so its end is recorded as the daemon's first,
 				// under the relabel's own act, and the patch sends the mode's operation, the one
 				// suspend's bare patch sends (suspendedMode), among the relabel's operations.
-				r.meanToEndPodOf(s, "the daemon suspended the pod's sandbox to relabel it for its issue's new tree")
+				r.meanToEndPodOf(ctx, s, "the daemon suspended the pod's sandbox to relabel it for its issue's new tree")
 				ops = append(ops, suspendedMode)
 			}
 			r.log.Info("sandbox runtime: relabelling a sandbox for its issue's new tree, keeping the Sandbox",
@@ -1827,9 +1835,9 @@ func displacing(uid types.UID, kind replacementKind) map[string]*string {
 // the relabel's operations (ensureSandbox).
 type suspensionNames interface {
 	// meanToEnd records that the daemon means to end the pod the suspension of the Sandbox s takes
-	// down, the one the kind carries or the one the store holds for s, or records nothing
-	// (meanToEndPod, meanToEndPodOf).
-	meanToEnd(r *Runtime, s *sandbox)
+	// down, the one the kind carries or the one s owns, read from the store or else from the API
+	// server on ctx (meanToEndPodOf), or records nothing (meanToEndPod).
+	meanToEnd(ctx context.Context, r *Runtime, s *sandbox)
 	// annotations is the suspension's annotations, in a map of their own, which suspendOver adds
 	// the reset mark to.
 	annotations() map[string]*string
@@ -1844,7 +1852,7 @@ type displacement struct {
 
 // meanToEnd records the end of the pod uid, the live pod the suspension replaces and the one its
 // annotations name (suspendDisplacing, displacing), under the act of that replacement.
-func (d displacement) meanToEnd(r *Runtime, _ *sandbox) {
+func (d displacement) meanToEnd(_ context.Context, r *Runtime, _ *sandbox) {
 	act := "a launch replaced the pod"
 	if d.kind == roundReplacement {
 		act = "an update round replaced the pod"
@@ -1862,7 +1870,7 @@ type ownEnd struct {
 	end string
 }
 
-func (ownEnd) meanToEnd(*Runtime, *sandbox) {}
+func (ownEnd) meanToEnd(context.Context, *Runtime, *sandbox) {}
 
 func (e ownEnd) annotations() map[string]*string {
 	ended, end := string(e.uid), e.end
@@ -1870,13 +1878,13 @@ func (e ownEnd) annotations() map[string]*string {
 }
 
 // daemonEnd names nothing beside the mode: the daemon's own end of the pod in no words of its
-// own. It records that end under daemonSuspendedAct, for the pod the store holds for the Sandbox
-// when the record is written (meanToEndPodOf), and it writes no annotation, so suspendOver sends
-// the bare JSON patch of the mode for it (sendSuspended) unless the pod calls for the reset mark.
+// own. It records that end under daemonSuspendedAct, for the pod the Sandbox owns when the record
+// is written (meanToEndPodOf), and it writes no annotation, so suspendOver sends the bare JSON
+// patch of the mode for it (sendSuspended) unless the pod calls for the reset mark.
 type daemonEnd struct{}
 
-func (daemonEnd) meanToEnd(r *Runtime, s *sandbox) {
-	r.meanToEndPodOf(s, daemonSuspendedAct)
+func (daemonEnd) meanToEnd(ctx context.Context, r *Runtime, s *sandbox) {
+	r.meanToEndPodOf(ctx, s, daemonSuspendedAct)
 }
 
 func (daemonEnd) annotations() map[string]*string { return map[string]*string{} }
@@ -1938,7 +1946,7 @@ func (r *Runtime) suspendOver(ctx context.Context, s *sandbox, pod *corev1.Pod, 
 		annotations[volumeResetAnnotation] = &fault
 	}
 	if s.mode() != modeSuspended {
-		names.meanToEnd(r, s)
+		names.meanToEnd(ctx, r, s)
 		if len(annotations) == 0 {
 			return s, r.sendSuspended(ctx, s)
 		}
