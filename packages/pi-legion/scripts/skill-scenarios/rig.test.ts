@@ -2967,65 +2967,66 @@ describe("batch_scored", () => {
   });
 });
 
-describe("rig.sh cell", () => {
-  /** The sentence of a clause of the guidance stage, by its id. */
-  const sentence = (id: string): string => {
-    const found = OWNER_WALK_STAGES.guidance?.clauses.find((each) => each.id === id);
-    if (found === undefined) throw new Error(`the guidance stage has no clause ${id}`);
-    return found.sentence;
+/** The sentence of a clause of the guidance stage, by its id. */
+const sentence = (id: string): string => {
+  const found = OWNER_WALK_STAGES.guidance?.clauses.find((each) => each.id === id);
+  if (found === undefined) throw new Error(`the guidance stage has no clause ${id}`);
+  return found.sentence;
+};
+/** One run of a case under a label, as a scored batch leaves it: its world.json, and its scored
+ * row.json whose clauses pass as `passes` says. */
+function plantScored(
+  work: string,
+  label: string,
+  owner: { kind: "root" | "child"; form: "B" | "D"; family: "claude" | "gpt" },
+  n: number,
+  passes: Record<string, boolean>
+): void {
+  const kase = `${owner.kind}-${owner.form}-${owner.family}`;
+  const name = `owner-walk-${kase}-${label}-${n}`;
+  const dir = path.join(work, "runs", name);
+  mkdirSync(dir, { recursive: true });
+  const world = {
+    scenario: "owner-walk",
+    stage: "guidance",
+    ...owner,
+    issue: "issue.md",
+    plansProject: "LWEVAL",
+    plansKeys: ["LWEVAL-1"],
+    guidance:
+      owner.form === "D"
+        ? {
+            file: "guidance-first.md",
+            implementerFamily: "claude",
+            reviewerFamily: "gpt",
+            implementerModel: "claude-model",
+            reviewerModel: "gpt-model",
+          }
+        : null,
+    questions: ["Would another family review the change?"],
   };
-  /** One run of a case under a label, as a scored batch leaves it: its world.json, and its scored
-   * row.json whose clauses pass as `passes` says. */
-  function plantScored(
-    work: string,
-    label: string,
-    owner: { kind: "root" | "child"; form: "B" | "D"; family: "claude" | "gpt" },
-    n: number,
-    passes: Record<string, boolean>
-  ): void {
-    const kase = `${owner.kind}-${owner.form}-${owner.family}`;
-    const name = `owner-walk-${kase}-${label}-${n}`;
-    const dir = path.join(work, "runs", name);
-    mkdirSync(dir, { recursive: true });
-    const world = {
-      scenario: "owner-walk",
-      stage: "guidance",
-      ...owner,
-      issue: "issue.md",
-      plansProject: "LWEVAL",
-      plansKeys: ["LWEVAL-1"],
-      guidance:
-        owner.form === "D"
-          ? {
-              file: "guidance-first.md",
-              implementerFamily: "claude",
-              reviewerFamily: "gpt",
-              implementerModel: "claude-model",
-              reviewerModel: "gpt-model",
-            }
-          : null,
-      questions: ["Would another family review the change?"],
-    };
-    writeFileSync(path.join(dir, "world.json"), `${JSON.stringify(world)}\n`);
-    const clauses = Object.entries(passes).map(([id, pass]) => ({
-      id,
-      clause: sentence(id),
-      pass,
-      evidence: `${id}: planted`,
-      counts: {},
-    }));
-    const row = RunRow.parse({
-      outcome: "scored",
-      run: name,
-      scenario: "owner-walk",
-      label,
-      case: kase,
-      pass: clauses.every((clause) => clause.pass),
-      clauses,
-      reach: [],
-    });
-    writeFileSync(path.join(dir, "row.json"), `${JSON.stringify(row)}\n`);
-  }
+  writeFileSync(path.join(dir, "world.json"), `${JSON.stringify(world)}\n`);
+  const clauses = Object.entries(passes).map(([id, pass]) => ({
+    id,
+    clause: sentence(id),
+    pass,
+    evidence: `${id}: planted`,
+    counts: {},
+  }));
+  const row = RunRow.parse({
+    outcome: "scored",
+    run: name,
+    scenario: "owner-walk",
+    label,
+    case: kase,
+    pass: clauses.every((clause) => clause.pass),
+    clauses,
+    reach: [],
+  });
+  writeFileSync(path.join(dir, "row.json"), `${JSON.stringify(row)}\n`);
+}
+
+describe("rig.sh cell", () => {
   /** The twelve owners of form D under a label, three runs of each kind and family, in that order;
    * owner `i` passes read when `passes(i)`. */
   function plantControl(work: string, label: string, passes: (owner: number) => boolean): void {
@@ -3079,6 +3080,351 @@ describe("rig.sh cell", () => {
     expect(line(work, "head-two", "root-B-claude", 3)).toBe(
       "cell owner-walk head-two root-B-claude: 3 runs, 3 scored, 0 rig errors, count 3; each clause: read 2 of 3, choices 3 of 3, earlier-and-fresh 3 of 3; runs passed 2 of 3; verdict fail"
     );
+  });
+});
+
+describe("the store of a scored run", () => {
+  /** A stand-in of the runner's rt-store (legion-remote-test.md, "The store of a scored run"): a
+   * bucket that is a directory, each name a file in it, each call recorded, and its put and get
+   * printing `stored|got <name> sha256 <hex>` as the runner's do. */
+  function plantStore(): { bin: string; bucket: string; calls: () => string } {
+    const dir = freshDir("rt-store");
+    const bucket = path.join(dir, "bucket");
+    mkdirSync(bucket);
+    const bin = path.join(dir, "rt-store");
+    const calls = path.join(dir, "calls");
+    writeFileSync(
+      bin,
+      String.raw`#!/usr/bin/env bash
+set -euo pipefail
+bucket=${bucket}
+printf '%s\n' "$*" >>${calls}
+case $1 in
+put) mkdir -p "$(dirname "$bucket/$3")" && cp "$2" "$bucket/$3" && printf 'stored %s sha256 %s\n' "$3" "$(sha256sum <"$bucket/$3" | cut -d' ' -f1)" ;;
+list) (cd "$bucket" && find . -type f | sed 's|^\./||' | grep "^$2" | sort) || true ;;
+get)
+  [ -f "$bucket/$2" ] || { echo "rt-store: get $2 answered HTTP 404" >&2; exit 1; }
+  cp "$bucket/$2" "$3" && printf 'got %s sha256 %s\n' "$2" "$(sha256sum <"$3" | cut -d' ' -f1)"
+  ;;
+esac
+`,
+      { mode: 0o755 }
+    );
+    return {
+      bin,
+      bucket,
+      calls: () => (existsSync(calls) ? readFileSync(calls, "utf8") : ""),
+    };
+  }
+  /** The stand-ins scored_attempt runs from $here: rig.sh's `run`, which makes the run's directory
+   * with a world.json naming its launch, records the launch, and fails when FAIL_RUN is set; and
+   * score.ts's `runs --run`, which writes the run's scored row. */
+  function plantLaunch(): string {
+    const here = freshDir("launch");
+    writeFileSync(
+      path.join(here, "rig.sh"),
+      String.raw`#!/usr/bin/env bash
+# run <scenario> <label> <n> <index> <start>
+dir=$SKILL_SCENARIOS_WORK/runs/$2-$SKILL_SCENARIOS_OWNER_WALK_CASE-$3-$4
+mkdir -p "$dir"
+printf '%s\n' "$4" >>"$SKILL_SCENARIOS_WORK/launches"
+printf '{"launch":%s}\n' "$4" >"$dir/world.json"
+[ -z "$FAIL_RUN" ] || { echo "skill-scenarios: the planted launch failed" >&2; exit 1; }
+`
+    );
+    writeFileSync(
+      path.join(here, "score.ts"),
+      String.raw`import { writeFileSync } from "node:fs";
+import path from "node:path";
+const [, , , runs, , name] = process.argv;
+writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scored", run: name }) + "\n");
+`
+    );
+    return here;
+  }
+  /** batch_scored_cell's cell of COUNT runs of root-B-claude under head, in WORK, launched through
+   * the stand-ins in HERE. */
+  const cell = (work: string, here: string, count: number, env: Record<string, string>) =>
+    bash(
+      `${defs("fail", "note", "next_run", "scored_count", "scored_rig_error", "score_scored_run", "store_scored_run", "scored_attempt", "batch_scored_cell")}\nwork=$1\nhere=$2\nstart=0\nscored_index=0\nbatch_scored_cell owner-walk head root-B-claude "$3"`,
+      [work, here, String(count)],
+      { SKILL_SCENARIOS_WORK: work, ...env }
+    );
+  /** `rig.sh restore-stored owner-walk` in WORK, against STORE. */
+  const restore = (work: string, store: string) => {
+    const result = childSpawn(
+      ["bash", path.join(scenarios, "rig.sh"), "restore-stored", "owner-walk"],
+      {
+        SKILL_SCENARIOS_WORK: work,
+        RT_STORE: store,
+      }
+    );
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  };
+  const run = (n: number) => `owner-walk-root-B-claude-head-${n}`;
+  /** The member names of a pack, sorted. */
+  const members = (pack: string) =>
+    childSpawn(["tar", "-tzf", pack]).stdout.toString().trim().split("\n").sort();
+
+  // Catches: a Job whose runs live in the pod alone, so an eviction loses the transcripts the
+  // scorer reads; a row stored before its pack, which a restart would count with no pack behind
+  // it; and a run the rig failed left unstored, so a restart loses its launch from the bound.
+  test("each run is stored as it ends, its pack and then its row, under runs/, and a run the rig failed too; without RT_STORE, none", () => {
+    const store = plantStore();
+    const here = plantLaunch();
+    const work = freshDir("store-work");
+    const stored = cell(work, here, 1, { RT_STORE: store.bin });
+    expect({ code: stored.code, stderr: stored.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(store.calls()).toBe(
+      [
+        `put ${work}/stored/${run(1)}.tar.gz runs/${run(1)}.tar.gz`,
+        `put ${work}/runs/${run(1)}/row.json runs/${run(1)}.row.json`,
+        "",
+      ].join("\n")
+    );
+    const pack = path.join(store.bucket, "runs", `${run(1)}.tar.gz`);
+    expect(members(pack)).toEqual([`${run(1)}/`, `${run(1)}/row.json`, `${run(1)}/world.json`]);
+    expect(stored.stdout).toContain(`stored runs/${run(1)}.tar.gz sha256 ${sha256(pack)}`);
+    expect(stored.stdout).toContain(
+      `stored runs/${run(1)}.row.json sha256 ${sha256(path.join(work, "runs", run(1), "row.json"))}`
+    );
+
+    const failing = plantStore();
+    const failed = cell(freshDir("store-failed"), here, 1, {
+      RT_STORE: failing.bin,
+      FAIL_RUN: "1",
+    });
+    expect(failed.code).toBe(0);
+    expect(
+      failing
+        .calls()
+        .trim()
+        .split("\n")
+        .map((call) => call.split(" ").at(-1))
+    ).toEqual([1, 2, 3].flatMap((n) => [`runs/${run(n)}.tar.gz`, `runs/${run(n)}.row.json`]));
+    expect(
+      JSON.parse(readFileSync(path.join(failing.bucket, "runs", `${run(1)}.row.json`), "utf8"))
+        .outcome
+    ).toBe("rig-error");
+
+    const bare = freshDir("store-none");
+    const none = cell(bare, here, 1, {});
+    expect({ code: none.code, stored: none.stdout.includes("stored ") }).toEqual({
+      code: 0,
+      stored: false,
+    });
+    expect(existsSync(path.join(bare, "stored"))).toBe(false);
+  });
+
+  // Catches: a restart that launches its cell from nothing, so a cell can never reach its count
+  // across evictions; one that counts a run whose row was never stored; numbering that starts
+  // over and so stores over a run kept before; and a bound of three times the count that a
+  // restart resets.
+  test("a restarted pod restores each run whose row is stored, its cell skips and counts them, and a put of a name stored before the restart is made again", () => {
+    const store = plantStore();
+    const here = plantLaunch();
+    // The first pod: run 1 scores and is stored whole. Then it stops between the two puts of run
+    // 2: its pack is stored, its row is not.
+    const first = freshDir("pod-first");
+    expect(cell(first, here, 1, { RT_STORE: store.bin }).code).toBe(0);
+    mkdirSync(path.join(first, "runs", run(2)));
+    writeFileSync(
+      path.join(first, "runs", run(2), "world.json"),
+      '{"launch":"the stopped pod\'s"}\n'
+    );
+    const stopped = path.join(first, `${run(2)}.tar.gz`);
+    expect(
+      childSpawn(["tar", "-czf", stopped, "-C", path.join(first, "runs"), run(2)]).exitCode
+    ).toBe(0);
+    expect(childSpawn([store.bin, "put", stopped, `runs/${run(2)}.tar.gz`]).exitCode).toBe(0);
+
+    const second = freshDir("pod-second");
+    expect(restore(second, store.bin)).toEqual({
+      code: 0,
+      stdout: [
+        `got runs/${run(1)}.tar.gz sha256 ${sha256(path.join(store.bucket, "runs", `${run(1)}.tar.gz`))}`,
+        `got runs/${run(1)}.row.json sha256 ${sha256(path.join(store.bucket, "runs", `${run(1)}.row.json`))}`,
+        "skill-scenarios: the store lists 3 names under runs/; 1 runs of owner-walk restored from it",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+    expect(readFileSync(path.join(second, "runs", run(1), "world.json"), "utf8")).toBe(
+      '{"launch":1}\n'
+    );
+    expect(existsSync(path.join(second, "runs", run(2)))).toBe(false);
+    // Its cell of two: run 1 counts, and its one launch is run 2, whose pack is stored again over
+    // the stopped pod's.
+    const resumed = cell(second, here, 2, { RT_STORE: store.bin });
+    expect({ code: resumed.code, stderr: resumed.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(second, "launches"), "utf8")).toBe("2\n");
+    expect(store.calls()).toContain(`put ${second}/stored/${run(2)}.tar.gz runs/${run(2)}.tar.gz`);
+    const again = childSpawn([
+      "tar",
+      "-xzOf",
+      path.join(store.bucket, "runs", `${run(2)}.tar.gz`),
+      `${run(2)}/world.json`,
+    ]);
+    expect(again.stdout.toString()).toBe('{"launch":2}\n');
+
+    // A third pod, whose cell of three never scores again: the two stored runs are two of its nine
+    // launches.
+    const third = freshDir("pod-third");
+    expect(restore(third, store.bin).code).toBe(0);
+    const bound = cell(third, here, 3, { RT_STORE: store.bin, FAIL_RUN: "1" });
+    expect({
+      code: bound.code,
+      stdout: bound.stdout.split("\n").filter((line) => line.startsWith("UNKNOWN")),
+    }).toEqual({
+      code: 0,
+      stdout: [
+        "UNKNOWN: owner-walk head root-B-claude: 2 scored runs of 3 after 9 launches, three times its count",
+      ],
+    });
+    expect(readFileSync(path.join(third, "launches"), "utf8")).toBe("3\n4\n5\n6\n7\n8\n9\n");
+  });
+
+  // Catches: a download read as the pods stored it with nothing compared, so an object changed or
+  // mixed up after its store counts in a cell; a check that passes a run whose object is missing,
+  // or that no log line names; one that unpacks a member beside its run; and a check that read
+  // nothing and reports nothing wrong.
+  test("rig.sh check-stored keeps each run whose objects match the Job's logged sha256, and makes a run whose object differs, is missing or is unlogged a rig error naming it", () => {
+    const store = plantStore();
+    const pod = freshDir("check-pod");
+    plantScored(pod, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
+    plantScored(pod, "head", { kind: "root", form: "B", family: "claude" }, 2, { read: false });
+    const log = path.join(pod, "job.log");
+    for (const n of [1, 2]) {
+      const stored = bash(
+        `${defs("note", "fail", "store_scored_run")}\nwork=$1\nstore_scored_run "$2"`,
+        [pod, run(n)],
+        {
+          RT_STORE: store.bin,
+        }
+      );
+      expect(stored.code).toBe(0);
+      appendFileSync(log, `scored-job: a line of the Job's own\n${stored.stdout}`);
+    }
+    /** A download of the store, and `rig.sh check-stored` of it against LOG. */
+    const download = (change?: (dir: string) => void) => {
+      const dir = freshDir("check-download");
+      cpSync(store.bucket, dir, { recursive: true });
+      change?.(dir);
+      return dir;
+    };
+    const check = (dir: string, against = log) => {
+      const result = childSpawn([
+        "bash",
+        path.join(scenarios, "rig.sh"),
+        "check-stored",
+        against,
+        dir,
+      ]);
+      const stdout = result.stdout.toString().trim().split("\n");
+      return { code: result.exitCode, stdout, stderr: result.stderr.toString() };
+    };
+    const scored = (lines: string[]) => JSON.parse(lines.at(-1) ?? "{}").scored;
+
+    const clean = download();
+    const kept = check(clean);
+    expect({ code: kept.code, stderr: kept.stderr, lines: kept.stdout.slice(0, 2) }).toEqual({
+      code: 0,
+      stderr: "",
+      lines: [`checked ${run(1)}: as stored`, `checked ${run(2)}: as stored`],
+    });
+    expect(scored(kept.stdout)).toBe(2);
+    expect(readFileSync(path.join(clean, "checked", run(2), "world.json"), "utf8")).toBe(
+      readFileSync(path.join(pod, "runs", run(2), "world.json"), "utf8")
+    );
+
+    const rowOf = (dir: string) => path.join(dir, "runs", `${run(2)}.row.json`);
+    const logged = sha256(rowOf(store.bucket));
+    const changed = download((dir) =>
+      writeFileSync(
+        rowOf(dir),
+        readFileSync(rowOf(dir), "utf8").replace('"pass":false', '"pass":true')
+      )
+    );
+    const fault = `runs/${run(2)}.row.json differs from the Job's log: logged ${logged}, downloaded ${sha256(rowOf(changed))}`;
+    const differs = check(changed);
+    expect({ code: differs.code, line: differs.stdout[1] }).toEqual({
+      code: 0,
+      line: `checked ${run(2)}: rig error: ${fault}`,
+    });
+    const row = JSON.parse(readFileSync(path.join(changed, "checked", run(2), "row.json"), "utf8"));
+    expect(row).toEqual({
+      outcome: "rig-error",
+      run: run(2),
+      scenario: "owner-walk",
+      label: "head",
+      case: "root-B-claude",
+      error: `the store's objects of the run are at fault: ${fault}`,
+    });
+    expect(RunRow.safeParse(row).success).toBe(true);
+    expect(differs.stderr).toContain(`${run(2)}: no world.json, so it is in no cell`);
+    expect(scored(differs.stdout)).toBe(1);
+
+    const missing = check(download((dir) => rmSync(path.join(dir, "runs", `${run(1)}.tar.gz`))));
+    expect(missing.stdout[0]).toBe(
+      `checked ${run(1)}: rig error: runs/${run(1)}.tar.gz is not in the download`
+    );
+
+    const unlogged = path.join(pod, "unlogged.log");
+    writeFileSync(
+      unlogged,
+      readFileSync(log, "utf8").replace(
+        new RegExp(`^stored runs/${run(1)}\\.row\\.json .*\\n`, "m"),
+        ""
+      )
+    );
+    expect(check(download(), unlogged).stdout[0]).toBe(
+      `checked ${run(1)}: rig error: runs/${run(1)}.row.json has no stored or got line in the Job's log`
+    );
+
+    // A pack whose member lands beside its run, logged with its own sha256: it is not unpacked.
+    const beside = download((dir) => {
+      const pack = path.join(dir, "runs", `${run(3)}.tar.gz`);
+      childSpawn([
+        "tar",
+        "-czf",
+        pack,
+        "-C",
+        pod,
+        "--transform",
+        `s|^job.log$|${run(3)}/../escaped|`,
+        "job.log",
+      ]);
+      cpSync(
+        path.join(dir, "runs", `${run(1)}.row.json`),
+        path.join(dir, "runs", `${run(3)}.row.json`)
+      );
+    });
+    const besideLog = path.join(pod, "beside.log");
+    writeFileSync(
+      besideLog,
+      `${readFileSync(log, "utf8")}stored runs/${run(3)}.tar.gz sha256 ${sha256(path.join(beside, "runs", `${run(3)}.tar.gz`))}\nstored runs/${run(3)}.row.json sha256 ${sha256(path.join(beside, "runs", `${run(3)}.row.json`))}\n`
+    );
+    const besideCheck = check(beside, besideLog);
+    expect(besideCheck.code).toBe(1);
+    expect(besideCheck.stderr).toContain(
+      `the pack of ${run(3)} holds '${run(3)}/../escaped', which is not under ${run(3)}/: it is not unpacked`
+    );
+    expect(existsSync(path.join(beside, "escaped"))).toBe(false);
+
+    const nothing = freshDir("check-nothing");
+    const emptyLog = path.join(nothing, "job.log");
+    writeFileSync(emptyLog, "");
+    expect(check(nothing, emptyLog)).toEqual({
+      code: 1,
+      stdout: [
+        `UNKNOWN: neither ${emptyLog} nor ${nothing}/runs names an owner-walk run: nothing was checked`,
+      ],
+      stderr: "",
+    });
   });
 });
 
@@ -4181,6 +4527,25 @@ esac
         `profile ctl-d ${d.trees}/ctl-d/tree`,
         "batch-scored owner-walk 1 ctl-d",
       ],
+    });
+  });
+
+  // Catches: a restarted Job that launches before it has put back the runs its earlier pods
+  // stored, and a Job with no store that asks for one.
+  test("scored-job.sh with RT_STORE restores the Job's stored runs before anything else, and without it restores none", () => {
+    const standin = { ...pod, SKILL_SCENARIOS_MODEL: "standin" };
+    const stored = plantedJob();
+    const job = stored.run({ ...standin, RT_STORE: "/work/bin/rt-store" });
+    expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(job.calls.split("\n").slice(0, 2)).toEqual([
+      "restore-stored owner-walk",
+      `install ${stored.repo}`,
+    ]);
+    const bare = plantedJob();
+    const none = bare.run(standin);
+    expect({ code: none.code, restores: none.calls.includes("restore-stored") }).toEqual({
+      code: 0,
+      restores: false,
     });
   });
 

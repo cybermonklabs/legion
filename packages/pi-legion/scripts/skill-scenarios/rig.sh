@@ -29,8 +29,18 @@
 #                                                  starts the scratch services and runs each
 #                                                  label's cell of the case the scenario's case
 #                                                  variable names until <count> runs of it scored,
-#                                                  at most three times <count> launches; a cell
-#                                                  short of its count prints UNKNOWN
+#                                                  at most three times <count> launches, a run
+#                                                  already in <work>/runs counted among them; a
+#                                                  cell short of its count prints UNKNOWN. With
+#                                                  RT_STORE, each run is stored as it ends, its
+#                                                  pack and then its row (store_scored_run)
+#   rig.sh restore-stored <scenario>               each run of the scenario whose row an earlier
+#                                                  pod of the Job stored (RT_STORE): its pack
+#                                                  unpacked into <work>/runs, its row beside it
+#   rig.sh check-stored <job log> <dir>            a download of a Job's store, checked against
+#                                                  the sha256 its log names: each run unpacked
+#                                                  into <dir>/checked, or a rig error row naming
+#                                                  each object at fault; then the cells
 #   rig.sh rows      [<scenario>]                  each scored run's row.json, then each entry of
 #                                                  its reach, without scoring it again
 #   rig.sh cell      <scenario> <label> <case> <count>
@@ -2506,6 +2516,7 @@ scored_rig_error() {
 
 # scored_attempt SCENARIO LABEL CASE N launches one run, `rig.sh run`, and writes its row: the
 # scenario's score (score_scored_run), or the rig's error with the reason the run's stderr named.
+# Then it stores the run, scored or not (store_scored_run).
 scored_attempt() {
   local name=$1-$3-$2-$4 err status=0
   mkdir -p "$work/scored-logs"
@@ -2518,14 +2529,21 @@ scored_attempt() {
   else
     scored_rig_error "$name" "$2" "$3" "$(grep '^skill-scenarios: ' "$err" | tail -n 1)"
   fi
+  store_scored_run "$name"
 }
 scored_index=0
 
 # batch_scored_cell SCENARIO LABEL CASE COUNT launches runs of CASE under LABEL (scored_attempt)
 # until COUNT of them hold a scored row, and stops the cell at three times COUNT launches, where
-# it prints UNKNOWN: a cell short of its count is never a pass.
+# it prints UNKNOWN: a cell short of its count is never a pass. The runs of the cell already in
+# $work/runs, each with its row, count as launches too, so a restarted Job, whose earlier runs
+# rig.sh restore-stored put back, keeps the same bound.
 batch_scored_cell() {
-  local scenario=$1 label=$2 case=$3 count=$4 launches=0
+  local scenario=$1 label=$2 case=$3 count=$4 launches=0 dir
+  for dir in "$work/runs/$scenario-$case-$label-"*; do
+    [[ ${dir##*/} =~ ^$scenario-$case-$label-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
+    launches=$((launches + 1))
+  done
   while [ "$(scored_count "$label" "$case")" -lt "$count" ]; do
     if [ "$launches" -ge $((3 * count)) ]; then
       echo "UNKNOWN: $scenario $label $case: $(scored_count "$label" "$case") scored runs of $count after $launches launches, three times its count"
@@ -2534,6 +2552,134 @@ batch_scored_cell() {
     launches=$((launches + 1))
     scored_attempt "$scenario" "$label" "$case" "$(next_run "$scenario-$case" "$label")"
   done
+}
+
+# The store of a scored run. RT_STORE is the runner's helper (legion-remote-test.sh --store-key):
+# `put <file> <name>`, `list <prefix>` and `get <name> <file>`, each under the Job's own key, each
+# put and get printing `stored|got <name> sha256 <hex>` in the Job's log. The bucket's name stays
+# in the runner. A run is two objects: its directory packed whole, runs/<run>.tar.gz, and then its
+# row, runs/<run>.row.json. The row goes last, so a stored row says its pack is stored too; a pod
+# stopped between the two leaves a pack no restart fetches, and its run's name is run, and its
+# pack stored, again.
+
+# store_scored_run NAME stores the run NAME, when RT_STORE is set. A failed pack or put is noted and
+# stops neither the batch nor the run's count in this pod. After a failed pack its row is not
+# stored, so no restart counts the run; at download, a run whose object the log names and the
+# download lacks is a rig error (cmd_check_stored).
+store_scored_run() {
+  [ -n "${RT_STORE:-}" ] || return 0
+  local name=$1 pack=$work/stored/$1.tar.gz
+  mkdir -p "$work/stored"
+  if ! tar -czf "$pack" -C "$work/runs" "$name"; then
+    note "the pack of $name failed, so the run is not stored"
+    return 0
+  fi
+  if ! "$RT_STORE" put "$pack" "runs/$name.tar.gz"; then
+    note "the store of runs/$name.tar.gz failed, so its row is not stored"
+    return 0
+  fi
+  "$RT_STORE" put "$work/runs/$name/row.json" "runs/$name.row.json" || note "the store of runs/$name.row.json failed"
+}
+
+# unpack_run PACK RUN DIR unpacks the pack of the run RUN into DIR, once each of its members is RUN
+# itself or under RUN/, with no `..` segment: no member lands beside its run.
+unpack_run() {
+  local members member
+  members=$(tar -tzf "$1") || fail "$1 is no pack: tar cannot list it"
+  while IFS= read -r member; do
+    [[ $member == "$2" || $member == "$2/" || $member == "$2/"* ]] && [[ /$member/ != */../* ]] ||
+      fail "the pack of $2 holds '$member', which is not under $2/: it is not unpacked"
+  done <<<"$members"
+  tar -xzf "$1" -C "$3" --no-same-owner || fail "the unpack of $1 failed"
+}
+
+# cmd_restore_stored SCENARIO (the header): each run of SCENARIO whose row an earlier pod of the
+# same Job stored, fetched into $work/runs: its pack unpacked, and its row beside it. A run already
+# in $work/runs is left. Each get prints its object's sha256, so the Job's log names every object a
+# cell counts. A failed list or get fails: a pod that cannot read its store would run again, and
+# store over, the names it already holds.
+cmd_restore_stored() {
+  [ $# = 1 ] || fail "usage: rig.sh restore-stored <scenario>"
+  [ -n "${RT_STORE:-}" ] || fail "restore-stored reads the Job's store, and RT_STORE is unset: legion-remote-test.sh --store-key sets it"
+  local names name run listed=0 restored=0
+  names=$("$RT_STORE" list runs/) || fail "the store's list of runs/ failed"
+  mkdir -p "$work/runs" "$work/stored"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    listed=$((listed + 1))
+    [[ $name =~ ^runs/($1-[A-Za-z0-9_-]+)\.row\.json$ ]] || continue
+    run=${BASH_REMATCH[1]}
+    [ ! -e "$work/runs/$run" ] || continue
+    "$RT_STORE" get "runs/$run.tar.gz" "$work/stored/$run.tar.gz" || fail "the get of runs/$run.tar.gz failed"
+    unpack_run "$work/stored/$run.tar.gz" "$run" "$work/runs"
+    "$RT_STORE" get "runs/$run.row.json" "$work/runs/$run/row.json" || fail "the get of runs/$run.row.json failed"
+    restored=$((restored + 1))
+  done <<<"$names"
+  note "the store lists $listed names under runs/; $restored runs of $1 restored from it"
+}
+
+# cmd_check_stored LOG DIR (the header). DIR is a download of a Job's store, DIR/runs/<run>.tar.gz
+# and DIR/runs/<run>.row.json, and LOG the Job's log, whose `stored` and `got` lines name each
+# object's sha256; a later line of a name holds over an earlier one. Each owner-walk run whose row
+# the download holds, or whose object the log names, is checked: each of its two objects must be in
+# the download, named in the log, and of the logged sha256. A run that passes is unpacked into
+# DIR/checked, its row beside it. One that fails gets a rig error row there, naming each object at
+# fault, and its pack is not unpacked; with no world.json, it is in no cell. Then a line for each
+# run, and the cells (score.ts cells). The check catches an object changed or mixed up after the
+# pod stored it, not one an agent in the same pod changed before the rig stored it.
+cmd_check_stored() {
+  [ $# = 2 ] || fail "usage: rig.sh check-stored <job log> <dir>"
+  local log=$1 dir=$2 line file name run object hex faults joined kind form family kase label rest
+  local -A logged=() named=()
+  [ -f "$log" ] || fail "the Job's log $log is not a file"
+  while IFS= read -r line; do
+    [[ $line =~ ^(stored|got)\ (runs/(owner-walk-[A-Za-z0-9_-]+)\.(tar\.gz|row\.json))\ sha256\ ([0-9a-f]{64})$ ]] || continue
+    logged[${BASH_REMATCH[2]}]=${BASH_REMATCH[5]}
+    named[${BASH_REMATCH[3]}]=1
+  done <"$log"
+  for file in "$dir"/runs/owner-walk-*.row.json; do
+    [ -f "$file" ] || continue
+    name=${file##*/}
+    named[${name%.row.json}]=1
+  done
+  if [ ${#named[@]} = 0 ]; then
+    echo "UNKNOWN: neither $log nor $dir/runs names an owner-walk run: nothing was checked"
+    return 1
+  fi
+  rm -rf "$dir/checked"
+  mkdir -p "$dir/checked"
+  while IFS= read -r run; do
+    faults=()
+    for object in "runs/$run.tar.gz" "runs/$run.row.json"; do
+      file=$dir/$object
+      if [ ! -f "$file" ]; then
+        faults+=("$object is not in the download")
+      elif [ -z "${logged[$object]:-}" ]; then
+        faults+=("$object has no stored or got line in the Job's log")
+      else
+        hex=$(sha256sum "$file")
+        hex=${hex%% *}
+        [ "$hex" = "${logged[$object]}" ] || faults+=("$object differs from the Job's log: logged ${logged[$object]}, downloaded $hex")
+      fi
+    done
+    if [ ${#faults[@]} = 0 ]; then
+      unpack_run "$dir/runs/$run.tar.gz" "$run" "$dir/checked"
+      cp "$dir/runs/$run.row.json" "$dir/checked/$run/row.json"
+      printf 'checked %s: as stored\n' "$run"
+      continue
+    fi
+    # The run's name gives its case and label: owner-walk-<kind>-<form>-<family>-<label>-<n>.
+    rest=${run#owner-walk-}
+    IFS=- read -r kind form family label <<<"$rest"
+    kase=$kind-$form-$family label=${label%-*}
+    printf -v joined '%s; ' "${faults[@]}"
+    joined=${joined%; }
+    mkdir -p "$dir/checked/$run"
+    jq -cn --arg run "$run" --arg label "$label" --arg case "$kase" --arg error "the store's objects of the run are at fault: $joined" \
+      '{outcome: "rig-error", run: $run, scenario: "owner-walk", label: $label, case: $case, error: $error}' >"$dir/checked/$run/row.json"
+    printf 'checked %s: rig error: %s\n' "$run" "$joined"
+  done < <(printf '%s\n' "${!named[@]}" | sort)
+  bun "$here/score.ts" cells "$dir/checked" owner-walk
 }
 
 # cmd_batch_scored SCENARIO COUNT LABEL... (the header): the batch's services, each label's texts
@@ -2745,6 +2891,8 @@ profile) shift && cmd_profile "$@" ;;
 live-read) shift && cmd_live_read "$@" ;;
 batch) shift && cmd_batch "$@" ;;
 batch-scored) shift && cmd_batch_scored "$@" ;;
+restore-stored) shift && cmd_restore_stored "$@" ;;
+check-stored) shift && cmd_check_stored "$@" ;;
 run) shift && cmd_run "$@" ;;
 score) shift && cmd_score "$@" ;;
 rows) shift && cmd_rows "$@" ;;

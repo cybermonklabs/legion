@@ -29,7 +29,8 @@
 # control's own cell over every owner of the form, which one case's runs cannot fill: the Job
 # prints it UNKNOWN until each owner's runs are in.
 #
-# In order: `bun install --frozen-lockfile`; the pod's own Postgres and NATS (LEGION_TEST_PG_DSN,
+# In order: with RT_STORE, the runs an earlier pod of the Job stored (rig.sh restore-stored); `bun
+# install --frozen-lockfile`; the pod's own Postgres and NATS (LEGION_TEST_PG_DSN,
 # LEGION_TEST_NATS_URL) as the rig's SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL, so
 # the batch starts no container, and its Oh My Pi (LEGION_TEST_OMP) as SKILL_SCENARIOS_OMP, each
 # unless the variable of the rig's own is set; the capture of a real plans read at the label
@@ -50,7 +51,15 @@
 # plain-text mention of one of the three hosts in a tool's arguments reaches it, and a host reached
 # through a variable, an encoding or a file is not listed.
 #
-# The Job keeps no run after the pod: it prints each run's row in its log, and stores none.
+# The store. With RT_STORE, the runner's helper (legion-remote-test.sh --store-key, which names the
+# Job's key), the Job keeps each run after the pod: as each run ends, rig.sh stores its directory
+# packed whole, runs/<run>.tar.gz, and then its row, runs/<run>.row.json, and the helper prints each
+# object's sha256 in the Job's log. A pod a restart of the same Job made fetches each run whose row
+# is stored (rig.sh restore-stored), so each cell skips it, counts it, and numbers its next run
+# after it, its bound of three times its count kept. At download, `rig.sh check-stored <the Job's
+# log> <the download>` compares each object's sha256 with the logged one: a run whose object
+# differs, or is missing, is a rig error naming the object. Without RT_STORE, the Job prints each
+# run's row in its log and keeps no run after the pod.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
@@ -154,6 +163,9 @@ fi
 checkout=$(cd "${SKILL_SCENARIOS_LABEL_CHECKOUT:-$root}" && pwd -P)
 commit=$(git -C "$checkout" rev-parse HEAD)
 say "$scenario, label group $group, cases ${selected[*]}, label checkout $checkout at $commit, work $SKILL_SCENARIOS_WORK"
+if [ -n "${RT_STORE:-}" ]; then
+  bash "$rig" restore-stored "$scenario"
+fi
 say "bun install --frozen-lockfile"
 (cd "$root" && bun install --frozen-lockfile) >"$SKILL_SCENARIOS_WORK/bun-install.log" 2>&1 ||
   refuse "bun install --frozen-lockfile failed; see $SKILL_SCENARIOS_WORK/bun-install.log"
