@@ -3,6 +3,7 @@ import {
   isParentStatusConflict,
   issueHasParentOrOpenChild,
   type ParentStatusQuestion,
+  type StatusMoveEnd,
   useParentStatusMove,
 } from "./useParentStatusMove";
 
@@ -17,8 +18,8 @@ export interface IssueStatusMove {
   /** The `onError` of each header write of `key` that can carry a status: where the write set the
    *  status and Dispatch refused it under the rule - the page read the parent or the children
    *  before they changed - it asks the question, as a refused dry run does. Each such write
-   *  carries one field, so a write that sets the status sets nothing else. Any other refusal
-   *  stays the header's to show. */
+   *  carries one field, so a write that sets the status sets nothing else. Any other refusal of a
+   *  status stays the header's to show, and ends that write with nothing written. */
   readonly onError: (
     error: unknown,
     key: string,
@@ -40,24 +41,44 @@ export interface IssueStatusMove {
  * issue page's header call this and draw `IssueStatusNotes`, so a fix to the question reaches
  * both. Every status write of the header - its select or pill, Close, Reopen and the palette's
  * rows - goes through `move`, and each write that can carry a status hands its refusal to
- * `onError`.
+ * `onError`. `unwritten`, where a header gives it, is called once for each status write of the
+ * header that ends with nothing written: its dry run, or its `PATCH`, refused for another reason
+ * than the rule; its question closed unanswered (`kept`), or closed behind a chosen write that
+ * Dispatch then refused (`left`); or a move made while another asked (`busy`). A write that ends
+ * written - by the `PATCH`, or by a choice the question took - changes the issue, which the
+ * header reads.
  */
 export function useIssueStatusMove(
-  issue: Pick<IssueDetails, "children" | "key" | "parent">
+  issue: Pick<IssueDetails, "children" | "key" | "parent">,
+  unwritten?: () => void
 ): IssueStatusMove {
   const parentStatus = useParentStatusMove();
+  /** Tells `unwritten` of a move or a question that ended with nothing written. A move that went
+   *  to the `PATCH` (`patched`) ends through `onError` where Dispatch refuses it. */
+  const ended = (end: StatusMoveEnd) => {
+    if (end.kind === "left") {
+      void end.written.catch(() => unwritten?.());
+    } else if (end.kind !== "patched" && end.kind !== "changed") {
+      unwritten?.();
+    }
+  };
   return {
     move: (status, patch) => {
-      void parentStatus.move({
-        key: issue.key,
-        patch,
-        related: issueHasParentOrOpenChild(issue),
-        status,
-      });
+      void parentStatus
+        .move({
+          key: issue.key,
+          patch,
+          related: issueHasParentOrOpenChild(issue),
+          status,
+        })
+        .then(ended);
     },
     onError: (error, key, input) => {
-      if (input.status !== undefined && isParentStatusConflict(error)) {
-        void parentStatus.ask({ key, status: input.status }, error);
+      if (input.status === undefined) return;
+      if (isParentStatusConflict(error)) {
+        void parentStatus.ask({ key, status: input.status }, error).then(ended);
+      } else {
+        unwritten?.();
       }
     },
     pending: parentStatus.pending?.status,

@@ -15,14 +15,17 @@ import { listOpen, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { recordEscapes } from "../../__tests__/record-escapes";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError, type WriteBounds } from "../../api/client";
+import { ApiError, api, NetworkError, type WriteBounds } from "../../api/client";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Artifact,
   ArtifactReview,
   Issue,
+  IssueChild,
   IssueDetails,
+  ParentStatusConflictIssue,
+  StatusChangeAnswer,
   UpdateIssueInput,
   UserIssueState,
   UserState,
@@ -38,6 +41,11 @@ import { MAX_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
+import {
+  answerStatusChanges,
+  type StatusChangeAnswerer,
+} from "./parent-status/status-change-fixtures";
+import type { ParentStatusOption } from "./parent-status/useParentStatusMove";
 import { stateForIssue } from "./pins";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -126,8 +134,10 @@ function CachedHeader(): ReactNode {
 }
 
 /** The header of `shown` in the main content, with the page's text after it, and the title
- *  writes it makes answered as Dispatch answers them. */
+ *  writes it makes answered as Dispatch answers them. `client` is the query client the header
+ *  reads the issue from, where a row draws a change another session made. */
 function header(shown: IssueDetails = details): {
+  client: QueryClient;
   patches: Patches;
   unmount: () => void;
   user: UserEvent;
@@ -159,6 +169,7 @@ function header(shown: IssueDetails = details): {
     </MemoryRouter>
   );
   return {
+    client,
     patches,
     unmount: () => {
       view.unmount();
@@ -648,6 +659,183 @@ for (const { from, shown, status, to, writes } of [
   }
 }
 
+// An issue with an open child or under a parent asks the rule's question before its Close issue or
+// its Reopen writes (`useIssueStatusMove`): a dialog, which holds the focus while the write the
+// reader chose in it is out. Dispatch publishes that write's change as it makes it, and the page's
+// read of the issue that the change sets off can answer before the write does, so the page draws
+// the issue closed or reopened, without the pressed control, while the dialog still holds the
+// focus; the dialog then goes as the write answers, and gives the focus back to a control the page
+// no longer draws. The control drawn in the pressed one's place takes it once the dialog has gone,
+// never the page's body (`useFocusBack`; dispatch://INFRA-2160, H1).
+
+/** The issue's child in work: a close of the issue is a move the rule judges. */
+const childInWork: IssueChild = {
+  active_at: "2026-09-24T05:00:00Z",
+  external_links: [],
+  key: "CORE-2",
+  status: "in_progress",
+  subtree_done: 0,
+  subtree_total: 1,
+  title: "Child in work",
+};
+
+/** Close issue or Reopen pressed on an issue whose move the rule judges. */
+interface AskedMove {
+  /** The choice that answers the question, and the option its write passes. */
+  readonly choice: string;
+  readonly option: ParentStatusOption;
+  /** The control pressed, and the one drawn in its place once the issue has moved. */
+  readonly from: string;
+  readonly to: string;
+  /** The dialog's name. */
+  readonly question: string;
+  /** The issue the control is pressed on: with a child in work, or closed under a parent. */
+  readonly shown: IssueDetails;
+  readonly status: string;
+  /** The issue Dispatch names as the one that stops the move. */
+  readonly stops: ParentStatusConflictIssue;
+  readonly writes: string;
+}
+
+const askedMoves: readonly AskedMove[] = [
+  {
+    choice: "Move them with it",
+    from: "Close issue",
+    option: "include_children",
+    question: "Move CORE-1 to Done?",
+    shown: {
+      ...details,
+      children: [childInWork],
+      progress: { children: { done: 0, total: 1 }, tasks: null },
+    },
+    status: "done",
+    stops: { key: "CORE-2", relation: "child", status: "in_progress", title: "Child in work" },
+    to: "Reopen issue",
+    writes: "closes",
+  },
+  {
+    choice: "Move the parents into work too",
+    from: "Reopen issue",
+    option: "include_parent",
+    question: "Move CORE-1 to Backlog?",
+    shown: { ...closedDetails, parent: "CORE-9" },
+    status: "backlog",
+    stops: { key: "CORE-9", relation: "parent", status: "done", title: "Epic that is done" },
+    to: "Close issue",
+    writes: "reopens",
+  },
+];
+
+/** The issue of `move` once its status is written, by the reader or in another session. */
+function moved(move: AskedMove): IssueDetails {
+  return { ...move.shown, ...statusAnswer(move.shown, { status: move.status }) };
+}
+
+/** Answers the rule's route for `move`: its own dry run refused under the rule, naming the issue
+ *  that stops it, and each choice's dry run with the issue as the write leaves it. The write the
+ *  reader chooses answers the same, or `written` where the row holds it. */
+function answerAskedMove(
+  move: AskedMove,
+  written?: Promise<StatusChangeAnswer>
+): Mock<StatusChangeAnswerer> {
+  const conflict = new ApiError(409, {
+    changed: [],
+    code: "PARENT_STATUS_CONFLICT",
+    error: "this change would leave a parent's status out of line with its children's.",
+    issues: [move.stops],
+  });
+  return answerStatusChanges().mockImplementation(async (_key, input) => {
+    const chosen = input.include_children || input.include_parent || input.unlink_children;
+    if (chosen !== true) throw conflict;
+    if (input.dry_run !== true && written !== undefined) return written;
+    return { changed: [], issue: moved(move) };
+  });
+}
+
+for (const move of askedMoves) {
+  test(`Enter on ${move.from}, answered in the rule's question, ${move.writes} the issue with the focus on ${move.to}, where the page reads the issue moved before the write answers`, async () => {
+    const written = Promise.withResolvers<StatusChangeAnswer>();
+    const statusChanges = answerAskedMove(move, written.promise);
+    const { client, unmount, user } = header(move.shown);
+    try {
+      const control = await screen.findByRole("button", { name: move.from });
+      act(() => control.focus());
+      await user.keyboard("{Enter}");
+      const question = await screen.findByRole("dialog", { name: move.question });
+      const choice = within(question).getByRole("button", { name: move.choice });
+      await waitFor(() => expect(choice).not.toHaveAttribute("aria-disabled"));
+      act(() => choice.focus());
+      await user.keyboard("{Enter}");
+      await waitFor(() =>
+        expect(statusChanges).toHaveBeenLastCalledWith(
+          "CORE-1",
+          { [move.option]: true, status: move.status },
+          keyedAttempt
+        )
+      );
+
+      act(() => {
+        client.setQueryData(issueQuery(base.key).queryKey, moved(move));
+      });
+      expect(screen.queryByRole("button", { name: move.from })).toBeNull();
+      expect(question.contains(document.activeElement), "the question lost the focus").toBe(true);
+
+      await act(async () => written.resolve({ changed: [], issue: moved(move) }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.getByRole("button", { name: move.to })).toHaveFocus();
+    } finally {
+      unmount();
+    }
+  });
+}
+
+// A Close issue or a Reopen whose status write Dispatch refused, or whose question the reader
+// closed unanswered, leaves the issue as it was and takes back its ask for the focus
+// (`useFocusBack`'s `letGo`). So a close or a reopen made later in another session, which the page
+// draws as it reads it, takes the pressed control away with the focus it holds and leaves that
+// focus on the page's body, as every change the reader did not make does (dispatch://INFRA-2160,
+// H1).
+for (const move of askedMoves) {
+  for (const ending of ["its write refused", "its question kept"] as const) {
+    test(`${move.from} with ${ending}, then the issue ${move.writes} in another session, moves no focus`, async () => {
+      if (ending === "its question kept") answerAskedMove(move);
+      else answerStatusChanges().mockResolvedValue({ changed: [], issue: moved(move) });
+      const { client, patches, unmount, user } = header(move.shown);
+      const refusal = Promise.withResolvers<Issue>();
+      patches.mockReturnValue(refusal.promise);
+      try {
+        const control = await screen.findByRole("button", { name: move.from });
+        act(() => control.focus());
+        await user.keyboard("{Enter}");
+        if (ending === "its question kept") {
+          const question = await screen.findByRole("dialog", { name: move.question });
+          act(() => within(question).getByRole("button", { name: "Keep as it is" }).focus());
+          await user.keyboard("{Enter}");
+          await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+        } else {
+          await waitFor(() =>
+            expect(patches).toHaveBeenCalledWith("CORE-1", { status: move.status }, keyedAttempt)
+          );
+          await act(async () =>
+            refusal.reject(new ApiError(403, { code: "FORBIDDEN", error: "not yours to move" }))
+          );
+          await waitFor(() => expect(control).not.toHaveAttribute("aria-disabled"));
+        }
+        expect(control).toHaveFocus();
+
+        act(() => {
+          client.setQueryData(issueQuery(base.key).queryKey, moved(move));
+        });
+        await waitFor(() => expect(screen.queryByRole("button", { name: move.from })).toBeNull());
+        expect(screen.getByRole("button", { name: move.to })).not.toHaveFocus();
+        expect(document.activeElement).toBe(document.body);
+      } finally {
+        unmount();
+      }
+    });
+  }
+}
+
 // Today's header draws Release beside the claim only while the issue has one, so the release its
 // press makes takes it off the page, with the focus it holds, once it lands. The focus goes on,
 // with no scroll, to the control now at its place in the header's order - the labels' control,
@@ -668,6 +856,42 @@ test("Enter on Release frees the claim with the focus on the control now at its 
       expect(screen.queryByRole("button", { name: "Release the claim on CORE-1" })).toBeNull()
     );
     expect(release).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Edit labels" })).toHaveFocus();
+  } finally {
+    unmount();
+    release.mockRestore();
+    agents.mockRestore();
+  }
+});
+
+// A release Dispatch refused draws its line with Retry (`QueryError`), and a press of Retry takes
+// the line away, with the focus Retry holds, while the release it sends again is out. The focus
+// goes to Release, held beside the claim while that release is out, and from there, once it lands,
+// to the control now at Release's place, as after a first release - never to the page's body
+// (`useFocusHandOff`; dispatch://INFRA-2160, H1).
+test("Retry of a refused release puts the focus on Release while the release is out, and on the labels' control once it lands", async () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
+  const { unmount, user } = header({ ...details, claim: sessionClaim });
+  const releaseControl = () =>
+    screen.queryByRole("button", { name: "Release the claim on CORE-1" });
+  try {
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    const failed = await screen.findByRole("alert");
+    expect(failed).toHaveTextContent("Could not release this claim.");
+
+    const retried = Promise.withResolvers<Issue>();
+    release.mockReturnValueOnce(retried.promise);
+    act(() => within(failed).getByRole("button", { name: "Retry" }).focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(releaseControl()).toHaveFocus();
+
+    await act(async () => retried.resolve({ ...base, updated_at: "2026-09-24T08:00:00Z" }));
+    await waitFor(() => expect(releaseControl()).toBeNull());
     expect(screen.getByRole("button", { name: "Edit labels" })).toHaveFocus();
   } finally {
     unmount();

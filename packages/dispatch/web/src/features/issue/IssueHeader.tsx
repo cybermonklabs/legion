@@ -194,6 +194,10 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["subscribers", issue.key] });
     },
   });
+  // The reader's press of Release, or of Retry after a refused release, noted as it sends the
+  // release and forgotten as that release is refused, or as the claim's box leaves the page
+  // (`claimLeft`).
+  const released = useRef(false);
   const releaseClaim = useKeyedWrite({
     // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
     // release of an issue nobody holds with the issue, as it answers the first.
@@ -202,6 +206,11 @@ export function IssueHeader({
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
+    // The write's own callback, not the press's: Retry sends the release again with none of its
+    // own (`retry`).
+    onError: () => {
+      released.current = false;
+    },
     onSuccess: (next) => {
       if (next !== null) mergeIssue(queryClient, next);
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
@@ -210,16 +219,21 @@ export function IssueHeader({
   const releasing = releaseClaim.isPending && !releaseClaim.late;
   // Release is drawn beside the claim only while the issue has one, so the release its press
   // makes takes the claim's box off the page as it lands, with the focus Release holds. The focus
-  // goes on, with no scroll, to the control now at Release's place in the header's order: the
-  // first after the State and Attention groups (`stateActions`), the first of the header's last
-  // line - the labels' own, or Details where they take no press (`useFocusHandOff`). Only a
-  // release of the reader's own hands it on (`released`, which the press sets and its refusal
-  // clears): the box taken away by a release made elsewhere leaves the focus on the page's body,
-  // as the new issue page's claim does (`IssueClaimControl`).
+  // goes on, with no scroll, to the control now at Release's place in the header's order
+  // (`releasePlace`): the first after the State and Attention groups (`stateActions`), the first
+  // of the header's last line - the labels' own, or Details where they take no press
+  // (`useFocusHandOff`). Only a release of the reader's own hands it on (`released`, which a press
+  // of Release or of Retry sets and the release's refusal clears): the box taken away by a release
+  // made elsewhere leaves the focus on the page's body, as the new issue page's claim does
+  // (`IssueClaimControl`). A refused release draws its line with Retry, and Retry's press takes the
+  // line away, with the focus Retry holds, as it sends the release again: the focus goes on to
+  // Release, held beside the claim while that release is out, and from there to Release's place
+  // once it lands, as after a first release; or to Release's place at once where the release has
+  // already taken the claim's box (`retryLeft`, which Retry's press arms, `retried`).
   const headerElement = useRef<HTMLElement>(null);
   const stateActions = useRef<HTMLDivElement>(null);
-  const released = useRef(false);
-  const claimLeft = useFocusHandOff(() => {
+  const releaseControl = useRef<HTMLButtonElement>(null);
+  const releasePlace = () => {
     const groups = stateActions.current;
     if (groups === null || headerElement.current === null) return null;
     return focusableIn(headerElement.current).find(
@@ -227,20 +241,28 @@ export function IssueHeader({
         !groups.contains(control) &&
         (groups.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
     );
-  }, released);
+  };
+  const claimLeft = useFocusHandOff(releasePlace, released);
+  const retried = useRef(false);
+  const retryLeft = useFocusHandOff(() => releaseControl.current ?? releasePlace(), retried);
   const pressRelease = () => {
     released.current = true;
-    releaseClaim.mutate(undefined, {
-      onError: () => {
-        released.current = false;
-      },
-    });
+    releaseClaim.mutate();
+  };
+  const retryRelease = () => {
+    retried.current = true;
+    released.current = true;
+    releaseClaim.retry();
   };
   // Every status write of the header - the status list, Close, Reopen and the palette's rows -
   // goes through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
   // parent or an open child, then the write below, or the question where Dispatch's rule would
-  // refuse it.
-  const statusMove = useIssueStatusMove(issue);
+  // refuse it. One that ends with nothing written takes back the focus that a press of Close issue
+  // or Reopen asked for (`closeFocus`, `reopenFocus`, below).
+  const statusMove = useIssueStatusMove(issue, () => {
+    closeFocus.letGo();
+    reopenFocus.letGo();
+  });
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -302,11 +324,17 @@ export function IssueHeader({
   // left it: Reopen after a close (`closeFocus`), Close issue after a reopen (`reopenFocus`). The
   // command bar's rows of the two ask the same: the bar runs one once it has given the focus
   // back, to the page's body where nothing held it as the bar opened, and the focus goes on from
-  // there. A write refused, or a question of the rule's left unanswered, keeps the ask until the
-  // issue does close or reopen, as a refused save keeps an editor's (`useFocusBack`): a control
-  // the reader put the focus on meanwhile keeps it.
-  const closeFocus = useFocusBack(!isClosed);
-  const reopenFocus = useFocusBack(isClosed);
+  // there. Where the rule's question asks first, its dialog holds the focus, and the page can draw
+  // the issue closed or reopened before the dialog goes - its read of the change Dispatch made can
+  // answer before the chosen write does - so the ask waits for the dialog too (`asking`): the
+  // dialog gives the focus back to the control pressed, or to the page's body where that control
+  // has gone, and the focus goes on from there. A status write refused, or a question closed
+  // unanswered, takes the ask back (`letGo`): the issue closed or reopened later in another
+  // session, which the page draws as it reads it, moves no focus, as a claim released elsewhere
+  // moves none (`released`).
+  const asking = statusMove.question !== undefined;
+  const closeFocus = useFocusBack(!isClosed || asking);
+  const reopenFocus = useFocusBack(isClosed || asking);
   const closeIssue = () => {
     closeFocus.handBack();
     requestStatus("done");
@@ -926,6 +954,7 @@ export function IssueHeader({
                   aria-label={`Release the claim on ${issue.key}`}
                   className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
                   {...heldPress(releasing, pressRelease)}
+                  ref={releaseControl}
                   title="Release this claim so another agent can take the issue"
                   type="button"
                 >
@@ -1037,14 +1066,18 @@ export function IssueHeader({
         />
       ) : null}
       {releaseClaim.isError ? (
-        <QueryError
-          message={
-            stoppedNote(releaseClaim, "the release of this claim", "made") ??
-            "Could not release this claim."
-          }
-          onRetry={releaseClaim.retry}
-          retrying={releaseClaim.isPending}
-        />
+        // Retry's press takes this line away as it sends the release again, and the focus Retry
+        // holds goes on to Release, or to Release's place (`retryLeft`).
+        <div className="contents" ref={retryLeft}>
+          <QueryError
+            message={
+              stoppedNote(releaseClaim, "the release of this claim", "made") ??
+              "Could not release this claim."
+            }
+            onRetry={retryRelease}
+            retrying={releaseClaim.isPending}
+          />
+        </div>
       ) : null}
       {updateIssue.isError && !statusPickOnly(updateIssue.variables) ? (
         parentSaveFailed ? (
