@@ -343,9 +343,9 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       landNow(live, place.kind === "place" ? place.last : null, place.to);
     });
   }, [landNow, settle]);
-  /** Parks the focus while the list names a listed row as leaving, as `park` does for the row
-   *  `last` (or the target `to` the page named), else makes the owed landing after the foot's
-   *  pass. */
+  /** Parks the focus, where it stands on the page's body, while the list names a listed row as
+   *  leaving, as `park` does for the row `last` (or the target `to` the page named); else makes
+   *  the owed landing after the foot's pass. */
   const parkOrLand = useCallback(
     (live: MarkedList, last: string | null, to?: LandingTarget) => {
       if (anyLeaving(live)) {

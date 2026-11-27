@@ -1,4 +1,6 @@
+import { openAgents } from "./agents";
 import { meInboxThreads } from "./api";
+import { drawer } from "./inbox-drawer";
 import { inboxPane } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { expect, test } from "./test";
@@ -23,10 +25,10 @@ import { asUser } from "./users";
  * One thread order everywhere, in the surfaces that sit on the live document: a
  * document block's thread in the spec, the margin thread beside the passage it is about, with
  * the Conversation card next to it, and the Inbox's reading pane over the comment thread, with
- * the Inbox's card below the pane's width. That thread is anchored to the spec, so the pane draws
- * it inside the spec's live room, under its block (the in-document pane, R3). An ask's own thread
- * in the Inbox is in `threads-order.stub.e2e.ts`, and the three threads both files are read over
- * are in `threads-order.ts`.
+ * its reading view below the pane's width and the drawer's card. That thread is anchored to the
+ * spec, so the pane draws it inside the spec's live room, under its block (the in-document pane,
+ * R3). An ask's own thread in the Inbox is in `threads-order.stub.e2e.ts`, and the three threads
+ * both files are read over are in `threads-order.ts`.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
@@ -205,12 +207,10 @@ test("the Inbox's pane, its reading view and the drawer's card read a thread in 
     expect(
       await verticalOrder(collapsedParts(body, 4, body.getByRole("textbox", { name: "Reply" })))
     ).toEqual(["root", "box", "reply-6", "reply-5", "fold"]);
-    await page.goto("/agents");
-    await page.locator("body").focus();
+    // The drawer's key is bound once sign-in answers, which `openAgents` waits for.
+    await openAgents(page);
     await page.keyboard.press("i");
-    const card = page
-      .getByRole("dialog", { name: "Inbox" })
-      .locator(`[data-inbox-row="${id}"] [data-inbox-thread-body]`);
+    const card = drawer(page).locator(`[data-inbox-row="${id}"] [data-inbox-thread-body]`);
     await expect(card).toBeVisible();
     expect(
       await verticalOrder(collapsedParts(card, 4, card.getByRole("textbox", { name: "Reply" })))

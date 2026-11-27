@@ -24,9 +24,9 @@ import { asUser } from "./users";
  * pick in the Inbox's display menu reaches every reader of the order on the page: the thread on
  * the screen reverses its replies and moves its reply box to the other end, with no page load
  * and no scroll, and a fold the reader opened stays open. This holds for a comment thread, an
- * issue message thread and an open ask's thread, in the reading pane and in the row's card below
- * the pane's width. An open ask's box is its answer box, which sits where a reply box would. The
- * pick leaves the display menu open.
+ * issue message thread and an open ask's thread, in the reading pane and in the row's card the
+ * Inbox drawer draws. An open ask's box is its answer box, which sits where a reply box would.
+ * The pick leaves the display menu open.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host or
  * project.
@@ -193,6 +193,12 @@ async function scrollPositions(
   return positions;
 }
 
+/** Clicks `target` from inside the page, which scrolls nothing, where Playwright's own click
+ *  scrolls the control into view first. */
+function scriptClick(target: Locator): Promise<void> {
+  return target.evaluate((node) => (node as HTMLElement).click());
+}
+
 /**
  * The View trigger of the bar inside `bar`: the bar's own button where the bar draws it in its
  * line, else its item of **More**, where a bar under 640 px of its width holds it - the drawer's
@@ -212,7 +218,7 @@ async function viewTrigger(
   // The wait above saw the button or More, and the bar lays itself out from its own width
   // before it first paints, so whether the button is drawn is settled once either shows.
   if ((await button.count()) > 0) return { more: null, trigger: button };
-  await more.evaluate((node) => (node as HTMLElement).click());
+  await scriptClick(more);
   const item = page
     .getByRole("menu", { name: "More" })
     .getByRole("menuitem", { exact: true, name: "View" });
@@ -230,8 +236,8 @@ async function viewTrigger(
  * The scroll is recorded before the menu opens, so the reads after a pick cover the whole
  * switch, the menu's opening too. The test opens and shuts the menu with a script click on
  * View, and on **More** where View is among its items. Playwright's own click scrolls a control
- * into view before it presses it. At 1024 px with the list scrolled, View is above the screen,
- * so that scroll would be the test's and not the page's. A script click scrolls nothing.
+ * into view before it presses it. In the drawer at 1024 px with its rows scrolled, **More** is
+ * above the drawer's top, so that scroll would be the test's and not the page's.
  */
 async function switchBothWays(
   page: Page,
@@ -242,14 +248,14 @@ async function switchBothWays(
   const before = await scrollPositions(page, boxes);
   const menu = page.getByRole("dialog", { name: "View" });
   const { more, trigger } = await viewTrigger(page, bar);
-  await trigger.evaluate((node) => (node as HTMLElement).click());
+  await scriptClick(trigger);
   await expect(menu).toHaveCount(1);
   for (const order of ["newest", "oldest"] as const) {
     const choice = displayChoice(menu, "Thread order", order);
     // A script click too. At 1024 px the menu is cut to the room under View and scrolls in
     // itself, and Thread order is its last section, out of sight. Playwright's click would
     // scroll the menu to it first, which is a scroll the test makes.
-    await choice.evaluate((node) => (node as HTMLElement).click());
+    await scriptClick(choice);
     for (const thread of threads) {
       await expectOrder(thread, order);
       await expectFoldOpen(thread);
@@ -265,10 +271,10 @@ async function switchBothWays(
   }
   // Shut again, so the panel covers nothing the test drives next: View, then **More**, which
   // stays open under a menu opened from it.
-  await trigger.evaluate((node) => (node as HTMLElement).click());
+  await scriptClick(trigger);
   await expect(menu).toHaveCount(0);
   if (more !== null) {
-    await more.evaluate((node) => (node as HTMLElement).click());
+    await scriptClick(more);
     await expect(page.getByRole("menu", { name: "More" })).toHaveCount(0);
   }
 }

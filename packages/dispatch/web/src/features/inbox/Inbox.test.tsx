@@ -4921,9 +4921,8 @@ test("a bulk Snooze that lands with the pointer on a row below the marked rows l
 // and the rows it took stay drawn in their band after the write, while the hand-off still waits for
 // them. The rows marked stood above the window, so the hand-off parked the focus on the list's own
 // stop, and the row under the pointer is the one the anchor keeps. Once the pointer rests, the rows
-// go, and the anchor lets them go with no scroll of its own (it used to name a snoozed row only
-// while its write was out, and scrolled the window back by the rows' height): the one scroll is
-// R8's landing bringing the row after them to the window's top.
+// go, and the anchor lets them go with no scroll of its own: the one scroll is R8's landing
+// bringing the row after them to the window's top.
 test("a bulk Snooze that lands while the pointer travels over the list lets the rows it took go once the pointer rests, and only the landing scrolls", async () => {
   const user = userEvent.setup();
   const rows = Array.from({ length: 12 }, (_, index) =>
