@@ -47,7 +47,13 @@ import {
   turnPlace,
 } from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
-import { LANDING_WAIT_MS, type LandingSight, newOwnNode, useOutlineWriter } from "./outline-writer";
+import {
+  type HeldLanding,
+  LANDING_WAIT_MS,
+  type LandingSight,
+  newOwnNode,
+  useOutlineWriter,
+} from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { nearestScroll, scrollingAncestor } from "./scroll-box";
@@ -110,8 +116,10 @@ export interface AddressedTurn {
  * so that the line at the foot can take the focus. What the line then sends opens it again where
  * its landing is the history's (`HeldLanding.opensDetails`), and the history, which the close took
  * off the page with how far it was drawn, is drawn down to the thread the reply answers to land
- * it there; a reply that lands in the outline, as a person's reply to an agents' comment tied to
- * no text does (decision 573), leaves Details shut.
+ * it there, reading the log on for that thread where the log, read anew, does not reach it yet;
+ * a close of Details before a read draws the reply ends its landing. A reply that lands in the
+ * outline, as a person's reply to an agents' comment tied to no text does (decision 573), leaves
+ * Details shut.
  */
 export function IssueHistory({
   activityFollowing,
@@ -280,16 +288,15 @@ export function IssueHistory({
     () => (itemId === undefined ? undefined : turnPlace(days, itemId)),
     [days, itemId]
   );
-  // The thread a landing the writer opened Details for answers (`HeldLanding.opensDetails`), which
-  // is drawn however far under the entries drawn it stands, as the thread of the turn an address
-  // names is: on a phone a turn's Reply closed Details, which took this list off the page with how
-  // far Show more had drawn it, so the list mounts again over its first entries, and a thread under
-  // them would draw no turn for the landing to go to (`useHistoryLanding`).
-  const writerLanding = useOutlineWriter()?.landing;
-  const reopenedFor =
-    writerLanding?.in === "history" && writerLanding.opensDetails
-      ? writerLanding.under?.id
-      : undefined;
+  // The writer's landing where it is the history's (`HeldLanding.in`), which this list lands
+  // (`useHistoryLanding`), and the thread one the writer opened Details for answers
+  // (`HeldLanding.opensDetails`), which is drawn however far under the entries drawn it stands, as
+  // the thread of the turn an address names is: on a phone a turn's Reply closed Details, which
+  // took this list off the page with how far Show more had drawn it, so the list mounts again over
+  // its first entries, and a thread under them would draw no turn for the landing to go to.
+  const writer = useOutlineWriter();
+  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
+  const reopenedFor = landing?.opensDetails === true ? landing.under?.id : undefined;
   const landingPlace = useMemo(
     () => (reopenedFor === undefined ? undefined : turnPlace(days, reopenedFor)),
     [days, reopenedFor]
@@ -314,36 +321,37 @@ export function IssueHistory({
   const listDrawn = log.data !== undefined && !firstFill;
   // Whether a press waits for the pages its next entries are read from.
   const pressWaits = asked && !stopped;
-  // Each move of the place is drawn in the render that finds it, before React commits anything.
+  // Each move of the place is drawn in the render that finds it, before React commits anything:
+  // to the thread of the turn the address names, else to the thread of the writer's landing,
+  // where it stands under the entries drawn.
+  const reach = [itemPlace, landingPlace].find(
+    (place) => place !== undefined && (shownEnd === undefined || comparePlaces(place, shownEnd) < 0)
+  );
   let nextEnd = end;
   if (asked && !short) {
     setAsked(false);
     nextEnd = placeUnder(days, shownEnd, HISTORY_PAGE);
-  } else if (
-    itemPlace !== undefined &&
-    (shownEnd === undefined || comparePlaces(itemPlace, shownEnd) < 0)
-  ) {
-    nextEnd = itemPlace;
-  } else if (
-    landingPlace !== undefined &&
-    (shownEnd === undefined || comparePlaces(landingPlace, shownEnd) < 0)
-  ) {
-    nextEnd = landingPlace;
+  } else if (reach !== undefined) {
+    nextEnd = reach;
   } else if (end === undefined && settled && (!short || stopped)) {
     nextEnd = shownEnd;
   }
   if (nextEnd !== end) setEnd(nextEnd);
   // The address of a turn of a thread that began before the oldest event read so far names an
-  // entry the history does not hold yet (`HistoryInput.loadedFrom`), so the log is read on, one
-  // page at a time, until that thread is in or the log has ended; the history is then drawn down
-  // to that thread, and the landing below marks the turn and brings it on screen. It waits for
-  // the comments and messages the threads are drawn from, before which no thread is drawn at all,
-  // and for every read in flight, so each page is one request. A read that failed stops it: a
-  // failed next page says so with its Retry, and a refetch that failed over the pages held draws
-  // no line, which leaves the control under the entries to read on.
-  const seeksItem =
-    item !== undefined &&
-    itemPlace === undefined &&
+  // entry the history does not hold yet (`HistoryInput.loadedFrom`), and so can the landing the
+  // writer opened Details for: nothing reads the log while Details is shut, so its pages can
+  // leave the cache before the reply is sent, and the log read anew holds its first page alone. So
+  // the log is read on, one page at a time, until that thread is in or the log has ended; the
+  // history is then drawn down to that thread, where the landing below marks the address's turn
+  // and brings it on screen, and the writer's lands on the reader's new turn
+  // (`useHistoryLanding`). It waits for the comments and messages the threads are drawn from,
+  // before which no thread is drawn at all, and for every read in flight, so each page is one
+  // request. A read that failed stops it: a failed next page says so with its Retry, and a refetch
+  // that failed over the pages held draws no line, which leaves the control under the entries to
+  // read on.
+  const seeksThread =
+    ((item !== undefined && itemPlace === undefined) ||
+      (reopenedFor !== undefined && landingPlace === undefined)) &&
     comments.data !== undefined &&
     messages.data !== undefined &&
     log.hasNextPage &&
@@ -367,10 +375,10 @@ export function IssueHistory({
       setOlderReadsEnded((ended) => ended + 1);
     });
   };
-  // The history reads on, a page at a time, for the turn an address names or for the entries it
-  // draws next (`short`), once the threads' reads have answered, while no read of the log is out,
-  // and never after one failed.
-  const readsOn = seeksItem || (short && settled && !log.isFetching && !log.isError);
+  // The history reads on, a page at a time, for the thread of the turn an address names or of the
+  // writer's landing, or for the entries it draws next (`short`), once the threads' reads have
+  // answered, while no read of the log is out, and never after one failed.
+  const readsOn = seeksThread || (short && settled && !log.isFetching && !log.isError);
   useEffect(() => {
     if (readsOn) readOlderPage();
   });
@@ -637,7 +645,15 @@ export function IssueHistory({
   });
   // A write from the line at the foot that answered a turn of a thread this history holds is the
   // history's to land (`useHistoryLanding`).
-  useHistoryLanding({ bringIntoBox, days, handTo, list: anchorRoot });
+  useHistoryLanding({
+    bringIntoBox,
+    days,
+    endLanding: writer?.landed,
+    handTo,
+    landing,
+    list: anchorRoot,
+    older,
+  });
   // The history draws the log it holds whatever the last read's outcome. The log's own line
   // stands under the heading, in place of the loading line, while the log stands failed
   // (`standsFailed`). A failed next page is said where Show more is, below the pages held, and
@@ -807,41 +823,52 @@ function drawnTurn(root: ParentNode | null, id: string): HTMLElement | undefined
 
 /**
  * Lands a write from the line at the foot that answered a turn of a thread the history drawn in
- * `list` holds, which is the history's to land (`HeldLanding.in`), as every other write's is the
- * outline's: the reader is taken to their new turn in that thread - or, for a `self` landing, back
- * to the turn they answered - focused, and wholly in Details' view by the least scroll of
- * Details' box, never of the page, as a hand-on brings what it focuses there (`handTo`), the turn
- * first (`bringIntoBox`) and then its first control, which takes the focus. The send has landed
- * when the line asks, but the read that draws the new turn is still out, so the turns the thread
- * holds are noted first, and the reader's turn that is new is gone to once a read has brought it
- * and the list has drawn it, by the one rule the outline goes to their new row by
- * (`newOwnNode`). A landing the writer already holds as the history mounts was asked for while it
- * was not drawn, with Details shut, and the reader has been elsewhere since, unless the writer
- * opened Details for it, on a phone, where a turn's Reply shut it (`HeldLanding.opensDetails`):
- * the history is drawn from the commit that holds that landing, down to the thread the landing
- * answers (`IssueHistory`'s `landingPlace`), and lands it as one asked for while it is drawn. One
- * asked for while Details is shut around the list has no turn on screen to go to, and nor has one
- * whose thread this history no longer holds, as an agents' post a person wrote in, which the
- * outline draws from then on. Each of these ends with the focus where it is, as the outline ends
- * a landing under a node it draws no row of, but for one whose reply takes that node out of this
- * history (`HeldLanding.leavesHistory`), and so does one whose new turn no read has drawn once the
- * read's wait is out (`LANDING_WAIT_MS`).
+ * `list` holds, which is the history's to land (`landing`, `HeldLanding.in`), as every other
+ * write's is the outline's: the reader is taken to their new turn in that thread - or, for a
+ * `self` landing, back to the turn they answered - focused, and wholly in Details' view by the
+ * least scroll of Details' box, never of the page, as a hand-on brings what it focuses there
+ * (`handTo`), the turn first (`bringIntoBox`) and then its first control, which takes the focus.
+ * The send has landed when the line asks, but the read that draws the new turn is still out, so
+ * the turns the thread holds are noted first, and the reader's turn that is new is gone to once a
+ * read has brought it and the list has drawn it, by the one rule the outline goes to their new
+ * row by (`newOwnNode`). A landing the writer already holds as the history mounts was asked for
+ * while it was not drawn, with Details shut, and the reader has been elsewhere since, unless the
+ * writer opened Details for it, on a phone, where a turn's Reply shut it
+ * (`HeldLanding.opensDetails`): the history is drawn from the commit that holds that landing,
+ * down to the thread the landing answers (`IssueHistory`'s `landingPlace`), and lands it as one
+ * asked for while it is drawn. That thread can stand on a page of the log not read yet, as `older`
+ * says: the log's pages can have left the cache while Details was shut, and the log read anew
+ * holds its first page alone, which leaves out a thread older than every event on it
+ * (`HistoryInput.loadedFrom`). The landing then waits while the history reads on for it
+ * (`IssueHistory`'s `seeksThread`). One asked for while Details is shut around the list has no
+ * turn on screen to go to, and nor has one whose thread this history no longer holds, as an
+ * agents' post a person wrote in, which the outline draws from then on. Each of these ends with
+ * the focus where it is, as the outline ends a landing under a node it draws no row of, but for
+ * one whose reply takes that node out of this history (`HeldLanding.leavesHistory`), and so does
+ * one whose new turn no read has drawn once the read's wait is out (`LANDING_WAIT_MS`), and one
+ * still waiting as the history goes.
  */
 function useHistoryLanding({
   bringIntoBox,
   days,
+  endLanding,
   handTo,
+  landing,
   list,
+  older,
 }: {
   readonly bringIntoBox: (element: HTMLElement) => void;
   readonly days: readonly HistoryDay[];
+  /** Ends the writer's landing (`OutlineWriter.landed`); undefined where no writer is drawn. */
+  readonly endLanding: (() => void) | undefined;
   readonly handTo: (element: HTMLElement) => void;
+  /** The writer's landing where it is the history's (`HeldLanding.in`). */
+  readonly landing: HeldLanding | undefined;
   readonly list: RefObject<HTMLElement | null>;
+  /** Whether older pages of the log are left to read. */
+  readonly older: boolean;
 }): void {
-  const writer = useOutlineWriter();
   const drawer = useMarginDrawer();
-  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
-  const endLanding = writer?.landed;
   const landingAtMount = useRef(landing);
   const endsAtMount = landing === landingAtMount.current && landing?.opensDetails !== true;
   const landingFrom = useRef<LandingSight | undefined>(undefined);
@@ -851,10 +878,14 @@ function useHistoryLanding({
   const reader = signedIn.data?.login;
   useLayoutEffect(() => {
     if (landing === undefined || endLanding === undefined) return;
+    if (endsAtMount || drawer?.open === false) {
+      endLanding();
+      return;
+    }
     const answered = landing.under?.id;
     const thread = answered === undefined ? undefined : threadOf(days, answered);
-    if (endsAtMount || drawer?.open === false || thread === undefined) {
-      endLanding();
+    if (thread === undefined) {
+      if (!landing.opensDetails || !older) endLanding();
       return;
     }
     const turns = [thread.root, ...thread.replies];
@@ -876,10 +907,33 @@ function useHistoryLanding({
     const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
     if (control !== null) handTo(control);
   });
+  // A landing waits for the read that draws the reader's new turn no longer than
+  // `LANDING_WAIT_MS`, and no longer than the history it waits in: one still waiting as the
+  // history goes - Details shut before a read drew that turn, as a reader on a phone shuts the
+  // sheet the writer opened for it - ends then. Only this history can end it, as the outline
+  // takes none of its landings, and held on, it would be taken up by the next history to mount at
+  // any later open of Details: one the writer opened Details for would draw that history down to
+  // its thread and take a new turn of the reader's there. A landing that ends, or a newer one in
+  // its place, runs this effect again rather than ending anything, so only the going of the
+  // history ends a landing, and only the one it waited on. React runs a mount's effects a second
+  // time under StrictMode, their cleanups between, within the same task, so whether the history
+  // went is read a microtask on (`onPage`).
+  const onPage = useRef(false);
+  useEffect(() => {
+    onPage.current = true;
+    return () => {
+      onPage.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (landing === undefined || endsAtMount || endLanding === undefined) return;
     const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
-    return () => window.clearTimeout(late);
+    return () => {
+      window.clearTimeout(late);
+      queueMicrotask(() => {
+        if (!onPage.current) endLanding();
+      });
+    };
   }, [endLanding, endsAtMount, landing]);
 }
 

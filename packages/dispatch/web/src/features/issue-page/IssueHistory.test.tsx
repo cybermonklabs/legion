@@ -639,16 +639,19 @@ function WriterProbe({ held }: { readonly held: HeldWriter }): null {
   return null;
 }
 
-/** Whether the shell holds Details open (`ShellDetails`), as its last render read it. */
+/** Whether the shell holds Details open (`ShellDetails`), as its last render read it, and the
+ *  drawer's own `setOpen`, which opens and shuts it as the reader's controls do. */
 interface HeldDetails {
   open?: boolean;
+  setOpen?: (open: boolean) => void;
 }
 
 /** Details as the shell holds it (`MarginDrawer`) around `children`: open as a case starts, and
- *  open or shut by its own `setOpen` from then on, which `held` reads. */
+ *  open or shut by its own `setOpen` from then on, which `held` reads and holds. */
 function ShellDetails({ children, held }: { children: ReactNode; held: HeldDetails }): ReactNode {
   const [open, setOpen] = useState(true);
   held.open = open;
+  held.setOpen = setOpen;
   const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
   return <MarginSlotProvider drawer={drawer}>{children}</MarginSlotProvider>;
 }
@@ -2690,8 +2693,8 @@ const TURN_HEIGHTS: Record<string, number> = { "m-earlier": 50, "m-mine": 100, "
  * phone (`phone`) the page is 390 px wide, a phone's width, and Details is as the shell holds it,
  * open, with the history drawn in it only while it is (`drawHistory`'s `details`); a Reply puts
  * the caret in the line's field. Elsewhere the focus is in that field, which she sent from.
- * Returns the box, that field, whether Details is open, the query client, the writer, and what
- * puts everything back.
+ * Returns the box, that field, whether Details is open, what opens or shuts it as the reader does,
+ * the query client, the writer, and what puts everything back.
  */
 async function drawLandingHistory({
   comments = [],
@@ -2707,6 +2710,7 @@ async function drawLandingHistory({
   field: HTMLElement;
   queryClient: QueryClient;
   restore: () => void;
+  setDetailsOpen: (open: boolean) => Promise<void>;
   writer: () => OutlineWriter | undefined;
 }> {
   await warmMarkdownRenderer();
@@ -2781,6 +2785,10 @@ async function drawLandingHistory({
       field,
       queryClient,
       restore,
+      setDetailsOpen: (open) =>
+        act(async () => {
+          details.setOpen?.(open);
+        }),
       writer: () => held.writer,
     };
   } catch (error) {
@@ -2905,22 +2913,21 @@ async function replyOnPhone(
 
 /**
  * Draws the history of `newer` claims on a phone (`drawLandingHistory`), sends a reply from its
- * turn `m-root` and holds its landing to decision 581: Reply shuts Details, the line at the foot
- * sends, the writer opens Details again with the history drawn - `historyDrawn` being the failure
- * where it is not - and once the reader's new turn is drawn the history focuses it, wholly in
- * Details' view, and ends the landing. `whileLanding` reads the writer's landing once Details has
- * opened for it, and `landed` the new turn the history focused, before the landing's last checks.
+ * turn `m-root` and holds its landing to decision 581: Reply shuts Details, `whileShut` changes
+ * what the case gives while it is shut, the line at the foot sends, the writer opens Details again
+ * for a landing in the history that it marks as opening Details, with the history drawn -
+ * `historyDrawn` being the failure where it is not - and once the reader's new turn is drawn,
+ * under the turn it answers, the history focuses it, wholly in Details' view, and ends the
+ * landing.
  */
 async function landPhoneReply({
   historyDrawn,
-  landed,
   newer,
-  whileLanding,
+  whileShut,
 }: {
   historyDrawn: string;
-  landed?: (turn: HTMLElement) => void;
   newer?: number;
-  whileLanding?: (landing: OutlineWriter["landing"]) => void;
+  whileShut?: (queryClient: QueryClient) => void;
 }): Promise<void> {
   const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
     newer,
@@ -2929,6 +2936,7 @@ async function landPhoneReply({
 
   try {
     await replyOnPhone(box, "m-root", field, detailsOpen);
+    if (whileShut !== undefined) act(() => whileShut(queryClient));
 
     // The line sends, and asks the page to land its reply (`IssueComposer.tsx`'s `finish`).
     act(() => {
@@ -2938,7 +2946,10 @@ async function landPhoneReply({
     expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
       true
     );
-    whileLanding?.(writer()?.landing);
+    expect(
+      writer()?.landing,
+      "the reply's landing is not the history's, or is not marked as opening Details"
+    ).toMatchObject({ in: "history", opensDetails: true });
     await waitFor(() =>
       expect(box.querySelector('[data-history-item="m-earlier"]'), historyDrawn).not.toBeNull()
     );
@@ -2961,7 +2972,10 @@ async function landPhoneReply({
     expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
       turn.querySelector("a[href], button:not(:disabled)")
     );
-    landed?.(turn);
+    expect(
+      turn.closest('[data-history-entry="thread:m-root"]'),
+      "the reader's new turn is not drawn under the turn it answers"
+    ).not.toBeNull();
     expect(
       writer()?.landing,
       "the landing did not end once it took the reader there"
@@ -2985,19 +2999,7 @@ async function landPhoneReply({
 // the reader to their new turn under the turn it answers, focused and wholly in Details' view, as
 // it does where Details stays open.
 test("on a phone, a reply sent from a turn of the history with Details shut opens Details on the history and focuses the reader's new turn, wholly in Details' view", async () => {
-  await landPhoneReply({
-    historyDrawn: "Details opened without the history",
-    landed: (turn) =>
-      expect(
-        turn.closest('[data-history-entry="thread:m-root"]'),
-        "the reader's new turn is not drawn under the turn it answers"
-      ).not.toBeNull(),
-    whileLanding: (landing) =>
-      expect(
-        landing,
-        "the reply's landing is not the history's, or is not marked as opening Details"
-      ).toMatchObject({ in: "history", opensDetails: true }),
-  });
+  await landPhoneReply({ historyDrawn: "Details opened without the history" });
 });
 
 // Decision 581, for a thread under the history's first entries. A turn's Reply shuts Details on a
@@ -3013,6 +3015,108 @@ test("on a phone, a reply sent from a turn of a thread under the history's first
       "Details opened again without the history drawn down to the thread the reply answers",
     newer: 25,
   });
+});
+
+// Decision 581, for a thread older than the log's first page. Nothing reads the history's log
+// while Details is shut, so its pages leave the cache after five minutes, and a reader who takes
+// that long to write the reply comes back to a log read anew, one page of it. The history leaves
+// out a thread whose first turn is older than every event read while older pages are left
+// (`HistoryInput.loadedFrom`), so the landing found no thread to go to and ended at once, as it
+// ends one whose thread the history no longer holds: Details opened over the history's first
+// entries, and the focus stayed in the line. The history reads the log on for the thread the
+// landing answers, a page at a time, as it does for the thread of a turn an address names, and
+// lands the reply there once that thread is in.
+test("on a phone, a reply sent from a turn of a thread older than the first page of a log read anew opens Details, reads on to that thread and focuses the reader's new turn there, wholly in Details' view", async () => {
+  // The ten claims the history drew before Reply (`drawLandingHistory`).
+  const drawnBefore = Array.from({ length: 10 }, (_, index) => claimAgo(20 - index, index + 1));
+  // The log's first page as it is read anew: a full page of events made while the reader wrote,
+  // all of the last second, so every one is newer than the thread's first turn, two minutes old;
+  // its newest 30 are claims, so its first entries leave entries to draw under them, and the rest
+  // are events the history leaves out. The claims drawn before are on the page under it.
+  const readAnew = Array.from({ length: 200 }, (_, index) =>
+    (index < 30 ? claimAgo : outlineEventAgo)(220 - index, (index + 1) / 200)
+  );
+  await landPhoneReply({
+    historyDrawn: "Details opened again without reading the log on to the thread the reply answers",
+    whileShut: (queryClient) => {
+      (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mockImplementation(
+        async (_key, options) =>
+          options?.after !== undefined
+            ? []
+            : [...(options?.before === undefined ? readAnew : drawnBefore)]
+      );
+      queryClient.removeQueries({ queryKey: HISTORY_LOG });
+    },
+  });
+});
+
+// Decision 581, for a reader who shuts Details again before the reply lands. The writer opened
+// Details for the reply's landing in the history, and the reader shut it before a read drew their
+// new turn: the history went with Details, its wait for the read with it, and nothing ended the
+// landing, which the writer kept. The reader's next open of Details, by any control, took it up
+// as one the writer opened Details for: the history was drawn down to that thread and, for 10 s,
+// took a new turn of the reader's there as the landing's. A landing still waiting as its history
+// goes ends there.
+test("on a phone, a reply's landing ends as the reader shuts the Details it opened before the new turn is drawn, and a later open of Details neither draws down to its thread nor takes a turn there", async () => {
+  const { box, detailsOpen, field, queryClient, restore, setDetailsOpen, writer } =
+    await drawLandingHistory({ newer: 25, phone: true });
+
+  try {
+    await replyOnPhone(box, "m-root", field, detailsOpen);
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
+      writer()?.clear();
+    });
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "Details opened again without the history drawn down to the thread the reply answers"
+      ).not.toBeNull()
+    );
+
+    await setDetailsOpen(false);
+    expect(
+      writer()?.landing,
+      "the landing outlived the history it waited in, which Details took off the page"
+    ).toBeUndefined();
+
+    await setDetailsOpen(true);
+    await waitFor(() =>
+      expect(
+        drawnEntries(),
+        "Details opened again without the history's first entries"
+      ).toHaveLength(PAGE_SIZE)
+    );
+    expect(
+      box.querySelector('[data-history-item="m-earlier"]'),
+      "a later open of Details drew the history down to the thread of a landing that had ended"
+    ).toBeNull();
+    // The reader draws the thread with Show more, which hands the focus to the first entry it
+    // draws, and a read then brings their new turn into that thread.
+    await userEvent.click(screen.getByRole("button", { name: SHOW_MORE }));
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "Show more did not draw the thread"
+      ).not.toBeNull()
+    );
+    const focused = document.activeElement;
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-mine"]'),
+        "the read did not draw the reader's new turn"
+      ).not.toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "a later open of Details took a new turn of the reader's for a landing that had ended"
+    ).toBe(focused);
+  } finally {
+    restore();
+  }
 });
 
 // Decision 573, which decision 581 leaves as it is: a person's reply to an agents' comment tied
