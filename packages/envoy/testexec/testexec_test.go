@@ -3,6 +3,7 @@ package testexec
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -22,6 +23,25 @@ func writeUnder(t *testing.T, root, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestAnExecutableWrittenWhileTheProcessForksRuns is c-exec's guarantee: a program WriteFile writes,
+// and a test then runs, is not refused as busy (ETXTBSY) while the process forks, because WriteFile
+// takes the fork lock through programfile.Write. RunsBeside forks true beside 400 writes-and-runs and
+// fails on any ETXTBSY (it skips under gVisor, where the kernel refuses no such run, and fails under
+// GITHUB_ACTIONS if even the probe run is not refused, a broken runner). If WriteFile ever wrote with
+// os.WriteFile again, every fake command a test writes with it would be back in the flake this pull
+// request exists to remove, and nothing else would catch it: the lock's other holder, programfile.Write,
+// has its own guard, but WriteFile's use of it is guarded only here. This is the test c-exec names.
+func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
+	dir := t.TempDir()
+	RunsBeside(t, 400, func(i int) error {
+		path := filepath.Join(dir, fmt.Sprintf("fake-%d", i))
+		if err := WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			return err
+		}
+		return exec.Command(path).Run()
+	})
 }
 
 // Unguarded names a write of a file with an execute bit by os.WriteFile or os.OpenFile in any file
