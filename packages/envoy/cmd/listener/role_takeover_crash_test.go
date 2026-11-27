@@ -536,7 +536,7 @@ func crashCopiedForwardHasOnePrefix(t *testing.T) {
 	next := rig.relayed(b, answerDone)
 	rig.claim(rig.mux, b, role)
 	frames := crashAwaitEvents(t, next, []string{answer.EventID}, nil, "the new holder")
-	copied := roleForwardDedupePrefix + publishDedupePrefix
+	copied := roleForwardDedupePrefix + bus.PublishDedupePrefix
 	for _, frame := range frames {
 		key := frame.item.DedupeKey
 		if frame.item.EventID == answer.EventID && (!strings.HasPrefix(key, copied) || key == want || strings.Count(key, roleForwardDedupePrefix) != 1) {

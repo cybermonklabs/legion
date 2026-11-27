@@ -1504,6 +1504,49 @@ func TestAPublishForARolesFirstHolderIsMadeOnlyOnDispatchsOwnIdentity(t *testing
 	}
 }
 
+// The rule that a call carrying a field the listener takes from Dispatch's identity alone is never
+// made on the shared token is kept by the one place every call is made through (post, do), not by
+// each caller: a marked call made directly through post on a client that holds only the shared
+// token, or no credential, is refused with ErrNoListenerIdentity before any request is built,
+// whichever route it names and whoever the caller is, with one Error line naming the call, and the
+// stand-in listener, which would take the shared token, is never called. The control is the same
+// call with no mark, which the shared token carries.
+func TestPostRefusesAMarkedCallOnAClientThatPresentsNoIdentity(t *testing.T) {
+	stand := &identityStand{takes: map[string]bool{"Bearer shared": true}}
+	listener := httptest.NewServer(http.HandlerFunc(stand.serve))
+	defer listener.Close()
+	const refusal = "dispatch: a call of a caller this test stands in for is refused"
+	marked := &markedCall{refusal: refusal, detail: "a call of a caller this test stands in for", attrs: []any{"caller", "test"}}
+
+	var logs bytes.Buffer
+	logger := WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
+	for i, client := range []*Client{New(listener.URL, WithToken("shared"), logger), New(listener.URL, logger)} {
+		response, err := client.post(context.Background(), "/v1/messages/send", marked, map[string]any{"message": "m"})
+		if response != nil {
+			response.Body.Close()
+		}
+		if !errors.Is(err, ErrNoListenerIdentity) || errors.Is(err, ErrUnavailable) ||
+			!strings.Contains(err.Error(), "a call of a caller this test stands in for") {
+			t.Fatalf("client %d's marked call = %v, want ErrNoListenerIdentity naming the call, and not ErrUnavailable", i, err)
+		}
+	}
+	if got := stand.taken(); len(got) != 0 {
+		t.Fatalf("the listener was called %+v by clients with no identity, want no call", got)
+	}
+	if n := logLines(&logs, "ERROR", refusal, map[string]any{"caller": "test"}); n != 2 {
+		t.Fatalf("the clients with no identity wrote %d Error lines %q for their two refused calls, want two:\n%s", n, refusal, logs.String())
+	}
+
+	response, err := New(listener.URL, WithToken("shared")).post(context.Background(), "/v1/messages/send", nil, map[string]any{"message": "m"})
+	if err != nil {
+		t.Fatalf("control: a call with no mark on the shared token: %v", err)
+	}
+	response.Body.Close()
+	if got := stand.taken(); len(got) != 1 || got[0].authorization != "Bearer shared" {
+		t.Fatalf("control: the listener was called %+v, want one call on the shared token", got)
+	}
+}
+
 // A listener URL that carries a made-up token as its user name or in its query, with nothing
 // listening: no call's error holds any part of the token, though net/http's error quotes the
 // request URL with only a password masked, and each is still ErrUnavailable and ErrUnreachable.

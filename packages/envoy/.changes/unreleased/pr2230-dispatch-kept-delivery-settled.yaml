@@ -5,18 +5,37 @@ body: |-
   and is made on Dispatch's own identity alone (`ENVOY_ACCOUNT_TOKEN_FILE` or
   `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`): a Dispatch with neither refuses it, and the attempt fails
   naming those settings, and an identity the listener refuses on two tries fails it naming the
-  role, never retried on the shared token. The attempt records `queued` while the listener keeps
-  the copy. When the listener's expiry notice of that copy arrives - its hour ended with no
-  session taking it, or the role's live holder does not take its delivery mode - the outbox
-  settles every attempt of that post the copy carried that nobody answered (`queued`, no session
-  pinned, no reply) as `failed`, with the error "The Envoy listener kept this message for the
-  role, and no session took it before the listener dropped it." and no envelope, so the dashboard
-  offers Retry, and appends one `comment.delivery` or `message.delivery` receipt for each, written
-  by the outbox's own system actor. An attempt a session already answered is left as it is, a
-  repeated notice settles nothing twice, and a notice naming a post the store does not hold is
-  passed over with one Error line. Nothing is kept again and no `outbox_role_copy_expiries` row is
-  written for it. With a listener of an earlier release, which ignores the post, the publish is
-  answered `404` and the attempt fails with the listener's text, as before. No migration.
+  role, never retried on the shared token. The Dispatch Envoy client keeps that rule in the one
+  place every call is made (`Client.do`), so no caller can send such a call on the shared token.
+  The attempt records `queued` while the listener keeps the copy. When the listener's expiry
+  notice of that copy arrives - its hour ended with no session taking it, or the role's live
+  holder does not take its delivery mode - the outbox settles every attempt of that post to that
+  role the copy carried that nobody answered (`queued`, no session pinned, no reply) as `failed`,
+  with the error "The Envoy listener kept this message for the role, and no session took it
+  before the listener dropped it." and no envelope, so the dashboard offers Retry, and appends one
+  `comment.delivery` or `message.delivery` receipt for each, written by the outbox's own system
+  actor. A copy whose forward the listener began and never confirmed may have reached the role's
+  holder, which its notice says (`forward_unconfirmed`): the attempt is then settled with the
+  error "The Envoy listener kept this message for the role, and a forward to its holder was not
+  confirmed before the listener dropped it; the holder may already have it, so Retry can deliver a
+  second copy." An attempt a session already answered is left as it is, a repeated notice settles
+  nothing twice, and a notice naming a post the store holds no delivery of to its role is passed
+  over with one Error line: a notice stored for one role settles no attempt of another role's, and
+  blocks none of its notices.
+
+  A notice can be read before the API has recorded the attempt `queued`, while the attempt is
+  still `pending`. The outbox then settles nothing and moves its cursor past the notice, and
+  records the end of the copy in the new `kept_delivery_expiries` table, keyed by the copy's
+  envelope id, the role and the post; the API's settle, which takes the same owner lock, reads
+  that record before it writes `queued` and settles the attempt `failed` in the same way, its
+  receipt saying so. The attempt ends settled in either order, and no pending attempt holds the
+  outbox's cursor back.
+
+  Migration `20261127073000_kept_delivery_expiries` creates that table. It names no existing
+  table and the release before it neither reads nor writes it, so a rolling update runs that
+  release over the new schema unchanged and its census answers `0`. Nothing needs draining
+  before a rollback past it. With a listener of an earlier release, which ignores the post, the
+  publish is answered `404` and the attempt fails with the listener's text, as before.
 time: 2026-11-27T05:43:46.000000000Z
 custom:
     Issue: pr2230

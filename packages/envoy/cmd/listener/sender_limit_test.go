@@ -1147,7 +1147,7 @@ func TestSenderLimitCost(t *testing.T) {
 		released.limit(4, 1)
 		const sender, holder, role = "ses_cost_released", "ses_cost_released_holder", "cost-released"
 		idempotencyKey := uuid.NewString()
-		earlier := listenerTestEnvelope(contracts.RoleTopicPrefix+role, publishDedupePrefix+idempotencyKey)
+		earlier := listenerTestEnvelope(contracts.RoleTopicPrefix+role, bus.PublishDedupePrefix+idempotencyKey)
 		earlier.SourceSession = sender
 		if _, err := keepRoleMessage(*released.deps.delivery, role, earlier); err != nil {
 			t.Fatalf("keep the earlier attempt; the listener log says why:\n%s", released.harness.logs.String())

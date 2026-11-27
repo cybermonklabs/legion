@@ -63,10 +63,17 @@ type roleAttempt struct {
 	failure  string
 }
 
-// expiredAttempt is attempt as settleKeptDelivery leaves it: failed with keptDeliveryExpiredError
-// and its envelope cleared, the rest as it stood.
+// expiredAttempt is attempt as settleKeptDelivery leaves it for a notice whose copy's forward may
+// not have reached a holder: failed with model.KeptDeliveryExpiredError(false) and its envelope
+// cleared, the rest as it stood.
 func expiredAttempt(attempt roleAttempt) roleAttempt {
-	attempt.state, attempt.failure, attempt.envelope = model.DeliveryStateFailed, keptDeliveryExpiredError, sqlNull
+	return expiredAttemptWith(attempt, model.KeptDeliveryExpiredError(false))
+}
+
+// expiredAttemptWith is attempt as settleKeptDelivery leaves it: failed with failure and its
+// envelope cleared, the rest as it stood.
+func expiredAttemptWith(attempt roleAttempt, failure string) roleAttempt {
+	attempt.state, attempt.failure, attempt.envelope = model.DeliveryStateFailed, failure, sqlNull
 	return attempt
 }
 
@@ -166,7 +173,7 @@ func roleAttempts(t *testing.T, database *store.Store, post listenerwire.Dispatc
 
 // keepDelivery stores on role's kept lane the copy of Dispatch's delivery of post that the
 // listener's publish route keeps for the role's first holder (cmd/listener/api.go, the publish
-// route, and isDispatchDeliveryCopy): source dispatch, no role mark, a dedupe key under the route's
+// route, and bus.KeptCopyDispatchDelivery): source dispatch, no role mark, a dedupe key under the route's
 // publish. prefix, and post written into its source_event_id (bus.DispatchPostEventID). It answers
 // the copy as the stream holds it, whose envelope's event id is the envelope_id publishForRole
 // records on every attempt the copy carries.
@@ -245,18 +252,17 @@ func deliveryReceiptCount(t *testing.T, database *store.Store) int {
 }
 
 // expiredReceipt is the payload of the receipt settleKeptDelivery appends for attempt of post: the
-// one the API writes for a failed attempt to role:<role> that names no session, with
-// keptDeliveryExpiredError.
-func expiredReceipt(post listenerwire.DispatchPost, role string, attempt roleAttempt) any {
+// one the API writes for a failed attempt to role:<role> that names no session, with failure.
+func expiredReceipt(post listenerwire.DispatchPost, role string, attempt roleAttempt, failure string) any {
 	if post.Kind == listenerwire.DispatchPostMessage {
 		return model.MessageDeliveryEventPayload{
 			MessageID: post.ID, Attempt: attempt.attempt, Delivery: attempt.delivery, Target: "role:" + role,
-			State: model.DeliveryStateFailed, Error: keptDeliveryExpiredError,
+			State: model.DeliveryStateFailed, Error: failure,
 		}
 	}
 	return model.CommentDeliveryEventPayload{
 		CommentID: post.ID, Target: "role:" + role, Attempt: attempt.attempt, Delivery: attempt.delivery,
-		State: model.DeliveryStateFailed, Error: keptDeliveryExpiredError,
+		State: model.DeliveryStateFailed, Error: failure,
 	}
 }
 
@@ -273,9 +279,9 @@ func receiptAttempt(receipt model.Event) int {
 
 // checkExpiredReceipts fails t unless receipts are one for each attempt of settled, which runs in
 // attempt order: each on issue T-1, the post's owner, written by the outbox's own system actor
-// (graphWriter), notifying nobody, and reporting its attempt as settleKeptDelivery settled it
-// (expiredReceipt).
-func checkExpiredReceipts(t *testing.T, receipts []model.Event, post listenerwire.DispatchPost, role string, settled []roleAttempt) {
+// (graphWriter), notifying nobody, and reporting its attempt as settleKeptDelivery settled it,
+// failed with failure (expiredReceipt).
+func checkExpiredReceipts(t *testing.T, receipts []model.Event, post listenerwire.DispatchPost, role string, settled []roleAttempt, failure string) {
 	t.Helper()
 	if len(receipts) != len(settled) {
 		t.Fatalf("%s %s has %d receipts %+v, want %d, one for each attempt settled", post.Kind, post.ID, len(receipts), receipts, len(settled))
@@ -283,7 +289,7 @@ func checkExpiredReceipts(t *testing.T, receipts []model.Event, post listenerwir
 	receipts = slices.Clone(receipts)
 	slices.SortFunc(receipts, func(a, b model.Event) int { return receiptAttempt(a) - receiptAttempt(b) })
 	for i, receipt := range receipts {
-		want := expiredReceipt(post, role, settled[i])
+		want := expiredReceipt(post, role, settled[i], failure)
 		if columnText(receipt.IssueKey) != "T-1" || !reflect.DeepEqual(receipt.Actor, graphWriter) || receipt.Notify ||
 			!reflect.DeepEqual(receipt.Payload, want) {
 			t.Fatalf("receipt %d is on %s by %+v, notify %t, with %+v; want one on T-1 by %+v, notifying nobody, with %+v",
@@ -324,14 +330,21 @@ func publishedReceipts(subscription <-chan model.Event, receiptType string) []in
 
 // checkKeptDeliverySettled fails t unless post's attempts read want and its receipts are one for
 // each attempt of settled (checkExpiredReceipts), every one of them published to subscription,
-// and no other receipt of their type.
+// and no other receipt of their type, for a notice whose copy's forward may not have reached a
+// holder.
 func checkKeptDeliverySettled(t *testing.T, rig *roleRig, subscription <-chan model.Event, post listenerwire.DispatchPost, role string, want, settled []roleAttempt) {
+	t.Helper()
+	checkKeptDeliverySettledWith(t, rig, subscription, post, role, want, settled, model.KeptDeliveryExpiredError(false))
+}
+
+// checkKeptDeliverySettledWith is checkKeptDeliverySettled for receipts that say failure.
+func checkKeptDeliverySettledWith(t *testing.T, rig *roleRig, subscription <-chan model.Event, post listenerwire.DispatchPost, role string, want, settled []roleAttempt, failure string) {
 	t.Helper()
 	if got := roleAttempts(t, rig.database, post); !slices.Equal(got, want) {
 		t.Fatalf("%s %s's attempts are %+v, want %+v", post.Kind, post.ID, got, want)
 	}
 	receipts := deliveryReceipts(t, rig.database, post)
-	checkExpiredReceipts(t, receipts, post, role, settled)
+	checkExpiredReceipts(t, receipts, post, role, settled, failure)
 	if published, appended := publishedReceipts(subscription, receiptTypeOf(post)), receiptIDs(receipts); !slices.Equal(published, appended) {
 		t.Fatalf("the expiry pass published %s receipts %v, want the ones it appended, %v", receiptTypeOf(post), published, appended)
 	}
@@ -369,7 +382,7 @@ func passExpiries(t *testing.T, outbox *Outbox) {
 // A copy the listener's publish route kept of Dispatch's delivery of a post for a role's first
 // holder, whose expiry notice says it ended with no session taking it, settles every attempt of
 // the post that copy carried - queued under the copy's envelope, naming no session - failed with
-// keptDeliveryExpiredError and its envelope cleared, and appends for each the comment.delivery or
+// model.KeptDeliveryExpiredError and its envelope cleared, and appends for each the comment.delivery or
 // message.delivery receipt the API writes for a failed attempt, on the post's owner, published
 // once the record has committed. A second attempt that repeated the first's key rode the same
 // copy, and is settled with a receipt of its own. The cursor moves past the notice, nothing is
@@ -584,11 +597,14 @@ func TestAKeptDeliverysExpiryOfAPostTheStoreDoesNotHoldIsPassedOver(t *testing.T
 }
 
 // A kept delivery's notice is passed over by the checks it shares with an outbox copy's notice,
-// with only the cursor moved and the attempt its copy carried left queued with no receipt: one
-// whose role is no role name (roles.Valid), stored on that role's own expiry subject and naming
-// the copy that role's kept lane holds; one stored on another role's expiry subject than its own
-// role's; and one naming a sequence where its role's kept lane holds the copy of another post's
-// delivery (noticedCopy). With any one of the checks taken away, its notice settles the attempt.
+// with only the cursor moved and the attempt its copy carried left queued with no receipt and no
+// end recorded: one whose role is no role name (roles.Valid), stored on that role's own expiry
+// subject and naming the copy that role's kept lane holds; one stored on another role's expiry
+// subject than its own role's; one naming a sequence where its role's kept lane holds the copy of
+// another post's delivery (noticedCopy); and one whose dedupe key is the outbox's while its source
+// event id names a post, a copy that is neither kind of copy Dispatch answers for
+// (bus.ClassifyKeptCopy), which no reader may take for an outbox copy's and a delivery's alike.
+// With any one of the checks taken away, its notice settles the attempt.
 func TestAKeptDeliverysNoticeThatNamesNoCopyOfItIsPassedOver(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -621,6 +637,24 @@ func TestAKeptDeliverysNoticeThatNamesNoCopyOfItIsPassedOver(t *testing.T) {
 			}
 			return lastNotice(t, rig, bus.KeptExpiredSubject(role))
 		}},
+		{"its key is the outbox's while its source event id names a post", "kept-delivery-crossed", func(t *testing.T, rig *roleRig, role string, kept bus.StoredMessage) uint64 {
+			item := envelopeOf(t, kept)
+			item.DedupeKey = "dispatch-" + uuid.NewString()
+			data, err := json.Marshal(item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ack, err := rig.client.JS().Publish(bus.KeptRoleSubject(role), data, natsgo.MsgId(bus.KeptMsgID(item.DedupeKey, role)))
+			if err != nil {
+				t.Fatalf("keep the crossed copy on role %s's kept lane: %v", role, err)
+			}
+			crossed, err := rig.client.NextStoredMessage(context.Background(), bus.KeptRoleSubject(role), ack.Sequence)
+			if err != nil || crossed.Sequence != ack.Sequence {
+				t.Fatalf("read the crossed copy at %d back: sequence %d, %v", ack.Sequence, crossed.Sequence, err)
+			}
+			expire(t, rig.client, role, crossed)
+			return lastNotice(t, rig, bus.KeptExpiredSubject(role))
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newRoleRig(t)
@@ -645,6 +679,252 @@ func TestAKeptDeliverysNoticeThatNamesNoCopyOfItIsPassedOver(t *testing.T) {
 			}
 			if expiries := copyExpiryCount(t, rig.database); expiries != 0 {
 				t.Fatalf("the outbox recorded %d copy expiries, want none", expiries)
+			}
+			if ends := keptDeliveryExpiryRows(t, rig.database); len(ends) != 0 {
+				t.Fatalf("the outbox recorded the ends %+v of copies, want none for a notice it passed over", ends)
+			}
+		})
+	}
+}
+
+// keptDeliveryExpiryRow is one kept_delivery_expiries row as a test reads it: the copy's envelope
+// id, the role it was kept for, the post it delivers by its kind and id, and whether its forward
+// may have reached the role's holder.
+type keptDeliveryExpiryRow struct {
+	envelope string
+	role     string
+	kind     string
+	post     string
+	forward  bool
+}
+
+// keptDeliveryExpiryRows is every row the outbox recorded in kept_delivery_expiries.
+func keptDeliveryExpiryRows(t *testing.T, database *store.Store) []keptDeliveryExpiryRow {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select envelope_id, role, post_kind, post_id::text, forward_unconfirmed from kept_delivery_expiries
+		order by envelope_id, role, post_kind, post_id
+	`)
+	if err != nil {
+		t.Fatalf("read the recorded ends of kept deliveries: %v", err)
+	}
+	defer rows.Close()
+	var found []keptDeliveryExpiryRow
+	for rows.Next() {
+		var row keptDeliveryExpiryRow
+		if err := rows.Scan(&row.envelope, &row.role, &row.kind, &row.post, &row.forward); err != nil {
+			t.Fatalf("scan a recorded end of a kept delivery: %v", err)
+		}
+		found = append(found, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the recorded ends of kept deliveries: %v", err)
+	}
+	return found
+}
+
+// A kept delivery's notice says whether its copy's forward may have reached the role's holder
+// (bus.KeptCopyExpiry.ForwardUnconfirmed), and the attempts it settles say so too, in their error
+// and in their receipts, so a person who presses Retry knows a second copy may follow; a notice
+// that says no such thing settles them with the plain error. Either way every attempt ends
+// settled, and the end of the copy is recorded with the qualifier. With the qualifier taken away,
+// the two rows' attempts read alike, and the second fails its error.
+func TestAKeptDeliverysNoticeSaysWhetherItsForwardMayHaveReachedAHolder(t *testing.T) {
+	if model.KeptDeliveryExpiredError(true) == model.KeptDeliveryExpiredError(false) {
+		t.Fatalf("the error of a copy whose forward may have reached its holder reads as the plain one: %q", model.KeptDeliveryExpiredError(true))
+	}
+	for _, kind := range keptDeliveryKinds {
+		for _, tc := range []struct {
+			name    string
+			forward bool
+		}{
+			{"the forward may have reached the holder", true},
+			{"no forward was claimed", false},
+		} {
+			t.Run(kind.post+", "+tc.name, func(t *testing.T) {
+				rig := newRoleRig(t)
+				role := "kept-delivery-forward-" + kind.post
+				seedIssue(t, rig.database, "T-1", nil)
+				post := seedRolePost(t, rig.database, kind.post, role)
+				kept := keepDelivery(t, rig, role, post)
+				carried := roleAttempt{
+					attempt: 1, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, kept).EventID,
+					state: model.DeliveryStateQueued, failure: sqlNull,
+				}
+				seedRoleAttempts(t, rig.database, post, role, carried)
+				outbox := holding(t, rig.deps())
+				subscription, unsubscribe := rig.broker.Subscribe()
+				defer unsubscribe()
+				notice := expiryNoticeOf(t, role, kept)
+				notice.ForwardUnconfirmed = tc.forward
+				if err := rig.client.PublishKeptCopyExpiry(context.Background(), notice); err != nil {
+					t.Fatalf("store the expiry notice: %v", err)
+				}
+
+				passExpiries(t, outbox)
+
+				failure := model.KeptDeliveryExpiredError(tc.forward)
+				checkKeptDeliverySettledWith(t, rig, subscription, post, role,
+					[]roleAttempt{expiredAttemptWith(carried, failure)}, []roleAttempt{carried}, failure)
+				want := []keptDeliveryExpiryRow{{envelope: carried.envelope, role: role, kind: kind.post, post: post.ID, forward: tc.forward}}
+				if got := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(got, want) {
+					t.Fatalf("the recorded ends of kept deliveries are %+v, want %+v", got, want)
+				}
+			})
+		}
+	}
+}
+
+// A kept delivery's notice read before its attempt is recorded queued settles nothing, since the
+// attempt is still pending, and holds nothing back: it records the end of the copy, which the
+// API's transaction reads when it records the attempt (store.ReadKeptDeliveryExpiry) and settles
+// the attempt failed instead of queued, and the cursor moves past it, so the notice behind it,
+// of another post's queued attempt, is settled in the same pass. The record names the role: a
+// read for another role's attempt finds none. With the record taken away, the attempt the notice
+// found pending is recorded queued afterwards and stays queued for good; with the cursor held at
+// the first notice, the second is not settled.
+func TestAKeptDeliverysNoticeReadBeforeItsAttemptIsQueuedIsRecordedAndHoldsNothingBack(t *testing.T) {
+	for _, kind := range keptDeliveryKinds {
+		t.Run(kind.post, func(t *testing.T) {
+			rig := newRoleRig(t)
+			role := "kept-delivery-early-" + kind.post
+			seedIssue(t, rig.database, "T-1", nil)
+			early := seedRolePost(t, rig.database, kind.post, role)
+			earlyCopy := keepDelivery(t, rig, role, early)
+			pending := roleAttempt{
+				attempt: 1, delivery: "aside", session: kind.unpinned, envelope: sqlNull,
+				state: model.DeliveryStatePending, failure: sqlNull,
+			}
+			seedRoleAttempts(t, rig.database, early, role, pending)
+			later := seedRolePost(t, rig.database, kind.post, role)
+			laterCopy := keepDelivery(t, rig, role, later)
+			queued := roleAttempt{
+				attempt: 1, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, laterCopy).EventID,
+				state: model.DeliveryStateQueued, failure: sqlNull,
+			}
+			seedRoleAttempts(t, rig.database, later, role, queued)
+			outbox := holding(t, rig.deps())
+			subscription, unsubscribe := rig.broker.Subscribe()
+			defer unsubscribe()
+			notice := expiryNoticeOf(t, role, earlyCopy)
+			notice.ForwardUnconfirmed = true
+			if err := rig.client.PublishKeptCopyExpiry(context.Background(), notice); err != nil {
+				t.Fatalf("store the early notice: %v", err)
+			}
+			expire(t, rig.client, role, laterCopy)
+			last := lastNotice(t, rig, bus.KeptExpiredSubject(role))
+
+			passExpiries(t, outbox)
+
+			if got := roleAttempts(t, rig.database, early); !slices.Equal(got, []roleAttempt{pending}) {
+				t.Fatalf("the attempt still pending is %+v, want it as it was", got)
+			}
+			if receipts := deliveryReceipts(t, rig.database, early); len(receipts) != 0 {
+				t.Fatalf("the attempt still pending has %d receipts %+v, want none", len(receipts), receipts)
+			}
+			checkKeptDeliverySettled(t, rig, subscription, later, role, []roleAttempt{expiredAttempt(queued)}, []roleAttempt{queued})
+			if cursor := expiryCursor(t, rig.database); cursor != int64(last) {
+				t.Fatalf("the expiry cursor is %d, want it at the last notice's sequence %d: the pending attempt held nothing back", cursor, last)
+			}
+			earlyEnvelope := envelopeOf(t, earlyCopy).EventID
+			ends := map[string]keptDeliveryExpiryRow{}
+			for _, end := range keptDeliveryExpiryRows(t, rig.database) {
+				ends[end.envelope] = end
+			}
+			if len(ends) != 2 ||
+				ends[earlyEnvelope] != (keptDeliveryExpiryRow{envelope: earlyEnvelope, role: role, kind: kind.post, post: early.ID, forward: true}) ||
+				ends[queued.envelope] != (keptDeliveryExpiryRow{envelope: queued.envelope, role: role, kind: kind.post, post: later.ID, forward: false}) {
+				t.Fatalf("the recorded ends of kept deliveries are %+v, want the early copy's with its forward unconfirmed and the later copy's", ends)
+			}
+
+			// What the API's settle reads under the post's owner lock.
+			ctx := context.Background()
+			tx, err := rig.database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the API's settle: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			ended := store.KeptDeliveryExpiry{EnvelopeID: earlyEnvelope, Role: role, PostKind: kind.post, PostID: early.ID}
+			if forward, found, err := store.ReadKeptDeliveryExpiry(ctx, tx, ended); err != nil || !found || !forward {
+				t.Fatalf("the settle reads the early copy's end as forward %t, found %t, %v; want found, with its forward unconfirmed", forward, found, err)
+			}
+			ended.Role = "kept-delivery-another-role"
+			if forward, found, err := store.ReadKeptDeliveryExpiry(ctx, tx, ended); err != nil || found {
+				t.Fatalf("the settle of another role's attempt reads the early copy's end as forward %t, found %t, %v; want none", forward, found, err)
+			}
+		})
+	}
+}
+
+// A kept delivery's notice stored on one role's expiry subject settles no attempt of another role,
+// whatever post and envelope it names: a forged frame an edge publisher stores on its own role's
+// lane, carrying the post and the envelope id of another role's queued attempt, reads as a
+// delivery's copy of that post, and its notice settles nothing and appends no receipt. The store
+// holds no delivery of a message to the forging role, so it records no end either; a comment that
+// mentions the forging role too is a delivery to it, whose end is recorded under the forging
+// role's own name, which no read for the other role finds, and whose attempt, queued under a copy
+// of its own, is not the envelope the notice names. The real notice of the other role is then
+// recorded and settled as ever: the forged one blocked nothing. With the target check taken away,
+// the real attempt is settled by the forged notice, and with the record keyed by the envelope
+// alone, the real notice records nothing.
+func TestAKeptDeliverysNoticeOfAnotherRoleSettlesNothingAndBlocksNothing(t *testing.T) {
+	for _, kind := range keptDeliveryKinds {
+		t.Run(kind.post, func(t *testing.T) {
+			rig := newRoleRig(t)
+			home, forger := "kept-delivery-project-a-"+kind.post, "kept-delivery-project-b-"+kind.post
+			seedIssue(t, rig.database, "T-1", nil)
+			post := seedRolePost(t, rig.database, kind.post, home)
+			homeCopy := keepDelivery(t, rig, home, post)
+			carried := roleAttempt{
+				attempt: 1, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, homeCopy).EventID,
+				state: model.DeliveryStateQueued, failure: sqlNull,
+			}
+			seedRoleAttempts(t, rig.database, post, home, carried)
+			forgedCopy := keepDelivery(t, rig, forger, post)
+			standing := []roleAttempt{carried}
+			var forgedEnds []keptDeliveryExpiryRow
+			if kind.post == listenerwire.DispatchPostComment {
+				mentioned := roleAttempt{
+					attempt: 2, delivery: "aside", session: kind.unpinned, envelope: envelopeOf(t, forgedCopy).EventID,
+					state: model.DeliveryStateQueued, failure: sqlNull,
+				}
+				seedRoleAttempts(t, rig.database, post, forger, mentioned)
+				standing = append(standing, mentioned)
+				forgedEnds = []keptDeliveryExpiryRow{{envelope: carried.envelope, role: forger, kind: kind.post, post: post.ID}}
+			}
+			outbox := holding(t, rig.deps())
+			subscription, unsubscribe := rig.broker.Subscribe()
+			defer unsubscribe()
+			forged := expiryNoticeOf(t, forger, forgedCopy)
+			forged.EventID = carried.envelope
+			if err := rig.client.PublishKeptCopyExpiry(context.Background(), forged); err != nil {
+				t.Fatalf("store the forged notice: %v", err)
+			}
+			forgery := lastNotice(t, rig, bus.KeptExpiredSubject(forger))
+
+			passExpiries(t, outbox)
+
+			if got := roleAttempts(t, rig.database, post); !slices.Equal(got, standing) {
+				t.Fatalf("the attempts after the forged notice are %+v, want them as they were %+v", got, standing)
+			}
+			if receipts := deliveryReceiptCount(t, rig.database); receipts != 0 {
+				t.Fatalf("the forged notice appended %d delivery receipts, want none", receipts)
+			}
+			if ends := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(ends, forgedEnds) {
+				t.Fatalf("the forged notice left the recorded ends %+v of copies, want %+v", ends, forgedEnds)
+			}
+			if cursor := expiryCursor(t, rig.database); cursor != int64(forgery) {
+				t.Fatalf("the expiry cursor is %d, want it at the forged notice's sequence %d", cursor, forgery)
+			}
+
+			expire(t, rig.client, home, homeCopy)
+			passExpiries(t, outbox)
+
+			want := append([]roleAttempt{expiredAttempt(carried)}, standing[1:]...)
+			checkKeptDeliverySettled(t, rig, subscription, post, home, want, []roleAttempt{carried})
+			wantEnds := append([]keptDeliveryExpiryRow{{envelope: carried.envelope, role: home, kind: kind.post, post: post.ID}}, forgedEnds...)
+			if ends := keptDeliveryExpiryRows(t, rig.database); !slices.Equal(ends, wantEnds) {
+				t.Fatalf("the recorded ends of kept deliveries are %+v, want the real notice's and no other role's settled, %+v", ends, wantEnds)
 			}
 		})
 	}

@@ -205,6 +205,10 @@ type roleSend struct {
 	// the message for the holder it went to (sendToRole), so a copy a later duplicate verdict names
 	// may be that forward's (deliveredHeld).
 	unanswered bool
+	// resolvedFromLeaders is whether this send's resolutions are read from the buckets' stream
+	// leaders alone (resolve), which missConfirmed asks to know whether the miss it is to confirm
+	// was read from them already.
+	resolvedFromLeaders bool
 }
 
 // shownHolder is the holder this send's answers may name: result for a holder the scope shows and the
@@ -309,26 +313,23 @@ const noSourceSessionNotKept = "; nothing was kept, because the publish names no
 	"a kept copy that no session took within its hour would expire with no notice to its sender"
 
 // keepTellsNobody reports whether a copy this send kept would expire with no word to anyone: the
-// send asks to be kept, names no source session, and is no delivery of a Dispatch post. The walk
-// that drops a copy at the end of its hour sends its dead letter to the copy's source session and
-// to nobody else, and tells Dispatch of a copy of its delivery of a post with an expiry notice
-// (judgeKeptRoleCopy, isDispatchDeliveryCopy), which Dispatch settles that delivery's attempt by.
-// A send that would tell nobody is refused rather than kept when its role has no live holder
-// (noHolder), so its sender learns at once that nothing waits for the role, where a 202 kept would
-// have promised a copy whose loss it is never told of. Dispatch's delivery of a post names no
-// source session and is kept, since Dispatch hears of its copy's end.
+// send asks to be kept and its copy is bus.KeptCopyUnanswered, naming no source session and
+// delivering no Dispatch post. The walk that drops a copy at the end of its hour sends its dead
+// letter to the copy's source session and to nobody else, and tells Dispatch of a copy of its
+// delivery of a post with an expiry notice (judgeKeptRoleCopy), which Dispatch settles that
+// delivery's attempt by. A send that would tell nobody is refused rather than kept when its role
+// has no live holder (noHolder), so its sender learns at once that nothing waits for the role,
+// where a 202 kept would have promised a copy whose loss it is never told of. Dispatch's delivery
+// of a post names no source session and is kept, since Dispatch hears of its copy's end.
 func (s *roleSend) keepTellsNobody() bool {
-	return s.keep && s.item.SourceSession == "" && !isDispatchDeliveryCopy(s.item)
+	return s.keep && bus.ClassifyKeptCopy(s.item) == bus.KeptCopyUnanswered
 }
 
 // resolve resolves the role's holder within ctx (roles.ResolveHolder). Only a send whose keep
-// would tell nobody (keepTellsNobody: it asks to be kept, names no source session and delivers no
-// Dispatch post) reads the leaders (resolvesFromLeaders): such a send asks the route to hold the
-// message, and a resolution that finds no live holder refuses it with nothing kept (noHolder). So
-// it is resolved from the buckets' stream leaders alone (resolveFromLeaders): never from the
-// registry's watched copy of either bucket, never from this listener's cache of the holder's
-// record, and never by a direct get, any of which can answer a holder as not live while the leader
-// holds it live, and would refuse a message a live holder can take.
+// would tell nobody (keepTellsNobody) is resolved from the buckets' stream leaders alone
+// (resolveRoleHolderFromLeaders): such a send asks the route to hold the message, and a
+// resolution that finds no live holder refuses it with nothing kept (noHolder). resolve records
+// that it did (resolvedFromLeaders), which missConfirmed reads.
 //
 // Every other send reads as GET /v1/roles/<role> reads (roleHolderSessions), Dispatch's delivery
 // of a post among them. A send that asks to be kept and names a session, or delivers a Dispatch
@@ -342,31 +343,11 @@ func (s *roleSend) keepTellsNobody() bool {
 // only a send whose miss a hand-off could take is resolved again from the leaders before its
 // message is handed off (missConfirmed).
 func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
-	if s.resolvesFromLeaders() {
-		return s.resolveFromLeaders(ctx)
+	s.resolvedFromLeaders = s.keepTellsNobody()
+	if s.resolvedFromLeaders {
+		return resolveRoleHolderFromLeaders(ctx, s.d, s.role)
 	}
 	return roles.ResolveHolder(ctx, s.d.registry, roleHolderSessions{s.d.sessions}, s.role)
-}
-
-// resolvesFromLeaders reports whether this send's resolutions (resolve) are read from the
-// buckets' stream leaders alone (resolveFromLeaders): those of a send whose keep would tell nobody
-// (keepTellsNobody). It is the one place that says which reads resolve made, so resolve reads by
-// it, and missConfirmed asks it whether the miss it is to confirm was already read from the
-// leaders.
-func (s *roleSend) resolvesFromLeaders() bool {
-	return s.keepTellsNobody()
-}
-
-// resolveFromLeaders resolves the role's holder within ctx from the buckets' stream leaders alone:
-// the claim from the role bucket stream's leader (leaderRoleClaims, the read
-// store.Registry.ReadLaneHolders makes), and the holder's record from the session bucket stream's
-// leader whatever this listener's cache holds (leaderOnlyHolderSessions, which says why the cache
-// cannot answer it). It is the resolution of the publish route's two decisions that no later read
-// undoes: each resolution of a send whose keep would tell nobody, whose miss refuses the send with
-// nothing kept (resolve), and the confirmation of any other send's miss before its message is
-// handed to the daemon of the role's stopped Legion agent (missConfirmed).
-func (s *roleSend) resolveFromLeaders(ctx context.Context) (roles.Resolution, error) {
-	return roles.ResolveHolder(ctx, leaderRoleClaims{s.d.registry}, leaderOnlyHolderSessions{s.d.sessions}, s.role)
 }
 
 // noHolder answers a role with no live holder. A Legion role whose newest session's daemon
@@ -380,7 +361,7 @@ func (s *roleSend) resolveFromLeaders(ctx context.Context) (roles.Resolution, er
 // its publish stored (senderCharge.published).
 //
 // No read can take a hand-off back, so noHolder hands off only once the role's holder, resolved
-// from the buckets' stream leaders alone (resolveFromLeaders), is found not live either
+// from the buckets' stream leaders alone (resolveRoleHolderFromLeaders), is found not live either
 // (missConfirmed). A send whose keep would tell nobody resolved its holder so from the start
 // (resolve), and result is then that confirmation. Every other send's result is a resolution over
 // this listener's cache of the holder's record and direct gets (roleHolderSessions, sendToRole),
@@ -427,7 +408,7 @@ func (s *roleSend) resolveFromLeaders(ctx context.Context) (roles.Resolution, er
 // it as "nothing was kept, run your own fallback" (the Legion daemon's notify.ErrNoHolder,
 // envoy-client's EnvoyApiError), and no client retries it: envoy-client retries nothing below 500,
 // and to a plain HTTP client it is no retry signal, as a 429 or a 503 would be. Dispatch's
-// delivery of a post (isDispatchDeliveryCopy) names no source session and is kept, and raises the
+// delivery of a post (bus.KeptCopyDispatchDelivery) names no source session and is kept, and raises the
 // role's wake, as every kept send does: its copy's end is told to Dispatch, which settles the
 // delivery's attempt, recorded queued until then, as undelivered.
 //
@@ -480,21 +461,21 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 }
 
 // missConfirmed reports whether the role still has no live holder when its holder is read from the
-// buckets' stream leaders alone (resolveFromLeaders): the confirmation noHolder asks for before a
-// hand-off. noHolder is handed only a resolution of resolve's that found no live holder, so for a
-// send whose resolutions are the leaders' (resolvesFromLeaders) that resolution is the
+// buckets' stream leaders alone (resolveRoleHolderFromLeaders): the confirmation noHolder asks for
+// before a hand-off. noHolder is handed only a resolution of resolve's that found no live holder,
+// so for a send whose resolutions are the leaders' (resolvedFromLeaders) that resolution is the
 // confirmation, and nothing is read again. Every other send's holder is resolved again, within the
 // send's window and roleHolderReadTimeout, whichever ends first. A resolution that names a live
 // holder, or that did not answer, confirms nothing. One that did not answer is logged here, once,
 // with the read's own error: the send's answer and its delivery line come from the first
 // resolution and do not name it.
 func (s *roleSend) missConfirmed() bool {
-	if s.resolvesFromLeaders() {
+	if s.resolvedFromLeaders {
 		return true
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
 	defer cancel()
-	confirmed, err := s.resolveFromLeaders(ctx)
+	confirmed, err := resolveRoleHolderFromLeaders(ctx, s.d, s.role)
 	if err != nil {
 		s.d.delivery.logger.Warn("listener role send could not confirm from the leader that its role has no live holder, so nothing is handed off",
 			slog.String("role", s.role),
@@ -544,7 +525,7 @@ func (s *roleSend) handedOff(handed *legionHandedOff) {
 // waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
 // fallback must run, as decided on 2026-10-31. A send that names no source session is never
 // answered 202 (noHolder): no one would be told if its copy expired - but Dispatch's delivery of a
-// post, whose copy's end is told to Dispatch (isDispatchDeliveryCopy).
+// post, whose copy's end is told to Dispatch (bus.KeptCopyDispatchDelivery).
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()

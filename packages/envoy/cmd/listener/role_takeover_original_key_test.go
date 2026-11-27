@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A takeover's copy carries a minted dedupe key of its own, and an exception about it - the kept
@@ -34,28 +36,31 @@ func TestAnExceptionAboutATakeoverCopyNamesTheMessagesOwnKey(t *testing.T) {
 	}
 }
 
-// A takeover's copy is judged an outbox copy or the listener's by its own key, which keeps the
-// publish route's marker: a copy of a frame the publish route forwarded for source dispatch is the
-// listener's, as the frame was, after one takeover and after a second that copies the copy; the
-// control is a copy of a frame Dispatch's outbox forwarded under its own key, which is the outbox's
-// at both. Each copy key is in the minted form, so every walk forwards it by its key.
-func TestATakeoverCopyIsJudgedAnOutboxCopyByItsOwnKeyAfterEveryMove(t *testing.T) {
+// A takeover's copy is classified by its own key and its own source event id (bus.ClassifyKeptCopy),
+// which keep the publish route's marker and the post a delivery names: a copy of a frame the
+// publish route forwarded for source dispatch is the listener's, as the frame was, and a copy of a
+// delivery of a Dispatch post is that delivery, after one takeover and after a second that copies
+// the copy; the control is a copy of a frame Dispatch's outbox forwarded under its own key, which
+// is the outbox's at both. Each copy key is in the minted form, so every walk forwards it by its key.
+func TestATakeoverCopyIsClassifiedByItsOwnKeyAfterEveryMove(t *testing.T) {
 	t.Parallel()
 	const role = "architect"
+	post := bus.DispatchPostEventID(listenerwire.DispatchPost{Kind: listenerwire.DispatchPostComment, ID: "6f1c2b9a-4d3e-4f5a-8b7c-9d0e1f2a3b4c"})
 	for _, row := range []struct {
-		name, key string
-		outbox    bool
+		name, key, sourceEventID string
+		want                     bus.KeptCopyKind
 	}{
-		{"a copy of a publish-route frame for source dispatch is the listener's", publishDedupePrefix + "0123456789abcdef0123456789abcdef", false},
-		{"control: a copy of an outbox frame is the outbox's", "dispatch-0123456789abcdef", true},
+		{"a copy of a publish-route frame for source dispatch is the listener's", bus.PublishDedupePrefix + "0123456789abcdef0123456789abcdef", "", bus.KeptCopyUnanswered},
+		{"a copy of a delivery the publish route kept is the delivery", bus.PublishDedupePrefix + "0123456789abcdef0123456789abcdef", post, bus.KeptCopyDispatchDelivery},
+		{"control: a copy of an outbox frame is the outbox's", "dispatch-0123456789abcdef", "42", bus.KeptCopyOutbox},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			once := contracts.Envelope{EventID: "evt", Source: "dispatch", Topic: contracts.RoleTopicPrefix + role, DedupeKey: takenFrameDedupeKey(row.key, 7)}
+			once := contracts.Envelope{EventID: "evt", Source: "dispatch", SourceEventID: row.sourceEventID, Topic: contracts.RoleTopicPrefix + role, DedupeKey: takenFrameDedupeKey(row.key, 7)}
 			twice := once
 			twice.DedupeKey = takenFrameDedupeKey(once.DedupeKey, 9)
 			for move, copied := range []contracts.Envelope{once, twice} {
-				if got := isOutboxCopy(copied); got != row.outbox {
-					t.Fatalf("isOutboxCopy after takeover %d of key %q (copy key %q) = %v, want %v", move+1, row.key, copied.DedupeKey, got, row.outbox)
+				if got := bus.ClassifyKeptCopy(copied); got != row.want {
+					t.Fatalf("kind after takeover %d of key %q (copy key %q) = %d, want %d", move+1, row.key, copied.DedupeKey, got, row.want)
 				}
 				if !regexp.MustCompile(contracts.MintedDedupeKeyPattern).MatchString(copied.DedupeKey) {
 					t.Fatalf("copy key %q after takeover %d is not in the minted form", copied.DedupeKey, move+1)

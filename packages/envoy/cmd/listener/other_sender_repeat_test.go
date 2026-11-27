@@ -218,7 +218,7 @@ func TestAKeptAnswerOfAnotherSendersCopyIsDuplicateOutsideARepeat(t *testing.T) 
 	t.Parallel()
 	rig := newSenderLimitRig(t)
 	topic := contracts.RoleTopicPrefix + "kept-outside-" + id.New()
-	key := publishDedupePrefix + uuid.NewString()
+	key := bus.PublishDedupePrefix + uuid.NewString()
 	aliceCopy := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_kept_outside_alice", Text: "alice's kept words"}, topic, key)
 	bobItem := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_kept_outside_bob", Text: "bob's words"}, topic, key)
 	// keep is the 202 a send of item answers when the keep, reading no repeat, hands it kept.

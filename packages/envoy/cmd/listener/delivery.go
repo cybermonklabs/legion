@@ -105,10 +105,10 @@ type listenerDeliveryHandlerConfig struct {
 	// roleKeptExpired counts the kept role copies a walk dropped at the end of their hour
 	// (envoy_role_kept_expired_total, keptRoleDroppedReport), whether or not a session held the
 	// role, under two labels: kept_by, listener or dispatch_outbox for a copy Dispatch's outbox
-	// kept (isOutboxCopy), and stale, true for a copy no walk had claimed whose hour ended more
+	// kept (bus.KeptCopyOutbox), and stale, true for a copy no walk had claimed whose hour ended more
 	// than an hour before the walk that dropped it (roleKeepStaleAge). A listener copy dropped
 	// with stale false is one whose sender is sent a dead letter when its publish named one, or
-	// Dispatch an expiry notice for a copy of its delivery of a post (isDispatchDeliveryCopy), so
+	// Dispatch an expiry notice for a copy of its delivery of a post (bus.KeptCopyDispatchDelivery), so
 	// a reading that climbs says messages kept for roles go unread by any holder in their hour.
 	roleKeptExpired *metrics.Counter
 	// roleDeadLetters counts the dead letters a walk sent the sender of a kept copy it dropped

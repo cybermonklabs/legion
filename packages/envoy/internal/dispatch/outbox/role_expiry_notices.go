@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -159,44 +160,54 @@ func (r *keptStreamRead) refresh(ctx context.Context, reader KeptLaneReader, for
 // recordKeptExpiry records the expiry notice stored, and moves the cursor past it in the stream
 // whose identity is streamID, in one holder transaction (inHolderTransaction) under recordTimeout,
 // which publishes the events the record appended, if any, once it has committed, and writes
-// nothing and answers errNotTheHolder while the publisher hold is not instance's. A notice names
-// one of two copies by its source event id:
+// nothing and answers errNotTheHolder while the publisher hold is not instance's. A notice is of
+// one of the two kinds of copy Dispatch answers for, by the one rule the listener classified the
+// copy by (bus.KeptCopyExpiry.CopyKind):
 //
-//   - a copy Dispatch's outbox kept for a role names the outbox's event by its decimal id: the
-//     notice is recorded in outbox_role_copy_expiries (recordExpiry), which may append the event's
-//     role.undelivered record;
+//   - a copy Dispatch's outbox kept for a role (bus.KeptCopyOutbox) names the outbox's event by
+//     its decimal id: the notice is recorded in outbox_role_copy_expiries (recordExpiry), which may
+//     append the event's role.undelivered record;
 //   - a copy of Dispatch's delivery of a post that the listener's publish route kept for a role's
-//     first holder names the post (bus.ParseDispatchPostEventID): the notice settles every attempt
-//     of that post the copy carried that nobody answered, undelivered (settleKeptDelivery), which
-//     appends a receipt for each. Nothing is kept again for it, and no outbox_role_copy_expiries
-//     row is written.
+//     first holder (bus.KeptCopyDispatchDelivery) names the post
+//     (bus.ParseDispatchPostEventID): the notice is recorded in kept_delivery_expiries and settles
+//     every attempt of that post the copy carried that nobody answered, undelivered
+//     (settleKeptDelivery), which appends a receipt for each. Nothing is kept again for it, and no
+//     outbox_role_copy_expiries row is written.
 //
 // A notice is passed over with one Error line, and only the cursor moves, when it names no copy
-// Dispatch answers for: its body does not decode; its source event id names neither an event nor
-// a post; its role is no role name (roles.Valid); it was stored on another role's expiry subject
-// than the one its role names; the stream holds something else than that copy at the sequence the
-// notice names (noticedCopy); the event it names was never routed to that role - the event's own
-// destinations, and its comment's fallback rows, do not name the role's topic - which an event the
-// log does not hold is not either; or the post it names is one the store does not hold. No read of
-// such a notice will ever name one. Only a NATS user on the listener's grant can store a notice at
-// all, so this guards the role that becomes a subject (bus.KeptRoleSubject) and is written into a
-// posted message, and the event whose delivery to the role a notice reopens or ends, and the post
-// whose attempts it settles, not a door. The notice's own attempt decides nothing (recordExpiry).
+// Dispatch answers for: its body does not decode; its dedupe key and its source event id name
+// neither kind of copy, or an event that is no number; its role is no role name (roles.Valid); it
+// was stored on another role's expiry subject than the one its role names; the stream holds
+// something else than that copy at the sequence the notice names (noticedCopy); the event it names
+// was never routed to that role - the event's own destinations, and its comment's fallback rows,
+// do not name the role's topic - which an event the log does not hold is not either; or the post
+// it names is one the store holds no delivery of to that role. No read of such a notice will ever
+// name one. Only a NATS user on the listener's grant can store a notice at all, so this guards the
+// role that becomes a subject (bus.KeptRoleSubject) and is written into a posted message, and the
+// event whose delivery to the role a notice reopens or ends, and the post whose attempts it
+// settles, not a door. The notice's own attempt decides nothing (recordExpiry).
 //
 // A Dispatch of an earlier release reads the notice of a delivery's copy as one whose source event
-// id is not a number, and passes it over with that one Error line, its cursor moved past it.
+// id is not a number, and passes it over with that one Error line, its cursor moved past it; it
+// reads the notice's forward_unconfirmed as a member it does not know, and ignores it.
 func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored bus.StoredMessage, streamID string) error {
 	ctx, cancel := context.WithTimeout(ctx, recordTimeout)
 	defer cancel()
 	var notice bus.KeptCopyExpiry
 	decodeErr := json.Unmarshal(stored.Data, &notice)
-	post, delivery := bus.ParseDispatchPostEventID(notice.SourceEventID)
+	kind := notice.CopyKind()
+	var post listenerwire.DispatchPost
 	var eventID int64
-	var parseErr error
-	if !delivery {
-		eventID, parseErr = strconv.ParseInt(notice.SourceEventID, 10, 64)
+	var kindErr error
+	switch kind {
+	case bus.KeptCopyDispatchDelivery:
+		post, _ = bus.ParseDispatchPostEventID(notice.SourceEventID)
+	case bus.KeptCopyOutbox:
+		eventID, kindErr = strconv.ParseInt(notice.SourceEventID, 10, 64)
+	default:
+		kindErr = fmt.Errorf("its dedupe key %q and its source event id %q name neither an outbox event's copy nor a delivery's", notice.DedupeKey, notice.SourceEventID)
 	}
-	refusal := errors.Join(decodeErr, parseErr)
+	refusal := errors.Join(decodeErr, kindErr)
 	switch {
 	case refusal != nil:
 	case !roles.Valid(notice.Role):
@@ -215,26 +226,27 @@ func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored
 	}
 	return inHolderTransaction(ctx, deps, instance, func(tx pgx.Tx) ([]model.Event, error) {
 		var appended []model.Event
-		switch {
-		case refusal != nil:
-		case delivery:
-			receipts, held, err := settleKeptDelivery(ctx, deps, tx, post, notice)
-			if err != nil {
-				return nil, err
-			}
-			if !held {
-				refusal = fmt.Errorf("the %s %s it names is not one the store holds", post.Kind, post.ID)
-			}
-			appended = receipts
-		default:
-			routed, err := routedToRole(ctx, tx, eventID, notice.Role)
-			if err != nil {
-				return nil, err
-			}
-			if !routed {
-				refusal = fmt.Errorf("event %d was never routed to role %s", eventID, notice.Role)
-			} else if appended, err = oneEvent(recordExpiry(ctx, deps, tx, eventID, notice)); err != nil {
-				return nil, err
+		if refusal == nil {
+			switch kind {
+			case bus.KeptCopyDispatchDelivery:
+				receipts, held, err := settleKeptDelivery(ctx, deps, tx, post, notice)
+				if err != nil {
+					return nil, err
+				}
+				if !held {
+					refusal = fmt.Errorf("the store holds no delivery of the %s %s to role %s", post.Kind, post.ID, notice.Role)
+				}
+				appended = receipts
+			case bus.KeptCopyOutbox:
+				routed, err := routedToRole(ctx, tx, eventID, notice.Role)
+				if err != nil {
+					return nil, err
+				}
+				if !routed {
+					refusal = fmt.Errorf("event %d was never routed to role %s", eventID, notice.Role)
+				} else if appended, err = oneEvent(recordExpiry(ctx, deps, tx, eventID, notice)); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if refusal != nil {
@@ -259,152 +271,199 @@ func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored
 	})
 }
 
-// keptDeliveryExpiredError is the error an attempt of Dispatch's delivery of a post is settled
-// failed with when the copy the listener kept of it for the role ended with no session taking it
-// (settleKeptDelivery).
-const keptDeliveryExpiredError = "The Envoy listener kept this message for the role, and no session took it before the listener dropped it."
+// keptDeliveryAttempts is what settleKeptDelivery needs of one post whose delivery to a role the
+// listener kept: the owner its receipts are appended on, the type of those receipts, and the
+// update that settles the post's attempts to the role, which differs between a comment's
+// (comment_deliveries) and a message's (message_deliveries).
+type keptDeliveryAttempts struct {
+	owner       model.Event
+	receiptType string
+	// fail settles failed, with failure and no envelope, every attempt of the post to the role
+	// that is queued under envelopeID with no session pinned and no reply, and answers each one it
+	// settled.
+	fail func(ctx context.Context, tx pgx.Tx, envelopeID, failure string) ([]settledAttempt, error)
+}
 
-// settleKeptDelivery settles, in tx, the attempts of post that the copy notice names carried and
-// that nobody answered, as undelivered: the copy the listener's publish route kept for the role's
-// first holder (Dispatch's publishForRole, internal/dispatch/api) ended with no session taking it -
-// its hour ended, or the role's live holder does not take its delivery mode. It reports false, and
-// writes nothing, for a post the store does not hold. The post's owner is locked first
-// (events.Broker.LockOwners), then its attempts are updated, the order every writer of these rows
-// that appends a receipt takes (settleAbandoned in mentions.go, settleDeliveryAttempt in
-// internal/dispatch/api).
+// settledAttempt is one attempt keptDeliveryAttempts.fail settled: its number and the receipt
+// payload that reports it.
+type settledAttempt struct {
+	attempt int
+	payload any
+}
+
+// keptDeliveryAttemptsOf reads, in tx, the post's attempts to target, "role:" and the role a
+// notice names, and reports false when the store holds no delivery of the post to that target: no
+// such post, a comment none of whose attempts name the target, or a message whose own target is
+// another. That is the check a notice's role is held to, which is what keeps a notice stored for
+// one role from settling, or recording an end for, the attempts of a post to another role - a
+// comment may mention several, and a person on any issue may mention any role. post.Kind is one of
+// the two bus.ParseDispatchPostEventID answers.
+func keptDeliveryAttemptsOf(ctx context.Context, tx pgx.Tx, post listenerwire.DispatchPost, target string) (keptDeliveryAttempts, bool, error) {
+	if post.Kind == listenerwire.DispatchPostComment {
+		return keptCommentAttempts(ctx, tx, post, target)
+	}
+	return keptMessageAttempts(ctx, tx, post, target)
+}
+
+// keptCommentAttempts is keptDeliveryAttemptsOf for a comment, which a mention to target delivers.
+func keptCommentAttempts(ctx context.Context, tx pgx.Tx, post listenerwire.DispatchPost, target string) (keptDeliveryAttempts, bool, error) {
+	var owner model.Event
+	var askID *string
+	err := tx.QueryRow(ctx, `
+		select issue_key, artifact_id::text, ask_id::text from comments
+		where id = $1 and exists (select 1 from comment_deliveries where comment_id = $1 and target = $2)
+	`, post.ID, target).Scan(&owner.IssueKey, &owner.ArtifactID, &askID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return keptDeliveryAttempts{}, false, nil
+	}
+	if err != nil {
+		return keptDeliveryAttempts{}, false, err
+	}
+	return keptDeliveryAttempts{
+		owner:       owner,
+		receiptType: "comment.delivery",
+		fail: func(ctx context.Context, tx pgx.Tx, envelopeID, failure string) ([]settledAttempt, error) {
+			rows, err := tx.Query(ctx, `
+				update comment_deliveries set state = 'failed', error = $4, envelope_id = null
+				where comment_id = $1 and target = $2 and envelope_id = $3 and state = 'queued' and session_id is null and reply_id is null
+				returning attempt, delivery, duplicate
+			`, post.ID, target, envelopeID, failure)
+			if err != nil {
+				return nil, err
+			}
+			return pgx.CollectRows(rows, func(row pgx.CollectableRow) (settledAttempt, error) {
+				payload := model.CommentDeliveryEventPayload{
+					CommentID: post.ID, AskID: askID, Target: target, State: model.DeliveryStateFailed, Error: failure,
+				}
+				err := row.Scan(&payload.Attempt, &payload.Delivery, &payload.Duplicate)
+				return settledAttempt{attempt: payload.Attempt, payload: payload}, err
+			})
+		},
+	}, true, nil
+}
+
+// keptMessageAttempts is keptDeliveryAttemptsOf for a message, whose own target is the role's
+// ("role:" and the role): every attempt of a message is to its target.
+func keptMessageAttempts(ctx context.Context, tx pgx.Tx, post listenerwire.DispatchPost, target string) (keptDeliveryAttempts, bool, error) {
+	var issueKey *string
+	err := tx.QueryRow(ctx, `select issue_key from messages where id = $1 and target = $2`, post.ID, target).Scan(&issueKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return keptDeliveryAttempts{}, false, nil
+	}
+	if err != nil {
+		return keptDeliveryAttempts{}, false, err
+	}
+	// A message on an issue is that issue's, and one on no issue is its target session's, as the
+	// API's receipt of it is (messageEvent in internal/dispatch/api); a message to a role is
+	// always on an issue, since its own creation appends nothing ownerless for a role.
+	owner := model.Event{IssueKey: issueKey}
+	if issueKey == nil {
+		owner.Payload = model.MessageDeliveryEventPayload{Target: target}
+	}
+	return keptDeliveryAttempts{
+		owner:       owner,
+		receiptType: "message.delivery",
+		fail: func(ctx context.Context, tx pgx.Tx, envelopeID, failure string) ([]settledAttempt, error) {
+			rows, err := tx.Query(ctx, `
+				update message_deliveries set state = 'failed', error = $3, envelope_id = null
+				where message_id = $1 and envelope_id = $2 and state = 'queued' and session_id = '' and reply_id is null
+				returning attempt, delivery, duplicate
+			`, post.ID, envelopeID, failure)
+			if err != nil {
+				return nil, err
+			}
+			return pgx.CollectRows(rows, func(row pgx.CollectableRow) (settledAttempt, error) {
+				payload := model.MessageDeliveryEventPayload{
+					MessageID: post.ID, Target: target, State: model.DeliveryStateFailed, Error: failure,
+				}
+				err := row.Scan(&payload.Attempt, &payload.Delivery, &payload.Duplicate)
+				return settledAttempt{attempt: payload.Attempt, payload: payload}, err
+			})
+		},
+	}, true, nil
+}
+
+// settleKeptDelivery records, in tx, that the copy notice names ended, and settles the attempts of
+// post that the copy carried and that nobody answered, as undelivered: the copy the listener's
+// publish route kept for the role's first holder (Dispatch's publishForRole,
+// internal/dispatch/api) ended with no session taking it - its hour ended, or the role's live
+// holder does not take its delivery mode. It reports false, and writes nothing, for a post the
+// store holds no delivery of to the role (keptDeliveryAttemptsOf): another role's attempt is never
+// settled, nor recorded as ended, by a notice stored for this one. The post's owner is locked
+// first (events.Broker.LockOwners), then the end is recorded and the attempts are updated, the
+// order every writer of these rows that appends a receipt takes (settleAbandoned in mentions.go,
+// settleDeliveryAttempt in internal/dispatch/api).
 //
 // An attempt the copy carried records the copy's envelope, notice.EventID, which publishForRole
 // recorded on it - a second attempt that repeated the first's key records the same copy's id - so
 // every attempt still queued under that envelope with no session pinned and no reply is settled:
-// failed, with keptDeliveryExpiredError, and with its envelope cleared, since a failed attempt
-// that carries an envelope reads as one its session answered with an error, which the dashboard
-// offers no Retry for (rowAnsweredWithError in packages/dispatch/web/src/features/conversation/
-// delivery.ts). An attempt a holder answered (sent, or queued with a session pinned), one already
-// failed, and one under another envelope are left as they are, so a repeated notice settles
-// nothing twice. Each settled attempt gets the comment.delivery or message.delivery receipt the API
-// writes for a failed attempt, appended in tx and published by the caller once it has committed.
-// Its actor is the outbox's own system actor (graphWriter), as the role.undelivered record's is
-// (appendUndelivered): the settlement is this process's finding at the copy's end, nobody's act,
-// and a person's or a session's actor would read as their own activity at that moment to every
-// reader that dates activity by an event's actor. A receipt notifies nobody whoever its actor
-// (events.Quiet).
+// failed, with the error that says whether the copy's forward may have reached the role's holder
+// (model.KeptDeliveryExpiredError, notice.ForwardUnconfirmed), and with its envelope cleared, since
+// a failed attempt that carries an envelope reads as one its session answered with an error, which
+// the dashboard offers no Retry for (rowAnsweredWithError in packages/dispatch/web/src/features/
+// conversation/delivery.ts). An attempt a holder answered (sent, or queued with a session pinned),
+// one already failed, and one under another envelope are left as they are, so a repeated notice
+// settles nothing twice. Each settled attempt gets the comment.delivery or message.delivery
+// receipt the API writes for a failed attempt, appended in tx and published by the caller once it
+// has committed. Its actor is the outbox's own system actor (graphWriter), as the
+// role.undelivered record's is (appendUndelivered): the settlement is this process's finding at
+// the copy's end, nobody's act, and a person's or a session's actor would read as their own
+// activity at that moment to every reader that dates activity by an event's actor. A receipt
+// notifies nobody whoever its actor (events.Quiet).
+//
+// The end is recorded whether or not an attempt is queued under the envelope yet
+// (store.RecordKeptDeliveryExpiry): the API records an attempt queued when its send reports, in a
+// transaction that takes the same owner lock, and a notice read before that finds the attempt
+// still pending and settles nothing. The API's transaction then reads the record and settles the
+// attempt failed instead of queued (settleDeliveryAttempt), so the attempt ends settled in either
+// order, and the pass moves its cursor past the notice instead of holding it for an attempt that
+// is not queued yet.
 func settleKeptDelivery(ctx context.Context, deps Deps, tx pgx.Tx, post listenerwire.DispatchPost, notice bus.KeptCopyExpiry) ([]model.Event, bool, error) {
+	attempts, held, err := keptDeliveryAttemptsOf(ctx, tx, post, "role:"+notice.Role)
+	if err != nil || !held {
+		return nil, false, err
+	}
+	if err := deps.Broker.LockOwners(ctx, tx, attempts.owner); err != nil {
+		return nil, false, err
+	}
+	end := store.KeptDeliveryExpiry{EnvelopeID: notice.EventID, Role: notice.Role, PostKind: post.Kind, PostID: post.ID}
+	if err := store.RecordKeptDeliveryExpiry(ctx, tx, end, notice.ForwardUnconfirmed); err != nil {
+		return nil, false, fmt.Errorf("record the end of the copy %s of %s %s's delivery to role %s: %w", notice.EventID, post.Kind, post.ID, notice.Role, err)
+	}
+	settled, err := attempts.fail(ctx, tx, notice.EventID, model.KeptDeliveryExpiredError(notice.ForwardUnconfirmed))
+	if err != nil {
+		return nil, false, err
+	}
 	var receipts []model.Event
-	var settled int
-	switch post.Kind {
-	case listenerwire.DispatchPostComment:
-		var owner model.Event
-		var askID *string
-		err := tx.QueryRow(ctx, `select issue_key, artifact_id::text, ask_id::text from comments where id = $1`, post.ID).
-			Scan(&owner.IssueKey, &owner.ArtifactID, &askID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, nil
-		}
+	for _, one := range settled {
+		receipt := attempts.owner
+		receipt.Type, receipt.Actor, receipt.Payload = attempts.receiptType, graphWriter, one.payload
+		appended, err := deps.Broker.Append(ctx, tx, receipt)
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("append the %s receipt of %s %s's attempt %d: %w", attempts.receiptType, post.Kind, post.ID, one.attempt, err)
 		}
-		if err := deps.Broker.LockOwners(ctx, tx, owner); err != nil {
-			return nil, false, err
-		}
-		rows, err := tx.Query(ctx, `
-			update comment_deliveries set state = 'failed', error = $3, envelope_id = null
-			where comment_id = $1 and envelope_id = $2 and state = 'queued' and session_id is null and reply_id is null
-			returning target, attempt, delivery, duplicate
-		`, post.ID, notice.EventID, keptDeliveryExpiredError)
-		if err != nil {
-			return nil, false, err
-		}
-		payloads, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.CommentDeliveryEventPayload, error) {
-			payload := model.CommentDeliveryEventPayload{
-				CommentID: post.ID, AskID: askID, State: model.DeliveryStateFailed, Error: keptDeliveryExpiredError,
-			}
-			return payload, row.Scan(&payload.Target, &payload.Attempt, &payload.Delivery, &payload.Duplicate)
-		})
-		if err != nil {
-			return nil, false, err
-		}
-		for _, payload := range payloads {
-			receipt := owner
-			receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", graphWriter, payload
-			appended, err := deps.Broker.Append(ctx, tx, receipt)
-			if err != nil {
-				return nil, false, fmt.Errorf("append the comment.delivery receipt of comment %s's attempt %d: %w", post.ID, payload.Attempt, err)
-			}
-			receipts = append(receipts, appended)
-		}
-		settled = len(payloads)
-	case listenerwire.DispatchPostMessage:
-		var issueKey, target *string
-		err := tx.QueryRow(ctx, `select issue_key, target from messages where id = $1`, post.ID).Scan(&issueKey, &target)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, nil
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		// A message on an issue is that issue's, and one on no issue is its target session's, as
-		// the API's receipt of it is (messageEvent in internal/dispatch/api); a message to a role
-		// is always on an issue, since its own creation appends nothing ownerless for a role.
-		owner := model.Event{IssueKey: issueKey}
-		messageTarget := ""
-		if target != nil {
-			messageTarget = *target
-		}
-		if issueKey == nil {
-			owner.Payload = model.MessageDeliveryEventPayload{Target: messageTarget}
-		}
-		if err := deps.Broker.LockOwners(ctx, tx, owner); err != nil {
-			return nil, false, err
-		}
-		rows, err := tx.Query(ctx, `
-			update message_deliveries set state = 'failed', error = $3, envelope_id = null
-			where message_id = $1 and envelope_id = $2 and state = 'queued' and session_id = '' and reply_id is null
-			returning attempt, delivery, duplicate
-		`, post.ID, notice.EventID, keptDeliveryExpiredError)
-		if err != nil {
-			return nil, false, err
-		}
-		payloads, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.MessageDeliveryEventPayload, error) {
-			payload := model.MessageDeliveryEventPayload{
-				MessageID: post.ID, Target: messageTarget, State: model.DeliveryStateFailed, Error: keptDeliveryExpiredError,
-			}
-			return payload, row.Scan(&payload.Attempt, &payload.Delivery, &payload.Duplicate)
-		})
-		if err != nil {
-			return nil, false, err
-		}
-		for _, payload := range payloads {
-			receipt := model.Event{IssueKey: issueKey, Type: "message.delivery", Actor: graphWriter, Payload: payload}
-			appended, err := deps.Broker.Append(ctx, tx, receipt)
-			if err != nil {
-				return nil, false, fmt.Errorf("append the message.delivery receipt of message %s's attempt %d: %w", post.ID, payload.Attempt, err)
-			}
-			receipts = append(receipts, appended)
-		}
-		settled = len(payloads)
-	default:
-		// bus.ParseDispatchPostEventID answers no other kind.
-		return nil, false, nil
+		receipts = append(receipts, appended)
 	}
 	slog.Info("dispatch outbox: a copy the listener kept of a delivery for a role ended with no session taking it; its unanswered attempts are settled undelivered",
 		"kind", post.Kind, "post", post.ID, "role", notice.Role, "envelope_id", notice.EventID,
-		"copy_sequence", notice.Sequence, "settled", settled)
+		"copy_sequence", notice.Sequence, "forward_unconfirmed", notice.ForwardUnconfirmed, "settled", len(receipts))
 	return receipts, true, nil
 }
 
 // noticedCopy reads the copy notice names back from reader, at the sequence it names on its role's
 // kept lane (laneCopyAt), and answers why that is not the copy a listener dropped that the notice
-// names - the copy of its event, or of its delivery's post, under its dedupe key - or "" when it
-// may be. A listener stores a copy's notice after it reads the copy, and it notices only a copy
-// Dispatch answers for, which decodes: one Dispatch's outbox kept, or one of Dispatch's delivery
-// of a post that the publish route kept (cmd/listener, isOutboxCopy and isDispatchDeliveryCopy),
-// so:
+// names - the copy of its event, or of its delivery's post, under its dedupe key, of the kind the
+// notice's own key and source event id say (bus.KeptCopyExpiry.CopyKind) - or "" when it may be. A
+// listener stores a copy's notice after it reads the copy, and it notices only a copy Dispatch
+// answers for, which decodes: one Dispatch's outbox kept, or one of Dispatch's delivery of a post
+// that the publish route kept (bus.KeptCopyOutbox and bus.KeptCopyDispatchDelivery), so:
 //
 //   - the copy's sequence is below the notice's own (stored);
 //   - a message the lane holds there is the notice's copy only when it decodes and is Dispatch's
-//     copy under the notice's source event id and dedupe key (copyOfEvent). One no read can
-//     decode, or another copy, is no copy the notice names, and the notice is passed over: no row
-//     is written, so nothing is kept again, nothing is recorded undelivered and no attempt is
+//     copy of the notice's kind under the notice's source event id and dedupe key (copyOfEvent),
+//     which the one classifier the listener judged it by says (bus.ClassifyKeptCopy). One no read
+//     can decode, or another copy, is no copy the notice names, and the notice is passed over: no
+//     row is written, so nothing is kept again, nothing is recorded undelivered and no attempt is
 //     settled;
 //   - a lane that holds nothing there lost the copy to the stream's retention only when the
 //     sequence is below the first message the stream still holds. The stream removes its messages
@@ -421,7 +480,7 @@ func noticedCopy(ctx context.Context, reader KeptLaneReader, stored bus.StoredMe
 	if notice.Sequence == 0 || notice.Sequence >= stored.Sequence {
 		return fmt.Sprintf("it names the copy at sequence %d, which is not below its own %d", notice.Sequence, stored.Sequence), nil
 	}
-	held, err := laneCopyAt(ctx, reader, notice.Role, notice.Sequence, notice.SourceEventID, notice.DedupeKey)
+	held, err := laneCopyAt(ctx, reader, notice.Role, notice.Sequence, notice.CopyKind(), notice.SourceEventID, notice.DedupeKey)
 	if err != nil {
 		return "", err
 	}
@@ -472,11 +531,12 @@ type laneCopy struct {
 	decodeErr error
 }
 
-// laneCopyAt reads what role's kept lane holds at seq, against Dispatch's copy of the event whose
-// id is eventID under dedupeKey (copyOfEvent). It is the one read of the copy at a sequence that
+// laneCopyAt reads what role's kept lane holds at seq, against Dispatch's copy of kind want
+// (bus.KeptCopyOutbox or bus.KeptCopyDispatchDelivery) of the event or post whose source event id is
+// sourceEventID under dedupeKey (copyOfEvent). It is the one read of the copy at a sequence that
 // the notice's record (noticedCopy) and the keep it owes (readExpiredCopy) both make, so both judge
 // a copy by one rule. A failed read is returned.
-func laneCopyAt(ctx context.Context, reader KeptLaneReader, role string, seq uint64, eventID, dedupeKey string) (laneCopy, error) {
+func laneCopyAt(ctx context.Context, reader KeptLaneReader, role string, seq uint64, want bus.KeptCopyKind, sourceEventID, dedupeKey string) (laneCopy, error) {
 	stored, err := reader.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
 	if errors.Is(err, natsgo.ErrMsgNotFound) || err == nil && stored.Sequence != seq {
 		return laneCopy{state: laneCopyNone}, nil
@@ -488,18 +548,21 @@ func laneCopyAt(ctx context.Context, reader KeptLaneReader, role string, seq uin
 	if err := json.Unmarshal(stored.Data, &item); err != nil {
 		return laneCopy{state: laneCopyUndecodable, decodeErr: err}, nil
 	}
-	if !copyOfEvent(item, eventID, dedupeKey) {
+	if !copyOfEvent(item, want, sourceEventID, dedupeKey) {
 		return laneCopy{state: laneCopyOther, item: item}, nil
 	}
 	return laneCopy{state: laneCopyOfEvent, item: item}, nil
 }
 
-// copyOfEvent reports whether item is Dispatch's copy of the event whose id is sourceEventID under
-// dedupeKey: what the outbox kept for that event (eventEnvelope), or the copy of Dispatch's
-// delivery of the post sourceEventID names (bus.DispatchPostEventID) the publish route kept, and
-// what a notice of either names.
-func copyOfEvent(item contracts.Envelope, sourceEventID, dedupeKey string) bool {
-	return item.Source == "dispatch" && item.SourceEventID == sourceEventID && item.DedupeKey == dedupeKey
+// copyOfEvent reports whether item is Dispatch's copy of kind want - what the outbox kept for an
+// event (bus.KeptCopyOutbox, eventEnvelope), or the copy of Dispatch's delivery of a post the
+// publish route kept (bus.KeptCopyDispatchDelivery, bus.DispatchPostEventID) - under sourceEventID
+// and dedupeKey, which is what a notice of either names. item's kind is the one the listener
+// judged it by (bus.ClassifyKeptCopy), so a copy is never an outbox copy to the listener and a
+// delivery's to this read, and a want that is neither kind names no copy.
+func copyOfEvent(item contracts.Envelope, want bus.KeptCopyKind, sourceEventID, dedupeKey string) bool {
+	return (want == bus.KeptCopyOutbox || want == bus.KeptCopyDispatchDelivery) &&
+		bus.ClassifyKeptCopy(item) == want && item.SourceEventID == sourceEventID && item.DedupeKey == dedupeKey
 }
 
 // routedToRole reports, in tx, whether the outbox ever routed eventID to role: the role's topic is

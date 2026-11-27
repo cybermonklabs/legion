@@ -68,7 +68,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 			first.requireHeld(t, "the first role publish", heldForward(t, rig.harness.client, holder), false)
 			first.requireNamed(t, "the first role publish", sender)
 			if row.forward {
-				rig.deps.confirmed.Clear(publishDedupePrefix+row.key, holder)
+				rig.deps.confirmed.Clear(bus.PublishDedupePrefix+row.key, holder)
 			}
 			before := *forwards
 			repeat := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role,
@@ -128,7 +128,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		key := uuid.NewString()
 		first := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": key}))
 		first.requireHeld(t, "the first role publish", heldForward(t, rig.harness.client, holder), false)
-		rig.deps.confirmed.Clear(publishDedupePrefix+key, holder)
+		rig.deps.confirmed.Clear(bus.PublishDedupePrefix+key, holder)
 		saved := rig.deps.delivery
 		t.Cleanup(func() { rig.deps.delivery = saved })
 		inProcess := fmt.Errorf("%w: %w", bus.ErrForwardNotStored,
@@ -296,7 +296,7 @@ func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testi
 				answer.requireHeld(t, what, stored, true)
 			}
 			if row.forward {
-				rig.deps.confirmed.Clear(publishDedupePrefix+key, bob)
+				rig.deps.confirmed.Clear(bus.PublishDedupePrefix+key, bob)
 			}
 			answers(who, held(t, rig.publishFromReading(t, second, contracts.RoleTopicPrefix+role,
 				map[string]any{"idempotency_key": key, "message": "the second request's own body"})))

@@ -730,7 +730,10 @@ func messageDeliveryReceipt(
 // completeMessageDelivery is the settle transaction of a targeted delivery: it records what the
 // send did and appends the message.delivery receipt, holding no listener call. The attempt's
 // session is written back with the outcome, which changes it only for a send the listener
-// refused to a session the registry named (deliverMessageResuming).
+// refused to a session the registry named (deliverMessageResuming). A send that reported the copy
+// the listener kept for a role queued settles failed instead when the outbox has read the
+// listener's notice that the copy ended before this settle (settleDeliveryAttempt,
+// keptDeliveryExpired), so the attempt ends settled whichever came first.
 func (s *server) completeMessageDelivery(
 	ctx context.Context,
 	message model.Message,
@@ -744,16 +747,36 @@ func (s *server) completeMessageDelivery(
 		MessageID: message.ID, Attempt: pending.attempt, Delivery: pending.resolved.Delivery,
 		SessionID: pending.resolved.attemptSessionID, State: state, Duplicate: outcome.duplicate, Error: failure,
 	}, pending.resolved.title)
+	// write records an outcome on the pending attempt this sender claimed and returns the row it
+	// left; pgx.ErrNoRows says the attempt is no longer that row.
+	write := func(ctx context.Context, tx pgx.Tx, envelopeID *string, written string, writtenFailure *string) (model.MessageDelivery, error) {
+		return scanMessageDelivery(tx.QueryRow(ctx, `
+			update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7, session_id = $8
+			where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
+			returning `+messageDeliveryColumns,
+			message.ID, pending.attempt, pending.claimedAt, envelopeID, written, writtenFailure, outcome.duplicate,
+			pending.resolved.attemptSessionID,
+		))
+	}
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
-			settled, err := scanMessageDelivery(tx.QueryRow(ctx, `
-				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7, session_id = $8
-				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
-				returning `+messageDeliveryColumns,
-				message.ID, pending.attempt, pending.claimedAt, outcome.envelopeID, state, failure, outcome.duplicate,
-				pending.resolved.attemptSessionID,
-			))
-			return settled, err
+			return write(ctx, tx, outcome.envelopeID, state, failure)
+		},
+		// The copy the listener kept for a role may have ended, and the outbox read its notice,
+		// before this send's report is recorded: the attempt is then settled failed, as the
+		// outbox's own settle would have left it had it found the attempt queued.
+		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, error) {
+			post := listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: message.ID}
+			expired, ended, err := keptDeliveryExpired(ctx, tx, post, messageTarget(message.Target), state, outcome.envelopeID)
+			if err != nil || !ended {
+				return model.MessageDelivery{}, false, err
+			}
+			settled, err := write(ctx, tx, nil, model.DeliveryStateFailed, &expired)
+			if errors.Is(err, pgx.ErrNoRows) {
+				// This sender no longer holds the attempt: the settle after this reads what it is now.
+				return model.MessageDelivery{}, false, nil
+			}
+			return settled, err == nil, err
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
 			var mine bool
@@ -869,10 +892,12 @@ func (s *server) deliverMessageResuming(
 	held := true
 	err = takeover.retry(ctx,
 		func() string {
-			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, messageTarget(message.Target), listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: message.ID},
-				message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
-			)
+			outcome = s.sendResolvedDelivery(ctx, resolvedDelivery{
+				target: pending.resolved, route: messageTarget(message.Target),
+				post: listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: message.ID},
+				body: message.Body, idempotencyKey: key, urgency: pending.urgency, wanted: wanted, frame: pending.frame,
+				connectedOnly: connectedOnly,
+			})
 			return outcome.failure
 		},
 		func() (bool, error) {

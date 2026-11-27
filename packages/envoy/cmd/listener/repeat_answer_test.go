@@ -226,7 +226,7 @@ func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.stored-copy-" + id.New()
 	message := func(text string) contracts.Envelope {
-		return contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: text}, topic, publishDedupePrefix+uuid.NewString())
+		return contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: text}, topic, bus.PublishDedupePrefix+uuid.NewString())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -265,7 +265,7 @@ func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 
 	// The sequence guard: the next copy on the subject carries the same dedupe key.
 	sameKeyTopic := "notifications.team.stored-copy-same-key-" + id.New()
-	sameKey := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: "one key, two copies"}, sameKeyTopic, publishDedupePrefix+uuid.NewString())
+	sameKey := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_stored_copy", Text: "one key, two copies"}, sameKeyTopic, bus.PublishDedupePrefix+uuid.NewString())
 	keptAck, err := client.PublishStoredAck(ctx, sameKeyTopic, sameKey, bus.ForwardMsgID(sameKey.DedupeKey, sameKeyTopic))
 	if err != nil {
 		t.Fatalf("publish the copy under its message id: %v", err)

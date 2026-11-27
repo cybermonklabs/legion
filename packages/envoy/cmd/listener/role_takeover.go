@@ -166,9 +166,9 @@ func takenFrameOf(msgID, role string) (key string, seq uint64, ok bool) {
 // key without the forward mark is dedupeKey: a key in the minted form
 // (contracts.MintedDedupeKeyPattern), a prefix and 32 hex digits of the SHA-256 of dedupeKey,
 // keptFrameMark and seq, so one frame's copies share it and no other message has it. The prefix
-// is publishDedupePrefix for a frame whose key has it - the listener's own publish route forwarded
+// is bus.PublishDedupePrefix for a frame whose key has it - the listener's own publish route forwarded
 // it - and takenFrameKeyPrefix for any other, so the listener's own messages are told from
-// Dispatch's outbox copies by the copy's key (isOutboxCopy) however many takeovers it went through.
+// Dispatch's outbox copies by the copy's key (bus.ClassifyKeptCopy) however many takeovers it went through.
 // A minted key names its event (contracts.DedupeKeyNamesTheUpstreamEvent), so every walk - this
 // release's, and the release before's, which reads a copy as any kept copy - forwards the copy
 // under that key (roleForward.msgID), an id no earlier forward of the same message took, and
@@ -179,8 +179,8 @@ func takenFrameOf(msgID, role string) (key string, seq uint64, ok bool) {
 func takenFrameDedupeKey(dedupeKey string, seq uint64) string {
 	sum := sha256.Sum256([]byte(dedupeKey + keptFrameMark + strconv.FormatUint(seq, 10)))
 	prefix := takenFrameKeyPrefix
-	if strings.HasPrefix(dedupeKey, publishDedupePrefix) {
-		prefix = publishDedupePrefix
+	if strings.HasPrefix(dedupeKey, bus.PublishDedupePrefix) {
+		prefix = bus.PublishDedupePrefix
 	}
 	return prefix + hex.EncodeToString(sum[:16])
 }
@@ -685,11 +685,11 @@ func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
 // process under another publish (bus.ErrDuplicateInProcess) is published again until the answer
 // names that publish's copy, as the keep's own is (publishPastInProcess). A copy of a frame
 // Dispatch's outbox forwarded, which carries no role mark, is an outbox copy to the walk
-// (isOutboxCopy): it raises no wake and gets no dead letter. A copy of a send Dispatch's API marked
+// (bus.KeptCopyOutbox): it raises no wake and gets no dead letter. A copy of a send Dispatch's API marked
 // with its role is the listener's own copy, which the sweep's wake report counts, and so is a copy
 // of a forward of Dispatch's delivery of a post, whose source event id and key prefix it keeps, so
 // the walk tells Dispatch of its end as it tells of the copy it was forwarded from
-// (isDispatchDeliveryCopy).
+// (bus.KeptCopyDispatchDelivery).
 func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, seq uint64) error {
 	key := strings.TrimPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix)
 	kept := item

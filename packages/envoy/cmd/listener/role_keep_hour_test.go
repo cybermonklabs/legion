@@ -1589,7 +1589,7 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 		}
 		return contracts.Envelope{
 			EventID: fmt.Sprintf("dispatch-%d", event.ID), Source: "dispatch", SourceSession: sender, SourceEventID: fmt.Sprint(event.ID),
-			Topic: contracts.RoleTopicPrefix + role, DedupeKey: publishDedupePrefix + id.New(), PayloadSummary: summary, Payload: string(payload),
+			Topic: contracts.RoleTopicPrefix + role, DedupeKey: bus.PublishDedupePrefix + id.New(), PayloadSummary: summary, Payload: string(payload),
 		}
 	}
 	// named is the line of item's dead letter that names the message, and the letter. It fails t
@@ -1722,7 +1722,7 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 			{"a message whose payload is a Dispatch event", &eventPayload},
 		} {
 			item := contracts.MessageEnvelope(contracts.Message{Source: "agent", SourceSession: sender, Text: phrase + "\nThe second line.", Payload: tc.payload},
-				contracts.RoleTopicPrefix+role, publishDedupePrefix+id.New())
+				contracts.RoleTopicPrefix+role, bus.PublishDedupePrefix+id.New())
 			if line, _ := named(t, item); line != "The first line of the message is: "+phrase {
 				t.Fatalf("%s: the dead letter names the message as %q, want its first line %q", tc.name, line, phrase)
 			}

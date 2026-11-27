@@ -1443,85 +1443,24 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 // leaderRoleClaims is the claim side (roles.ClaimStore) of each resolution of a role's holder that
 // must not read the claim from before a takeover: each claim read is the role bucket stream
 // leader's (store.Registry.RoleClaimFromLeader), since on a replicated bucket a direct get can
-// answer the claim as it stood before a takeover, naming the previous holder. Four resolutions
-// read through it:
-//
-//   - the kept lane handover's (handOverKeptRole), which on a stale claim would walk the lane for
-//     the previous holder, whose drain hold (roleKeepDrainHolds, a leader read) refuses every
-//     forward, and give the lane up with the copy left on it until the next sweep, minutes later;
-//   - the marked send's, before it hands the send off or keeps it (handOffOrKeepRoleSend);
-//   - the publish route's confirmation of a miss before it hands the message off
-//     (roleSend.missConfirmed);
-//   - each resolution of a publish whose keep would tell nobody (roleSend.resolve,
-//     keepTellsNobody), which on a stale claim would refuse, with nothing kept, a message the
-//     role's live holder can take.
-//
-// The publish route's two read through roleSend.resolveFromLeaders. On a stale claim, the marked
-// send's and the confirmation would each find the previous holder, which is not live, and hand the
-// message to that holder's daemon, while the session that took the role never receives it. For
-// the same reasons all four read the holder's session record from the session bucket stream's
-// leader as well: a copy of that bucket that has not applied the registration of a session that
-// took the role answers it absent, a holder that is not live. The handover reads it so only where
-// this listener's cache does not show the holder live (leaderHolderSessions), since its miss takes
-// nothing away; the other three read every holder from the leader (leaderOnlyHolderSessions),
-// since a cached record read live can pass its live deadline before the resolution judges it.
+// answer the claim as it stood before a takeover, naming the previous holder. The kept lane
+// handover reads through it, with leaderHolderSessions (handOverKeptRole), where a stale claim
+// would walk the lane for the previous holder, whose drain hold (roleKeepDrainHolds, a leader
+// read) refuses every forward, and give the lane up with the copy left on it until the next
+// sweep, minutes later. The resolutions that act on a miss no later read takes back read through
+// it too, with leaderOnlyHolderSessions (resolveRoleHolderFromLeaders).
 type leaderRoleClaims struct{ registry *store.Registry }
 
 func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
 	return c.registry.RoleClaimFromLeader(ctx, role)
 }
 
-// isOutboxCopy reports whether item is a copy Dispatch's outbox kept on a role's kept lane rather
-// than one the listener kept: its source is dispatch, its dedupe key does not begin with
-// publishDedupePrefix, and it carries no role mark. The outbox keeps a role-routed event under the
-// key it published it under, dispatch-<id> or a mention's key (internal/dispatch/outbox), and the
-// publish route refuses a dedupe key chosen for an envelope with source dispatch and makes one
-// under publishDedupePrefix for it (publishHandler, api.go), so a copy the route kept never reads
-// as the outbox's, whatever source it names - Dispatch's delivery of a post the route kept among
-// them (isDispatchDeliveryCopy). A send Dispatch's API made for a route to a role
-// carries the role's mark (contracts.Envelope.Role), which the outbox never writes: the send route
-// kept it (keepRoleSend), or a takeover copied it from its holder's subject, and Dispatch recorded
-// the send as made, so the listener alone answers for it. The rule reads the copies an earlier
-// outbox wrote as well, since it needs no mark the outbox would have to write. An outbox copy gets
-// no dead letter, since the person or session behind a Dispatch event sent no Envoy message: the
-// walk that drops it at the end of its hour tells Dispatch instead, with an expiry notice
-// (endKeptCopyWithExpiryNotice), and Dispatch's outbox keeps the event again or records it
-// undelivered. It wakes no role from the sweep (keptLaneWakesItsRole), as an outbox keep raises
-// no wake report either. A takeover's copy of a frame the publish route forwarded keeps
-// publishDedupePrefix in its own key (takenFrameDedupeKey), so it reads as the listener's after
-// any number of takeovers.
-func isOutboxCopy(item contracts.Envelope) bool {
-	return item.Source == "dispatch" && item.Role == "" && !strings.HasPrefix(item.DedupeKey, publishDedupePrefix)
-}
-
-// isDispatchDeliveryCopy reports whether item is a copy of Dispatch's delivery of a post that the
-// publish route kept for a role's first holder: its source is dispatch, it carries no role mark,
-// its dedupe key begins with publishDedupePrefix, and its source_event_id names a post in the one
-// form the route writes for a publish that carried a Dispatch post from Dispatch's own principal
-// (bus.ParseDispatchPostEventID, refuseDispatchPost). No other writer of the route produces that
-// form, since every other envelope the route builds carries a new id there
-// (contracts.MessageEnvelope). Such a copy names no source session, so it is owed no dead letter,
-// and the route keeps it all the same (roleSend.keepTellsNobody): the walk that ends it tells
-// Dispatch with an expiry notice (endKeptCopyWithExpiryNotice), at the end of its hour whether it
-// is stale or not, and when the role's live holder does not take its delivery mode, so Dispatch
-// settles the delivery's attempt, which reads queued until then, as undelivered. It is the
-// listener's own copy otherwise (keptCopyKeptBy): the route raised the role's wake as it kept it,
-// and the sweep raises it again while the copy waits (keptLaneWakesItsRole), which an outbox copy
-// does not, and so it is no outbox copy. A takeover's copy of its forward keeps its source event
-// id and publishDedupePrefix in its own key (takenFrameDedupeKey), so it reads as one too.
-func isDispatchDeliveryCopy(item contracts.Envelope) bool {
-	if item.Source != "dispatch" || item.Role != "" || !strings.HasPrefix(item.DedupeKey, publishDedupePrefix) {
-		return false
-	}
-	_, delivers := bus.ParseDispatchPostEventID(item.SourceEventID)
-	return delivers
-}
-
 // keptCopyKeptBy is who kept item, as the kept_by label and attribute name it:
-// keptByDispatchOutbox for an outbox copy (isOutboxCopy), keptByListener for every other, a copy
-// of Dispatch's delivery of a post the publish route kept (isDispatchDeliveryCopy) among them.
+// keptByDispatchOutbox for an outbox copy (bus.KeptCopyOutbox), keptByListener for every other, a
+// copy of Dispatch's delivery of a post the publish route kept (bus.KeptCopyDispatchDelivery)
+// among them.
 func keptCopyKeptBy(item contracts.Envelope) string {
-	if isOutboxCopy(item) {
+	if bus.ClassifyKeptCopy(item) == bus.KeptCopyOutbox {
 		return keptByDispatchOutbox
 	}
 	return keptByListener
@@ -1554,16 +1493,16 @@ const (
 	// keptCopyForwardClaimed: a walk claimed the copy to forward it, and no walk confirmed the
 	// forward.
 	keptCopyForwardClaimed
-	// keptCopyModeClaimed: a walk claimed the copy to end it with a dead letter because the
-	// role's live holder does not take its delivery mode, and no walk confirmed the dead letter.
+	// keptCopyModeClaimed: a walk claimed the copy to end it because the role's live holder does
+	// not take its delivery mode - with a dead letter, or, for a copy of Dispatch's delivery of a
+	// post, with an expiry notice (endKeptCopyWithExpiryNotice) - and no walk confirmed that end.
 	keptCopyModeClaimed
-	// keptCopyExpiryClaimed: a walk claimed the copy, because its hour ended, to end it with a
-	// dead letter (endKeptCopyWithDeadLetter) or, for a copy Dispatch answers for (an outbox
-	// copy, or a copy of Dispatch's delivery of a post, which a walk also claims so when the
-	// role's live holder does not take its delivery mode), with an expiry notice
-	// (endKeptCopyWithExpiryNotice), and no walk confirmed that end. A walk that takes the claim
-	// over judges the copy expired again (judgeKeptRoleCopy), which sends a listener's copy's dead
-	// letter again and the notice of a copy Dispatch answers for again.
+	// keptCopyExpiryClaimed: a walk claimed the copy, because its hour ended, to end it with a dead
+	// letter (endKeptCopyWithDeadLetter) or, for a copy Dispatch answers for (an outbox copy, or a
+	// copy of Dispatch's delivery of a post), with an expiry notice (endKeptCopyWithExpiryNotice),
+	// and no walk confirmed that end. A walk that takes the claim over judges the copy expired again
+	// (judgeKeptRoleCopy), which sends a listener's copy's dead letter again and the notice of a
+	// copy Dispatch answers for again.
 	keptCopyExpiryClaimed
 )
 
@@ -1584,10 +1523,10 @@ func (c keptCopyClaim) forwardUnconfirmed() bool {
 // here: the value with unconfirmedClaimSuffix cut from its end is the reason,
 // deadLetterDeliveryMode for a mode claim and deadLetterExpired for an expiry claim, and the
 // suffix is the qualifier of either. A value that names neither reason is an expiry claim with no
-// qualifier, whatever its end; no walk writes one. This is the one place a claim is read back.
-// Two places write one: claimReason for a dead letter's drop, and endKeptCopyWithExpiryNotice,
-// which writes the plain expired reason. judgeKeptRoleCopy builds the drop again from the claim
-// this returns. Both are read from the claim and from nothing else: the
+// qualifier, whatever its end; no walk writes one. This is the one place a claim is read back, and
+// claimReason the one place a drop is written into one, for a dead letter's drop and an expiry
+// notice's alike. judgeKeptRoleCopy builds the drop again from the claim this returns. Both are
+// read from the claim and from nothing else: the
 // copy's age on the clock of the walk taking the claim over need not be what it was on the clock
 // of the walk that made it, the holder that refused the copy's mode may no longer hold the role,
 // and the forward's claim that showed the copy may have reached the holder is gone from the
@@ -1623,10 +1562,10 @@ const (
 	keptCopyDeadLetter
 	// keptCopyExpiryNotice: the walk ends a copy Dispatch answers for with an expiry notice to
 	// Dispatch - a copy Dispatch's outbox kept, whose hour ended, and a copy of Dispatch's
-	// delivery of a post (isDispatchDeliveryCopy) whose hour ended or whose live holder does not
-	// take its delivery mode - in the same three cursor writes under the same expired claim a
-	// dead letter takes (endKeptCopyWithExpiryNotice), so a walk that takes the claim over judges
-	// the copy expired again and stores the notice again under the same message id.
+	// delivery of a post (bus.KeptCopyDispatchDelivery) whose hour ended or whose live holder does
+	// not take its delivery mode - in the same three cursor writes under the same claim a dead
+	// letter takes (endKeptCopyWithExpiryNotice), so a walk that takes the claim over judges the
+	// copy as the first did and stores the notice again under the same message id.
 	keptCopyExpiryNotice
 	// keptCopyWait: the copy is inside its hour and the walk has no live holder to forward it to,
 	// so the walk stops at it.
@@ -1641,13 +1580,15 @@ type keptCopyVerdict struct {
 	// at is the walk's clock when it judged the copy, which a dead letter names as the time
 	// Envoy dropped the copy and dates itself by.
 	at time.Time
-	// report is what the copy is owed beyond its dead letter's own line - its line, its counter
-	// and its delivery outcome - which the walk runs only once its last cursor write for the copy
-	// has landed, so two walks never report one copy twice. It is nil for a copy the walk
-	// forwards or stops at, and for a delivery mode's dead-letter claim taken over, whatever the
-	// copy's age, whose one line is its dead letter's.
+	// report is what the copy is owed beyond its dead letter's or notice's own line - its line, its
+	// counter and its delivery outcome - which the walk runs only once its last cursor write for
+	// the copy has landed, so two walks never report one copy twice. It is nil for a copy the walk
+	// forwards or stops at, and for a delivery mode's claim taken over, whatever the copy's age,
+	// whose one line is its dead letter's or its notice's.
 	report func()
-	// drop is why a copy the walk ends with a dead letter is dropped.
+	// drop is why a copy the walk ends with a dead letter or an expiry notice is dropped: its
+	// reason, and whether its forward may have reached the holder, which the claim written for the
+	// end (keptRoleDrop.claimReason) and the notice (bus.KeptCopyExpiry.ForwardUnconfirmed) carry.
 	drop keptRoleDrop
 }
 
@@ -1666,42 +1607,46 @@ type keptCopyVerdict struct {
 //     the takeover copy of a forward it answered as failed (withdrawLateForward), so it is ended,
 //     forwarded to no one, owed no dead letter and counted as no expired copy whatever its age,
 //     with one line naming its event, so a reader of the lane sees what became of that forward.
-//  3. A copy under a delivery mode's dead-letter claim that this walk takes over
-//     (keptCopyModeClaimed) is a delivery mode drop whose dead letter was not confirmed, and it is
-//     owed that dead letter again, whatever its age now, whoever holds the role now and whether
-//     anyone does. Its dead letter's line is its one report: it was dropped inside its hour for
-//     its delivery mode, so it is no expired copy however old it is when the dead letter is sent
-//     again.
-//  4. A copy whose hour ended (keptCopyEnded), and a copy under an expiry's dead-letter claim
-//     that this walk takes over (keptCopyExpiryClaimed) whatever its age by this walk's clock,
-//     since the walk that made the claim found its hour ended, is dropped, counted and logged
+//  3. A copy under a delivery mode's claim that this walk takes over (keptCopyModeClaimed) is a
+//     delivery mode drop whose end was not confirmed, and it is owed that end again, whatever its
+//     age now, whoever holds the role now and whether anyone does: its dead letter, or, for a copy
+//     of Dispatch's delivery of a post (bus.KeptCopyDispatchDelivery), its expiry notice with the
+//     delivery mode as its reason. Its dead letter's line or its notice's line is its one report:
+//     it was dropped inside its hour for its delivery mode, so it is no expired copy however old
+//     it is when its end is sent again, and nothing is counted on envoy_role_kept_expired_total
+//     for it.
+//  4. A copy whose hour ended (keptCopyEnded), and a copy under an expiry's claim that this walk
+//     takes over (keptCopyExpiryClaimed) whatever its age by this walk's clock, since the walk
+//     that made the claim found its hour ended, is dropped, counted and logged
 //     (keptRoleDroppedReport). It is owed a dead letter when the listener kept it and its publish
-//     named a sender session, unless no walk claimed it and its hour ended more than an hour
-//     before (roleKeepStaleAge): a copy a walk claimed is owed one whatever its age. A walk for a
-//     holder names that holder in the dead letter as the session that holds the role now
-//     (keptRoleDrop.holder), since telling the sender no session held the role would be false;
-//     the dead letter of a copy whose forward may have reached the holder (below) says that
-//     instead. A copy Dispatch's outbox kept (isOutboxCopy) is owed an expiry notice to Dispatch
-//     in place of a dead letter (keptCopyExpiryNotice, endKeptCopyWithExpiryNotice), whatever its
-//     age: Dispatch decides what becomes of the event, and a copy no walk reached for hours is
-//     the very one it must hear of, where a stale dead letter would tell a session of a message
-//     it sent hours ago. So is a copy of Dispatch's delivery of a post (isDispatchDeliveryCopy),
-//     whatever its age: Dispatch settles the delivery's attempt by the notice, however late the
-//     walk that reads the copy is.
+//     named a sender session (bus.KeptCopySession), unless no walk claimed it and its hour ended
+//     more than an hour before (roleKeepStaleAge): a copy a walk claimed is owed one whatever its
+//     age. A walk for a holder names that holder in the dead letter as the session that holds the
+//     role now (keptRoleDrop.holder), since telling the sender no session held the role would be
+//     false; the dead letter of a copy whose forward may have reached the holder (below) says that
+//     instead. A copy Dispatch's outbox kept (bus.KeptCopyOutbox) is owed an expiry notice to
+//     Dispatch in place of a dead letter (keptCopyExpiryNotice, endKeptCopyWithExpiryNotice),
+//     whatever its age: Dispatch decides what becomes of the event, and a copy no walk reached for
+//     hours is the very one it must hear of, where a stale dead letter would tell a session of a
+//     message it sent hours ago. So is a copy of Dispatch's delivery of a post, whatever its age:
+//     Dispatch settles the delivery's attempt by the notice, however late the walk that reads the
+//     copy is.
 //  5. A walk with no holder stops at every other copy.
 //  6. A walk for a holder applies beforeForward (keptRoleForwardAllowed): an allowed copy is
 //     forwarded; an echo or a repeat is passed over; and a copy whose delivery mode the holder
 //     does not take is dropped as the lane refuses it, and owed a dead letter naming that holder
 //     when the listener kept it and its publish named a sender session. A copy of Dispatch's
 //     delivery of a post whose delivery mode the holder does not take is owed an expiry notice
-//     instead, so its attempt does not stay queued for good; an outbox copy's is owed nothing.
+//     instead, with the delivery mode as its reason, so its attempt does not stay queued for good;
+//     an outbox copy's is owed nothing.
 //
-// Every copy owed a dead letter, by rule 3, 4 or 6, is dropped as a copy whose forward may have
-// reached the holder (keptRoleDrop.forwarded) when the claim this walk takes over is a forward's
-// claim, or a dead letter's claim a walk wrote with that qualifier
-// (keptCopyClaim.forwardUnconfirmed), however many walks took the claim over before this one, and
-// its dead letter says so beside its reason. The verdict of such a copy is made in one place
-// below, so no rule builds a drop without the qualifier its claim carried.
+// Every copy owed a dead letter or an expiry notice, by rule 3, 4 or 6, is dropped as a copy whose
+// forward may have reached the holder (keptRoleDrop.forwarded) when the claim this walk takes
+// over is a forward's claim, or a dead letter's or notice's claim a walk wrote with that
+// qualifier (keptCopyClaim.forwardUnconfirmed), however many walks took the claim over before
+// this one, and its dead letter says so beside its reason, as its notice does
+// (bus.KeptCopyExpiry.ForwardUnconfirmed). The verdict of such a copy is made in one of two places
+// below (deadLetter and notice), so no rule builds a drop without the qualifier its claim carried.
 //
 // The forward claim of a copy inside its hour is no reason of its own: that copy is judged as any
 // copy, and the walk claims it again, for the forward or for the dead letter that judgement gives
@@ -1731,9 +1676,10 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 		}}
 	}
 	// A copy Dispatch answers for is told to Dispatch and owed no dead letter: an outbox copy, and
-	// a copy of Dispatch's delivery of a post, which names no source session.
-	delivery := isDispatchDeliveryCopy(item)
-	owed := !isOutboxCopy(item) && !delivery && item.SourceSession != ""
+	// a copy of Dispatch's delivery of a post, which names no source session. Every other copy is
+	// the listener's, owed a dead letter where it names a sender.
+	kind := bus.ClassifyKeptCopy(item)
+	owed := kind == bus.KeptCopySession
 	// deadLetter is the verdict of a copy owed a dead letter for drop, with the report the copy
 	// is owed beside it. Every such verdict is made here, so every drop carries the qualifier of
 	// the claim this walk took over, whatever its reason (keptCopyClaim.forwardUnconfirmed).
@@ -1741,18 +1687,35 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 		drop.forwarded = claim.forwardUnconfirmed()
 		return keptCopyVerdict{step: keptCopyDeadLetter, item: item, at: at, report: report, drop: drop}
 	}
-	if claim.kind == keptCopyModeClaimed && owed {
-		// The walk that made the claim knew the holder that did not take the copy, and the
-		// cursor does not keep it; the mode is the copy's own, read as that walk read it.
-		mode, err := payloadDeliveryMode(item.Payload)
-		return deadLetter(nil, keptRoleDrop{reason: deadLetterDeliveryMode, mode: mode, unreadable: err != nil})
+	// notice is the verdict of a copy Dispatch answers for, told to Dispatch for reason, with the
+	// report the copy is owed beside the notice. It carries the qualifier of the claim this walk
+	// took over as deadLetter does, so the claim the notice is written under keeps the reason and
+	// the qualifier for the walk that takes it over, and Dispatch hears whether the copy may have
+	// reached a holder.
+	notice := func(report func(), reason deadLetterReason) keptCopyVerdict {
+		drop := keptRoleDrop{reason: reason, forwarded: claim.forwardUnconfirmed()}
+		return keptCopyVerdict{step: keptCopyExpiryNotice, item: item, at: at, report: report, drop: drop}
+	}
+	if claim.kind == keptCopyModeClaimed {
+		switch kind {
+		case bus.KeptCopySession:
+			// The walk that made the claim knew the holder that did not take the copy, and the
+			// cursor does not keep it; the mode is the copy's own, read as that walk read it.
+			mode, err := payloadDeliveryMode(item.Payload)
+			return deadLetter(nil, keptRoleDrop{reason: deadLetterDeliveryMode, mode: mode, unreadable: err != nil})
+		case bus.KeptCopyDispatchDelivery:
+			// A delivery mode refusal whose notice was not confirmed: it ended inside its hour, so
+			// it is reported as no expired copy, whatever its age now.
+			return notice(nil, deadLetterDeliveryMode)
+		}
 	}
 	if claim.kind == keptCopyExpiryClaimed || keptCopyEnded(at, stored.Time) {
 		age := at.Sub(stored.Time)
 		stale := claim.kind == keptCopyUnclaimed && age > roleKeepStaleAge
 		report := keptRoleDroppedReport(cfg, role, holder, stored, item, age, stale)
-		if isOutboxCopy(item) || delivery {
-			return keptCopyVerdict{step: keptCopyExpiryNotice, item: item, at: at, report: report}
+		switch kind {
+		case bus.KeptCopyOutbox, bus.KeptCopyDispatchDelivery:
+			return notice(report, deadLetterExpired)
 		}
 		if !owed || stale {
 			return keptCopyVerdict{step: keptCopyEnd, item: item, report: report}
@@ -1767,13 +1730,13 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	case forwardAllowed:
 		return keptCopyVerdict{step: keptCopyForward, item: item}
 	case forwardModeUnadvertised, forwardModeUnreadable:
-		if owed {
+		switch kind {
+		case bus.KeptCopySession:
 			return deadLetter(report, keptRoleDrop{reason: deadLetterDeliveryMode, holder: holder, mode: verdict.mode, unreadable: verdict.kind == forwardModeUnreadable})
-		}
-		if delivery {
-			// The notice's claim is the plain expired one (endKeptCopyWithExpiryNotice), so a walk
-			// that takes it over ends the copy with the same notice, as an expired copy.
-			return keptCopyVerdict{step: keptCopyExpiryNotice, item: item, at: at, report: report}
+		case bus.KeptCopyDispatchDelivery:
+			// The notice's claim names the delivery mode (keptRoleDrop.claimReason), so a walk that
+			// takes it over ends the copy with the same notice, as a refusal and no expired copy.
+			return notice(report, deadLetterDeliveryMode)
 		}
 	}
 	return keptCopyVerdict{step: keptCopyEnd, item: item, report: report}
@@ -1830,14 +1793,13 @@ type keptRoleDrop struct {
 }
 
 // claimReason is the reason a walk writes into its claim of the copy it ends with a dead letter
-// for d (bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter): d's reason, with
-// unconfirmedClaimSuffix after it for a copy whose forward may have reached the holder
-// (d.forwarded), whichever reason that is. It is the one place a dead letter's drop is written
-// into a claim. An expiry notice writes the plain expired reason itself
-// (endKeptCopyWithExpiryNotice): it is no dead letter, keptCopyClaimOf reads that reason back with
-// no qualifier, and a walk that takes its claim over sends the notice again whatever the
-// qualifier would have said. keptCopyClaimOf is the one place a claim is read back, so a walk that
-// takes the claim over drops the copy for the reason, and with the qualifier, this drop has.
+// or an expiry notice for d (bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter,
+// endKeptCopyWithExpiryNotice): d's reason, with unconfirmedClaimSuffix after it for a copy whose
+// forward may have reached the holder (d.forwarded), whichever reason that is. It is the one place
+// a drop is written into a claim. keptCopyClaimOf is the one place a claim is read back, so a walk
+// that takes the claim over drops the copy for the reason, and with the qualifier, this drop has:
+// a delivery mode refusal stays one, and is not reported as an expired copy, and a forward that
+// may have reached the holder is still told.
 func (d keptRoleDrop) claimReason() string {
 	if d.forwarded {
 		return string(d.reason) + unconfirmedClaimSuffix
@@ -2160,41 +2122,46 @@ func reportKeptCopyEnd(cfg listenerDeliveryHandlerConfig, judged keptCopyVerdict
 
 // keptCopyExpiry is the expiry notice of the copy item, stored at stored on role's kept lane and
 // dropped at dropped: its event, the attempt its message id names (bus.KeptCopyAttempt), its key,
-// its stream sequence, and when the stream stored it and the walk dropped it.
-func keptCopyExpiry(role string, stored bus.StoredMessage, item contracts.Envelope, dropped time.Time) bus.KeptCopyExpiry {
+// its stream sequence, when the stream stored it and the walk dropped it, and whether the copy's
+// forward may have reached the session that held the role (forwardUnconfirmed).
+func keptCopyExpiry(role string, stored bus.StoredMessage, item contracts.Envelope, dropped time.Time, forwardUnconfirmed bool) bus.KeptCopyExpiry {
 	return bus.KeptCopyExpiry{
-		EventID:       item.EventID,
-		SourceEventID: item.SourceEventID,
-		Role:          role,
-		Attempt:       bus.KeptCopyAttempt(stored.MsgID, item.DedupeKey, role),
-		DedupeKey:     item.DedupeKey,
-		Sequence:      stored.Sequence,
-		KeptAt:        stored.Time.UnixMilli(),
-		DroppedAt:     dropped.UnixMilli(),
+		EventID:            item.EventID,
+		SourceEventID:      item.SourceEventID,
+		Role:               role,
+		Attempt:            bus.KeptCopyAttempt(stored.MsgID, item.DedupeKey, role),
+		DedupeKey:          item.DedupeKey,
+		Sequence:           stored.Sequence,
+		KeptAt:             stored.Time.UnixMilli(),
+		DroppedAt:          dropped.UnixMilli(),
+		ForwardUnconfirmed: forwardUnconfirmed,
 	}
 }
 
 // endKeptCopyWithExpiryNotice ends the copy stored at stored, a copy Dispatch answers for
 // (keptCopyExpiryNotice): an expired copy Dispatch's outbox kept, or a copy of Dispatch's delivery
 // of a post whose hour ended or whose live holder does not take its delivery mode
-// (isDispatchDeliveryCopy). It ends it for a walk whose cursor stands at kept, through the one
+// (bus.KeptCopyDispatchDelivery). It ends it for a walk whose cursor stands at kept, through the one
 // order every end of a copy with a publish takes (endKeptCopyWithPublish): the claim, written with
-// the plain expired reason - a walk that takes the claim over sends the notice again whatever a
-// qualifier would say, since the notice is the same whether or not a forward of the copy may have
-// reached a holder; the notice, stored on the role's expiry subject under the copy's own message
-// id through cfg.publishExpiryNotice (bus.Client.PublishKeptCopyExpiry, keptCopyExpiry), naming
-// the copy's source event id, the outbox's event or the delivery's post; and the confirm. Its
-// report is counted on envoy_role_kept_expiry_notices_total, and its line names who kept the copy
-// (keptCopyKeptBy). Dispatch's outbox reads the notice (internal/dispatch/outbox,
-// readKeptExpiries): for an outbox copy it keeps the event again, or records it undelivered once
-// it has kept it its bound of times; for a delivery's copy it settles that post's attempts the copy
-// carried and nobody answered as undelivered. It reports what endKeptCopyWithPublish reports.
+// the drop's reason, qualified where the copy's forward may have reached the holder
+// (keptRoleDrop.claimReason), so a walk that takes it over (keptCopyClaimOf) sends the notice again
+// for the same reason and with the same qualifier, and a delivery mode refusal is not reported
+// again as an expired copy; the notice, stored on the role's expiry subject under the copy's own
+// message id through cfg.publishExpiryNotice (bus.Client.PublishKeptCopyExpiry, keptCopyExpiry),
+// naming the copy's source event id, the outbox's event or the delivery's post, and whether the
+// copy's forward may have reached a holder; and the confirm. Its report is counted on
+// envoy_role_kept_expiry_notices_total, and its line names who kept the copy (keptCopyKeptBy).
+// Dispatch's outbox reads the notice (internal/dispatch/outbox, readKeptExpiries): for an outbox
+// copy it keeps the event again, or records it undelivered once it has kept it its bound of times;
+// for a delivery's copy it settles that post's attempts the copy carried and nobody answered as
+// undelivered, saying in the attempt's error that the message may have reached the role's holder
+// where the notice says its forward may have. It reports what endKeptCopyWithPublish reports.
 func endKeptCopyWithExpiryNotice(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
 	cfg, role := lane.cfg, lane.role
-	notice := keptCopyExpiry(role, stored, judged.item, judged.at)
+	notice := keptCopyExpiry(role, stored, judged.item, judged.at, judged.drop.forwarded)
 	return endKeptCopyWithPublish(ctx, lane, kept, stored, keptCopyPublish{
 		judged:  judged,
-		claim:   string(deadLetterExpired),
+		claim:   judged.drop.claimReason(),
 		publish: func(ctx context.Context) error { return cfg.publishExpiryNotice(ctx, notice) },
 		what:    fmt.Sprintf("tell Dispatch role %s's kept message %s ended", role, judged.item.EventID),
 		report: keptCopyEndReport{

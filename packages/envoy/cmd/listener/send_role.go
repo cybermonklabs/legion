@@ -110,16 +110,8 @@ func dispatchFieldRefusal(r *http.Request, dispatchPrincipal, field string) stri
 
 // handOffOrKeepRoleSend answers a send marked with its role whose claim names holder - another
 // session, or none - rather than the target the send names. A claim naming a session is resolved
-// first with the resolution every role route makes (roles.ResolveHolder, within the send's
-// window), from the buckets' stream leaders alone, as the publish route's confirmation of a miss
-// reads them (roleSend.resolveFromLeaders): its claim from the role bucket stream's leader
-// (leaderRoleClaims), as answerRoleSend's own read is, and its holder's session record from the
-// session bucket stream's leader whatever this listener's cache holds (leaderOnlyHolderSessions).
-// The cached record, read live when the resolution looks it up, can pass its live deadline before
-// the resolution judges it, and on a replicated bucket a direct get can answer the claim as it
-// stood before a takeover, naming the previous holder, which is not live, or answer that the
-// session that took the role has no record yet: each way the message would be handed to the
-// daemon of the role's stopped agent while the role's live holder never receives it. A resolution
+// first from the buckets' stream leaders alone (resolveRoleHolderFromLeaders, within the send's
+// window), since a miss hands the message to the daemon of the role's stopped agent. A resolution
 // that failed is answered as a claim read that failed is (refuseRoleClaimRead), with no wake
 // reported and nothing handed off or kept, and the answers below name the holder the resolution
 // read.
@@ -154,7 +146,7 @@ func dispatchFieldRefusal(r *http.Request, dispatchPrincipal, field string) stri
 func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target, holder string) {
 	live := false
 	if holder != "" {
-		resolved, err := roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, leaderOnlyHolderSessions{d.sessions}, item.Role)
+		resolved, err := resolveRoleHolderFromLeaders(ctx, d, item.Role)
 		if err != nil {
 			refuseRoleClaimRead(w, record, item.Role, err)
 			return

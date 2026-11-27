@@ -250,8 +250,9 @@ func (r *hourRig) keptForDispatch(l *hourListener, role, mode string) laneCopy {
 
 // assertDeliveryNoticeOf fails unless notices is the one expiry notice of held, the copy of
 // Dispatch's delivery of deliveredPost on role's kept lane, naming the post as its source event
-// and stored under the copy's own message id.
-func assertDeliveryNoticeOf(t *testing.T, notices []storedNotice, role string, held laneCopy) {
+// and stored under the copy's own message id, and saying that the copy's forward may have reached
+// a holder exactly when forwardUnconfirmed is set.
+func assertDeliveryNoticeOf(t *testing.T, notices []storedNotice, role string, held laneCopy, forwardUnconfirmed bool) {
 	t.Helper()
 	if len(notices) != 1 {
 		t.Fatalf("the stream holds %d expiry notices for role %s, want the delivery's one: %+v", len(notices), role, notices)
@@ -260,6 +261,9 @@ func assertDeliveryNoticeOf(t *testing.T, notices []storedNotice, role string, h
 	if got.EventID != held.item.EventID || got.SourceEventID != bus.DispatchPostEventID(deliveredPost) || got.Role != role ||
 		got.DedupeKey != held.item.DedupeKey || got.Sequence != held.sequence || got.KeptAt != held.stored.UnixMilli() {
 		t.Fatalf("the expiry notice is %+v, want the copy %s at %d naming the post %q", got, held.item.EventID, held.sequence, bus.DispatchPostEventID(deliveredPost))
+	}
+	if got.ForwardUnconfirmed != forwardUnconfirmed {
+		t.Fatalf("the expiry notice says forward_unconfirmed %t, want %t: %+v", got.ForwardUnconfirmed, forwardUnconfirmed, got)
 	}
 	if post, ok := bus.ParseDispatchPostEventID(got.SourceEventID); !ok || post != deliveredPost {
 		t.Fatalf("the expiry notice's source event %q names %+v (%t), want the post %+v", got.SourceEventID, post, ok, deliveredPost)
@@ -296,7 +300,7 @@ func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
 		rig.waitReported(role, expiryNoticeLine, 1)
 		rig.letSweepsRun()
 
-		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held)
+		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, false)
 		if letters := rig.envoyLetters(); len(letters) != 0 {
 			t.Fatalf("the stream holds dead letters %+v, want none", letters)
 		}
@@ -329,7 +333,7 @@ func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
 		rig.waitReported(role, expiryNoticeLine, 1)
 		rig.letSweepsRun()
 
-		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held)
+		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, false)
 		if letters := rig.envoyLetters(); len(letters) != 0 {
 			t.Fatalf("the stream holds dead letters %+v, want none", letters)
 		}
@@ -352,7 +356,7 @@ func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
 		rig.waitReported(role, expiryNoticeLine, 1)
 		rig.letSweepsRun()
 
-		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held)
+		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, false)
 		if lines := rig.lines(hourModeLine, map[string]any{"role": role, "event_id": held.item.EventID}); len(lines) != 1 {
 			t.Fatalf("the copy's refusal for its delivery mode is logged %d times, want once: %v", len(lines), lines)
 		}
@@ -366,4 +370,179 @@ func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
 			t.Fatalf("%s is %d, want no expired copy: the copy ended inside its hour", hourExpired, drops)
 		}
 	})
+}
+
+// writeForwardClaim writes onto role's drain cursor the claim a walk leaves when it ends after it
+// claimed the copy stored at seq to forward it and before it confirmed the forward: the stream may
+// hold that forward, so the copy may have reached the session that held the role then.
+func (r *hourRig) writeForwardClaim(role string, seq uint64) {
+	r.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	current, err := r.client().ReadKeptRoleCursor(ctx, role)
+	if err != nil {
+		r.t.Fatalf("read role %s's drain cursor: %v", role, err)
+	}
+	body, err := json.Marshal(bus.KeptRoleCursor{Kept: current.Cursor.Kept, Claiming: seq})
+	if err != nil {
+		r.t.Fatalf("encode the forward's claim: %v", err)
+	}
+	if _, err := r.client().PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), body, current.Sequence); err != nil {
+		r.t.Fatalf("write the forward's claim of the copy at %d: %v", seq, err)
+	}
+}
+
+// The notice of a copy of Dispatch's delivery says whether the copy's forward may have reached a
+// holder (bus.KeptCopyExpiry.ForwardUnconfirmed), however many walks took the claim over before
+// the one whose confirm landed, and whichever way the copy ended: a walk claimed it to forward it
+// and no walk confirmed the forward, so the stream may hold that forward, and Dispatch must not
+// tell a person who retries the delivery that nothing took it. The first walk's publish of the
+// notice fails with an error that can pass, so a second walk takes the claim over; the claim both
+// find names the copy's end and, for a copy whose forward was claimed, the qualifier
+// (keptRoleDrop.claimReason). A delivery mode refusal's claim is read back as one, so the walk
+// that takes it over reports no expired copy: nothing is counted on envoy_role_kept_expired_total
+// and no drop line names the keep window, though the copy's hour had not ended when it was refused.
+func TestADeliverysNoticeKeepsWhatItsClaimSaidWhenAnotherWalkTakesTheClaimOver(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// refused is whether the role's live holder, which takes btw alone, refuses the copy's
+		// steer, which ends the copy inside its hour; otherwise nobody holds the role and the
+		// copy's hour ends.
+		refused bool
+		// forward is whether a walk claimed the copy to forward it and no walk confirmed that.
+		forward bool
+		// claim is the dead_letter value of the claim the notice's publish finds on the cursor.
+		claim string
+	}{
+		{"the hour ends on a copy no walk claimed", false, false, "expired"},
+		{"the hour ends on a copy whose forward was claimed", false, true, "expired_unconfirmed"},
+		{"the holder refuses the mode of a copy no walk claimed", true, false, "delivery_mode"},
+		{"the holder refuses the mode of a copy whose forward was claimed", true, true, "delivery_mode_unconfirmed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newHourRig(t)
+			const (
+				role   = "hour-delivery-claimed"
+				holder = "ses_hour_delivery_claimed_holder"
+			)
+			mode := "btw"
+			if tc.refused {
+				mode = "steer"
+			}
+			held := rig.keptForDispatch(rig.listeners[0], role, mode)
+			if tc.forward {
+				rig.writeForwardClaim(role, held.sequence)
+			}
+			seam := failingOnce(role, nil)
+			seam.installExpiryNotices(t, rig)
+			// Moving the clock makes every claim read older than bus.KeptRoleClaimWindow to the
+			// listeners the moment it is written, which lets a walk take the claims over. It would
+			// let the first listener's sweep take over the notice's claim while the second
+			// listener's walk publishes, so the first listener's guard is held for the whole row:
+			// both walks are the second listener's.
+			release, taken := rig.listeners[0].cfg.roleKeepDrains.hold(context.Background(), role)
+			if !taken {
+				t.Fatalf("take role %s's handover guard on the first listener", role)
+			}
+			defer release()
+			if tc.refused {
+				rig.moveClock(30 * time.Minute)
+			} else {
+				rig.moveClock(time.Hour + time.Minute)
+			}
+			rig.startSweeps()
+			if tc.refused {
+				rig.claim(rig.listeners[1], holder, role,
+					session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
+			}
+			rig.waitPassed(role, held.sequence)
+			rig.waitReported(role, expiryNoticeLine, 1)
+			rig.letSweepsRun()
+
+			assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, tc.forward)
+			for i, call := range seam.assertTakenOver(t, "expiry notice", held, 0) {
+				if call.cursor.DeadLetter != tc.claim {
+					t.Fatalf("call %d of the notice's publish found the claim %+v, want its dead_letter to be %q", i+1, call.cursor, tc.claim)
+				}
+			}
+			expired, stale := rig.count(hourExpired), rig.count(hourExpiredStale)
+			drops := rig.lines(hourDropLine, map[string]any{"role": role})
+			if tc.refused && (expired != 0 || stale != 0 || len(drops) != 0) {
+				t.Fatalf("a delivery mode refusal taken over counts %d expired and %d stale copies and logs %d drop lines %v, want none: the copy ended inside its hour",
+					expired, stale, len(drops), drops)
+			}
+			if !tc.refused && (expired != 1 || stale != 0 || len(drops) != 1) {
+				t.Fatalf("an expired copy counts %d expired and %d stale copies and logs %d drop lines %v, want one expired copy and one line",
+					expired, stale, len(drops), drops)
+			}
+		})
+	}
+}
+
+// The claim a walk writes for the notice of a copy of Dispatch's delivery (keptRoleDrop.claimReason)
+// is read back by the walk that takes it over (keptCopyClaimOf) as the end it was made for, and
+// that walk judges the copy as the first did, whatever its age on its own clock and whoever holds
+// the role now: the notice's reason is the delivery mode or the hour, a forward that may have
+// reached a holder stays a notice that says so (bus.KeptCopyExpiry.ForwardUnconfirmed), and a
+// delivery mode refusal is reported as no expired copy by the walk that takes its claim over.
+func TestADeliverysNoticeClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
+	t.Parallel()
+	const role = "delivery-claimed-role"
+	stored := bus.StoredMessage{Sequence: 7, Time: time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)}
+	data, err := json.Marshal(contracts.Envelope{
+		EventID: "evt_delivery", Source: "dispatch", SourceEventID: bus.DispatchPostEventID(deliveredPost),
+		DedupeKey: bus.PublishDedupePrefix + "claimed", Payload: `{"delivery":{"mode":"steer"}}`,
+	})
+	if err != nil {
+		t.Fatalf("encode the copy: %v", err)
+	}
+	stored.Data = data
+	forward := bus.KeptRoleCursor{Kept: 6, Claiming: 7}
+	const refuser = "ses_delivery_claim_holder"
+	// judged is the judgement of a walk for holder - refuser, a live holder that takes btw alone,
+	// or none - of the copy under cursor's claim, by a clock at after the keep.
+	judged := func(holder string, cursor bus.KeptRoleCursor, at time.Duration) keptCopyVerdict {
+		return judgeKeptRoleCopy(listenerDeliveryHandlerConfig{}, role, holder, session.SessionEntry{Capabilities: []string{"btw"}}, stored,
+			keptCopyClaimOf(cursor, stored.Sequence), func() time.Time { return stored.Time.Add(at) }, func(string, string) bool { return false })
+	}
+	for _, tc := range []struct {
+		name      string
+		holder    string
+		cursor    bus.KeptRoleCursor
+		at        time.Duration
+		reason    deadLetterReason
+		forwarded bool
+		// reported is whether the walk's own judgement reports the copy: an expired copy or the
+		// refusal of a holder, and not a delivery mode claim taken over.
+		reported bool
+		// claim is the dead_letter value the claim of that notice carries.
+		claim string
+	}{
+		{"a copy no walk claimed, read after its hour", "", bus.KeptRoleCursor{Kept: 6}, time.Hour + time.Minute, deadLetterExpired, false, true, "expired"},
+		{"a forward's claim taken over after the hour", "", forward, time.Hour + time.Minute, deadLetterExpired, true, true, "expired_unconfirmed"},
+		{"a delivery mode claim taken over after the hour", "", bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: "delivery_mode"}, 3 * time.Hour, deadLetterDeliveryMode, false, false, "delivery_mode"},
+		{"a delivery mode claim of a forwarded copy taken over after the hour", "", bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: "delivery_mode_unconfirmed"}, 3 * time.Hour, deadLetterDeliveryMode, true, false, "delivery_mode_unconfirmed"},
+		{"a copy no walk claimed, read inside its hour for a holder that does not take its delivery mode", refuser, bus.KeptRoleCursor{Kept: 6}, 30 * time.Minute, deadLetterDeliveryMode, false, true, "delivery_mode"},
+		{"a forward's claim taken over inside the hour for a holder that does not take its delivery mode", refuser, forward, 30 * time.Minute, deadLetterDeliveryMode, true, true, "delivery_mode_unconfirmed"},
+	} {
+		first := judged(tc.holder, tc.cursor, tc.at)
+		if first.step != keptCopyExpiryNotice || first.drop.reason != tc.reason || first.drop.forwarded != tc.forwarded || (first.report != nil) != tc.reported {
+			t.Fatalf("%s: judged %+v, want a notice for %s with forwarded %t and a report: %t", tc.name, first, tc.reason, tc.forwarded, tc.reported)
+		}
+		if notice := keptCopyExpiry(role, stored, first.item, first.at, first.drop.forwarded); notice.ForwardUnconfirmed != tc.forwarded {
+			t.Fatalf("%s: the notice says forward_unconfirmed %t, want %t", tc.name, notice.ForwardUnconfirmed, tc.forwarded)
+		}
+		claimed := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: first.drop.claimReason()}
+		if claimed.DeadLetter != tc.claim {
+			t.Fatalf("%s: the notice's claim names %q, want %q", tc.name, claimed.DeadLetter, tc.claim)
+		}
+		for _, at := range []time.Duration{59 * time.Minute, 3 * time.Hour} {
+			again := judged("", claimed, at)
+			if again.step != keptCopyExpiryNotice || again.drop.reason != tc.reason || again.drop.forwarded != tc.forwarded ||
+				again.drop.claimReason() != tc.claim || (again.report != nil) != (tc.reason == deadLetterExpired) {
+				t.Fatalf("%s: its claim taken over by a clock %s after the keep is judged %+v, want a notice for %s with forwarded %t under the claim %q, reported only for an expired copy",
+					tc.name, at, again, tc.reason, tc.forwarded, tc.claim)
+			}
+		}
+	}
 }

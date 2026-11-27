@@ -18,10 +18,23 @@ body: |-
   dead letter: when its hour ends with no session taking it, however late the walk is, or when
   the role's live holder does not take its delivery mode, the walk stores an expiry notice on
   `notifications.envoy.kept.expired.<role>` naming the copy and the post, counted on
-  `envoy_role_kept_expiry_notices_total`; the drop is counted on `envoy_role_kept_expired_total`
-  under `kept_by="listener"`. Every other publish that names no `source_session` is still refused
-  `404` with nothing kept. A listener of an earlier release ignores the field and answers
-  Dispatch's publish `404`, as before.
+  `envoy_role_kept_expiry_notices_total`. The notice carries `forward_unconfirmed` when a walk
+  claimed the copy to forward it and never confirmed the forward, so the copy may have reached the
+  session that held the role; a Dispatch of an earlier release ignores the member. The drop is
+  counted on `envoy_role_kept_expired_total` under `kept_by="listener"` when its hour ended, and
+  not when the walk ended it for the holder's delivery mode, whichever walk of several finishes
+  it: the claim a walk writes for the notice names that reason, and `_unconfirmed` after it for a
+  forward that may have reached the holder, as a dead letter's claim does, so a walk that takes
+  the claim over sends the same notice for the same reason and reports a delivery mode refusal as
+  no expired copy. Every other publish that names no `source_session` is still refused `404` with
+  nothing kept. A listener of an earlier release ignores the field and answers Dispatch's publish
+  `404`, as before.
+
+  A kept copy is one of four kinds, told by one rule (`bus.ClassifyKeptCopy`) that the listener's
+  walk, its keep and its wake scan, and Dispatch's outbox, which reads a notice's copy back, all
+  read: an outbox copy, a delivery's copy, a copy owed a dead letter, and a copy no one hears of.
+  A copy whose dedupe key is the outbox's and whose source event id names a post is none of the
+  first two, so it is never an outbox copy to one reader and a delivery's to another.
 time: 2026-11-27T05:43:45.000000000Z
 custom:
     Issue: pr2230

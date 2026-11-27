@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -433,12 +434,13 @@ type cannotKeep struct {
 // readExpiredCopy reads held's copy back from its role's kept lane, at the stream sequence its
 // notice named (laneCopyAt). It reports false with no error when the stream no longer holds a copy
 // there - the stream's retention passed it - or holds a message no read can decode, or one that is
-// not Dispatch's copy of held's event under held's dedupe key, any of which the pass cannot keep
-// again. The notice's record read held's copy there (noticedCopy), so either of the last two is a
-// message a stream created again since then stored: held's copy is gone with the stream before it,
-// and keeping or forwarding the other one would send another event under held's.
+// not the outbox's copy (bus.KeptCopyOutbox) of held's event under held's dedupe key, any of which
+// the pass cannot keep again. The notice's record read held's copy there (noticedCopy), so either
+// of the last two is a message a stream created again since then stored: held's copy is gone with
+// the stream before it, and keeping or forwarding the other one would send another event under
+// held's.
 func readExpiredCopy(ctx context.Context, deps Deps, held expiredCopy) (contracts.Envelope, bool, error) {
-	read, err := laneCopyAt(ctx, deps.KeptLanes, held.role, held.sequence, strconv.FormatInt(held.eventID, 10), held.dedupeKey)
+	read, err := laneCopyAt(ctx, deps.KeptLanes, held.role, held.sequence, bus.KeptCopyOutbox, strconv.FormatInt(held.eventID, 10), held.dedupeKey)
 	if err != nil {
 		return contracts.Envelope{}, false, err
 	}

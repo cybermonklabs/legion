@@ -283,7 +283,7 @@ func (rig *inProcessRig) requireOutcomes(t *testing.T, path inProcessPath, sende
 // forwardAttempts is the attempts of each role send delivery line for the dedupe key key.
 func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 	var attempts []float64
-	for _, line := range linesIn(rig.harness.logs.String(), "listener publish role send", map[string]any{"dedupe_key": publishDedupePrefix + key}) {
+	for _, line := range linesIn(rig.harness.logs.String(), "listener publish role send", map[string]any{"dedupe_key": bus.PublishDedupePrefix + key}) {
 		n, _ := line["attempts"].(float64)
 		attempts = append(attempts, n)
 	}

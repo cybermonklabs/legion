@@ -277,7 +277,11 @@ holds no entry for keeps the message for its first holder and wakes it: Dispatch
 its own identity, naming the post it delivers, and its attempt reads `queued`. When that copy's
 hour ends with no session taking it, or the role's live holder does not take its delivery mode,
 the listener stores an expiry notice for Dispatch, and Dispatch records each attempt the copy
-carried that no session answered as `failed`, with no envelope, so a person can retry it. An
+carried that no session answered as `failed`, with no envelope, so a person can retry it. When the
+listener had begun to forward the copy and never confirmed that forward, the notice says so, and
+the attempt's error says the holder may already have the message, so a retry can deliver a second
+copy. A notice that reaches Dispatch before it has recorded the attempt settles it all the same:
+Dispatch records the end of the copy, and records the attempt `failed` when its send reports. An
 edge listener hands
 nothing off: its grant
 (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics

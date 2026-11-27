@@ -647,6 +647,15 @@ func receiptError(failure *string) string {
 // receipt from the row, stating what the reply recorded rather than what this send reported -
 // so every attempt carries exactly one receipt and that receipt agrees with its row.
 //
+// expired runs first, under the same owner lock, for a delivery whose send reported the copy the
+// listener kept for a role (keptDeliveryExpired): the outbox can read the listener's notice that
+// the copy ended before this attempt is recorded queued under the copy's envelope, finds the
+// attempt pending, and settles nothing. It records the end of the copy in the same lock
+// (store.RecordKeptDeliveryExpiry), so this transaction reads it here, and, finding it, settles
+// the attempt failed in place of queued and returns that row, whose receipt then states the failure
+// it records (answeredReceipt) - and the attempt ends settled whichever of the two came first. A
+// settle that has no copy to expire passes nil.
+//
 // stated queues what the attempt states in the node and tuple store in the batch that appends the
 // receipt, right after the receipt: the node of the session a sent attempt reached
 // (graphstore.QueueReached), caused by the receipt as the id sequence left it
@@ -660,6 +669,7 @@ func settleDeliveryAttempt[T any](
 	s *server,
 	receipt model.Event,
 	settle func(context.Context, pgx.Tx) (T, error),
+	expired func(context.Context, pgx.Tx) (row T, found bool, err error),
 	answered func(context.Context, pgx.Tx) (row T, mine bool, replyID *string, err error),
 	answeredReceipt func(T) model.Event,
 	stated func(b *store.WriteBatch, attempt T) error,
@@ -673,7 +683,18 @@ func settleDeliveryAttempt[T any](
 	if err := s.deps.Events.LockOwners(ctx, tx, receipt); err != nil {
 		return zero, err
 	}
-	attempt, err := settle(ctx, tx)
+	var attempt T
+	settledByExpiry := false
+	if expired != nil {
+		if attempt, settledByExpiry, err = expired(ctx, tx); err != nil {
+			return zero, err
+		}
+	}
+	if settledByExpiry {
+		receipt = answeredReceipt(attempt)
+	} else {
+		attempt, err = settle(ctx, tx)
+	}
 	wrote := err == nil
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -710,4 +731,26 @@ func settleDeliveryAttempt[T any](
 	}
 	s.publish(ctx, event)
 	return attempt, nil
+}
+
+// keptDeliveryExpired is the failure an attempt of post is settled with, and true, when its send
+// reported the copy the listener kept for a role (target, "role:" and the role) as queued under
+// envelopeID and the outbox has already read the listener's notice that that copy ended with no
+// session taking it (store.ReadKeptDeliveryExpiry, kept_delivery_expiries): the failure says
+// whether the copy's forward may have reached the role's holder (model.KeptDeliveryExpiredError).
+// It reads, in tx, under the post's owner lock, which is what orders it against the outbox's
+// record of the notice, and answers false for any other attempt without a read: one that is not
+// queued, names no envelope, or is not to a role. The record names the role the attempt targets, so
+// a notice stored for another role's copy is never found for it.
+func keptDeliveryExpired(ctx context.Context, tx pgx.Tx, post listenerwire.DispatchPost, target, state string, envelopeID *string) (string, bool, error) {
+	role, forRole := strings.CutPrefix(target, "role:")
+	if !forRole || state != model.DeliveryStateQueued || envelopeID == nil {
+		return "", false, nil
+	}
+	forwardUnconfirmed, found, err := store.ReadKeptDeliveryExpiry(ctx, tx,
+		store.KeptDeliveryExpiry{EnvelopeID: *envelopeID, Role: role, PostKind: post.Kind, PostID: post.ID})
+	if err != nil || !found {
+		return "", false, err
+	}
+	return model.KeptDeliveryExpiredError(forwardUnconfirmed), true, nil
 }

@@ -34,21 +34,18 @@ import (
 	"github.com/sjawhar/envoy/roleholder"
 )
 
-// ClaimStore is where a role's claim is read: in the listener, store.Registry, and cmd/listener's
-// roleLaneClaims, which bounds a read of another ClaimStore, and leaderRoleClaims, which reads the
-// role bucket stream's leader; Buckets in Dispatch. Reading is all a resolution asks of it.
+// ClaimStore is where a role's claim is read: the store that holds the claim, or an adapter that
+// reads it another way, bounded or from the stream's leader. Reading is all a resolution asks of it.
 type ClaimStore interface {
 	// RoleClaim returns role's claim, read within ctx, or a zero claim without an error when the
 	// role is unclaimed.
 	RoleClaim(ctx context.Context, role string) (store.RoleClaim, error)
 }
 
-// SessionLookup reads a role holder's session record and judges it. Outside this package's tests,
-// four types implement it: cmd/listener's roleHolderSessions, leaderHolderSessions and
-// leaderOnlyHolderSessions, each of which adds Holder to the listener's session registry
-// (session.SessionRegistry), and Dispatch's Buckets. The first two answer a holder the cache shows
-// live from the cache and read any other from the session bucket, the first by a direct get and
-// the second from the bucket stream's leader; the third reads every holder from that leader.
+// SessionLookup reads a role holder's session record and judges it. How fresh the record it reads
+// is, a cached copy, a direct read of the bucket or the bucket stream's leader's answer, is the
+// lookup's choice, which is how one resolution (ResolveHolder) serves callers that need different
+// answers; the judgement is always its own windows'.
 type SessionLookup interface {
 	// Holder returns sessionID's record, read within ctx, whatever state that record is in:
 	// judging it is EntryState's. nats.ErrKeyNotFound says no record stands here at all; any

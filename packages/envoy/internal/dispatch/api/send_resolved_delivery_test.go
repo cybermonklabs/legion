@@ -129,8 +129,9 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 			})
 			go func() {
 				defer close(returned)
-				answered <- s.sendResolvedDelivery(
-					ctx, tc.target, "session:s1", testDeliveredPost, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+				delivery := testDelivery(tc.target, "session:s1")
+				delivery.post = testDeliveredPost
+				answered <- s.sendResolvedDelivery(ctx, delivery)
 			}()
 			outcome := testwait.Receive(t, "sendResolvedDelivery to answer", answered)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
@@ -158,6 +159,16 @@ func keptForPlanner() ResolvedMention {
 // testDeliveredPost is the post these tests' deliveries are of, which a publish for a role's first
 // holder names (publishForRole).
 var testDeliveredPost = listenerwire.DispatchPost{Kind: listenerwire.DispatchPostMessage, ID: "8f14e45f-ceea-467a-9c1e-000000000001"}
+
+// testDelivery is the resolved delivery these tests send to target by route: a steer of the body
+// "body" under the key m1:steer that wants a reply and carries an empty frame. It names no post,
+// which only a publish for a role's first holder reads (publishForRole): a test of one sets post.
+func testDelivery(target ResolvedMention, route string) resolvedDelivery {
+	return resolvedDelivery{
+		target: target, route: route, body: "body", idempotencyKey: "m1:steer",
+		wanted: contracts.ExpectsReplyOptional, frame: []byte(`{}`),
+	}
+}
 
 // A role kept for its next holder is published with the failures a send's are worded with: the
 // listener's own text for a publish it kept nothing of, the receipt-timeout cause for one whose
@@ -200,8 +211,9 @@ func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 				window = 150 * time.Millisecond
 			}
 			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(window), envoy.WithAccountTokenFile(testEnvoyAccountTokenFile(t, listener.URL)))}}
-			outcome := s.sendResolvedDelivery(
-				context.Background(), keptForPlanner(), "role:planner", testDeliveredPost, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			delivery := testDelivery(keptForPlanner(), "role:planner")
+			delivery.post = testDeliveredPost
+			outcome := s.sendResolvedDelivery(context.Background(), delivery)
 			if outcome.failure != tc.failure || outcome.envelopeID != nil || outcome.queued {
 				t.Fatalf("sendResolvedDelivery = %+v, want failure %q with no envelope", outcome, tc.failure)
 			}
@@ -221,8 +233,9 @@ func TestAConnectedOnlySendToAKeptRoleIsNotKept(t *testing.T) {
 	t.Cleanup(listener.Close)
 	s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
 	kept := keptForPlanner()
-	outcome := s.sendResolvedDelivery(
-		context.Background(), kept, "role:planner", testDeliveredPost, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), true)
+	delivery := testDelivery(kept, "role:planner")
+	delivery.connectedOnly = true
+	outcome := s.sendResolvedDelivery(context.Background(), delivery)
 	if outcome.failure != "no holder for role planner" || outcome.refused != &kept.redirect.listenerAnswer ||
 		outcome.envelopeID != nil || outcome.queued {
 		t.Fatalf("sendResolvedDelivery = %+v, want the listener's no-holder answer refused, with nothing kept", outcome)
@@ -285,8 +298,7 @@ func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAns
 			// A window past the run (pastTheRun): the listener answers at once, and a loaded machine
 			// must not turn its answer into the client's timeout.
 			s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(pastTheRun))}}
-			outcome := s.sendResolvedDelivery(
-				context.Background(), tc.target, tc.target.Target, testDeliveredPost, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			outcome := s.sendResolvedDelivery(context.Background(), testDelivery(tc.target, tc.target.Target))
 			if !tc.refused {
 				if outcome.failure != "" || outcome.refused != nil || outcome.queued || outcome.envelopeID == nil ||
 					*outcome.envelopeID != "handed-off-1" {
@@ -323,8 +335,7 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 		// A window past the run (pastTheRun): the listener answers at once, and a loaded machine
 		// that carries that answer slowly must not turn it into a receipt timeout.
 		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithTimeout(pastTheRun))}}
-		return s.sendResolvedDelivery(
-			context.Background(), live, "session:s1", testDeliveredPost, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+		return s.sendResolvedDelivery(context.Background(), testDelivery(live, "session:s1"))
 	}
 	maybe := send(`{"code":"maybe_stored","error":"envoy: the message bus did not answer: publish unacknowledged"}`)
 	if maybe.failure != storeUnconfirmedText || maybe.failure == receiptTimeoutText || maybe.envelopeID != nil {
@@ -368,8 +379,7 @@ func TestASendTheListenerAnsweredWithAnOutageIsTriedAgain(t *testing.T) {
 			}))
 			defer listener.Close()
 			s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
-			outcome := s.sendResolvedDelivery(
-				context.Background(), live, "session:s1", testDeliveredPost, "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
+			outcome := s.sendResolvedDelivery(context.Background(), testDelivery(live, "session:s1"))
 			if outcome.failure == "" || outcome.envelopeID != nil {
 				t.Fatalf("a send the listener answered %d = %+v, want a failure and no envelope", tc.status, outcome)
 			}

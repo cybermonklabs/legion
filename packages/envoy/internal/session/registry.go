@@ -1303,39 +1303,17 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 // applies what it read to the cache as Refresh does, answers as Get would for that row, and maps
 // every error the same way, ctx's end included.
 //
-// It is the read for the callers that cannot afford a stale answer, all of them in cmd/listener.
-// Most act on a miss, taking something away from the session, or passing it over, on the strength
-// of the session having no record at all:
-//
-//   - the listener's delete of a session's JetStream consumer, which re-reads this bucket under
-//     the session's lock and deletes only where the session is gone from it;
-//   - the interest and role claim reapers' test of a session the cache does not hold
-//     (sessionMayBeLive);
-//   - a soft role claim's reads of the holder it would take the role from, its liveness and the
-//     registration of a declared predecessor (roleSupersessionVerdict);
-//   - the Legion hand-off's read of the stopped agent it would hand a message to its daemon for
-//     (legionHandoff.handOffToLegion);
-//   - the resolutions of a role's holder that act on a holder they read as not live: through
-//     leaderOnlyHolderSessions, which reads every holder here (bucketSessionEntry), each
-//     resolution of a publish whose keep would tell nobody (roleSend.resolve), the publish
-//     route's confirmation of a miss before it hands the message off (roleSend.missConfirmed)
-//     and the marked send's resolution before it hands the send off or keeps it
-//     (handOffOrKeepRoleSend); through leaderHolderSessions, for a holder the cache does not
-//     show live, the kept lane handover's (handOverKeptRole).
+// It is the read for the callers that cannot afford a stale answer, which act on a miss: they take
+// something away from the session, or pass it over, on the strength of the session having no
+// record at all. A caller that only answers or waits on a session asks Refresh instead.
 //
 // A copy that has not applied a relaunch's registration, or the registration of a session that
-// took a role a moment ago, would answer that read "not found": the delete would then remove the
-// consumer of a live relaunch, whose relay stops until it registers again, the reaper a live
-// session's interest or role, the soft claim a live holder's role, the hand-off would give a live
-// session's message to its daemon, and a resolution would read a live holder as lapsed, refusing
-// its message with nothing kept, handing it to the daemon of the role's stopped agent, or leaving
-// its kept copy on the lane.
+// took a role a moment ago, would answer that read "not found", and a caller acting on that miss
+// would act on a live session as if it were gone.
 //
-// The other two read a registration for its client instance id, which an entry a copy has not
-// caught up with can lack or carry stale (bucketSessionEntry): the claimant's own registration in
-// POST /v1/roles/set (roleSetHandler), whose id a claim weighed against a predecessor falls back
-// to and which the claim writes back, and the registration view of GET /v1/registry/<session_id>
-// (writeSessionRegistration), whose caller names that id in the delete that follows.
+// The reads of a registration for its client instance id, which an entry a copy has not caught up
+// with can lack or carry stale, ask here too: the claimant's own registration when a claim is set
+// and the registration view of a session whose caller names that id in the delete that follows.
 //
 // Every other caller asks Refresh, which costs the server less: a direct get is answered by any
 // copy that is near enough to current, where this read is one more thing for the leader to do.

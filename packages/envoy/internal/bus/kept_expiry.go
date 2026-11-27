@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -23,13 +24,81 @@ import (
 const KeptExpiredSubjectPrefix = KeptTopicPrefix + "expired."
 
 // KeptExpiredSubject is the subject of role's expiry notices: one for each copy on role's kept
-// lane (KeptRoleSubject) that Dispatch answers for, whose hour ended with no session taking it,
-// which the listener's walk stores as it drops that copy (cmd/listener/role_keep.go): a copy
-// Dispatch's outbox kept, and a copy of Dispatch's delivery of a post that the publish route kept
-// (DispatchPostEventID), whose notice also ends that copy when the role's live holder does not
-// take its delivery mode. The role name is written into the subject as KeptRoleSubject writes it.
+// lane (KeptRoleSubject) that Dispatch answers for (KeptCopyOutbox, KeptCopyDispatchDelivery),
+// whose hour ended with no session taking it, which the listener's walk stores as it drops that
+// copy (cmd/listener/role_keep.go), and whose notice also ends a copy of Dispatch's delivery of a
+// post when the role's live holder does not take its delivery mode. The role name is written into
+// the subject as KeptRoleSubject writes it.
 func KeptExpiredSubject(role string) string {
 	return KeptExpiredSubjectPrefix + role
+}
+
+// PublishDedupePrefix opens every dedupe key the listener's publish route makes for a request that
+// chose none: publish.<a new id>, or publish.<the request's idempotency_key> (cmd/listener,
+// publishHandler). The route refuses a dedupe key chosen for an envelope with source dispatch, so
+// every copy it keeps of a dispatch envelope carries the prefix, and a takeover's copy of such a
+// message keeps it in its own key (cmd/listener, takenFrameDedupeKey). Dispatch's outbox keeps
+// its copies under keys of its own, dispatch-<id> or a mention's key, which never begin with it,
+// so the prefix tells a copy the route kept from one the outbox kept (ClassifyKeptCopy).
+const PublishDedupePrefix = "publish."
+
+// KeptCopyKind is who answers for a copy on a role's kept lane that ends with no session taking
+// it, and so what the listener's walk does at its end (ClassifyKeptCopy).
+type KeptCopyKind uint8
+
+const (
+	// KeptCopySession is a copy the listener kept whose publish named a source session, which the
+	// walk sends the copy's dead letter.
+	KeptCopySession KeptCopyKind = iota
+	// KeptCopyUnanswered is a copy the listener kept whose publish named no source session: no
+	// one hears of its end. The publish route keeps no such send for a role with no live holder
+	// (cmd/listener, roleSend.keepTellsNobody); a message published straight onto the role's
+	// subject, and a send Dispatch marked with a role that moved, can still leave one.
+	KeptCopyUnanswered
+	// KeptCopyOutbox is a copy Dispatch's outbox kept for a role-routed event, under a key of its
+	// own and the event's decimal id as its source event id. The walk ends it with an expiry
+	// notice, and Dispatch's outbox keeps the event again or records it undelivered. It raises no
+	// wake, as the outbox's own keep raises none.
+	KeptCopyOutbox
+	// KeptCopyDispatchDelivery is a copy of Dispatch's delivery of a post that the publish route
+	// kept for a role's first holder (DispatchPostEventID). The walk ends it with an expiry notice,
+	// and Dispatch settles the delivery's attempts the copy carried. It is the listener's own copy
+	// otherwise: the route raised the role's wake as it kept it.
+	KeptCopyDispatchDelivery
+)
+
+// ClassifyKeptCopy is the kind of item, a copy on a role's kept lane, and the one rule every
+// reader of a kept copy decides it by: the listener's walk, its keep and its wake scan, and
+// Dispatch's outbox, which reads a notice's copy back (KeptCopyExpiry.CopyKind). A copy whose
+// source is dispatch and that carries no role mark (contracts.Envelope.Role) is Dispatch's when
+// its dedupe key and source event id agree on which of Dispatch's copies it is:
+//
+//   - KeptCopyDispatchDelivery: its key begins with PublishDedupePrefix, and its source event id
+//     names a post (ParseDispatchPostEventID), which only the publish route writes, from
+//     Dispatch's own principal;
+//   - KeptCopyOutbox: its key does not begin with PublishDedupePrefix, and its source event id
+//     names no post.
+//
+// A copy whose key and source event id disagree - a key of the outbox's beside a post's source
+// event id, or a key of the route's beside none - is neither, so no copy is told to Dispatch as an
+// outbox copy by one reader and as a delivery by another. Every other copy is the listener's: a
+// send Dispatch's API marked with its role (the send route kept it, or a takeover copied it from
+// its holder's subject), and every copy from any other source. It is KeptCopySession when it names
+// a source session and KeptCopyUnanswered when it names none.
+func ClassifyKeptCopy(item contracts.Envelope) KeptCopyKind {
+	if item.Source == "dispatch" && item.Role == "" {
+		_, delivers := ParseDispatchPostEventID(item.SourceEventID)
+		switch routeKey := strings.HasPrefix(item.DedupeKey, PublishDedupePrefix); {
+		case routeKey && delivers:
+			return KeptCopyDispatchDelivery
+		case !routeKey && !delivers:
+			return KeptCopyOutbox
+		}
+	}
+	if item.SourceSession != "" {
+		return KeptCopySession
+	}
+	return KeptCopyUnanswered
 }
 
 // dispatchPostEventIDPrefix begins the source_event_id of the envelope of a role publish that
@@ -41,12 +110,13 @@ const dispatchPostEventIDPrefix = "dispatch-post:"
 // the route takes from Dispatch's own verified principal alone): dispatch-post:<kind>:<id>. No
 // other writer of that route produces it - every other envelope the route builds carries a new id
 // of 32 hex digits (contracts.MessageEnvelope, internal/id) - and Dispatch's outbox writes its
-// event's decimal id there. So a kept copy that carries it is a delivery of Dispatch's the route
-// kept (cmd/listener, isDispatchDeliveryCopy), and the expiry notice of that copy (KeptCopyExpiry)
-// names the post by it, which Dispatch's outbox reads back (ParseDispatchPostEventID) to settle
-// the attempts of that post the copy carried. The envelope gains no field for it: the envelope's
-// schema takes none (packages/contracts/schemas/envelope.schema.json), and the plugins that read
-// envelopes only carry this one. post is one ValidDispatchPost takes, which the route checks first.
+// event's decimal id there. So a kept copy that carries it under the route's key is a delivery of
+// Dispatch's the route kept (KeptCopyDispatchDelivery), and the expiry notice of that copy
+// (KeptCopyExpiry) names the post by it, which Dispatch's outbox reads back
+// (ParseDispatchPostEventID) to settle the attempts of that post the copy carried. The envelope
+// gains no field for it: the envelope's schema takes none
+// (packages/contracts/schemas/envelope.schema.json), and the plugins that read envelopes only
+// carry this one. post is one ValidDispatchPost takes, which the route checks first.
 func DispatchPostEventID(post listenerwire.DispatchPost) string {
 	return dispatchPostEventIDPrefix + post.Kind + ":" + post.ID
 }
@@ -140,20 +210,35 @@ func KeptCopyAttempt(msgID, dedupeKey, role string) int {
 // by, and for a delivery's copy the post it delivers (DispatchPostEventID), whose attempts that
 // copy carried Dispatch settles undelivered - the Attempt it was kept for (KeptCopyAttempt), its
 // DedupeKey, the stream Sequence it was stored at on the kept lane, which is where Dispatch reads
-// the copy back, and the Unix-millisecond times the stream stored it (KeptAt) and the walk dropped
-// it (DroppedAt).
+// the copy back, the Unix-millisecond times the stream stored it (KeptAt) and the walk dropped it
+// (DroppedAt), and ForwardUnconfirmed, whether a walk claimed the copy to forward it and no walk
+// confirmed that forward, so the copy may have reached the session that held the role then.
 //
 // It lives here, as KeptRoleCursor does, because the listener writes it and Dispatch's outbox
 // reads it: a body each spelled out for itself would decode a drifted tag as zero.
 type KeptCopyExpiry struct {
-	EventID       string `json:"event_id"`
-	SourceEventID string `json:"source_event_id"`
-	Role          string `json:"role"`
-	Attempt       int    `json:"attempt"`
-	DedupeKey     string `json:"dedupe_key"`
-	Sequence      uint64 `json:"sequence"`
-	KeptAt        int64  `json:"kept_at"`
-	DroppedAt     int64  `json:"dropped_at"`
+	EventID            string `json:"event_id"`
+	SourceEventID      string `json:"source_event_id"`
+	Role               string `json:"role"`
+	Attempt            int    `json:"attempt"`
+	DedupeKey          string `json:"dedupe_key"`
+	Sequence           uint64 `json:"sequence"`
+	KeptAt             int64  `json:"kept_at"`
+	DroppedAt          int64  `json:"dropped_at"`
+	ForwardUnconfirmed bool   `json:"forward_unconfirmed,omitempty"`
+}
+
+// CopyKind is the kind of copy n names, by the one rule ClassifyKeptCopy applies to an envelope:
+// KeptCopyOutbox or KeptCopyDispatchDelivery when n's dedupe key and source event id agree on
+// which of Dispatch's copies it names, and KeptCopyUnanswered when they do not. Every reader of a
+// notice judges it here, so the listener and Dispatch's outbox can never read one copy as two
+// kinds.
+func (n KeptCopyExpiry) CopyKind() KeptCopyKind {
+	return ClassifyKeptCopy(contracts.Envelope{
+		Source:        "dispatch",
+		SourceEventID: n.SourceEventID,
+		DedupeKey:     n.DedupeKey,
+	})
 }
 
 // PublishKeptCopyExpiry stores notice on its role's expiry subject (KeptExpiredSubject) under the

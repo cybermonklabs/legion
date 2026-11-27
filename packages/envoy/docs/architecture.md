@@ -779,13 +779,25 @@ role's kept lane for one hour for the holder that claims it next, as the listene
 are, and the `gone` holder's claim is left where it is for the role claim reaper. When an outbox
 copy's hour ends with no session taking it, the walk that drops it sends no dead letter: it stores
 an expiry notice on `notifications.envoy.kept.expired.<role>` instead (`bus.KeptCopyExpiry`: the
-event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, and when
-it was kept and dropped), one per copy under the message id `envoy.kept-expired.<role>.<sequence>`,
-counted on `envoy_role_kept_expiry_notices_total`. The walk stores the same notice for a copy of
-Dispatch's delivery of a post that the publish route kept (`dispatch_post`, above), at the end of
-its hour and when the role's live holder does not take its delivery mode; its source event id
-is `dispatch-post:<kind>:<id>`, naming the post rather than an outbox event, which a Dispatch of
-an earlier release passes over with one Error line. The subject lies under the listener's own kept
+event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, when it
+was kept and dropped, and `forward_unconfirmed`, set when a walk claimed the copy to forward it and
+no walk confirmed that forward, so the copy may have reached the session that held the role), one
+per copy under the message id `envoy.kept-expired.<role>.<sequence>`, counted on
+`envoy_role_kept_expiry_notices_total`. The walk stores the same notice for a copy of Dispatch's
+delivery of a post that the publish route kept (`dispatch_post`, above), at the end of its hour
+and when the role's live holder does not take its delivery mode; its source event id is
+`dispatch-post:<kind>:<id>`, naming the post rather than an outbox event, which a Dispatch of an
+earlier release passes over with one Error line. The walk judges each copy's kind once, by
+`bus.ClassifyKeptCopy`, which its keep, its wake scan and Dispatch's outbox read alike: an outbox
+copy (source `dispatch`, no role mark, a key that does not begin with `publish.` and no post in
+its source event id), a delivery's copy (the same, under a `publish.` key and with a post in its
+source event id), a copy owed a dead letter (every other copy that names a source session) and a
+copy no one hears of. A copy whose key is the outbox's and whose source event id names a post is
+neither of the first two. The claim a walk writes for a notice names the end it is for, as a dead
+letter's claim does: `expired` or `delivery_mode`, and `_unconfirmed` after it for a forward that
+may have reached the holder, so the walk that takes the claim over stores the same notice, with
+the same `forward_unconfirmed`, and a delivery mode refusal is never reported as an expired copy.
+The subject lies under the listener's own kept
 lane. So only a NATS user whose grant publishes every notification topic writes it: `Listener`,
 `Dispatch` (its envoy-listener runs beside envoy-dispatch), and the legacy `ListenerHost` and
 `Host` sets built on the listener's (`natsgrant/natsgrant.go`). Dispatch reads it with the
@@ -800,25 +812,38 @@ the stream's identity (`bus.StreamIDMetadataKey`), which the outbox reads at mos
 seconds: a stream created again numbers its notices below a cursor of the one before it, so the
 outbox sets such a cursor back to the new stream's start, with one Error line, and reads its
 notices from the first. It passes over a notice whose role is no valid role name, that was stored
-on another role's expiry subject, whose event was never routed to that role, or that does not
-name that event's copy: the notice's sequence is not below its own; the role's kept lane holds a
-message there that no read can decode, or another copy than Dispatch's copy of that event under
-the notice's dedupe key; or the lane holds nothing there, and the sequence is at or past the
-first message the stream still holds, so the stream's retention did not remove a copy there: the
-stream removes messages oldest first by its age alone, since it discards new messages at its byte
-limit, and this assumes it has no per-subject limit, which would remove older messages mid-stream. A
-passed-over notice writes no row, so nothing is kept again and nothing is recorded undelivered.
+on another role's expiry subject, whose dedupe key and source event id name neither kind of copy,
+whose event was never routed to that role, or that does not name that event's copy: the notice's
+sequence is not below its own; the role's kept lane holds a message there that no read can decode,
+or another copy than Dispatch's copy of the notice's kind under the notice's source event id and
+dedupe key; or the lane holds nothing there, and the sequence is at or past the first message the
+stream still holds, so the stream's retention did not remove a copy there: the stream removes
+messages oldest first by its age alone, since it discards new messages at its byte limit, and this
+assumes it has no per-subject limit, which would remove older messages mid-stream. A passed-over
+notice writes no row, so nothing is kept again and nothing is recorded undelivered.
 A notice of a delivery's copy takes the same checks of its role, its subject and its copy, and
 none of the event's: the outbox reads the post's owner, a comment's issue or document or a
-message's issue, locks that owner, and settles every attempt of the post that still names the
-copy's envelope, reads `queued` and names no session and no reply: `failed`, with one fixed error
-saying the listener kept the message for the role and no session took it before the listener
-dropped it, and no envelope, so the dashboard offers Retry. Each settled attempt gets the
-`comment.delivery` or `message.delivery` receipt a failed attempt gets, written by the outbox's
-own system actor and published once the transaction commits; an attempt a session answered, one
-already failed and a repeated notice settle nothing, and a notice naming a post the store does not
-hold is passed over. Nothing is kept again for it and no `outbox_role_copy_expiries` row is
-written (`settleKeptDelivery`).
+message's issue, and passes the notice over when the store holds no delivery of that post to the
+notice's role (a message whose own target is another role, a comment none of whose attempts name
+that role), so a notice stored for one role never settles or records anything for another role's
+attempts of the same post. It locks the owner, records the end of the copy in
+`kept_delivery_expiries` (keyed by the copy's envelope id, the role, and the post's kind and id,
+with `forward_unconfirmed`), and settles every attempt of the post to that role that still names
+the copy's envelope, reads `queued` and names no session and no reply: `failed`, with one of two
+fixed errors (`model.KeptDeliveryExpiredError`): that the listener kept the message for the role
+and no session took it before the listener dropped it, or, when the notice's forward is
+unconfirmed, that a forward to its holder was not confirmed and the holder may already have it, so
+Retry can deliver a second copy; and no envelope, so the dashboard offers Retry. Each settled
+attempt gets the `comment.delivery` or `message.delivery` receipt a failed attempt gets, written by
+the outbox's own system actor and published once the transaction commits; an attempt a session
+answered, one already failed and a repeated notice settle nothing, and a notice naming a post the
+store holds no delivery of to its role is passed over. Nothing is kept again for it and no
+`outbox_role_copy_expiries` row is written (`settleKeptDelivery`). A notice read before the API has
+recorded the attempt `queued` finds it still `pending` and settles nothing, but its record stays,
+and the outbox's cursor moves on past it, held back by no attempt: the API's settle takes the same
+owner lock, reads that record before it writes `queued`, and records the attempt `failed` with the
+same error and a receipt that says so (`settleDeliveryAttempt`), so the attempt ends settled
+whichever of the two comes first.
 It records each other notice in `outbox_role_copy_expiries`, keyed by the event, the role and
 the attempt, which is the outbox's own next attempt for that pair (the notice's own attempt is
 logged), so a repeated notice reopens the event's delivery to that role once. It then keeps the

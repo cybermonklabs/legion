@@ -1244,16 +1244,6 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 	}
 }
 
-// publishDedupePrefix opens every dedupe key the publish route makes for a request that chose
-// none: publish.<a new id>, or publish.<the request's idempotency_key>. Four places use it: the
-// route, which writes it (publishHandler) and refuses a dedupe key chosen for an envelope with
-// source dispatch, so every copy it keeps of a dispatch envelope carries it; a takeover's copy of
-// such a message, whose own key keeps it (takenFrameDedupeKey); isOutboxCopy, which reads it to
-// tell such a copy from one Dispatch's outbox kept under a key of its own; and
-// isDispatchDeliveryCopy, which reads it to tell a copy of Dispatch's delivery of a post the route
-// kept.
-const publishDedupePrefix = "publish."
-
 // dispatchPostField is the publish route's request field naming the Dispatch post a role publish
 // delivers (listenerwire.PublishRequest.DispatchPost), as the route's refusals name it.
 const dispatchPostField = "dispatch_post"
@@ -1269,7 +1259,7 @@ const dispatchPostField = "dispatch_post"
 // (bus.ValidDispatchPost). A post the route takes is written into the envelope as its
 // source_event_id (bus.DispatchPostEventID), which is what keeps the copy though it names no
 // source session (roleSend.keepTellsNobody) and what tells Dispatch the end of its hour
-// (isDispatchDeliveryCopy).
+// (bus.KeptCopyDispatchDelivery).
 func refuseDispatchPost(w http.ResponseWriter, r *http.Request, d *listenerDeps, record *requestRecord, request listenerwire.PublishRequest) bool {
 	post := request.DispatchPost
 	if post == nil {
@@ -1346,7 +1336,7 @@ func refuseDispatchPost(w http.ResponseWriter, r *http.Request, d *listenerDeps,
 // a send that names no source session, whose copy's expiry no dead letter could report
 // (roleSend.keepTellsNobody): both are answered that 404. The one send that names no source session
 // and is kept is Dispatch's delivery of a post (dispatch_post, refuseDispatchPost), whose copy's
-// end the walk tells Dispatch with an expiry notice instead (isDispatchDeliveryCopy); a Dispatch
+// end the walk tells Dispatch with an expiry notice instead (bus.KeptCopyDispatchDelivery); a Dispatch
 // of an earlier release sends no post, and its publish is answered that 404 as before, as is
 // every publish of this release's Dispatch to a listener of an earlier release, which ignores the
 // field.
@@ -1445,12 +1435,12 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "dedupe_key cannot be chosen for a dispatch envelope", "dedupe_key")
 			return
 		}
-		dedupeKey := publishDedupePrefix + id.New()
+		dedupeKey := bus.PublishDedupePrefix + id.New()
 		switch {
 		case request.DedupeKey != "":
 			dedupeKey = request.DedupeKey
 		case request.IdempotencyKey != "":
-			dedupeKey = publishDedupePrefix + request.IdempotencyKey
+			dedupeKey = bus.PublishDedupePrefix + request.IdempotencyKey
 		}
 		item := contracts.MessageEnvelope(listenerMessage(request.MessageBody, bodyExpectsReply), request.Topic, dedupeKey)
 		if request.DispatchPost != nil {
