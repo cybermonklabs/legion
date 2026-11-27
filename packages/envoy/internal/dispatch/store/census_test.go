@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	neturl "net/url"
 	"slices"
@@ -1994,6 +1995,25 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 		"relation things AccessShareLock granted",
 		"virtualxid ExclusiveLock granted",
 	}
+	// CONTROL ONLY: wake the holder's backend again and again while the censuses read it.
+	stop, woke := make(chan struct{}), make(chan string)
+	go func() {
+		wakes, last := 0, error(nil)
+		for {
+			select {
+			case <-stop:
+				woke <- fmt.Sprintf("%d wakes, last error %v", wakes, last)
+				return
+			default:
+			}
+			var sent bool
+			if err := store.Pool.QueryRow(ctx, "select pg_log_backend_memory_contexts($1)", int(holder.PgConn().PID())).Scan(&sent); err != nil {
+				last = err
+			} else if sent {
+				wakes++
+			}
+		}
+	}()
 	reads, unwaited := 0, 0
 	refusal := testwait.UntilPolling(t, 100*time.Millisecond, "a census whose diagnosis of "+pid+" Postgres answered with its wait for its client", func() (string, bool) {
 		report, err := census(ctx, relayed, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
@@ -2035,6 +2055,12 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 			return "", false
 		}
 	})
+	close(stop)
+	control := <-woke
+	t.Logf("CONTROL: %s", control)
+	if strings.HasPrefix(control, "0 wakes") {
+		t.Fatalf("CONTROL: no wake reached the holder: %s", control)
+	}
 	t.Logf("%d censuses read; Postgres answered %d of their diagnoses of %s with no wait, each taken again", reads, unwaited, pid)
 	if want := ", backend_xid none, wait_event Client/ClientRead, query \"select count(*) from things where kind = ?\"; its locks: "; !strings.Contains(refusal, want) {
 		t.Errorf("refusal lacks %q:\n%s", want, refusal)
