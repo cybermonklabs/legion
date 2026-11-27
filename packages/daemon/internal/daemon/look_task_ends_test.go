@@ -519,24 +519,33 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		r.openTree(lookEndsRoot)
-		putOutboxIssue(r.t, r.pool, r.records, record.Issue{
+		running := record.Issue{
 			Key: lookEndsRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: "LEGION", Tree: lookEndsRoot, Title: "root", Phase: phase.Implementing,
 			Generation: 2, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 2,
-		})
-		holdSlot(r.t, r.pool, lookEndsRoot)
-		// Check is still open from generation 1 with look 1 already closed so CheckBound closes it.
-		putProductionCheck(r.t, r.pool, r.records, record.ProductionCheck{
+		}
+		check := record.ProductionCheck{
 			Issue: lookEndsRoot, Project: "LEGION", Tree: lookEndsRoot, Repo: "acme/widgets",
 			Number: 42, MergeSHA: "merge-42", Role: claim.RoleTester,
 			OpenedAt: opened, BoundAt: opened.Add(48 * time.Hour),
-			Looks: 1, LookOpen: false, LookWakeAt: &opened,
+			Looks: 1, LookOpen: true, LookWakeAt: &opened,
 			LastWakeKind: "merge", LastWakeDetail: "merge-42", LastWakeAt: &opened,
 			LookID: lookEndsFirstLookID, LookIDLook: 1, LookIDOpenedAt: opened, OpenedGeneration: 1,
-		})
+		}
+		// Look 1's task is queued while the root is done at generation 1 and the look is open, so
+		// the look holds and the send keeps it; the root then runs again at generation 2.
+		done := running
+		done.Phase, done.Generation, done.Status, done.DispatchStatus, done.LastDispatchSeq = phase.Done, 1, "done", "done", 1
+		putOutboxIssue(r.t, r.pool, r.records, done)
+		putProductionCheck(r.t, r.pool, r.records, check)
 		token, machine, conn := r.readyTester(lookEndsRoot, lookEndsRoot, "ses-root-tester")
 		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
 		before := len(conn.Prompts())
+		putOutboxIssue(r.t, r.pool, r.records, running)
+		holdSlot(r.t, r.pool, lookEndsRoot)
+		// Check is still open from generation 1 with look 1 already closed so CheckBound closes it.
+		check.LookOpen = false
+		putProductionCheck(r.t, r.pool, r.records, check)
 
 		r.setNow(opened.Add(48 * time.Hour))
 		r.apply("check-bound", intake.CheckBound{Issue: lookEndsRoot})
@@ -558,11 +567,29 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		})
 		holdSlot(r.t, r.pool, lookEndsRoot)
 		parent := lookEndsRoot
-		putOutboxIssue(r.t, r.pool, r.records, record.Issue{
+		merging := record.Issue{
 			Key: lookEndsChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: "LEGION", Tree: lookEndsRoot, Parent: &parent, Title: "child", Phase: phase.Merging,
 			Generation: 2, Status: "retro", Rank: "V", LastDispatchSeq: 2,
+		}
+		// Look 1's task of the earlier check is queued while the child is done at generation 1 and
+		// the look is open, so the look holds and the send keeps it; the child then runs again at
+		// generation 2 and reaches merging.
+		done := merging
+		done.Phase, done.Generation, done.Status, done.DispatchStatus, done.LastDispatchSeq = phase.Done, 1, "done", "done", 1
+		putOutboxIssue(r.t, r.pool, r.records, done)
+		putProductionCheck(r.t, r.pool, r.records, record.ProductionCheck{
+			Issue: lookEndsChild, Project: "LEGION", Tree: lookEndsRoot, Repo: "acme/widgets",
+			Number: 42, MergeSHA: "merge-42", Role: claim.RoleTester,
+			OpenedAt: oldOpened, BoundAt: oldOpened.Add(48 * time.Hour),
+			Looks: 1, LookOpen: true, LookWakeAt: &oldOpened,
+			LastWakeKind: "merge", LastWakeDetail: "merge-42", LastWakeAt: &oldOpened,
+			LookID: lookEndsFirstLookID, LookIDLook: 1, LookIDOpenedAt: oldOpened, OpenedGeneration: 1,
 		})
+		token, machine, conn := r.readyTester(lookEndsRoot, lookEndsChild, "ses-tester-1")
+		r.deliverUnconfirmedLook(machine, token, oldOpened, lookEndsOldTask)
+		before := len(conn.Prompts())
+		putOutboxIssue(r.t, r.pool, r.records, merging)
 		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			if err := r.records.PutPhase(ctx, tx, record.PhaseRow{
 				Issue: lookEndsChild, Role: claim.RoleMerger, Claim: "child-merger", HandoffCommit: "head-44",
@@ -576,17 +603,6 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed merging child PR: %v", err)
 		}
-		putProductionCheck(r.t, r.pool, r.records, record.ProductionCheck{
-			Issue: lookEndsChild, Project: "LEGION", Tree: lookEndsRoot, Repo: "acme/widgets",
-			Number: 42, MergeSHA: "merge-42", Role: claim.RoleTester,
-			OpenedAt: oldOpened, BoundAt: oldOpened.Add(48 * time.Hour),
-			Looks: 1, LookOpen: true, LookWakeAt: &oldOpened,
-			LastWakeKind: "merge", LastWakeDetail: "merge-42", LastWakeAt: &oldOpened,
-			LookID: lookEndsFirstLookID, LookIDLook: 1, LookIDOpenedAt: oldOpened, OpenedGeneration: 1,
-		})
-		token, machine, conn := r.readyTester(lookEndsRoot, lookEndsChild, "ses-tester-1")
-		r.deliverUnconfirmedLook(machine, token, oldOpened, lookEndsOldTask)
-		before := len(conn.Prompts())
 
 		// Merging PR #44 replaces the earlier check and starts look 1 of the new check.
 		r.apply("later-merge", intake.PullRequestMerged{

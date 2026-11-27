@@ -2452,6 +2452,41 @@ func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
+// retireLookTask runs a `retire_look` row (record.SuperviseRequest): the workflow ended a look of
+// the issue's production check — a report of it, its bound, a hold its start met, a failed claim,
+// a close of the check, a re-entry or a re-admission of its issue (workflow's retireLook) — and the
+// task of that look goes from the claim of the check's role (supervise.Machine.RetireLookTask), in
+// whatever state that claim stands, suspended and failed included. It stops nothing and starts
+// nothing. The machine's look fence alone decides: the claim's pending task goes only when it is
+// that look's and its look no longer holds (record.LookHolds), a task a turn has taken is left to
+// that turn's end, and every other task stays where it is. A Reported row also counts the look
+// served by the claim and starts its prompt budgets again, whatever the claim holds.
+//
+// A claim this daemon does not supervise holds no task to retire, and the row finishes. A task
+// on its way to the agent keeps the row (supervise.ErrTaskSending, a wait), which runs again once
+// the send has settled. The lines name the look by its number alone, never the look id or the
+// task (R3 of dispatch://INFRA-3518).
+func (r *outbox) retireLookTask(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
+	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	}
+	machine, found := r.supervisor.Machine(token)
+	if !found {
+		r.log.Info("outbox look retirement finished without acting: this daemon supervises no claim of the check's role", "row", row.ID,
+			"issue", issue.Key, "role", payload.Role, "look", payload.CheckLook)
+		return nil
+	}
+	look := supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt}
+	retired, err := machine.RetireLookTask(ctx, look, payload.Reported)
+	if err != nil {
+		return fmt.Errorf("retire the task of look %d of %s's production check from its %s: %w", payload.CheckLook, row.Issue, payload.Role, err)
+	}
+	r.log.Info("outbox ran the retirement of an ended production check look's task", "row", row.ID, "issue", issue.Key, "role", payload.Role,
+		"look", payload.CheckLook, "reported", payload.Reported, "retired", retired)
+	return nil
+}
+
 // hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
 // the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
 // else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
@@ -2976,6 +3011,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	}
 	if (payload.Op == "suspend" || payload.Op == "tree_close") && payload.Tree != issue.Tree {
 		return r.stopInLeftTree(ctx, row, payload, issue)
+	}
+	// A look's retirement names a look that has ended, of a check that may have closed since or of
+	// an issue running again at a later generation, on a claim in any state: it is decided here,
+	// above the look's start fence (checkLookHolds) and the generation and tree checks below, each of
+	// which would finish it unrun. The claim's look fence decides what it retires (retireLookTask).
+	if payload.Op == "retire_look" {
+		return r.retireLookTask(ctx, row, payload, issue)
 	}
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the

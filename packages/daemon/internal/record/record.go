@@ -3418,10 +3418,12 @@ type QueuedSupervise struct {
 // stepped (step_at, turn_started_at), what its own session last reported it was doing
 // (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
 // none, with the task's delivery id, generation, phase, entry, the moments it was queued and
-// confirmed, and whether a let-go took it back from a turn (interrupted). The id is what says the
-// task is the daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a
-// reader of a run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and
-// readyWorkerTask).
+// confirmed, whether a let-go took it back from a turn (interrupted), and the production check
+// look it was queued for with that look's id (check_look, check_opened_at, look_id). The
+// delivery id is what says the task is the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch), which a reader of a run reads as no work of the claim's
+// (supervise.HoldsTask: workflow's owed and readyWorkerTask), and the look and its id are what say
+// a look's task whose look no longer holds is no work either (LookHolds: readyWorkerTask).
 type RoleClaim struct {
 	State supervise.ClaimState
 	// FailureCause is the word for what failed the claim as its machine holds it

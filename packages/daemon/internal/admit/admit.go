@@ -1749,6 +1749,11 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 // run keeps its mark with the run: that run is its new tree's from here on, and the tree it roots
 // has run when it is taken back. Nothing here writes the mark: a run is earned by running, never by
 // arriving.
+//
+// An open production check of the issue stays open through the re-admission, and the task of its
+// current look ends here (workflow.Engine.RetireOpenLook): the issue runs again, so that look no
+// longer holds (record.LookHolds), and the new run's worker on the checking role's claim is never
+// sent it.
 func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue, o observed, carry bool) error {
 	if stored.Generation == ^uint64(0) {
 		return fmt.Errorf("re-admit %s: generation overflows", stored.Key)
@@ -1826,6 +1831,10 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	// the daemon what it already knows.
 	if err := a.store.MarkIssueMoved(ctx, tx, stored.Key, a.now()); err != nil {
 		return err
+	}
+	// The task of the open production check's look ends with the old run (above).
+	if err := a.engine.RetireOpenLook(ctx, tx, stored.Key); err != nil {
+		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
 	}
 	// The members this generation leaves mid-phase, and those reopened at done, come back the
 	// first time its tree runs: at the promotion that opens it, or at the pass that finds it

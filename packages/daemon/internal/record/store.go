@@ -4708,7 +4708,11 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // readyWorkerTask). So is whether the task is one of news alone (supervise.Delivery.NewsOnly),
 // read from the delivery's own column (pending_task_deliveries.news_only), which is no task of its
 // phase to any reader of a role run (supervise.Delivery.StillWorked, supervise.HoldsWork) and no
-// task of an entry, so it holds no sweep's start back (workflow.ArchitectStartPending).
+// task of an entry, so it holds no sweep's start back (workflow.ArchitectStartPending). So is the
+// production check look the task was queued for and that look's id (check_look, check_opened_at,
+// look_id; zero and "" for a task of no look, and "" for a look task an older daemon queued): a
+// look's task whose look no longer holds (LookHolds) is no work to the ready of a phase worker
+// (workflow's readyWorkerTask). The id is read for that test alone, and nothing logs it.
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
 // delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go
@@ -4731,7 +4735,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
-		coalesce(d.interrupted, false), coalesce(d.news_only, false)
+		coalesce(d.interrupted, false), coalesce(d.news_only, false), coalesce(d.check_look, 0), d.check_opened_at, coalesce(d.look_id, '')
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -4742,7 +4746,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var held RoleClaim
 		var pending bool
 		var task supervise.Delivery
-		var queued, confirmed *time.Time
+		var queued, confirmed, lookOpened *time.Time
 		// last_ready is nullable (migration 20261029121000_claim_death_and_start_causes): a claim
 		// whose agent has never said it was ready has none, and the zero time is what says so.
 		var ready *time.Time
@@ -4762,7 +4766,8 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		if err := rows.Scan(&token, &held.State, &cause, &heldFor, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
-			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted, &task.NewsOnly); err != nil {
+			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted, &task.NewsOnly,
+			&task.CheckLook.Look, &lookOpened, &task.LookID); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		held.FailureCause = supervise.DecodeCause(cause, heldFor)
@@ -4793,6 +4798,9 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 			}
 			if confirmed != nil {
 				task.ConfirmedAt = *confirmed
+			}
+			if lookOpened != nil {
+				task.CheckLook.OpenedAt = *lookOpened
 			}
 			held.Pending = &task
 		}

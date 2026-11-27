@@ -821,7 +821,18 @@ func TestTheOwningArchitectsMoveOfAChildItsMergeClosedIsAPersonsMove(t *testing.
 		before := effects(t, rig.pool)
 		rig.write(ownerChild, "backlog", session)
 		rows := effects(t, rig.pool)
-		return outcome{child: withoutMovement(issue(t, rig.pool, ownerChild)), check: rig.check(ownerChild), rows: rows}, rows[len(before):]
+		check := rig.check(ownerChild)
+		// The look's id is random (workflow's startLook), so each run of the merge makes its own:
+		// it is written as one name here, and every other field of both runs is compared as it is.
+		lookID := check.LookID
+		check.LookID = "<look id>"
+		for i, row := range rows {
+			if start, ok := row.payload.(record.SuperviseRequest); ok && start.LookID == lookID {
+				start.LookID, start.Task = "<look id>", strings.ReplaceAll(start.Task, lookID, "<look id>")
+				rows[i].payload = start
+			}
+		}
+		return outcome{child: withoutMovement(issue(t, rig.pool, ownerChild)), check: check, rows: rows}, rows[len(before):]
 	}
 	person, added := move("")
 	if !slices.Contains(rolesOf(rowsFor(added, ownerChild), "suspend"), claim.RoleTester) || len(payloadsOf[record.IssueSuspend](rowsFor(added, ownerChild))) != 1 {

@@ -917,8 +917,10 @@ func recordedResolution(issue record.Issue) Resolution {
 // for that caller too: one re-entry, not two.
 //
 // A done child's open production check closes as not run before the new run starts
-// (markCheckClosed). The run's generation fences a completion left by an interrupted phase, and
-// the closed check refuses an old look's report, so both claims stay live.
+// (markCheckClosed), and the task of its look ends with it (retireLook), so the new run's worker
+// on the checking role's claim is never sent it. The run's generation fences a completion left by
+// an interrupted phase, and the closed check refuses an old look's report, so both claims stay
+// live.
 func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue, fact intake.DispatchIssue) error {
 	root, err := e.store.Issue(ctx, tx, child.Tree)
 	if err != nil || root == nil {

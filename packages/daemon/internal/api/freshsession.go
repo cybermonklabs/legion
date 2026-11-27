@@ -1,11 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -19,7 +24,9 @@ type FreshSessionResponse struct {
 	//
 	//   - the claim is back in a new session owing no task, and the workflow refused the
 	//     restart that would have handed it one, or moved the issue to awaiting_children in its
-	//     place, which the sentence names with the open children (restartWorkedPhase);
+	//     place, which the sentence names with the open children (restartWorkedPhase); or it is
+	//     back holding the task of a production check look, and the read of whether that look
+	//     still holds failed, so nothing restarted its phase, which the sentence names (owesTask);
 	//   - this request stopped the claim, and the machine refused a step that would have
 	//     brought it back — the forget of the session it recorded, or the start of it in a
 	//     new session — and the sentence names that refusal and the state the claim stands in
@@ -397,9 +404,16 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// owes (supervise.HoldsTask), so a claim holding that alone is read as owing nothing, and
 	// the phase's task takes its place (supervise's queue). Nor is a task of news of the approved
 	// design alone (supervise.HoldsWork): the phase's task is restarted beside it, and waits behind
-	// it until a turn has taken it.
+	// it until a turn has taken it. Nor is the task of a production check look whose look no longer
+	// holds (owesTask): a tester or implementer whose issue runs again can come back holding only
+	// that task, which its send drops, so its phase is restarted as for a claim holding nothing.
 	status = http.StatusOK
-	if !supervise.HoldsWork(m.Claim().Pending) {
+	switch owes, err := s.owesTask(r.Context(), m.Claim()); {
+	case err != nil:
+		s.logRequestFailure(r, err, "api: read whether a fresh session's task is of a production check look that still holds", "claim", token)
+		notRestarted = fmt.Sprintf("%s is back in a new session, and nothing restarted its phase: could not read the production check of %s: %v",
+			token, c.Issue, err)
+	case !owes:
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {
@@ -412,6 +426,36 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	}
 	s.log.Info("api: a fresh session was started for a claim that was suspended", "claim", token)
 	return status, notRestarted, true, true
+}
+
+// owesTask says whether c's pending task is one c owes, which the fresh session's resume sends and
+// no restart of its phase replaces: a task that holds work (supervise.HoldsWork), less the task of
+// a production check look whose look no longer holds (record.LookHolds: the check closed or was
+// replaced, the look ended, or the issue runs again). The issue and its check are read in one
+// read-only transaction, and only for a look's task. A daemon that records no issues holds every
+// look's task, as its supervisor's look fence does.
+func (s *server) owesTask(ctx context.Context, c supervise.Claim) (bool, error) {
+	pending := c.Pending
+	if !supervise.HoldsWork(pending) {
+		return false, nil
+	}
+	if pending.CheckLook.Look <= 0 || s.pool == nil {
+		return true, nil
+	}
+	var holds bool
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, c.Issue)
+		if err != nil {
+			return err
+		}
+		check, err := s.records.ProductionCheck(ctx, tx, c.Issue)
+		if err != nil {
+			return err
+		}
+		holds = record.LookHolds(issue, check, pending.CheckLook, pending.LookID)
+		return nil
+	})
+	return holds, err
 }
 
 // refuseInATurn is the refusal of a claim stored working that runs an agent the operation

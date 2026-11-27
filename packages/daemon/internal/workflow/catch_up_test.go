@@ -551,3 +551,52 @@ func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
 		t.Fatalf("the reason %q does not name LEGION-3, which waits in accepting", reason)
 	}
 }
+
+// A tester whose claim becomes ready holding only the task of a production check look whose look
+// no longer holds (record.LookHolds) — the look ended, or the issue runs again while its check
+// stays open at that look — holds no work of its phase: the claim's send drops that task
+// (supervise's look fence), so the worker would be sent nothing. So it is queued its phase's
+// resume task, as a claim holding nothing is (readyWorkerTask, heldLookEnded), and what decides it
+// is the task's own look and look id, which the role run reads with the task (record.RoleClaim).
+func TestAReadyTesterHoldingAnEndedLooksTaskIsSentItsPhaseTask(t *testing.T) {
+	t.Parallel()
+	opened := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	const lookID = "LOOKIDREADYTESTER000000001"
+	for name, lookOpen := range map[string]bool{
+		"its look ended": false,
+		"its issue runs again while the look stays open": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool := migratedPool(t)
+			issue := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 2, Status: "testing", Rank: "U", HandedOver: true}
+			seedIssue(t, pool, issue)
+			seedSlot(t, pool, record.Slot{Issue: issue.Key, Index: 0})
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{
+					Issue: issue.Key, Project: "LEGION", Tree: issue.Tree, Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42",
+					Role: claim.RoleTester, OpenedAt: opened, BoundAt: opened.Add(48 * time.Hour),
+					Looks: 1, LookOpen: lookOpen, LookWakeAt: &opened, LastWakeKind: wakeMerge, LastWakeDetail: "merge-42", LastWakeAt: &opened,
+					LookID: lookID, LookIDLook: 1, LookIDOpenedAt: opened, OpenedGeneration: 1,
+				})
+			})
+			token := seedPhaseWorker(t, pool, issue.Key, claim.RoleTester, "")
+			if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, generation, check_look,
+				check_opened_at, look_id, queued_at) values ($1, 'outbox:57', $2, 1, 1, $3, $4, now())`,
+				string(token), "Production check of LEGION-209: look 1.", opened, lookID); err != nil {
+				t.Fatalf("seed the tester's task of look 1: %v", err)
+			}
+
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
+				intake.ClaimReady{Issue: issue.Key, Role: claim.RoleTester, Launch: 2}, engine, admissionStub{}); err != nil {
+				t.Fatalf("apply the ready: %v", err)
+			}
+
+			starts := superviseRowsOf(t, pool, issue.Key, "start")
+			if len(starts) != 1 || !starts[0].ResumeTask || starts[0].Phase != phase.Testing || starts[0].Task != phaseResumeTask(t, pool, engine, issue.Key) {
+				t.Fatalf("the starts after the ready = %+v, want the phase's resume task alone: the task of a look that no longer holds is no work", starts)
+			}
+		})
+	}
+}
