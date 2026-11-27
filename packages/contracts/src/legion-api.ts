@@ -79,7 +79,7 @@ export const LegionInstant = timestamp.regex(
  * whose work merged waits in `verifying` (the defect-calls entry) for what its close waits on
  * (`closeWait` on the issue record): its checks, its production check, the issues beneath it,
  * its open children and its open defects. The daemon closes the issue (`done`) once nothing is
- * left; the production check after the close is no phase (`check` on the issue record). A caller
+ * left; the production check it waits on is no phase (`check` on the issue record). A caller
  * whose contract is below the entry is served `merging` in place of `verifying`. */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
