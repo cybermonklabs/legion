@@ -40,15 +40,24 @@ func holding(t *testing.T, deps Deps) *Outbox {
 }
 
 // holdRow writes the publisher hold's row naming holder, lapsing an hour from now on the database's
-// clock.
+// clock (writePublisherHold).
 func holdRow(t *testing.T, database *store.Store, holder uuid.UUID) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + interval '1 hour')
-		on conflict (name) do update set holder = excluded.holder, expires_at = excluded.expires_at
-	`, publisherHold, holder); err != nil {
+	if err := writePublisherHold(context.Background(), database, holder); err != nil {
 		t.Fatalf("write the publisher hold's row: %v", err)
 	}
+}
+
+// writePublisherHold writes the publisher hold's row naming holder, lapsing an hour from now on the
+// database's clock, as duty's takeHold writes it, and answers the write's error: a test makes its
+// own outbox the holder with it (holdRow), and another process the holder - a takeover - with a
+// fresh holder.
+func writePublisherHold(ctx context.Context, database *store.Store, holder uuid.UUID) error {
+	_, err := database.Pool.Exec(ctx, `
+		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + interval '1 hour')
+		on conflict (name) do update set holder = excluded.holder, expires_at = excluded.expires_at
+	`, publisherHold, holder)
+	return err
 }
 
 // holdingProcess is the process the publisher hold's row names, whatever its lease says: the

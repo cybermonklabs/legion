@@ -13,7 +13,10 @@
 // route's handover and the kept lane's sweep run the passes (handOverTakenRole). The session relay
 // copies a role message whose role another session holds instead of delivering it
 // (sessionRelays.takeOverFrame). Dispatch marks a send for a role route from its own identity alone
-// (internal/dispatch/envoy, Send), which is what lets a copy find a message Dispatch sent.
+// (internal/dispatch/envoy, Send), which is what lets a copy find a message Dispatch sent. A
+// claim that names the session it replaces adds a handover record, whose passes are these passes
+// with the differences runTakeoverPass names; the claim route's side of it, its rule and its
+// direct copies are in role_handover.go.
 
 package main
 
@@ -24,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,7 +54,12 @@ import (
 // and the publish route's own failures), so a copy stored later than the record's end is one its
 // sender is told failed. A record lives that long and not the stream's age, so the passes of the
 // three shared listeners read the previous holders' subjects of the last hour's takeovers alone,
-// not of three days' (TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning).
+// not of three days' (TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning). A handover
+// record lives handoverRecordLife instead, the stream's retention, since no fence bounds when a
+// message to the replaced session is sent, counted from the last pass that found its replaced
+// session live where that is later than the claim (runTakeoverPass), so it lives on while that
+// session does; such a pass reads the role's claim and the session's state, and none of its
+// subject.
 const takeoverRecordLife = roleKeepWindow
 
 // takeoverRecordWindow bounds the write of a takeover record before a try of a claim's write. The
@@ -248,6 +257,9 @@ type takeoverFaultSet struct {
 	// claimRecordWrite, when it returns an error, is the answer of the claim route's write of a
 	// takeover record in place of the write.
 	claimRecordWrite func(role, previous string) error
+	// handoverRecordWrite, when it returns an error, is the answer of the claim route's write of
+	// a handover record (publishHandover) in place of the write.
+	handoverRecordWrite func(role, previous, successor string) error
 	// beforeWithdraw runs before the publish route withdraws a forward stored past its fence
 	// (withdrawLateForward), with the role and the forward's stream sequence; withdrawPublish,
 	// when it returns an error, is the answer of each publish of the withdrawal mark in place of
@@ -474,12 +486,13 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // changed nothing of it writes it again (runTakeoverPass): one that read nothing new on the
 // previous holder's subject, and one that copies nothing because the record's previous holder
 // holds the role, which writes the time it found that holder (bus.TakeoverRecord.HolderSeenAt).
-// It is well inside the stream's age limit less the record's life, so no record ages out of the
-// stream while a pass may still need it for as long as some listener runs a pass at least every
-// 72 hours less this; and short enough that the hour a record copies from once that holder loses
-// the role starts at most this much and one sweep interval (roleWakeInterval) before the hour
-// before it lost it. So a record nothing moves costs one write each time this has passed, whatever
-// the number of listeners whose sweeps run its passes, and no write in the sweeps between.
+// It is well inside the stream's age limit, so no record that is not finished ages out of the
+// stream for as long as some listener runs a pass of it at least every 72 hours less this, however
+// long the record lives (a handover record's life is the stream's retention); and short enough that
+// the hour a record copies from once that holder loses the role starts at most this much and one
+// sweep interval (roleWakeInterval) before the hour before it lost it. So a record nothing moves
+// costs one write each time this has passed, whatever the number of listeners whose sweeps run its
+// passes, and no write in the sweeps between.
 const takeoverRecordRefresh = 15 * time.Minute
 
 // runTakeoverPass is one pass of the takeover record stored, and returns the record as it stands
@@ -517,14 +530,52 @@ const takeoverRecordRefresh = 15 * time.Minute
 // that starts more than takeoverRecordLife after the claim's time and reads to the end marks it
 // finished.
 //
+// A handover record (bus.HandoverSubject, the claim of a session that named the one it replaces)
+// is passed the same way, with five differences.
+//
+// First, it copies nothing while the replaced session is live, as well as while the role's claim
+// names it: a session that answers reads its own messages, and a copy would hand a person's or an
+// agent's messages to another session while it still reads them. Its hour runs from the last pass
+// that found the replaced session live or holding the role (HolderSeenAt) where that is later than
+// the claim, and such a pass never finishes it: a replaced session that stays live past the
+// record's life and then stops leaves unread what it was sent before it stopped, which the record
+// still hands over then.
+//
+// Second, it copies nothing, and sets the record back the same way without moving its hour, while
+// the two sessions' last registrations do not name one principal, the rule the claim route wrote
+// the record under: a session that registered as another principal since is handed nothing more.
+// Both rules are one gate (handoverFence), judged at the start and again as the last step before
+// each copy, after the beforeCopy seam, each read from the leader the registration lands on, so a
+// registration that lands while the pass runs, through this listener or another one, ends it
+// before its next copy; such a pass sets the record back as the start does (setBack).
+//
+// Third, it copies more of the replaced session's subject (takenFrame): a role message of any role
+// goes to that role's kept lane, for the role's next live holder, a drain of each such lane
+// starting once the pass ends; and a message to the session itself goes to the successor's own
+// agent subject (handOverDirectFrame), however long before the claim it was stored past where the
+// pass starts, since a message to a session has no hour.
+//
+// Fourth, where the replaced session's floor is unknown its pass starts at the first message the
+// stream holds on that session's subject, not an hour before the claim: a message to the session
+// stored earlier and never read is handed over too, at the cost of handing over again what the
+// session read in the stream's retention.
+//
+// Fifth, its life is handoverRecordLife, the stream's retention, and not the keep window: a
+// message sent to the replaced session after the claim's hour is handed over too, since nothing
+// fences a direct send to a session as roles.ForwardFenceAge fences a role forward.
+//
 // A read or a copy that failed ends the pass with the record written at the frame it stopped at,
 // under the same rule; a failed read of where to start ends it with nothing written, and the next
 // pass reads again.
 func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord) (bus.StoredTakeoverRecord, bool, error) {
 	record := stored.Record
+	successor, handover := bus.TakeoverSuccessor(stored.Subject)
 	started := cfg.now()
-	claimedAt := time.UnixMilli(record.ClaimedAt)
-	lifeOver := started.Sub(claimedAt) > takeoverRecordLife
+	life, lifeFrom := takeoverRecordLife, time.UnixMilli(record.ClaimedAt)
+	if handover {
+		life, lifeFrom = handoverRecordLife, time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt))
+	}
+	lifeOver := started.Sub(lifeFrom) > life
 	written := func(record bus.TakeoverRecord, done bool, err error) (bus.StoredTakeoverRecord, bool, error) {
 		sequence, writeErr := writeTakeoverRecord(ctx, cfg, stored, record)
 		if err := errors.Join(err, writeErr); err != nil {
@@ -538,27 +589,69 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		}
 		return written(record, done, err)
 	}
+	// setBack ends a pass that copies nothing more for verdict, at its start or, for a handover,
+	// before a copy after copied role messages and handed direct ones: the record is finished once
+	// its life has passed, unless it waits for a handover's replaced session; otherwise one that had
+	// found where to start is set back to finding it again, and one that never moved keeps its
+	// state. It is written when that changed it, or once its last write is takeoverRecordRefresh
+	// old, with the time a waiting pass found the holder or the live session (HolderSeenAt); a
+	// handover pass logs what it copied before it stopped, and a refusal it writes.
+	setBack := func(verdict passVerdict, copied, handed int) (bus.StoredTakeoverRecord, bool, error) {
+		writes := true
+		switch {
+		case lifeOver && !(handover && verdict == passWaits):
+			record.Finished = true
+		case record.Next != 0 || record.FloorMissed:
+			record.Next, record.FloorMissed = 0, false
+		default:
+			writes = started.Sub(stored.Written) >= takeoverRecordRefresh
+		}
+		if handover && (copied+handed > 0 || (writes && verdict == passRefused)) {
+			why := "the replaced session is live, so what it has not read stays its own"
+			if verdict == passRefused {
+				why = "the replaced session and the session that replaced it do not last register as one principal, so nothing more of the replaced session's is copied"
+			}
+			cfg.logger.Info("listener handover pass copied nothing more: "+why,
+				slog.String("role", record.Role),
+				slog.String("previous_session_id", record.Previous),
+				slog.String("session_id", successor),
+				slog.Int("copied", copied),
+				slog.Int("handed_over", handed),
+				slog.Bool("finished", record.Finished))
+		}
+		if !writes {
+			return stored, true, nil
+		}
+		if verdict == passWaits {
+			record.HolderSeenAt = started.UnixMilli()
+		}
+		return written(record, true, nil)
+	}
 	holder, err := readRoleClaimHolder(ctx, cfg, record.Role)
 	if err != nil {
 		return stored, false, fmt.Errorf("read role %s's claim: %w", record.Role, err)
 	}
-	if holder == record.Previous {
-		switch {
-		case lifeOver:
-			record.Finished = true
-		case record.Next != 0 || record.FloorMissed:
-			record.Next, record.FloorMissed = 0, false
-		case started.Sub(stored.Written) < takeoverRecordRefresh:
-			return stored, true, nil
+	var fence *handoverFence
+	if handover {
+		fence = &handoverFence{cfg: cfg, previous: record.Previous, successor: successor}
+	}
+	verdict := passCopies
+	switch {
+	case holder == record.Previous:
+		verdict = passWaits
+	case fence != nil:
+		if verdict, err = fence.judge(ctx); err != nil {
+			return stored, false, err
 		}
-		record.HolderSeenAt = started.UnixMilli()
-		return written(record, true, nil)
+	}
+	if verdict != passCopies {
+		return setBack(verdict, 0, 0)
 	}
 	since := time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt)).Add(-roleKeepWindow)
 	agent := contracts.LegacyAgentSubject(record.Previous)
 	next := record.Next
 	if next == 0 {
-		start, missed, err := takeoverStart(ctx, cfg, record, agent, since)
+		start, missed, err := takeoverStart(ctx, cfg, record, agent, since, handover)
 		if err != nil {
 			return stored, false, err
 		}
@@ -570,17 +663,31 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 			return settle(record, true, nil)
 		}
 		if start == 0 {
-			// Nothing on the subject from the hour before the claim on: the end, with nothing
-			// to start from yet.
+			// Nothing on the subject from where an unknown floor starts on: the end, with
+			// nothing to start from yet.
 			record.Finished = lifeOver
 			return settle(record, true, nil)
 		}
 		next = start
 	}
-	copied, reachedEnd := 0, false
+	copied, handed, reachedEnd := 0, 0, false
+	// The other roles a pass copied a message of, whose kept lanes a drain hands to their live
+	// holders once the pass ends, however it ends.
+	var others []string
+	defer func() {
+		for _, role := range others {
+			startHandover(cfg, role, runKeptRoleDrain)
+		}
+	}()
 	stop := func(err error) (bus.StoredTakeoverRecord, bool, error) {
 		record.Next = next
 		return settle(record, false, err)
+	}
+	beforeCopy := func(seq uint64) error {
+		if hook := cfg.takeoverFaults.faults().beforeCopy; hook != nil {
+			return hook(record.Role, record.Previous, seq)
+		}
+		return nil
 	}
 	for range roleKeepScanMax {
 		message, err := cfg.client.NextStoredMessage(ctx, agent, next)
@@ -591,24 +698,59 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		if err != nil {
 			return stop(fmt.Errorf("read %s after %d: %w", agent, next, err))
 		}
-		if !message.Time.Before(since) {
-			if item, ok := takenRoleMessage(message.Data, record.Role); ok {
-				if hook := cfg.takeoverFaults.faults().beforeCopy; hook != nil {
-					if err := hook(record.Role, record.Previous, message.Sequence); err != nil {
-						return stop(err)
-					}
-				}
-				if err := keepTakenRoleFrame(ctx, cfg, record.Role, item, message.Sequence); err != nil {
-					return stop(err)
-				}
-				copied++
+		frame, kind := takenFrame(message.Data, record.Role, record.Previous, handover)
+		if kind == takenRoleCopy && message.Time.Before(since) {
+			kind = takenNone
+		}
+		if kind == takenNone {
+			next = message.Sequence + 1
+			continue
+		}
+		if err := beforeCopy(message.Sequence); err != nil {
+			return stop(err)
+		}
+		// A handover's gate is judged again here, after every step but the copy itself, so a
+		// registration that landed since the last judge, through any listener, ends the pass
+		// before the copy.
+		if fence != nil {
+			verdict, err := fence.judge(ctx)
+			if err != nil {
+				return stop(err)
 			}
+			if verdict != passCopies {
+				return setBack(verdict, copied, handed)
+			}
+		}
+		switch kind {
+		case takenRoleCopy:
+			if err := keepTakenRoleFrame(ctx, cfg, frame.role, frame.envelope(), message.Sequence); err != nil {
+				return stop(err)
+			}
+			copied++
+			if frame.role != record.Role && !slices.Contains(others, frame.role) {
+				others = append(others, frame.role)
+			}
+		case takenDirectCopy:
+			if err := handOverDirectFrame(ctx, cfg, record.Previous, successor, frame, message.Sequence); err != nil {
+				return stop(err)
+			}
+			handed++
 		}
 		next = message.Sequence + 1
 	}
 	record.Next = next
 	record.Finished = reachedEnd && lifeOver
-	if copied > 0 || record.Finished {
+	switch {
+	case handover && (copied > 0 || handed > 0 || record.Finished):
+		cfg.logger.Info("listener handover pass copied the replaced session's unread messages to the session that replaced it and to the kept lanes of their roles",
+			slog.String("role", record.Role),
+			slog.String("previous_session_id", record.Previous),
+			slog.String("session_id", successor),
+			slog.Int("copied", copied),
+			slog.Int("handed_over", handed),
+			slog.Uint64("next", next),
+			slog.Bool("finished", record.Finished))
+	case copied > 0 || record.Finished:
 		cfg.logger.Info("listener takeover copy pass copied the previous holder's role messages to the role's kept lane",
 			slog.String("role", record.Role),
 			slog.String("previous_session_id", record.Previous),
@@ -619,14 +761,33 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 	return settle(record, reachedEnd, nil)
 }
 
+// passVerdict is what a pass of a takeover record does, read at its start and, for a handover
+// record, again before each copy (handoverFence.judge): copy, or copy nothing more and set the
+// record back (runTakeoverPass's setBack).
+type passVerdict uint8
+
+const (
+	// passCopies: the pass copies on.
+	passCopies passVerdict = iota
+	// passWaits: the role's claim names the record's previous holder again, or a handover's
+	// replaced session is live. That session reads its own messages, so the record waits for it,
+	// and a handover's hour runs on from this pass.
+	passWaits
+	// passRefused: a handover's two sessions do not last register as one principal, or not as the
+	// one the pass's first judge read. The record copies nothing while that holds, and its hour
+	// does not move.
+	passRefused
+)
+
 // takeoverStart is where a record's first pass reads the previous holder's subject from: the
 // sequence after the floor of its session consumer, or after the floor the listener recorded when
 // it deleted that consumer (bus.Client.SessionReadFloor). With neither, missed is set on a record
 // whose earlier pass did not miss yet, so the pass ends and the next one reads the consumer again;
 // and on one that did, the start is the first message stored at or after since on the subject (a
-// stored-message read by start time), or 0 for a subject that holds none: the floor is unknown,
-// and what the previous holder read in that hour is copied too.
-func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, record bus.TakeoverRecord, agent string, since time.Time) (uint64, bool, error) {
+// stored-message read by start time), or for a handover the first message the stream holds on the
+// subject at all, or 0 for a subject that holds none: the floor is unknown, and what the previous
+// holder read in that hour, or for a handover in the stream's retention, is copied too.
+func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, record bus.TakeoverRecord, agent string, since time.Time, handover bool) (uint64, bool, error) {
 	if refuse := cfg.takeoverFaults.faults().floorRead; refuse != nil {
 		if err := refuse(record.Previous); err != nil {
 			return 0, false, err
@@ -642,12 +803,19 @@ func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, recor
 	if !record.FloorMissed {
 		return 0, true, nil
 	}
-	first, err := cfg.client.FirstStoredMessageSince(ctx, agent, since)
+	var first bus.StoredMessage
+	from := since.UTC().Format(time.RFC3339)
+	if handover {
+		from = "its first message"
+		first, err = cfg.client.NextStoredMessage(ctx, agent, 1)
+	} else {
+		first, err = cfg.client.FirstStoredMessageSince(ctx, agent, since)
+	}
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return 0, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read %s from %s: %w", agent, since.UTC().Format(time.RFC3339), err)
+		return 0, false, fmt.Errorf("read %s from %s: %w", agent, from, err)
 	}
 	return first.Sequence, false, nil
 }
@@ -681,16 +849,42 @@ func roleOfLaneTopic(topic string) (string, bool) {
 	return role, role != ""
 }
 
-// takenRoleMessage reports the envelope of data when data is a role message of role (readRoleFrame),
-// read field by field (roleFrame.envelope): a message the listener's wire rules or the envelope's
-// own refuse is still copied for the role's next holder, as the session relay and the kept lane's
-// walk take it. A message whose role no read can tell is no role message to copy.
-func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
+// takenKind is what a takeover pass does with one message of the previous session's agent subject
+// (takenFrame).
+type takenKind uint8
+
+const (
+	// takenNone: the message is copied nowhere.
+	takenNone takenKind = iota
+	// takenRoleCopy: a role message, copied to its role's kept lane (keepTakenRoleFrame).
+	takenRoleCopy
+	// takenDirectCopy: a message to the session itself, copied to the session that replaced it
+	// (handOverDirectFrame).
+	takenDirectCopy
+)
+
+// takenFrame reads data, a message stored on previous's own agent subject, as a pass of a record
+// of role copies it, and returns the frame with what the pass does with it. A role message of role
+// (readRoleFrame) is copied to role's kept lane, read field by field (roleFrame.envelope): a
+// message the listener's wire rules or the envelope's own refuse is still copied for the role's
+// next holder, as the session relay and the kept lane's walk take it. On a handover record
+// (handover) a role message of any other role is copied too, to that role's lane, and a message
+// that is no role message and whose envelope names one of previous's own agent subjects as its
+// topic (messageToSession) - a direct message to the session, or a dead letter sent to it - is
+// copied to the session that replaced previous. A message whose role no read can tell is copied
+// nowhere, and so is any other message: a forward of a topic the session followed is that
+// topic's, which the session that replaced it registers for itself.
+func takenFrame(data []byte, role, previous string, handover bool) (roleFrame, takenKind) {
 	frame, err := readRoleFrame(data)
-	if err != nil || frame.role != role {
-		return contracts.Envelope{}, false
+	switch {
+	case err != nil:
+		return roleFrame{}, takenNone
+	case frame.role != "" && (frame.role == role || handover):
+		return frame, takenRoleCopy
+	case frame.role == "" && handover && messageToSession(frame, previous):
+		return frame, takenDirectCopy
 	}
-	return frame.envelope(), true
+	return roleFrame{}, takenNone
 }
 
 // keepTakenRoleFrame copies item, the frame stored at seq on a session's own subject, to role's

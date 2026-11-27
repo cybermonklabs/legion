@@ -145,10 +145,11 @@ export function createClaimSession(
       },
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go): no issue topic carries one,
-      // so no claim subscribes to one.
-      claimRole: async (role) => {
+      // so no claim subscribes to one. `replaces`, the session the registration says this one
+      // replaces, is the claim's `previous_session_id`, so its unread messages come here.
+      claimRole: async (role, replaces) => {
         try {
-          await claimEnvoyRole(sessionID, role, context);
+          await claimEnvoyRole(sessionID, role, context, replaces);
         } catch (error) {
           // Envoy refused the claim because the session's stop has begun: the stop is this
           // boot's too, so the failure ends the claim step quietly (`claimRoleAtFirstTurn`).

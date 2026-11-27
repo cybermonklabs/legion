@@ -107,7 +107,7 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     setRole: async (input) => {
       setRoles.push(input)
       if (setRoles.length === 2) reasserted.resolve()
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     getRole: async () => ({ role: "reviewer", holder: "ses_lost", last_seen: 1, state: "live" }),
   }
@@ -154,7 +154,7 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
     unregisterSession: async () => undefined,
     setRole: async () => {
       holder = "ses_current"
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     getRole: async () => {
       // Healthy ticks see this session; the listener then loses the claim once.
@@ -206,7 +206,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     getInterest: async () => interest(),
     unsubscribe: async () => undefined,
     unregisterSession: async () => undefined,
-    setRole: async () => ({ claimed: true, interest: interest() }),
+    setRole: async () => ({ claimed: true, interest: interest(), warnings: [] }),
     getRole: async () => {
       if (!unclaimed) {
         return { role: "legion-claim", holder: "ses_current", last_seen: 1, state: "live" } as const
@@ -329,7 +329,7 @@ test("a refusal naming this session under another process keeps the record, asks
     setRole: async (input) => {
       claims.push(input)
       if (staleClaimLive) return { claimed: false, holder: "ses_current" }
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     // The lookup names this session, under the process that claimed it: the other `claude`.
     getRole: async () => ({
@@ -411,7 +411,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
       claims.push(input)
       // The fresh claim clears the mark, as the listener's does.
       handedBack = false
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     // This session and this very process — and the hand-back mark, which is why it is no hold.
     getRole: async () => ({
@@ -548,7 +548,7 @@ test("a role taken while a heartbeat's refused claim of the old role is still ou
     unsubscribe: async () => undefined,
     unregisterSession: async () => undefined,
     setRole: async (input) => {
-      if (input.role !== OLD) return { claimed: true, interest: interest() }
+      if (input.role !== OLD) return { claimed: true, interest: interest(), warnings: [] }
       oldClaimAsked.resolve()
       return oldClaim.promise
     },
@@ -636,7 +636,7 @@ test("a heartbeat body past its stop check when the shutdown begins makes no rol
     unregisterSession: async () => undefined,
     setRole: async (input) => {
       if (shutdownBegan) claimsAfterShutdown.push(input)
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     // The listener lost the claim and names another session, so the body would claim it back.
     // The read is answered only once the test lets it go, after the shutdown began.

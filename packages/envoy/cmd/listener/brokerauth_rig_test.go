@@ -330,7 +330,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 16
+const v1RoutePatterns = 17
 
 // walkSession is where a walk request's path or body names the session its token names.
 const walkSession = "<session>"
@@ -372,6 +372,7 @@ var v1Walk = []struct {
 		`{"topic":"notifications.team.rig","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
 	{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
+	{http.MethodGet, "/v1/sessions/<session>/successors", sessionSuccessorsPattern, ""},
 	{http.MethodGet, "/v1", "/v1", ""},
 	{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
 }

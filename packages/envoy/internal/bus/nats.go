@@ -2956,7 +2956,9 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 // a refusal means is theirs: PublishCursorAt and Client.WriteTakeoverRecordAt, which write under a
 // precondition and read a lost one by preconditionLost; SessionConsumers.recordResumeFloorAt,
 // which writes a record whose one writer keeps no sequence to write against, so the newest write
-// stands; and Client.WriteTakeoverRecord, which writes a subject no other writer has.
+// stands; Client.WriteTakeoverRecord, which writes a subject no other writer has; and
+// Client.WriteHandoverRecord, which writes only while its subject holds nothing and reads any
+// refusal of that as the record being there already.
 //
 // extra is one option rather than a variadic list because each caller has exactly one or none:
 // a list would have the caller build a slice and this method append to it, where the two sends

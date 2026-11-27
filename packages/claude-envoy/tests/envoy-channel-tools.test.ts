@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { chmodSync, writeFileSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { EnvelopeSchema } from "@legion/contracts"
@@ -17,6 +17,7 @@ import {
   type ChannelToolRuntime,
   channelToolDefinitions,
   executeEnvoyTool,
+  mcpResult,
 } from "../src/envoy-channel-server"
 import { SessionIdentity } from "../src/session-identity"
 import { isolatePaneEnvironment } from "./pane-environment"
@@ -445,6 +446,57 @@ test("envoy_role_set once the session is stopping is refused naming the stop, an
     "this session is stopping, so it claims no role: role reviewer is not held here",
   )
   expect(sent).toEqual([])
+})
+
+// A claim can land and still hand over none of the messages of the session it replaces, and the
+// listener says so in the answer's warnings. The agent reads each beside the interest row in the
+// tool's result, and the server's log, its stderr, holds each with the role and the session.
+test("envoy_role_set logs each of the listener's warnings about the claim and returns them to the agent", async () => {
+  const handover =
+    "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals"
+  const legacy = "reviewer is the old form of ACME.reviewer; claim ACME.reviewer"
+  const interest = {
+    session_id: "ses_claude",
+    machine_id: "devbox",
+    dir: "/work",
+    topics: ["notifications.role.reviewer"],
+  }
+  let warnings: string[] = [legacy, handover]
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async () => Response.json({ ...interest, warnings }),
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  try {
+    const result = await executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })
+    expect(result).toEqual({ ...interest, warnings: [legacy, handover] })
+    expect(mcpResult(result).content[0]?.text).toContain(JSON.stringify([legacy, handover]))
+    expect(written).toEqual([
+      `envoy-channel: the Envoy listener warned about the claim of role reviewer for session ses_claude: ${legacy}\n`,
+      `envoy-channel: the Envoy listener warned about the claim of role reviewer for session ses_claude: ${handover}\n`,
+    ])
+
+    // A claim the listener answered no warnings for, as every listener before the field answers,
+    // gives the interest row as it always did, and logs nothing.
+    warnings = []
+    written.length = 0
+    expect(await executeEnvoyTool(runtime, "envoy_role_set", { role: "reviewer" })).toEqual(
+      interest,
+    )
+    expect(written).toEqual([])
+  } finally {
+    stderr.mockRestore()
+  }
 })
 
 test("a send that is not confirmed names its key, and a resend under that key sends it again", async () => {

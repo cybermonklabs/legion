@@ -1,5 +1,5 @@
-// What SessionConsumers reads of the notification stream itself: its identity and sequences, read
-// once for every call waiting on a read.
+// What SessionConsumers reads of the notification stream itself, its identity and sequences, read
+// once for every call waiting on a read, and the identity Client.StreamID reads for Dispatch's outbox.
 
 package bus
 
@@ -17,6 +17,15 @@ import (
 type sessionStreamState struct {
 	id                string
 	firstSeq, lastSeq uint64
+}
+
+// streamID is the stream's identity as s read it, and ErrNoStreamID for a stream that carries none:
+// the one answer of Client.StreamID and SessionConsumers.StreamID.
+func (s sessionStreamState) streamID() (string, error) {
+	if s.id == "" {
+		return "", ErrNoStreamID
+	}
+	return s.id, nil
 }
 
 // sessionStreamReadWait bounds one read of the stream's state (streamState).
@@ -88,15 +97,15 @@ func (s *SessionConsumers) readStreamStates() {
 		}
 		s.streamMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), sessionStreamReadWait)
-		read.state, read.err = s.readStreamState(ctx)
+		read.state, read.err = s.client.readStreamState(ctx)
 		cancel()
 		close(read.done)
 	}
 }
 
 // readStreamState reads the stream's identity and sequences with one stream info.
-func (s *SessionConsumers) readStreamState(ctx context.Context) (sessionStreamState, error) {
-	reply, err := s.client.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
+func (c *Client) readStreamState(ctx context.Context) (sessionStreamState, error) {
+	reply, err := c.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
 	if err != nil {
 		return sessionStreamState{}, err
 	}
@@ -121,4 +130,20 @@ func (s *SessionConsumers) readStreamState(ctx context.Context) (sessionStreamSt
 		firstSeq: response.State.FirstSeq,
 		lastSeq:  response.State.LastSeq,
 	}, nil
+}
+
+// StreamID reads the stream's identity, its StreamIDMetadataKey metadata, with one stream info
+// within ctx's bound (storedMessageWait when ctx sets none), and answers ErrNoStreamID for a stream
+// that carries none, as SessionConsumers.StreamID does. Dispatch's outbox reads it to tell the
+// stream its expiry notices' cursor counts in from one created again since
+// (internal/dispatch/outbox, keptExpiryStart): a cursor's sequence names a message of the stream
+// it was read from and no other, and a stream with no identity cannot be told from another. The
+// read is the one SessionConsumers makes (streamState), over a subject the listener's and
+// Dispatch's grants both hold.
+func (c *Client) StreamID(ctx context.Context) (string, error) {
+	state, err := c.readStreamState(ctx)
+	if err != nil {
+		return "", err
+	}
+	return state.streamID()
 }

@@ -7,11 +7,16 @@ import type { SessionContext } from "./pi-types";
  * hook from its heartbeat; the Legion entry (`extensions/legion.ts`, `controller-session.ts`)
  * claims through it and registers that hook. The bridge object itself is the `roleClaim` member of
  * the versioned interface (`interface.ts`), which both plugins reach through `globalThis`.
+ *
+ * `replaces` is the session this session replaces, as the daemon's registration names it: the
+ * claim sends it as its `previous_session_id`, so the listener hands that session's unread direct
+ * and role messages to this one once the claim lands. Undefined or empty, the claim names none.
  */
 export type LegionRoleClaim = (
   sessionID: string,
   role: string,
-  context?: SessionContext
+  context?: SessionContext,
+  replaces?: string
 ) => Promise<void>;
 
 /**
@@ -112,12 +117,14 @@ export function legionRoleClaimBridge(): LegionRoleClaimBridge {
  * establishes the session itself; a stopped instance moves to the front, so the fallback is a
  * live one where there is one.
  * A session whose stop has begun keeps its instance on the bridge, which refuses the claim naming
- * the stop, so no other instance gets it.
+ * the stop, so no other instance gets it. `replaces` is the session this one replaces, which the
+ * claim names as its `previous_session_id` (`LegionRoleClaim`).
  */
 export async function claimEnvoyRole(
   sessionID: string,
   role: string,
-  context?: SessionContext
+  context?: SessionContext,
+  replaces?: string
 ): Promise<void> {
   const bridge = legionRoleClaimBridge();
   bridge.managedSessions.add(sessionID);
@@ -125,7 +132,7 @@ export async function claimEnvoyRole(
     bridge.instances.findLast((candidate) => candidate.sessionID() === sessionID) ??
     bridge.instances.at(-1);
   if (instance === undefined) throw new Error("Envoy has no bound instance for a role claim");
-  await instance.claim(sessionID, role, context);
+  await instance.claim(sessionID, role, context, replaces);
 }
 
 /**

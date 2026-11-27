@@ -389,6 +389,7 @@ var DispatchEventTypes = []string{
 	"project.updated",
 	"result.recorded",
 	"result.retracted",
+	"role.undelivered",
 	"settings.architecture_source.updated",
 	"settings.project_default_assignee.updated",
 	"settings.repo_project.updated",

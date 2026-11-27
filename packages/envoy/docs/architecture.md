@@ -90,9 +90,10 @@ requires a bearer checks no `Host`.
 | `/v1/interests/unsubscribe` | POST | Remove persisted topics for a session and answer in `removed` every topic it named that the record no longer holds, with every other form of them the record held, and never a role lane topic the record kept, so a named topic the record never held is in it too; a consumer-delivery session's consumer stops filtering on them. A stored record this build cannot decode is left as it is (it routes none of its topics), logged at WARN. A session the bucket holds no record for has nothing removed, and the route answers 200 with `removed` as `[]`. The request carries `client_instance_id`, the process handing the interests back, and that decides which role claims it frees: of the roles the topics name, only the claims naming that same process, so a second process that resumed this session's id frees none of the holder's. An absent process matches nothing: a release that states no process frees no claim, and a claim that names no process (one whose claimant stated none: an older client's, or a session pod's claim of its launch role) is freed by no release this route makes; the role claim reaper frees it. A role lane topic whose claim this release did not free stays in the record and is left out of `removed`, because one record serves every process running under one session id and that topic is the interest half of a claim that still stands, written there by the claim itself; no delivery rides on it, since a role lane never enters a session's consumer filter and a role message goes to its holder's agent subject with the holder read off the claim. Such a release — stating no process, not forcing, and naming that role's own lane topic — is a hand-back, and it marks the claim it could not free (`handed_back`), whether that claim names a process or none: no registration renews or adopts a marked claim, `GET /v1/roles/<role>` answers `handed_back` meanwhile, and the role claim reaper frees the role at its first pass past the live window, unless the holder, which reads a marked claim as a role it does not hold, claims it back at its next heartbeat. A release that loses its conditional delete to a record written since reads the claim again, and one still naming that same session and that same process, and carrying the same `grant_id`, is its own holder's renewal, so the delete goes out again at the revision that renewal left, three deletes in all; a claim renewed under every one of them is left standing and fails the route naming the role, rather than reporting a release it did not make. A claim granted again since the release read the claim, to any process, the one the release states included, and in any millisecond, is no claim the release read, and it is left standing as the hand-back's mark leaves it. This route never forces a release; `DELETE /v1/interests/{session_id}` is the only caller that does. The consumer's filter update runs after the record is written, and one that meets a NATS reconnect answers `503` with `Retry-After: 1` and a body that opens `envoy: the message bus did not answer` and names `bus: NATS is reconnecting`, inside 3.5 s of the request's arrival (`sendRequestBudget`). Each read of the connection's state made once the budget has ended can add up to 100 ms (`ConnLockWait`), and a send or subscribe that meets a handshake begun just after its read waits for that attempt. On that 503 the record may already be written. envoy-client's retry removes the topics again and sets the filter; a retry after a first attempt that took the record's last topic finds no record and answers 200 with `removed` as `[]` once its own filter update is answered. A caller whose retry finds the topics gone leaves the filter to the session's next registration. A write route |
 | `/v1/interests/` | GET | List persisted interests. Answers the refilling 503 while the interest copy cannot be served |
 | `/v1/interests/{session_id}` | GET/DELETE | Get or delete a session's persisted interests. A GET reads a cache miss from the bucket within 3.5 s, and up to `ConnLockWait` (100 ms) later when a reconnect's handshake holds nats.go's connection lock: 404 only for a key the bucket does not hold, 413 or 400 for an id NATS will not take as a key, `500 {"error":"envoy: the interest record of session <id> is unreadable: <reason>"}` with no `Retry-After` for a record this build cannot decode (`store.ErrMalformedInterest`), 503 with `Retry-After: 1` for a read that did not answer. A DELETE removes a record this build cannot decode too, forcing the release of every role claim the session holds whichever process holds it; it is the one caller that forces a release, because an operator clearing a session's interests states no process and a release naming none frees nothing a process the claim names holds. It names no role's lane topic either, so it is no hand-back and marks nothing. A DELETE answers 204. Its consumer's filter update runs after the record is deleted, and one that meets a NATS reconnect answers `503` with `Retry-After: 1` and a body that opens `envoy: the message bus did not answer` and names `bus: NATS is reconnecting`, inside 3.5 s of the request's arrival (`sendRequestBudget`); the record is deleted all the same. Each read of the connection's state made once the budget has ended can add up to 100 ms (`ConnLockWait`), and a send or subscribe that meets a handshake begun just after its read waits for that attempt. It is a write route |
-| `/v1/roles/set` | POST | Claim a role; the claim makes the session the holder, and the route also adds the role's topic to its record. The request carries `client_instance_id`, the process making the claim (the id every registration carries: one per Oh My Pi Envoy extension instance and one per Claude Code channel-server process, minted when that instance starts), and the claim record names it as the process holding the role. An explicit claim reads no holder: it writes with the revision of the claim record it read and, on a conflict, reads and writes again until its request's budget ends, so the last write wins; one that met a conflict at every try answers `503` with `Retry-After: 1` and writes nothing. Before each try whose read names another session it writes a takeover record (below); a try whose record did not store writes no claim and answers `503` with `Retry-After: 1`, and the Legion claim boot claims again. When nothing answered the record's write, that `503`'s body opens `envoy: the message bus did not answer` and names the takeover record, as the claim's own write that the bus did not answer does; a full stream, a denied publish and a refused record keep the `503` that names the record alone. A soft claim is granted when the role is unheld, when its holder is not `live` — `gone`, or `unresponsive` past the live window, which is how a relaunched Legion role recovers its own role — and when its holder is the session this one continues (`previous_session_id`) and that predecessor is this claimant's to take: the predecessor is not `live`, or its live entry carries the claimant's own `client_instance_id`, or either side carries no instance id. The last case is a client older than the field, and the listener logs that takeover with both session ids; the predecessor rule reads the claimant's instance from the request and falls back to its stored entry only where the request states none. A role already held under the claimant's **own** session id is decided on the standing claim and never on the session record, which names whichever process registered that id last: granted where that claim names this very process, granted where nobody has answered for the claim inside the listener's configured live window (`renewed_at`, which every registration of the holding process stamps) and this listener can vouch that the holder stopped, and otherwise refused the 409 naming that session, logged once with the holder's instance and the claimant's. The claim record reads the same whether its holder stopped registering or this listener failed to renew it, so that renewal arm refuses the claim, naming the state and claiming nothing rather than hand a live holder's role to a second process, in three states: while the role claim view cannot be served (`store.Registry.RoleViewErr`, the state a listener restart leaves until its first read of the bucket completes), while the copy's last whole read of the bucket is past its 2-minute bound or none has completed (`store.RoleClaimRepairReport.Err`), and while this listener's own renewal of that role for that holder failed inside the live window (`store.Registry.RenewalFailedWithin`: a claim read or write that did not answer or failed, or a registration whose store work failed before its renewal ran). The first is the bus-unavailable 503 with `Retry-After: 1`. The other two are the grant guard's own: the bus answered every read they rest on, so they get the 409 a second process gets while the holder still answers for its claim, `{"error":"envoy: the role grant guard refused the claim because this listener cannot vouch that its holder stopped renewing it: <state>","holder":…,"role":…}` with the claimant's own session id as `holder` and no `Retry-After` (`grantGuardPrefix`, `writeGrantGuardRefusal`), logged once with the arm that refused as well. It is a 409 and not a 503 because a 503 says the claim wrote nothing and may be made again, which the Legion claim boot does after a growing wait (`packages/pi-shared/src/legion-claim-core.ts`), while this refusal names the session that holds the role: both harnesses wait out a 409 that names their own session, claude-envoy for at most the live window and 10 s. The record of failed renewals is kept by role and holder session, not by process: a renewal of that claim that writes clears it, but a failure another process of the same session recorded while the claim names a process that has stopped (a restarted process whose registration or claim read failed) is cleared by no renewal, and refuses until one live window after the last failure. A relaunched process's own registrations clear no failure recorded against the claim that names the process before it, and record none while their store calls answer, so that arm stops refusing the relaunched process one live window after the last failure, inside claude-envoy's wait unless one of this listener's store calls for that session fails again more than about 10 s after the relaunched process's first claim. That record is this listener's own and a restart loses it, so the repair's bound and not the record is what bounds the harm. The arm that grants to the process the standing claim names is not gated: it rests on no renewal, and it is that holder re-claiming its own role after a listener restart. So a second process that resumed a live session's id cannot take the role that session holds, and reads `/v1/roles/{role}`'s `client_instance_id` to see which process does. A `live` holder refuses the claim atomically, a predecessor still live under another client instance among them, which gets the 409 any other live holder gets. The predecessor's entry is read from the `envoy_sessions` bucket itself, not from this listener's cache of it, and a predecessor read that did not answer is the bus-unavailable 503. The claimant's entry is read from the bucket too, falling back to the cached entry when that read does not answer. The answer names the previous holder's `holder_state`. A claim carrying `if_claim_revision` is conditional: it lands only while the role's claim record is still at that `envoy_roles` revision, the one `/v1/roles/{role}` reported as `claim_revision`, where `0` names a role with no claim record at all. Any other revision, a record where the claim names none, or none where it names one is `409 {error, role, holder, claim_revision}` carrying the revision the bucket does hold, and so is a claim that lost its conditional write to a claim that landed in between; no claim record is written, so the role keeps the holder the standing claim gave it. A hard claim with no `if_claim_revision` is weighed by the last-claim-wins rule alone, while a soft one with none carries a precondition the route supplies in the caller's place: the revision of the claim record the route decided on, `0` where no record stands, since the route decides on one read of that record and the write reads it again, and without the precondition two processes of one session id claiming one unheld role in the same moment were both granted it. A record replaced under such a claim is no answer for a caller that asked nothing about revisions: the route reads the claim again, decides the whole thing again on what the second read finds, and tries once more, a second mismatch answered with the same 409. A claim stating its own `if_claim_revision` is never decided again, that revision being the caller's own precondition. A write route |
+| `/v1/roles/set` | POST | Claim a role; the claim makes the session the holder, and the route also adds the role's topic to its record. The request carries `client_instance_id`, the process making the claim (the id every registration carries: one per Oh My Pi Envoy extension instance and one per Claude Code channel-server process, minted when that instance starts), and the claim record names it as the process holding the role. An explicit claim reads no holder: it writes with the revision of the claim record it read and, on a conflict, reads and writes again until its request's budget ends, so the last write wins; one that met a conflict at every try answers `503` with `Retry-After: 1` and writes nothing. Before each try whose read names another session it writes a takeover record (below); a try whose record did not store writes no claim and answers `503` with `Retry-After: 1`, and the Legion claim boot claims again. When nothing answered the record's write, that `503`'s body opens `envoy: the message bus did not answer` and names the takeover record, as the claim's own write that the bus did not answer does; a full stream, a denied publish and a refused record keep the `503` that names the record alone. A claim of either kind that lands and names another session as `previous_session_id`, the session it replaces, writes that session's handover record (below) when the claim's credential, the claimant's last registration and that session's last registration name one principal, so that session's unread messages reach the claimant whether or not it still held the role; a handover record that did not store, and a rule the listener could not read (the known-session bucket's leader not answering, or the claimant's own registration not recorded with its principal yet), answer `503` with `Retry-After: 1`, the claim standing, and the client's next claim writes it. A claim that does not name one principal, and every such claim through a listener whose known-session bucket is not open, stands, writes no handover record, and is answered `200` with a warning that no message of that session is handed over and why. A soft claim is granted when the role is unheld, when its holder is not `live` — `gone`, or `unresponsive` past the live window, which is how a relaunched Legion role recovers its own role — and when its holder is the session this one continues (`previous_session_id`) and that predecessor is this claimant's to take: the predecessor is not `live`, or its live entry carries the claimant's own `client_instance_id`, or either side carries no instance id. The last case is a client older than the field, and the listener logs that takeover with both session ids; the predecessor rule reads the claimant's instance from the request and falls back to its stored entry only where the request states none. A role already held under the claimant's **own** session id is decided on the standing claim and never on the session record, which names whichever process registered that id last: granted where that claim names this very process, granted where nobody has answered for the claim inside the listener's configured live window (`renewed_at`, which every registration of the holding process stamps) and this listener can vouch that the holder stopped, and otherwise refused the 409 naming that session, logged once with the holder's instance and the claimant's. The claim record reads the same whether its holder stopped registering or this listener failed to renew it, so that renewal arm refuses the claim, naming the state and claiming nothing rather than hand a live holder's role to a second process, in three states: while the role claim view cannot be served (`store.Registry.RoleViewErr`, the state a listener restart leaves until its first read of the bucket completes), while the copy's last whole read of the bucket is past its 2-minute bound or none has completed (`store.RoleClaimRepairReport.Err`), and while this listener's own renewal of that role for that holder failed inside the live window (`store.Registry.RenewalFailedWithin`: a claim read or write that did not answer or failed, or a registration whose store work failed before its renewal ran). The first is the bus-unavailable 503 with `Retry-After: 1`. The other two are the grant guard's own: the bus answered every read they rest on, so they get the 409 a second process gets while the holder still answers for its claim, `{"error":"envoy: the role grant guard refused the claim because this listener cannot vouch that its holder stopped renewing it: <state>","holder":…,"role":…}` with the claimant's own session id as `holder` and no `Retry-After` (`grantGuardPrefix`, `writeGrantGuardRefusal`), logged once with the arm that refused as well. It is a 409 and not a 503 because a 503 says the claim wrote nothing and may be made again, which the Legion claim boot does after a growing wait (`packages/pi-shared/src/legion-claim-core.ts`), while this refusal names the session that holds the role: both harnesses wait out a 409 that names their own session, claude-envoy for at most the live window and 10 s. The record of failed renewals is kept by role and holder session, not by process: a renewal of that claim that writes clears it, but a failure another process of the same session recorded while the claim names a process that has stopped (a restarted process whose registration or claim read failed) is cleared by no renewal, and refuses until one live window after the last failure. A relaunched process's own registrations clear no failure recorded against the claim that names the process before it, and record none while their store calls answer, so that arm stops refusing the relaunched process one live window after the last failure, inside claude-envoy's wait unless one of this listener's store calls for that session fails again more than about 10 s after the relaunched process's first claim. That record is this listener's own and a restart loses it, so the repair's bound and not the record is what bounds the harm. The arm that grants to the process the standing claim names is not gated: it rests on no renewal, and it is that holder re-claiming its own role after a listener restart. So a second process that resumed a live session's id cannot take the role that session holds, and reads `/v1/roles/{role}`'s `client_instance_id` to see which process does. A `live` holder refuses the claim atomically, a predecessor still live under another client instance among them, which gets the 409 any other live holder gets. The predecessor's entry is read from the `envoy_sessions` bucket itself, not from this listener's cache of it, and a predecessor read that did not answer is the bus-unavailable 503. The claimant's entry is read from the bucket too, falling back to the cached entry when that read does not answer. The answer names the previous holder's `holder_state`. A claim carrying `if_claim_revision` is conditional: it lands only while the role's claim record is still at that `envoy_roles` revision, the one `/v1/roles/{role}` reported as `claim_revision`, where `0` names a role with no claim record at all. Any other revision, a record where the claim names none, or none where it names one is `409 {error, role, holder, claim_revision}` carrying the revision the bucket does hold, and so is a claim that lost its conditional write to a claim that landed in between; no claim record is written, so the role keeps the holder the standing claim gave it. A hard claim with no `if_claim_revision` is weighed by the last-claim-wins rule alone, while a soft one with none carries a precondition the route supplies in the caller's place: the revision of the claim record the route decided on, `0` where no record stands, since the route decides on one read of that record and the write reads it again, and without the precondition two processes of one session id claiming one unheld role in the same moment were both granted it. A record replaced under such a claim is no answer for a caller that asked nothing about revisions: the route reads the claim again, decides the whole thing again on what the second read finds, and tries once more, a second mismatch answered with the same 409. A claim stating its own `if_claim_revision` is never decided again, that revision being the caller's own precondition. A write route |
 | `/v1/registry/{session_id}` | GET | The authoritative answer for one session — reads through the cache to the session bucket, so a session the cache has not read yet is still found, and returns the same body a `/v1/sessions` row carries, roles from the claims included, with the session's `state`, `last_seen` and `client_instance_id`, the client process that wrote the registration, left out where the entry carries none as `/v1/roles/{role}` leaves its own out. It takes the list's selector: a session whose state is `unresponsive` is a 200 asked with `include=unresponsive`, and without it the 404 below, which names that session's `state` and `last_seen` all the same, so a caller reads `state` rather than the status code to decide whether the session ended. A live session with no interest record is a 200 with `topics` as `[]`, as the list shows it, and so is one whose id only the interest bucket refuses as a key and that the listener's interest copy holds no record for, logged at WARN naming it: Dispatch's envoy client reads a 413 or 400 here as a session that cannot exist. It refuses with 413 or 400 for an id the session bucket will not take as a key, `404 {"error":"no live session <id>", "state":…, "last_seen":…}` for a key the bucket does not hold, which is `gone`, and for an `unresponsive` session the caller did not ask for, the unreadable-interest-record 500 `/v1/interests/{session_id}` gives, and 503 with `Retry-After: 1` for a read that did not answer, the session's, its interest record's or the claims view's, all within a 3.5 s budget. `view=registration` asks instead for the stored registration alone (`listenerwire.SessionRegistration`: `session_id`, `state`, `last_seen`, `updated_at`, `client_instance_id`), read from the session bucket itself and never from this listener's cache, with no interest record and no role claims joined to it, so it answers whenever that bucket answers, and no state filter applies to it: every entry the bucket holds is a 200 carrying its record's own state, `gone` included, and the 404 is the bucket holding no record. It is what the Legion daemon's clean stop of a role whose process ended (a probe judged it gone, or a suspension's own stop ended it) reads before it deletes — the full answer's two extra reads are none of the stop's business, and either refusing would leave a dead session's claims standing to the gone horizon. Any other value of `view` is a 400 naming the selector |
 | `/v1/sessions/{session_id}` | DELETE | Remove a session's registration; the session is `gone` from that moment, with no live window to wait out. A caller that must not remove a registration another process wrote names a condition, and the registration is removed only while the stored entry meets it, answered `200 {"deleted":true}` for one that is gone and `200 {"deleted":false,"reason":…}` for one that stayed. With `client_instance_id` it is removed only while it carries that id or carries none, so a departing client instance never removes the registration a later instance made under the same session id; with `if_not_registered_after` (unix milliseconds, and a value that is not a positive whole number of them is a 400) only while it was last written at or before that moment. The entry is kept when **either** condition refuses it (`session.DeleteConditions.keeps`), so naming both narrows what a delete takes and widens nothing. The Legion daemon's clean stop of a role's session, sent when its probe judged the role's process gone or when a suspension's own stop ended that process, names both at once (dispatch://INFRA-2064). Its moment is the one its own probe judged the process gone, or the one that suspension's stop returned, with nothing subtracted: on clocks that agree this listener stamped the ended process's last heartbeat before that moment, so the moment deletes it, where a stop dated earlier would read the same heartbeat as a registration written since and refuse the stop that was owed. Its instance id, read from `/v1/registry/{session_id}?view=registration` a moment before, is what makes carrying that moment undated safe: where the read answered the dead process's own entry, a relaunch's registration is refused by its own identity whatever the two clocks say, and where the read was answered after the relaunch had registered, the id names that successor and the moment keeps the registration instead. A write route |
+| `/v1/sessions/{session_id}/successors` | GET | `{"session_id":…,"principal":…,"successors":[…]}`: the sessions that replaced that session, sorted and each once, `[]` when none (`handoverSuccessors`): each session the stream's handover records name as its successor (`bus.Client.HandoverSuccessors`), and each that replaced one of those in turn, however long the chain, since a message handed to a session replaced before it read it is handed on with its delivery unchanged. Successors are named only between sessions of one principal: a session is named only while its last registration names the principal the asked-about session last registered as, read from the known-session bucket's leader, so a session that registered as another principal since its claim is named no more, nor is any session only it leads to; a session whose principal no registration of this build recorded has none. `principal` is that principal, which each named session last registered as too (in the form that names the credential's kind and scope, `internal/ciphertoken/principal.go`), shown only to the caller whose verified identity is the listener's `ENVOY_DISPATCH_PRINCIPAL`, and only beside a named session: every other caller (a session's broker token, the shared token, another identity, an open `/v1`, and every caller of a listener that sets no `ENVOY_DISPATCH_PRINCIPAL`) reads `""`, and so does an answer whose `successors` is empty. A listener whose known-session bucket is not open names none, `200` with `[]`, as it hands nothing over, until its store opens the bucket. Dispatch accepts a successor's reply on a broker token only where the token acts for that principal. The records are those the claim route writes for a claim that names the session it replaces (see "Role delivery and exceptions" below), read by their subjects alone, one `STREAM.INFO` for each form a role takes in a subject; a finished record still names its successor while the stream keeps it. Dispatch reads it before a reply's transaction, so the session that replaced the one a `session:` attempt names may answer that attempt, a copy of which the listener handed it. A read of the stream or the bucket that did not answer within 3.5 s, the whole chain's included, is the bus-unavailable 503 with `Retry-After: 1`, never a list naming part of the chain. A broker token is not narrowed to its own session here, as the registry read is not. An edge listener reads the shared listeners' records, which its grant's `STREAM.INFO` allows, and names a successor only where the token's projects show that session, confirmed by its stored record as a row of `/v1/sessions` is |
 | `/v1/legion/agents/sessions/{session_id}` | GET/PUT | One Legion session's registry entry. GET adds `live` (the session's own state in the session registry, true only while it reads `live`; an `unresponsive` session reads false and has not ended, see “Session state”) and `replaced_by`/`replaced_at` (the next session of its role token by `started_at`), both derived at the read, or answers `404 {"error":"unknown legion agent <id>"}`; PUT records the daemon's entry for the session, and a write moving a recorded session to another issue or role is a 409, concurrent writes included: a write claims `session.<id>` by compare-and-swap before it writes the index keys. All three registry routes answer 503 naming the missing grant on a listener whose NATS user lacks the `legion_agents` grant; every other route serves |
 | `/v1/legion/agents/roles/{role_token}` | GET | `{"entries":[…]}`: a role token's sessions, newest first (the first is the current holder), `[]` when none |
 | `/v1/legion/agents` | GET/PUT | GET `?issue={KEY}`: an issue's sessions by role in workflow order, then newest first, `[]` when none. PUT: a batch of at most 256 entries and 4 MiB, the `/v1` body limit, every entry validated before the first write (400 naming the bad entry's index); a batch that fails after that names how many were written (`written`) with the failed entry's own status, a 503 to retry for a write the bucket did not answer. Every read comes from the bucket itself, never a cache |
@@ -617,9 +618,11 @@ copy's payload holds, or by the copy's event id alone where that event names no 
 (`keptCopyNamed`). The stream
 holds one dead letter for each copy, however many walks send it. A copy whose hour ended more
 than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead
-letter. While a lane holds a copy the listener kept with at least twenty minutes of its hour
-left, and no live session holds the role, each sweep raises the role's wake report again, at
-most once for a role in each five-minute interval across every listener. `GET /v1/roles/<role>`
+letter. A copy Dispatch's outbox kept gets no dead letter at all: whatever its age, the walk tells
+Dispatch with an expiry notice instead (below). While a lane holds a copy the listener kept with
+at least twenty minutes of its hour left, and no live session holds the role, each sweep raises
+the role's wake report again, at most once for a role in each five-minute interval across every
+listener. `GET /v1/roles/<role>`
 still answers 404 for an unheld or lapsed role: only the publish route gained the kept answer, and
 the send route's for a send Dispatch marks with its role, whose role moved before it arrived. A
 sender that keeps a queue of its own and redelivers from it asks not to be kept (`keep: false` in
@@ -748,6 +751,156 @@ form or in the new form under one of the token's projects (`roleFrameVerdict`,
 `roleMarkOnAgentSubject`); a role-marked frame with any other topic, or none, it judges by its
 topic, as a frame with no role mark.
 
+A session that replaces another of its own principal (below) gets the replaced session's unread
+messages, whether or not the replaced session's claim of the role still stands. The role claim
+reaper frees a dead holder's claim, so the claim of the session that replaces it often reads no
+holder and writes no takeover record; the claimant names the session it replaces instead, in
+`previous_session_id`, on a soft claim or an outright one (a Legion session names the session its
+claim abandoned, which the daemon's registration answers as `replaces`). Once such a claim lands,
+the claim route writes a handover record, a takeover record whose attempt token is
+`handover-<claimant>` (`bus.HandoverSubject`): one subject for a claimant and the session it
+names, so a claim made again at each registration costs no second record, and a write that finds
+the record is no error.
+A record that did not store, and a rule the listener could not read (below), answer the claim
+`503` with `Retry-After: 1` and the code `handover_unrecorded` (`listenerwire.CodeHandoverUnrecorded`):
+the claim stands, and the client's next claim judges and writes the record. A `previous_session_id`
+no session consumer can be named for (one holding `.`, `*`, `>`, `/`, `\` or whitespace) is
+answered `400` before anything is written. A handover record's passes are a takeover record's,
+with five differences.
+
+First, while the replaced session is `live` they copy nothing and set the record back as a pass
+that finds the previous holder holding the role does: a session that answers reads its own
+messages, and a person's direct messages go to no other session while that person's session
+answers. A handover record's life runs from the last pass that found the replaced session live, or
+holding the role, where that is later than the claim, and such a pass never finishes it: a session
+that stays live past the record's life and then stops is handed over then.
+
+Second, they copy nothing either, and set the record back the same way without moving its life,
+while the two sessions' last registrations do not name one principal: a session that registered
+as another principal since the claim, or while the pass runs, is handed nothing more. The two
+rules are one gate (`handoverFence`), judged before the pass and again as the last step before
+each copy: the session's state from the listener's cache and, where that does not read it live,
+from the session bucket's leader (`sessionLiveNow`), and both registrations from the known-session
+bucket's leader (`handoverStands`), each copy held to the principal the pass started under. So a
+registration that lands while a pass runs, through any listener, ends it before its next copy.
+
+Third, they copy more of the replaced session's subject: a role message of any role goes to that
+role's kept lane, whose walk hands it to the role's next live holder within the hour (the
+claimant, for each role it claims), and a message whose topic is the replaced session's own agent
+subject, in either form - a direct message to it, or a dead letter - goes to the claimant's own
+agent subject, with the claimant's subject as its topic, the message's event id and sender, and a
+dedupe key in the minted form, under the message id
+`notifications.agent.<claimant>:handover:<event id>`, so the stream keeps one copy of a message
+for a session however many passes, records and hops make it, and two sessions that each replaced
+the other copy a message to and fro once. A message that names no event id is given one on its
+first copy, drawn from the frame it was first read from (`handedOverEventID`), and every later
+copy keeps it. A direct message has no hour: it is copied however long before the claim it was
+stored, from the replaced session's floor on.
+
+Fourth, with no floor known, a pass starts at the first message the stream holds on the replaced
+session's subject, not an hour before the claim as a takeover record's does, so a direct message
+stored earlier and never read is handed over too, along with what the session read in the
+stream's retention.
+
+Fifth, a handover record lives the stream's retention, 72 hours (`handoverRecordLife`), not the
+one-hour keep window: nothing fences a direct send to a session as the role lane's fence fences a
+forward, and a sender can write to the replaced session long after the claim (a person who answers
+a Dispatch ask the session made, a peer that knows its id). Each message sent to the replaced
+session within that time is handed over; one sent after the record finished stays on the replaced
+session's own subject for the stream's retention, as every message to a session that is not live
+did before handovers. While it lives, each sweep's pass of the record on each listener that runs
+passes reads the role's claim, the replaced session's state, both principals and the replaced
+session's subject, and writes the record again every 15 minutes.
+
+Delivery is at least once, as for a takeover: a message the replaced session acknowledged out of
+order above its floor reaches the claimant too. A handover record's stored body names no role and
+no previous session, which its subject names, so a listener of the release before leaves it out as
+a record no pass can act on, rather than run it as a takeover record and move it past direct
+messages it did not copy. An edge listener writes no handover record, as it writes no takeover
+record, and answers such a claim with a warning that says so.
+
+A claim hands over only between sessions of one principal (`handoverRefusal`). The principal a
+request's credential acts for names the credential's kind and scope beside the person or service
+(`requestPrincipal`; `internal/ciphertoken/principal.go` spells each form): a broker token scoped
+to its person, a broker token an operator's entry gave a person for a project (a worker pod's), a
+broker token naming no person, an identity token, and none for the shared token or an open
+`/v1`. So a person's own session and an agent session acting for that person on a project entry
+are two principals.
+Each registration records its credential's principal, none included,
+on the session's known-session record, and marks it recorded (`session.KnownSession.Principal`,
+`PrincipalRecorded`). The record's other writes, an interest change and a clean stop, keep the
+principal the bucket's stream leader holds, writing over the revision they read it at, so a
+listener whose copy has not applied another listener's registration yet never writes the
+principal that registration replaced back over it; where the leader does not answer they write
+nothing. Before a registration changes anything of the session (its entry, its consumer, its
+relay, a role claim it releases or renews), the listener reads the session's record from the
+bucket's leader, and where it names another principal, recorded, writes it again with no
+principal recorded over the revision the read found, keeping its topics, title, capabilities and
+last_seen (`session.KnownSessions.AdmitRegistration`): from then on the gate refuses every
+handover to or from the session until the registration's own write records the new principal,
+while a send to the session and a publish's count still find the record if that write never
+comes, as for a stopped session whose registration is refused after its admission. A record
+stored in chunks is joined and written again with every topic it held, and one whose chunks are
+gone is written whole from its manifest's view. A leader that does not answer, and a clear the
+bucket refuses, answer the registration `503` with `Retry-After: 1`
+(`session.ErrPrincipalUnrecorded`) with nothing of it admitted. A listener whose known-session
+bucket is not open (its NATS grant does not carry the bucket, or its store's first attempt, which
+waits 2 s, did not open it) can read and write no record until an attempt of its store's own
+opens it, 1 s doubling to at most 5 minutes apart, which takes a grant that lands later with no
+restart: it admits each registration, heartbeats included, with no principal recorded, answers it
+with a warning that says so, and logs that at most once a minute; and it refuses every claim's
+handover until its bucket opens. A registration admitted while the bucket was not open writes no
+record even where the bucket opened since (`session.Admission`). The
+admission answers the revision it read or wrote (`session.Admission`), and the registration's
+own write is a compare-and-swap at exactly that revision: a record written since - by another
+registration of the session, through any listener, whose admission cleared this principal or
+whose write recorded its own, or by an interest change or a stop - is left as it is, and the
+registration writes nothing and is answered the same `503`, so a registration whose write is
+delayed past another one's admission never puts back a principal that admission cleared. Of two
+registrations of one session admitted before either writes, the one that writes first stands,
+and the other registers again at once; until it does, its session entry can stand beside a
+record naming the first one's principal. A registration whose record a listener's copy holds
+unchanged inside the refresh age is skipped only where its admission found the leader's record
+naming its principal and the leader still holds that revision; otherwise it is the
+compare-and-swap write, so a skip never answers `200` over a record written since the admission.
+A registration whose write failed is answered the same `503` unless the leader confirms the
+record names its principal, none recorded, or nothing; so the session registers again until the
+record names the principal it registers as. What no step fences is a registration whose listener
+stops between the session entry's write and the record's write: the record another registration
+wrote since stands beside its entry until its client registers again. The claim
+route writes the handover record
+only when the claim's credential, the claimant's last registration and the replaced session's
+last registration name one principal, none equal to none, each registration read from the
+bucket's leader (`session.KnownSessions.Read`). A replaced session with no record, one whose
+principal no registration of this build recorded, a listener with no known-session store, and a
+listener whose known-session bucket is not open are refused. A refused claim stands, writes no
+handover record, is answered `200` with a warning that
+no message of that session is handed over, and is logged at INFO with the role and both sessions;
+the replaced session's consumer keeps its messages for that session. A refused claim that took
+the role from the session it names still moves that role's own unread messages to the role's
+holder, as every takeover does, since they were sent to the role, and its warning says so. What
+the listener could not read is no refusal: a known-session leader that did not answer, and a
+claimant whose own registration is not recorded with its principal yet, answer the
+claim `503` with `Retry-After: 1`, the claim standing, and the client's next claim judges it
+again. A session's own broker token proves that the claimant is itself, not that it continues the
+session it names, so without this rule any session could read a stopped session's messages by
+naming it, a person's among them. An agent session that names a person's session is refused by
+design: its credential acts for its service, for another principal, or for that person on a
+project an operator's entry names, never as the person's own token. An agent that runs on its
+person's own sign-in token is that person here, since nothing the broker answers tells the two
+apart. Dispatch
+lets a session answer a delivery attempt of the session it replaced only where the successor read
+names it, which holds both sessions to this rule and follows a chain of replacements of one
+principal (`handoverSuccessors`), and, on a credential that proves the replying session (a broker
+token), only where that credential's principal, in the same form, is the principal the read
+names (`actsForSuccessorPrincipal`). The read names that principal only to Dispatch's own verified
+identity (`ENVOY_DISPATCH_PRINCIPAL`), and answers every other caller the same successors with no
+principal, so no session reads which person or service another session registered as; a listener
+whose known-session bucket is not open names no successor, as it hands nothing over. A listener of an earlier build reads a
+known-session record with its principal unknown and writes it back without one, so a record such
+a listener rewrote names no recorded principal until its session's next registration through
+this build, and a claim naming that session is refused until then, whatever its credential.
+
 The session relay delivers a role message to a session only while the role's claim names that
 session. It reads the claim from the role bucket for each frame that is a role message; when the
 claim names another session, or none, it copies the frame to the role's kept lane as a pass does,
@@ -763,7 +916,11 @@ role message costs the read of its topic and role and nothing
 else. A forward to a holder from the role lane, the publish route or Dispatch's outbox whose
 resolution is 55 minutes old when its publish starts (`roles.ForwardFenceAge`, the keep window
 less one sweep interval) resolves the holder again first, so a forward the previous holder was
-chosen for is stored inside the window a takeover's passes read. Delivery stays at least once: a
+chosen for is stored inside the window a takeover's passes read. The outbox judges the stream's
+acknowledgement of its forward the same way: one stored later than that fence and its
+acknowledgement window (`roleForwardAckTimeout`, 5 s) after the resolution is no delivery
+(`roles.ForwardStoredTooLate`), and the event stays pending for the next read to resolve the
+holder again. Delivery stays at least once: a
 frame the previous holder was being handed at the takeover, one it acknowledged out of order above
 its floor, and every role message of the hour before a takeover whose holder's floor is unknown
 can reach both sessions.
@@ -813,12 +970,80 @@ holder through the one resolution the listener's routes and its lane use (`roles
 Dispatch's events no longer cross `notifications.role.*`. That resolution writes nothing to the
 role bucket here either. A role with no claim, and one whose holder is `gone`, is kept on that
 role's kept lane for one hour for the holder that claims it next, as the listener's own copies
-are, and the `gone` holder's claim is left where it is for the role claim reaper. The listener's
-walk drops an outbox copy at the end of its hour and sends nobody a dead letter for it, so the
-person or session that wrote the Dispatch event is not told. An `unresponsive` holder's event
-stays pending and is retried, as a read that failed is, until that session answers or its
-record passes the gone horizon. A copy kept for it would wait one hour at most, and its end would
-tell nobody. The outbox raises no exception.
+are, and the `gone` holder's claim is left where it is for the role claim reaper. When an outbox
+copy's hour ends with no session taking it, the walk that drops it sends no dead letter: it stores
+an expiry notice on `notifications.envoy.kept.expired.<role>` instead (`bus.KeptCopyExpiry`: the
+event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, and when
+it was kept and dropped), one per copy under the message id `envoy.kept-expired.<role>.<sequence>`,
+counted on `envoy_role_kept_expiry_notices_total`. The subject lies under the listener's own kept
+lane. So only a NATS user whose grant publishes every notification topic writes it: `Listener`,
+`Dispatch` (its envoy-listener runs beside envoy-dispatch), and the legacy `ListenerHost` and
+`Host` sets built on the listener's (`natsgrant/natsgrant.go`). Dispatch reads it with the
+stream's stored-message read its grant holds; `ListenerHost` and `Host` also subscribe every
+notification topic, so they receive it. No session's own set (`Session`, `SessionPattern`) can
+read it: no consumer filter takes it, no session may register an interest reaching it, those sets
+hold no stream read, and the publish route refuses it. A legacy host's sessions that share its
+`Host` user share that user's reach. Dispatch's outbox reads the notices from the stream every
+30 seconds, and after every scan, with the stored-message read it already holds
+(`readKeptExpiries`). Its cursor in `outbox_kept_expiry_cursor` names the stream it counts in by
+the stream's identity (`bus.StreamIDMetadataKey`), which the outbox reads at most every 30
+seconds: a stream created again numbers its notices below a cursor of the one before it, so the
+outbox sets such a cursor back to the new stream's start, with one Error line, and reads its
+notices from the first. It passes over a notice whose role is no valid role name, that was stored
+on another role's expiry subject, whose event was never routed to that role, or that does not
+name that event's copy: the notice's sequence is not below its own; the role's kept lane holds a
+message there that no read can decode, or another copy than Dispatch's copy of that event under
+the notice's dedupe key; or the lane holds nothing there, and the sequence is at or past the
+first message the stream still holds, so the stream's retention did not remove a copy there: the
+stream removes messages oldest first by its age alone, since it discards new messages at its byte
+limit, and this assumes it has no per-subject limit, which would remove older messages mid-stream. A
+passed-over notice writes no row, so nothing is kept again and nothing is recorded undelivered.
+It records each other notice in `outbox_role_copy_expiries`, keyed by the event, the role and
+the attempt, which is the outbox's own next attempt for that pair (the notice's own attempt is
+logged), so a repeated notice reopens the event's delivery to that role once. It then keeps the
+event's copy again, read
+back from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or
+forwards it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else
+of the event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops
+and appends a `role.undelivered` event on the event's own issue, document or project, written by
+a system actor so it reaches no role, which a person reads in that owner's history. It stops the
+same way, with fewer keeps, when a copy cannot be kept again: the stream's retention has removed
+it; the stream holds at its sequence a message no read can decode or another event's copy, which
+only a stream created again since the notice's record can hold there; or NATS refused its keep or
+its forward for good. Where the bound
+is reached or no other copy carries its delivery on, every expiry of the event still owed a keep
+is settled, and its one `role.undelivered` record is appended, so nothing keeps it again. A copy
+that cannot be kept again ends nothing while another copy of the event carries its delivery on,
+that is, while another expiry of it is still owed a keep or was kept, forwarded or skipped after
+this one was recorded; its row is settled `carried`, and nothing else is written. The outbox also
+notes the event in
+`outbox_role_undelivered_notes` for a message on the event's issue, or on the issue of the
+document a document event is about: the first such note of a role on an issue opens a one-hour
+window, every later note of that role there joins it, and once the hour has ended the outbox
+posts one message naming every event of the window, through the issue message route's own writer
+(`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route either.
+The window is kept in Postgres, and its message is written under an id derived from the issue,
+the role, the moment the window opened and the events it names. So a restart does not lose the
+window, and a post made again after a crash between the post and its mark writes no second
+message. A note joins only a window whose message is not posted yet. A long window's events go in
+several lists, each at most 50 events and 16,000 UTF-16 units, so no block of the message passes
+the writer's 32,000-unit block bound. A reference over 4,096 units, which only a document kept
+from before the name bound can have, is named by the document's id and the reference's length
+instead. Only the publisher hold's holder records a notice, claims an expiry or posts a window.
+Each write that may append a `role.undelivered` record - a notice's record, and a record of a
+copy that cannot be kept again - is one holder transaction: it reads the hold's row first with
+no lock, and locks it for share only as its last statement before the commit, rolling back when
+the hold is no longer its own. So a takeover of the hold either lands before that lock and makes
+the record roll back, or waits for its commit, and the new holder reads every write it made; and
+the hold's renewal never waits behind a record that is itself waiting on an issue's lock. The
+pass's other writes to `outbox_role_copy_expiries` are single statements that check the hold
+themselves. An event of
+no issue and
+of no issue's document never has a copy kept for a role, since the route is read from the issue
+alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An
+`unresponsive` holder's event stays pending and is retried, as a read that failed is, until that
+session answers or its record passes the gone horizon: a copy kept for it would spend one of
+those three keeps on a session that is still alive. The outbox raises no exception.
 That forward is stored only: one copy on the holder's agent subject under its own
 `Nats-Msg-Id` (`bus.ForwardMsgID` of the forward's dedupe key and that subject), counted
 reached on the stream's acknowledgement of the copy and on nothing else, with no receipt from
