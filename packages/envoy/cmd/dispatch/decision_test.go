@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // decisionEnvironment is a server configured with the decision model: the measured model, its
@@ -98,15 +99,30 @@ func TestDecisionModelUnsetBootsAndDecidesNothing(t *testing.T) {
 }
 
 // The endpoint and the token file are set together or not at all, the refusal naming the one
-// missing; the model may be left out; and the endpoint is an absolute https base URL.
+// missing; the model may be left out; and the endpoint is an absolute https base URL, refused as
+// the chat endpoints are (httpsBaseURL): a query or a fragment by the setting alone, and any other
+// shape with the value quoted through redact.URL, which prints one with no scheme or no host as
+// redact.NotPrinted.
 func TestDecisionModelRefusesAShapeItCannotUse(t *testing.T) {
 	refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_TOKEN_FILE": ""}),
 		"DISPATCH_DECISION_MODEL_TOKEN_FILE is required when DISPATCH_DECISION_MODEL_ENDPOINT is set")
 	refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": ""}),
 		"DISPATCH_DECISION_MODEL_ENDPOINT is required when DISPATCH_DECISION_MODEL_TOKEN_FILE is set")
-	for _, endpoint := range []string{"http://decide.example", "decide.example", "https://", "https://decide.example?key=1", "https://decide.example#top"} {
-		refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": endpoint}),
-			`DISPATCH_DECISION_MODEL_ENDPOINT="`+endpoint+`" (expected an absolute https URL`)
+	const endpointShape = "(expected an absolute https URL with a host and no query or fragment, the base URL the System One route is appended to)"
+	// withheld is how the refusal quotes an endpoint redact.URL does not print: one with no scheme
+	// or no host, since such a value could hold a credential no check can find.
+	const withheld = `DISPATCH_DECISION_MODEL_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape
+	// queried is the refusal of a query or a fragment, which credentialURLRefusal names by the
+	// setting alone, as it does a user name, a password and an "@" past the host.
+	const queried = "DISPATCH_DECISION_MODEL_ENDPOINT cannot be read: it holds a query or a fragment, which an endpoint's URL has none of"
+	for _, row := range []struct{ endpoint, naming string }{
+		{"http://decide.example", `DISPATCH_DECISION_MODEL_ENDPOINT="http://decide.example" ` + endpointShape},
+		{"decide.example", withheld},
+		{"https://", withheld},
+		{"https://decide.example?key=1", queried},
+		{"https://decide.example#top", queried},
+	} {
+		refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": row.endpoint}), row.naming)
 	}
 	if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL": ""})); boot.Decision.Endpoint != "https://decide.example" || boot.Decision.Model != "" {
 		t.Errorf("endpoint and token file with no model: Decision = %+v, want the two with no model", boot.Decision)

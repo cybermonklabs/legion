@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/going/eval"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // refuseSessionsDatabase refuses a database URL naming the database of the agent sessions of the
@@ -108,9 +109,12 @@ func (d *databases) url(name string) string {
 }
 
 // create makes the database name, a copy of template where template is not "", copied file by
-// file rather than through the write-ahead log (docs/testing.md, "A database a Go test creates").
+// file rather than through the write-ahead log, and with JIT off, as production's database runs
+// (testdb.WithoutJIT; docs/testing.md, "A database a Go test creates"). A copy does not take its
+// template's settings, so the template and each try's copy are each set as they are made.
 func (d *databases) create(ctx context.Context, name, template string) error {
-	statement := "create database " + pgx.Identifier{name}.Sanitize() + " strategy file_copy"
+	quoted := pgx.Identifier{name}.Sanitize()
+	statement := "create database " + quoted + " strategy file_copy"
 	if template != "" {
 		statement += " template " + pgx.Identifier{template}.Sanitize()
 	}
@@ -120,6 +124,9 @@ func (d *databases) create(ctx context.Context, name, template string) error {
 		return fmt.Errorf("create the database %s: %w", name, err)
 	}
 	d.made = append(d.made, name)
+	if _, err := d.admin.Exec(ctx, testdb.WithoutJIT(quoted)); err != nil {
+		return fmt.Errorf("turn JIT off on the database %s: %w", name, err)
+	}
 	return nil
 }
 

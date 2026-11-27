@@ -24,9 +24,11 @@ type decisionConfig struct {
 // resolveDecisionModel reads the three decision-model settings and refuses, naming the one
 // missing, an endpoint without its token file or a token file without its endpoint: the two are
 // set together or not at all. The model is optional, as a deployment renders the endpoint and the
-// file before it names a model. The endpoint must be an absolute https URL with a host and no
-// query or fragment, as the chat endpoints must (chatEndpoint). It calls nothing and reads no
-// file, so an endpoint that is down, or a token file not written yet, never refuses boot.
+// file before it names a model. The endpoint is refused as the chat endpoints are (httpsBaseURL):
+// a user name, a password, an "@" past the host, a query or a fragment by the setting alone, and
+// any other value that is not an absolute https URL with a host quoted through redact.URL. It
+// calls nothing and reads no file, so an endpoint that is down, or a token file not written yet,
+// never refuses boot.
 func resolveDecisionModel(env settingValues) (decisionConfig, error) {
 	cfg := decisionConfig{
 		Model:     strings.TrimSpace(env.get("DISPATCH_DECISION_MODEL")),

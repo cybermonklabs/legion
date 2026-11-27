@@ -647,7 +647,7 @@ func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 	}
 }
 
-// ENVOY_URL, the three model endpoints and DISPATCH_GITHUB_API_BASE refuse a user name, a
+// ENVOY_URL, the four model endpoints and DISPATCH_GITHUB_API_BASE refuse a user name, a
 // password, an "@" past the host, a query and a fragment, each by the setting alone, as
 // DISPATCH_AGENT_SECRETS_URL does (credentialURLRefusal): each URL booted with any of them, and
 // Dispatch's clients printed it in their errors, which reach the API's answers (the listener
@@ -675,6 +675,9 @@ func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
 		},
 		"DISPATCH_CHAT_ENDPOINT": func(value string) map[string]string {
 			return endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": value})
+		},
+		"DISPATCH_DECISION_MODEL_ENDPOINT": func(value string) map[string]string {
+			return signInEnvironment(decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": value}))
 		},
 		"DISPATCH_GITHUB_API_BASE": func(value string) map[string]string {
 			return signInEnvironment(map[string]string{"DISPATCH_GITHUB_API_BASE": value})

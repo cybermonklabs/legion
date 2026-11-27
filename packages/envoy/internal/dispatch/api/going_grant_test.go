@@ -319,7 +319,9 @@ func TestTheGrantResolvesAsTheRequestWould(t *testing.T) {
 	})
 
 	t.Run("a token's call holds the scopes its row holds, until the token is revoked", func(t *testing.T) {
-		token := personalTokenOwnedBy(t, rig.database, "alice", model.ScopePerson, model.ScopeApprove)
+		// The widest set a person's token may hold (model.Scopes: person, approve and p0), so the
+		// row holds the set the call is held to below, p0 among it.
+		token := personalTokenOwnedBy(t, rig.database, "alice", model.Scopes...)
 		id := rig.tokenID(t, token)
 		run := rig.run(t, "alice")
 		rig.granted(t, rig.cookies, run, goingStarting(goingBearer(token)))
@@ -330,7 +332,8 @@ func TestTheGrantResolvesAsTheRequestWould(t *testing.T) {
 			Act:        &model.ActorAct{TokenID: id, TokenName: "probe", Scopes: model.Scopes, Agent: model.ActAgentCommandBar, Run: run},
 		}}
 		if err != nil || !reflect.DeepEqual(caller, want) {
-			t.Fatalf("the call under alice's token resolves %+v, %v; want %+v", caller, err, want)
+			t.Fatalf("the call under alice's token resolves %+v (credential %+v, act %+v), %v; want %+v (credential %+v, act %+v)",
+				caller, caller.actor.Credential, caller.actor.Act, err, want, want.actor.Credential, want.actor.Act)
 		}
 		// Narrowed to person: the next call holds person alone, and a route needing approve
 		// refuses it as it refuses the token's own request.

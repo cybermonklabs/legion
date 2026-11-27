@@ -904,6 +904,7 @@ var goingPostlessReads = map[string]goingPostlessRead{
 	"GET /api/v1/delivery/pipeline":                      {reason: "the delivery pipeline's runs and jobs"},
 	"GET /api/v1/delivery/runs/{id}":                     {reason: "one deploy run with its jobs"},
 	"GET /api/v1/delivery/timeline":                      {reason: "the delivery timeline's pull requests and runs"},
+	"GET /api/v1/deploys":                                {reason: "a repository's current deploy of each program: its commit, time, source, writer and URL"},
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {reason: "GitHub's answer on the App's installation"},
 	"GET /api/v1/handoffs/{id}":                          {reason: "one phase handoff with its body: a handoff is no comment or message"},
 	"GET /api/v1/issues":                                 {reason: "issue lists: keys, titles, statuses and labels"},

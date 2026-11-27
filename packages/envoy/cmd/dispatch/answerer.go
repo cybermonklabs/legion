@@ -95,19 +95,22 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 	if endpoint == "" {
 		return "", fmt.Errorf("%s is required when DISPATCH_ANSWERER is %s", name, place)
 	}
-	if err := credentialURLRefusal(name, "an endpoint's URL", endpoint); err != nil {
-		return "", err
-	}
 	if err := httpsBaseURL(name, endpoint, "chat completions route"); err != nil {
 		return "", err
 	}
 	return endpoint, nil
 }
 
-// httpsBaseURL refuses an endpoint setting that is not an absolute https URL with a host and no
-// query or fragment, naming the setting and the route its client appends to it. The refusal
-// quotes the endpoint through redact.URL, so it prints no credential the URL holds.
+// httpsBaseURL refuses an endpoint setting that can carry a credential (a user name, a password,
+// an "@" past the host, a query or a fragment), named by the setting alone (credentialURLRefusal),
+// and then one that is not an absolute https URL with a host and no query or fragment, naming the
+// setting and the route its client appends to it. That refusal quotes the endpoint through
+// redact.URL, so it prints no credential the URL holds. The two chat endpoints and the decision
+// model's endpoint each refuse through it, so the three refuse a shape alike.
 func httpsBaseURL(name, endpoint, route string) error {
+	if err := credentialURLRefusal(name, "an endpoint's URL", endpoint); err != nil {
+		return err
+	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
 		return fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the %s is appended to)", name, redact.URL(endpoint), route)
