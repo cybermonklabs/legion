@@ -305,7 +305,8 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) *re
 			if handed == nil && key == "" {
 				// The record's read failed, so there is no pull request to hand, and no base
 				// reads the issue: the climb reads again after the wait.
-				backoff = min(max(2*backoff, w.mergeStateWait()), mergeStateFollowWaits*w.mergeStateWait())
+				// CONTROL (fb8-cap): the waits double with no cap.
+				backoff = max(2*backoff, w.mergeStateWait())
 				w.log.Warn("read GitHub's merge state for an issue whose read was asked for; the record's read failed, and the read is made again after the wait",
 					"issue", issue, "read", read, "wait", backoff, "error", err)
 				if !w.climbWait(ctx, issue, backoff) {
