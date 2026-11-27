@@ -91,17 +91,15 @@ type doneByChecksOptions struct {
 
 // doneByChecksIssueSpec is one issue a run makes, in Dispatch and in the daemon's store: its title,
 // its Verification document ("" for none), each other document it holds from its creation, by
-// name, its pull request's number and head, open on legion/<KEY> from the boot on, the 1-based
-// place among the run's issues of the issue it is a child of (0 for a root), and whether it stands
-// at its review when the daemon boots, as the release before left it there. A root that does not
-// stands at admitted with its gate approved, so its planning starts at the boot.
+// name, its pull request's number and head, open on legion/<KEY> from the boot on, and whether it
+// stands at its review when the daemon boots, as the release before left it there. A root that
+// does not stands at admitted with its gate approved, so its planning starts at the boot.
 type doneByChecksIssueSpec struct {
 	title        string
 	verification string
 	documents    map[string]string
 	number       int
 	head         string
-	under        int
 	reviewing    bool
 }
 
@@ -181,41 +179,23 @@ func newDoneByChecksRigWith(t *testing.T, options doneByChecksOptions) *doneByCh
 		t.Logf("GitHub opened pull request #%d of %s from %s at %s: envelope %s", issue.number, liveRepo, claim.IssueBranch(r.key), issue.head, opened)
 	}
 	r.boot()
-	for place, issue := range options.issues {
-		if issue.under == 0 {
-			r.on(made[place].Key)
-			r.worker(claim.RoleArchitect)
-		}
+	for _, issue := range made {
+		r.on(issue.Key)
+		r.worker(claim.RoleArchitect)
 	}
 	r.on(made[0].Key)
 	return r
 }
 
-// makeIssue makes issue in Dispatch, a child of the run's issue its place under names, which
-// Dispatch made before it: its documents, its Verification document, and its status and the legion
-// label. The documents are written before the status, so the sequence the daemon is seeded with
-// (createdIssue.LastSeq) is past their events. It adds the issue to the run's issues and answers
-// it as Dispatch made it.
+// makeIssue makes issue in Dispatch, with its documents, its Verification document, and its status
+// and the legion label. The documents are written before the status, so the sequence the daemon is
+// seeded with (createdIssue.LastSeq) is past their events. It adds the issue to the run's issues
+// and answers it as Dispatch made it.
 func (r *doneByChecksRig) makeIssue(issue doneByChecksIssueSpec) createdIssue {
 	r.t.Helper()
-	create := map[string]string{"project": r.cfg.Project, "title": issue.title}
-	if issue.under > 0 {
-		create["parent"] = r.issues[issue.under-1].key
-	}
 	var created createdIssue
-	r.person(http.MethodPost, "/api/v1/issues", create, http.StatusCreated, &created)
-	names := make([]string, 0, len(issue.documents))
-	for name := range issue.documents {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		r.person(http.MethodPost, "/api/v1/issues/"+created.Key+"/artifacts", map[string]string{"name": name, "content": issue.documents[name]}, http.StatusCreated, nil)
-	}
-	if issue.verification != "" {
-		r.person(http.MethodPost, "/api/v1/issues/"+created.Key+"/artifacts",
-			map[string]string{"name": "verification.md", "content": issue.verification}, http.StatusCreated, nil)
-	}
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": issue.title}, http.StatusCreated, &created)
+	r.documents(created.Key, issue)
 	status := "in_progress"
 	if issue.reviewing {
 		status = "needs_review"
@@ -225,34 +205,35 @@ func (r *doneByChecksRig) makeIssue(issue doneByChecksIssueSpec) createdIssue {
 	return created
 }
 
-// seedIssue seeds the walk's issue, which Dispatch made as created, in the daemon's store as issue
-// says. A root is seeded as newStepRecordsRigWith seeds a walk (seed): at admitted, its gate
-// approved and its architect's launch unfinished, on its pull request open at its head. A root at
-// its review stands in reviewing at generation 1 with every column of this release at its default,
-// as the migration leaves a row of the release before. A child stands in reviewing under its
-// parent, in its parent's tree, on a pull request of its own, as seedChildInReviewing seeds one.
+// documents writes the documents issue names on key in Dispatch as the run's person, in the order
+// of their names, and then its Verification document.
+func (r *doneByChecksRig) documents(key string, issue doneByChecksIssueSpec) {
+	r.t.Helper()
+	names := make([]string, 0, len(issue.documents))
+	for name := range issue.documents {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		r.person(http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]string{"name": name, "content": issue.documents[name]}, http.StatusCreated, nil)
+	}
+	if issue.verification != "" {
+		r.person(http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
+			map[string]string{"name": "verification.md", "content": issue.verification}, http.StatusCreated, nil)
+	}
+}
+
+// seedIssue seeds the walk's issue, a root Dispatch made as created, in the daemon's store as
+// issue says, as newStepRecordsRigWith seeds a walk (seed): its gate approved and its architect's
+// launch unfinished, on its pull request open at its head. A root at its review stands in reviewing
+// at generation 1 with every column of this release at its default, as the migration leaves a row
+// of the release before; every other root stands at admitted.
 func (r *doneByChecksRig) seedIssue(issue doneByChecksIssueSpec, created createdIssue) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
 	pull := stepRecordsPullRequest(r.key, issue.number)
 	pull.HeadSHA = issue.head
-	if issue.under > 0 {
-		parent := r.issues[issue.under-1].key
-		if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-			if err := r.records.PutIssue(ctx, tx, record.Issue{
-				Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: parent, Parent: &parent, Project: r.cfg.Project,
-				Title: issue.title, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
-				Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
-			}); err != nil {
-				return err
-			}
-			return r.records.PutPullRequest(ctx, tx, pull)
-		}); err != nil {
-			t.Fatalf("seed %s under %s: %v", r.key, parent, err)
-		}
-		return
-	}
 	r.seed(created.Rank, created.LastSeq)
 	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if issue.reviewing {
@@ -269,6 +250,42 @@ func (r *doneByChecksRig) seedIssue(issue doneByChecksIssueSpec, created created
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+}
+
+// childInReviewing files child, an issue of the walk's issue, a running root, as
+// seedChildInReviewing does: made in Dispatch under the root with its documents, held by the
+// daemon's store in reviewing at generation 1 in the root's tree, on its pull request open at its
+// head, which GitHub opens and the rig publishes. It is filed after the boot, since a root the boot
+// finds at its review with a child in the workflow waits for its children (awaiting_children). It
+// adds the child to the run's issues and answers its key.
+func (r *doneByChecksRig) childInReviewing(child doneByChecksIssueSpec) string {
+	t := r.t
+	t.Helper()
+	root := r.key
+	var created createdIssue
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": child.title, "parent": root}, http.StatusCreated, &created)
+	r.documents(created.Key, child)
+	pull := stepRecordsPullRequest(created.Key, child.number)
+	pull.HeadSHA = child.head
+	ctx := context.Background()
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := r.records.PutIssue(ctx, tx, record.Issue{
+			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: root, Parent: &root, Project: r.cfg.Project,
+			Title: child.title, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
+			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
+		}); err != nil {
+			return err
+		}
+		return r.records.PutPullRequest(ctx, tx, pull)
+	}); err != nil {
+		t.Fatalf("seed %s under %s: %v", created.Key, root, err)
+	}
+	r.issues = append(r.issues, walkIssue{key: created.Key, title: child.title, number: child.number})
+	r.standIn.open(child.number, claim.IssueBranch(created.Key), child.head)
+	opened := r.publishPull(child.number, "opened")
+	t.Logf("%s filed under %s in reviewing; GitHub opened pull request #%d from %s at %s: envelope %s",
+		created.Key, root, child.number, claim.IssueBranch(created.Key), child.head, opened)
+	return created.Key
 }
 
 // walk runs one step of the walk, which returns once the issue reached its next phase, and logs
@@ -494,8 +511,9 @@ func (r *doneByChecksRig) mergeOf(issue string, number int, commit string) time.
 
 // mergeAndComplete is the merger of the walk's issue at work: it takes its task (taskOf), GitHub
 // merges pull request number as commit, the daemon applies the merge (mergeFact), and the merger
-// completes and ends its turn. It answers the merge fact's time, and the daemon's status and body
-// for the completion, which lands in verifying once the merge has moved the issue there.
+// completes at the head its workspace stands on, the pull request's (a merger's completion names
+// its commit), and ends its turn. It answers the merge fact's time, and the daemon's status and
+// body for the completion, which lands in verifying once the merge has moved the issue there.
 func (r *doneByChecksRig) mergeAndComplete(number int, commit string) (time.Time, int, string) {
 	t := r.t
 	t.Helper()
@@ -504,9 +522,10 @@ func (r *doneByChecksRig) mergeAndComplete(number int, commit string) (time.Time
 	t.Logf("the merger took its task: %s in session %s", merger.token, merger.session)
 	r.standIn.merge(number, commit)
 	at := r.mergeFact(number)
-	status, body := r.complete(merger, api.HandoffCompleteRequest{Summary: "merged #" + strconv.Itoa(number)})
+	pull, _ := r.standIn.pullRequest(number)
+	status, body := r.complete(merger, api.HandoffCompleteRequest{Summary: "merged #" + strconv.Itoa(number), Commit: pull.head})
 	merger.endTurn()
-	t.Logf("the merger's completion of #%d after the merge = %d %s", number, status, body)
+	t.Logf("the merger's completion of #%d at %s after the merge = %d %s", number, pull.head, status, body)
 	return at, status, body
 }
 
@@ -977,14 +996,16 @@ func (r *doneByChecksRig) awaitCloseRead(issue, what string, after time.Time, ho
 	var why error
 	if !testwait.Holds(doneByChecksReadWait, 200*time.Millisecond, func() bool {
 		var answer []byte
+		var generation int64
 		got := doneByChecksRead{issue: issue}
 		err := r.st.Pool().QueryRow(context.Background(),
 			"select generation, read_at, recorded_at, answer from close_reads where issue = $1 and failure = '' and read_at > $2",
-			issue, after).Scan(&got.generation, &got.readAt, &got.recordedAt, &answer)
+			issue, after).Scan(&generation, &got.readAt, &got.recordedAt, &answer)
 		if err != nil {
 			why = fmt.Errorf("no read of %s that answered began after %s: %v", issue, after.UTC().Format(time.RFC3339Nano), err)
 			return false
 		}
+		got.generation = uint64(generation)
 		if err := json.Unmarshal(answer, &got.answer); err != nil {
 			why = fmt.Errorf("decode the read of %s: %v", issue, err)
 			return false
@@ -1146,27 +1167,31 @@ func (r *doneByChecksRig) closeWaitVersions(issue string) ([]string, error) {
 	return nil, nil
 }
 
-// awaitCloseWaitDocument waits for issue's close-wait.md in Dispatch to hold, as its newest
-// version, the issue's stored wait as the daemon renders it (record.CloseWaitDocument), and logs
-// it: the document at what. It answers every version, oldest first.
+// awaitCloseWaitDocument waits for issue's close-wait.md in Dispatch to name, in its newest
+// version, each value of the issue's stored wait (waitValues), and logs it: the document at what.
+// It answers every version, oldest first. Dispatch keeps a document's markdown in its own form, so
+// the check reads the values the daemon wrote and not its bytes.
 func (r *doneByChecksRig) awaitCloseWaitDocument(issue, what string) []string {
 	t := r.t
 	t.Helper()
 	var versions []string
 	var why error
 	if !testwait.Holds(stepRecordsWait, 200*time.Millisecond, func() bool {
-		rendered, err := record.CloseWaitDocument(r.issueRow(issue))
-		if err != nil {
-			why = err
-			return false
-		}
+		values := waitValues(r.issueRow(issue))
+		var err error
 		if versions, err = r.closeWaitVersions(issue); err != nil {
 			why = err
 			return false
 		}
-		if len(versions) == 0 || versions[len(versions)-1] != rendered {
-			why = fmt.Errorf("Dispatch holds %d versions of %s's close-wait.md, the newest not the stored wait's\n%s", len(versions), issue, rendered)
+		if len(versions) == 0 {
+			why = fmt.Errorf("Dispatch holds no close-wait.md of %s", issue)
 			return false
+		}
+		for _, value := range values {
+			if !strings.Contains(versions[len(versions)-1], value) {
+				why = fmt.Errorf("version %d of %s's close-wait.md names no %q of the stored wait:\n%s", len(versions), issue, value, versions[len(versions)-1])
+				return false
+			}
 		}
 		return true
 	}) {
@@ -1174,6 +1199,48 @@ func (r *doneByChecksRig) awaitCloseWaitDocument(issue, what string) []string {
 	}
 	t.Logf("close-wait.md of %s at %s, version %d:\n%s", issue, what, len(versions), versions[len(versions)-1])
 	return versions
+}
+
+// waitValues is each value issue's stored wait names, as close-wait.md writes it: since when the
+// issue waits, and either when it closed, or each item with since when it stands (each check's id,
+// the production check's merge, each issue beneath and each open child with its status, each
+// open change's generation, and the read that does not count).
+func waitValues(issue record.Issue) []string {
+	var wait record.StoredWait
+	if len(issue.CloseWait) == 0 || json.Unmarshal(issue.CloseWait, &wait) != nil {
+		return []string{"the stored wait of " + issue.Key}
+	}
+	var values []string
+	if issue.CloseWaitSince != nil {
+		values = append(values, closeWaitTime(*issue.CloseWaitSince))
+	}
+	if wait.Closed != nil {
+		return append(values, closeWaitTime(*wait.Closed))
+	}
+	for _, check := range wait.Checks {
+		values = append(values, "`"+check.ID+"`", closeWaitTime(check.Since))
+	}
+	if production := wait.Production; production != nil {
+		values = append(values, production.State, closeWaitTime(production.Since))
+		if production.Merge != "" {
+			values = append(values, production.Merge)
+		}
+	}
+	for _, waiting := range slices.Concat(wait.Beneath, wait.OpenChildren) {
+		values = append(values, waiting.Key+" ("+waiting.Status+")", closeWaitTime(waiting.Since))
+	}
+	if change := wait.NextChange; change != nil {
+		values = append(values, closeWaitTime(change.Since))
+	}
+	if unread := wait.Unread; unread != nil {
+		values = append(values, closeWaitTime(unread.Since))
+	}
+	return values
+}
+
+// closeWaitTime is at as close-wait.md writes a moment: UTC, to the second.
+func closeWaitTime(at time.Time) string {
+	return at.UTC().Format("2006-01-02 15:04:05 UTC")
 }
 
 // daemonMessages is how many messages issue holds in Dispatch. The test posts none and its role

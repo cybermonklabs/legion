@@ -120,15 +120,14 @@ func TestAnIssueClosesWhenTheChecksOfItsGoalPass(t *testing.T) {
 			{title: doneByChecksTitle, verification: doneByChecksBothChecks, number: doneByChecksPull, head: stepRecordsHead},
 			{title: "Gadgets publish a changelog", verification: doneByChecksBeforeOnly, number: doneByChecksGadgetsPull, head: doneByChecksGadgetsHead},
 			{title: "Sprockets rotate under load", verification: doneByChecksVerification, number: doneByChecksSprocketPull, head: doneByChecksSprocketHead, reviewing: true},
-			{title: "Gears mesh with the new axle", verification: doneByChecksVerification, number: doneByChecksGearsPull, head: doneByChecksGearsHead, under: 3, reviewing: true},
 		}})
-		first, second, third, fifth := r.issues[0].key, r.issues[1].key, r.issues[2].key, r.issues[3].key
+		first, second, third := r.issues[0].key, r.issues[1].key, r.issues[2].key
 		thirdSeeded(r, third)
 		look := firstToItsMerge(r, first)
 		secondClosesAtItsProductionPass(r, second)
 		r.on(third)
 		r.walkReview(doneByChecksSprocketPull, doneByChecksSprocketHead)
-		fifthSetBack(r, third, fifth)
+		fifth := fifthSetBack(r, third)
 		firstThroughItsNextChange(r, first, look)
 		thirdStaysOpenAfterItsMerge(r, third, fifth)
 		if got := r.d.state().Issues[second]; got.Phase != phase.Done {
@@ -298,14 +297,17 @@ func secondClosesAtItsProductionPass(r *doneByChecksRig, second string) {
 	r.awaitIssue(second, "the production check's pass", inPhase(phase.Done))
 }
 
-// fifthSetBack is the fifth issue, the third's child, from its review to its merge, its pull
-// request approved and signed off by the tree's architect, and then that architect's done on it
-// while its check after the merge has no pass: the daemon sets the done back, the child stays in
-// verifying with the status testing, and the architect is told why.
-func fifthSetBack(r *doneByChecksRig, third, fifth string) {
+// fifthSetBack is the fifth issue, filed as the third's child once the third stands in accepting,
+// from its review to its merge, its pull request approved and signed off by the tree's architect,
+// and then that architect's done on it while its check after the merge has no pass: the daemon
+// sets the done back, the child stays in verifying with the status testing, and the architect is
+// told why. It answers the fifth issue's key.
+func fifthSetBack(r *doneByChecksRig, third string) string {
 	t := r.t
 	t.Helper()
 	r.on(third)
+	fifth := r.childInReviewing(doneByChecksIssueSpec{title: "Gears mesh with the new axle", verification: doneByChecksVerification,
+		number: doneByChecksGearsPull, head: doneByChecksGearsHead})
 	r.reviewOf(fifth, doneByChecksGearsPull, doneByChecksGearsHead, "APPROVED", phase.Accepting)
 	r.signOff(fifth)
 	r.retroOf(fifth, doneByChecksGearsHead)
@@ -335,6 +337,7 @@ func fifthSetBack(r *doneByChecksRig, third, fifth string) {
 		return r.personRead("/api/v1/issues/"+fifth, &status) == nil && status.Status == "testing"
 	})
 	t.Logf("the architect's done on %s set back: Dispatch shows it %s, and %s's architect holds %d close-waits notices naming it", fifth, status.Status, third, told())
+	return fifth
 }
 
 // firstThroughItsNextChange is items 3 to 8 of Task 11b's Step 1, on the first issue, whose look 1
@@ -818,9 +821,4 @@ func productionOf(issue api.Issue) *api.CloseWaitProductionView {
 		return nil
 	}
 	return issue.CloseWait.Production
-}
-
-// closeWaitTime is at as close-wait.md writes a moment: UTC, to the second.
-func closeWaitTime(at time.Time) string {
-	return at.UTC().Format("2006-01-02 15:04:05 UTC")
 }
