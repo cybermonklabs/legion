@@ -710,8 +710,9 @@ legion replay run \
 It enters each Dispatch event, each recorded phase move, each tick and each boot at its recorded time or offset.
 Where the window has a run-out, the replay runs on through it, and enters each of those in the run-out too.
 Every measure of the run reads only the window's span, and `run.json` names the run-out as `after`.
-Where the window starts while a daemon process boots, no pass runs before that process's recorded reconcile, and each act before the reconcile waits for it, as an act waits for the next boot while no daemon runs.
+Each daemon process serves from its recorded reconcile: no pass of the process runs before it, and each act from the process's first line, or from the window's start for the process that runs there, waits for it, as an act waits for the next boot while no daemon runs.
 The replay reads that reconcile from the line that holds roots for the Dispatch consumer, or else from the process's first slot line before its line `legion daemon started`.
+A process whose log shows neither serves from its first line.
 Most Dispatch events that the daemon's own session wrote are its outbox's status writes, which the replay's own outbox makes again, so the replay leaves those events out.
 The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move from one of those or from done to todo that adds no `legion` label, and the controller's todo on a root whose phase is held.
 The controller's `set_status`, an architect's `release_children` and `rerun_child` and, in releases that have it, an architect's `park_child` write such moves, and the replay enters each one as recorded.
@@ -1634,9 +1635,9 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | Rule | What it is | Commit |
 | --- | --- | --- |
 | `main` | The daemon's own rule, with no slot past the review, the slot given back on a link wait and a children wait, a started parent with an open child moved into `awaiting_children`, which keeps no slot (cybermonklabs/legion#4592), the line by priority first and returned issues first within one priority, a P0 issue started outside the cap under the P0 bound (cybermonklabs/legion#5488), and a conflicting head that keeps its phase. | `0d3786da` |
-| `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main` but no open child that stops a started parent's phase, the line by no priority, no P0 issue started outside the cap, and a conflicting head that moves back to implementing. | `958173da` |
-| `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, no open child that stops a started parent's phase, the line by no priority, no P0 issue started outside the cap, and red checks that move back to implementing. | `9542c6fb` |
-| `legion-v22.14.1` | The rule of release 22.14.1, with the slot choices of `main` but no open child that stops a started parent's phase, the line by no priority, no P0 issue started outside the cap, and a conflicting head that keeps its phase in every phase, accepting, retro and merging too, while the implementer merges the base forward at once (cybermonklabs/legion#4464 without #4979). | `bafd3618` |
+| `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main` but no open child that stops a started parent's phase or holds its acceptance, the line by no priority, no P0 issue started outside the cap, and a conflicting head that moves back to implementing. | `958173da` |
+| `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, no open child that stops a started parent's phase or holds its acceptance, the line by no priority, no P0 issue started outside the cap, and red checks that move back to implementing. | `9542c6fb` |
+| `legion-v22.14.1` | The rule of release 22.14.1, with the slot choices of `main` but no open child that stops a started parent's phase or holds its acceptance, the line by no priority, no P0 issue started outside the cap, and a conflicting head that keeps its phase in every phase, accepting, retro and merging too, while the implementer merges the base forward at once (cybermonklabs/legion#4464 without #4979). | `bafd3618` |
 | `keep-past-review` | `main` with the slot kept in accepting, retro and merging, so that a send-back past the review finds its issue with its slot; a parent with an open child still moves into `awaiting_children`, from accepting too, and gives its slot back, as under `main`. | `0d3786da` |
 | `blockers-first` | `main` with each issue that a started issue waits on placed first among the issues that have not started. | `0d3786da` |
 | `returned-by-rank` | `main` with a returned issue placed in the line by its board rank, not by the time at which it gave its slot back. | `0d3786da` |
@@ -1664,6 +1665,7 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1678,6 +1680,7 @@ legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
+  an open child holds the acceptance: false
   the line's order: returned_oldest_first
   the line stands by priority first: false
   a start takes: own_slot
@@ -1692,6 +1695,7 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   a children wait gives the slot back: false
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
+  an open child holds the acceptance: false
   the line's order: returned_oldest_first
   the line stands by priority first: false
   a start takes: own_slot
@@ -1706,6 +1710,7 @@ legion-v22.14.1 (commit bafd3618eb58722419c77f34174c1b77525c891b)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
+  an open child holds the acceptance: false
   the line's order: returned_oldest_first
   the line stands by priority first: false
   a start takes: own_slot
@@ -1720,6 +1725,7 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1734,6 +1740,7 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: blockers_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1748,6 +1755,7 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_by_rank
   the line stands by priority first: true
   a start takes: own_slot
@@ -1762,6 +1770,7 @@ cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: false
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: cover
@@ -1776,6 +1785,7 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 5m0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1790,6 +1800,7 @@ wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 1h0m0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1804,6 +1815,7 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_by_first_slot
   the line stands by priority first: true
   a start takes: own_slot
@@ -1818,6 +1830,7 @@ rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: rework_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1832,6 +1845,7 @@ rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: rework_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1846,6 +1860,7 @@ arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: arrival
   the line stands by priority first: true
   a start takes: own_slot
@@ -1860,6 +1875,7 @@ before-p0 (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1874,6 +1890,7 @@ idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1888,6 +1905,7 @@ signals (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1903,6 +1921,7 @@ signals-backoff (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a children wait gives the slot back: true
   a wait gives the slot back after: 0s
   a wait stops the phase under way: true
+  an open child holds the acceptance: true
   the line's order: returned_oldest_first
   the line stands by priority first: true
   a start takes: own_slot
@@ -1927,6 +1946,11 @@ Each line of a rule gives one choice:
 - `a wait stops the phase under way`: whether an open Dispatch child of a started parent stops the phase under way (cybermonklabs/legion#4592).
   Where it does, a parent in `planning` through `accepting` whose pull request has not merged moves into `awaiting_children`, which keeps no slot, in place of each start an open child holds and in the middle of a phase the admission pass finds it in, and comes back once no child of it is open.
   Where it does not, the parent's phases go on while a child is open, and a `blocked_by` link stops no phase under any rule.
+
+- `an open child holds the acceptance`: whether the work under an issue beyond the issues beneath it in the workflow holds its acceptance: its sign-off, the close of a root and a held retro.
+  Where it does, an open Dispatch child of the issue (`SIGNOFF_CHILD_OPEN`) and a root whose design-gate step rests on the issue's approval while that root is in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) hold it too, as the daemon holds them since cybermonklabs/legion#4592, and so does each candidate built on `main`, `cover` among them.
+  The rules of the recorded windows do not: their releases came before that change and held an acceptance for an issue beneath it in the workflow alone (`SIGNOFF_CHILD_IN_WORKFLOW`), so a replay under one of them signs off an issue whose Dispatch child is open where its record did.
+  Each sign-off that the engine holds writes the line `replay: a sign-off is held` to the run's log, with `issue`, `code` (the refusal's code) and `reason` (its message, which names what holds it); the replay applies a held sign-off again at each leave of a member of its tree.
 
 - `the line's order`: `returned_oldest_first`, the returned issues first, oldest first, and then the issues that have not started by rank.
   `returned_by_rank` places a returned issue by its board rank.
@@ -3501,6 +3525,10 @@ Doubtful where the reach begins with slots in use and no line names their holder
 Doubtful too where a slot is taken again by a way that writes no slot line, because the slot at the window's start is then read from the worker's start alone.
 The daemon starts the worker of a phase that keeps a slot only once the issue holds one, so a worker that started after the issue's last slot went back is the record's sight of a slot that no line names.
 An issue whose work came back with no slot and whose worker has not started owes its start, and is given no slot.
+Under a rule that gives the slot back at the merger's ready mark (`legion-v19.57.3`), an issue that stands in merging past that mark keeps no slot there, so a turn that its merger takes after the mark is no sight of a slot.
+The start state keeps that mark for the replay's passes, as the replay keeps a mark that it applies.
+An issue that stands in a phase that the architect works, such as accepting, owes no start that waits for a slot, because the architect's turn starts on no slot of the issue's.
+Where the record holds such an issue's slot with no line, the start state names the issue, because it holds neither a slot nor a start that waits for one.
 
 **Evidence in a recorded window.** _The slot line at the window's start._
 The first `admission:` slot line at or after the window's start gives the slots in use where the start state places them.

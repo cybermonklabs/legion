@@ -214,11 +214,12 @@ type driver struct {
 	anchored []int
 	starting map[string][]int
 	reopens  map[string][]int
-	// serving is when the daemon process that runs at the window's start begins to serve, its
-	// recorded reconcile where that comes after the start (servesFrom), zero where it serves from
-	// the start: every act before it waits for that boot, as an act that falls while the daemon is
-	// down waits for the next.
-	serving time.Time
+	// unserved is each stretch in which a daemon process has started and not yet begun to serve,
+	// from its start to its recorded reconcile (reconcileOf): the process that runs at the window's
+	// start, from the start (servesFrom), and each process that starts inside the window, from its
+	// first line. Every act in such a stretch waits for that boot, as an act that falls while the
+	// daemon is down waits for the next, and the boot's own run takes its stretch out.
+	unserved [][2]time.Time
 	// signOffs is each issue whose sign-off the engine holds behind a member beneath, which the
 	// replay applies again at each leave of a member of its tree.
 	signOffs map[string]bool
@@ -910,22 +911,21 @@ func (d *driver) run() error {
 			return err
 		}
 	}
+	// A process that starts inside the window serves from its recorded reconcile where the log
+	// shows one after its first line, as the process at the window's start does: its boot runs
+	// there, and every act from its first line to it waits for it (pushBoot).
 	for i := range t.Boots {
 		boot := t.Boots[i]
 		if boot.At.Before(w.From) || !boot.At.Before(end) {
 			continue
 		}
-		d.push(&item{at: boot.At, class: classBoot, rec: boot.At, run: func() error { return d.boot(boot) }})
+		d.pushBoot(boot, boot.At, d.reconcileOf(boot))
 	}
 	// The process that runs at the window's start serves from its recorded reconcile where that
 	// comes after the start: no pass runs before it, and every act before it waits for it, as an
 	// act that falls while the daemon is down waits for the next boot (servesFrom).
 	if boot, serves, waits := d.servesFrom(); waits {
-		d.serving = serves
-		d.push(&item{at: serves, class: classBoot, rec: serves, run: func() error {
-			d.serving = time.Time{}
-			return d.boot(boot)
-		}})
+		d.pushBoot(boot, w.From, serves)
 	}
 	for _, at := range t.Ticks {
 		if at.Before(w.From) || !at.Before(end) {
@@ -1006,7 +1006,7 @@ func (d *driver) run() error {
 				return err
 			}
 		}
-		if it.class != classBoot && (d.down(it.at) || it.at.Before(d.serving)) {
+		if it.class != classBoot && (d.down(it.at) || d.awaitsReconcile(it.at)) {
 			// The daemon's timer is in its memory, so one that falls while the daemon is down never
 			// fires: the boot's first pass computes the deadline again.
 			if !it.timer {
@@ -1090,6 +1090,15 @@ func (d *driver) down(at time.Time) bool {
 	return false
 }
 
+// awaitsReconcile says whether at falls in a stretch in which a daemon process has started and
+// not yet begun to serve (driver.unserved): from its first line, or the window's start for the
+// process that runs there, to its recorded reconcile.
+func (d *driver) awaitsReconcile(at time.Time) bool {
+	return slices.ContainsFunc(d.unserved, func(stretch [2]time.Time) bool {
+		return !at.Before(stretch[0]) && at.Before(stretch[1])
+	})
+}
+
 // queuePriorityChanges queues, where the replay's copy of Dispatch shows the priority Dispatch
 // resolves (shadow.priorities, under a rule with the new P0 start), each change of it of an issue
 // of the project from the window's start to the end of its inputs, at its moment and after every
@@ -1144,9 +1153,12 @@ func (d *driver) queuePriorityChanges() {
 // stands in (firstSlotBefore, keepFirstSlot), the start state holding no slot's moment once the
 // slot went back; and under a rule that places it by arrival it keeps each issue's arrival, the
 // record's entry of the run it stands in (arrivalBefore, keepArrival), which no record of the start
-// state carries. The P0 bound in force at the start, the last change the window records before it
-// (p0BoundBefore), is written as the daemon's store keeps it, with no pass of its own: the start
-// state is what that change's pass left.
+// state carries. The merger's ready mark of each issue that stands in merging at the start past
+// that mark (readyMarkAt) goes through the replay's handler as a mark the replay applies does
+// (ReadyMark), at the mark's own moment, so a pass under a rule that gives the slot back there
+// reads it from the start (assumption 20). The P0 bound in force at the start, the last change the
+// window records before it (p0BoundBefore), is written as the daemon's store keeps it, with no pass
+// of its own: the start state is what that change's pass left.
 func (d *driver) seed() error {
 	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		seeded := withRanks(d.trace, d.shadow.ranks)
@@ -1201,6 +1213,15 @@ func (d *driver) seed() error {
 				if arrived := d.arrivalBefore(issue.Key); !arrived.IsZero() {
 					if err := keepArrival(ctx, tx, issue, arrived); err != nil {
 						return err
+					}
+				}
+			}
+			if iss, traced := d.trace.Issues[issue.Key]; traced && record.StandsAt(issue) == phase.Merging {
+				if mark, ready := readyMarkAt(iss, d.window.From); ready {
+					d.used[19], d.used[20] = true, true
+					marking := replayHandler{clock: func() time.Time { return mark }, rule: d.rule}
+					if _, err := marking.Apply(ctx, tx, ReadyMark{Issue: issue.Key, Generation: issue.Generation}); err != nil {
+						return fmt.Errorf("replay: keep the ready mark of %s at the window's start: %w", issue.Key, err)
 					}
 				}
 			}
@@ -1772,13 +1793,10 @@ func (d *driver) boot(boot Boot) error {
 }
 
 // servesFrom is the daemon process that runs at the window's start, the newest begun before it,
-// and the moment it begins to serve, where that comes inside the window: its reconcile, the line of
-// which the log holds where the reconcile held summaries for the Dispatch consumer (Boot.Holding),
-// and otherwise the first slot line of the process before its `legion daemon started` line, the
-// pass of its reconcile. False where no process began before the start, or the log shows its
-// reconcile before the start or not at all. The daemon applies no fact before its reconcile, so a
-// replay's first pass waits for it, and no act before it runs (run), as none runs while no daemon
-// does.
+// and the moment it begins to serve, where that comes inside the window: its reconcile
+// (reconcileOf). False where no process began before the start, or the log shows its reconcile
+// before the start or not at all. The daemon applies no fact before its reconcile, so a replay's
+// first pass waits for it, and no act before it runs (run), as none runs while no daemon does.
 func (d *driver) servesFrom() (Boot, time.Time, bool) {
 	t, w := d.trace, d.window
 	var boot *Boot
@@ -1790,16 +1808,42 @@ func (d *driver) servesFrom() (Boot, time.Time, bool) {
 	if boot == nil {
 		return Boot{}, time.Time{}, false
 	}
-	serves := boot.Holding
-	if serves.IsZero() && !boot.Started.IsZero() {
-		for _, move := range t.Slots {
-			if !move.At.Before(boot.At) && move.At.Before(boot.Started) {
-				serves = move.At
-				break
-			}
+	serves := d.reconcileOf(*boot)
+	return *boot, serves, serves.After(w.From) && serves.Before(w.End())
+}
+
+// reconcileOf is the moment the daemon process boot begins to serve, its reconcile: the line of
+// it, which the log holds where the reconcile held summaries for the Dispatch consumer
+// (Boot.Holding), and otherwise the first slot line of the process before its `legion daemon
+// started` line, the pass of its reconcile. Zero where the log shows neither.
+func (d *driver) reconcileOf(boot Boot) time.Time {
+	if !boot.Holding.IsZero() || boot.Started.IsZero() {
+		return boot.Holding
+	}
+	for _, move := range d.trace.Slots {
+		if !move.At.Before(boot.At) && move.At.Before(boot.Started) {
+			return move.At
 		}
 	}
-	return *boot, serves, serves.After(w.From) && serves.Before(w.End())
+	return time.Time{}
+}
+
+// pushBoot queues boot to run at serves, its recorded reconcile, where that comes after from and
+// inside the window, and at from otherwise: from is the process's first line, or the window's
+// start for the process that runs there. Every act from from to serves waits for the boot
+// (awaitsReconcile), whose run takes that stretch out before it reconciles, so the acts it holds
+// run once it serves, as the acts of a downtime do.
+func (d *driver) pushBoot(boot Boot, from, serves time.Time) {
+	if !serves.After(from) || !serves.Before(d.window.End()) {
+		d.push(&item{at: from, class: classBoot, rec: from, run: func() error { return d.boot(boot) }})
+		return
+	}
+	stretch := [2]time.Time{from, serves}
+	d.unserved = append(d.unserved, stretch)
+	d.push(&item{at: serves, class: classBoot, rec: serves, run: func() error {
+		d.unserved = slices.DeleteFunc(d.unserved, func(unserved [2]time.Time) bool { return unserved == stretch })
+		return d.boot(boot)
+	}})
 }
 
 // serialized runs write in one transaction that takes the lock every fact applies under, with

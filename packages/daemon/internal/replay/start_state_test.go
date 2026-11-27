@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -333,5 +334,94 @@ func TestSeedOwesTheMembersOfARootReadmittedBeforeTheStart(t *testing.T) {
 	})
 	if len(report.Unplaced) != 0 {
 		t.Errorf("the seed names %+v, want no issue", report.Unplaced)
+	}
+}
+
+// pastReadyMarkWindow is a window from 10:00 to 12:00 recorded under legion-v19.57.3 at a cap of
+// 2, its inputs reaching back to the daemon's boot at 08:00. ACME-1, a root promoted at 08:05,
+// works to its review as rootThroughReview runs it and on through accepting and retro with its
+// slot kept, into merging at 09:20; at 09:25 its merger's ready mark gives the slot back
+// (TriggerReady), and its merger takes another turn from 09:40 to 09:50 with no slot, as that
+// release's merger looked again at a pull request that waited for its merge. ACME-2, a root
+// promoted at 08:10, works in implementing on its slot through the window. ACME-3, a root handed
+// to Legion at 10:30, is promoted at once on the slot ACME-1 gave back.
+func pastReadyMarkWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.window.Parts[0].Rule = "legion-v19.57.3"
+	b.reaches(2 * time.Hour)
+	b.capped(2)
+	b.boot(clock(8, 0))
+	b.file(clock(8, 5), "ACME-1", filing{Title: "Ship the ACME-1 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.rootThroughReview(clock(8, 5), "ACME-1")
+	promotedRoot(b, clock(8, 10), "ACME-2", "a2")
+	b.rootDesigned(clock(8, 25), "ACME-2")
+	b.segmentEnds(clock(8, 40), "ACME-2", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.pastReviewKept(clock(9, 10), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.pastReviewKept(clock(9, 15), "ACME-1", phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+	b.pastReviewKept(clock(9, 20), "ACME-1", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	b.turnEnds(clock(9, 25), "ACME-1", claim.RoleMerger)
+	b.moved(clock(9, 25), "ACME-1", phase.Merging, PhaseAwaitingMerge, TriggerReady)
+	b.slotReleased(clock(9, 25), "ACME-1")
+	b.turnStarts(clock(9, 40), "ACME-1", claim.RoleMerger)
+	b.turnEnds(clock(9, 50), "ACME-1", claim.RoleMerger)
+	promotedRoot(b, clock(10, 30), "ACME-3", "a3")
+	return b.build()
+}
+
+// An issue that stands at the window's start in merging past its merger's ready mark, under a rule
+// that gives the slot back at that mark (record.SlotRule.ReadsReadyMark), holds no slot there,
+// though its merger takes a turn after the mark: that release's merger works on no slot once the
+// mark has given it back, so its turn is no sight of a slot (assumption 34 infers none), and the
+// start state keeps the mark for the replay's passes, as the replay keeps a mark it applies
+// (ReadyMark). The test builds pastReadyMarkWindow: the trace infers no slot of ACME-1 and holds
+// two at the slot line of 10:30, as that line says. Replayed under legion-v19.57.3, the first
+// state finds ACME-1 holding no slot and its mark kept, the start state names no issue and infers
+// no slot, and the pass gives ACME-3 its slot at 10:30, as the record did.
+func TestAMergingIssuePastItsReadyMarkHoldsNoSlotAtTheStart(t *testing.T) {
+	t.Parallel()
+	window := pastReadyMarkWindow(t)
+	trace := placedTrace(t, window)
+	if slots := trace.Issues["ACME-1"].Slots; slices.ContainsFunc(slots, func(span SlotSpan) bool { return span.Inferred }) ||
+		trace.InferredSlots != 0 {
+		t.Errorf("ACME-1's slots are %s and the trace infers %d; want none inferred: its merger's ready mark at 09:25 gave its slot back",
+			describeReading(slots), trace.InferredSlots)
+	}
+	if count := trace.SlotCount; !count.At.Equal(clock(10, 30)) || count.Recorded != 2 || count.Held != 2 {
+		t.Errorf("the trace's slot count is %+v, want the line of 10:30 carrying 2 slots in use and 2 the trace holds", count)
+	}
+
+	var first time.Time
+	var holds bool
+	var marks int
+	out := t.TempDir()
+	cfg := RunConfig{Window: window, Rule: replayedRule(t, "legion-v19.57.3"), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: out}
+	cfg.atSettled = func(ctx context.Context, st *store.Store, at time.Time) error {
+		if !first.IsZero() {
+			return nil
+		}
+		first = at
+		return store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			slots, err := record.NewStore().Slots(ctx, tx)
+			if err != nil {
+				return err
+			}
+			holds = slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == "ACME-1" })
+			return tx.QueryRow(ctx, `select count(*) from replay_ready_marks where issue = 'ACME-1'`).Scan(&marks)
+		})
+	}
+	result, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("replay pastReadyMarkWindow under legion-v19.57.3: %v", err)
+	}
+	if first.IsZero() || !first.Before(clock(10, 30)) || holds || marks != 1 {
+		t.Errorf("the first state, at %s, finds ACME-1 holding a slot: %t, and %d ready marks of it; want a state before 10:30, no slot and its one mark",
+			stamp(first), holds, marks)
+	}
+	if len(result.Unplaced) != 0 || result.Divergence.InferredSlots != 0 {
+		t.Errorf("the start state names %+v and infers %d slots; want no issue and none", result.Unplaced, result.Divergence.InferredSlots)
+	}
+	if given := slotsGiven(replayLog(t, out)); !slices.Equal(given, []string{"ACME-3 at 10:30"}) {
+		t.Errorf("the replay gives the slots %q, want ACME-3's at 10:30 alone", given)
 	}
 }

@@ -2056,6 +2056,40 @@ func TestTheFirstPassWaitsForTheRunningBootsReconcile(t *testing.T) {
 	}
 }
 
+// restartAtCapRaiseWindow is a window from 10:00 to 12:00 whose inputs reach back to the daemon's
+// boot at 08:00, at a cap of 1 that a restart raises to 2. ACME-1, a root promoted at 08:05, holds
+// the one slot through the window. ACME-2, a root handed to Legion at 09:00, waits for one. The
+// daemon stops at 10:20, and a process starts at 10:30 under the cap of 2: its reconcile's pass,
+// the first slot line of the process before its `legion daemon started` line, promotes ACME-2 at
+// 10:33, and the process serves from 10:33:10.
+func restartAtCapRaiseWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.reaches(2 * time.Hour)
+	b.window.Caps = []CapAt{{At: clock(10, 0), Cap: 1}, {At: clock(10, 33), Cap: 2}}
+	b.boot(clock(8, 0))
+	promotedRoot(b, clock(8, 5), "ACME-1", "a1")
+	b.rootDesigned(clock(8, 20), "ACME-1")
+	b.file(clock(9, 0), "ACME-2", filing{Title: "Ship the ACME-2 change", Status: "todo", Rank: "a2", Labels: handedToLegion})
+	b.stopped(clock(10, 20))
+	b.boot(clock(10, 30))
+	b.rootPromoted(clock(10, 33), "ACME-2")
+	b.info(clock(10, 33).Add(10*time.Second), "legion daemon started", "project", builtProject, "admissionCap", 2, "boot", 2)
+	return b.build()
+}
+
+// A daemon process that starts inside the window serves from its recorded reconcile, as the
+// process that runs at the window's start does (driver.run): no pass runs from its first line to
+// that reconcile, and every act in between waits for it. The test replays restartAtCapRaiseWindow
+// under main: the process that starts at 10:30 under the raised cap gives ACME-2 its slot at its
+// reconcile at 10:33, as the record does, and not at its first line.
+func TestABootInsideTheWindowAdmitsFromItsReconcile(t *testing.T) {
+	t.Parallel()
+	_, log := knobRun(t, restartAtCapRaiseWindow(t), mainRule(t), "main")
+	if given, want := slotsGiven(log), []string{"ACME-2 at 10:33"}; !slices.Equal(given, want) {
+		t.Errorf("the replay gives the slots %q, want %q: the boot of 10:30 reconciles at 10:33", given, want)
+	}
+}
+
 // closedGateMergingWindow is a window from 10:00 to 13:00 recorded under legion-v20.42.5, in a
 // deployment that gates the spec, its inputs reaching back to the daemon's boot at 05:00. ACME-1, a
 // root promoted at 05:05 whose spec a person approves at 05:15, implements from 05:50 to the

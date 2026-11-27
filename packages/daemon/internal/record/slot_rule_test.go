@@ -96,6 +96,25 @@ func TestTheDaemonStartsAP0OutsideTheCapAndTheRecordedRulesDoNot(t *testing.T) {
 	}
 }
 
+// The daemon holds an issue's acceptance for an open Dispatch child of it and for a root resting
+// on its approval since cybermonklabs/legion#4592 brought both holds: the rule it is built with
+// (MainRule), the zero rule that names none, and every rule the repository keeps that is the
+// daemon's own with another choice changed, cover and before-p0 among them, hold it. The rules the
+// recorded windows' daemons ran, whose releases came before #4592, hold it for the issues beneath
+// it in the workflow alone (OpenChildHoldsAcceptance off).
+func TestTheRecordedRulesHoldNoAcceptanceForAnOpenChild(t *testing.T) {
+	t.Parallel()
+	if !MainRule.OpenChildHoldsAcceptance || !(SlotRule{}).OrMain().OpenChildHoldsAcceptance {
+		t.Errorf("the daemon's own rule holds no acceptance for an open child, and it holds one since cybermonklabs/legion#4592")
+	}
+	off := map[string]bool{"legion-v19.57.3": true, "legion-v20.42.5": true, "legion-v22.14.1": true}
+	for _, rule := range SlotRules() {
+		if rule.OpenChildHoldsAcceptance == off[rule.Name] {
+			t.Errorf("the rule %q holds an acceptance for an open child: %t, want %t", rule.Name, rule.OpenChildHoldsAcceptance, !off[rule.Name])
+		}
+	}
+}
+
 // mainOfTheClone is the name the repository's clone gives the main branch, origin/main where it
 // holds it and main otherwise, and skips t where the clone holds no history to read: git is not
 // there, the directory is in no git clone, the clone is shallow, or it holds no main.

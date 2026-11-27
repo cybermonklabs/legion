@@ -2805,7 +2805,10 @@ func heldAcceptanceBack(w Walk) string {
 // (childrenOpen, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and is a Dispatch
 // child of it is named by the second, as it holds there first. It is the one statement of the
 // rule for the sign-off (signOff), the close of a root (closeRoot), and the retro of a parent that
-// no sign-off accepts, which it holds (retroHeld) and releases (StartHeldRetro).
+// no sign-off accepts, which it holds (retroHeld) and releases (StartHeldRetro). The second and the
+// third came with cybermonklabs/legion#4592, and are read only under a rule that holds an
+// acceptance for them (record.SlotRule.OpenChildHoldsAcceptance, the daemon's own): under the
+// rules of the recorded windows, whose releases came before it, the first alone holds it.
 func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) (acceptanceHold, error) {
 	members, err := e.treeMembers(ctx, tx, issue)
 	if err != nil {
@@ -2813,6 +2816,9 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	if open := record.OpenBeneath(issue, members); len(open) > 0 {
 		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
+	}
+	if !e.cfg.SlotRule.OpenChildHoldsAcceptance {
+		return acceptanceHold{}, nil
 	}
 	resting, err := record.RestingRoots(ctx, tx, e.store, issue.Key)
 	if err != nil {
@@ -2887,7 +2893,10 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 // workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), and then while a Dispatch child of the issue is open
 // (SIGNOFF_CHILD_OPEN), each naming what holds it, in that order (acceptanceHeld,
 // dispatch://INFRA-3320 R8): the issue's requirements are proved by the checks of the issues under
-// it together, so it is accepted after them, before the admission pass that would move it. A
+// it together, so it is accepted after them, before the admission pass that would move it. Those
+// two hold it only under a rule that holds an acceptance for them
+// (record.SlotRule.OpenChildHoldsAcceptance, the daemon's own), and not under the rules of the
+// recorded windows, whose releases held it for an issue beneath it in the workflow alone. A
 // parent that the wait has already moved stands in awaiting_children, no phase that sign_off acts
 // on, and is refused with the wait's own code, naming its open children (waitingRefusal, R11).
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {

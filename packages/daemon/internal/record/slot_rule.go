@@ -68,6 +68,18 @@ type SlotRule struct {
 	// does not, the rules the recorded windows ran before #4592, an open child holds no start of a
 	// started parent, whose phases go on as they did.
 	WaitStopsPhase bool
+	// OpenChildHoldsAcceptance says whether work under an issue beyond the issues beneath it in the
+	// workflow holds the issue's acceptance — its sign-off, the close of a root, and the retro of a
+	// parent no sign-off accepts (workflow's acceptanceHeld) — as cybermonklabs/legion#4592 brought
+	// it (its spec's R8): a Dispatch child of the issue that is still open (ChildOpen,
+	// SIGNOFF_CHILD_OPEN), and a root of any tree whose design-gate step rests on the issue's
+	// approval while that root is still in the workflow (RestingRoots,
+	// SIGNOFF_RESTING_ROOT_IN_WORKFLOW). An issue beneath it still in the workflow (OpenBeneath,
+	// SIGNOFF_CHILD_IN_WORKFLOW) holds the acceptance under every rule. It is on in MainRule and every
+	// rule built on it, cover among them, and off in the recorded rules, whose releases came before
+	// #4592 and held an acceptance for the issues beneath it in the workflow alone, so a replay of
+	// such a window signs off an issue whose Dispatch child is open where its record did.
+	OpenChildHoldsAcceptance bool
 	// Order is the order of the waiting line (Waiting), within each priority's band where the rule
 	// bands the line (PriorityFirst).
 	Order LineOrder
@@ -196,11 +208,12 @@ const (
 // through the review and in held, and none past the review nor in awaiting_children; a link wait
 // and a children wait give the slot back at the pass that finds them, with no grace; an open
 // Dispatch child of a started parent stops the phase under way and moves the parent into
-// awaiting_children (cybermonklabs/legion#4592); the line stands by priority first
-// (cybermonklabs/legion#5365) and, within one priority, work that came back goes first, oldest
-// first, then the line by rank; a P0 issue starts outside the cap, under the P0 bound in force
-// (StartsNow, R10, which cybermonklabs/legion#5488 brought), and every other start takes a slot of
-// the cap; a conflicting head keeps its phase while the base is merged forward,
+// awaiting_children, and holds its acceptance with a root resting on its approval
+// (OpenChildHoldsAcceptance), both since cybermonklabs/legion#4592; the line stands by priority
+// first (cybermonklabs/legion#5365) and, within one priority, work that came back goes first,
+// oldest first, then the line by rank; a P0 issue starts outside the cap, under the P0 bound in
+// force (StartsNow, R10, which cybermonklabs/legion#5488 brought), and every other start takes a
+// slot of the cap; a conflicting head keeps its phase while the base is merged forward,
 // and past the review waits for merging, where the merger merges it (cybermonklabs/legion#4979);
 // and no slot goes back because its holder is idle. Its commit is the commit the rule was first
 // written as a value at; the rule is the daemon's at the tool's commit, which each replay run
@@ -211,17 +224,18 @@ var MainRule = SlotRule{
 	Commit: "0d3786da536722f2eb26a793ab1b9827b6e90f47",
 	KeepsSlotIn: []phase.Phase{phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
 		phase.Reviewing, phase.Held},
-	LinkWaitGivesBack:     true,
-	ChildrenWaitGivesBack: true,
-	WaitGrace:             0,
-	WaitStopsPhase:        true,
-	Order:                 LineReturnedOldestFirst,
-	PriorityFirst:         true,
-	Take:                  TakeOwnSlot,
-	Conflict:              ConflictMergeForward,
-	ReleaseAtReady:        false,
-	StartsNow:             true,
-	IdleReturn:            0,
+	LinkWaitGivesBack:        true,
+	ChildrenWaitGivesBack:    true,
+	WaitGrace:                0,
+	WaitStopsPhase:           true,
+	OpenChildHoldsAcceptance: true,
+	Order:                    LineReturnedOldestFirst,
+	PriorityFirst:            true,
+	Take:                     TakeOwnSlot,
+	Conflict:                 ConflictMergeForward,
+	ReleaseAtReady:           false,
+	StartsNow:                true,
+	IdleReturn:               0,
 }
 
 // OrMain is r, or MainRule where r is the zero value a caller that names no rule holds: a
@@ -390,10 +404,11 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 // signals-backoff, which admit below P0 by signals). The daemon's own rule
 // orders the line by priority first since cybermonklabs/legion#5365, which the comparison ran as
 // the candidate priority-first before that change merged, stops a started parent's phase for
-// its open children since cybermonklabs/legion#4592 (WaitStopsPhase), and starts a P0 issue
+// its open children and holds an acceptance for them since cybermonklabs/legion#4592
+// (WaitStopsPhase, OpenChildHoldsAcceptance), and starts a P0 issue
 // outside the cap since cybermonklabs/legion#5488 (StartsNow), which the comparison ran as the
 // candidates p0-at-once and, with idle-return-1h's idle return, p0-idle before that change merged;
-// each candidate, built from the daemon's own, keeps all three, and the recorded
+// each candidate, built from the daemon's own, keeps all three changes, and the recorded
 // rules, whose releases came before them, keep none. `legion replay rules` prints them. Each
 // answer is built afresh, so a caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
@@ -440,14 +455,16 @@ func everyWorkflowPhase() []phase.Phase {
 // TriggerConflict, the rows of that release's transition table the daemon's own table no longer
 // carries (workflow.TableFor), where main keeps the phase and merges the base forward (#4464). Its
 // line stands by no priority (PriorityFirst), as every release before #5365's, no open child
-// stops a started parent's phase (WaitStopsPhase), as in every release before #4592's, and no P0
-// issue starts outside the cap (StartsNow), as in every release before #5488's.
+// stops a started parent's phase (WaitStopsPhase) or holds an acceptance
+// (OpenChildHoldsAcceptance), as in every release before #4592's, and no P0 issue starts outside
+// the cap (StartsNow), as in every release before #5488's.
 func windowOneRule() SlotRule {
 	return mainRuleWith("legion-v20.42.5", func(rule *SlotRule) {
 		rule.Commit = conflictMovesBackCommit
 		rule.Conflict = ConflictMovesBack
 		rule.PriorityFirst = false
 		rule.WaitStopsPhase = false
+		rule.OpenChildHoldsAcceptance = false
 		rule.StartsNow = false
 	})
 }
@@ -458,7 +475,8 @@ func windowOneRule() SlotRule {
 // LineFacts.Ready); no wait on another issue gives the slot back; red checks, that release's one
 // path of a conflicting head, move the issue back to implementing by workflow's TriggerChecksRed;
 // the line stands by no priority (PriorityFirst), no open child stops a started parent's phase
-// (WaitStopsPhase) and no P0 issue starts outside the cap (StartsNow).
+// (WaitStopsPhase) or holds an acceptance (OpenChildHoldsAcceptance), and no P0 issue starts
+// outside the cap (StartsNow).
 func windowTwoRule() SlotRule {
 	return mainRuleWith("legion-v19.57.3", func(rule *SlotRule) {
 		rule.Commit = awaitingMergeCommit
@@ -468,6 +486,7 @@ func windowTwoRule() SlotRule {
 		rule.ReleaseAtReady = true
 		rule.PriorityFirst = false
 		rule.WaitStopsPhase = false
+		rule.OpenChildHoldsAcceptance = false
 		rule.StartsNow = false
 	})
 }
@@ -478,13 +497,15 @@ func windowTwoRule() SlotRule {
 // retro and merging included, and the implementer is asked at once to merge the base forward,
 // where main leaves a conflict in accepting or retro to wait for merging and asks the merger there.
 // Its line stands by no priority (PriorityFirst), no open child stops a started parent's phase
-// (WaitStopsPhase), and no P0 issue starts outside the cap (StartsNow).
+// (WaitStopsPhase) or holds an acceptance (OpenChildHoldsAcceptance), and no P0 issue starts
+// outside the cap (StartsNow).
 func windowThreeRule() SlotRule {
 	return mainRuleWith("legion-v22.14.1", func(rule *SlotRule) {
 		rule.Commit = implementerMergesForwardCommit
 		rule.Conflict = ConflictImplementerMergesForward
 		rule.PriorityFirst = false
 		rule.WaitStopsPhase = false
+		rule.OpenChildHoldsAcceptance = false
 		rule.StartsNow = false
 	})
 }
