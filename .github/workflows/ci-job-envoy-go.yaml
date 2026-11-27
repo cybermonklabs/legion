@@ -757,8 +757,8 @@ jobs:
       # reading's identity digests the stored body of attribution_keys, where 16 keeps each
       # node's place in the source text and 17 and later write -1, so a restore changes the
       # stored body on 16 alone; the two identity tests hold the identity to that. Every other
-      # test of the package runs on 18 in envoy-go and envoy-go-race. -v prints each test's
-      # verdict to the log.
+      # test of the package runs on 18 under the race detector, in envoy-go-race's leg 4
+      # (.github/go-legs.yaml), and in no leg of envoy-go. -v prints each test's verdict to the log.
       - name: Test the attribution's database guard and the reading's identity on PostgreSQL 16
         run: go test -count=1 -v -run '^(TestPrepareAttributionRefusesADatabaseItCannotRead|TestTheReadingIdentityIsTheStoredBodyAndTheMajorVersion|TestTheReadingIdentitySurvivesARestoreOfItsText)$' ./internal/dispatch/delivery
         working-directory: packages/envoy

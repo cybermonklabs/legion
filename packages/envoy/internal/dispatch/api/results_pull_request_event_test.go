@@ -381,11 +381,13 @@ func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySetting
 // open at headCommit, where CI's run 41 passed, and #9, a draft negative control opened after it
 // at newHeadCommit, where run 42 failed. Neither's branch or texts name the issue, so the links
 // alone make them the issue's. Dispatch read both from GitHub before #9 closed and stores both
-// open, so the read of a check CI proves is at the open head of the highest number, #9, where c1
-// fails, and no role can record a result to correct it (409 CHECK_PROVED_BY_CI). GitHub then
-// closes #9 unmerged. Its `closed` event is the one envelope the stream ever holds and nothing
-// else reads GitHub: GitHub names no pull request for any commit here and the reconcile is not
-// running. Within v-head-no-settings' 5 seconds of that event c1 must read CI's pass at #5's head.
+// open, so both open heads are c1's subjects, each carrying CI's read at its own head: #5's pass
+// and #9's failure. The check's own read is the open head of the highest number, #9, where c1
+// fails, so c1 does not stand, and no role can record a result to correct it (409
+// CHECK_PROVED_BY_CI). GitHub then closes #9 unmerged. Its `closed` event is the one envelope the
+// stream ever holds and nothing else reads GitHub: GitHub names no pull request for any commit
+// here and the reconcile is not running. Within v-head-no-settings' 5 seconds of that event c1
+// must read CI's pass at #5's head.
 //
 // Production held such a pair: the read stayed at the closed pull request's failure for the 25
 // minutes from its close to the open one's merge, and the merge moved it, not the close. The

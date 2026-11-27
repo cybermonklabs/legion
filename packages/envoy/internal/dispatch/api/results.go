@@ -153,7 +153,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	// The row keeps linkedCommitRepo, so the results read compares the result with the branches
 	// of that linked repository (comparisonReader, onNamedBranch), reads its pull requests
-	// through it (readThroughHead) and decides a `before_merge` result by it (commitStands):
+	// through it (readThroughHeads) and decides a `before_merge` result by it (commitStands):
 	// asked of repo, the repository the check's issue resolves to, GitHub answers 404 for such a
 	// commit and the result reads unknown. Such a repository is one GitHub said holds the commit.
 	// Every other row keeps none and is compared in the repository the check's issue resolves to,

@@ -103,7 +103,7 @@ const linkedPullRequestReads = 10
 // at a commit of repo, and it answers nil for it. recordResultUnderOwnerLocks writes a repository
 // it answers with the row (model.CheckResult.CommitRepo), so the results read compares a branch
 // check's result in that repository (comparisonReader.onNamedBranch) and reads a `before_merge`
-// result's pull requests through it (comparisonReader.readThroughHead); and the read-through after
+// result's pull requests through it (comparisonReader.readThroughHeads); and the read-through after
 // the write reads the commit's pull requests through it, or through repo where it answers nil
 // (readThroughPullRequests). The repository is under the name it is called today: the heads and
 // the links are read under the boot's rename pairs (delivery.Attributor), so the row stores no

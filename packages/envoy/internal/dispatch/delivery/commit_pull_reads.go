@@ -17,7 +17,7 @@ import (
 // (ReadThroughCommitPulls). It is branch.go's twin: that file holds how long an answer about a
 // repository and a commit's place on one of its branches is believed, this one how long an
 // answer about the pull requests of a commit stands before GitHub is asked again. Its one
-// caller is the results read (api/results_comparison.go, comparisonReader.readThroughHead), which
+// caller is the results read (api/results_read_through.go, comparisonReader.readThroughHeads), which
 // keeps a memo for the span of one request and no policy. The bound holds across processes:
 // each process keeps the moment in its memory (CommitPullReads), and the database holds the claim
 // every process shares (commit_pull_reads, ClaimAcrossProcesses). A writer's read claims a commit
@@ -135,7 +135,7 @@ func (c *CommitPullReads) Refuses(repoFull, sha string, now time.Time) bool {
 // RefusesAcrossProcesses reports whether ClaimAcrossProcesses would refuse sha's pull requests in
 // repoFull at now, and records nothing: no claim in this process's memory or in the database, no
 // hold and no sweep. A read-only caller's results read asks it where a writer's read claims
-// (api/results_read_through.go, comparisonReader.readThroughHead), so it asks GitHub nothing where
+// (api/results_read_through.go, comparisonReader.readThroughHeads), so it asks GitHub nothing where
 // a writer's read at that moment would be refused, and leaves every later read's claim as it found
 // it. It asks this process's memory first (Refuses), and then reads the claim every process shares
 // (commit_pull_reads): a moment held there past now refuses, as claimCommitPullReadSQL's guard
@@ -164,7 +164,7 @@ func (c *CommitPullReads) refusesLocked(key commitPullKey, now time.Time) bool {
 // Settle holds the asking about one repository and commit off for CommitPullSettledFor: GitHub
 // has been read for the pair and named a pull request whose head is another commit, so this
 // commit is behind that pull request and nothing a read within that span can learn about it
-// repairs a result there (api/results_comparison.go, comparisonReader.readThroughHead). Without it
+// repairs a result there (api/results_read_through.go, comparisonReader.readThroughHeads). Without it
 // the pair would be claimed again every CommitPullReadStaleAfter for as long as the result is
 // read, since nothing is stored at a commit no pull request heads.
 //

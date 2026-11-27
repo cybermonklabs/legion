@@ -3483,7 +3483,7 @@ func TestAResultsReadReadsThroughNoUnseenRepositoryAndAKnownHeadOnceAWindow(t *t
 // GitHub answers by naming the pull request at the head it has now: an answer about that commit
 // that stands until something opens a pull request at it. So the pair is held off for
 // delivery.CommitPullSettledFor and no read inside that span asks again
-// (delivery.CommitPullReads.Settle, api/results_comparison.go's readThroughHead); without that, a
+// (delivery.CommitPullReads.Settle, api/results_read_through.go's readThroughHeads); without that, a
 // tab left open would spend the call again every delivery.CommitPullReadStaleAfter for as long
 // as the result is read.
 func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *testing.T) {
@@ -3867,7 +3867,7 @@ func TestAResultsReadComparesWithAPullRequestWhoseCommitsAnswer500(t *testing.T)
 // the same, since GitHub can name a second pull request at that head (R6 of the results lookup).
 // Two reads in a row ask once: the claim bounds them. The result stands at no basis of the
 // parent's check by the rule itself, whatever GitHub answers (R4, api/results_comparison.go,
-// readThroughHead).
+// readThroughHeads).
 func TestAChildsOpenHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) {
 	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
@@ -3973,7 +3973,7 @@ func TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck(t *test
 // The control the two above are read against: one check, one result, at the head of a pull
 // request nothing told Dispatch of, and nothing else recorded anywhere. It stands at that
 // head, so a failure of either test above is the eligibility test refusing the call and not
-// the read-through failing to repair the result (api/results_comparison.go, readThroughHead).
+// the read-through failing to repair the result (api/results_read_through.go, readThroughHeads).
 func TestACheckWithOneResultAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 	t.Parallel()
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")

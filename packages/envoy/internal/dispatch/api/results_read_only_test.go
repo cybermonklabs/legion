@@ -138,7 +138,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		pair, issue := pushed(t)
 		// The claim is made by a writer's read, on every stack: GitHub names no pull request for
 		// either commit yet, so that read claims both (server.commitPulls.Claim, in
-		// comparisonReader.readThroughHead, under the issue's canonical repository name) and
+		// comparisonReader.readThroughHeads, under the issue's canonical repository name) and
 		// stores nothing.
 		claimed := pair.writersRead(t, issue, "the writer's read that claims both commits")
 		claimed.calls(t, parityPulls, 2)
@@ -171,7 +171,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		// The settle is made by a writer's read, on every stack: it reads behindHeadCommit
 		// through, stores pull request 61, whose head is another commit, and settles
 		// behindHeadCommit for delivery.CommitPullSettledFor (server.commitPulls.Settle, in
-		// comparisonReader.readThroughHead). It reads headCommit through too (R6).
+		// comparisonReader.readThroughHeads). It reads headCommit through too (R6).
 		settled := pair.writersRead(t, issue, "the writer's read that settles behindHeadCommit")
 		settled.calls(t, parityPulls, 2)
 		// The read is past the claim's span and inside the settle's.
