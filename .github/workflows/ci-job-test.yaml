@@ -399,11 +399,13 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
-      # scripts/search-measure's psql helper: the password a DSN carries reaches psql in PGPASSWORD
-      # alone, in no argument. A stand-in psql answers, so it needs no Postgres; the runner's own
-      # python3 runs it.
-      - name: Test the search-measure psql helper
-        run: python3 -m unittest -v pg_test
+      # scripts/search-measure's helpers: the password a DSN carries reaches psql in PGPASSWORD
+      # alone, in no argument (pg_test), and the harvest and the load write and load, a row at a
+      # time, what reading every answer and every file at once did (stream_test). A stand-in psql
+      # and a stand-in Dispatch answer, so they need no Postgres and no network; the runner's own
+      # python3 runs them.
+      - name: Test the search-measure helpers
+        run: python3 -m unittest -v pg_test stream_test
         working-directory: scripts/search-measure
 
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon

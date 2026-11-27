@@ -26,7 +26,7 @@ import subprocess
 import urllib.parse
 
 import pg
-from corpus import read_json, read_jsonl, say
+from corpus import JsonlRows, read_json, read_jsonl, say
 
 ACTOR = json.dumps({"kind": "session", "id": "search-measure-fixture"})
 # Every project names a default assignee (projects.default_assignee is not null since migration
@@ -82,45 +82,49 @@ def main():
     corpus = arguments.corpus
     projects = read_json(corpus, "projects.json")
     issues = read_jsonl(corpus, "issues.jsonl")
-    documents = read_jsonl(corpus, "documents.jsonl")
-    comments = read_jsonl(corpus, "comments.jsonl")
-    asks = read_jsonl(corpus, "asks.jsonl")
-    messages = read_jsonl(corpus, "messages.jsonl")
+    # The other files are read a row at a time, once for each use below: documents.jsonl is every
+    # document's markdown, more than a gigabyte of a deployment's, and parsed whole it is more than
+    # the memory of the pod that loads it. Projects and issues are small.
+    documents = JsonlRows(corpus, "documents.jsonl")
+    comments = JsonlRows(corpus, "comments.jsonl")
+    asks = JsonlRows(corpus, "asks.jsonl")
+    messages = JsonlRows(corpus, "messages.jsonl")
 
     copy(target, "projects", ("key", "name", "next_number", "default_assignee"),
-         ([project["key"], project["name"], 1, DEFAULT_ASSIGNEE] for project in projects), len(projects))
+         ([project["key"], project["name"], 1, DEFAULT_ASSIGNEE] for project in projects))
 
     loaded_issues = {issue["key"] for issue in issues}
     copy(target, "issues",
          ("key", "project_key", "number", "title", "status", "labels", "rank", "assignee", "created_by", "updated_at"),
          ([issue["key"], issue["project"], issue["number"], issue["title"], issue["status"],
            pg_array(issue["labels"]), issue["rank"], issue["assignee"], ACTOR, issue["updated_at"]]
-          for issue in issues), len(issues))
+          for issue in issues))
     # A parent is set after every issue is in, so a child never arrives before its parent; it is
     # no part of any search vector, and the issue tree is what a project's reader sees.
     parents = [(issue["key"], issue["parent"]) for issue in issues
                if issue.get("parent") and issue["parent"] in loaded_issues]
     if parents:
-        copy(target, "issue_parents_staging", ("key", "parent_key"), (list(pair) for pair in parents), len(parents),
+        copy(target, "issue_parents_staging", ("key", "parent_key"), (list(pair) for pair in parents),
              create="create temporary table issue_parents_staging (key text, parent_key text)",
              after="update issues set parent_key = s.parent_key from issue_parents_staging s where issues.key = s.key")
 
-    documents = [document for document in documents
-                 if document["issue_key"] is None or document["issue_key"] in loaded_issues]
+    def loaded(document):
+        return document["issue_key"] is None or document["issue_key"] in loaded_issues
+
     copy(target, "artifacts",
          ("id", "issue_key", "project_key", "slug", "name", "kind", "is_primary", "created_by", "created_at"),
          ([document["artifact_id"], document["issue_key"], document["project"], document["slug"],
            document["name"], "doc", document["primary"], ACTOR, document["created_at"]]
-          for document in documents), len(documents))
+          for document in documents if loaded(document)))
     copy(target, "artifact_versions",
          ("artifact_id", "number", "markdown", "authors", "named", "summary", "created_at"),
          ([document["artifact_id"], document["version"], document["markdown"], f"[{ACTOR}]",
            document["version_named"], document["version_summary"], document["version_created_at"]]
-          for document in documents), len(documents))
+          for document in documents if loaded(document)))
 
-    documents_loaded = {document["artifact_id"] for document in documents}
-    asks = [ask for ask in asks
-            if (ask["issue_key"] in loaded_issues if ask["issue_key"] else ask["artifact_id"] in documents_loaded)]
+    documents_loaded = {document["artifact_id"] for document in documents if loaded(document)}
+    asks = (ask for ask in asks
+            if (ask["issue_key"] in loaded_issues if ask["issue_key"] else ask["artifact_id"] in documents_loaded))
     copy(target, "asks",
          ("id", "issue_key", "artifact_id", "author", "question", "options", "answer", "state", "resolution", "created_at"),
          ([ask["id"], ask["issue_key"], ask["artifact_id"], ACTOR, ask["question"], json.dumps(ask["options"]),
@@ -128,20 +132,20 @@ def main():
            ask["state"] if not (ask["state"] == "answered" and not ask["answer"]) else "open",
            "{}" if ask["state"] == "resolved" else None,
            ask["created_at"]]
-          for ask in asks), len(asks))
+          for ask in asks))
 
-    comments = [comment for comment in comments
-                if (comment["issue_key"] in loaded_issues if comment["issue_key"] else comment["artifact_id"] in documents_loaded)]
+    comments = (comment for comment in comments
+                if (comment["issue_key"] in loaded_issues if comment["issue_key"] else comment["artifact_id"] in documents_loaded))
     copy(target, "comments",
          ("id", "issue_key", "artifact_id", "author", "body", "resolved", "created_at"),
          ([comment["id"], comment["issue_key"], comment["artifact_id"], ACTOR, comment["body"],
            comment["resolved"], comment["created_at"]]
-          for comment in comments), len(comments))
+          for comment in comments))
 
-    messages = [message for message in messages if message["issue_key"] in loaded_issues]
+    messages = (message for message in messages if message["issue_key"] in loaded_issues)
     copy(target, "messages", ("id", "issue_key", "author", "body", "target", "created_at"),
          ([message["id"], message["issue_key"], ACTOR, message["body"], message["target"], message["created_at"]]
-          for message in messages), len(messages))
+          for message in messages))
 
     for table in QUEUE_TABLES:
         psql(target, f"delete from {table}", tolerate=True)
@@ -151,19 +155,22 @@ def main():
     print(row_counts(target))
 
 
-def copy(dsn, table, columns, rows, count, create=None, after=None):
+def copy(dsn, table, columns, rows, create=None, after=None):
     """COPY rows into table as CSV, so every row-level trigger the schema has fires.
 
     Every value is quoted and NULL is the one unquoted field there is, so an empty body and a
-    missing one are not the same cell.
+    missing one are not the same cell. The rows are counted as they are written, so the line this
+    says costs no pass over a corpus file of its own.
     """
     path = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"search-measure-copy-{table}.sql")
+    count = 0
     with open(path, "w") as handle:
         if create:
             handle.write(create + ";\n")
         handle.write(f"copy {table} ({', '.join(columns)}) from stdin with (format csv, null '');\n")
         for row in rows:
             handle.write(",".join(_cell(value) for value in row) + "\n")
+            count += 1
         handle.write("\\.\n")
         if after:
             handle.write(after + ";\n")
