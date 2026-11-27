@@ -457,9 +457,10 @@ func disarmLegacyConfig(jjDir, repo string) error {
 // clone that Location puts beside it (guardWorkspace), and no legacy configuration file that jj
 // would migrate into the configuration it reads (disarmLegacyConfig, which removes each). The clone
 // is derived from dir's place in the layout and from nothing inside dir, by the derivation
-// WorkspaceOf makes (layoutWorkspace). The Kubernetes issue pod's launcher calls it before its
-// workspace read (R6 of #5285). An error is a workspace in which no jj command is
-// to run.
+// WorkspaceOf makes (layoutWorkspace). Where a fix's working copy stands beside dir (FixDir, a
+// `.jj` there), the workspace read runs jj in it too (ReadWork), so it is held to the same guards
+// as a workspace of the same clone. The Kubernetes issue pod's launcher calls it before its
+// workspace read (R6 of #5285). An error is a workspace in which no jj command is to run.
 func GuardJJ(dir string) error {
 	located, err := layoutWorkspace(dir)
 	if err != nil {
@@ -469,7 +470,18 @@ func GuardJJ(dir string) error {
 	if err != nil {
 		return err
 	}
-	return disarmLegacyConfig(guarded.jjDir, guarded.repo)
+	if err := disarmLegacyConfig(guarded.jjDir, guarded.repo); err != nil {
+		return err
+	}
+	fix := FixDir(located.Dir)
+	if beside, err := HoldsJJ(fix); err != nil || !beside {
+		return err
+	}
+	guardedFix, err := guardWorkspace(fix, located.Clone, true)
+	if err != nil {
+		return err
+	}
+	return disarmLegacyConfig(guardedFix.jjDir, guardedFix.repo)
 }
 
 // refuseSymlinkedLayout refuses an operation at root when dir, or any of the directories above it

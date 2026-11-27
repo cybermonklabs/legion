@@ -255,7 +255,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 	defer done()
 	dir, jj, run, runIn := opened.dir, opened.jj, opened.run, opened.runIn
 	fix := workspace.FixDir(dir)
-	fixMade, err := holdsJJ(fix)
+	fixMade, err := workspace.HoldsJJ(fix)
 	if err != nil {
 		return "", "", err
 	}
@@ -468,16 +468,3 @@ func bindCopyToFix(fix, branch string) error {
 // own, or one bound to no fix (fixOfCopy). A request with no branch of a fix takes the copy as it
 // finds it, as every such request did before a copy was bound to anything.
 func boundToFix(bound, branch string) bool { return bound == "" || branch == "" || bound == branch }
-
-// holdsJJ is whether dir holds a jj workspace: a `.jj` directory. A dir that is not there holds
-// none, and a read that fails for another reason is the adoption's failure, named.
-func holdsJJ(dir string) (bool, error) {
-	info, err := os.Lstat(filepath.Join(dir, ".jj"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("worker-shim: read the fix's working copy %s: %w", dir, err)
-	}
-	return info.IsDir(), nil
-}
