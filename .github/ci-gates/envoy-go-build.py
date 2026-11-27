@@ -10,12 +10,12 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
     step_run("envoy-go-build", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
              ["./cmd/dispatch", "./cmd/listener"], mode="build"),
     # The architecture-note and spec-file rules and their commands: the closure of the five
-    # packages, tests, testdata and all, built from the list the unit step's `grep -Ev` leaves
-    # them out by.
+    # packages, tests, testdata and all, built from the list `.github/go-legs.yaml#elsewhere`
+    # names them in, which keeps them out of envoy-go's unit legs.
     step_run("envoy-go-build", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
     # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
-    # listener clients among them, and internal/wirecheck's), built from the list the unit
-    # step's `grep -Ev` leaves them out by.
+    # listener clients among them, and internal/wirecheck's), built from the list
+    # `.github/go-legs.yaml#elsewhere` names them in, which keeps them out of the unit legs.
     step_run("envoy-go-build", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
 ], exact=[
     # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
@@ -58,7 +58,11 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
 ], reads=reads(
     (f"{ENVOY}/**", f"{at('envoy-go-build', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included"),
     ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-build', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
-    ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/"),
+    ("packages/contracts/scripts/gen-go-tools.ts", "`packages/contracts/scripts/gen-go.ts#renderDispatchTools` imports renderDispatchTools, whose output --check compares"),
+    ("packages/contracts/scripts/gen-go-dispatch-frame.ts", "`packages/contracts/scripts/gen-go.ts#renderDispatchFrameSchema`, `packages/contracts/scripts/gen-go.ts#renderDispatchFrameSchemaGo` and `packages/contracts/scripts/gen-go.ts#renderDispatchFrameVerdicts` import the Dispatch frame renderers, whose outputs --check compares"),
+    ("packages/contracts/scripts/dispatch-frame-corpus.ts", "`packages/contracts/scripts/gen-go-dispatch-frame.ts#dispatchFrameCorpus` imports dispatchFrameCorpus, the payloads whose verdicts --check compares with fixtures/dispatch-frame-verdicts.json"),
+    (f"{FIX}/dispatch-frame-verdicts.json", "`packages/contracts/scripts/gen-go.ts#outputs` holds it, rendered by `packages/contracts/scripts/gen-go.ts#renderDispatchFrameVerdicts`: an output --check reads to compare with its render"),
+    ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/, and --check reads schemas/dispatch-frame.schema.json to compare"),
     # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
     # must start this job: the Run stands for what the command compiles, never for what it reads.
     ("packages/contracts/schemas/dispatch-openapi.json",

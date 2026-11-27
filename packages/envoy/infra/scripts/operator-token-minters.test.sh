@@ -29,7 +29,10 @@
 #     Secret Manager's NOT_FOUND and PERMISSION_DENIED are printed.
 #
 # Each row resets the world (so each plant is removed after its row), plants one thing, and holds
-# the run to its exit and to the line naming what it planted. The rows are in eight files of
+# the run to its exit and to the line naming what it planted. A row of a list of rights instead
+# plants the whole list in one world: each right on a ServiceAccount of its own (plant_rights), or
+# each permission through a role of its own on one member (plant_permissions), and holds one run a
+# world to each right's line (want_planted); row bf is two worlds. The rows are in eight files of
 # operator-token-minters/, by concern, each sourced below after the world and its helpers, and
 # each listing its rows in its header:
 #
@@ -43,8 +46,9 @@
 #     accounts, the hold writers, IAM impersonation and IAM writers, and a fleet member's project;
 #   - test-rows-pool.sh: the pool's other clusters: the project's other clusters, the pool
 #     project's own clusters, and the fleet's members;
-#   - test-rows-admission.sh: admission power outside the admission objects: a webhook's backend,
-#     a policy engine's resources, and an admission policy's parameter objects;
+#   - test-rows-admission.sh: admission power: the rights on the admission objects, and outside
+#     them a webhook's backend, a policy engine's resources, and an admission policy's parameter
+#     objects;
 #   - test-rows-become.sh: who can become a principal with a finding through a right a live role
 #     limits by name;
 #   - test-rows-fence.sh: the broker's pod fence, which credits what it refuses only when the
@@ -643,6 +647,90 @@ full_labels() {
   jq -r --arg op "cluster:$project/us-central1/operator-cluster" '
     [(.findings[], .credited[], .residuals[]) | .resource | select(startswith("cluster:"))]
     | map(select((test("^cluster:[^/]+/[^/]+/[^/]+$") | not) or (endswith("/operator-cluster") and . != $op))) | unique[]' "$1"
+}
+# --- A list of rights in one world. A row of such a list plants every right of it in one world,
+# each right on a ServiceAccount of its own (plant_rights), or each permission through a role of
+# its own on one member (plant_permissions), and judges the world by one run of the check
+# (want_planted): a run per right cost about 140 runs of the check a harness run. A right the check
+# does not ask leaves its line out. The ServiceAccount rows also check each account's other
+# findings (planted_problems); the permission rows check each role's line alone. What a finding
+# belongs to is read from its own line, never from a cluster's label or a subject's form: the
+# principal is the text before the line's first ": ", and a right's verb and resource are its first
+# two words. A line wanted whole is built from what the caller passes (SUFFIX, MEMBER, ATTACHED), so
+# a change to how the check names a cluster or a member changes those arguments alone. ---
+OWN_FINDINGS=()
+# plant_rights CLUSTER NAMESPACE SUFFIX ENTRY...: each ENTRY, `verb|group|resource|subresource|the
+# binding's namespace|the resource name=the right the run names` (an empty namespace is
+# cluster-wide, an empty name names none), granted on CLUSTER to NAMESPACE/right-<its place among
+# the ENTRYs>, a ServiceAccount that holds nothing else; adds to OWN_FINDINGS the finding each must
+# print, its right followed by SUFFIX (` on cluster <project>/<location>/<name>` off the operator's).
+plant_rights() {
+  local cluster="$1" ns="$2" suffix="$3" entry verb group resource sub gns name i=0
+  shift 3
+  for entry in "$@"; do
+    i=$((i + 1))
+    IFS='|' read -r verb group resource sub gns name <<<"${entry%%=*}"
+    add_sa "$cluster" "$ns" "right-$i"
+    subject_grant "$cluster" "$(sa_subject "$ns" "right-$i")" "$verb" "$group" "$resource" "$sub" "$gns" "$name"
+    OWN_FINDINGS+=("system:serviceaccount:$ns:right-$i"$'\t'"${entry#*=}$suffix")
+  done
+}
+# plant_permissions ATTACHED MEMBER PERMISSION...: each PERMISSION held by MEMBER on ATTACHED through
+# a role of its own that grants nothing else, projects/<project>/roles/only.<permission>; adds to
+# OWN_FINDINGS the finding each must print.
+plant_permissions() {
+  local attached="$1" member="$2" permission
+  shift 2
+  for permission in "$@"; do
+    role "projects/$project/roles/only.$permission" "$permission"
+    iam "$attached" "projects/$project/roles/only.$permission" "$member"
+    OWN_FINDINGS+=("$member"$'\t'"$permission on $attached through projects/$project/roles/only.$permission, granted at $attached")
+  done
+}
+# planted_problems MODE: each way the run's output departs from OWN_FINDINGS, one a line:
+# `missing: FINDING ...` for each finding OWN_FINDINGS holds that the run did not print; with MODE
+# own or only, `misread: FINDING ...` for each other finding naming a planted principal whose right
+# is another planted principal's own, or does not start with the verb and resource of one of its
+# own (a grant of one verb on one resource, naming no name or namespace, allows that verb on that
+# resource by name and in each namespace too, and a chain from it starts with the right it becomes
+# by); with MODE only, `unplanted: FINDING ...` for each finding naming any other principal. One
+# awk reads the output whole.
+planted_problems() {
+  local planted="$temporary_dir/planted-${world##*/}.tsv"
+  printf '%s\n' "${OWN_FINDINGS[@]}" >"$planted"
+  awk -F'\t' -v mode="$1" '
+    FNR == NR { want[$0] = 1; planted[$1] = 1; owned[$2] = 1; split($2, w, " "); stem[$1 "\t" w[1] " " w[2]] = 1; next }
+    /^FINDING / {
+      line = substr($0, 9); at = index(line, ": ")
+      if (!at) next
+      who = substr(line, 1, at - 1); right = substr(line, at + 2)
+      if ((who "\t" right) in want) { seen[who "\t" right] = 1; next }
+      if (who in planted) {
+        split(right, w, " ")
+        if (mode != "lines" && (right in owned || !((who "\t" w[1] " " w[2]) in stem))) print "misread: " $0
+      } else if (mode == "only") print "unplanted: " $0
+    }
+    END { for (k in want) if (!(k in seen)) { sub(/\t/, ": ", k); print "missing: FINDING " k } }' "$planted" - <<<"$output"
+}
+# want_planted WHAT MODE: the run printed each finding OWN_FINDINGS holds and, with MODE own or only,
+# nothing planted_problems names, and exited 1; it fails once, listing every problem, before it
+# reads the exit. With MODE own or only it holds itself to its control: the output with the last
+# planted finding moved onto the first planted principal reads as that finding misread and missing.
+# Empties OWN_FINDINGS.
+want_planted() {
+  local problems last first moved
+  problems="$(planted_problems "$2")"
+  [ -z "$problems" ] || fail "$1: ${problems//$'\n'/; }"
+  want_status 1 "$1"
+  first="${OWN_FINDINGS[0]%%$'\t'*}" last="${OWN_FINDINGS[-1]}"
+  if [ "$2" != lines ] && [ "$first" != "${last%%$'\t'*}" ]; then
+    moved="${output/$'\n'"FINDING ${last/$'\t'/: }"$'\n'/$'\n'"FINDING $first: ${last#*$'\t'}"$'\n'}"
+    [ "$moved" != "$output" ] || fail "$1: the control could not move the line 'FINDING ${last/$'\t'/: }'"
+    problems="$(output="$moved" planted_problems "$2")"
+    [[ "$problems" == *"misread: FINDING $first: ${last#*$'\t'}"* && "$problems" == *"missing: FINDING ${last/$'\t'/: }"* ]] ||
+      fail "$1: the control, the finding of ${last%%$'\t'*} moved onto $first, read as: ${problems:-nothing}"
+  fi
+  OWN_FINDINGS=()
 }
 rows=0
 passed() {

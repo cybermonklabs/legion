@@ -89,8 +89,8 @@ else
   # The previews' own custom roles, so a role the code declares is read as the code declares it.
   while IFS="$US" read -r -u 3 what name permissions _; do
     [ "$what" = role ] || continue
-    role_perms_file="$WORK/roles/$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_')"
-    printf '%s\n' "${permissions//,/$'\n'}" | sed '/^$/d' | sort -u >"$role_perms_file"
+    role_file "$name"
+    printf '%s\n' "${permissions//,/$'\n'}" | sed '/^$/d' | sort -u >"$ROLE_FILE"
   done 3<"$WORK/preview.rec"
   judged=0
   while IFS="$US" read -r -u 3 what a b c d e f g; do
@@ -108,7 +108,8 @@ else
             unknown "$step" "$f grants $d, whose permissions are unknown: $ROLE_ERROR"
             continue
           fi
-          granted="$(tr ' ' '\n' <<<"${CHECK_PERMS[$check]}" | grep -xF -f "$ROLE_FILE" | paste -sd, || true)"
+          role_granted "$check"
+          granted="$GRANTED"
           [ -n "$granted" ] || continue
           judged=$((judged + 1))
           attached="$a:$b"

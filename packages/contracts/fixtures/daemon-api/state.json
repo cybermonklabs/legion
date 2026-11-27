@@ -8,6 +8,20 @@
   },
   "admission": {
     "cap": 5,
+    "p0Holders": 1,
+    "p0Bound": {
+      "bound": 3,
+      "configured": 4,
+      "live": {
+        "bound": 3,
+        "setBy": {
+          "kind": "controller",
+          "session": "ses_controller"
+        },
+        "setAt": "2026-09-22T09:10:00Z",
+        "reason": "the P0 issues outran the gateway"
+      }
+    },
     "active": [
       "LEGION-208",
       "LEGION-210",
@@ -64,10 +78,13 @@
       "phase": "done",
       "status": "done",
       "tree": "LEGION-207",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "lingerUntil": "2026-09-22T10:10:12Z",
       "priority": null,
+      "resolvedPriority": 2,
+      "priorityFrom": "OTHER-5",
       "workers": {
         "implementer": {
           "claim": {
@@ -98,7 +115,14 @@
           "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
           "currentVersion": 4,
           "approvedVersion": 4,
-          "status": "approved"
+          "status": "open_on_basis",
+          "basis": {
+            "issue": "LEGION-200",
+            "artifactId": "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+            "version": 5,
+            "approver": "user:alice",
+            "approvedAt": "2026-09-20T15:02:41Z"
+          }
         }
       ],
       "check": {
@@ -124,6 +148,7 @@
       "phase": "implementing",
       "status": "in_progress",
       "tree": "LEGION-208",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -349,6 +374,7 @@
       "phase": "held",
       "status": "in_progress",
       "tree": "LEGION-210",
+      "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
@@ -409,6 +435,7 @@
       "phase": "implementing",
       "status": "in_progress",
       "tree": "LEGION-211",
+      "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "ancestry": [
@@ -416,6 +443,7 @@
         "LEGION-208"
       ],
       "priority": 1,
+      "resolvedPriority": 1,
       "workers": {
         "implementer": {
           "claim": {
@@ -472,6 +500,7 @@
       "phase": "awaiting_person",
       "status": "in_progress",
       "tree": "LEGION-212",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": 0,
@@ -522,10 +551,27 @@
       "phase": "admitted",
       "status": "todo",
       "tree": "LEGION-214",
+      "treeRuns": false,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "priority": null,
-      "workers": {}
+      "resolvedPriority": null,
+      "workers": {},
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "a4c9e2f7-1b3d-4e68-9f05-7d2b8c6e1a39",
+          "currentVersion": 2,
+          "approvedVersion": null,
+          "status": "pending_on_basis",
+          "basis": {
+            "issue": "LEGION-200",
+            "artifactId": "f3b8d1a6-5c27-4e90-8a14-6e9c2d7b0f58",
+            "version": 6,
+            "askId": "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75"
+          }
+        }
+      ]
     },
     "LEGION-218": {
       "key": "LEGION-218",
@@ -533,6 +579,7 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-218",
+      "treeRuns": true,
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "priority": null,
@@ -589,6 +636,7 @@
       "phase": "reviewing",
       "status": "needs_review",
       "tree": "LEGION-219",
+      "treeRuns": true,
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "priority": null,
@@ -1001,7 +1049,7 @@
         },
         "plugins": {
           "pi_legion": "10.4.0",
-          "pi_envoy": "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"
+          "pi_envoy": "https://[a URL with credentials]/pi-envoy-10.4.0.tgz"
         },
         "setup": [
           "/bin/sh",
@@ -1056,6 +1104,7 @@
       }
     },
     "admission_cap": 4,
+    "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
@@ -1078,9 +1127,9 @@
     "prompt_retire_limit": 3,
     "worker_wakes_per_minute": 12,
     "worker_wake_burst": 2,
-    "envoy_url": "http://xxxxx@envoy-listener.internal.example:9020",
+    "envoy_url": "http://[a URL with credentials]",
     "nats_urls": [
-      "nats://xxxxx@nats.internal.example:4222",
+      "nats://[a URL with credentials]",
       "nats://nats-2.internal.example:4222"
     ],
     "dispatch_url": "https://dispatch.internal.example",
@@ -1148,6 +1197,8 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"

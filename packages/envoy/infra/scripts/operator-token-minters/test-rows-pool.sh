@@ -27,13 +27,19 @@
 #   (y)  the same in the route password reader's namespace, naming that pair;
 #   (aa) a second cluster of the project named operator-cluster, in us-east1, holding the namespace
 #        envoy-operator, is a finding with --location us-central1, and UNKNOWN without it;
-#   (an) each escalation right alone, given to ci/runner on another cluster of the pool (impersonate
-#        users, groups and serviceaccounts, escalate and bind clusterroles, create, patch and update
-#        clusterrolebindings cluster-wide; bind and escalate roles and create, patch and update
-#        rolebindings in envoy-operator), exits 1 naming it;
-#   (as) on a GKE fleet member in another project, apps/deployer given alone impersonate groups,
-#        create clusterrolebindings, bind clusterroles, create or get nodes/proxy, or create pods in
-#        kube-system (where namespace-controller may create namespaces) exits 1 naming it;
+#   (an) each escalation right (impersonate users, groups and serviceaccounts, escalate and bind
+#        clusterroles, create, patch and update clusterrolebindings cluster-wide; bind and escalate
+#        roles and create, patch and update rolebindings in envoy-operator; create and get
+#        nodes/proxy), given on another cluster of the pool to a ServiceAccount that holds nothing
+#        else, is a finding naming it; no finding of that ServiceAccount names another planted
+#        account's right or a right of another verb or resource, and no other principal has a
+#        finding (one world, one ServiceAccount a right);
+#   (as) on a GKE fleet member in another project, impersonate groups, create clusterrolebindings,
+#        bind clusterroles, create or get nodes/proxy, or create pods in kube-system (where
+#        namespace-controller may create namespaces), each given to a ServiceAccount that holds
+#        nothing else, is a finding naming it, and no finding of that ServiceAccount names another
+#        planted account's right or a right of another verb or resource (one world, one
+#        ServiceAccount a right);
 #   (az) with --pool-project example-pool, that project's own cluster holding the namespace
 #        envoy-operator exits 1 naming it, and a pool project whose clusters cannot be listed reads
 #        UNKNOWN;
@@ -487,72 +493,56 @@ if row gn; then
   passed "(gn) a guarded namespace on another cluster brings the operator's rights there, naming each holder with the cluster's label and no principal-less finding; without one the guard rights' review stands; copies without the operator's rights, or with the old namespace finding, are caught"
 fi
 
-# --- (an) The escalation rights on another cluster of the pool, each alone. Each entry is the grant
-# (verb, API group, resource, the binding's namespace or none for cluster-wide) and the right the
+# --- (an) The escalation rights on another cluster of the pool, each given to a ServiceAccount of
+# its own there that holds nothing else, ci/right-<its place in the list>, all in one world and one
+# run (plant_rights, want_planted). Each entry is the grant (verb, API group, resource, subresource,
+# the binding's namespace or none for cluster-wide, the resource name or none) and the right the
 # run must name. ---
 escalation_rights=(
-  "impersonate||users|=impersonate users cluster-wide"
-  "impersonate||groups|=impersonate groups cluster-wide"
-  "impersonate||serviceaccounts|=impersonate serviceaccounts cluster-wide"
-  "escalate|rbac.authorization.k8s.io|clusterroles|=escalate clusterroles.rbac.authorization.k8s.io cluster-wide"
-  "bind|rbac.authorization.k8s.io|clusterroles|=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
-  "create|rbac.authorization.k8s.io|clusterrolebindings|=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
-  "patch|rbac.authorization.k8s.io|clusterrolebindings|=patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
-  "update|rbac.authorization.k8s.io|clusterrolebindings|=update clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
-  "bind|rbac.authorization.k8s.io|roles|envoy-operator=bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
-  "escalate|rbac.authorization.k8s.io|roles|envoy-operator=escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
-  "create|rbac.authorization.k8s.io|rolebindings|envoy-operator=create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
-  "patch|rbac.authorization.k8s.io|rolebindings|envoy-operator=patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
-  "update|rbac.authorization.k8s.io|rolebindings|envoy-operator=update rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
-  "create||nodes/proxy|=create nodes/proxy cluster-wide"
-  "get||nodes/proxy|=get nodes/proxy cluster-wide"
+  "impersonate||users||||=impersonate users cluster-wide"
+  "impersonate||groups||||=impersonate groups cluster-wide"
+  "impersonate||serviceaccounts||||=impersonate serviceaccounts cluster-wide"
+  "escalate|rbac.authorization.k8s.io|clusterroles||||=escalate clusterroles.rbac.authorization.k8s.io cluster-wide"
+  "bind|rbac.authorization.k8s.io|clusterroles||||=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
+  "create|rbac.authorization.k8s.io|clusterrolebindings||||=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "patch|rbac.authorization.k8s.io|clusterrolebindings||||=patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "update|rbac.authorization.k8s.io|clusterrolebindings||||=update clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "bind|rbac.authorization.k8s.io|roles||envoy-operator|=bind roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "escalate|rbac.authorization.k8s.io|roles||envoy-operator|=escalate roles.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "create|rbac.authorization.k8s.io|rolebindings||envoy-operator|=create rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "patch|rbac.authorization.k8s.io|rolebindings||envoy-operator|=patch rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "update|rbac.authorization.k8s.io|rolebindings||envoy-operator|=update rolebindings.rbac.authorization.k8s.io in envoy-operator, guarding envoy-operator/envoy-operator"
+  "create||nodes|proxy|||=create nodes/proxy cluster-wide"
+  "get||nodes|proxy|||=get nodes/proxy cluster-wide"
 )
-escalation_row() {
-  local right="${1#*=}" verb group resource sub="" namespace
-  IFS='|' read -r verb group resource namespace <<<"${1%%=*}"
-  case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
+if row an; then
   base_world
   add_cluster other-cluster us-east1
-  add_sa other-cluster ci runner
-  subject_grant other-cluster "$(sa_subject ci runner)" "$verb" "$group" "$resource" "$sub" "$namespace" ""
+  plant_rights other-cluster ci " on cluster $project/us-east1/other-cluster" "${escalation_rights[@]}"
   run
-  want_status 1 "ci/runner with $right on other-cluster"
-  want_line "FINDING system:serviceaccount:ci:runner: $right on cluster $project/us-east1/other-cluster" "ci/runner with $right on other-cluster"
-  [ "$(count_prefix 'FINDING system:serviceaccount:ci:runner: ')" -eq "$(count_prefix 'FINDING ')" ] ||
-    fail "ci/runner with $right on other-cluster: a finding names another principal"
-}
-if row an; then
-  each escalation_row "${escalation_rights[@]}"
-  passed "(an) each of the ${#escalation_rights[@]} escalation rights, given alone to ci/runner on another cluster of the pool, exits 1 naming it"
+  want_planted "each escalation right on other-cluster given to a ServiceAccount of its own" only
+  passed "(an) each of the ${#escalation_rights[@]} escalation rights, given on another cluster of the pool to a ServiceAccount that holds nothing else, is a finding naming it; no finding of that ServiceAccount names another planted account's right or a right of another verb or resource, and no other principal has a finding"
 fi
 
 # --- (as) The escalation rights, nodes/proxy and the system namespaces on a GKE fleet member in
-# another project, each alone given to apps/deployer there. Each entry is the grant (verb, API group,
-# resource[/subresource], the binding's namespace or none for cluster-wide) and the right the run
-# must name. ---
+# another project, each given to a ServiceAccount of its own there that holds nothing else,
+# apps/right-<its place in the list>, all in one world and one run. Each entry is the grant, as
+# (an)'s are, and the right the run must name. ---
 member_rights=(
-  "impersonate||groups|=impersonate groups cluster-wide"
-  "create|rbac.authorization.k8s.io|clusterrolebindings|=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
-  "bind|rbac.authorization.k8s.io|clusterroles|=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
-  "create||nodes/proxy|=create nodes/proxy cluster-wide"
-  "get||nodes/proxy|=get nodes/proxy cluster-wide"
-  "create||pods|kube-system=create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
+  "impersonate||groups||||=impersonate groups cluster-wide"
+  "create|rbac.authorization.k8s.io|clusterrolebindings||||=create clusterrolebindings.rbac.authorization.k8s.io cluster-wide"
+  "bind|rbac.authorization.k8s.io|clusterroles||||=bind clusterroles.rbac.authorization.k8s.io cluster-wide"
+  "create||nodes|proxy|||=create nodes/proxy cluster-wide"
+  "get||nodes|proxy|||=get nodes/proxy cluster-wide"
+  "create||pods||kube-system|=create pods in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
 )
-member_right_row() {
-  local right="${1#*=}" verb group resource sub="" namespace
-  IFS='|' read -r verb group resource namespace <<<"${1%%=*}"
-  case "$resource" in */*) sub="${resource#*/}" resource="${resource%%/*}" ;; esac
+if row as; then
   base_world
   grade_member
-  subject_grant grade-cluster "$(sa_subject apps deployer)" "$verb" "$group" "$resource" "$sub" "$namespace" ""
+  plant_rights grade-cluster apps " on cluster example-grade/us-east1/grade-cluster" "${member_rights[@]}"
   run
-  want_status 1 "apps/deployer with $right on the fleet member grade"
-  want_line "FINDING system:serviceaccount:apps:deployer: $right on cluster example-grade/us-east1/grade-cluster" \
-    "apps/deployer with $right on the fleet member grade"
-}
-if row as; then
-  each member_right_row "${member_rights[@]}"
-  passed "(as) each of the ${#member_rights[@]} escalation and system-namespace rights, given alone to a ServiceAccount on a GKE fleet member in another project, exits 1 naming it"
+  want_planted "each right on the fleet member grade given to a ServiceAccount of its own" own
+  passed "(as) each of the ${#member_rights[@]} escalation and system-namespace rights, given on a GKE fleet member in another project to a ServiceAccount that holds nothing else, is a finding naming it, and no finding of that ServiceAccount names another planted account's right or a right of another verb or resource"
 fi
 
 # --- (az) The pool project's own clusters, with --pool-project naming another project. ---

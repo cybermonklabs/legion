@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -100,6 +102,11 @@ func testOptions() Options {
 		BusyBackoff:           time.Millisecond,
 		TerminationGrace:      200 * time.Millisecond,
 		ProbeInterval:         time.Hour,
+		// The rig's runtime never runs its own gh refresher tick, about 292 years: the tests that
+		// exercise the refresher drive its ticks themselves (refreshTick, readCacheHealth) and count
+		// what each does, and a tick of the runtime's own a run reached would add its reads and
+		// writes to theirs. A test that wants the runtime's ticks sets a short interval.
+		GitHubRefreshInterval: time.Duration(math.MaxInt64),
 		AdoptTimeout:          time.Minute,
 		Tokens:                staticTokens{},
 		GitHubCredential:      staticCredential,
@@ -504,11 +511,17 @@ type rig struct {
 	// feeds, when set, are the informers' feeds withBreakableFeeds serves.
 	feeds *breakableFeeds
 	uids  atomic.Int64
+	// watches counts the watches the rig's fakes opened, by resource (countWatches).
+	watchMu sync.Mutex
+	watches map[string]int
 
-	// hold stops the controller creating pods; autoStart makes a pod it creates scheduled on a
-	// node, past workspace-init, and Running at once.
-	hold      atomic.Bool
-	autoStart atomic.Bool
+	// hold stops the controller creating pods, set through setHold; autoStart makes a pod it
+	// creates scheduled on a node, past workspace-init, and Running at once. started counts the
+	// controller's passes begun and passed the last one ended: a pass reads hold once, before it
+	// lists the Sandboxes (control).
+	hold            atomic.Bool
+	autoStart       atomic.Bool
+	started, passed atomic.Int64
 	// suspendDelay is how long a pod the controller deletes stays terminating first, in
 	// nanoseconds. It is atomic because a test may shorten it while control() is running, to ask
 	// for a pod it has been holding terminating to end now: g.suspendDelay.Store(0) in
@@ -555,17 +568,66 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// readsWorkspace is what every fake launcher's hello says of reading the issue workspace
+	// (shimwire.LauncherHello.ReadsWorkspace, withWorkspaceRead), and workspaceAnswer is what each
+	// such launcher answers a workspace-work request with, its ID set to the request's.
+	readsWorkspace  bool
+	workspaceAnswer shimwire.WorkspaceWorkResult
 	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
 	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
 	heldStops <-chan struct{}
+	// cacheDial, when set, is the runtime's cacheDial, installed before the runtime starts
+	// (withCacheDial).
+	cacheDial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
 
+// withWaitsToTheDeadline sets the runtime's boot timeout to what is left of the test binary's
+// deadline when the rig is made (testwait.Remaining), in place of testOptions' 2 s. That timeout
+// bounds each wait of a launch on the wall clock — for its old pod to end, for its new pod, for its
+// role launcher's hello — and the wait for the answer to a stop, so no such wait gives up before the
+// binary's own deadline is near. It is for a test whose launches must not give up: each of those
+// waits ends there on an event the rig brings (its controller deleting or making a pod, a fake
+// launcher's hello or answer), and a loaded machine can put that event off past any fixed span. The
+// 2 s failed TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch in CI run
+// 45752994928: its launch gave up while the controller had not yet deleted the earlier pod. A test
+// that means a launch to give up at its boot timeout sets that timeout itself. The timeout is at
+// most a day: under go test's -timeout 0, Remaining is about 36 years, and the launch's own bound
+// (launchBound), about ten boot timeouts, would wrap a time.Duration.
+func withWaitsToTheDeadline() rigOption {
+	return func(g *rig, o *Options) { o.BootTimeout = min(testwait.Remaining(g.t), 24*time.Hour) }
+}
+
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
+
+// withCacheDial has the runtime open its cache health reads through dial, installed before the
+// runtime starts. start runs the gh refresher on a goroutine of its own, and each of its ticks
+// (r.gitHubRefresh: a minute in the daemon; out of reach in this rig unless a test sets it) reads
+// the caches' health through r.cacheDial; start's go statement orders a dial installed before it
+// ahead of every such read. A test that set the field once newRig had returned was ordered ahead
+// of a tick's read only by the store locks the tick happens to take before it, which no test
+// should rely on.
+func withCacheDial(dial func(ctx context.Context, network, address string) (net.Conn, error)) rigOption {
+	return func(g *rig, _ *Options) { g.cacheDial = dial }
+}
+
+// withHeld starts the controller stand-in with its hold on (setHold), so it makes no pod from its
+// first pass: for a test that seeds a Running Sandbox it means to have no pod. A hold set after
+// newRig returns comes too late for such a Sandbox, since control's first pass can run before it
+// and make the pod. TestProbeImageReplacesOnlyItsOwnProjectsLeftover's foreign probe Sandbox got
+// one that way, the pod reached the runtime's store (the fakes' watches ignore label selectors)
+// without its Sandbox, and the probe waited 10 s for it to go instead of refusing the Sandbox.
+func withHeld() rigOption { return func(g *rig, _ *Options) { g.hold.Store(true) } }
+
+// withoutAutoStart has the controller stand-in leave each pod it makes Pending and on no node from
+// its first pass (autoStart), for a rig that drives its pods' lifecycle itself, as newProbeRig's
+// does. Turned off once newRig had returned, a pass in that gap could already have made a seeded
+// Running Sandbox's pod scheduled and Running.
+func withoutAutoStart() rigOption { return func(g *rig, _ *Options) { g.autoStart.Store(false) } }
 
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
 // launcher holds it installed when installed is set, as one of a pod whose launcher already took
@@ -598,6 +660,13 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withWorkspaceRead has every fake launcher's hello say it reads the issue workspace, and answer
+// each workspace-work request with answer, as a launcher of this release answers the daemon's read
+// of a pod no role process reads through (R6 of #5285).
+func withWorkspaceRead(answer shimwire.WorkspaceWorkResult) rigOption {
+	return func(g *rig, _ *Options) { g.readsWorkspace, g.workspaceAnswer = true, answer }
+}
 
 // withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
 // is closed.
@@ -800,6 +869,8 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		dyn, kube = limitedDynamic{dyn, g.limit}, limitedKube{kube, g.limit, g.askedSecret}
 	}
 	g.clients = runtimeClients{informers: kubeClients{dyn: g.dyn, kube: g.kube}, requests: kubeClients{dyn: dyn, kube: kube}}
+	g.countWatches(&g.dyn.Fake, &g.kube.Fake)
+	opened := g.openedWatches()
 	if g.prober {
 		p, err := newProber(ctx, g.clients, opts)
 		if err != nil {
@@ -811,15 +882,85 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		if err != nil {
 			t.Fatal(err)
 		}
+		if g.cacheDial != nil {
+			r.cacheDial = g.cacheDial
+		}
 		if err := r.start(ctx, g.clients); err != nil {
 			t.Fatal(err)
 		}
 		g.r = r
 	}
+	g.awaitWatches(opened)
 	if !g.noController {
 		go g.control()
 	}
 	return g
+}
+
+// informerResources are the resources every runtime's informers watch (startInformers).
+var informerResources = []string{"sandboxes", "pods", "services"}
+
+// countWatches has each of fakes count every watch it opens, under the resource the watch is of
+// (openedWatches). The fake tracker opens a watch at the present and replays nothing an informer's
+// list saw before it, so a change made between an informer's list and its watch never reaches the
+// runtime's store: a Sandbox a test deleted there stayed in it for ever
+// (TestAConfirmingReadTheReplacementsDeleteOvertakesIsUncertain, which waited 638 s). So every
+// runtime started on the rig's fakes is waited for until its informers have opened their watches
+// (awaitWatches). A watch reactor a test adds after newRig runs before this count, which then sees
+// nothing of the watches it answers.
+func (g *rig) countWatches(fakes ...*k8stesting.Fake) {
+	for _, fake := range fakes {
+		rest := slices.Clone(fake.WatchReactionChain)
+		fake.PrependWatchReactor("*", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			for _, reactor := range rest {
+				if !reactor.Handles(a) {
+					continue
+				}
+				handled, w, err := reactor.React(a)
+				if !handled {
+					continue
+				}
+				if err == nil {
+					g.watchMu.Lock()
+					if g.watches == nil {
+						g.watches = map[string]int{}
+					}
+					g.watches[a.GetResource().Resource]++
+					g.watchMu.Unlock()
+				}
+				return true, w, err
+			}
+			return false, nil, nil
+		})
+	}
+}
+
+// openedWatches is how many watches the rig's fakes have opened so far, by resource.
+func (g *rig) openedWatches() map[string]int {
+	g.watchMu.Lock()
+	defer g.watchMu.Unlock()
+	return maps.Clone(g.watches)
+}
+
+// awaitWatches waits until the rig's fakes have opened a watch of each of informerResources more
+// than before counted: the watches of a runtime started since.
+func (g *rig) awaitWatches(before map[string]int) {
+	g.t.Helper()
+	testwait.Eventually(g.t, "the runtime's informers to open their watches", func() bool {
+		now := g.openedWatches()
+		return !slices.ContainsFunc(informerResources, func(resource string) bool { return now[resource] <= before[resource] })
+	})
+}
+
+// startWatched runs start, which starts a runtime's informers on the rig's fakes, failing the test on
+// its error, and waits until those informers have opened their watches (countWatches).
+func (g *rig) startWatched(start func() error) {
+	g.t.Helper()
+	before := g.openedWatches()
+	if err := start(); err != nil {
+		g.t.Fatal(err)
+	}
+	g.awaitWatches(before)
 }
 
 // newDynamic is the dynamic fake holding objects, each under the resource an API server serves
@@ -985,7 +1126,8 @@ func (g *rig) clearActions() {
 // and the headless Service of a Sandbox that asks for one, which it makes as the controller does
 // (cacheService) when no Service of the name exists and removes once its Sandbox is gone, as the
 // garbage collector would. Its own requests go through the tracker directly, so they never appear
-// among the runtime's.
+// among the runtime's. Each pass reads hold once, before it lists the Sandboxes, and decides on
+// that reading (setHold).
 func (g *rig) control() {
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
@@ -997,61 +1139,96 @@ func (g *rig) control() {
 			return
 		case <-tick.C:
 		}
-		list, err := g.dyn.Tracker().List(sandboxGVR, sandboxGVR.GroupVersion().WithKind("Sandbox"), testNamespace)
-		if err != nil {
+		pass := g.started.Add(1)
+		g.reconcile(g.hold.Load(), terminating, services)
+		g.passed.Store(pass)
+	}
+}
+
+// reconcile is one pass of the controller stand-in (control), creating no pod when hold is set. It
+// makes or ends a pod only while the Sandbox the pass listed is still in the mode its list read
+// (stillMode).
+func (g *rig) reconcile(hold bool, terminating map[types.UID]time.Time, services map[string]types.UID) {
+	list, err := g.dyn.Tracker().List(sandboxGVR, sandboxGVR.GroupVersion().WithKind("Sandbox"), testNamespace)
+	if err != nil {
+		return
+	}
+	items, _ := list.(*unstructured.UnstructuredList)
+	if items == nil {
+		return
+	}
+	live := map[types.UID]bool{}
+	for i := range items.Items {
+		s, err := decodeSandbox(&items.Items[i])
+		if err != nil || s.DeletionTimestamp != nil {
 			continue
 		}
-		items, _ := list.(*unstructured.UnstructuredList)
-		if items == nil {
-			continue
-		}
-		live := map[types.UID]bool{}
-		for i := range items.Items {
-			s, err := decodeSandbox(&items.Items[i])
-			if err != nil || s.DeletionTimestamp != nil {
-				continue
-			}
-			live[s.UID] = true
-			if s.Spec.Service != nil && *s.Spec.Service {
-				if _, err := g.kube.Tracker().Get(servicesGVR, testNamespace, s.Name); err != nil {
-					if g.kube.Tracker().Add(cacheService(s.Name, s.UID)) == nil {
-						services[s.Name] = s.UID
-					}
+		live[s.UID] = true
+		if s.Spec.Service != nil && *s.Spec.Service {
+			if _, err := g.kube.Tracker().Get(servicesGVR, testNamespace, s.Name); err != nil {
+				if g.kube.Tracker().Add(cacheService(s.Name, s.UID)) == nil {
+					services[s.Name] = s.UID
 				}
-			}
-			pod := g.pod(s.Name)
-			owned := ownedBy(pod, s.UID)
-			switch {
-			case owned && pod.DeletionTimestamp != nil:
-				// A pod the cluster is terminating goes once its grace has passed, whatever its
-				// Sandbox says by then. Only the suspended branch below used to remove one, so a
-				// pod still terminating when its Sandbox came back to Running was in a state this
-				// controller could not leave: it neither removed that pod nor made a replacement,
-				// since a replacement needs none to be there. A launch whose own wait for the pod
-				// to go accepts a terminating one - which production's does, because in a cluster
-				// such a pod is on its way out - then waited for a pod this controller was never
-				// going to create. That is what red this package's pod-drift row about 4 times in
-				// 100 under load, at every bound it was given, with the controller reading
-				// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
-				if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
-					_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
-				}
-			case s.mode() == modeSuspended && owned:
-				if _, ok := terminating[pod.UID]; !ok {
-					terminating[pod.UID] = time.Now()
-					g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
-				}
-			case s.mode() == modeRunning && pod == nil && !g.hold.Load():
-				g.createPod(s)
 			}
 		}
-		for name, uid := range services {
-			if !live[uid] {
-				_ = g.kube.Tracker().Delete(servicesGVR, testNamespace, name)
-				delete(services, name)
+		pod := g.pod(s.Name)
+		owned := ownedBy(pod, s.UID)
+		switch {
+		case owned && pod.DeletionTimestamp != nil:
+			// A pod the cluster is terminating goes once its grace has passed, whatever its
+			// Sandbox says by then. Only the suspended branch below used to remove one, so a
+			// pod still terminating when its Sandbox came back to Running was in a state this
+			// controller could not leave: it neither removed that pod nor made a replacement,
+			// since a replacement needs none to be there. A launch whose own wait for the pod
+			// to go accepts a terminating one - which production's does, because in a cluster
+			// such a pod is on its way out - then waited for a pod this controller was never
+			// going to create. That is what red this package's pod-drift row about 4 times in
+			// 100 under load, at every bound it was given, with the controller reading
+			// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
+			if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
+				_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
 			}
+		case s.mode() == modeSuspended && owned:
+			if _, ok := terminating[pod.UID]; !ok && g.stillMode(s, modeSuspended) {
+				terminating[pod.UID] = time.Now()
+				g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
+			}
+		case s.mode() == modeRunning && pod == nil && !hold && g.stillMode(s, modeRunning):
+			g.createPod(s)
 		}
 	}
+	for name, uid := range services {
+		if !live[uid] {
+			_ = g.kube.Tracker().Delete(servicesGVR, testNamespace, name)
+			delete(services, name)
+		}
+	}
+}
+
+// stillMode is whether the Sandbox the pass listed as s is, as the API holds it now, still that
+// Sandbox in mode: the pass decides to make or to end a pod on the Sandbox as it stands, not as its
+// list found it a pass earlier, which a launch may since have suspended or set Running.
+func (g *rig) stillMode(s *sandbox, mode string) bool {
+	current := g.sandbox(s.Name)
+	return current != nil && current.UID == s.UID && current.DeletionTimestamp == nil && current.mode() == mode
+}
+
+// setHold has the controller stand-in create no pod while on is set, and returns once a pass of
+// it that began after the change has ended, so no pass that read the setting before is still in
+// flight when the test acts on the new one. A pass that listed a Sandbox Running and read hold
+// only after the test had released it created a pod for a Sandbox the runtime had suspended in the
+// meantime, and then ended that pod under the launch that had taken it
+// (TestAKeptVolumeOutlivesItsPodsAndItsRelease, `uid-pod-17, want uid-pod-16`).
+func (g *rig) setHold(on bool) {
+	g.t.Helper()
+	g.hold.Store(on)
+	if g.noController {
+		return
+	}
+	after := g.started.Load() + 1
+	g.eventually("a pass of the controller stand-in that began after its hold changed", func() bool {
+		return g.passed.Load() >= after
+	})
 }
 
 var servicesGVR = corev1.SchemeGroupVersion.WithResource("services")
@@ -1362,13 +1539,19 @@ func answerGeneration(command shimwire.Frame, running *uint64) (answers []shimwi
 func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 
 // connectRunning is a fake launcher connection for token whose launcher already runs generation
-// running (0 for none), as one that survived a daemon restart reports its child at once.
+// running (0 for none), as one that survived a daemon restart reports its child at once. It returns
+// once the runtime has read the launcher's first state, so the session is ready: a read of the
+// pod's workspace takes only a ready launcher and waits for none (launchers.workspaceReader), and a
+// launch that read before the server goroutine had read that state found no launcher connected.
+// The rig calls it from the fake controller's goroutine too (createPod), so a launcher that never
+// gets ready is an error of the test, not a stop of the goroutine.
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
+		ReadsWorkspace: g.readsWorkspace,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -1425,9 +1608,30 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 					installed = installed || len(checks[command.ID]) == command.Count
 					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, OK: true, Installed: installed})
 				}
+			case shimwire.WorkspaceWork:
+				answer := g.workspaceAnswer
+				answer.ID = command.ID
+				_ = writer.WriteFrame(answer)
 			}
 		}
 	}()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		select {
+		case <-session.ready:
+			return
+		case <-time.After(5 * time.Millisecond):
+		}
+		session.mu.Lock()
+		closed := session.closed
+		session.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			g.t.Errorf("the fake launcher of %s sent its first state, and the runtime had not read it 10s later", token)
+			return
+		}
+	}
 }
 
 // keptSince is what the resolver reads off the Sandbox of token's pod for a hello

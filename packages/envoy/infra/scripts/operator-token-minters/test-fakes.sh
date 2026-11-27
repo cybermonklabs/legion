@@ -4,9 +4,11 @@
 # operator-token-minters.test.sh puts first on PATH, each answering from the world directory a run
 # names. Sourced by the test, whose header says what each fake models.
 # fake writes the fake command $1 from the body on stdin, after the header every fake shares: the
-# world directory it reads, which each run names in OPERATOR_MINTERS_WORLD.
+# world directory it reads, which each run names in OPERATOR_MINTERS_WORLD. A fake starts the bash
+# this test runs under ($BASH) by its path: a run calls the fakes about 56 times, and an
+# `env bash` line would start env for each.
 fake() {
-  { printf '#!/usr/bin/env bash\nset -euo pipefail\nworld="${OPERATOR_MINTERS_WORLD:?the test names the world in OPERATOR_MINTERS_WORLD}"\n' && cat; } >"$fake_bin/$1"
+  { printf '#!%s\nset -euo pipefail\nworld="${OPERATOR_MINTERS_WORLD:?the test names the world in OPERATOR_MINTERS_WORLD}"\n' "$BASH" && cat; } >"$fake_bin/$1"
   chmod +x "$fake_bin/$1"
 }
 
@@ -43,11 +45,11 @@ case "${words[*]}" in
   "iam roles describe "*)
     role="${words[3]}"
     [ ! -e "$world/refuse-describe" ] || refuse iam.roles.describe "Permission 'iam.roles.get' denied on resource (or it may not exist)."
-    if ! jq -e --arg r "$role" 'has($r)' "$world/roles.json" >/dev/null; then
+    # One jq: the role's description when the role table holds it, else nothing (jq -e exits 4).
+    jq -e --arg r "$role" 'select(has($r)) | {name: $r, title: $r, stage: "GA", etag: "AA==", includedPermissions: .[$r]}' "$world/roles.json" || {
       echo "ERROR: (gcloud.iam.roles.describe) NOT_FOUND: The role named $role was not found." >&2
       exit 1
-    fi
-    jq --arg r "$role" '{name: $r, title: $r, stage: "GA", etag: "AA==", includedPermissions: .[$r]}' "$world/roles.json"
+    }
     ;;
   "projects describe $project")
     jq -n --arg p "$project" --arg n "$number" \
@@ -308,9 +310,10 @@ forbidden() {
 }
 # A world marked token-secret-data gives each token Secret data, as a real API server holds it;
 # every call then looks under the run's work directories ($TMPDIR/operator-token-minters.*) for
-# that data, and records where it finds it (row cp).
-secret_data_b64="$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"
+# that data, and records where it finds it (row cp). The data's base64 is worked out in that world
+# alone: every other call of this fake would start a base64 for nothing.
 if [ -e "$dir/token-secret-data" ]; then
+  secret_data_b64="$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"
   for work in "${TMPDIR:-/tmp}"/operator-token-minters.*/; do
     [ -d "$work" ] || continue
     found="$(grep -rlF -e "$secret_data_b64" -e SECRET-DATA-CANARY-7f3a "$work" 2>/dev/null || true)"
@@ -371,8 +374,13 @@ case "${args[*]}" in
     mark() { [ -e "$dir/$1" ] && echo on || echo off; }
     # A world marked review-refuse-holding or review-short-holding (a subject, as the record's
     # last field writes it) refuses, or answers one review short, the one call that asks about
-    # that subject, whichever batch that is (row cz's later-batch items).
-    holding() { [ -s "$dir/$1" ] && cut -f7 "$dir/review-requests-$calls.tsv" | grep -qxF -- "$(cat "$dir/$1")"; }
+    # that subject, whichever batch that is (row cz's later-batch items). The subjects reach grep
+    # through a process substitution, never `cut | grep -q`: this fake runs under pipefail, grep
+    # stops at its first match (the marked subject is its batch's first line), and cut's next write
+    # then fails the pipeline with SIGPIPE, so the call that holds the subject read as one that does
+    # not and answered in full (row cz's later-refused item's run so passed its step under load
+    # on 2026-11-26).
+    holding() { [ -s "$dir/$1" ] && grep -qxF -- "$(cat "$dir/$1")" < <(cut -f7 "$dir/review-requests-$calls.tsv"); }
     ! holding review-refuse-holding ||
       forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
     short=off
@@ -424,8 +432,10 @@ case "${args[*]}" in
     # kube-system/system::extension-apiserver-authentication-reader, and one binding of each grant,
     # naming its subject: a RoleBinding when the grant names a namespace, to the grant's Role when
     # it has role_kind Role, named by the grant's binding_name and role_name when it has them. A
-    # world marked no-rolebindings answers the ClusterRoleBindings alone,
-    # as an answer whose RoleBinding half came back empty would (row cu).
+    # grant marked unlisted has no binding here, as an authorizer other than RBAC (a webhook) would
+    # allow it, though the reviews still allow it (row dc). A world marked no-rolebindings answers
+    # the ClusterRoleBindings alone, as an answer whose RoleBinding half came back empty would (row
+    # cu).
     shaped_answer bindings
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
     jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" --arg rolebindings "$([ -e "$dir/no-rolebindings" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
@@ -438,7 +448,7 @@ case "${args[*]}" in
                      labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
           roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "extension-apiserver-authentication-reader"},
           subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "User", name: "system:kube-scheduler"}]}]
-      + [to_entries[] | .key as $i | .value as $g | {
+      + [to_entries[] | .key as $i | .value as $g | select($g.unlisted != true) | {
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: (if $g.namespace == null then "ClusterRoleBinding" else "RoleBinding" end),
           metadata: ({name: ($g.binding_name // "planted-\($i)")} + (if $g.namespace == null then {} else {namespace: $g.namespace} end)),

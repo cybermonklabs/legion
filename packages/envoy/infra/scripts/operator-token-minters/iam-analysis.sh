@@ -75,8 +75,11 @@ analyze() {
     ANALYZE_ERROR="the analysis is not the JSON Policy Analyzer answers: $(first_line "$WORK/analysis.err")"
     return 1
   fi
-  if [ "$(cut -d"$US" -f1 "$WORK/analysis.rec" | head -n 1)" = error ]; then
-    ANALYZE_ERROR="$(cut -d"$US" -f2- "$WORK/analysis.rec" | head -n 1)"
+  # The first record, read by the shell: an error record is `error` and its reason.
+  local first reason
+  IFS="$US" read -r first reason <"$WORK/analysis.rec" || true
+  if [ "$first" = error ]; then
+    ANALYZE_ERROR="$reason"
     return 1
   fi
 }
@@ -116,12 +119,16 @@ live_iam() {
   if [ "$check" = dbsecret ] && [ "$RBAC_OK" != true ]; then
     unknown "$step" "the RBAC step's principals' reviews for get on it could not be made (live: RBAC)"
   fi
-  # Never `cut | grep -q` under pipefail: grep stops at its first match, and a long answer's next
-  # write then fails the pipeline with SIGPIPE, reading a witness that is there as one that is not.
-  if [ -n "$witness_member" ] && ! grep -qxF -- "$witness_member" < <(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec"); then
+  # The holders, each once, and whether the witness is among them, in one read of the records (an
+  # awk that reads them whole: never `cut | grep -q` under pipefail, where grep stops at its first
+  # match and a long answer's next write fails the pipeline with SIGPIPE, reading a witness that is
+  # there as one that is not).
+  local witness_listed
+  read -r holders witness_listed < <(WITNESS="$witness_member" awk -F"$US" '$1 == "row" { if (!seen[$2]++) n++; if ($2 == ENVIRON["WITNESS"]) listed = 1 }
+    END { print n + 0, listed + 0 }' "$WORK/analysis.rec")
+  if [ -n "$witness_member" ] && [ "$witness_listed" != 1 ]; then
     unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete"
   fi
-  holders="$(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec" | sort -u | wc -l | tr -d ' ')"
   # A chain record's holder role and holder are in its written-out chain, the sentence's part; a row
   # record's seventh field, read here as designed, is its binding's condition.
   while IFS="$US" read -r -u 3 what identity role attached perms how designed _ hattached _ text; do
