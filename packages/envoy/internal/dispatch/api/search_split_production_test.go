@@ -206,7 +206,7 @@ func searchSplitWrittenIn(t *testing.T, statement string, types, values []string
 	}
 	var written strings.Builder
 	for span := range sqlSpans(statement) {
-		if span.kind != sqlCode {
+		if span.kind != sqlCodeSpan {
 			written.WriteString(span.text)
 			continue
 		}

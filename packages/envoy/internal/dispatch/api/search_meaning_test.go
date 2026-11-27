@@ -1278,7 +1278,7 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 
 // TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep is the defect at the other boundary:
 // not the project's, but q's own three filters (searchRowFilters). The route says ?status=,
-// ?author= and ?updated_since= narrow every leg of the search (routes_table.go, GET
+// ?author= and ?updated_since= narrow every leg of the search (the route files of GET
 // /api/v1/search), and main applies all three inside the comment arm's ordered, limited
 // candidate select. The arm this change buys takes the nearest searchWindowCandidates comment
 // windows first and applies them above that limit, so one crowd of windows the filter would

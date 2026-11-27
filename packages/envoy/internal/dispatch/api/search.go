@@ -1743,7 +1743,7 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 // searchWindowCandidates comment windows first and filters above that limit, so one author's
 // thousand nearer windows fill the candidate set and a search for another author's comment is
 // answered with none of them, where the route says each of the three narrows every leg
-// (routes_table.go, GET /api/v1/search) and the web client shows them as doing so
+// (GET /api/v1/search's route file) and the web client shows them as doing so
 // (packages/dispatch/web/src/api/client.ts). What it costs that search is main's plan, the joins
 // below the ordering that searchMeaningCommentArm measures, and that is the price of answering
 // the contract the route states.

@@ -129,9 +129,9 @@ type Credential struct {
 	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
 	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
 	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
-	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes its approve list names
-	// (approveScopeRoutes) alone, answering it 403 APPROVE_ONLY_TOKEN on every other
-	// (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes whose declaration states
+	// ApproveOnly (api's routeDecl.ApproveOnly) alone, answering it 403 APPROVE_ONLY_TOKEN on every
+	// other (refuseApproveOnlyToken), before anything else the route does. False for every other
 	// credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
@@ -3563,16 +3563,26 @@ type Comment struct {
 // is what says the post itself is gone rather than the one block. All three are absent on a part
 // of an ask, which no correction marks. An event's reply_block keeps the marks the write that
 // appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
-// with every field but its text, which is empty: a delete event carries no text of another post.
+// with every field but its text, quote and occurrence: its text is empty and the other two are
+// absent, because a delete event carries no text of another post.
+//
+// Quote and Occurrence are the words of the block the reply quotes and which of their matches in
+// the block's plain text they are, counted from 0, as the reply stored them
+// (comments.replies_to_quote and replies_to_occurrence, and the same two of messages): both or
+// neither, absent on a reply that quotes nothing, as the marks are absent where the post holds
+// none. A read leaves both out once the quoted post is deleted (refs.ReplyBlocks), as they are
+// words of that post.
 type ReplyBlock struct {
-	Node      string     `json:"node"`
-	Ref       string     `json:"ref,omitempty"`
-	BlockID   string     `json:"block_id"`
-	Text      string     `json:"text"`
-	Removed   bool       `json:"removed"`
-	EditedAt  *time.Time `json:"edited_at,omitempty"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	DeletedBy *Actor     `json:"deleted_by,omitempty"`
+	Node       string     `json:"node"`
+	Ref        string     `json:"ref,omitempty"`
+	BlockID    string     `json:"block_id"`
+	Text       string     `json:"text"`
+	Removed    bool       `json:"removed"`
+	EditedAt   *time.Time `json:"edited_at,omitempty"`
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy  *Actor     `json:"deleted_by,omitempty"`
+	Quote      *string    `json:"quote,omitempty"`
+	Occurrence *int       `json:"occurrence,omitempty"`
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET

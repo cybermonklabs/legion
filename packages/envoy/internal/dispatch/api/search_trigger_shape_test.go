@@ -41,9 +41,9 @@ func standalone(code string, start, end int) bool {
 type sqlSpanKind int
 
 const (
-	// sqlCode is text the lexer reads as tokens: names, numbers, operators, parameters and the
+	// sqlCodeSpan is text the lexer reads as tokens: names, numbers, operators, parameters and the
 	// white space between them.
-	sqlCode sqlSpanKind = iota
+	sqlCodeSpan sqlSpanKind = iota
 	// sqlLineComment runs from `--` to the line's end, its newline left to the code after it.
 	sqlLineComment
 	// sqlBlockComment is `/* */`, nested.
@@ -99,9 +99,9 @@ func sqlSpans(src string) iter.Seq[sqlSpan] {
 				if escapes {
 					start = i - 1
 				}
-				kind, end = sqlString, quotedEnd(src, i, escapes)
+				kind, end = sqlString, spanQuotedEnd(src, i, escapes)
 			case src[i] == '"':
-				kind, end = sqlQuotedIdentifier, quotedEnd(src, i, false)
+				kind, end = sqlQuotedIdentifier, spanQuotedEnd(src, i, false)
 			case src[i] == '$' && (i == 0 || !identifierByte(src[i-1])) && dollarTag.MatchString(rest):
 				tag := dollarTag.FindString(rest)
 				kind, end = sqlString, len(src)
@@ -112,7 +112,7 @@ func sqlSpans(src string) iter.Seq[sqlSpan] {
 				i++
 				continue
 			}
-			if start > codeFrom && !yield(sqlSpan{sqlCode, src[codeFrom:start]}) {
+			if start > codeFrom && !yield(sqlSpan{sqlCodeSpan, src[codeFrom:start]}) {
 				return
 			}
 			if !yield(sqlSpan{kind, src[start:end]}) {
@@ -121,15 +121,15 @@ func sqlSpans(src string) iter.Seq[sqlSpan] {
 			i, codeFrom = end, end
 		}
 		if codeFrom < len(src) {
-			yield(sqlSpan{sqlCode, src[codeFrom:]})
+			yield(sqlSpan{sqlCodeSpan, src[codeFrom:]})
 		}
 	}
 }
 
-// quotedEnd answers the index just past the quote that closes the one at open in src, or len(src)
-// when none closes it. A doubled quote is one quote of the text, and where escapes a backslash
-// takes the byte after it.
-func quotedEnd(src string, open int, escapes bool) int {
+// spanQuotedEnd answers the index just past the quote that closes the one at open in src, or
+// len(src) when none closes it. A doubled quote is one quote of the text, and where escapes a
+// backslash takes the byte after it.
+func spanQuotedEnd(src string, open int, escapes bool) int {
 	quote := src[open]
 	for i := open + 1; i < len(src); i++ {
 		switch {
@@ -154,7 +154,7 @@ func maskSQL(src string) string {
 	var code strings.Builder
 	for span := range sqlSpans(src) {
 		switch span.kind {
-		case sqlCode:
+		case sqlCodeSpan:
 			code.WriteString(span.text)
 		case sqlLineComment:
 		case sqlBlockComment:

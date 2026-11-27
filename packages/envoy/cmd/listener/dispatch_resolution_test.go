@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,12 +21,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
+	dispatchstoretest "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testpg"
 )
 
 // This file is the one proof that spans both services. Every other test of INFRA-249 exercises
@@ -202,19 +203,21 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 	return logs
 }
 
-// migratedDispatchDatabase opens an empty Postgres database of this test's own, carries every
-// Dispatch migration into it, and records the person whose writes the tests make.
+// migratedDispatchDatabase is a Dispatch store on an empty database of this test's own carrying
+// every migration (Dispatch's storetest.Open), with the person whose writes the tests make
+// recorded. It is storetest's rather than internal/testpg's, which starts a container when
+// DISPATCH_TEST_DATABASE_URL is unset: testpg links testcontainers-go, whose package init reads
+// every process on the machine, and this test binary starts itself as the listener
+// (start_credential_wait_test.go's startListenerChild), so every such start would pay that init.
+// Without the variable the row skips, as every Postgres-backed Dispatch test does, and its skip
+// says what to set; CI's envoy-go-race job sets it for the step that runs this package.
 func migratedDispatchDatabase(t *testing.T) *dispatchstore.Store {
 	t.Helper()
+	if os.Getenv(dispatchstoretest.DatabaseURLEnv) == "" {
+		t.Skip(dispatchstoretest.DatabaseURLEnv + " is unset, so this row has no Postgres for Dispatch's store: set it to a Postgres server's admin URL, such as postgres://postgres:<password>@127.0.0.1:5432/postgres?sslmode=disable, as .github/workflows/ci-job-envoy-go-race.yaml does")
+	}
 	ctx := context.Background()
-	database, err := dispatchstore.Open(ctx, testpg.URL(t))
-	if err != nil {
-		t.Fatalf("open the Dispatch database: %v", err)
-	}
-	t.Cleanup(database.Pool.Close)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate the Dispatch database: %v", err)
-	}
+	database := dispatchstoretest.Open(t)
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	if err := people.Record(ctx, rigHuman); err != nil {
 		t.Fatalf("record %s as having signed in: %v", rigHuman, err)
