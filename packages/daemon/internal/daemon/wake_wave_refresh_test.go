@@ -411,7 +411,7 @@ func baselineRootLaunches(t *testing.T) []time.Duration {
 	d := startRefreshWaveDaemon(t, cfg, clock, rt, logged)
 	defer d.stop()
 
-	waiting := awaitWave(t, d, refreshWaveRoots)
+	waiting := awaitWave(t, d, rt, roots)
 	runWave(t, clock, rt, waiting, 1)
 	return firstLaunchMoments(t, rt, roots, origin)
 }
