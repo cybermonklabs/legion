@@ -246,7 +246,7 @@ The broker also narrows any trade that asks for `read`: that token keeps the ses
 A `read-person` token that names its person holds the `person` scope alone, never `approve` or `p0`, and every other read-only broker token holds no OAuth scope.
 A personal token minted with `read` is read-only too (`/api/v1/me/agent-tokens`, below).
 Dispatch serves a read-only token on the reads of its read class and on no other route.
-`readClasses` (`internal/dispatch/api/read_classes.go`) gives every GET row of the route table one class: a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
+Every GET route's declaration states one read class (`routeDecl.Read`, `internal/dispatch/api/read_classes.go` for what a class is): a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
 `register` refuses to mount a table with a GET row that has no class.
 Every other route of the table, and `GET /ws/live`, answers a read-only token `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 Every read but `GET /api/v1/whoami` answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`), naming the cut: this build answers no read at a past time, and it does not answer one with the present.
@@ -294,7 +294,7 @@ A service whose verifier does not set the switch, the Envoy listener among them,
 An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
 It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with the scopes `person` and `approve`, never `p0`, and marks its credential approve-only (`model.Credential.ApproveOnly`).
-Dispatch serves it on the routes its approve list names (`approveScopeRoutes` in `internal/dispatch/api/routes_table.go`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
+Dispatch serves it on the routes whose declaration states `ApproveOnly` (`routeDecl.ApproveOnly`, in each route's file under `internal/dispatch/api`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
 Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseApproveOnlyToken`), before the route's scopes and everything else it does.
 The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
 A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
@@ -330,11 +330,11 @@ One function holds that test: `access.CredentialCovers` (`internal/dispatch/acce
 Each caller passes it the visibility of the target's project (`projects.visibility`), which it reads in the statement or the transaction that reads that project, before the route writes anything.
 A write to a private project that the credential does not name writes nothing.
 The caller gets exactly the answer, in status, code and message, that it gets at the same check for a target that does not exist, so it cannot tell the two apart.
-Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
-a `GET` row declares nothing), in four classes:
+Every mutating route declares what its write belongs to (the `WriteClass` of its declaration, in its file under `internal/dispatch/api`;
+a `GET` route declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
 *a project the body names* — the issue create and the question of an answer run (`POST /api/v1/going/requests`), whose project the address does not name, so `createIssue` and `createGoingRequest` each make the same check once that project is settled;
-*the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
+*the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by, and, for a delivery sent to a `session:` route, one sent to a session the listener names it a successor of, which a session that replaced that session answers it by), and the caller-private `me` rows;
 and *the deployment's* — the project create, a project's default repository, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
 `Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
 
@@ -1216,7 +1216,7 @@ What the two processes share, and what each keeps to itself:
 
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
-  a send that meets one of those (or a receipt timeout, or a 503 coded `maybe_stored`, whose publish the stream never acknowledged) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
+  a send that meets one of those (or a receipt timeout, a 503 coded `maybe_stored`, whose publish the stream never acknowledged, or any other outage status: a 408 from a proxy in front of the listener, a 429, a 5xx but the listener's own 500, which it answers for a record it cannot decode) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
   A request that sends during a take-over answers up to 12 seconds later, and a mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
   A targeted message to such a session is queued instead at that moment:
   when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
@@ -1636,7 +1636,9 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Three cases are not seen.
   An earlier build whose boot takes more than an hour from its dashboard publish to its registration is not in the fleet from that hour's end until it registers: every step between the two is bounded at 30 to 60 seconds and its admission at 20, but the seed of the repository projects is not.
   A process of an earlier build silent past the prune age (10 minutes) - frozen, or cut from the database - has its row pruned and is not in the fleet until a heartbeat's admission of it, whose insert is an arrival, commits.
-  Each such admission waits for the gate at most 2 seconds, its heartbeat's own bound, so a write of this build that holds the gate longer defers it, and that process serves writes in its row-first order meanwhile; production rolls with `Recreate` (above), which stops every process of one release before the other starts, so it does not reach this case.
+  Each such admission waits for the gate at most 2 seconds, its heartbeat's own bound, so a write of this build that holds the gate longer defers it, and that process serves writes in its row-first order meanwhile.
+  Production did not reach this case under the `Recreate` rollout of the release this was written for, which stopped every process of one release before the other started.
+  It now runs two replicas under `strategy: RollingUpdate`, which overlaps the old and the new pods for the length of a rollout, so a pod of the earlier release that falls silent past the prune age during a rollout can reach it.
   That is the registry's own model: every other decision over the fleet (the signing keys, the embedder, the schema admission) counts a process silent past its live window as gone.
   A subcommand of an earlier build that an operator runs beside this one neither publishes nor registers, so it is never in the fleet.
   Of those subcommands, `rebuild-refs` takes issues' and documents' rows `for no key update` (from `legion-envoy-v30.21.1` on), and `backfill-block-ids` and `backfill-anchor-blocks` settle a document they open that owes a settlement, which takes its owner's row and appends its events: run those from a build that carries this change.
@@ -2690,9 +2692,11 @@ A new table: nothing existing is read, locked or rewritten, the previous release
 Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
 `heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
 The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.
-The build is a plain `create index` in the runner's transaction, not `concurrently`: production runs one app pod under `Recreate`, which migrates before it listens, so no writer runs while the build holds `SHARE` on `block_refs` for one scan of the table.
+The build is a plain `create index` in the runner's transaction, not `concurrently`.
+Under the `Recreate` rollout of the release it shipped in, production ran one app pod, which migrates before it listens, so no writer ran while the build held `SHARE` on `block_refs` for one scan of the table.
+Production now runs two replicas under `strategy: RollingUpdate`, which overlaps the old and the new pods, so where a deployment applies this migration in a rolling update, the build holds off the old pods' writes to `block_refs` for that scan (below).
 The census admits it only while `block_refs` is under `CensusTableLimit` and refuses it above, and then the build must be rewritten in the concurrent form (`-- pgmigrate:non-transactional`, `create index concurrently if not exists`, alone in its file) before the deployment can move.
-The drop sets `lock_timeout` to `120s` for its own transaction, because it takes `ACCESS EXCLUSIVE` on `block_refs` for the instant it unlinks the index and waits for any read the stopped pod left running, which can outlast the runner's three attempts of 5 s.
+The drop sets `lock_timeout` to `120s` for its own transaction, because it takes `ACCESS EXCLUSIVE` on `block_refs` for the instant it unlinks the index and waits for any read an earlier pod left running or still runs, which can outlast the runner's three attempts of 5 s.
 That bound holds on each try, and `store.Migrate` tries a migration up to 3 times after a lock timeout (`pgmigrate.RetryLockTimeouts`), so the drop waits up to 120 s on each of those 3 tries.
 Where two builds serve at once, the build holds off the earlier build's writes to `block_refs` for its scan, and the drop its reads and writes for as long as it waits, up to 120 s on each of `store.Migrate`'s 3 tries.
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
@@ -2737,6 +2741,11 @@ It names no other table, so a plain `create table` and `create index` in the run
 That release does not publish a `comment_fallback_copies` row either:
 it has no fallback pass, and its outbox skips an event already published, so a copy a row holds is never sent once it serves alone.
 Before rolling back past `20261101180039`, run `select count(*) from comment_fallback_copies where settled_at is null` and roll back only when it answers `0`, or let this build drain the rows first.
+
+Migration `20261124134448_outbox_role_copy_expiries` creates `outbox_role_copy_expiries`, one row for each copy the outbox kept on a role's kept lane whose hour ended with no session taking it, as the listener's expiry notice names it (event, role, its stream sequence, its dedupe key, and when it was kept and dropped), keyed by event, role and `keep_attempt`, the outbox's own count of that pair's expiries (1 for the first), with the outbox's keep of the next attempt as the row's own outcome (`readKeptExpiries` and `keepExpiredCopiesAgain` in `internal/dispatch/outbox/role_expiry.go`), and its partial index of the unsettled rows; `outbox_kept_expiry_cursor`, the one row holding the stream sequence of the last notice the outbox read and the identity of the stream that sequence counts in, so a stream created again is read from its first notice; and `outbox_role_undelivered_notes`, one row for each event recorded undelivered to a role, grouped into one-hour windows per issue and role, each window's message posted on the issue once its hour ends (`postUndeliveredNotes` in `internal/dispatch/outbox/role_undelivered_notes.go`), with its two indexes.
+It names no other table, so a plain `create table` and `create index` in the runner's transaction lock only the new tables, and the release before it neither reads nor writes them, so that release runs over the new schema unchanged and the census answers `0`.
+That release reads no notice either: the notices the listeners store meanwhile wait in the stream, and the first process of this release reads them from the stream's first one on, so a notice stored while the earlier release served is acted on as long as the stream still holds it.
+Before rolling back past `20261124134448`, run `select (select count(*) from outbox_role_copy_expiries where settled_at is null) + (select count(*) from outbox_role_undelivered_notes where posted_at is null)` and roll back only when it answers `0`, or let this build drain the rows first: the release before has no expiry pass, so a row left unsettled is an event that is neither kept again nor recorded undelivered, and a note left unposted is a message nobody posts.
 
 Migration `20261101144855_block_pointer_links` gives `block_refs` a nullable `to_types text[]`, the types a typed block's `block[]` pointer may point at (null:
 any), creates the function `block_ref_listed(to_types, to_id)`, true when `to_types` is null or no current `document_blocks` row of the target has a type outside it, and re-states `graph_edges` with `0142`'s arms, its `block_refs` arm listing a row only while `block_ref_listed` holds ("Reference graph" below states the typed block rules).
@@ -2857,11 +2866,23 @@ Its census answers `0`: a trigger runs only on later inserts and rewrites no row
 Migration `20261117100016_session_titles_backfill` creates `session_titles_backfill`, the one row that stands for the fill of `20261117100008`'s table for the events stored before `20261117100015`'s trigger: `session_id`, the keyset cursor, `''` before the first batch.
 It writes no `session_titles` row and reads no other table, so it locks only the table it creates; its census answers `0`.
 The fill is `store.FillSessionTitles`, which the boot runs after `store.FillDocumentSearch` and before the server listens (`cmd/dispatch/main.go`), not a migration, for `20261101182501`'s reason: one statement would read every session's events in one transaction while the trigger is live, and a write of a session the statement had already written would wait for the whole statement at its commit.
-Each batch is instead one short transaction that takes the next `store.SessionTitlesFillBatch` (1,000) sessions above the cursor, writes each one's newest title under the trigger's own guard, so a row the trigger wrote meanwhile is never replaced by an older one, moves the cursor and commits.
+Production runs two replicas under `strategy: RollingUpdate`.
+A new pod listens only after the migrations and the fill, so the old pods serve requests while the migrations and the fill run.
+The old build reads titles from `events`, and `20261117100015`'s trigger stores the titles of the events the old pods write.
+A failed fill exits the new pod, stops the rollout and leaves the old pods serving.
+Each batch is one short transaction that takes the next `store.SessionTitlesFillBatch` (1,000) sessions above the cursor, writes each one's newest title under the trigger's own guard, so a row the trigger wrote meanwhile is never replaced by an older one, moves the cursor and commits.
 The batch that takes no further session deletes the row, so a boot after the pass has finished reads one empty table and stops, and a database emptied of its rows owes no fill.
 A failure stops the boot (`slog.Error`, then exit 1): this release reads titles from `session_titles` alone, so a process serving with the table unfilled would name every earlier session by its id.
-Production runs one replica under `strategy: Recreate`, so no process serves while the migrations and the fill run, and the operator follow-up is that wait on the first boot of this release:
+The operator follow-up is the wait for the migrations and the fill on the first boot of this release:
 `packages/envoy/scripts/session-titles-scale.sh` times the four migrations and the fill together on 1.5 million titled session events, more than 1.25 times production's newest event id on 2026-11-24, and they end inside the 60 s that leaves the compose deployer's 90 s room for the rest of the boot.
+
+Migration `20261126203311_delivery_run_jobs_failed` builds `delivery_run_jobs_failed` on `delivery_run_jobs (repo, run_id) where conclusion = 'failure'`, the failed jobs alone.
+The Delivery reads of a deploy run's jobs name the jobs they read (`delivery.ListRunJobsForRuns`, `name = any($3)`, a descent of the primary key for each run and name), where the read with no name read every job of each run, 660 ms a call at ten times the stated run rate.
+The timeline lists each deploy run with its failed jobs and the job that failed first, which can be any job the run holds, so it reads each run's production jobs by name and its failed jobs through this index (`delivery.listRunJobsFailedForRuns`), whose read grows with the runs' failures and not with every job they ran.
+The predicate is the read's own `conclusion = 'failure'`, written into its statement rather than bound, so the planner proves the index under a generic plan too.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because the intake and the reconcile write `delivery_run_jobs` on every job listing: a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of a job waits for.
+A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
+Its census answers `0`: an ordinary index refuses and rewrites no row.
 
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
@@ -3409,8 +3430,9 @@ A project left with no default after both statements is one to name a person on 
 Reaching the migration with one left stops it, and its refusal names the repair that works from there: nothing is serving by then, so it is `update projects set default_assignee = '<the person''s email>' where key = '<KEY>';` on the database itself.
 
 **`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
-The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
-no server of the earlier release serves while the migration runs, and the release that boots over it names a default on every project it creates.
+The narrowing shipped in the same release as the fill (`legion-envoy-v30.11.0`), where the rule above splits a narrowing across two releases, because the deployment then ran one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
+no server of the earlier release served while the migration ran, and the release that boots over it names a default on every project it creates.
+That held under the `Recreate` rollout of that release; production now runs two replicas under `strategy: RollingUpdate`, which overlaps the old and the new pods, so a deployment still on a release before `20261111210103` stops every server of the old release before it starts this one (Database migrations, above).
 An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
 recover a failed deploy forward, as `0113` and `0117` require.
 
@@ -4706,6 +4728,16 @@ the docs site's HTTP API reference is generated from it.
 `envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
 `--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
+Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it), holding one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`).
+A branch made before routes moved into files adopts that layout in its merge of main with the adopter, run from `packages/envoy` of a checkout that holds it, with the branch's worktree on a clean tree:
+
+```sh
+go run ./cmd/dispatch-route-adopt -C <the branch's worktree>             # merges main: origin/main, or main@origin under jj
+go run ./cmd/dispatch-route-adopt -C <the branch's worktree> <revision>  # or merges that revision
+```
+
+It makes the merge itself, so do not merge first: it refuses a tree that is mid-merge or holds a change, naming the commands that return it (`git merge --abort`; under jj `jj abandon @`, then `jj edit` of the merge's first parent) and what they cost.
+It reads both sides and the merge base before it merges, writes the branch's route changes into route files, takes `routes_table.go` and `routes_shapes.go` from main, and lists what is left for the person; its package comment (`cmd/dispatch-route-adopt/main.go`) gives every step.
 The list below is a summary.
 An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
 /v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
@@ -5478,7 +5510,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
-  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
+  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); its route file's description (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
   A `parent` may be an issue of any project, under the refusals a create meets, and one that would make the issue its own ancestor is `409 PARENT_INPUT`;
   a parent of another project passes on no repository, components or `legion` label, as on creation.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
@@ -5719,7 +5751,11 @@ Each item below names a path with its method and identity, then its purpose.
   A `reply_to` naming a comment its author deleted is `409 POST_DELETED`, the refusal every write that would add to a deleted post takes, read from the parent the create already locks and so before the named block is looked for;
   a reply written before the delete keeps its text and its place.
   A reply or error callback on `POST /api/v1/comments/{id}/reply` or `POST /api/v1/messages/{id}/reply` is accepted from the session the attempt names, and, for an attempt sent for a `role:` route, from the session the role's claim names when the reply arrives while the listener's role lookup (`GET /v1/roles/<role>`) calls it live: the session that took the role from the one Dispatch sent to, which the listener hands what that session had not read.
-  Dispatch asks the listener before the reply's transaction opens, and only when the attempt names another session; a lookup the listener does not answer is `503 ENVOY_UNAVAILABLE`, and any other session, or the role's holder while it is not live, is `403 REPLY_FORBIDDEN`.
+  For an attempt sent to a `session:` route, a person's direct message or a mention of a session, it is accepted as well from a session the listener's successor read (`GET /v1/sessions/<session>/successors`) names for the attempt's session: one whose claim named that session as the one it replaces, or that replaced such a session in turn, while each last registered as the principal the attempt's session did, which the listener hands that session's unread messages, each copy keeping its delivery.
+  The read also names that principal (`principal`), and a reply on a credential that proves the replying session, a broker token, is accepted only where the token's principal is that principal (`actsForSuccessorPrincipal`), in the form that names the token's kind and scope (`internal/ciphertoken/principal.go`): a session run on another principal's token before a registration recorded it may not answer the earlier principal's deliveries, and an agent's token that an operator's entry gave a person for a project may not answer that person's own session's.
+  The listener names that principal to Dispatch's own identity alone (`ENVOY_DISPATCH_PRINCIPAL`), and names no successor while its known-session bucket is not open.
+  A credential that proves no session (the shared agent token, a personal token, a service account's token) can name the attempt's own session anyway, so nothing more is asked of it.
+  Dispatch asks the listener before the reply's transaction opens, and only when the attempt names another session; a lookup or a successor read the listener does not answer is `503 ENVOY_UNAVAILABLE`, and any other session, or the role's holder while it is not live, is `403 REPLY_FORBIDDEN`.
   The attempt's first stored reply stays its reply, and a later reply is answered as any second reply is (the stored reply; a message reply with `follow_up` is posted under the first).
   A comment's record in its document's margin - its body and replies, or a suggestion's and its replacement - holds at most 256 KiB of text, and a document's margin 1 MiB:
   a comment, reply or suggestion that would leave either past its bound and bigger is `413 CAP_EXCEEDED`, naming the bound and both sizes.
@@ -5742,7 +5778,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/comments/{id}` (PATCH; cookie, trusted header, or bearer)
 
   Edit a comment body, its author alone (`403 NOT_AUTHOR`).
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
   An edit that would leave the comment's margin record or its document's margin past its bound (above) and bigger is `413 CAP_EXCEEDED`.
   `blocks` (`[{id, from}]`, each block id the editor carried and where its span starts in `body`, in UTF-16 code units, in body order) with `base_revision` (the revision `.../blocks` answered) keeps each id on the new block its span starts in;
   with a `base_revision` that is no longer the comment's, or without `blocks`, the new blocks take ids by their text.
@@ -5751,12 +5787,12 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/comments/{id}` (DELETE; cookie, trusted header, or bearer)
 
   Delete a comment, its author alone (`403 NOT_AUTHOR`): the comment keeps its place, and no read of it gives its body again.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/comments/{id}/history?before=` (GET; cookie, trusted header, or bearer)
 
   The bodies an edit or a delete of this comment replaced, newest first: a delete writes an entry of its own, and a deleted comment's entries carry no body.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/comments/{id}/resolve` (POST; cookie, trusted header, or bearer)
 
@@ -5802,17 +5838,17 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/messages/{id}` (PATCH; cookie, trusted header, or bearer)
 
   Edit an issue message's body, its author alone (`403 NOT_AUTHOR`).
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/messages/{id}` (DELETE; cookie, trusted header, or bearer)
 
   Delete an issue message, its author alone (`403 NOT_AUTHOR`): the message keeps its place, and no read of it gives its body again.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/messages/{id}/history?before=&session=` (GET; cookie, trusted header, or bearer)
 
   The bodies an edit or a delete of this message replaced, newest first: a delete writes an entry of its own, and a deleted message's entries carry no body.
-  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/deploys` (POST; cookie, trusted header, or bearer)
 
@@ -6156,7 +6192,7 @@ Each item below names a path with its method and identity, then its purpose.
   - **When the daemon publishes.**
     The daemon publishes the set when a claim readies, at each boot, and at each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its session, or the claim retires, fails, or is suspended by any source but the idle release.
     A claim whose idle pod the daemon released keeps its role, and so does a claim that a project pause's stop suspended: each keeps its session, its phase and its task, and the next wake resumes the same session, so the release, the wake and the launch that resumes the session change nothing in the set.
-    A claim launched again over the session it kept holds its role through the launch.
+    A claim launched again over the session it kept holds its role through the launch, and after a suspension by any source but the idle release the resume's first write over that session, `queued` or `launching`, queues a publication that names the session again, before the agent registers.
     The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
     An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published when the daemon makes that write again at the claim's next decision, and not before: until then the store still holds the claim live.
     The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.

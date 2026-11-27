@@ -4,7 +4,7 @@
 // file is the HTTP shape of those calls and the refusals they map to.
 //
 // A priority belongs to no project, so each of the three writes is classed scopeDeployment
-// (writeClasses, routes_table.go): a credential scoped to one project is refused
+// (each route's WriteClass): a credential scoped to one project is refused
 // PROJECT_SCOPE_DEPLOYMENT, and a machine's broker token naming a service and no person is
 // refused by writeNeedsASignedInPerson, as it is refused every write. No guard of this file's own
 // stands between an agent and a priority: a person signed in, a personal token, the shared token
@@ -563,7 +563,7 @@ func priorityEvent(actor model.Actor, id, change string) model.Event {
 // each attribute the priority was written with and each `advances` relation an issue asserted or
 // retracted on it, with its writer and its moment — and no act of any other node.
 //
-// It is a read, so no write class stands on it (writeClasses, routes_table.go) and every
+// It is a read, so no write class stands on it (its declaration states no WriteClass) and every
 // authenticated caller makes it, as the listing is read: a priority belongs to no project, so a
 // credential that names one project reads this as it reads the listing.
 //

@@ -302,22 +302,23 @@ func giversOf(version record.PlanVersion) string {
 	return namedGivers(version.Givers())
 }
 
-// namedGivers names givers by their claims, as a sentence lists them (listedWords).
+// namedGivers names givers by their claims, as a sentence lists them (listed).
 func namedGivers(givers []claim.Token) string {
 	names := make([]string, len(givers))
 	for i, giver := range givers {
 		names[i] = string(giver)
 	}
-	return listedWords(names)
+	return listed(names, "and")
 }
 
-// listedWords joins words as a sentence lists them: one alone, two joined by "and", more by commas
-// and a last "and".
-func listedWords(words []string) string {
+// listed joins words as a sentence lists them, with conjunction before the last: one alone, two
+// joined by it, more by commas and a last conjunction ("a", "a or b", "a, b and c").
+func listed(words []string, conjunction string) string {
 	if len(words) < 2 {
 		return strings.Join(words, "")
 	}
-	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+	last := len(words) - 1
+	return strings.Join(words[:last], ", ") + " " + conjunction + " " + words[last]
 }
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its

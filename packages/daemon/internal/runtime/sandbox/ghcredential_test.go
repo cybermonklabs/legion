@@ -466,15 +466,6 @@ func (l *leaseTokens) minted(repo ghrepo.Repository) int {
 	return l.mints[strings.ToLower(repo.String())]
 }
 
-// fetched is a pod's status once workspace-fetch has exited successfully: Pending still, with
-// workspace-init running, which is a pod past its fetch.
-func fetched(p *corev1.Pod) {
-	p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-		{Name: fetchContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}},
-		{Name: initContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
-	}}
-}
-
 // spawnIssue launches the architect of the issue named key on g — an issue of the test tree with a
 // pod of its own — and returns that pod's name.
 func spawnIssue(t *testing.T, g *rig, key string) string {
@@ -506,13 +497,13 @@ func refreshTick(g *rig) {
 }
 
 // A re-minted lease reaches the provisioning Secret of every live issue pod on one tick, whatever
-// its workspace-fetch has already done — a pod's init containers can run again at any point in its
-// life, and the fetch reads the token's file anew before every transfer from GitHub, so a boot
-// token aged past the hour GitHub gives one would leave the pod unable to fetch its repository
-// again — and the repository cache's Secret follows on the same tick. Only the token is rewritten;
-// the cache's bearer token beside it stays. A pod no launcher runs in any more, one the walk can
-// judge nothing by, and a Secret another Sandbox owns are left as they are. The lease is minted
-// once for a repository however many of its pods the walk holds, and a repository whose mint
+// its workspace-init has done. The kubelet can run the init container again after it rebuilds the
+// pod's sandbox, and workspace-init reads the token's file anew before every transfer from GitHub,
+// so a boot token aged past the hour GitHub gives one would leave the pod unable to fetch its
+// repository again. The repository cache's Secret follows on the same tick. Only the token is
+// rewritten; the cache's bearer token beside it stays. A pod no launcher runs in any more, one the
+// walk can judge nothing by, and a Secret another Sandbox owns are left as they are. The lease is
+// minted once for a repository however many of its pods the walk holds, and a repository whose mint
 // fails is logged once and left to the next tick.
 func TestTheRefresherKeepsEveryLivePodsProvisioningTokenFresh(t *testing.T) {
 	t.Parallel()
@@ -547,8 +538,8 @@ func TestTheRefresherKeepsEveryLivePodsProvisioningTokenFresh(t *testing.T) {
 			}
 		}
 		bearer := string(g.secret(secretName(inFetch)).Data[cacheTokenKey])
-		g.update(g.pod(pastFetch), fetched)
-		g.update(g.pod(inFetch), fetching)
+		g.update(g.pod(pastFetch), initializing)
+		g.update(g.pod(inFetch), initializing)
 		g.update(g.pod(deleting), func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
 		g.update(g.pod(succeeded), func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded })
 		g.update(g.pod(failed), func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed })
@@ -556,7 +547,7 @@ func TestTheRefresherKeepsEveryLivePodsProvisioningTokenFresh(t *testing.T) {
 		g.update(g.pod(unowned), func(p *corev1.Pod) { p.OwnerReferences = nil })
 		g.update(g.pod(unparsed), func(p *corev1.Pod) {
 			for i, c := range p.Spec.InitContainers {
-				if at := slices.Index(c.Command, "--repo"); c.Name == fetchContainer && at >= 0 {
+				if at := slices.Index(c.Command, "--repo"); c.Name == initContainer && at >= 0 {
 					p.Spec.InitContainers[i].Command[at+1] = repo.Name()
 				}
 			}
@@ -835,7 +826,7 @@ func leaseNamed(role appauth.AppRole, owner, kind string) string {
 
 // An issue recorded on the repository as it was keeps writing the repository as GitHub holds it
 // now across a refresh, pod after pod. The refresher reads the repository from the pod itself
-// (fetchRepository, the --repo its workspace-fetch names) and asks the credential by it, so the
+// (fetchRepository, the --repo workspace-init names) and asks the credential by it, so the
 // configured pair is resolved for that one repository: the sjawhar directory, the name the record
 // spells, holds the write lease minted for cybermonklabs, and so does cybermonklabs' own
 // directory — the one the record's repository routes to, which the pod's GH_CONFIG_DIR names,
