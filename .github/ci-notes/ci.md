@@ -1930,8 +1930,9 @@ naming the filters that differ from the base tree's, or the computed filters' ow
 first line of ci_filter_coverage's GENERATED_HEAD, nothing widened). The script imports that
 header only when the first line is none of the other three, since the fail-open file is what the
 generator writes when the engine fails, and on that run the engine may not import. A file that
-cannot be read, or a first line in no such form, is an `::error::`, and each line that would say
-its paths matched says instead that whether its filter was widened is UNKNOWN.
+cannot be read, a first line in no such form, or a computed header that cannot be checked
+because ci_filter_coverage does not import, is an `::error::`, and each line that would say its
+paths matched says instead that whether its filter was widened is UNKNOWN.
 ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to on pull requests
 with and without a label, a merge group, and dispatches of main and of a branch. It checks that
 the step's FILTERS_FILE is the file the paths-filter step reads, feeds the script files the real

@@ -225,7 +225,9 @@ check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n'
 # exit, lines_hold, or both, as its checks name. The filters file a case hands the script is one
 # ci-filters-generate.sh wrote: this run's computed filters by default, and, in the widened cases
 # near the end, the generator's own fail-open file and the files it writes for a base it cannot read
-# and for a base whose filters differ. Only the refusal cases hand it a file no generator wrote.
+# and for a base whose filters differ. Only the refusal cases and the later-byte case (this run's
+# computed filters with one line added by hand, which must still be accepted) hand it a file no
+# generator wrote.
 statement='Say what decided each slow suite on this run'
 # statement_of <workflow> <event> [--filters-file <file>] <argument>...: lane-verdicts.py run once over
 # the env that workflow's statement step is handed on that run. The step's FILTERS_FILE must be the
@@ -370,7 +372,7 @@ printf '# FORCED: each filter matches every path: x.\nx: []\n' > "$work/forced-e
 printf '\377\376# not UTF-8\nx: []\n' > "$work/not-utf8.yaml"
 for pair in "no file:$work/no-such-filters.yaml" "a directory:$work" \
   "a FORCED line in other words:$work/forced-other-words.yaml" "an every-filter FORCED line in other words:$work/forced-each.yaml" \
-  "the computed header with its tail changed:$work/computed-by-hand.yaml" "a first line that is not UTF-8:$work/not-utf8.yaml"; do
+  "the computed header with its tail changed:$work/computed-by-hand.yaml" "a first line that starts with bytes that are not UTF-8:$work/not-utf8.yaml"; do
   label=${pair%%:*} refused=${pair#*:}
   statement_of "$ci_yaml" pull_request --filters-file "$refused"
   check "$label: the script exits 1" "$(is "$said_status" 1)"

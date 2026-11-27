@@ -18,9 +18,10 @@ Whether a filter was widened is read from the first line of the file the paths-f
 which must be, as a whole line, one of the four ci-filters-generate.sh writes (FAIL_OPEN,
 FORCED_ALL, FORCED_NAMES, and the computed filters' own header): the fail-open line and the
 every-filter FORCED line (every filter), the FORCED line naming the filters that differ from the
-base tree's (those), or the computed header (nothing widened). A file that cannot be read, or a
-first line in no such form, is an `::error::` and exit 1, and each line that would say its paths
-matched says instead that whether its filter was widened is UNKNOWN.
+base tree's (those), or the computed header (nothing widened). A file that cannot be read, a
+first line in no such form, or a computed header that cannot be checked because
+ci_filter_coverage does not import, is an `::error::` and exit 1, and each line that would say
+its paths matched says instead that whether its filter was widened is UNKNOWN.
 
 The computed header is the first line of ci_filter_coverage.GENERATED_HEAD, its owner's text, and
 it is imported only when the first line is none of the other three forms, which need no import.
@@ -79,8 +80,9 @@ def widened(path):
         return None, "FILTERS_FILE is not set, so which filters were widened to every path is unknown"
     try:
         # errors="replace": text-mode readline decodes a whole buffered chunk, so a byte that is
-        # not UTF-8 on a later line must not refuse a good first line. One on the first line makes
-        # it a line in no accepted form.
+        # not UTF-8 on a later line must not refuse a good first line. On the first line it reads
+        # as U+FFFD: one in the fixed text makes the line match no form, and one in a FAIL-OPEN or
+        # FORCED line's free reason is accepted as that line (the generator writes only ASCII there).
         with open(path, errors="replace") as fh:
             first = fh.readline().rstrip("\n")
     except OSError as error:
