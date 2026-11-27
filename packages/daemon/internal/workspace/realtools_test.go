@@ -188,7 +188,7 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	}
 
 	timeout := stopTimeout
-	run := NewRunner(timeout, map[string]string{"git": git})
+	run := NewRunner(timeout, map[string]string{"git": heldTool(t, root, "held-git", git)}) // CONTROL (never merged)
 
 	var ended atomic.Pointer[os.ProcessState]
 	hook := func(command Command, state *os.ProcessState) {
@@ -217,6 +217,7 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 			t.Errorf("the git's run had not returned %s after the cleanup cancelled its context", cutRunMargin)
 		}
 	})
+	holdCPU0For(t, 16, runqHold) // CONTROL (never merged)
 	call := calling(t)
 	started := time.Now()
 	go func() {
