@@ -128,10 +128,10 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		if words := transport.contentFilterWords(); words != "" {
 			result.Detail += " (" + words + ")"
 		} else if err := stream.Err(); err != nil {
-			result.Detail += ": " + err.Error()
+			result.Detail += ": " + transport.failure(err).Error()
 		}
 	case stream.Err() != nil:
-		result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
+		result.Fault, result.Detail = FaultProviderError, transport.failure(stream.Err()).Error()
 		result.Status = transport.failedStatus()
 	case len(result.Steps) == 0:
 		result.Fault, result.Detail = FaultProviderError, "the model made no reply"

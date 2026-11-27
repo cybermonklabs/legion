@@ -33,9 +33,20 @@
 // a run or in a decision, so the token reaches the endpoint the caller named and no other
 // server: the client's redirect check fails the call, above the transport and its retry, with
 // an error naming the redirecting status and the host the Location points at, so the run ends
-// in FaultProviderError. The Detail of that fault carries more than the host: Go's own
-// *url.Error wraps the check's error and names the Location in full, query included, as the
-// endpoint sent it. A caller that logs a Detail logs whatever the endpoint it named put there.
+// in FaultProviderError, whose Detail names that host and no more of the Location.
+//
+// # A failed call's Detail
+//
+// Go's client wraps every failure of a call in a *url.Error, whose text quotes the request URL
+// with only a password masked, so an endpoint that holds a token before "@" would print it there.
+// The Detail of a call that failed so never holds that quote: a failure in this package's own
+// words (a token the transport could not read, a redirect refused) is those words, and
+// net/http's own failure is its text where the endpoint is a clean http(s) URL and net/http
+// names the URL the call was made to (a refused dial's address, a TLS failure's certificate
+// fault), and its class alone otherwise (internal/redact's CauseAt). A status the provider
+// refused the call with is described as the provider's SDK describes it, but for the request URL
+// Anthropic's SDK quotes whole there: where the endpoint is no clean URL, that URL prints as
+// redact.NotPrinted.
 //
 // # The retry
 //

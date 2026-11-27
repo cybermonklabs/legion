@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/httpoutage"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
@@ -37,6 +38,11 @@ type modelTransport struct {
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+	// endpoint is the configured base URL, and posted the URL of the last request the
+	// transport carried, as the SDK or Decide built it: a model call's failure is printed
+	// through redact.CauseAt over both (failure).
+	endpoint string
+	posted   atomic.Pointer[string]
 	// deployment is the model name the requests name, which a 429 is logged with: the Azure
 	// deployment where the endpoint names one, else the model id.
 	deployment string
@@ -112,7 +118,7 @@ func newModelTransport(model Model) *modelTransport {
 		deployment = model.ID
 	}
 	return &modelTransport{base: http.DefaultTransport, kind: model.Endpoint.Kind, token: model.Endpoint.Token,
-		query: model.Endpoint.Query, deployment: deployment}
+		query: model.Endpoint.Query, endpoint: model.Endpoint.BaseURL, deployment: deployment}
 }
 
 // client is the HTTP client one Run or one Decide makes its model calls with: this transport,
@@ -126,16 +132,62 @@ func (t *modelTransport) client() *http.Client {
 	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 		// The host alone, since a Location can carry a query: this message names no
 		// more of it than the server a credential would have gone to. (Go's own
-		// client wraps the error in a *url.Error that names the Location in full.)
-		return fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
-			t.kind, req.Response.Status, req.URL.Host)
+		// client wraps the error in a *url.Error that names the Location in full,
+		// which failure leaves out.)
+		return &ownFailure{fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
+			t.kind, req.Response.Status, req.URL.Host)}
 	}}
+}
+
+// ownFailure is a model call's failure in this package's own words: a token the transport could
+// not read for an attempt, and a redirect the client refused. client.Do wraps it in a *url.Error,
+// as it wraps every failure of a call, and the SDK may wrap that again; failure prints its words
+// alone, which name no part of the request's URL: a refused redirect names the host its Location
+// points at and no more of it, and a token's failure is the endpoint's Token's own error.
+type ownFailure struct{ err error }
+
+func (f *ownFailure) Error() string { return f.err.Error() }
+func (f *ownFailure) Unwrap() error { return f.err }
+
+// failure is err, a model call's failure as client.Do, or the SDK over it, returned it, as a
+// run's or a decision's Detail prints it. client.Do wraps every failure of a call in a
+// *url.Error, whose text quotes the request URL with only a password masked, so an endpoint
+// holding a token before "@" printed it there. A failure in this package's own words (ownFailure)
+// prints those words, without the quote. Any other failure under a *url.Error, net/http's,
+// prints through redact.CauseAt: its own text when the endpoint is a clean http(s) URL and the
+// URL net/http names is the one the transport carried (a refused dial's address, a TLS failure's
+// x509 cause), and its class alone otherwise, a redirect's target or an endpoint holding a
+// credential among them. A failure with no *url.Error under it is a status the provider refused
+// the call with, as its SDK words it. Anthropic's SDK quotes the request URL whole in those words,
+// password and all, so where the endpoint is no clean URL (redact.Clean) every copy of the URL the
+// transport carried prints as redact.NotPrinted. A clean endpoint's URL holds no credential, since
+// the endpoint's query parameters go on the attempt's copy alone, and prints as the SDK wrote it.
+func (t *modelTransport) failure(err error) error {
+	var posted string
+	if p := t.posted.Load(); p != nil {
+		posted = *p
+	}
+	var own *ownFailure
+	var quoted *url.Error
+	switch {
+	case errors.As(err, &own):
+		return own
+	case errors.As(err, &quoted):
+		return redact.CauseAt(err, t.endpoint, posted)
+	case posted != "" && !redact.Clean(t.endpoint) && strings.Contains(err.Error(), posted):
+		return errors.New(strings.ReplaceAll(err.Error(), posted, redact.NotPrinted))
+	}
+	return err
 }
 
 // defaultRetryWait is how long the retry waits when the response names no wait (retryable).
 const defaultRetryWait = time.Second
 
 func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// The URL net/http's *url.Error names if this request fails: the request as the SDK or
+	// Decide built it, before an attempt's copy takes the endpoint's query parameters.
+	posted := req.URL.String()
+	t.posted.Store(&posted)
 	var body []byte
 	if req.Body != nil {
 		var err error
@@ -158,7 +210,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if t.kind != AzureAnthropic {
 			var err error
 			if key, err = t.readToken(ctx); err != nil {
-				return nil, fmt.Errorf("reading the %s token: %w", t.kind, err)
+				return nil, &ownFailure{fmt.Errorf("reading the %s token: %w", t.kind, err)}
 			}
 		}
 		r := req.Clone(ctx)

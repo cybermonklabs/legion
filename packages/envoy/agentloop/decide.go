@@ -151,9 +151,9 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
 	}
 	post.Header.Set("Content-Type", "application/json")
-	client := newModelTransport(req.Model).client()
+	transport := newModelTransport(req.Model)
 
-	resp, err := client.Do(post)
+	resp, err := transport.client().Do(post)
 	var raw []byte
 	if err == nil {
 		// One byte past the cap, so a body that reaches it is told from one that fits.
@@ -170,7 +170,7 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	case errors.Is(callCtx.Err(), context.DeadlineExceeded):
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the decision went past %s", req.Bounds.Time)
 	case err != nil:
-		result.Fault, result.Detail = FaultProviderError, err.Error()
+		result.Fault, result.Detail = FaultProviderError, transport.failure(err).Error()
 	case resp.StatusCode/100 != 2:
 		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", resp.Status, raw)
 	case len(raw) > answerLimit:
