@@ -110,10 +110,10 @@ func roleHolderRefusal(role string, result roles.Resolution) listenerwire.RoleRe
 // Retry-After, naming the role and the record. It returns the status it wrote, for the publish
 // route's record (refuseRoleClaimUnreadable).
 func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int {
-	writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf(
+	writeJSONError(w, listenerwire.FaultStatus, fmt.Sprintf(
 		"envoy: the claim record of role %s is unreadable: %s", role, err,
 	))
-	return http.StatusInternalServerError
+	return listenerwire.FaultStatus
 }
 
 // liveSessionEntry is sessionID's record and the state that record puts its session in, for a

@@ -425,7 +425,8 @@ jobs:
     # Each step's limit must leave its go test's -timeout room to fire before the runner cancels
     # the job: about 2 minutes of setup, the store-form count's own 5 (two packages, which go test
     # starts at once, so its -timeout bounds the step), the skip counter's test's own
-    # timeout-minutes of 15 and the two vets' minutes, so 35.
+    # timeout-minutes of 15, the two vets' minutes and the route adopter's own 5 after install-jj's
+    # seconds, so 35.
     timeout-minutes: 35
     services:
       postgres:
@@ -524,6 +525,19 @@ jobs:
         run: |
           . ../../.github/scripts/ci-log-guard.sh
           ci_log_guard go vet -tags moto ./cmd/cipher/
+        working-directory: packages/envoy
+      # The route adopter's rows run under git and under jj, and those that need jj fail rather
+      # than skip on GitHub Actions without it, so jj is installed first. -v names each row in the
+      # log, which a leg's go test -json report does not; .github/go-legs.yaml puts the package
+      # `elsewhere`, with this job, so no leg runs it and this is its one run (ADOPTER_PACKAGES in
+      # .github/scripts/ci_job_reads.py). The package took 4.5 s in job 139022226359; the -timeout
+      # fires before the step's limit.
+      - uses: ./.github/actions/install-jj
+      - name: Test the route adopter under git and jj
+        timeout-minutes: 5
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

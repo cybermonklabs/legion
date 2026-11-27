@@ -2,7 +2,7 @@
 # packages/envoy/scripts/database-skips.test.sh
 #
 # Tests database-skips.sh, the skip counter of the envoy module's database-backed packages, with
-# seven controls. Each control must fail as it states, or this test fails; each beside it a run
+# eight controls. Each control must fail as it states, or this test fails; each beside it a run
 # the counter must pass, so a counter that fails everything fails here too:
 #
 #   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/, ./internal/holdrecord/
@@ -45,6 +45,20 @@
 #      the counter with a line for a test the package does not have reads UNKNOWN under a -run and
 #      names that line alone; a name with a non-ASCII letter is taken; a -run that is no list of
 #      whole test names is refused before any test runs; and the option is refused beside --report.
+#   8. a control that passes prints no line that a reader or a grep of the CI log takes for a
+#      test failure (MARKER): judge fails, and counts as failed, a passing control whose evidence
+#      holds one, each kind of marker wherever a run's printed lines put it, and fails none for a
+#      skip, a count or a package's time; it prints the output of a control's planted tests only
+#      when that control fails, and on neither stream when it passes; a grep for failed tests of a
+#      log holding a real failure and judge's lines finds the real test by its own name, and the
+#      planted one only as TestPlanted..., on the line of the control that failed; and every
+#      failed or unfinished test that any run of controls 1 to 7 printed is named TestPlanted...,
+#      and they printed some, read by a scan that finds a real test's failure in each form go test
+#      and the counter print one, as text, and fails on a file it cannot read. A grep of CI logs for
+#      `--- FAIL: ` found TestTwice, then a planted test of control 3, in 14 of the 60 failed
+#      merge-group runs of 2026-11-25 and 26, and took it for the most frequent failing test,
+#      though it never failed: this script printed its planted failure in every run, beside the
+#      PASS: line of the control that planted it.
 #
 # Every run narrows its packages to the tests it is about with
 # GOFLAGS=-run=..., which go test reads as its own -run (and go list ignores): what the counter
@@ -53,6 +67,11 @@
 # lists for the package, which the counter holds a run of that package to, and one test that
 # passes, since a package whose tests all skip shows no run.
 #
+# Every test this script plants, whether in a package through an overlay or as a --report
+# report's events, is named TestPlanted...; a report's other events name real tests of the
+# package, which it needs to show a run. A planted failure that a failed control prints so says it
+# was planted.
+#
 # It prints a PASS: or FAIL: line per property and then `database-skips.test.sh: passed` or
 # `database-skips.test.sh: failed (<n> of <m>)`, and exits 0 or 1.
 #
@@ -60,7 +79,7 @@
 #
 # Needs go, jq and git, this repository's git checkout, and a scratch Postgres named by both
 # BROKER_TEST_DATABASE_URL and DISPATCH_TEST_DATABASE_URL, as ci.yaml's envoy-go job sets them;
-# with either unset it fails, naming it, since every control but 2 and 3 runs database tests.
+# with either unset it fails, naming it, since every control but 2, 3 and 8 runs database tests.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -88,13 +107,26 @@ trap cleanup EXIT
 
 PASSED=0
 FAILED=0
-judge() { # <0 for a pass> <property> <what was seen>
-  if [ "$1" = 0 ]; then
+# MARKER: what a reader or a grep of a CI log takes for a test failure, in evidence printed on one
+# line: go test's `--- FAIL: `, a panic, the race detector's report, and a printed line that is
+# FAIL or starts `FAIL ` (go test's package line, and the counter's `FAIL <package> <test>`) or
+# `UNFINISHED ` (the counter's). A printed line starts the evidence, follows a | (seen joins a
+# run's lines with one), or follows `printed ` or `stderr `, which name what a run printed.
+MARKER='--- FAIL: |panic: |WARNING: DATA RACE|(^|[|]|printed |stderr )(FAIL|UNFINISHED)([[:space:]|]|$)'
+# judge <0 for a pass> <property> <what was seen> [<what the control's planted tests printed>]:
+# the fourth argument is printed only when the property fails, and a property that passes fails
+# when what was seen holds a MARKER (control 8).
+judge() {
+  if [ "$1" != 0 ]; then
+    FAILED=$((FAILED + 1))
+    printf 'FAIL: %s — %s%s\n' "$2" "$3" "${4:+; its planted tests printed $4}"
+  elif grep -qE -e "$MARKER" <<<"$3"; then
+    FAILED=$((FAILED + 1))
+    printf 'FAIL: %s — %s: %s\n' "$2" \
+      "it passed, but what it saw holds a line a reader of the log takes for a test failure (MARKER), which only judge's fourth argument may hold" "$3"
+  else
     PASSED=$((PASSED + 1))
     printf 'PASS: %s — %s\n' "$2" "$3"
-  else
-    FAILED=$((FAILED + 1))
-    printf 'FAIL: %s — %s\n' "$2" "$3"
   fi
 }
 
@@ -106,13 +138,17 @@ for name in BROKER_TEST_DATABASE_URL DISPATCH_TEST_DATABASE_URL; do
   fi
 done
 
-# count NAME COMMAND...: runs COMMAND, keeping its stdout, stderr and exit status as NAME.
+# count NAME COMMAND...: runs COMMAND, keeping its stdout, stderr and exit status as NAME. It also
+# adds both to runs.log, which keeps every run's output for control 8, though a later run of the
+# same NAME replaces NAME's own files; each ends with a line break there, so that a last line
+# without one does not run into the next file's first.
 count() {
   local name="$1"
   shift
   local code=0
   "$@" >"$WORK/$name.out" 2>"$WORK/$name.err" || code=$?
   echo "$code" >"$WORK/$name.exit"
+  { cat "$WORK/$name.out"; echo; cat "$WORK/$name.err"; echo; } >>"$WORK/runs.log"
 }
 out() { cat "$WORK/$1.out"; }
 code() { cat "$WORK/$1.exit"; }
@@ -208,7 +244,7 @@ unknown_report() {
   judge "$([ "$(code "$1")" = 1 ] && [ "$(out "$1")" = 'database_skips=UNKNOWN' ] && said "$1" "$2" && echo 0 || echo 1)" \
     "control 3: $3" "$(seen "$1")"
 }
-{ ev pass "$MODULE/internal/dispatch/store" TestElsewhere; ev skip "$MODULE/internal/dispatch/store" TestSkippedElsewhere
+{ ev pass "$MODULE/internal/dispatch/store" TestPlantedElsewhere; ev skip "$MODULE/internal/dispatch/store" TestPlantedSkipElsewhere
   ev pass "$MODULE/internal/dispatch/store"; } >"$WORK/elsewhere.json"
 count elsewhere bash "$COUNTER" --report "$WORK/elsewhere.json"
 unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ ./internal/holdrecord/ that passed or failed' \
@@ -231,24 +267,25 @@ unknown_report silent "holds no test that passed or failed in $cmdbroker, which 
 count partial bash "$COUNTER" --report "$WORK/partial.json" ./internal/cipher/api/ ./cmd/cipherd/
 unknown_report partial "holds no test that passed or failed in $cmdbroker, which has test files" \
   "a named package the report does not hold, beside one whose tests ran, is UNKNOWN"
-{ ev pass "$brokerapi" TestHealthzIsPublic; ev fail "$brokerapi" TestABrokenTest; ev fail "$brokerapi"; } >"$WORK/failed.json"
+{ ev pass "$brokerapi" TestHealthzIsPublic; ev fail "$brokerapi" TestPlantedFailure; ev fail "$brokerapi"; } >"$WORK/failed.json"
 count failed bash "$COUNTER" --report "$WORK/failed.json" ./internal/cipher/api/
-judge "$([ "$(code failed)" = 1 ] && [ "$(out failed)" = 'database_skips=0' ] && said failed "FAIL $brokerapi TestABrokenTest" && echo 0 || echo 1)" \
-  "control 3: a report holding a failed test fails, naming it" "$(seen failed)"
+judge "$([ "$(code failed)" = 1 ] && [ "$(out failed)" = 'database_skips=0' ] && said failed "FAIL $brokerapi TestPlantedFailure" && echo 0 || echo 1)" \
+  "control 3: a report holding a failed test fails, naming it" "$(seen failed)" "$(tr '\n' '|' <"$WORK/failed.err")"
 # A data race report the detector prints after a subtest's `--- PASS` is filed under that passed
 # subtest, as test2json files it; the counter must print it, and no line a passed test printed
 # before its own `--- PASS`.
 oev() { jq -nc --arg p "$brokerapi" --arg t "$1" --arg o "$2" '{Action: "output", Package: $p, Test: $t, Output: $o}'; }
-{ oev TestPassedBeside 'a line TestPassedBeside printed itself'$'\n'; oev TestPassedBeside '--- PASS: TestPassedBeside (0.00s)'$'\n'
-  ev pass "$brokerapi" TestPassedBeside
-  oev TestRaced/sub '--- PASS: TestRaced/sub (0.00s)'$'\n'; ev pass "$brokerapi" TestRaced/sub
-  oev TestRaced/sub 'WARNING: DATA RACE'$'\n'; oev TestRaced/sub 'Write at 0x00c000 by goroutine 7:'$'\n'
-  oev TestRaced '    testing.go:1617: race detected during execution of test'$'\n'; oev TestRaced '--- FAIL: TestRaced (0.01s)'$'\n'
-  ev fail "$brokerapi" TestRaced; ev fail "$brokerapi"; } >"$WORK/raced.json"
+{ oev TestPlantedPassBeside 'a line TestPlantedPassBeside printed itself'$'\n'; oev TestPlantedPassBeside '--- PASS: TestPlantedPassBeside (0.00s)'$'\n'
+  ev pass "$brokerapi" TestPlantedPassBeside
+  oev TestPlantedRace/sub '--- PASS: TestPlantedRace/sub (0.00s)'$'\n'; ev pass "$brokerapi" TestPlantedRace/sub
+  oev TestPlantedRace/sub 'WARNING: DATA RACE'$'\n'; oev TestPlantedRace/sub 'Write at 0x00c000 by goroutine 7:'$'\n'
+  oev TestPlantedRace '    testing.go:1617: race detected during execution of test'$'\n'; oev TestPlantedRace '--- FAIL: TestPlantedRace (0.01s)'$'\n'
+  ev fail "$brokerapi" TestPlantedRace; ev fail "$brokerapi"; } >"$WORK/raced.json"
 count raced bash "$COUNTER" --report "$WORK/raced.json" ./internal/cipher/api/
 judge "$([ "$(code raced)" = 1 ] && said raced 'WARNING: DATA RACE' && said raced 'Write at 0x00c000 by goroutine 7:' &&
-  ! said raced 'a line TestPassedBeside printed itself' && echo 0 || echo 1)" \
-  "control 3: a data race report filed under a subtest that passed is printed, and a passed test's own output is not" "$(seen raced)"
+  ! said raced 'a line TestPlantedPassBeside printed itself' && echo 0 || echo 1)" \
+  "control 3: a data race report filed under a subtest that passed is printed, and a passed test's own output is not" "$(seen raced)" \
+  "$(tr '\n' '|' <"$WORK/raced.err")"
 # A test the binary runs twice under one name, as internal/cipher/proxy's TestMain runs its
 # whole suite once per protocol: test2json reports both runs under that name. The run that failed
 # has its failure's lines printed though the other run passed, whichever run failed, and the run
@@ -256,17 +293,17 @@ judge "$([ "$(code raced)" = 1 ] && said raced 'WARNING: DATA RACE' && said race
 # of the failure in CI job 135597604679. A test that passed in the first run and was running when
 # the binary timed out in the second is unfinished.
 pev() { jq -nc --arg p "$brokerapi" --arg o "$1" '{Action: "output", Package: $p, Output: $o}'; }
-twice() { # FAILED_RUN: TestTwice in two runs of one binary, failing in run FAILED_RUN (1 or 2)
+twice() { # FAILED_RUN: TestPlantedTwice in two runs of one binary, failing in run FAILED_RUN (1 or 2)
   local run
   for run in 1 2; do
     pev "the suite's run $run of 2"$'\n'
-    ev run "$brokerapi" TestTwice; oev TestTwice '=== RUN   TestTwice'$'\n'
+    ev run "$brokerapi" TestPlantedTwice; oev TestPlantedTwice '=== RUN   TestPlantedTwice'$'\n'
     if [ "$run" = "$1" ]; then
-      oev TestTwice "    log_masking_test.go:282: the failure of run $run"$'\n'; oev TestTwice '--- FAIL: TestTwice (0.00s)'$'\n'
-      ev fail "$brokerapi" TestTwice; pev 'FAIL'$'\n'
+      oev TestPlantedTwice "    zz_planted_test.go:282: the planted failure of run $run"$'\n'; oev TestPlantedTwice '--- FAIL: TestPlantedTwice (0.00s)'$'\n'
+      ev fail "$brokerapi" TestPlantedTwice; pev 'FAIL'$'\n'
     else
-      oev TestTwice 'a line TestTwice printed in the run that passed'$'\n'; oev TestTwice '--- PASS: TestTwice (0.00s)'$'\n'
-      ev pass "$brokerapi" TestTwice; pev 'PASS'$'\n'
+      oev TestPlantedTwice 'a line TestPlantedTwice printed in the run that passed'$'\n'; oev TestPlantedTwice '--- PASS: TestPlantedTwice (0.00s)'$'\n'
+      ev pass "$brokerapi" TestPlantedTwice; pev 'PASS'$'\n'
     fi
   done
   ev fail "$brokerapi"
@@ -274,21 +311,21 @@ twice() { # FAILED_RUN: TestTwice in two runs of one binary, failing in run FAIL
 for failed_run in 1 2; do
   twice "$failed_run" >"$WORK/twice-$failed_run.json"
   count "twice-$failed_run" bash "$COUNTER" --report "$WORK/twice-$failed_run.json" ./internal/cipher/api/
-  judge "$([ "$(code "twice-$failed_run")" = 1 ] && said "twice-$failed_run" "FAIL $brokerapi TestTwice" &&
-    said "twice-$failed_run" "log_masking_test.go:282: the failure of run $failed_run" &&
-    ! said "twice-$failed_run" 'a line TestTwice printed in the run that passed' && echo 0 || echo 1)" \
+  judge "$([ "$(code "twice-$failed_run")" = 1 ] && said "twice-$failed_run" "FAIL $brokerapi TestPlantedTwice" &&
+    said "twice-$failed_run" "zz_planted_test.go:282: the planted failure of run $failed_run" &&
+    ! said "twice-$failed_run" 'a line TestPlantedTwice printed in the run that passed' && echo 0 || echo 1)" \
     "control 3: a test run twice under one name that fails in run $failed_run and passes in the other has its failure's lines printed, and none of the passing run's own" \
-    "$(seen "twice-$failed_run"); stderr $(tr '\n' '|' <"$WORK/twice-$failed_run.err")"
+    "$(seen "twice-$failed_run")" "$(tr '\n' '|' <"$WORK/twice-$failed_run.err")"
 done
-{ ev run "$brokerapi" TestSlow; oev TestSlow '=== RUN   TestSlow'$'\n'; oev TestSlow '--- PASS: TestSlow (0.00s)'$'\n'
-  ev pass "$brokerapi" TestSlow; pev 'PASS'$'\n'
-  ev run "$brokerapi" TestSlow; oev TestSlow '=== RUN   TestSlow'$'\n'; oev TestSlow 'panic: test timed out after 1s'$'\n'
+{ ev run "$brokerapi" TestPlantedSlow; oev TestPlantedSlow '=== RUN   TestPlantedSlow'$'\n'; oev TestPlantedSlow '--- PASS: TestPlantedSlow (0.00s)'$'\n'
+  ev pass "$brokerapi" TestPlantedSlow; pev 'PASS'$'\n'
+  ev run "$brokerapi" TestPlantedSlow; oev TestPlantedSlow '=== RUN   TestPlantedSlow'$'\n'; oev TestPlantedSlow 'panic: test timed out after 1s'$'\n'
   ev fail "$brokerapi"; } >"$WORK/twice-unfinished.json"
 count twice-unfinished bash "$COUNTER" --report "$WORK/twice-unfinished.json" ./internal/cipher/api/
-judge "$([ "$(code twice-unfinished)" = 1 ] && said twice-unfinished "UNFINISHED $brokerapi TestSlow" &&
+judge "$([ "$(code twice-unfinished)" = 1 ] && said twice-unfinished "UNFINISHED $brokerapi TestPlantedSlow" &&
   said twice-unfinished 'panic: test timed out after 1s' && echo 0 || echo 1)" \
   "control 3: a test that passed in the first run and was running when the second run's binary timed out is printed as unfinished" \
-  "$(seen twice-unfinished); stderr $(tr '\n' '|' <"$WORK/twice-unfinished.err")"
+  "$(seen twice-unfinished)" "$(tr '\n' '|' <"$WORK/twice-unfinished.err")"
 { ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev skip "$cmdbroker" TestPlantedSkip; ev pass "$cmdbroker"; } >"$WORK/spelled.json"
 for spelling in ./cmd/./cipherd/ .//cmd/cipherd/ ./cmd/cipherd/../cipherd/; do
   count spelled bash "$COUNTER" --report "$WORK/spelled.json" "$spelling"
@@ -299,7 +336,7 @@ done
 QUIET=(./internal/cipher/api/ ./cmd/cipherd/ ./internal/cipher/proxyrules/)
 { ev pass "$brokerapi" TestHealthzIsPublic; ev pass "$brokerapi"
   ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev pass "$cmdbroker"
-  ev pass "$airlock" TestAnAirlockTestThatRan; airlock_skips
+  ev pass "$airlock" TestPlantedAirlockPass; airlock_skips
   ev pass "$airlock"; } >"$WORK/quiet.json"
 count quiet bash "$COUNTER" --report "$WORK/quiet.json" "${QUIET[@]}"
 judge "$([ "$(code quiet)" = 0 ] && [ "$(out quiet)" = 'database_skips=0' ] && echo 0 || echo 1)" \
@@ -456,6 +493,93 @@ judge "$([ "$(code leg-unicode)" = 0 ] && ! said leg-unicode 'usage:' && grep -q
 count leg-report bash "$COUNTER" --report "$WORK/quiet.json" "-run=^($API_ANCHOR)\$" "${QUIET[@]}"
 judge "$([ "$(code leg-report)" = 1 ] && said leg-report 'refused beside it' && echo 0 || echo 1)" \
   "control 7: -run is refused beside --report" "$(seen leg-report)"
+
+echo "database-skips.test.sh: control 8, a control that passes prints no test failure" >&2
+# probe <0 for a pass> <what was seen> [<what the planted tests printed>]: one judgement by judge, in
+# a subshell, so that it is not counted in this run: what judge printed on both streams, then
+# `counted <p> passed, <f> failed`, what it added to each count. The evidence of these judgements
+# names only counts, verdicts and test names, since it must hold no MARKER itself.
+probe() {
+  local passed="$PASSED" failed="$FAILED"
+  (judge "$1" probe "$2" ${3+"$3"} 2>&1; echo "counted $((PASSED - passed)) passed, $((FAILED - failed)) failed")
+}
+# Each failure marker, as the first line a run printed, as a later one and as its stderr, fails a
+# control whose property held, and is counted as a failure; evidence of the shapes the passing
+# controls print (a skip, a count, a package's time) passes, and is counted as a pass.
+missed=0
+tried=0
+for marker in '--- FAIL: TestPlantedMarker (0.00s)' 'FAIL' "FAIL $brokerapi TestPlantedMarker" \
+  "UNFINISHED $brokerapi TestPlantedMarker" 'panic: test timed out after 1s' 'WARNING: DATA RACE'; do
+  for evidence in "exit 1, printed $marker|database_skips=0|" "exit 1, printed database_skips=0|$marker|" \
+    "exit 1, printed database_skips=0|; stderr $marker|"; do
+    tried=$((tried + 1))
+    [[ "$(probe 0 "$evidence")" == 'FAIL: probe '*$'\ncounted 0 passed, 1 failed' ]] || missed=$((missed + 1))
+  done
+done
+judge "$missed" \
+  "control 8: a control whose property held fails, and is counted as failed, when what it saw holds a test failure, for each marker wherever a run's printed lines put it" \
+  "$missed of $tried missed"
+flagged=0
+tried=0
+for evidence in "exit 1, printed SKIP $cmdbroker TestPlantedSkip|database_skips=1|" 'exit 0, printed database_skips=0|go_test_exit=0|' \
+  "exit 0, printed database_skips=NONE|go_test_exit=0|; stderr pass $fold 0.002s|"; do
+  tried=$((tried + 1))
+  [[ "$(probe 0 "$evidence")" == 'PASS: probe '*$'\ncounted 1 passed, 0 failed' ]] || flagged=$((flagged + 1))
+done
+judge "$flagged" "control 8: evidence of a skip, a count or a package's time fails no control" "$flagged of $tried failed"
+# A planted failure as the control's planted output: printed on neither stream beside a pass, and
+# printed beside a fail.
+planted_failure='--- FAIL: TestPlantedMarker (0.00s)|FAIL|'
+beside_pass="$(probe 0 'exit 1, printed database_skips=0|' "$planted_failure")"
+beside_fail="$(probe 1 'exit 1, printed database_skips=0|' "$planted_failure")"
+judge "$([[ "$beside_pass" == 'PASS: probe '*$'\ncounted 1 passed, 0 failed' ]] && ! grep -qE -e "$MARKER" <<<"$beside_pass" && echo 0 || echo 1)" \
+  "control 8: a control that passes prints none of its planted tests' failure, on either stream" "judge's verdict ${beside_pass%%:*}"
+judge "$([[ "$beside_fail" == 'FAIL: probe '*"$planted_failure"*$'\ncounted 0 passed, 1 failed' ]] && echo 0 || echo 1)" \
+  "control 8: a control that fails prints its planted tests' failure" "judge's verdict ${beside_fail%%:*}"
+# A log holding one real test's failure as go test prints it, and judge's lines for those two
+# controls: a grep of it for `--- FAIL: <name>` finds the real test by its own name, and the
+# planted one only as TestPlanted..., on the one line of the control that failed.
+log="$(printf '%s\n' '--- FAIL: TestTheRealFailure (0.00s)' "$beside_pass" "$beside_fail")"
+found="$(grep -oE -e '--- FAIL: [A-Za-z0-9_]+' <<<"$log" | awk '{ print $NF }' | sort | paste -sd ' ' || true)"
+judge "$([ "$found" = 'TestPlantedMarker TestTheRealFailure' ] && [ "$(grep -cF -e '--- FAIL: TestPlanted' <<<"$log")" = 1 ] &&
+  grep -F -e '--- FAIL: TestPlanted' <<<"$log" | grep -q '^FAIL: probe ' && echo 0 || echo 1)" \
+  "control 8: a grep of a log for failed tests finds a real failure by its own name, and a planted one only as TestPlanted..., beside a control that failed" \
+  "found $found"
+# failed_tests FILE: the failed and unfinished tests FILE holds, one per line, as go test prints one
+# (`--- FAIL: <name>`) and as the counter does (`FAIL <package> <name>`, `UNFINISHED <package>
+# <name>`), read as text whatever bytes FILE holds; it returns 2 when it cannot read FILE.
+failed_tests() {
+  local lines status=0
+  lines="$(grep -aoE -e '--- FAIL: [^ ]+|^(FAIL|UNFINISHED) [^ ]+ [^ ]+' "$1")" || status=$?
+  [ "$status" -le 1 ] || return 2
+  [ -z "$lines" ] || awk '{ print $NF }' <<<"$lines" | sort -u
+}
+# failed_tests itself: beside a planted failure, a real test's failure in each of the three forms,
+# after a NUL byte, is found by its name, and go test's package line and a bare FAIL name none; and
+# a file it cannot read is no read at all.
+scan_missed=0
+for form in '--- FAIL: TestTheRealFailure (0.00s)' "FAIL $brokerapi TestTheRealFailure" "UNFINISHED $brokerapi TestTheRealFailure"; do
+  printf 'FAIL %s TestPlantedMarker\noutput\0with a NUL byte\n%s\nFAIL\t%s\t0.012s\nFAIL\n' \
+    "$brokerapi" "$form" "$brokerapi" >"$WORK/scan-probe.txt"
+  [ "$(failed_tests "$WORK/scan-probe.txt" | paste -sd ' ')" = 'TestPlantedMarker TestTheRealFailure' ] || scan_missed=$((scan_missed + 1))
+done
+scan_status=0
+failed_tests "$WORK/no-such-file.txt" >/dev/null 2>&1 || scan_status=$?
+[ "$scan_status" = 2 ] || scan_missed=$((scan_missed + 1))
+judge "$scan_missed" \
+  "control 8: the scan finds a real test's failure beside a planted one in each form it is printed in, past a NUL byte, takes no name from a package's FAIL line, and reads an unreadable file as no read" \
+  "$scan_missed of 4 missed"
+# The failed and unfinished tests that every run of controls 1 to 7 printed (runs.log) are all
+# tests this script planted, so a grep for failed tests tells each one a failing control prints
+# from a real failure. Controls 3, 4 and 6 print planted failures, so a read that found none read
+# nothing, and fails, as does a read that could not read runs.log.
+scan_status=0
+printed="$(failed_tests "$WORK/runs.log")" || scan_status=$?
+printed="$(paste -sd ' ' <<<"$printed")"
+unplanted="$(tr ' ' '\n' <<<"$printed" | grep -v '^TestPlanted' | paste -sd ' ' || true)"
+judge "$([ "$scan_status" = 0 ] && [ -n "$printed" ] && [ -z "$unplanted" ] && echo 0 || echo 1)" \
+  "control 8: every failed or unfinished test that any run of controls 1 to 7 printed is named TestPlanted..., and they printed some" \
+  "runs.log $([ "$scan_status" = 0 ] && echo read || echo unreadable); tests: ${printed:-none}; not named TestPlanted...: ${unplanted:-none}"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "database-skips.test.sh: failed ($FAILED of $((PASSED + FAILED)))"
