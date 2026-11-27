@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Tests for `race_memory.py`: a command's status passes through, a peak over the limit fails the
 # step and names the tests that were running, a run within the limit ends with the peak, a
-# `go test -json` stream's output reaches the log, the sampler reads the files of its command's
-# own processes alone, and neither a process's name nor a byte of the command's stdout that is not
-# UTF-8 stops a run before it gives its result.
+# `go test -json` stream's output reaches the log, a line names at most NAMES_BYTES of tests, the
+# sampler reads the files of its command's own processes alone, and neither a process's name nor a
+# byte of the command's stdout that is not UTF-8 stops a run before it gives its result.
 #
 # Each case runs the real script around a stand-in command — a shell or a Python program that
 # prints a -json stream and grows — so no Go, no race binary and no database are needed. The two
@@ -89,16 +89,25 @@ check "exits 3" "$(is "$status" 3)"
 check "names the default limit" "$(contains "$out" 'the limit is 8388608 kB (the default')"
 
 echo "case: a peak over the limit fails the run and names the test that was running"
-# The grower prints a -json event naming a test as running, then waits on its stdin, which is
-# this case's. It grows past a 1 kB limit once a sample has named that test, so the stream has
-# been read by then, and it ends once a later sample has seen it grown: a VmRSS above the 64 MiB
-# it allocates. So the highest sample is one taken with the test known, and there are two
+# The grower prints a -json stream naming a test as running, a parallel test that ran, paused and
+# was let go on, and another left paused, then waits on its stdin, which is this case's. It grows
+# past a 1 kB limit once a sample has named that test, so the stream has been read by then, and it
+# ends once a later sample has seen it grown: a VmRSS above the 64 MiB it allocates. So the highest sample is one taken with the test known, and there are two
 # samples at least, on a machine of any speed. A grower that slept 6 s instead was gone before
 # the second walk reached it when the sampler walked the whole /proc, about a second a walk: 18
 # runs of 18 took one sample among 26,800 processes at a load average of 320 to 380.
 grower='
 import json, sys
-sys.stdout.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
+for event in [
+    {"Action": "run", "Test": "TestTheSamplerNamesMe"},
+    {"Action": "run", "Test": "TestAParallelOneLetGoOn"},
+    {"Action": "pause", "Test": "TestAParallelOneLetGoOn"},
+    {"Action": "cont", "Test": "TestAParallelOneLetGoOn"},
+    {"Action": "run", "Test": "TestAParallelOneStillPaused"},
+    {"Action": "output", "Test": "TestAParallelOneStillPaused", "Output": "=== PAUSE TestAParallelOneStillPaused\n"},
+    {"Action": "pause", "Test": "TestAParallelOneStillPaused"},
+]:
+    sys.stdout.write(json.dumps(event) + "\n")
 sys.stdout.flush()
 sys.stdin.readline()
 block = b"x" * (64 * 1024 * 1024)
@@ -108,7 +117,7 @@ sys.stdout.write(str(len(block)) + "\n")
 # on_grower_line: a sample naming the test lets the grower grow, and a later sample that saw it
 # past the 64 MiB lets it end.
 on_grower_line() {
-  if [ "$stage" = unnamed ] && [[ $line == *'tests running: TestTheSamplerNamesMe'* ]]; then
+  if [ "$stage" = unnamed ] && [[ $line == *'tests running: '*TestTheSamplerNamesMe* ]]; then
     echo grow >&"$to_run"
     stage=growing
   elif [ "$stage" = growing ] && [[ $line =~ \ s,\ VmRSS\ ([0-9]+)\ kB ]] &&
@@ -123,9 +132,19 @@ check "a sample named the test, and a later one saw it grown" "$(is "$stage" gro
 check "the sampler wrote until it ended" "$(is "$read_status" 1)"
 check "exits 1" "$(is "$status" 1)"
 check "names the limit it was given" "$(contains "$out" 'the limit is 1 kB (RACE_MEM_LIMIT_KB)')"
+decision=$(grep -- 'had these tests running' <<<"$out" || true)
 check "its decision line names the tests at the highest sample" \
-  "$(contains "$out" 'had these tests running: TestTheSamplerNamesMe')"
+  "$(contains "$decision" 'had these tests running: TestAParallelOneLetGoOn, TestTheSamplerNamesMe')"
+check "its decision line leaves out a test that is paused at its t.Parallel" \
+  "$(is "$(contains "$decision" 'TestAParallelOneStillPaused')" false)"
+check "the paused test's own output still reaches the log" \
+  "$(contains "$out" '^=== PAUSE TestAParallelOneStillPaused$')"
 check "says the peak passed the limit" "$(contains "$out" 'passed the limit of 1 kB')"
+# The grower holds a 64 MiB block in a Python process of a few tens of MB, so its peak is at least
+# 65,536 kB and far under 512 MiB, whichever field it is.
+peak_seen=$(sed -n 's/.*the peak of \([0-9][0-9]*\) kB passed.*/\1/p' <<<"$out")
+check "its peak is the grown process's, the 64 MiB it holds and not far more" \
+  "$([ "${peak_seen:-0}" -ge 65536 ] && [ "${peak_seen:-0}" -le 524288 ] && echo true || echo false)"
 # How that line ends depends on the kernel, so this is the end-to-end check only — that the
 # field the sampler chose reaches the line main writes. The rule itself, both of its branches,
 # is pinned by the two fixture cases below, on either kernel.
@@ -371,5 +390,115 @@ check "exits 1" "$(is "$status" 1)"
 check "names pgrep's failure" "$(contains "$out" 'a sample saw only part of the tree: pgrep -P [0-9]* exited 2')"
 check "says the limit was not checked against the whole tree" \
   "$(contains "$out" 'samples could not read the command.s descendants')"
+
+echo "case: a line names at most NAMES_BYTES of tests and counts the rest"
+# 3,000 tests running at once, each name about as long as a generated table's subtest: main's
+# sampler, which named them all, wrote a line of about 190 kB, which `gh run view --log` (gh up to
+# 2.105) stops reading at and prints nothing after (job 140239891619).
+capped=$(peak '
+import race_memory
+tests = race_memory.RunningTests()
+for n in range(3000):
+    tests.record({"Action": "run", "Test": "TestATableOfEveryCombination/%04d-N-E-P-L-N-E-P-L" % n})
+line = race_memory.Sample(seconds=1.0, rss_kb=1, hwm_kb=1, comm="docs.test", tests=tests.names()).line()
+print(len(line.encode()))
+print(line)
+print(race_memory.named(["TestA", "TestB"]))
+print(race_memory.named([]))
+print(race_memory.named(["T" * (race_memory.NAMES_BYTES + 1), "TestB"]))
+# The budget is bytes, separators charged: with names of two-byte letters, a count of characters
+# or a separator left uncharged names more than the budget holds.
+wide = sorted("TestÄÖÜ/%04d-ÄÖÜ-ÄÖÜ-ÄÖÜ-ÄÖÜ" % n for n in range(3000))
+text = race_memory.named(wide)
+names = text[: text.index(", and ")]
+shown = names.split(", ")
+used = len(names.encode())
+following = len(wide[len(shown)].encode()) + 2
+print("budget %s" % ("held" if used <= race_memory.NAMES_BYTES < used + following else "broken %d %d" % (used, following)))
+')
+# 49-byte names: 40 of them with their 39 separators are 2,038 bytes, a 41st would make 2,089.
+check "it names the first tests in order" \
+  "$(contains "$capped" 'tests running: TestATableOfEveryCombination/0000-N-E-P-L-N-E-P-L, TestATableOfEveryCombination/0001-')"
+check "it names as many as the budget holds and counts the rest exactly" \
+  "$(contains "$capped" 'TestATableOfEveryCombination/0039-N-E-P-L-N-E-P-L, and 2960 more (3000 in all)$')"
+check "the line stays far under 64 KiB" \
+  "$([ "${capped%%$'\n'*}" -le 2300 ] && echo true || echo false)"
+check "the budget is bytes with the separators, and the next name would pass it" \
+  "$(contains "$capped" '^budget held$')"
+check "a list under the cap is named whole" "$(contains "$capped" '^TestA, TestB$')"
+check "no test running is none" "$(contains "$capped" '^none$')"
+check "a first name over the cap is counted, not cut" \
+  "$(contains "$capped" '^2 running; the first name alone passes the line.s 2048-byte cap$')"
+
+echo "case: a sample after output that ends mid-line starts a line of its own"
+# A -json Output fragment can end mid-line (a test's print with no newline): the stream sends it
+# whole, then holds the rest of its line, so a sample written straight after the fragment would be
+# glued to it, one line as long as both. (Plain output cannot do this: the script reads the
+# command's stdout a line at a time.) The stand-in holds the rest of its line on its stdin, which
+# this case closes once the sampler's own lines show two samples after the fragment: the wait is on
+# those lines, not on a clock.
+fragment='
+import json, sys
+def event(**fields):
+    sys.stdout.write(json.dumps(fields) + "\n")
+    sys.stdout.flush()
+event(Action="run", Test="TestAPrintWithNoNewline")
+event(Action="output", Test="TestAPrintWithNoNewline", Output="partial output with no newline")
+sys.stdin.read()
+event(Action="output", Test="TestAPrintWithNoNewline", Output="\n")
+event(Action="pass", Test="TestAPrintWithNoNewline")
+'
+# on_fragment_line: once the fragment is out, a second sample after it lets the stream go on.
+on_fragment_line() {
+  if [ "$stage" = waiting ] && [ "$line" = 'partial output with no newline' ]; then
+    stage=after
+    samples_after=0
+  elif [ "$stage" = after ] && [[ $line == 'race memory: at '*' s, VmRSS '* ]]; then
+    samples_after=$((samples_after + 1))
+    if [ "$samples_after" -ge 2 ]; then
+      close_run
+      stage=released
+    fi
+  fi
+}
+stage=waiting
+drive_run on_fragment_line env -u RACE_MEM_LIMIT_KB "$sampler" python3 -c "$fragment"
+check "two samples followed the fragment before the stream went on" "$(is "$stage" released)"
+check "exits 0" "$(is "$status" 0)"
+check "the fragment keeps its own line" "$(contains "$out" '^partial output with no newline$')"
+check "the sample after it starts its own line" \
+  "$(contains "$(grep -A1 -- '^partial output with no newline$' <<<"$out" | tail -n 1)" '^race memory: at [0-9.]* s, VmRSS ')"
+check "no sample is glued to the fragment" "$(is "$(contains "$out" 'newline.*race memory')" false)"
+
+echo "case: a process on the machine whose name is no UTF-8 does not end the run"
+# This sampler reads the files of its command's own processes alone (the case on its own processes
+# above), so another process's status is never read and its name cannot end a walk. The case keeps
+# the guard a walk of every process would need: were the sampler to read the whole machine again, a
+# process that names itself with bytes that are no UTF-8 (prctl PR_SET_NAME) would be read, and a
+# strict decode of it would end the step. The process stays up while the sampler takes its first
+# sample; the wait for it to be up is a bound on a readiness file, and the control below fails the
+# case if it never came, so no verdict rests on that bound.
+named_dir=$(mktemp -d)
+python3 -c '
+import ctypes, sys, time
+ctypes.CDLL(None).prctl(15, b"bad\xff\xfename", 0, 0, 0)
+open(sys.argv[1] + "/ready", "w").close()
+time.sleep(30)
+' "$named_dir" &
+bad_pid=$!
+for _ in $(seq 200); do [ -e "$named_dir/ready" ] && break; sleep 0.05; done
+# The control: the process is up, and the kernel gives its name as bytes that are no UTF-8.
+bad_name=$(python3 -c '
+import sys
+print(b"Name:\tbad\xff\xfename" in open("/proc/%s/status" % sys.argv[1], "rb").read())
+' "$bad_pid" 2>/dev/null || echo False)
+run_sampler '' sh -c 'exit 0'
+kill "$bad_pid" 2>/dev/null || true
+wait "$bad_pid" 2>/dev/null || true
+rm -rf "$named_dir"
+check "a process whose name is no UTF-8 was up for the walk" "$(is "$bad_name" True)"
+check "exits 0" "$(is "$status" 0)"
+check "writes no decode error" "$(is "$(contains "$out" 'UnicodeDecodeError')" false)"
+check "still ends with the peak" "$(contains "$out" '^race memory: the peak was [0-9][0-9]* kB')"
 
 summary "race_memory.py"

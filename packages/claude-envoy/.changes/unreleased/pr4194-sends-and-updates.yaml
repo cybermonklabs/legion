@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A send answered `no_receiver` says the session takes no message into its conversation now
+  instead of live. The README's "Updates" names the command that updates the plugin on npm 12 or
+  later, where `allow-remote` defaults to none:
+  `npm_config_allow_remote=all claude plugin update claude-envoy@legion-plugins`.
+time: 2026-11-16T18:40:01Z
+custom:
+    Issue: pr4194
