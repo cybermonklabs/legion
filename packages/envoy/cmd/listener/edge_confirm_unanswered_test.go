@@ -40,6 +40,7 @@ import (
 // confirmation's error passed to the answer as it is (edgeScope.showsConfirmed and
 // showsAgentConfirmed returning err), every 503 names the foreign session and the row fails.
 func TestAnEdgeConfirmationThatDoesNotAnswerNamesNoSession(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const reader, foreign, older = "ses_unanswered_reader", "ses_unanswered_foreign_pub", "ses_unanswered_older_priv"
 	const role, issue, roleToken = "legion-priv-priv-11-tester", "PRIV-12", "legion-priv-priv-12-tester"

@@ -335,6 +335,7 @@ func TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent(t *testing.T) {
 // repositoryGapSent before this row), the stalled write never ends and the stalled leader read ends
 // only at bus.RequestTimeout, and both subtests fail.
 func TestARelaysGapMarkWritesEndWhileTheSessionBucketDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	// The row's limit lies between the relay's own bound and a read's own, so it can tell them apart
 	// only while the first is the shorter: a bound raised past bus.RequestTimeout would otherwise set
 	// a limit as long as the bound it guards.
@@ -690,6 +691,7 @@ func giveBackWithheldEvent(t *testing.T, rig *edgeRig, sessionID string, spoil f
 // each give-back and no line at the end, as before this row, the second give-back logs a second
 // WARN and the row fails.
 func TestAGivenBackEventIsLoggedOnceUntilItsSessionsEntryTakesAMark(t *testing.T) {
+	t.Parallel()
 	const gaveBack, marked = "edge listener gave a withheld GitHub event back to the server", "edge listener recorded a gap mark on the session's entry again"
 	const sessionID = "ses_edge_gap_logged_once"
 	rig := newEdgeRigServing(t, []string{"PRIV"})
@@ -731,6 +733,7 @@ func TestAGivenBackEventIsLoggedOnceUntilItsSessionsEntryTakesAMark(t *testing.T
 // ended only by a mark write that lands or the session leaving, as at 3031034d82, the count of the
 // first run stands, the second run's give-back logs nothing, and the row fails.
 func TestARunOfGiveBacksEndsWhenAFreshAnswerRelaysTheEvent(t *testing.T) {
+	t.Parallel()
 	const gaveBack, decided = "edge listener gave a withheld GitHub event back to the server", "edge listener decides the session's GitHub events by a fresh repository answer again"
 	const sessionID = "ses_edge_gap_answer_back"
 	rig := newEdgeRigServing(t, []string{"PRIV"})
@@ -776,6 +779,7 @@ func TestARunOfGiveBacksEndsWhenAFreshAnswerRelaysTheEvent(t *testing.T) {
 // the run ended at every drop, as at e263b68294, the no-repository event writes the end line, the
 // next give-back writes a second WARN, and the row fails.
 func TestADropNoAnswerDecidedLeavesARunOfGiveBacksOpen(t *testing.T) {
+	t.Parallel()
 	const gaveBack, decided = "edge listener gave a withheld GitHub event back to the server", "edge listener decides the session's GitHub events by a fresh repository answer again"
 	const sessionID = "ses_edge_gap_unnamed_drop"
 	rig := newEdgeRigServing(t, []string{"PRIV"})
@@ -816,6 +820,7 @@ func (a nakAcker) NakWithDelay(time.Duration) error { return a.err }
 // once a run. Control: with the nak's error logged only at a run's first give-back, as at
 // 3031034d82, the second give-back's failed nak is logged nowhere and the row fails.
 func TestAGiveBackWhoseNakFailsIsLoggedEveryTime(t *testing.T) {
+	t.Parallel()
 	const gaveBack, unNaked = "edge listener gave a withheld GitHub event back to the server", "edge listener could not give a withheld GitHub event back to the server"
 	logs := &cmdtest.LockedBuffer{}
 	m := &sessionRelays{logger: logging.NewWithWriter("test", logs)}
@@ -1007,6 +1012,7 @@ func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
 // WARN at each failed read and no line at the end, as before this row, the three failed refreshes
 // log three WARN lines and the row fails.
 func TestAnEdgeRefreshLogsARunOfFailedReadsOnceAndItsEnd(t *testing.T) {
+	t.Parallel()
 	const failed, again = "edge listener could not read its project's repositories", "edge listener read its project's repositories again"
 	var refusing atomic.Bool
 	newReader := func() (*edgeRepositories, *cmdtest.LockedBuffer, *listenerClock) { return refusableReader(&refusing) }
@@ -1083,6 +1089,7 @@ func refusableReader(refusing *atomic.Bool) (reader *edgeRepositories, logs *cmd
 // refresh's good read, as at e263b68294, the registration's good read logs nothing, the next failed
 // refresh logs no WARN, and the row fails.
 func TestAGoodRegistrationReadEndsARunOfFailedRefreshes(t *testing.T) {
+	t.Parallel()
 	const failed, again = "edge listener could not read its project's repositories", "edge listener read its project's repositories again"
 	var refusing atomic.Bool
 	reader, logs, clock := refusableReader(&refusing)
@@ -1117,6 +1124,7 @@ func TestAGoodRegistrationReadEndsARunOfFailedRefreshes(t *testing.T) {
 // WARN at each failed removal, as before this row, three failed passes log three WARN lines and
 // the row fails.
 func TestAnEdgePruneLogsARunOfFailedRemovalsOnce(t *testing.T) {
+	t.Parallel()
 	const failed, removed = "edge listener could not remove the interests of a repository that left the session's projects", "edge listener removed the interests of a repository that left the session's projects"
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const sessionID, two = "ses_edge_prune_failing", "notifications.github.acme.two.>"
@@ -1155,6 +1163,7 @@ func TestAnEdgePruneLogsARunOfFailedRemovalsOnce(t *testing.T) {
 // withholding one whose repository the answer does not name. Control: with a line at each nak, as at
 // e263b68294, three naks log three lines and the row fails.
 func TestARelaySocketLogsARunOfAnswerUnknownNaksOnceAndItsEnd(t *testing.T) {
+	t.Parallel()
 	const ended = "listener: the relay socket decides its session's GitHub frames by a fresh repository answer again"
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -1250,6 +1259,7 @@ const noneOutsideWhy = "no interest of the session is outside its projects' repo
 // before it, so no removal succeeds between. Control: with a run ended silently when nothing is left
 // to remove, as at e263b68294, the pass logs no end line and the row fails.
 func TestAnEdgePruneLogsTheEndOfARunWhenTheRepositoryComesBack(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_edge_prune_comes_back"
 	rig := startFailedRemovalRun(t, sessionID)
 	rig.repositories.answer("PRIV", "acme/pub", "acme/two")
@@ -1265,6 +1275,7 @@ func TestAnEdgePruneLogsTheEndOfARunWhenTheRepositoryComesBack(t *testing.T) {
 // that the repository came back: acme/two is still outside PRIV's answer. Control: with the why
 // "the repository is the session's again", as at 845bd3766e, the row fails on the why.
 func TestAnEdgePruneLogsTheEndOfARunTheSessionEndsByUnsubscribing(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_edge_prune_unsubscribed"
 	rig := startFailedRemovalRun(t, sessionID)
 	requireStatus(t, rig.call(t, http.MethodPost, rig.personToken(sessionID, "PRIV"), "/v1/interests/unsubscribe",
@@ -1285,6 +1296,7 @@ func TestAnEdgePruneLogsTheEndOfARunTheSessionEndsByUnsubscribing(t *testing.T) 
 // listener's, as when the session registers again through it. Control: with that end's line removed
 // (the ended call for another listener's record), the pass logs no end line and the row fails.
 func TestAnEdgePruneLogsTheEndOfARunWhenTheSessionMovesToAnotherListener(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_edge_prune_moved"
 	rig := startFailedRemovalRun(t, sessionID)
 	if _, err := rig.deps.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "shared-listener"}, []string{edgeRowTwo}); err != nil {
@@ -1303,6 +1315,7 @@ func TestAnEdgePruneLogsTheEndOfARunWhenTheSessionMovesToAnotherListener(t *test
 // deregistration. Control: with that end's line removed (the ended call for a session the list no
 // longer names), the pass logs no end line and the row fails.
 func TestAnEdgePruneLogsTheEndOfARunWhenTheSessionsRecordIsGone(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_edge_prune_gone"
 	rig := startFailedRemovalRun(t, sessionID)
 	if _, err := rig.deps.registry.Remove(t.Context(), sessionID, nil, store.RoleReleaseAuthority{Force: true}); err != nil {
@@ -1321,6 +1334,7 @@ func TestAnEdgePruneLogsTheEndOfARunWhenTheSessionsRecordIsGone(t *testing.T) {
 // passes fail between. Control: with a WARN at each failed list and no line at the end, as before
 // this row, three failed passes log three WARN lines and the row fails.
 func TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd(t *testing.T) {
+	t.Parallel()
 	const failed, again = "edge listener could not list the interests a repository may have left", "edge listener lists the interests again"
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))

@@ -26,6 +26,7 @@ import (
 // The bus reads that run as superseded, and the hook must not WARN about it either. A move that
 // fails on a live run, against a bucket deleted under the store, is still the hook's WARN.
 func TestTheKnownSessionHookLogsNothingForARunThatIsOver(t *testing.T) {
+	t.Parallel()
 	const moveFailed = "the known-session cache did not move to the recovered connection"
 	for _, tc := range []struct {
 		name string

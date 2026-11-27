@@ -327,10 +327,17 @@ case $verb in
         # exists answer it (the count lives in FAKE_DIR/lock-get-oks) and every read after them
         # fails, so a caller that reads the lock twice where one read would do acts on the first
         # answer and is refused by the second.
-        # FAKE_LOCK_GET_DELAY=S: every read of the lock takes S seconds, so a signal sent while
-        # the caller is inside one lands there.
+        # FAKE_LOCK_GET_HOLD: each of those reads leaves FAKE_DIR/lock-get-started behind and goes
+        # on only once the test has written FAKE_DIR/lock-get-go, so a signal the test sends once
+        # the marker is there lands while the caller is inside that read, however slow the box is.
+        # It waits in 0.05 s naps, which the fake sleep hands to the real one whatever
+        # FAKE_FAST_SLEEP shortens, and it ends too once FAKE_DIR is gone, so a read the suite's
+        # cleanup left held does not outlive it.
         if [ -n "${FAKE_LOCK_GET_FAIL:-}" ] && [ -f "$FAKE_DIR/lock.json" ]; then
-          [ -z "${FAKE_LOCK_GET_DELAY:-}" ] || sleep "$FAKE_LOCK_GET_DELAY"
+          if [ -n "${FAKE_LOCK_GET_HOLD:-}" ]; then
+            : >"$FAKE_DIR/lock-get-started"
+            until [ -f "$FAKE_DIR/lock-get-go" ] || [ ! -d "$FAKE_DIR" ]; do sleep 0.05; done
+          fi
           oks=0
           [ ! -f "$FAKE_DIR/lock-get-oks" ] || oks=$(cat "$FAKE_DIR/lock-get-oks")
           if [ -n "${FAKE_LOCK_GET_OK_TIMES:-}" ] && ((oks < FAKE_LOCK_GET_OK_TIMES)); then
@@ -412,6 +419,8 @@ case $verb in
       # runner's own script here, on the fake runner's /work with this call's standard input, so
       # the script itself writes the credentials and its job's EXIT trap removes them; the job it
       # starts is credential_reader, in place of the loadgen command the start line names.
+      # FAKE_RUNNER_EXEC_FAIL_AT_START: the pod goes away once the job runs in it, so the start is
+      # the last exec of the runner that answers, and a step has nothing left but its wait.
       "sh -c name="*)
         printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts"
         if [[ ${cmd[2]} == *'read -r v'* ]]; then
@@ -424,6 +433,7 @@ case $verb in
           sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "${cmd[4]}" \
             sh -c "$credential_reader" sh "${cmd[4]}" "$FAKE_DIR/runner$claimed" "$FAKE_DIR/runner-credentials" || exit $?
         fi
+        [ -z "${FAKE_RUNNER_EXEC_FAIL_AT_START:-}" ] || : >"$FAKE_RUNNER_EXEC_FAIL"
         ;;
       # replay_checksum: the runner's own script too, with credential_reader and then the checksum
       # line standing in for loadgen replay-checksum.
@@ -1012,15 +1022,22 @@ EOF
 # watcher's 30 s, where a test sets them), are recorded and return at once; every other sleep (the
 # daemons' loops, their start waits) is the real one. FAKE_DIR/clock, where a test makes it, is a
 # fake epoch second that each recorded wait moves forward by its seconds: a cluster.sh whose now()
-# the test replaced reads its bound on it, so a bound of minutes costs the test no real second.
+# or timer_now() the test replaced reads its bound on it, so a bound of minutes costs the test no
+# real second.
 #
-# FAKE_SLEEP_GATE=FILE holds the daemons' 60 s until FILE exists. A daemon removes its own pidfile
+# FAKE_SLEEP_GATE=FILE holds a sleep of FAKE_SLEEP_GATE_SECONDS (default 60, the daemons' period)
+# until FILE exists, and then lets it go as the rules above say. A daemon removes its own pidfile
 # when it stops, and with FAKE_FAST_SLEEP's fast periods it stops as soon as the last command of
 # its run has ended -- before the case that ran that command reads the pidfile, or after, as the
 # box schedules them. A command run with the gate leaves its daemons in their first period, alive
-# and with their pidfiles, until the case has read their pids and made FILE. The wait is in real
-# 0.05 s naps, and it ends too once FAKE_DIR is gone, so a daemon the suite's cleanup missed does
-# not wait for ever.
+# and with their pidfiles, until the case has read their pids and made FILE. A step run with the
+# gate on 15 s leaves its runner_wait in a nap the same way. The wait is in real 0.05 s naps, and
+# it ends too once FAKE_DIR is gone, so a daemon the suite's cleanup missed does not wait for ever.
+#
+# FAKE_SLEEP_HOLD=SECONDS: a sleep of SECONDS that comes once sleep.log already records one holds
+# until a signal ends it, as the TERM a disk watcher takes ends the nap it is in, or until FAKE_DIR
+# is gone. So the first such sleep is the fast one FAKE_FAST_SLEEP makes it, and the next naps
+# until the case sends its signal, however long a loaded box takes to send it.
 #
 # Every call, fast or real, of any length, is also a line "CALLER SECONDS" in naps.log, CALLER being
 # the pid of the shell that napped: how many naps one shell has taken, whatever their length (naps_by).
@@ -1028,13 +1045,24 @@ real_sleep=$(PATH=$real_path command -v sleep)
 cat >"$bin/sleep" <<EOF
 #!/usr/bin/env bash
 [ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s %s\n' "\$PPID" "\$*" >>"\$FAKE_DIR/naps.log"
-if [ "\$*" = 60 ] && [ -n "\${FAKE_SLEEP_GATE:-}" ]; then
+if [ "\$*" = "\${FAKE_SLEEP_GATE_SECONDS:-60}" ] && [ -n "\${FAKE_SLEEP_GATE:-}" ]; then
   until [ -e "\$FAKE_SLEEP_GATE" ] || [ ! -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
+fi
+if [ "\$*" = "\${FAKE_SLEEP_HOLD:-}" ] && grep -qxF -- "\$*" "\$FAKE_DIR/sleep.log" 2>/dev/null; then
+  while [ -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
+  exit 0
 fi
 if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
   printf '%s\n' "\$*" >>"\$FAKE_DIR/sleep.log"
+  # One writer at a time (flock), and each new second published whole by a rename, so a wait that
+  # reads the clock while another process's wait moves it never reads it empty or half written,
+  # and two waits that move it at once lose neither's seconds.
   if [ -f "\$FAKE_DIR/clock" ] && [[ \$* =~ ^[0-9]+\$ ]]; then
-    printf '%s\n' "\$((\$(<"\$FAKE_DIR/clock") + \$*))" >"\$FAKE_DIR/clock"
+    {
+      flock 9
+      printf '%s\n' "\$((\$(<"\$FAKE_DIR/clock") + \$*))" >"\$FAKE_DIR/clock.\$\$"
+      mv -f -- "\$FAKE_DIR/clock.\$\$" "\$FAKE_DIR/clock"
+    } 9>>"\$FAKE_DIR/clock.lock"
   fi
   exit 0
 fi
@@ -1096,8 +1124,9 @@ export PATH="$bin:$PATH"
 unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FAIL FAKE_QUIET FAKE_STORED_ORDER \
   FAKE_EXEC_ERRORS FAKE_FAST_SLEEP FAKE_TYPING_RC FAKE_DISPATCH_BUILD_ERROR FAKE_COPY_BACK_FAIL \
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
-  FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
-  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE \
+  FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_HOLD \
+  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_RUNNER_EXEC_FAIL_AT_START \
+  FAKE_SLEEP_GATE FAKE_SLEEP_GATE_SECONDS FAKE_SLEEP_HOLD \
   FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
@@ -1209,7 +1238,7 @@ reset_fake() {
     "$fake/runner-stops" "$fake/runner-kills" "$fake/rc-polls" "$fake/rc-kill-polls" "$fake/df-seq" "$fake/runner-heap-kept" "$fake/lock-get-fails" "$fake/lock-get-oks" \
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
-    "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go" \
+    "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go" "$fake/lock-get-started" "$fake/lock-get-go" \
     "$fake/fixturebuckets.log" "$fake/fixture-marker" \
     "$fake/identity-probes" "$fake/identity-probe-times" "$fake/identity-answers" "$fake/mint-help.log" "$fake/clock" \
     "$fake/naps.log" "$fake/daemon-start-holds" "$fake/daemon-start-releases"
@@ -1314,13 +1343,15 @@ session_gone() { ! session_live "$1"; }
 # keep_timer_readings FILE: in a shell that has sourced cluster.sh, timer_now also appends each
 # reading to FILE, "WHAT SECOND" a line: the record of the clock runner_wait and pg_disk_watch_stop
 # judge their bounds by, which the bounds of (dd) and (ee) are held to, rather than to this test's
-# own clock.
+# own clock. Where the case has made FAKE_DIR/clock, that clock is the fake one, which only the
+# fake sleep's recorded waits move: a wait whose polls are fast sleeps then reaches a bound of
+# seconds or minutes at the poll that would reach it in production, with no real second passing.
 # shellcheck disable=SC2317 # timer_now runs where cluster.sh's waits call it, by name
 keep_timer_readings() {
   timer_readings=$1
   : >"$timer_readings"
   timer_now() {
-    NOW=$EPOCHSECONDS
+    if [ -f "$FAKE_DIR/clock" ]; then NOW=$(<"$FAKE_DIR/clock"); else NOW=$EPOCHSECONDS; fi
     printf '%s %s\n' "$*" "$NOW" >>"$timer_readings"
   }
 }
@@ -3548,25 +3579,30 @@ kill_dir=$LOADTEST_CLUSTER_ROOT/$kill_run/steps/pgkill
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC: $(cat "$tmp/out")"
 # The step's load never ends (FAKE_RC_UNTIL_STOP) and the volume has room, so the watcher polls
-# on. Only its own 30 s poll is a fast sleep, which it records in sleep.log: the step's shell sits
-# in runner_wait's real 15 s sleep when the kill arrives, as a step does while its load runs.
+# on. Its own 30 s poll is a fast sleep, which it records in sleep.log. The step's shell sits in
+# runner_wait's 15 s nap when the kill arrives, as a step does while its load runs: that nap holds
+# at a gate (FAKE_SLEEP_GATE on 15 s) until the case has killed the step, and every nap of the wait
+# from then on is a fast one.
 df_seq "$pg_size $pg_used_low $pg_free_low"
 : >"$fake/sleep.log"
-FAKE_PG_DF_SEQ=$fake/df-seq FAKE_RC_UNTIL_STOP=1 FAKE_FAST_SLEEP=30 \
+FAKE_PG_DF_SEQ=$fake/df-seq FAKE_RC_UNTIL_STOP=1 FAKE_FAST_SLEEP="15 30" \
+  FAKE_SLEEP_GATE=$fake/root-watchkill.gate FAKE_SLEEP_GATE_SECONDS=15 \
   bash "$cluster" step --namespace "$ns" pgkill 1 --duration 1m >"$tmp/out" 2>&1 &
 kill_step=$!
 # The waits in this case are the step's own doing, never a stretch of wall clock: this one ends
-# at the watcher's first nap, which the fake sleep records, and at once if the step ends first.
+# once the watcher has taken its first nap, which the fake sleep records, and the wait on the
+# runner job has read the job's .rc once (FAKE_RC_UNTIL_STOP counts it in rc-polls), after which it
+# naps at the gate; and at once if the step ends first.
 watching=no
 while kill -0 "$kill_step" 2>/dev/null; do
-  if grep -qx 30 "$fake/sleep.log"; then
+  if grep -qx 30 "$fake/sleep.log" && [ -f "$fake/rc-polls" ]; then
     watching=yes
     break
   fi
   sleep 0.05
 done
 [ "$watching" = yes ] ||
-  fail "the step ended before its disk watcher took its first 30 s nap, so it read the volume through no watcher: $(cat "$tmp/out")"
+  fail "the step ended before its disk watcher took its first 30 s nap and its wait read the job's .rc, so it read the volume through no watcher or waited on no job: $(cat "$tmp/out")"
 # The two subshells the SIGKILL leaves behind: the disk watcher, and the wait on the runner job
 # in its command substitution. Each ends at its own next poll, and the assertions below wait for
 # exactly these pids, so no clock decides how long a loaded box may take to reach that poll.
@@ -3576,15 +3612,19 @@ mapfile -t kill_kids < <(pgrep -P "$kill_step")
 kill -KILL "$kill_step"
 # The zombie reaped, so the pid the watcher and the wait hold names no process any more. A watcher
 # that is gone takes no 30 s nap and reads the volume no more; the step's runner_wait, in a
-# command substitution the kill leaves behind too, sleeps a real 15 s and reads no volume, so the
-# fake kubectl's df is the watcher's read alone, and it ends at the poll after that sleep. The
-# wait here is for the watcher's own poll after the kill, which it says it stops at, and it gives
-# up as soon as both subshells are gone; it is no assertion, since a watcher that polls on fails
-# the counts below.
+# command substitution the kill leaves behind too, naps at the gate and reads no volume, so the
+# fake kubectl's df is the watcher's read alone.
 wait "$kill_step" 2>/dev/null || true
-until grep -q 'disk watcher' "$tmp/out" || all_gone "${kill_kids[@]}"; do
-  sleep 0.05
-done
+# The wait's reads of its job's .rc so far, every one made before the kill: it naps at the gate
+# until the gate opens just below, so its next poll is its first after the kill.
+kill_rcs=$(grep -c -- 'exec runner -c runner -- cat /work/logs/step-pgkill.rc' "$fake/kubectl.log" || true)
+: >"$fake/root-watchkill.gate"
+# The watcher's own poll after the kill, which it says it stops at, or both subshells gone: no
+# assertion, since a watcher that polls on fails the counts below.
+# watcher_stopped_or_gone: the watcher said it stops, or the watcher and the wait have both ended.
+watcher_stopped_or_gone() { grep -q 'disk watcher' "$tmp/out" || all_gone "${kill_kids[@]}"; }
+wait_for "the killed step's disk watcher to say it stops at its poll after the kill, or it and the wait on the runner job (pids ${kill_kids[*]}) to end" \
+  watcher_stopped_or_gone
 # From here the volume is under the threshold: a watcher still polling records the dead step
 # failed and stops the job step-pgkill, which a later run of a step of that name would be.
 df_seq "$pg_size $pg_used_high $pg_free_high"
@@ -3606,6 +3646,9 @@ own_kids_gone() {
 }
 wait_for "the killed step's disk watcher and its wait on the runner job (pids ${kill_kids[*]}) to end at their next poll; polling on, the watcher records pg_disk in a dead step's directory and the wait stops the job step-pgkill at the step's deadline, which a later run's step of that name would be" \
   own_kids_gone "${kill_kids[@]}"
+kill_rcs_after=$(grep -c -- 'exec runner -c runner -- cat /work/logs/step-pgkill.rc' "$fake/kubectl.log" || true)
+[ "$kill_rcs_after" = "$kill_rcs" ] ||
+  fail "the killed step's wait on its runner job read the job's .rc $((kill_rcs_after - kill_rcs)) more times after the kill before it ended: it polls on, and at the step's deadline stops the job step-pgkill, which a later run's step of that name would be"
 kill_dfs_after=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
 ! grep -qx 'step-pgkill' "$fake/runner-stops" 2>/dev/null ||
   fail "the disk watcher of a killed step stopped the runner job step-pgkill after the kill: $(cat "$fake/runner-stops")"
@@ -4170,7 +4213,9 @@ stop_watchdog_end() {
   self_start=$(proc_start "$self")
   export FAKE_PG_DF_SEQ=$fake/df-seq FAKE_RC_UNTIL_STOP=1
   # The guard's 2 s between tries, the wait's 15 s poll and the watcher's 30 s poll are fast
-  # sleeps, so no assertion below waits on a clock.
+  # sleeps, and the waits read their clock on FAKE_DIR/clock, which only those sleeps move
+  # (keep_timer_readings), so no assertion below waits on a clock.
+  printf '%s\n' "$clock_start" >"$fake/clock"
   export FAKE_FAST_SLEEP="2 15 30"
   # The volume is under the threshold at every reading, so the watcher acts at its first poll.
   df_seq "$pg_size $pg_used_high $pg_free_high"
@@ -4243,20 +4288,25 @@ stop_watchdog_end() {
   grep -qF "no exit status within $RUNNER_STOP_GRACE_SECONDS s of the SIGTERM" "$oneread_out" ||
     fail "that wait did not say that it sent the SIGKILL its grace ran out on: $(cat "$oneread_out")"
   unset FAKE_RC_UNTIL_KILL
-  # The TERM that lands while the watcher is inside its read of the lock. Every read fails and
-  # each takes a real second (FAKE_LOCK_GET_DELAY), so the watcher's three tries are some 7 s
-  # long and the TERM, sent once the first of them has failed, lands inside that act. The
-  # watcher takes it as a flag and leaves at the end of the act, recording nothing: a TERM
-  # ignored there would leave pg_disk_watch_stop waiting on a watcher that polls on.
-  export FAKE_RC_UNTIL_STOP=1 FAKE_LOCK_GET_FAIL=1 FAKE_LOCK_GET_DELAY=1 FAKE_FAST_SLEEP=30
-  rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$oneread_dir/step-failed.json"
+  # The TERM that lands while the watcher is inside its read of the lock. Every read fails, and the
+  # first holds (FAKE_LOCK_GET_HOLD) until this case has sent the watcher its TERM, so the TERM
+  # lands inside that act however slow the box is; the case then lets the read answer. The
+  # watcher takes the TERM as a flag and leaves at the end of the act, its three tries, recording
+  # nothing: a TERM ignored there would leave pg_disk_watch_stop waiting on a watcher that polls on.
+  # pg_disk_watch_stop then sends its own TERM, which finds the watcher leaving or gone, and waits
+  # for it to go. Its 1 s naps are fast ones on FAKE_DIR/clock, so a watcher that stays reaches the
+  # stop's 300 s bound at the stop's 300th reading, whatever the watcher itself does meanwhile.
+  export FAKE_RC_UNTIL_STOP=1 FAKE_LOCK_GET_FAIL=1 FAKE_LOCK_GET_HOLD=1 FAKE_FAST_SLEEP="1 2 30"
+  rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go" "$oneread_dir/step-failed.json"
   df_seq "$pg_size $pg_used_high $pg_free_high"
   pg_disk_watch pgterm "$oneread_dir" step-pgterm "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgterm
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
-  [ -f "$fake/lock-get-fails" ] ||
+  until [ -f "$fake/lock-get-started" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  [ -f "$fake/lock-get-started" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
+  kill -TERM "$watcher"
+  : >"$fake/lock-get-go"
   PG_DISK_STOP_SECONDS=300
   stop_watchdog "$watcher"
   pg_disk_watch_stop 2>"$oneread_stop"
@@ -4270,19 +4320,23 @@ stop_watchdog_end() {
   [ ! -f "$oneread_dir/step-failed.json" ] ||
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"
   # The same TERM with the bound small: a watcher that will not leave is killed at the bound and
-  # the step says so, instead of hanging every path out of the step on it.
-  rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$oneread_dir/step-failed.json"
+  # the step says so, instead of hanging every path out of the step on it. Its first read of the
+  # lock holds until the stop is over, so it never leaves; the stop's 1 s naps are fast sleeps on
+  # FAKE_DIR/clock, so its bound costs no real second.
+  rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go" "$oneread_dir/step-failed.json"
   df_seq "$pg_size $pg_used_high $pg_free_high"
   pg_disk_watch pgbound "$oneread_dir" step-pgbound "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgbound
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
-  [ -f "$fake/lock-get-fails" ] ||
+  until [ -f "$fake/lock-get-started" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  [ -f "$fake/lock-get-started" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=2
+  export FAKE_FAST_SLEEP="1 2 30"
   stop_watchdog "$watcher"
   pg_disk_watch_stop 2>"$oneread_stop"
   stop_watchdog_end
+  : >"$fake/lock-get-go"
   [ ! -f "$fake/stop-late" ] ||
     fail "pg_disk_watch_stop had not returned at the CI step's deadline, so it has no bound on the watcher it TERMed: $(cat "$oneread_stop")"
   # By the stop's own clock (timer_now): it armed its deadline the bound after its TERM, and
@@ -4298,9 +4352,10 @@ stop_watchdog_end() {
   [ ! -f "$oneread_dir/step-failed.json" ] ||
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"
 )
+rm -f -- "$fake/clock"
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
-rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks"
+rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go"
 pass "each poll of the disk watcher and of the runner-job wait reads the lock once and kills by that one answer, a wait keeps polling until the job it stopped records an exit status and SIGKILLs one that ignored the TERM, and a TERM that lands while the watcher acts is taken, with pg_disk_watch_stop killing a watcher that outlasts its bound and saying so"
 
 # (ee) A runner pod no exec reaches bounds the wait, so the step ends and stops holding the lock.
@@ -4340,10 +4395,12 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   mkdir -p "$RUN_DIR/logs" "$unreach_dir"
   self=$BASHPID
   self_start=$(proc_start "$self")
-  # The guard's 2 s between tries is a fast sleep; the wait's 15 s poll is a real one, so each
-  # stage of its stop takes one poll and no assertion counts a spin. Three seconds of grace, so
-  # the bound is one poll wide.
-  export FAKE_FAST_SLEEP=2
+  # The guard's 2 s between tries and the wait's 15 s poll are fast sleeps, and the wait reads
+  # its clock on FAKE_DIR/clock, which only those sleeps move (keep_timer_readings): each stage
+  # of its stop takes one poll, no assertion counts a spin, and none waits a real second. Three
+  # seconds of grace, so the bound is one poll wide.
+  printf '%s\n' "$clock_start" >"$fake/clock"
+  export FAKE_FAST_SLEEP="2 15"
   RUNNER_STOP_GRACE_SECONDS=3
   export FAKE_RUNNER_EXEC_FAIL=$unreach_fail
   # The deadline has passed and the runner pod is gone: no TERM leaves this pod, and the job's
@@ -4412,10 +4469,11 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   # records the exit status that SIGKILL makes it record, and no exec of the runner answers
   # after it, so no read of the wait's can ever bring that exit status back. The last of the
   # three bounds ends the wait one grace past the SIGKILL; with none the wait polls for ever
-  # for a .rc nothing can hand it. The wait's 15 s poll is a fast sleep here, so what it waits
-  # out is that grace and not a poll: a wait that kept no bound of its own would end at its
-  # first poll after the SIGKILL, which is at once.
-  export FAKE_RC_UNTIL_KILL=1 FAKE_RUNNER_EXEC_FAIL_AT_KILL=1 FAKE_FAST_SLEEP="2 15"
+  # for a .rc nothing can hand it. Here the grace is three of the wait's 15 s polls wide, so
+  # what the wait waits out is that grace and not a poll: a wait that kept no bound of its own
+  # would end at its first poll after the SIGKILL, 30 s short of the grace by its own clock.
+  RUNNER_STOP_GRACE_SECONDS=45
+  export FAKE_RC_UNTIL_KILL=1 FAKE_RUNNER_EXEC_FAIL_AT_KILL=1
   rm -f -- "$unreach_fail" "$fake/runner-stops" "$fake/runner-kills" "$fake/rc-kill-polls"
   kills=$(kill_tries)
   (
@@ -4446,8 +4504,9 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   grep -qF 'no exit status was read from the runner pod' "$unreach_out" ||
     fail "that wait's note does not say that no exit status was read from the runner pod it could not reach: $(cat "$unreach_out")"
   unset FAKE_RC_UNTIL_KILL FAKE_RUNNER_EXEC_FAIL_AT_KILL
-  export FAKE_FAST_SLEEP=2
-  rm -f -- "$unreach_fail"
+  # The disk watcher's stops below are judged on the real clock: a watcher that leaves on its TERM
+  # ends them at once.
+  rm -f -- "$unreach_fail" "$fake/clock"
   # The disk watcher's TERM, between an act that failed and its next nap: the watcher took the
   # act's answer (the lock is this run's, the kill never left this pod), recorded the step
   # failed and went back to polling, and the TERM there leaves it without a second act --
@@ -4457,11 +4516,15 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   rm -f -- "$fake/runner-stops" "$unreach_dir/step-failed.json"
   : >"$unreach_fail"
   stops=$(stop_tries)
+  # The watcher's first 30 s nap is a fast one and the next holds until a signal ends it
+  # (FAKE_SLEEP_HOLD), so the act below is its only one, however long the box takes to send the
+  # TERM: a watcher that took the TERM leaves from the nap it ends, and one that lost it naps on
+  # until pg_disk_watch_stop kills it at its bound and says so.
+  : >"$fake/sleep.log"
+  export FAKE_FAST_SLEEP="2 30" FAKE_SLEEP_HOLD=30
   pg_disk_watch pgterm "$unreach_dir" step-pgterm "$unreach_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$unreach_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgterm
   watcher=$PG_DISK_WATCHER
-  # The watcher's 30 s poll is a real sleep here, so the act below is its only one: a watcher
-  # that took the TERM leaves before the next nap ends, and one that lost it acts again.
   until [ -f "$unreach_dir/step-failed.json" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
   [ -f "$unreach_dir/step-failed.json" ] ||
     fail "the watcher ended before it recorded the step failed, so no TERM of this case lands after an act that failed: $(cat "$unreach_out")"
@@ -4488,6 +4551,7 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   # stops no browser typing, and pg_disk_watch_stop returns well inside its bound.
   # FAKE_PG_DF_DELAY holds that one exec open until this case lets it answer; the watcher's
   # 30 s poll is a fast sleep, so the read it waits in is all it waits in.
+  unset FAKE_SLEEP_HOLD
   export FAKE_PG_DF_DELAY=60 FAKE_FAST_SLEEP="2 30"
   rm -f -- "$unreach_fail" "$fake/pg-df-started" "$fake/pg-df-go" "$fake/runner-stops" "$fake/runner-kills"
   df_seq "$pg_size $pg_used_high $pg_free_high"
@@ -4545,30 +4609,40 @@ until ! kill -0 "$unreach_hb" 2>/dev/null; do sleep 0.05; done
 # Everything else -- the parse, the lock, the run's daemons, the step's shell and its EXIT trap
 # -- is the step command's own.
 # The step's waits keep their clock's readings in timer-step, as keep_timer_readings has (dd)'s and
-# (ee)'s kept.
+# (ee)'s kept, and read that clock on FAKE_DIR/clock, which only the wait's fast 15 s polls move
+# while the step runs. The slack of 9 s makes the wait's deadline 60 s (30 s of warm-up, the 1 s
+# window, 20 s of grace and the slack), the reading of its fifth poll (0, 15, 30, 45, 60 s), so its
+# TERM falls due at a reading of its own and the grace after it is judged from there.
 cat >"$tmp/step-bounded.sh" <<EOF
 source "$cluster"
-RUNNER_RUN_SLACK_SECONDS=1
+RUNNER_RUN_SLACK_SECONDS=9
 RUNNER_STOP_GRACE_SECONDS=3
-timer_now() { NOW=\$EPOCHSECONDS; printf '%s %s\n' "\$*" "\$NOW" >>"$tmp/timer-step"; }
+timer_now() { NOW=\$(<"\$FAKE_DIR/clock"); printf '%s %s\n' "\$*" "\$NOW" >>"$tmp/timer-step"; }
 main "\$@"
 EOF
 rm -f -- "$tmp/timer-step"
 rm -f -- "$fake/runner-starts" "$fake/runner-stops" "$fake/rc-polls"
-# The step's heartbeat is gated as in (o) until its pid is read below: with fast periods it could
-# otherwise stop, and take its pidfile with it, as soon as the step command has ended.
-FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
+printf '%s\n' "$clock_start" >"$fake/clock"
+# The pod goes away once the load runs in it (FAKE_RUNNER_EXEC_FAIL_AT_START), which is when a
+# step has nothing but this wait left. The step's heartbeat is gated as in (o) until its pid is
+# read below: with fast periods it could otherwise stop, and take its pidfile with it, as soon as
+# the step command has ended. The disk watcher's 30 s nap is a real one, which the step's EXIT
+# trap ends. The stop of that watcher in the EXIT trap (pg_disk_watch_stop) naps 1 s between its
+# readings, and that nap is a fast one that moves the fake clock too, so a watcher that ignores its
+# TERM reaches the stop's 300 s bound at the stop's 300th reading and fails below by name, where a
+# frozen clock would leave the stop polling until the CI step's deadline.
+FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_RUNNER_EXEC_FAIL_AT_START=1 FAKE_FAST_SLEEP="1 15 60" \
+  FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
   bash "$tmp/step-bounded.sh" step --namespace "$ns" unreach 1 --duration 1s >"$unreach_step" 2>&1 &
 unreach_pid=$!
-# The pod goes away once the load runs in it, which is when a step has nothing but this wait left.
 until grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null || ! kill -0 "$unreach_pid" 2>/dev/null; do sleep 0.05; done
 grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null ||
   fail "the step command ended before it started its loadgen run, so no runner pod of it went away: $(cat "$unreach_step")"
-: >"$unreach_fail"
 stop_watchdog "$unreach_pid"
 unreach_step_rc=0
 wait "$unreach_pid" 2>/dev/null || unreach_step_rc=$?
 stop_watchdog_end
+rm -f -- "$fake/clock"
 [ ! -f "$fake/stop-late" ] ||
   fail "the step command had not ended at the CI step's deadline, with a runner pod that answers no exec: it waits for an exit status nothing can record, and its heartbeat renews the lock while no load runs: $(cat "$unreach_step")"
 ((unreach_step_rc != 0)) ||

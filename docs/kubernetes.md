@@ -428,7 +428,7 @@ Then:
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
-  The listen queue Postgres asks for is twice `max_connections` (`legion-testpg`'s comment gives the number), below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  The listen queue Postgres asks for is twice `max_connections` (`legion-testpg`'s comment gives the number), more than the 1,024 gVisor allows (`net.core.somaxconn`), which caps it at 1,024, and gVisor's network stack drops a burst past that while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
   No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
@@ -2651,6 +2651,7 @@ Five migrations write the list after it, `20261117000528_outbox_kinds_with_the_s
 A `role_holders_publish` row publishes the session of each role of one issue whose claim holds it to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its own, or the claim retires, fails, or is suspended by any source but the idle release.
 A claim whose idle pod the daemon released, or that a project pause's stop suspended, keeps its role, and so does a claim launched again over the session it kept.
+After a suspension by any other source, the resume's first write over the kept session, `queued` or `launching`, queues one too: it puts the session back in the set before the agent registers.
 The migration changes no column.
 
 The daemon and Dispatch deploy in either order.
@@ -2677,8 +2678,8 @@ The airlock closes that case.
 **A row of the new kind can stay through a rollback.**
 An earlier release puts the kind in no outbox lane, so it never runs such a row.
 Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
-At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
-The boot of this release queues each issue with a live claim or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
+At the roll forward, this release runs the row, and it sends the set that it reads then, so the row does no harm.
+The boot of this release queues each issue with a claim that holds its role, a released claim among them, or a claim that changed in the last seven days, so a claim that the earlier release ended more than seven days before the roll forward stays listed until the next change of a claim on its issue.
 To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql

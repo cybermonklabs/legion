@@ -590,6 +590,8 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 // context and can run its 10 s. close ends the retry and returns at once, an open under way or not;
 // that open, ending later, opens nothing more.
 func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
+	// Not parallel: it requires the registry's close to return within 1 s while an open is under
+	// way (legionAgentRegistry.close).
 	l := newLegionListener(t, setupPublishTestClient(t))
 	var opens atomic.Int32
 	inOpen := make(chan struct{})
