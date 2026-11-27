@@ -2058,6 +2058,15 @@ func StepWords() string {
 // approval reads ApprovedByPerson rather than ApprovedVersion. The transitions are written once,
 // in gate_basis.go (OpenOnBasis, PendOnBasis, OpenPendingBasis, CloseBasis, EndPendingBasis) and
 // in classify.ApplyDesignGateEvent, and no caller sets the three fields itself.
+//
+// A row also records Dispatch's verdict on whether the approval of its document stands
+// (dispatch://INFRA-6065, R2). It is in hash mode while Verdict is set and in version mode while
+// Verdict is nil, which is every row the daemon wrote before that migration and every row a
+// Dispatch that sends no digest leaves. In version mode the gate opens on an approval of its
+// latest version, as above; in hash mode it opens on Dispatch's verdict for the latest version
+// whatever version the approval is of, and reads closed while a newer version owes its digest
+// (GateOpen, DigestOwed). ToldOpen keeps, in hash mode, the standing the daemon last told, which
+// such a version leaves as it was (ToldStanding).
 type DesignGate struct {
 	Issue string
 	// Step is the document of Issue this gate holds, and the second half of the record's key: one
@@ -2113,6 +2122,47 @@ type DesignGate struct {
 	// one made again over a step whose basis its first attempt left as it was is not. It is no count
 	// of changes requests: a person's changes request on the basis document moves no basis (R3).
 	BasisMoves int
+	// Verdict is Dispatch's verdict on the approval of the document (GateVerdict): nil while the
+	// row is in version mode, set while it is in hash mode. The transition function moves a row
+	// between the two modes on what each fact carries, and the store's reader reads a row a
+	// daemon from before the hash gate moved by the marks (Store.GatesOf, digestAsWritten).
+	Verdict *GateVerdict
+	// ApprovedDigest is the approved_sha256 an artifact.digest named for the approval the row
+	// holds, "" where none did. It is for a reader only: the daemon decides nothing from it, and
+	// Store.PutGate writes it only with an approval.
+	ApprovedDigest string
+	// ToldOpen is, in hash mode, whether the step read open when the daemon last told the tree's
+	// standing (Departure D1 of dispatch://INFRA-6065): a version that owes its digest leaves it
+	// as it was, so a fill window tells nothing. It is nil in version mode, where the told
+	// standing is GateOpen, and Store.PutGate writes it only with a verdict (ToldStanding).
+	ToldOpen *bool
+	// Carried says the row is a copy the re-admission's carry brought from an old root's gate
+	// (admit's carriedGate, Departure D3), on the old root's document, whose events arrive keyed
+	// by that root; false on every step registered on the issue's own document. The migration
+	// that added it marked each copy it found by the hand-over that carried it.
+	Carried bool
+}
+
+// GateVerdict is Dispatch's verdict on whether the approval of a gate's document stands for one
+// version of it (dispatch://INFRA-6065, R2), as the newest fact that gave one carried it: an
+// artifact.digest, a review at or above the gate's latest version in hash mode, or a read of
+// Dispatch whose approval carried digest_owed false.
+type GateVerdict struct {
+	// Version is the newest version of the document Dispatch gave a verdict for
+	// (design_gates.latest_digest_version). Below the gate's LatestVersion, the newer version
+	// owes its digest (DigestOwed).
+	Version int
+	// Current is that verdict: whether the approval stands for Version
+	// (design_gates.approval_current).
+	Current bool
+	// Digest is Version's content_sha256 where the fact named it, "" otherwise
+	// (design_gates.latest_digest). It is for a reader only: the daemon decides nothing from it.
+	Digest string
+	// Mark is where the fact that gave the verdict stands in Dispatch's order
+	// (design_gates.latest_digest_seq and latest_digest_at): the digest event's own mark, the
+	// review's, or a read's verdict mark. An approval or a changes request the row holds marked
+	// after it is a move of a daemon from before the hash gate (the store's digestAsWritten).
+	Mark EventMark
 }
 
 // GateBasis is an ancestor's approval that a step of a root stands open on, or the ancestor's
@@ -2144,6 +2194,14 @@ type GateBasis struct {
 	// first one's time, so that moment does not move (workflow's registeredBasis). It is never zero
 	// (Store.PutGate refuses a basis without it).
 	RegisteredAt time.Time
+	// RootVersion is the version of the issue's own document the registration stood at
+	// (Departure D2 of dispatch://INFRA-6065): the latest version the gate held when the basis
+	// was set (OpenOnBasis, PendOnBasis), or, for a pending basis a person's approval of the
+	// request opened (OpenPendingBasis), the version that pending registration stood at. A
+	// version of that document that owes its digest raises the gate's LatestVersion and leaves
+	// the basis, so nothing else on the row keeps it. It is 0 on a basis written before the
+	// migration that added it.
+	RootVersion int
 	// Pending is the open approval request the step waits on, nil for a basis that stands.
 	Pending *PendingBasis
 }

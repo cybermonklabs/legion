@@ -936,13 +936,47 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	return facts, nil
 }
 
-// GateOpen is whether an approval stands on the gate's current document version: a person's, or
-// the ancestor's approval a basis opened the step on, which sets ApprovedVersion to the version the
-// root registered (OpenOnBasis), so this one rule reads both. It is the one statement of it, which
-// classify.DesignGateOpen and Store.PutGate's own write both call. internal/classify reads this
-// package, so the rule lives here, where every reader can reach it.
+// GateOpen is whether an approval stands on the gate's current document version. In version mode
+// (DesignGate.Verdict nil), and for a step that stands open on an ancestor's approval (OnBasis) in
+// either mode, it is an approval of the latest version: a person's, or the ancestor's approval a
+// basis opened the step on, which sets ApprovedVersion to the version the root registered
+// (OpenOnBasis), so this one rule reads both. Every other row in hash mode reads Dispatch's verdict
+// (dispatch://INFRA-6065, R2): the approval stands for a version at or above the latest, whatever
+// version it approved, so the row reads closed while a newer version owes its digest
+// (DigestOwed). A step pending on an ancestor's request is no OnBasis row, so in hash mode it
+// reads the verdict on the root's own document. It is the one statement of the rule, which
+// classify.DesignGateOpen and Store.PutGate's own write both call, and which every reader that
+// holds work on the gate reads; a reader that tells the standing reads ToldStanding.
+// internal/classify reads this package, so the rule lives here, where every reader can reach it.
 func GateOpen(gate DesignGate) bool {
+	if gate.Verdict == nil || gate.OnBasis() {
+		return approvedAtLatest(gate)
+	}
+	return gate.Verdict.Current && gate.Verdict.Version >= gate.LatestVersion
+}
+
+// approvedAtLatest is the version rule: the gate holds an approval of its latest version.
+func approvedAtLatest(gate DesignGate) bool {
 	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
+}
+
+// DigestOwed is whether the gate's latest version owes Dispatch's digest: in hash mode, the
+// verdict is for a version below the latest, which is design_gates.digest_owed, the column the
+// database derives from the same two versions and no write sets. A row in version mode owes none.
+func DigestOwed(gate DesignGate) bool {
+	return gate.Verdict != nil && gate.Verdict.Version < gate.LatestVersion
+}
+
+// ToldStanding is whether the step reads open to the readers that tell the tree's standing,
+// rather than hold work on it: in hash mode the standing the daemon last told
+// (DesignGate.ToldOpen), which a version that owes its digest leaves as it was, so a fill window
+// tells nothing and shows no new word; in version mode, and on a row in hash mode that stores
+// none, GateOpen.
+func ToldStanding(gate DesignGate) bool {
+	if gate.Verdict != nil && gate.ToldOpen != nil {
+		return *gate.ToldOpen
+	}
+	return GateOpen(gate)
 }
 
 // TreeSteps is the steps one tree is gated on: the steps the deployment gates, in the order it

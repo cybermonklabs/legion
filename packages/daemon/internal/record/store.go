@@ -2349,36 +2349,47 @@ func scannedMark(seq *int64, at *time.Time) EventMark {
 }
 
 // gateColumns reads the basis's text columns as "" where no basis stands, its served references
-// as nil where it names none, and rests_on as nil for a step that rests on nothing.
+// as nil where it names none, and rests_on as nil for a step that rests on nothing; the verdict's
+// digests as "" where no fact named one, and a basis's root version as 0 where a basis written
+// before the hash gate recorded none. digest_owed is not read: DigestOwed derives it from the two
+// versions as the database does.
 const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened,
 	coalesce(basis_issue, ''), coalesce(basis_artifact_id, ''), coalesce(basis_version, 0), basis_approved_seq, basis_approved_at, coalesce(basis_approver, ''),
 	nullif(basis_serves, '{}'), coalesce(basis_reason, ''), coalesce(basis_session, ''), basis_registered_at, coalesce(basis_pending_ask, ''),
-	kept_person_version, kept_person_seq, kept_person_at, nullif(rests_on, '{}'), basis_moves`
+	kept_person_version, kept_person_seq, kept_person_at, nullif(rests_on, '{}'), basis_moves,
+	latest_digest_version, approval_current, coalesce(latest_digest, ''), latest_digest_seq, latest_digest_at, coalesce(approved_digest, ''),
+	told_open, coalesce(basis_root_version, 0), carried`
 
-// scanGate reads a gate row in the shape PutGate writes: an approval's mark only with the approval,
-// a told changes request's reason and mark only with its version, a basis only with its document,
-// its approval only while it is not pending, and a kept person's approval only while a basis
-// stands. An older daemon, which knows none of these columns, may clear a version and leave the
-// rest, so the shape is the reader's and the writer's to keep rather than a constraint that would
-// refuse that daemon's write: a basis such a daemon's write moved is read as ended
-// (basisAsWritten).
+// scanGate reads a gate row in the shape PutGate writes: an approval's mark and digest only with
+// the approval, a told changes request's reason and mark only with its version, a basis only with
+// its document, its approval only while it is not pending, a kept person's approval only while a
+// basis stands, and a verdict, and the told standing, only in hash mode. An older daemon, which
+// knows none of these columns, may clear a version and leave the rest, so the shape is the
+// reader's and the writer's to keep rather than a constraint that would refuse that daemon's
+// write: a basis such a daemon's write moved is read as ended (basisAsWritten), and a verdict it
+// left behind a review it applied is read as that review gives it (digestAsWritten).
 func scanGate(row scanner) (DesignGate, error) {
 	var gate DesignGate
-	var approvedSeq, toldSeq, basisSeq, keptSeq *int64
-	var approvedAt, toldAt, basisAt, registeredAt, keptAt *time.Time
-	var keptVersion *int
-	var step, pendingAsk string
+	var approvedSeq, toldSeq, basisSeq, keptSeq, digestSeq *int64
+	var approvedAt, toldAt, basisAt, registeredAt, keptAt, digestAt *time.Time
+	var keptVersion, digestVersion *int
+	var current, toldOpen *bool
+	var step, pendingAsk, digest string
 	var basis GateBasis
 	if err := row.Scan(&gate.Issue, &step, &gate.ArtifactID, &gate.LatestVersion, &gate.ApprovedVersion, &approvedSeq, &approvedAt,
 		&gate.ToldChangesVersion, &gate.ToldChangesReason, &toldSeq, &toldAt, &gate.EverOpened,
 		&basis.Issue, &basis.ArtifactID, &basis.Version, &basisSeq, &basisAt, &basis.Approver,
 		&basis.Serves, &basis.Reason, &basis.Session, &registeredAt, &pendingAsk,
-		&keptVersion, &keptSeq, &keptAt, &gate.RestsOn, &gate.BasisMoves); err != nil {
+		&keptVersion, &keptSeq, &keptAt, &gate.RestsOn, &gate.BasisMoves,
+		&digestVersion, &current, &digest, &digestSeq, &digestAt, &gate.ApprovedDigest,
+		&toldOpen, &basis.RootVersion, &gate.Carried); err != nil {
 		return DesignGate{}, err
 	}
 	gate.Step = DesignStep(step)
 	if gate.ApprovedVersion != nil {
 		gate.ApprovedMark = scannedMark(approvedSeq, approvedAt)
+	} else {
+		gate.ApprovedDigest = ""
 	}
 	if gate.ToldChangesVersion != nil {
 		gate.ToldChangesMark = scannedMark(toldSeq, toldAt)
@@ -2399,7 +2410,52 @@ func scanGate(row scanner) (DesignGate, error) {
 	if gate.OnBasis() && keptVersion != nil {
 		gate.KeptPerson = &PersonApproval{Version: *keptVersion, Mark: scannedMark(keptSeq, keptAt)}
 	}
-	return basisAsWritten(gate), nil
+	if digestVersion != nil && current != nil {
+		gate.Verdict = &GateVerdict{Version: *digestVersion, Current: *current, Digest: digest, Mark: scannedMark(digestSeq, digestAt)}
+		gate.ToldOpen = toldOpen
+	}
+	return digestAsWritten(basisAsWritten(gate)), nil
+}
+
+// digestAsWritten is gate as this release reads a row in hash mode that a daemon from before the
+// hash gate moved (dispatch://INFRA-6065, R2): such a daemon names none of the verdict's columns,
+// so a write of its own leaves the verdict standing beside the approval or the changes request it
+// applied after it. This release writes no review in hash mode marked after the verdict's mark: a
+// review it applies at or above the latest version gives the verdict with that review's own mark,
+// and a read gives its verdict a mark no earlier than the review it records. So a row whose
+// approval or changes request is marked after the verdict (EventMark.After) is that daemon's
+// move, and reads as this release's rules would have made it: an approval of the latest version
+// gives the verdict true at that version, and a changes request of it the verdict false, each
+// with that review's mark; any other move, such as an approval below the latest version, reads in
+// version mode. The digests named the verdict and the approval before the move, and go with them,
+// and the told standing then reads as the row opens. A review with no mark is none of such a
+// daemon's moves (a step a basis opened carries none), and a new version it applied leaves no mark
+// at all: that row reads owed, so closed, until the boot's gate seed reads Dispatch again. The next
+// write of the row writes what this reads (Store.PutGate).
+func digestAsWritten(gate DesignGate) DesignGate {
+	verdict := gate.Verdict
+	if verdict == nil {
+		return gate
+	}
+	after := func(version *int, mark EventMark) bool {
+		return version != nil && mark != (EventMark{}) && mark.After(verdict.Mark)
+	}
+	approved, changes := after(gate.ApprovedVersion, gate.ApprovedMark), after(gate.ToldChangesVersion, gate.ToldChangesMark)
+	switch {
+	case !approved && !changes:
+		return gate
+	case approved && *gate.ApprovedVersion == gate.LatestVersion:
+		gate.Verdict = &GateVerdict{Version: gate.LatestVersion, Current: true, Mark: gate.ApprovedMark}
+	case changes && *gate.ToldChangesVersion == gate.LatestVersion:
+		gate.Verdict = &GateVerdict{Version: gate.LatestVersion, Current: false, Mark: gate.ToldChangesMark}
+	default:
+		gate.Verdict = nil
+	}
+	gate.ApprovedDigest, gate.ToldOpen = "", nil
+	if gate.Verdict != nil {
+		gate.ToldOpen = new(GateOpen(gate))
+	}
+	return gate
 }
 
 // GatesOf is every gate issue holds, by step. An issue with no gate gives an empty map.
@@ -2539,11 +2595,13 @@ func gatesWhere(ctx context.Context, tx pgx.Tx, condition string, arg any, what 
 }
 
 // PutGate writes the gate of one step of one issue, which is the record's key, keeping the row's
-// shape itself: an approval's mark is written only with the approval, a told changes request's
-// reason and mark only with its version, a basis's approval only while it is not pending, and a
-// kept person's approval only while a basis stands (scanGate). A gate with no basis writes every
-// basis column null, which is how a basis that ended leaves the row. It is the single writer of
-// every gate change, so it is also the only place ever_opened can rise.
+// shape itself: an approval's mark and digest are written only with the approval, a told changes
+// request's reason and mark only with its version, a basis's approval only while it is not
+// pending, a kept person's approval only while a basis stands, and a verdict and the told standing
+// only in hash mode (scanGate). A gate with no basis writes every basis column null, its root
+// version among them, which is how a basis that ended leaves the row, and a gate in version mode
+// writes every verdict column null. digest_owed is the database's to derive, and no write names it.
+// It is the single writer of every gate change, so it is also the only place ever_opened can rise.
 //
 // A gate built with no step is written as DesignStepSpec (DesignStep.OrSpec, the one place that
 // rule is written). Go names no missing field at build time, so a caller that forgets the step
@@ -2551,7 +2609,8 @@ func gatesWhere(ctx context.Context, tx pgx.Tx, condition string, arg any, what 
 // reached that path first. A basis that names no ancestor, document, version or registration time,
 // or a pending one that names no request, is refused for the same reason: the readers that find a
 // step by its basis (GatesForBasisArtifact, GatesByPendingAsk, GatesRestingOn) and the waiting
-// line's moment (TreeGate.OpenedAt) read each.
+// line's moment (TreeGate.OpenedAt) read each. A verdict that names no version is refused too:
+// the version is the one GateOpen holds against the latest.
 func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error {
 	step := gate.Step.OrSpec()
 	approvedSeq, approvedAt := markValues(gate.ApprovedMark)
@@ -2563,7 +2622,7 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	if gate.ToldChangesVersion == nil {
 		toldSeq, toldAt, toldReason = nil, nil, ""
 	}
-	var basisIssue, basisArtifact, basisVersion, basisSeq, basisAt, basisApprover, basisReason, basisSession, registeredAt, pendingAsk any
+	var basisIssue, basisArtifact, basisVersion, basisSeq, basisAt, basisApprover, basisReason, basisSession, registeredAt, pendingAsk, rootVersion any
 	var basisServes []string
 	if basis := gate.Basis; basis != nil {
 		switch {
@@ -2576,6 +2635,9 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 		}
 		basisIssue, basisArtifact, basisVersion = basis.Issue, basis.ArtifactID, basis.Version
 		basisServes, basisReason, basisSession, registeredAt = basis.Serves, basis.Reason, basis.Session, basis.RegisteredAt
+		if basis.RootVersion > 0 {
+			rootVersion = basis.RootVersion
+		}
 		if basis.Pending != nil {
 			pendingAsk = basis.Pending.Ask
 		} else {
@@ -2587,6 +2649,21 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	if kept := gate.KeptPerson; kept != nil && gate.OnBasis() {
 		keptVersion = kept.Version
 		keptSeq, keptAt = markValues(kept.Mark)
+	}
+	var approvedDigest any
+	if gate.ApprovedVersion != nil {
+		approvedDigest = nullableText(gate.ApprovedDigest)
+	}
+	var digestVersion, current, digest, digestSeq, digestAt, toldOpen any
+	if verdict := gate.Verdict; verdict != nil {
+		if verdict.Version <= 0 {
+			return fmt.Errorf("put design gate for %s: a verdict names the version of the document it is for", gate.Issue)
+		}
+		digestVersion, current, digest = verdict.Version, verdict.Current, nullableText(verdict.Digest)
+		digestSeq, digestAt = markValues(verdict.Mark)
+		if gate.ToldOpen != nil {
+			toldOpen = *gate.ToldOpen
+		}
 	}
 	// ever_opened only ever rises: the write ORs what the row holds with what this gate opens with,
 	// because a changes request's write carries a gate whose approval it has just cleared and would
@@ -2607,10 +2684,11 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 		told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened,
 		basis_issue, basis_artifact_id, basis_version, basis_approved_seq, basis_approved_at, basis_approver, basis_serves,
 		basis_reason, basis_session, basis_registered_at, basis_pending_ask, kept_person_version, kept_person_seq, kept_person_at, rests_on,
-		basis_moves)
+		basis_moves, latest_digest_version, approval_current, latest_digest, latest_digest_seq, latest_digest_at, approved_digest, told_open,
+		basis_root_version, carried)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
 		$13, $14, $15, $16, $17, $18, $19::text[], $20, $21, $22, $23, $24, $25, $26, nullif($27::text[], '{}'),
-		case when $13::text is null then 0 else 1 end)
+		case when $13::text is null then 0 else 1 end, $28, $29, $30, $31, $32, $33, $34, $35, $36)
 		on conflict (issue, step) do update set artifact_id = excluded.artifact_id,
 		latest_version = excluded.latest_version, approved_version = excluded.approved_version,
 		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at,
@@ -2623,6 +2701,10 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 		basis_session = excluded.basis_session, basis_registered_at = excluded.basis_registered_at,
 		basis_pending_ask = excluded.basis_pending_ask, kept_person_version = excluded.kept_person_version,
 		kept_person_seq = excluded.kept_person_seq, kept_person_at = excluded.kept_person_at,
+		latest_digest_version = excluded.latest_digest_version, approval_current = excluded.approval_current,
+		latest_digest = excluded.latest_digest, latest_digest_seq = excluded.latest_digest_seq, latest_digest_at = excluded.latest_digest_at,
+		approved_digest = excluded.approved_digest, told_open = excluded.told_open, basis_root_version = excluded.basis_root_version,
+		carried = excluded.carried,
 		rests_on = (select array_agg(ancestor order by first) from (
 			select ancestor, min(place) as first
 			from unnest(coalesce(design_gates.rests_on, '{}') || coalesce(excluded.rests_on, '{}')) with ordinality as named (ancestor, place)
@@ -2635,7 +2717,8 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 		gate.ToldChangesVersion, toldReason, toldSeq, toldAt,
 		gate.EverOpened || GateOpen(gate),
 		basisIssue, basisArtifact, basisVersion, basisSeq, basisAt, basisApprover, basisServes,
-		basisReason, basisSession, registeredAt, pendingAsk, keptVersion, keptSeq, keptAt, gate.RestsOn)
+		basisReason, basisSession, registeredAt, pendingAsk, keptVersion, keptSeq, keptAt, gate.RestsOn,
+		digestVersion, current, digest, digestSeq, digestAt, approvedDigest, toldOpen, rootVersion, gate.Carried)
 	if err != nil {
 		return fmt.Errorf("put design gate for %s: %w", gate.Issue, err)
 	}

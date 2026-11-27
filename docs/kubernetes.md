@@ -3648,6 +3648,32 @@ Run them only when every daemon of the database is stopped, and roll back every 
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
 
+#### Rolling back the release whose design gate follows Dispatch's approval verdict
+
+This release records on each `design_gates` row Dispatch's verdict on whether the approval of the row's document stands (dispatch://INFRA-6065).
+Its migration `20261127204213_design_gate_verdict` adds ten columns to `design_gates` and the check `design_gates_verdict_check`: the verdict (`latest_digest_version`, `approval_current`, `latest_digest`, `latest_digest_seq` and `latest_digest_at`), `approved_digest`, the generated column `digest_owed`, `told_open`, `basis_root_version` and `carried`.
+A row is in hash mode while `latest_digest_version` is set, and its gate opens while Dispatch reports the approval current for the latest version, whatever version the person approved.
+A row is in version mode while `latest_digest_version` is null, and its gate opens on an approval of its latest version, as before.
+The migration leaves every row it finds in version mode, and sets `carried` on each copy of a gate that a hand-over carried at its root's current generation.
+The release adds no outbox kind and no field of an outbox payload.
+
+The earlier release runs on this schema with no statement.
+It names none of the new columns: its inserts leave them null and `carried` false, and its updates leave them as they stand.
+What the rollback costs is the verdict.
+The earlier release reads every gate by the version rule, so a gate that stands open on an approval below the latest version reads closed under it and holds its tree until a person approves the latest version.
+It also drops every `artifact.digest` event.
+When this release is rolled forward without the way back, it reads a row that the earlier release moved by the marks of the reviews on it (`digestAsWritten` in `internal/record/store.go`).
+An approval of the latest version that the earlier release applied gives the verdict true, a changes request of the latest version gives the verdict false, and any other review it applied puts the row in version mode.
+A new version that the earlier release applied leaves no mark, so the row reads closed until the boot's gate seed reads Dispatch again.
+A copy of a gate that the earlier release carried at a re-admission has `carried` false.
+
+The way back in the header of `20261127204213_design_gate_verdict.up.sql` drops the ten columns and the check, `digest_owed` first, and deletes that migration's version row.
+Run it with every daemon that shares the database stopped: after this release's daemons stop and before the earlier image starts, or later, before this release is rolled forward.
+A daemon of this release that still runs for another project would fail every read of a gate after the drop.
+The roll forward then applies the migration again: every row reads in version mode, and the migration sets `carried` again on each copy that a hand-over carried, the copies the earlier release carried among them.
+At its boot this release queues a gate seed for each step that reads closed, and the seed's read of Dispatch puts the row in hash mode again where Dispatch reports a verdict.
+`TestHashGateMigrationAndWayBack` in `internal/store` runs the way back on a migrated database, writes gates with the earlier release's `PutGate` statement before and after it, and rolls forward.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -4279,6 +4305,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
+20261127204213_design_gate_verdict, of dispatch://INFRA-6065, adds ten columns of `design_gates`, each null on every row it finds but `carried`, which it sets true on each copy of a gate a hand-over carried at its root's current generation and false on every other row, and the check `design_gates_verdict_check`, and touches none of the six, so the block holds over it and leaves the columns standing, which the earlier release names in no statement; its way back, which drops the columns and the check and deletes its version row, runs with every daemon of the database stopped, at the rollback or before the roll forward ([Rolling back the release whose design gate follows Dispatch's approval verdict](#rolling-back-the-release-whose-design-gate-follows-dispatchs-approval-verdict)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

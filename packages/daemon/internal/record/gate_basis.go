@@ -63,20 +63,27 @@ func (g DesignGate) openedAt() time.Time {
 // OpenOnBasis opens the step on basis, an ancestor's approval, at the version of the issue's own
 // document the gate holds as its latest, which is the version the root registered: ApprovedVersion
 // becomes that version with no ApprovedMark, so GateOpen, TreeGate.Open, EverOpened and the
-// merger's start read the step open as after a person's approval. A person's approval of an
-// earlier version the step held moves into KeptPerson; a basis that already stood keeps the
-// approval it kept. The step rests on basis's ancestor for the generation from then on, beside
-// each ancestor an earlier basis opened it on (RestsOn). A step a person's approval holds open at
-// its latest version stays on that approval, which no basis outranks (R3), and is returned as it
-// is.
+// merger's start read the step open as after a person's approval. The basis records that version
+// as the one its registration stood at (GateBasis.RootVersion), unless it names one already: a
+// pending basis a person's approval of the request opens (OpenPendingBasis) keeps the version its
+// pending registration stood at. A person's approval of an earlier version the step held moves
+// into KeptPerson; a basis that already stood keeps the approval it kept. The step rests on
+// basis's ancestor for the generation from then on, beside each ancestor an earlier basis opened
+// it on (RestsOn). A step a person's approval holds open at its latest version stays on that
+// approval, which no basis outranks (R3), and is returned as it is: the standing last told
+// (ToldStanding) says so, so a version of the issue's own document that owes its digest does not
+// move a standing approval into KeptPerson.
 func OpenOnBasis(gate DesignGate, basis GateBasis) DesignGate {
-	if !gate.OnBasis() && GateOpen(gate) {
+	if !gate.OnBasis() && ToldStanding(gate) {
 		return gate
 	}
 	if !gate.OnBasis() {
 		gate.KeptPerson = gate.ApprovedByPerson()
 	}
 	basis.Pending = nil
+	if basis.RootVersion == 0 {
+		basis.RootVersion = gate.LatestVersion
+	}
 	gate.Basis = &basis
 	registered := gate.LatestVersion
 	gate.ApprovedVersion, gate.ApprovedMark = &registered, EventMark{}
@@ -89,17 +96,25 @@ func OpenOnBasis(gate DesignGate, basis GateBasis) DesignGate {
 
 // PendOnBasis records that the step waits, closed, on ask, the ancestor's open request for a
 // person's approval of basis's version: basis carries no approval yet, so its Approval and
-// Approver are cleared. A basis that stood is closed first (CloseBasis), so the step falls back to
-// the person's own approval it kept. The step rests on the ancestor through the pending basis
-// alone (RestsOnIssue), so a wait that ends without opening leaves no rest behind. A step a
-// person's approval holds open at its latest version waits on nothing, as OpenOnBasis leaves it.
+// Approver are cleared, and it records the gate's latest version as the one its registration
+// stood at (GateBasis.RootVersion). A basis that stood is closed first (CloseBasis), so the step
+// falls back to the person's own approval it kept. The step rests on the ancestor through the
+// pending basis alone (RestsOnIssue), so a wait that ends without opening leaves no rest behind. A
+// step a person's approval holds open at its latest version waits on nothing, as OpenOnBasis
+// leaves it: by the standing last told (ToldStanding) for a step no basis stands on, so a version
+// that owes its digest leaves that approval standing, and by GateOpen once a basis that stood is
+// closed, since the standing told was the basis's.
 func PendOnBasis(gate DesignGate, basis GateBasis, ask string) DesignGate {
+	if !gate.OnBasis() && ToldStanding(gate) {
+		return gate
+	}
 	gate = CloseBasis(gate)
 	if GateOpen(gate) {
 		return gate
 	}
 	basis.Approval, basis.Approver = EventMark{}, ""
 	basis.Pending = &PendingBasis{Ask: ask}
+	basis.RootVersion = gate.LatestVersion
 	gate.Basis = &basis
 	return gate
 }
@@ -151,16 +166,19 @@ func EndPendingBasis(gate DesignGate) DesignGate {
 // release's move, and is read as this release's rule would have made it: a changes request (no
 // approval) or a person's approval (a mark) ended the basis and the approval it kept; a newer
 // version (an approval below the latest) closed it, falling back to the kept approval rather than
-// to the version the basis opened. A pending row a person's approval opened at its latest version
-// has ended its wait. The next write of the row clears what is left (Store.PutGate).
+// to the version the basis opened. That last reading holds only where no digest is owed
+// (DigestOwed): a version of the issue's own document that owes its digest raises the latest
+// version under this release too, and leaves the basis for the digest to settle. A pending row a
+// person's approval opened at its latest version, or whose own verdict reads it open, has ended
+// its wait. The next write of the row clears what is left (Store.PutGate).
 func basisAsWritten(gate DesignGate) DesignGate {
 	switch {
-	case gate.PendingOnBasis() && GateOpen(gate):
+	case gate.PendingOnBasis() && (approvedAtLatest(gate) || GateOpen(gate)):
 		gate.Basis = nil
 	case !gate.OnBasis():
 	case gate.ApprovedVersion == nil, gate.ApprovedMark != (EventMark{}):
 		gate.Basis, gate.KeptPerson = nil, nil
-	case *gate.ApprovedVersion != gate.LatestVersion:
+	case *gate.ApprovedVersion != gate.LatestVersion && !DigestOwed(gate):
 		gate = CloseBasis(gate)
 	}
 	return gate
