@@ -263,16 +263,21 @@ itself, whose tests import its sources by relative path.
 
 - A Go test of `packages/daemon` that asks whether a stop of a command's process group reached a
   child the command left in that group by the run's return, and where the stop found the
-  command's output pipe, starts the child as a `testkernel.Child` (`ChildCommand` and `Args`) and
-  reads it with `After`, never from the child's `SigPnd` or `ShdPnd` in `/proc/<pid>/status`: the
-  build cluster's gVisor has neither line, and a signal the shell has taken but whose trap has not
-  yet run is pending in neither. The child writes a beat, the time since boot, at each turn of its
+  command's output pipe, starts the child as a `testkernel.Child` (`ChildCommand` and `Args`, or
+  `Start` in a command's own script that goes on past the child's start) and reads it with
+  `After`, never from the child's `SigPnd` or `ShdPnd` in `/proc/<pid>/status`: the build
+  cluster's gVisor has neither line, and a signal the shell has taken but whose trap has not yet
+  run is pending in neither. The child writes a beat, the time since boot, at each turn of its
   loop, so a beat past the run's return and one more after it show that no SIGTERM was sent by
-  then; its SIGTERM trap writes one byte to the pipe and records whether the write met EPIPE
-  (`TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsItsOutput` in
-  `packages/daemon/internal/capabilities/image_test.go`, and
+  then; its SIGTERM trap writes one byte to the pipe and records whether the write met EPIPE, and
+  when the trap ran. A stop that found the pipe open (`InWait`) came inside `Wait`, and a row that
+  knows the earliest moment its budget could pass fails one whose trap ran before it
+  (`judgeable` in `packages/daemon/internal/workspace/errwaitdelay_test.go`). The rows that do
+  this are `TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsItsOutput`
+  in `packages/daemon/internal/capabilities/image_test.go`,
   `TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt` in
-  `packages/daemon/internal/daemon/bootgate_test.go`).
+  `packages/daemon/internal/daemon/bootgate_test.go`, and the two in-group rows of
+  `errwaitdelay_test.go`.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
