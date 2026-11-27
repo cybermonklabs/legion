@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 )
@@ -64,10 +65,15 @@ func childEnvMap(t *testing.T, environ []string, values map[string]string, relea
 // TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy pins the one list the airlock gets wrong in both
 // directions: an entry that stays takes a secret's request past the proxy with a placeholder in
 // it, and an entry that is missing sends a request the proxy refuses (a private address) or
-// cannot reach (the broker itself) through it.
+// cannot reach (the broker itself) through it. An entry with a trailing dot is the same name
+// fully qualified, which Bun's fetch, the runtime `dispatch result` writes with, reads as covering
+// the bound host, so it is held to the bound hosts as the name without it is. Bun also splits the
+// list on white space, so a bound host that a space, a tab or a line feed joins to another entry
+// is dropped as one between commas is, the other entry is kept, and the child's list holds no
+// white space in any row.
 func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 	t.Parallel()
-	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com"}, map[string]string{"value": testAirlockPlaceholder})
+	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com", "dispatch.example.test"}, map[string]string{"value": testAirlockPlaceholder})
 	for _, row := range []struct {
 		name        string
 		environ     []string
@@ -113,9 +119,88 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 			wantEntries: []string{"broker.internal.example"},
 			wantGone:    []string{"broker.internal.example:8443"},
 		},
+		{
+			// The broker's host is held to the bound hosts as any entry is: a parent domain of a
+			// bound host, the bound host itself on another port, and a host under a bound "*."
+			// name each leave the list, so the bound host's requests stay on the proxy.
+			name:     "a broker host that is a parent domain of a bound host",
+			environ:  []string{"AGENT_SECRETS_URL=https://example.com"},
+			wantGone: []string{"example.com"},
+		},
+		{
+			name:     "a broker host that is a bound host on another port",
+			environ:  []string{"AGENT_SECRETS_URL=https://api.example.com:8443"},
+			wantGone: []string{"api.example.com"},
+		},
+		{
+			name:     "a broker host under a bound *. name",
+			environ:  []string{"AGENT_SECRETS_URL=https://secrets.cdn.example.com"},
+			wantGone: []string{"secrets.cdn.example.com"},
+		},
+		{
+			name: "an inherited entry with a trailing dot naming a bound host or its parent",
+			environ: []string{
+				"AGENT_SECRETS_URL=https://broker.internal.example",
+				"NO_PROXY=dispatch.example.test.,.dispatch.example.test.,example.test.,.example.test.,intranet.example.org",
+			},
+			wantEntries: []string{"intranet.example.org"},
+			wantGone:    []string{"dispatch.example.test.", ".dispatch.example.test.", "example.test.", ".example.test."},
+		},
+		{
+			// A row of its own: beside "dispatch.example.test." the list keeps one spelling of
+			// each name in any case, so this entry would leave it whatever the test made of it.
+			name: "an inherited bound host in capitals with a trailing dot",
+			environ: []string{
+				"AGENT_SECRETS_URL=https://broker.internal.example",
+				"NO_PROXY=DISPATCH.EXAMPLE.TEST.,intranet.example.org",
+			},
+			wantEntries: []string{"intranet.example.org"},
+			wantGone:    []string{"DISPATCH.EXAMPLE.TEST."},
+		},
+		{
+			name:     "a broker host that is a bound host with a trailing dot",
+			environ:  []string{"AGENT_SECRETS_URL=https://dispatch.example.test.:8443"},
+			wantGone: []string{"dispatch.example.test.", "dispatch.example.test"},
+		},
+		{
+			name:     "a broker host that is a parent domain of a bound host with a trailing dot",
+			environ:  []string{"AGENT_SECRETS_URL=https://example.test."},
+			wantGone: []string{"example.test.", "example.test"},
+		},
+		{
+			name:        "control: a sibling entry with a trailing dot stays",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=secrets.example.test."},
+			wantEntries: []string{"secrets.example.test.", "broker.internal.example"},
+		},
+		{
+			name:        "an inherited bound host a space joins to another entry",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=other.test dispatch.example.test"},
+			wantEntries: []string{"other.test", "broker.internal.example"},
+			wantGone:    []string{"dispatch.example.test", "other.test dispatch.example.test"},
+		},
+		{
+			name:        "an inherited bound host a tab joins to another entry",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=other.test\tdispatch.example.test"},
+			wantEntries: []string{"other.test", "broker.internal.example"},
+			wantGone:    []string{"dispatch.example.test", "other.test\tdispatch.example.test"},
+		},
+		{
+			name:        "a list of commas, spaces, tabs and a line feed, with bound hosts among it",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=intranet.example.org, other.test\tapi.example.com ,\nx.example.net  .cdn.example.com"},
+			wantEntries: []string{"intranet.example.org", "other.test", "x.example.net", "broker.internal.example"},
+			wantGone:    []string{"api.example.com", ".cdn.example.com"},
+		},
+		{
+			name:        "control: a sibling broker host stays",
+			environ:     []string{"AGENT_SECRETS_URL=https://secrets.example.com"},
+			wantEntries: []string{"secrets.example.com"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := airlockNoProxy(row.environ, release)
+			if strings.ContainsFunc(got, unicode.IsSpace) {
+				t.Errorf("NO_PROXY = %q, want no white space in it", got)
+			}
 			entries := strings.Split(got, ",")
 			has := func(want string) bool {
 				for _, e := range entries {
@@ -136,6 +221,30 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAFixedNoProxyEntryOverABoundHostIsDropped: a fixed NO_PROXY entry is held to the bound hosts
+// as an inherited one is. With Dispatch's tailnet name bound, `.ts.net` leaves the list, so a
+// write to it goes through the proxy rather than straight out with a placeholder in it; the
+// broker's own tailnet name, which the release does not bind, stays, and so does every other fixed
+// entry. A grant bound to a host outside the tailnet keeps `.ts.net`.
+func TestAFixedNoProxyEntryOverABoundHostIsDropped(t *testing.T) {
+	environ := []string{"AGENT_SECRETS_URL=https://secrets.example-tailnet.ts.net"}
+	entries := func(hosts ...string) []string {
+		return strings.Split(airlockNoProxy(environ, testRelease("DISPATCH_RESULTS_TOKEN", hosts, map[string]string{"value": testAirlockPlaceholder})), ",")
+	}
+	dispatch := entries("dispatch.example-tailnet.ts.net")
+	if slices.Contains(dispatch, ".ts.net") || !slices.Contains(dispatch, "secrets.example-tailnet.ts.net") {
+		t.Fatalf("with Dispatch's tailnet name bound, NO_PROXY = %q; want no .ts.net and the broker's own name", dispatch)
+	}
+	for _, fixed := range airlockFixedNoProxy {
+		if fixed != ".ts.net" && !slices.Contains(dispatch, fixed) {
+			t.Errorf("with Dispatch's tailnet name bound, NO_PROXY = %q; want the fixed entry %q kept", dispatch, fixed)
+		}
+	}
+	if github := entries("api.github.com"); !slices.Contains(github, ".ts.net") {
+		t.Fatalf("with api.github.com bound, NO_PROXY = %q; want .ts.net kept", github)
 	}
 }
 

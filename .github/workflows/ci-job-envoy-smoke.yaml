@@ -59,12 +59,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # go-envoy-smoke holds what this job's three go commands compile: the smoke test in the root
+      # workspace, and envoy-infra's host live tests and plugin in the infra module's go.work, whose
+      # dependencies (the Pulumi SDKs among them) took 182 s of the live step to compile from
+      # nothing. .github/workflows/ci-caches.yaml fills it again on every push to main.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-smoke-family
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-smoke-{0}-{1}-', runner.os, runner.arch) }}
       # Both modules this job compiles on the host: packages/envoy for the smoke test, and
       # packages/envoy/infra, a workspace of its own, for the live tests and the plugin build.
       # Downloaded once and retried before any of them (ci-budgets.md's Retries note; the retried
@@ -72,8 +86,8 @@ jobs:
       # `go mod download` runs measured 77 s for packages/envoy and 113 s for
       # packages/envoy/infra on an empty module cache on 2026-11-07, so the bound is 1.6 times
       # the slower of the two, and an attempt it kills leaves what it fetched in the module
-      # cache for the next one to resume from. This job restores no module cache, so this is
-      # where its modules arrive. The image builds below download inside the image.
+      # cache for the next one to resume from. It runs after the restore above, so it fetches
+      # only the modules that entry lacks. The image builds below download inside the image.
       - name: Download the Go modules this job builds
         # Its own retry arithmetic: two calls, 2 x (5 x 180 + 150) = 2100 s, a whole number of
         # minutes, so the budget is the next one strictly above it -> 36 min.

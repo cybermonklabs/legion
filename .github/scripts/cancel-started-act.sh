@@ -15,8 +15,15 @@
 # The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step. Each call is
 # retry_fetch's ladder (ci-retry.sh) run through gh-read.sh's gh_wait_reset, which waits out a
 # spent API budget only when the wait and one more ladder fit within the step's
-# JOB_TIMEOUT_MINUTES and fails by name otherwise: a refused list fails the step as it did, and a
-# refused cancel warns as it did.
+# JOB_TIMEOUT_MINUTES and fails by name otherwise: a list still refused after the ladder fails the
+# step as it did, and a refused cancel warns as it did. The list's ladder is the retry main's
+# #5448 gave it, so one refusal GitHub lifts by itself is read again rather than failing the merge
+# group: merge-group run 45467602844 (pull request #5331's second group) went red whole when the
+# list answered HTTP 500 once, in job 138706588845. #5448 wrote that retry as gh-read.sh's
+# three-attempt gh_read, which this branch's gh-read.sh does not hold, since retry_fetch is the
+# one ladder (dispatch://INFRA-1545, R2); the list takes retry_fetch's five attempts and no second
+# ladder around them.
+# Its tests are in cancel-started-act.test.sh, which ci.yaml's test job runs.
 #
 # Run from the repository root, with those three and $GITHUB_REPOSITORY set:
 #   .github/scripts/cancel-started-act.sh

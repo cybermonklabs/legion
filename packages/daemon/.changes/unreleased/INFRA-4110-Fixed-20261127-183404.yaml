@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A stale-plugin relaunch keeps its credit of the refresh gate through a retry, a hold of the
+    project pause's gate and a wait at its issue pod's start gate. Before, the relaunch gave the
+    credit back when it started one of these waits, and a later wake of that relaunch then went
+    into the wake pacing with no credit. Now each `plugin-refresh` wake in the pacing holds a
+    credit, so the lane's wakes in the pacing are never more than `worker_wakes_per_minute`.
+time: 2026-11-27T18:34:04Z
+custom:
+    Issue: INFRA-4110

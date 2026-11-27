@@ -140,15 +140,8 @@ jobs:
         env:
           LEGION_LIVE_TOOL_DIR: ${{ runner.temp }}/live-tools
         # The tools come down in the step above, so this step holds no retried call of its own.
-        # One call per package, never one union -run over the three: a name an untagged test of
-        # one package shares with a natslive test of another would then run a second time with
-        # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or
-        # refused list fails the step instead of running -run "", which matches every test.
-        run: |
-          for pkg in ./core ./seed ./gcp; do
-            pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
-          done
+        # why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
+        run: scripts/natslive.sh ./core ./seed ./gcp
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

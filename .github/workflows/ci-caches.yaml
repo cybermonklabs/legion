@@ -388,6 +388,89 @@ jobs:
           KEY: ${{ steps.go-envoy-test.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-test-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
+  # go-envoy-smoke: what ci.yaml's envoy-smoke compiles, on ubuntu-24.04, its one runner - the
+  # smoke test in the root workspace, and envoy-infra's host live tests and plugin in the infra
+  # module's go.work.
+  # why: .github/ci-notes/ci-caches.md#the-envoy-smoke-family
+  envoy-smoke:
+    if: inputs.only != 'dispatch-builds'
+    runs-on: ubuntu-24.04
+    # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes main's #5843
+    # wrote for it against a cold run of the three builds 232 s and the save 13 s (scratch run
+    # 45998597537), about seven times that, plus its one retried step, the Go module download
+    # below, two calls at 2 x (5 x 180 + 150) = 2100 s. 1800 + 2100 = 3900 s, a whole number of
+    # minutes, so the budget is the next one strictly above it -> 66 min.
+    timeout-minutes: 66
+    outputs:
+      # The key this job saved, named by family and architecture as the other fills' are.
+      go-envoy-smoke-x64: ${{ steps.saved.outputs.go-envoy-smoke-x64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+
+      # The newest entry of the family, found as the daemon job's restore finds its own.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - id: go-envoy-smoke
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      # Both workspaces the builds below compile in, the root go.work and packages/envoy/infra's
+      # own, downloaded once and retried before the first, after the restore, which would
+      # otherwise unpack over what the download wrote.
+      # why: .github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds
+      - name: Download the Go modules this job builds
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s, a whole number
+        # of minutes, so the budget is the next one strictly above it -> 36 min.
+        timeout-minutes: 36
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
+
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-envoy-smoke-working-set"
+
+      # envoy-smoke's three go commands, each in its own directory and workspace: the two test
+      # binaries started as that job's go test starts them, running no test, and the plugin's
+      # packages, built without the job's `-ldflags`.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-smoke-family
+      - name: Build and start the smoke and live test binaries, running no test, and build the plugin
+        run: |
+          (cd packages/envoy && go test -count=1 -run '^$' -tags smoke ./internal/smoke/)
+          (cd packages/envoy/infra && go test -count=1 -run '^$' -tags pulumilive ./host/)
+          (cd packages/envoy/infra && go build -o "$RUNNER_TEMP/pulumi-resource-envoy-infra" ./cmd/pulumi-resource-envoy-infra)
+
+      - name: Delete the build cache's entries the builds did not use
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-smoke-working-set"
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}
+
+      - name: Name the key this job saved by its architecture
+        id: saved
+        env:
+          KEY: ${{ steps.go-envoy-smoke.outputs.cache-primary-key }}-${{ github.sha }}
+        run: echo "go-envoy-smoke-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
+
   # go-envoy-race: the race build of envoy's race lane (ci_job_reads.py's ENVOY_RACE_LANE) and the
   # program pg-connection-ceiling.sh runs, on ubuntu-24.04-arm, the lane's runner.
   # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
@@ -561,7 +644,7 @@ jobs:
   # plus its one retried step, 300 + 3 x 300 = 1200 s. 300 + 1200 = 1500 s -> 26 min, the whole
   # minute above a sum that is itself a whole number of minutes.
   refill-superseded:
-    needs: [daemon, notices, envoy, envoy-test, envoy-race, envoy-darwin-vet]
+    needs: [daemon, notices, envoy, envoy-test, envoy-smoke, envoy-race, envoy-darwin-vet]
     if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
     strategy:
       fail-fast: false
@@ -574,6 +657,7 @@ jobs:
           - { job: envoy, family: go-envoy, arch: arm64 }
           - { job: envoy-test, family: go-envoy-test, arch: x64 }
           - { job: envoy-test, family: go-envoy-test, arch: arm64 }
+          - { job: envoy-smoke, family: go-envoy-smoke, arch: x64 }
           - { job: envoy-race, family: go-envoy-race, arch: arm64 }
           - { job: envoy-darwin-vet, family: go-envoy-darwin-vet, arch: x64 }
     runs-on: ubuntu-24.04-arm
