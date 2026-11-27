@@ -579,52 +579,61 @@ func (d *scratchDispatch) start() {
 // ownPort is a loopback port the kernel chooses, owned until t ends by a TCP socket bound to that
 // port by number and listening only while a Dispatch serves it. A socket bound by number keeps its
 // port when it stops listening (Linux's SOCK_BINDPORT_LOCK), where one bound to port 0 gives the
-// port back, so the port's number comes from a probe: the probe binds port 0 with SO_REUSEADDR, the
-// socket binds the probe's port beside it with SO_REUSEADDR, the probe closes, and the socket drops
-// SO_REUSEADDR before it first listens. From then on no other socket of any user binds the port,
-// whether it sets SO_REUSEADDR, SO_REUSEPORT or neither, and while the socket does not listen
-// every dial is refused. stop takes it out of listening with shutdown(SHUT_RD), SO_REUSEADDR
-// dropped first: a listening socket shares its port with no bind, and a socket that is neither
-// listening nor sets SO_REUSEADDR shares it with none either.
+// port back, and a restart's listen then comes up on another port, so the port's number comes from
+// a probe: the probe binds port 0, which the kernel answers with a port no socket holds, and
+// closes; the socket then binds that port by number. Neither sets SO_REUSEADDR, so the socket's
+// bind either makes the port its own, which no other socket of any user binds while it holds it,
+// or fails, because another socket took the port in the moment between the probe's close and the
+// bind; then the next probe chooses again.
+//
+// A probe whose socket outlives its close is one such other socket: a child the process forks
+// holds a copy of every descriptor from its fork to its exec, close-on-exec or not, and this
+// package forks children of its own (scratch Dispatch among them) while its tests run in parallel. Before,
+// the socket bound beside the probe with SO_REUSEADDR and claimed the port with its first listen,
+// which failed with "address already in use" whenever such a copy, or any socket that took the
+// port in the moment, still held it (TestAStepThatReadsAPullRequestWaitsForAnImplementer, in a
+// merge group's daemon-go-race leg).
+//
+// While the socket does not listen every dial is refused. stop takes it out of listening with
+// shutdown(SHUT_RD), SO_REUSEADDR dropped first: a listening socket shares its port with no bind,
+// and a socket that is neither listening nor sets SO_REUSEADDR shares it with none either.
 func ownPort(t *testing.T) (*os.File, int) {
 	t.Helper()
-	probe := ownPortSocket(t, "the probe of scratch Dispatch's port")
-	if err := syscall.SetsockoptInt(int(probe.Fd()), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-		t.Fatalf("let the probe of scratch Dispatch's port share it: %v", err)
+	taken := make([]int, 0, ownPortAttempts)
+	for range ownPortAttempts {
+		probe := ownPortSocket(t, "the probe of scratch Dispatch's port")
+		if err := syscall.Bind(int(probe.Fd()), &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+			t.Fatalf("take a loopback port for scratch Dispatch: %v", err)
+		}
+		name, err := syscall.Getsockname(int(probe.Fd()))
+		if err != nil {
+			t.Fatalf("read scratch Dispatch's port: %v", err)
+		}
+		port := name.(*syscall.SockaddrInet4).Port
+		if err := probe.Close(); err != nil {
+			t.Fatalf("close the probe of scratch Dispatch's port: %v", err)
+		}
+		owner := ownPortSocket(t, "scratch Dispatch's port")
+		err = syscall.Bind(int(owner.Fd()), &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
+		if err == nil {
+			return owner, port
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatalf("bind scratch Dispatch's socket to port %d: %v", port, err)
+		}
+		_ = owner.Close()
+		taken = append(taken, port)
 	}
-	if err := syscall.Bind(int(probe.Fd()), &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
-		t.Fatalf("take a loopback port for scratch Dispatch: %v", err)
-	}
-	name, err := syscall.Getsockname(int(probe.Fd()))
-	if err != nil {
-		t.Fatalf("read scratch Dispatch's port: %v", err)
-	}
-	port := name.(*syscall.SockaddrInet4).Port
-	owner := ownPortSocket(t, "scratch Dispatch's port")
-	fd := int(owner.Fd())
-	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-		t.Fatalf("let scratch Dispatch's socket bind beside the probe: %v", err)
-	}
-	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
-		t.Fatalf("bind scratch Dispatch's socket to port %d: %v", port, err)
-	}
-	if err := probe.Close(); err != nil {
-		t.Fatalf("close the probe of scratch Dispatch's port: %v", err)
-	}
-	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 0); err != nil {
-		t.Fatalf("keep scratch Dispatch's port from being shared: %v", err)
-	}
-	// A listen reads the socket's own SO_REUSEADDR again, which no other socket of the port now
-	// sets, so from it on the kernel shares the port with no other bind; the shutdown takes the
-	// socket out of listening until the first start.
-	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
-		t.Fatalf("settle scratch Dispatch's port %d as its socket's alone: %v", port, err)
-	}
-	if err := syscall.Shutdown(fd, syscall.SHUT_RD); err != nil {
-		t.Fatalf("stop listening on scratch Dispatch's port %d: %v", port, err)
-	}
-	return owner, port
+	t.Fatalf("scratch Dispatch's socket bound none of the %d ports its probes chose, each held by another socket at its bind: %v",
+		ownPortAttempts, taken)
+	return nil, 0
 }
+
+// ownPortAttempts is how many ports ownPort's probes choose before it fails. An attempt is lost
+// only to a socket that still holds the probed port at the owner's bind, and the next probe is
+// answered with a port no socket holds, so a port once lost is not offered again while it is held;
+// the count bounds attempts, not time, so a machine's load can never spend it.
+const ownPortAttempts = 32
 
 // ownPortSocket is a close-on-exec TCP socket, closed when t ends if it is still open.
 func ownPortSocket(t *testing.T, what string) *os.File {
