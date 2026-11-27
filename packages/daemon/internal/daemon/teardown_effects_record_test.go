@@ -1808,9 +1808,9 @@ func TestTeardownEffectsTraceCommentOnADocument(t *testing.T) {
 	sha := func(id string) string { return id }
 	version := func(string) int { return 1 }
 	at := time.Date(2030, 1, 9, 12, 5, 0, 0, time.UTC)
-	f3Comment := teardownEffectsF3Events(t)("comment.created")
-	f3Payload, _ := f3Comment["payload"].(map[string]any)
-	f3Body, _ := f3Payload["body"].(string)
+	documentComment := teardownEffectsDocumentEvents(t)("comment.created")
+	documentPayload, _ := documentComment["payload"].(map[string]any)
+	documentBody, _ := documentPayload["body"].(string)
 	write := func(fields map[string]any) teardownEffectsTraceAction {
 		return teardownEffectsTraceAction{Kind: "dispatch", Command: "comment", Target: "ACME-52", Seq: 2, At: at, Fields: fields}
 	}
@@ -1849,9 +1849,9 @@ func TestTeardownEffectsTraceCommentOnADocument(t *testing.T) {
 			quote:  "The flag's default is 3.",
 		},
 		{
-			name:   "a copy of fixture F3's anchored comment payload",
-			fields: f3Payload,
-			body:   f3Body,
+			name:   "a copy of document-events.json's anchored comment payload",
+			fields: documentPayload,
+			body:   documentBody,
 			quote:  "Deliver R1 and R2 of the spec",
 		},
 	} {

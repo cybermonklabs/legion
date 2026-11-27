@@ -1,6 +1,6 @@
-Three events of fixture F3, the real event log of one issue of a Legion deployment's Dispatch, read on 2026-11-27 with:
+The document events: three events of the real event log of one issue of a Legion deployment's Dispatch, read on 2026-11-27 with:
 
-  curl -fsS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"
+  printf 'Authorization: Bearer %s' "$(cat "$DISPATCH_TOKEN_FILE")" | curl -fsS -H @- "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"
 
 and kept with:
 

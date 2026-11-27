@@ -882,11 +882,12 @@ func (r *teardownEffectsRun) call(seq int, at time.Time, args map[string]any) ([
 
 // teardownEffectsReviewSettle bounds phaseAfter's wait for the daemon to record the reviews the
 // role submitted. The read that records them reads the pull request, follows its head and reads
-// its reviews, and the daemon bounds each of those reads by issueRead, the same 30 s. The scratch
-// GitHub answers each in milliseconds, and in a controls Job the read applied the review tens of
-// milliseconds after the completion was answered. A review the daemon has not recorded by then is
-// one the read did not apply, not one it is still reading, and the phase is read as it stands.
-const teardownEffectsReviewSettle = 30 * time.Second
+// its reviews, and the daemon bounds each of those reads by issueRead, which bounds the wait too.
+// The scratch GitHub answers each in milliseconds, and in a controls Job the read applied the
+// review tens of milliseconds after the completion was answered. A review the daemon has not
+// recorded by then is one the read did not apply, not one it is still reading, and the phase is
+// read as it stands.
+const teardownEffectsReviewSettle = issueRead
 
 // teardownEffectsReviewPoll is how often that wait reads the daemon's store again: each time is a
 // read of the database, so the wait does not ask a hundred times a second (testwait.Holds).
@@ -963,14 +964,11 @@ func (r *teardownEffectsRun) unrecorded(pr record.PullRequest) func([]intake.Pul
 }
 
 // recordedPull is the issue's pull request as the daemon's store records it now, nil where it
-// records none.
+// records none: its row alone, as the daemon's own read of the issue reads it (issueRecord,
+// issuePullRequest).
 func (r *teardownEffectsRun) recordedPull() *record.PullRequest {
-	var pr *record.PullRequest
-	if err := store.TransactWith(r.t.Context(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		pr, err = r.records.PullRequest(ctx, tx, r.key)
-		return err
-	}); err != nil {
+	_, pr, err := issueRecord(r.t.Context(), r.st.Pool(), r.records, r.key)
+	if err != nil {
 		r.t.Fatalf("read the pull request the daemon records for %s: %v", r.key, err)
 	}
 	return pr
@@ -1079,8 +1077,7 @@ func (h teardownEffectsHarness) control(t *testing.T, c teardownEffectsCase, nam
 				if err != nil {
 					return nil, err
 				}
-				// A comment is no call, so the phase is read at once.
-				turned.call.PhaseAfter, turned.after = r.phaseAfter(p.String(), nil), r.productionCheck()
+				turned.call.PhaseAfter, turned.after = string(r.issue(r.key).Phase), r.productionCheck()
 				if err := teardownEffectsShows(p, c, turned); err != nil {
 					t.Errorf("%s: %v", p, err)
 					return refused, nil

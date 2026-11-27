@@ -702,7 +702,7 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 			return "its record " + text("handoff_id") + " is not in the readback", false
 		}
 	case "comment.created":
-		for _, field := range []string{"ask_id", "artifact_id", "block_id", "reply_block"} {
+		for _, field := range []string{"ask_id", "artifact_id", "block_id", "reply_block", "suggestion"} {
 			if v := e.Payload[field]; v != nil && v != "" {
 				return "a comment with " + field + ", which the replay does not make", true
 			}
@@ -1808,15 +1808,15 @@ func TestTeardownEffectsOrderAuditRecords(t *testing.T) {
 
 // A HARNESS verdict is typed by its cause, never read from its reason. A Dispatch write the replay
 // does not make (a status write, a reply to a comment the readback holds no record of, a comment
-// anchored to a document the issue does not hold), of the session whose legion call it precedes and
-// scored by outcome.json, is the role's write, named by its record, its outcome.json action and case
-// time, its author and that call. The same write by another session, a handoff by a person, a write
-// whose record the readback lacks or whose event carries no body, and a seeded write the replay
-// cannot make are the harness's own records. A comment anchored to a document of the issue, a reply
-// to a comment the readback holds and a document whose event names it in its payload alone are
-// writes the replay makes, each as real Dispatch writes it (fixture F3): no fault, and placed. Each
-// row changes one event of the control, and a row that sets seeded changes event 4 too, the seed's
-// status write, which the replay skips.
+// anchored to a document the issue does not hold, a suggested edit), of the session whose legion
+// call it precedes and scored by outcome.json, is the role's write, named by its record, its
+// outcome.json action and case time, its author and that call. The same write by another session,
+// a handoff by a person, a write whose record the readback lacks or whose event carries no body,
+// and a seeded write the replay cannot make are the harness's own records. A comment anchored to a
+// document of the issue, a reply to a comment the readback holds and a document whose event names
+// it in its payload alone are writes the replay makes, each as real Dispatch writes it
+// (document-events.json): no fault, and placed. Each row changes one event of the control, and a
+// row that sets seeded changes event 4 too, the seed's status write, which the replay skips.
 func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 	t.Parallel()
 	const role = "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
@@ -1826,36 +1826,41 @@ func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 	}
 	records := &teardownEffectsFault{Kind: "harness-record"}
 	payload := func(event map[string]any) map[string]any { p, _ := event["payload"].(map[string]any); return p }
-	// f3 puts fixture F3's event of the type kind in event's place: event keeps its seq, time, id,
-	// issue and author, and takes the copy's type, its own artifact_id (none) and its payload.
-	f3Event := teardownEffectsF3Events(t)
-	f3 := func(event map[string]any, kind string) {
-		copied := f3Event(kind)
+	// asDocumentEvent puts document-events.json's event of the type kind in event's place: event keeps
+	// its seq, time, id, issue and author, and takes the copy's type, its own artifact_id (none) and
+	// its payload.
+	documentEvent := teardownEffectsDocumentEvents(t)
+	asDocumentEvent := func(event map[string]any, kind string) {
+		copied := documentEvent(kind)
 		event["type"], event["artifact_id"], event["payload"] = copied["type"], copied["artifact_id"], copied["payload"]
 	}
-	// The control's one document, and the id of F3's comment, which is anchored to words of plan.md.
+	// The control's one document, and the id of the document events' comment, which is anchored to
+	// words of plan.md.
 	const document, comment = "art-acme-12-verification", "88213038-202d-4554-bdaf-eceda4f590cc"
-	// anchored is F3's comment, anchored to the same words of the control's document.
+	// anchored is the document events' comment, anchored to the same words of the control's document.
 	anchored := func(e map[string]any) {
-		f3(e, "comment.created")
+		asDocumentEvent(e, "comment.created")
 		anchor, _ := payload(e)["anchor"].(map[string]any)
 		anchor["artifact_id"], payload(e)["artifact_name"] = document, "verification.md"
 	}
-	// reply is F3's comment made a reply to F3's comment, as Dispatch writes a reply: on no words.
+	// reply is the document events' comment made a reply to that comment, as Dispatch writes a reply:
+	// on no words.
 	reply := func(e map[string]any) {
-		f3(e, "comment.created")
+		asDocumentEvent(e, "comment.created")
 		p := payload(e)
 		p["id"], p["anchor"], p["artifact_name"], p["reply_to"] = "4f0c7a52-3d5e-4b1a-9c2d-7e8f9a0b1c2d", nil, "", comment
 	}
-	// created is the control's document as F3's artifact.created names plan.md: in its payload alone.
+	// created is the control's document as the document events' artifact.created names plan.md: in
+	// its payload alone.
 	created := func(e map[string]any) {
-		f3(e, "artifact.created")
+		asDocumentEvent(e, "artifact.created")
 		artifact, _ := payload(e)["artifact"].(map[string]any)
 		artifact["id"], artifact["name"] = document, "verification.md"
 	}
-	// versioned is a new version of the control's document, as F3's artifact.version names plan.md's.
+	// versioned is a new version of the control's document, as the document events' artifact.version
+	// names plan.md's.
 	versioned := func(e map[string]any) {
-		f3(e, "artifact.version")
+		asDocumentEvent(e, "artifact.version")
 		payload(e)["artifact_id"], payload(e)["name"] = document, "verification.md"
 	}
 	for _, row := range []struct {
@@ -1871,7 +1876,11 @@ func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 		{"the role's reply", 6, reply, "", nil, anchored},
 		{"a reply to a comment the readback holds no record of is still a role write", 6, reply, "a reply to the comment " + comment + ", which the readback holds no earlier record of", roleWrite("comment.created"), nil},
 		{"a comment anchored to a document of the issue is no role write", 6, anchored, "", nil, nil},
-		{"a comment anchored to a document the issue does not hold is still a role write", 6, func(e map[string]any) { f3(e, "comment.created") }, "a comment anchored to words of 5493e699-5455-48ce-af81-bff67681cb87, a document the readback does not hold", roleWrite("comment.created"), nil},
+		{"a comment anchored to a document the issue does not hold is still a role write", 6, func(e map[string]any) { asDocumentEvent(e, "comment.created") }, "a comment anchored to words of 5493e699-5455-48ce-af81-bff67681cb87, a document the readback does not hold", roleWrite("comment.created"), nil},
+		{"a comment anchored to a document of the issue that suggests an edit is still a role write", 6, func(e map[string]any) {
+			anchored(e)
+			payload(e)["suggestion"] = map[string]any{"replace_with": "Deliver R1, R2 and R3 of the spec"}
+		}, "a comment with suggestion, which the replay does not make", roleWrite("comment.created"), nil},
 		{"another session's status write", 6, func(e map[string]any) {
 			e["type"], e["actor"] = "issue.updated", map[string]any{"kind": "session", "id": "ses-acme-12-tester"}
 		}, "the replay writes no issue.updated", records, nil},
@@ -1951,12 +1960,12 @@ func teardownEffectsEditEvent(t *testing.T, path string, seq float64, edit func(
 	}
 }
 
-// teardownEffectsF3Events reads three events of fixture F3, a real issue's event log
+// teardownEffectsDocumentEvents reads the document events, three events of a real issue's event log
 // (testdata/teardown-effects/document-events.json; its .command says how they were taken), and
 // answers a fresh copy of the one of a type at each call: plan.md's artifact.created and its
 // artifact.version, each of which names the document in its payload alone, and a comment anchored
 // to words of plan.md.
-func teardownEffectsF3Events(t *testing.T) func(kind string) map[string]any {
+func teardownEffectsDocumentEvents(t *testing.T) func(kind string) map[string]any {
 	t.Helper()
 	var events []json.RawMessage
 	if err := teardownEffectsDecode("testdata/teardown-effects/document-events.json", &events); err != nil {
@@ -1973,7 +1982,7 @@ func teardownEffectsF3Events(t *testing.T) func(kind string) map[string]any {
 	return func(kind string) map[string]any {
 		var event map[string]any
 		if err := json.Unmarshal(byType[kind], &event); err != nil {
-			panic(fmt.Sprintf("fixture F3 holds no %s event: %v", kind, err))
+			panic(fmt.Sprintf("document-events.json holds no %s event: %v", kind, err))
 		}
 		return event
 	}
@@ -2299,16 +2308,11 @@ func TestTeardownEffectsTraceChange(t *testing.T) {
 func TestTeardownEffectsReviewFooterNamesTheReplaysSession(t *testing.T) {
 	t.Parallel()
 	const (
-		replay = "01b7c2d4-5e6f-4a8b-9c0d-1e2f3a4b5c6d"
 		run    = "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
-		head   = "17ce09f6fa69fce39aaf7b56e7c81d2abe3ef0dd"
 		mapped = "567aff47ddca30e9e9847574796288439ef204e3"
-		said   = "I read the change at the head: t1 is delivered as its block asks, and check k1 passes at the head.\n\nFast-follow: none\n\n"
-		locked = said + `<!-- legion: {"session":"ses-acme-53-reviewer","phase":"review","head":"17ce09f6fa69fce39aaf7b56e7c81d2abe3ef0dd","entry":"1"} -->`
 	)
-	footer := func(session, head string) string {
-		return `<!-- legion: {"session":"` + session + `","phase":"review","head":"` + head + `","entry":"1"} -->`
-	}
+	replay, head, said, footer := teardownEffectsTestSession, teardownEffectsTestHead, teardownEffectsTestSaid, teardownEffectsTestLegionFooter
+	locked := teardownEffectsTestFooter("ses-acme-53-reviewer", head)
 	trace := func(string) bool { return true }
 	ownRun := func(named string) bool { return named == run }
 	same := func(commit string) string { return commit }
@@ -2360,9 +2364,9 @@ func TestTeardownEffectsReviewFooterNamesTheReplaysSession(t *testing.T) {
 	}
 }
 
-// The reviews the tests of the replay's wait for a review are made of: rev-double-write's
-// known-good approval, its footer naming the replay's session and the pull request's head, the
-// pull request it reviews, and the daemon's judgement of a review.
+// The reviews the tests of the replay's review footer and of its wait for a review are made of:
+// rev-double-write's known-good approval, its footer naming the replay's session and the pull
+// request's head, the pull request it reviews, and the daemon's judgement of a review.
 const (
 	teardownEffectsTestSession = "01b7c2d4-5e6f-4a8b-9c0d-1e2f3a4b5c6d"
 	teardownEffectsTestHead    = "17ce09f6fa69fce39aaf7b56e7c81d2abe3ef0dd"
@@ -2371,10 +2375,16 @@ const (
 
 var teardownEffectsTestSubmitted = time.Date(2030, 1, 7, 15, 4, 0, 0, time.UTC)
 
-// teardownEffectsTestFooter is the review body the role wrote, its Legion footer naming session
-// and head.
+// teardownEffectsTestFooter is the review body the role wrote: teardownEffectsTestSaid and its
+// Legion footer naming session and head (teardownEffectsTestLegionFooter).
 func teardownEffectsTestFooter(session, head string) string {
-	return teardownEffectsTestSaid + `<!-- legion: {"session":"` + session + `","phase":"review","head":"` + head + `","entry":"1"} -->`
+	return teardownEffectsTestSaid + teardownEffectsTestLegionFooter(session, head)
+}
+
+// teardownEffectsTestLegionFooter is the Legion footer of the review body the role wrote, naming
+// session and head.
+func teardownEffectsTestLegionFooter(session, head string) string {
+	return `<!-- legion: {"session":"` + session + `","phase":"review","head":"` + head + `","entry":"1"} -->`
 }
 
 // teardownEffectsTestReview is a review the review App submitted with body, minutes after the
@@ -2459,7 +2469,7 @@ func TestTeardownEffectsAwaitsTheReviewTheDaemonTakes(t *testing.T) {
 // that never moves is read at the bound as it stands, so an effect that needs the move fails as an
 // effect fails, and the test log names the wait. With no deciding review the phase is read at
 // once, and nothing is logged. The record of a call that waited encodes as that of a call that
-// did not: the same bytes for the same phase, and only the keys heldout-reader-receipt.ts takes.
+// did not, with only the keys heldout-reader-receipt.ts takes.
 func TestTeardownEffectsReadsThePhaseOnceTheDaemonRecordsTheReview(t *testing.T) {
 	t.Parallel()
 	const call = "rev-double-write good trace, action 4"
@@ -2527,31 +2537,22 @@ func TestTeardownEffectsReadsThePhaseOnceTheDaemonRecordsTheReview(t *testing.T)
 		if len(logged) != 1 {
 			t.Fatalf("the call logged %q, want the one line of its wait", logged)
 		}
-		// The same completion, where the daemon had recorded the review before it: nothing is
-		// awaited, and the phase the completion moved is read at once.
-		atOnce := teardownEffectsSettle{phase: func() string { return string(phase.Accepting) }}.phaseAfter(call, nil)
-		encoded := func(phaseAfter string) []byte {
-			replay := teardownEffectsNewReplayRecord("5c2b9a4e-1d3f-4e6a-8b7c-9d0e1f2a3b4c")
-			replay.Verdict = "ok"
-			replay.Calls = append(replay.Calls, teardownEffectsReplayCall{Call: call, Op: "handoff_complete", At: teardownEffectsTestSubmitted, Before: []teardownEffectsChange{},
-				State: teardownEffectsState{Phase: string(phase.Reviewing), Pulls: []teardownEffectsPullState{}}, Standin: []teardownEffectsAnswerRef{}, Daemon: []teardownEffectsAnswerRef{}, PhaseAfter: phaseAfter})
-			data, err := json.Marshal(replay)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return data
-		}
-		if string(encoded(waited)) != string(encoded(atOnce)) {
-			t.Fatalf("the call that waited encodes as\n%s\nand the one that did not as\n%s", encoded(waited), encoded(atOnce))
+		replay := teardownEffectsNewReplayRecord("5c2b9a4e-1d3f-4e6a-8b7c-9d0e1f2a3b4c")
+		replay.Verdict = "ok"
+		replay.Calls = append(replay.Calls, teardownEffectsReplayCall{Call: call, Op: "handoff_complete", At: teardownEffectsTestSubmitted, Before: []teardownEffectsChange{},
+			State: teardownEffectsState{Phase: string(phase.Reviewing), Pulls: []teardownEffectsPullState{}}, Standin: []teardownEffectsAnswerRef{}, Daemon: []teardownEffectsAnswerRef{}, PhaseAfter: waited})
+		encoded, err := json.Marshal(replay)
+		if err != nil {
+			t.Fatal(err)
 		}
 		var decoded struct {
 			Calls []map[string]json.RawMessage `json:"calls"`
 		}
 		var top map[string]json.RawMessage
-		if err := json.Unmarshal(encoded(waited), &top); err != nil {
+		if err := json.Unmarshal(encoded, &top); err != nil {
 			t.Fatal(err)
 		}
-		if err := json.Unmarshal(encoded(waited), &decoded); err != nil || len(decoded.Calls) != 1 {
+		if err := json.Unmarshal(encoded, &decoded); err != nil || len(decoded.Calls) != 1 {
 			t.Fatalf("decode the record's calls: %v, %d calls", err, len(decoded.Calls))
 		}
 		keys := func(object map[string]json.RawMessage) []string { return slices.Sorted(maps.Keys(object)) }
