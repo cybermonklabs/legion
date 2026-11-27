@@ -372,7 +372,7 @@ func rawConnect(t *testing.T, b *resultsBroker, password string) *http.Response 
 // each answered 407 GRANT_NOT_LIVE by the proxy itself, and the token the pod minted for the
 // grant introspects inactive.
 func TestAnExpiredResultGrantEndsTheProxysUse(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (its first write must land inside a 2 s grant, `BROKER_RESULT_GRANT_TEST_SECONDS=2`).
 	e := newResultsEnvironment(t, "BROKER_RESULT_GRANT_TEST_SECONDS=2")
 	b := e.start(t)
 	g := e.grant(t, b, "7")
