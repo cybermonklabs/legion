@@ -9,12 +9,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// The two counters this release adds to tables the release before also writes,
-// issues.check_states_seq and phases.states_serial, are nullable with a default of 0. A migration
-// that a rolling release runs adds only tables, nullable columns and non-unique indexes, so the
-// release before still runs on the migrated database during a roll or a rollback. A counter that
-// holds no value reads as 0, the value its default gives, the cursor's raise lifts it from no value,
-// and each column still refuses a negative number.
+// The three counters this release adds to tables the release before also writes,
+// issues.check_states_seq, phases.states_serial and phases.return_to, are nullable with a default
+// of 0. A migration that a rolling release runs adds only tables, nullable columns and non-unique
+// indexes, so the release before still runs on the migrated database during a roll or a rollback.
+// A counter that holds no value reads as 0, the value its default gives, the cursor's raise lifts
+// it from no value, and each column still refuses a negative number.
 func TestTheCountersAddedToSharedTablesAreNullableAndReadNoValueAsZero(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -22,10 +22,10 @@ func TestTheCountersAddedToSharedTablesAreNullableAndReadNoValueAsZero(t *testin
 	issue := issueFixture("LEGION-286")
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
-		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "legion-286-tester", StatesSerial: 5}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "legion-286-tester", StatesSerial: 5, ReturnTo: 2}))
 		must(t, records.SetCheckStatesSeq(ctx, tx, issue.Key, 7))
 	})
-	columns := []struct{ table, column string }{{"issues", "check_states_seq"}, {"phases", "states_serial"}}
+	columns := []struct{ table, column string }{{"issues", "check_states_seq"}, {"phases", "states_serial"}, {"phases", "return_to"}}
 	for _, c := range columns {
 		var nullable, fallback string
 		must(t, st.Pool().QueryRow(ctx, `select is_nullable::text, coalesce(column_default, '')::text from information_schema.columns
@@ -37,8 +37,8 @@ func TestTheCountersAddedToSharedTablesAreNullableAndReadNoValueAsZero(t *testin
 	if _, err := st.Pool().Exec(ctx, `update issues set check_states_seq = null where key = $1`, issue.Key); err != nil {
 		t.Fatalf("clear the issue's cursor: %v", err)
 	}
-	if _, err := st.Pool().Exec(ctx, `update phases set states_serial = null where issue = $1`, issue.Key); err != nil {
-		t.Fatalf("clear the tester's serial: %v", err)
+	if _, err := st.Pool().Exec(ctx, `update phases set states_serial = null, return_to = null where issue = $1`, issue.Key); err != nil {
+		t.Fatalf("clear the tester's serial and step: %v", err)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		cursors, err := records.CheckStatesSeqs(ctx, tx, []string{issue.Key})
@@ -48,8 +48,8 @@ func TestTheCountersAddedToSharedTablesAreNullableAndReadNoValueAsZero(t *testin
 		}
 		phases, err := records.Phases(ctx, tx, issue.Key)
 		must(t, err)
-		if len(phases) != 1 || phases[0].StatesSerial != 0 {
-			t.Fatalf("the phases with no serial = %#v, want the tester's row at serial 0", phases)
+		if len(phases) != 1 || phases[0].StatesSerial != 0 || phases[0].ReturnTo != 0 {
+			t.Fatalf("the phases with no serial and no step = %#v, want the tester's row at serial 0 and step 0", phases)
 		}
 		must(t, records.SetCheckStatesSeq(ctx, tx, issue.Key, 3))
 	})
@@ -65,5 +65,8 @@ func TestTheCountersAddedToSharedTablesAreNullableAndReadNoValueAsZero(t *testin
 	}
 	if _, err := st.Pool().Exec(ctx, `update phases set states_serial = -1 where issue = $1`, issue.Key); err == nil {
 		t.Fatal("phases.states_serial took -1, want its check to refuse it")
+	}
+	if _, err := st.Pool().Exec(ctx, `update phases set return_to = -1 where issue = $1`, issue.Key); err == nil {
+		t.Fatal("phases.return_to took -1, want its check to refuse it")
 	}
 }
