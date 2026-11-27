@@ -211,13 +211,14 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // rewrites outbox_kind_check over the rows main's daemon left. Main has none of the eleven of a
 // plan's tasks, their working copies and pull requests, and the claim-keyed resumes, backstops
 // and deliveries (20261117213545 through 20261124192838), nor 20261126194217, which writes the
-// kind list of both. The upgrade applies all of them whatever main's newest version is:
-// Store.apply asks each migration whether its own version is recorded.
+// kind list of both, nor 20261127020907, the phase a start whose step waits keeps on its task.
+// The upgrade applies all of them whatever main's newest version is: Store.apply asks each
+// migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	20261115060739: true, 20261115121838: true, 20261117213545: true, 20261117224125: true,
 	20261121165047: true, 20261121183336: true, 20261122072945: true, 20261122074350: true,
 	20261122122826: true, 20261122131321: true, 20261123072431: true, 20261123200630: true,
-	20261124192838: true, 20261126110259: true, 20261126194217: true,
+	20261124192838: true, 20261126110259: true, 20261126194217: true, 20261127020907: true,
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each

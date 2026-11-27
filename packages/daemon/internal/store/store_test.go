@@ -1133,9 +1133,10 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // before that version, it fails on the missing column. So does a migration that changes a table a
 // version of the list creates, as 20261117213545 adds a column to 20261117034837's plan_steps, and
 // 20261123200630 and the givers of a plan version (20261124033010) each add one to its
-// issue_plans: applied as main's, before that table exists, it fails on the missing table. So
-// does one that replaces an index a version of the list creates, as 20261122074350 replaces
-// 20261105183200's pod_resumes_one_open_per_role. 20261126194217 is the last migration that
+// issue_plans, and 20261127020907 one to its plan_tasks: applied as main's, before that table
+// exists, it fails on the missing table. So does one that replaces an index a version of the list
+// creates, as 20261122074350 replaces 20261105183200's pod_resumes_one_open_per_role.
+// 20261126194217 is the last migration that
 // writes outbox_kind_check: it stands above 20261126110259, 20261123072431, 20261122154643,
 // 20261122122826, 20261121165047, 20261119203047 and 20261119003157, which write it too, and
 // main's 20261111090000, 20261111091500 and 20261116144907 write none. The cache trimmer's two,
@@ -1158,7 +1159,7 @@ var thisRelease = map[int]bool{
 	20261117224125: true, 20261119003157: true, 20261119203047: true, 20261121165047: true,
 	20261122074350: true, 20261122122826: true, 20261122154643: true, 20261123072431: true,
 	20261123200630: true, 20261123212127: true, 20261124033010: true, 20261126110259: true,
-	20261126194217: true,
+	20261126194217: true, 20261127020907: true,
 }
 
 const idleRelease = 20261101222956

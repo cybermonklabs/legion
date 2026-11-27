@@ -990,7 +990,10 @@ type PhaseRow struct {
 	// EntryFrom is the phase the start that raised that entry moved the issue from, written beside
 	// the four fields above in the same transaction (workflow's start and enter): the phase a
 	// transition left, awaiting_children for the return from a wait on the children, and held for
-	// the release of a hold that raises one (workflow's restartTask and StartHeldRetro). It is
+	// the release of a hold that raises one (workflow's restartTask and StartHeldRetro). A start
+	// whose step waits for its join or its agent raises no entry: it keeps that phase on its task's
+	// row (PlanTask.StepWaitFrom), and the start after the wait raises the entry from it (workflow's
+	// startAfterWait), so the entry names the phase whether or not its step waited. It is
 	// "" where no move raised the entry: the promotion's start of a mid-phase worker a re-admitted
 	// tree brings back, which hands the role the phase it already stands in, and every row a
 	// daemon upgraded in place found. Like the entry it is never reset: ClearGeneration leaves it
@@ -2862,6 +2865,9 @@ type Store interface {
 	// SetStepWait writes what the step at a running task's place waits for, since at;
 	// StepWaitNone with a nil at ends its wait.
 	SetStepWait(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, wait StepWait, at *time.Time) error
+	// SetStepWaitFrom writes the phase the start whose step waits moved the issue from, which the
+	// start after the wait raises its entry from; every move and stop of the task clears it.
+	SetStepWaitFrom(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, from phase.Phase) error
 	// AgentWaiter is the running task whose step has waited longest for agent (its wait agent, by
 	// the moment it began, then by task id), "" where no step waits for it.
 	AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error)

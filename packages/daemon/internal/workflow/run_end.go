@@ -251,9 +251,13 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // work stands and its own pull request (standingPart). Where the start that waited was a start
 // again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
 // its entry counts as a move back, as that start's own would have had it waited for nothing
-// (startAtFirstStep, transition). Its entry names no phase a move left
-// (record.PhaseRow.EntryFrom): no move raises it now. said is the log line, which names the issue,
-// the task, its place and role, and args.
+// (startAtFirstStep, transition). Its entry names the phase the start that waited moved the issue
+// from (record.PhaseRow.EntryFrom), which that start kept on its task's row
+// (record.PlanTask.StepWaitFrom, waitsFrom), read on s's plan, as that start's own entry would
+// have named it: so an entry a role's move back raised out of retro or merging names that phase
+// after a wait for its agent too, and the admission pass leaves its start alone (acceptedEntry).
+// said is the log line, which names the issue, the task, its place and role, the reason and that
+// phase, and args.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
@@ -261,11 +265,15 @@ func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, sai
 		return err
 	}
 	reason := w.StartReason
+	var from phase.Phase
+	if row, ok := s.plan.TaskOf(w.Task); ok {
+		from = row.StepWaitFrom
+	}
 	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
-		"reason", reason}, args...)...)
+		"reason", reason, "from", from}, args...)...)
 	return e.start(ctx, tx, s, role, taskPull{}, func(at Standing) string {
 		return task(view, at, record.PhaseRow{}, reason)
-	}, "", reason != "")
+	}, from, reason != "")
 }
 
 // agentWaiters is each task of stored, the plan of a run, in the state running whose step waits for
