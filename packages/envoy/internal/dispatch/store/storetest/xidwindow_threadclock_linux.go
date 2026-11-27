@@ -52,11 +52,21 @@ const xidClockTries = 16
 // inside the gap the rig keeps for the code; and while the collector is held off
 // (runWithoutCollector) an allocation there would land on a page the process never touched - a
 // first touch that, on a loaded machine, costs milliseconds of the thread's CPU in the kernel. On
-// a thread the rig does not hold it opens the file for the one reading.
+// a thread the rig does not hold it opens the file for the one reading, and so it does where the
+// thread's held clock is dropped between the read's finding it and its reading it (Measure's
+// dropOpenClocks, once the capture's statements are copied, may drop the clock of a transaction a
+// goroutine of the operation is still running). The held clock is read under its lock
+// (xidHeldClock.readClock), so no read uses a descriptor the drop closed, or one whose number
+// another open has taken since.
 func readXidThreadClock() xidThreadClock {
 	thread := unix.Gettid()
 	if held, ok := (*xidHeldClocks.Load())[thread]; ok {
-		return readXidThreadClockOn(held.schedstat, thread)
+		if xidHeldClockFound != nil {
+			xidHeldClockFound()
+		}
+		if reading, read := held.readClock(thread); read {
+			return reading
+		}
 	}
 	fd, ok := xidOpenThreadClock()
 	if !ok {
@@ -65,6 +75,14 @@ func readXidThreadClock() xidThreadClock {
 	defer xidCloseProc(fd)
 	return readXidThreadClockOn(fd, thread)
 }
+
+// xidHeldClockFound, where set, runs in readXidThreadClock and readXidSoftirqs right after each
+// finds the calling thread's held clock and before it takes the clock's lock: the tests of a clock
+// dropped in between set it (TestAHeldClockDroppedWhileItIsReadStillReadsTheThread,
+// TestASoftirqReadOfAClockDroppedWhileItIsReadCountsNothing). xidHeldClockReading, where set, runs
+// in readClock under the clock's lock, right before it reads the descriptor: the test of a drop
+// that starts during a read sets it (TestADropThatStartsDuringAReadWaitsForIt).
+var xidHeldClockFound, xidHeldClockReading func()
 
 // readXidThreadClockOn is readXidThreadClock's reading, on thread's schedstat open as fd.
 func readXidThreadClockOn(fd uintptr, thread int) xidThreadClock {
@@ -90,9 +108,10 @@ func readXidThreadClockOn(fd uintptr, thread int) xidThreadClock {
 }
 
 // xidHeldClocks is, for each thread the rig holds, its schedstat open as a descriptor and its
-// pinned CPU's softirq counts open beside it (xidHeldClock). It is read at every statement's two
-// ends without a lock, as an immutable map an atomic pointer swaps, and changed only when a thread
-// is held or let go (xidWatchThreadClock, xidDropThreadClock).
+// pinned CPU's softirq counts open beside it (xidHeldClock). The map is read at every statement's
+// two ends without a lock, as an immutable map an atomic pointer swaps, and changed only when a
+// thread is held or let go (xidWatchThreadClock, xidDropThreadClock); a clock found in it is read
+// under its own lock (xidHeldClock).
 var (
 	xidHeldClocks      atomic.Pointer[map[int]*xidHeldClock]
 	xidHeldClocksWrite sync.Mutex
@@ -100,9 +119,33 @@ var (
 
 // xidHeldClock is what the rig keeps open for a thread it holds: its schedstat, and the reader of
 // the softirq counts of the CPU it is pinned to, nil where the rig could not pin it or count them.
+// The thread's own goroutine reads them at its statements' ends, and another goroutine may drop
+// them meanwhile: Measure drops the clock of every transaction still open once it has copied the
+// capture's statements (dropOpenClocks), and a goroutine of the operation may still be running
+// such a transaction, as a broadcast's delivery may be. So mu holds each read against the close:
+// the drop closes them under it and sets dropped, and a read that finds dropped set reads nothing
+// off them. Without the lock a read that had found the clock in the map could read its descriptor
+// after the drop closed it (envoy-go job 139692608395, where the drop still came before the copy
+// and a delivery's COMMIT, read at its start, was judged not read at its end).
 type xidHeldClock struct {
+	mu        sync.Mutex
+	dropped   bool
 	schedstat uintptr
 	softirqs  *xidSoftirqReader
+}
+
+// readClock reads thread's clocks off its held schedstat (readXidThreadClockOn), under the
+// clock's lock, and answers false, having read nothing, once the clock is dropped.
+func (c *xidHeldClock) readClock(thread int) (xidThreadClock, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dropped {
+		return xidThreadClock{}, false
+	}
+	if xidHeldClockReading != nil {
+		xidHeldClockReading()
+	}
+	return readXidThreadClockOn(c.schedstat, thread), true
 }
 
 func init() { xidHeldClocks.Store(&map[int]*xidHeldClock{}) }
@@ -144,11 +187,14 @@ func xidWatchThreadClock() (stop func(), ok bool) {
 }
 
 // xidDropThreadClock stops reading thread's held clock and closes it and its softirq counts, if
-// it is still held. A transaction's COMMIT drops its thread's clock, and so does the end of a
-// capture, for a thread whose transaction never ended - its goroutine stopped by a Fatalf - so
-// that no later thread the kernel gives the same id reads a dead thread's descriptor. Dropping
-// twice closes once. A thread whose goroutine stopped while locked ends with it, so its CPUs are
-// not put back.
+// it is still held. A transaction's COMMIT drops its thread's clock, after its own reads, and
+// Measure drops the clock of every transaction still open once it has copied the capture's
+// statements (dropOpenClocks): one whose goroutine a Fatalf stopped, so that no later thread the
+// kernel gives the same id reads a dead thread's descriptor, and one a goroutine of the operation
+// is still running, which may be reading the clock as it is dropped. The close waits under the
+// clock's lock for a read in progress, and marks the clock dropped, so a read that finds it
+// dropped opens the thread's file for itself (readXidThreadClock). Dropping twice closes once. A
+// thread whose goroutine stopped while locked ends with it, so its CPUs are not put back.
 func xidDropThreadClock(thread int) {
 	var clock *xidHeldClock
 	xidSwapHeldClocks(func(held map[int]*xidHeldClock) {
@@ -158,6 +204,9 @@ func xidDropThreadClock(thread int) {
 	if clock == nil {
 		return
 	}
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.dropped = true
 	xidCloseProc(clock.schedstat)
 	if clock.softirqs != nil {
 		xidCloseProc(clock.softirqs.fd)

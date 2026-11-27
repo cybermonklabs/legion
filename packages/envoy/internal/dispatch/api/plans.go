@@ -11,7 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
-// The plan each run of an issue ran from, which the Legion daemon of the issue's project writes
+// The plan each run of an issue ran from, which a Legion daemon writes (isIssueDaemon: the
+// daemon of the issue's project, or the daemon of another project whose broker token proves it)
 // when the run's work starts and again at each later version of the owner's plan that Legion takes
 // (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's finished issues
 // (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro gave it with the
@@ -23,7 +24,7 @@ import (
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
 // all its finished issues in one statement whatever their number, and is a read of the read
-// class (readClasses), which a read-only token may call.
+// class (routeDecl.Read), which a read-only credential may call.
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
 // error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to

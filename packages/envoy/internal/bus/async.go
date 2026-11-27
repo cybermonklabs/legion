@@ -135,14 +135,17 @@ type RequestOptions struct {
 // call from several goroutines at once.
 //
 // The window's sends never write at or past deadline, read again at each check so a deadline that
-// moves on (a hold's renewal) is the one in force. A send checks it before anything else, as
-// before: a send past the deadline answers ErrWindowDeadline whatever else is wrong with its
-// message, so a caller that counts a refusal once per event counts none for it
-// (internal/dispatch/outbox's sendChains). Its first send waits for a connection no later than
-// the deadline, and every send checks it again once pinned, the last act before the write; a send
-// that finds it passed at any of these answers ErrWindowDeadline, in the channel when the send
-// returns, and sends nothing. A nil deadline is none. A Probe sends no envelope and does not
-// check it.
+// moves on (a hold's renewal) is the one in force. A send checks it before anything else: a send
+// past the deadline answers ErrWindowDeadline whatever else is wrong with its message, the answer
+// on which a caller stops its batch and counts nothing, not a refusal it counts once per event
+// (internal/dispatch/outbox's sendChains). Then come a send's own refusals, each before the wait
+// for a connection: a Request with no message id, a subject NATS does not take, a topic the stream
+// does not capture (PublishAsync, PublishStoredAsync), and last a message past the server's max
+// payload, headers included (Client.checkSend). Its first send waits for a connection no later
+// than the deadline, and every send checks it again once pinned, the last act before the write; a
+// send that finds it passed at any of these answers ErrWindowDeadline, in the channel when the send
+// returns, and sends nothing. A nil deadline is none. A Probe sends no envelope and does not check
+// it.
 func (c *Client) WindowUntil(deadline func() time.Time) Sender {
 	return &window{client: c, deadline: deadline}
 }
@@ -194,13 +197,7 @@ func outcomeOf(answer func() error, err error) <-chan error {
 // send writes item to the window's connection on subject, under msgID as its Nats-Msg-Id when
 // that is not empty, and returns what waits for the stream's answer. The envelope is encoded as
 // it is, so a copy stored away from its own topic keeps that topic (PublishStoredAsync). Its
-// refusals come in the order they always did: the window's deadline first, then the subject and
-// the stream's subjects, then the size of the message, headers included (checkSend), which is
-// answered before the wait for a connection. A window sends envelopes its callers built,
-// Dispatch's outbox among them, of any size they were given, so the size check belongs here; it
-// comes after the deadline because a send past it must keep the ErrWindowDeadline its caller
-// takes for a send to make again, not an ErrRefused that caller counts once per event
-// (internal/dispatch/outbox's sendChains).
+// refusals come in WindowUntil's order.
 func (w *window) send(subject string, item contracts.Envelope, msgID string) (func() error, error) {
 	if err := w.expired(); err != nil {
 		return nil, err
@@ -450,8 +447,8 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		return nil, err
 	}
 	msg := &nats.Msg{Subject: subject, Data: data, Header: msgIDHeader(opts.MsgID)}
-	// The size check comes after the window's deadline and before the wait for a connection, as
-	// send's does: a request carries an envelope its caller built.
+	// The size check comes where WindowUntil puts it: a request carries an envelope its caller
+	// built.
 	if err := w.client.checkSend(msg); err != nil {
 		return nil, err
 	}

@@ -69,7 +69,7 @@ import (
 // server's own count of the subscribers on the deliver subject, and reads PushBound only to keep
 // a run where nobody is bound from passing.
 func TestAHolderBackFromAReconnectInPlaceLeavesTheDurableToTheProcessThatTookIt(t *testing.T) {
-	holderBackFromALostHold(t, func(*connectionEventProcesses) {}, 30*time.Second)
+	holderBackFromALostHold(t, func(*connectionEventProcesses) {})
 }
 
 // A process whose connection was replaced comes back to a durable another process took over, and
@@ -79,7 +79,9 @@ func TestAHolderBackFromAReconnectInPlaceLeavesTheDurableToTheProcessThatTookIt(
 // the durable over once the hold lapses, and only then is the holder's connection closed, so its
 // client dials a replacement and binds its own registration again (internal/bus/recovery.go's
 // restoreSubscriptions) rather than having nats.go re-send it. That redial backs off from one
-// second, so the holder's client is given 60 s to be connected again once the link is back.
+// second, doubling to at most 30 s between attempts (recoverUntilHealthy), so how long the
+// holder's client takes to be connected again once the link is back is the bus's backoff and the
+// machine's to decide, and the row waits for it to the test binary's deadline.
 //
 // The assertions are the row above's, and for the row above's reason: PushBound is one bool
 // however many subscribers deliver, so what says the two processes did not both deliver is the
@@ -90,7 +92,7 @@ func TestAHolderWhoseConnectionWasReplacedLeavesTheDurableToTheProcessThatTookIt
 		// The hand-over first: a connection replaced before the standby has the durable would be
 		// dialled while the durable is free, which is not the state this row is about.
 		processes.holderClient.Connection().Close()
-	}, 60*time.Second)
+	})
 }
 
 // A message the process holding the delivery durable had in flight, inside its handler, when the
@@ -133,7 +135,7 @@ func TestAMessageInFlightWhenTheDurableIsGivenUpReachesTheProcessThatKeepsIt(t *
 	processes.cutHolderOff()
 	processes.awaitKeeper(t)
 	processes.restoreHolder()
-	awaitHolderConnectedAgain(t, processes.holderClient, processes.hooked, 60*time.Second)
+	awaitHolderConnectedAgain(t, processes.holderClient, processes.hooked)
 
 	// 60 s: the hold's lapse (intakeHoldTTL, 15 s), the standby's poll (durableBindInterval, 2 s)
 	// and the take-over's delete, subscribe and create under the consumer lease -- and a fifth of
@@ -373,9 +375,8 @@ func storedPullRequests(t *testing.T, ctx context.Context, pool *store.Pool, num
 // processes startConnectionEventProcesses leaves delivering and standing by: the holder is cut off
 // NATS and Postgres, the standby takes the durable over once the hold lapses, and the holder is
 // let back. afterTakeOver is the row's own step between the hand-over and the restore, for a row
-// whose connection is replaced rather than reconnected in place. backWithin is how long the
-// holder's client may take to be connected again once the link is restored.
-func holderBackFromALostHold(t *testing.T, afterTakeOver func(*connectionEventProcesses), backWithin time.Duration) {
+// whose connection is replaced rather than reconnected in place.
+func holderBackFromALostHold(t *testing.T, afterTakeOver func(*connectionEventProcesses)) {
 	t.Helper()
 	processes := startConnectionEventProcesses(t, holderCountsItsFetches)
 	server, logs := processes.server, processes.logs
@@ -388,7 +389,7 @@ func holderBackFromALostHold(t *testing.T, afterTakeOver func(*connectionEventPr
 	afterTakeOver(processes)
 
 	processes.restoreHolder()
-	awaitHolderConnectedAgain(t, holderClient, processes.hooked, backWithin)
+	awaitHolderConnectedAgain(t, holderClient, processes.hooked)
 	// A round trip on the returned process's own connection, so the server has processed
 	// everything that connection sent on its way back -- the SUB nats.go re-sends inside its
 	// reconnect among it -- before the envelope is published on the other process's connection.
@@ -620,12 +621,15 @@ func heldFetches(held *heldPullRequests, number string) int64 {
 }
 
 // awaitDurableTakenOver waits for the process standing by to hold the delivery durable while the
-// other process is cut off, and names what each of the two is when it never does. The wait covers
-// the hold's whole lapse (intakeHoldTTL, 15 s), the standby's poll (durableBindInterval, 2 s) and
-// the take-over's own delete, subscribe and create under the consumer lease.
+// other process is cut off, and names what each of the two is when it never does. What it reads is
+// the standby's own subscription, live from the take-over's subscribe, which comes after its delete
+// of the durable and before its create (finishTakeOver). The wait covers the hold's whole lapse
+// (intakeHoldTTL, 15 s), the standby's poll (durableBindInterval, 2 s) and those steps under the
+// consumer lease, each of which a loaded machine slows with nothing wrong, so its one bound is what
+// the test binary's deadline leaves (untilTheBinaryDeadline).
 func awaitDurableTakenOver(t *testing.T, holder, keeper *Intake, keeperClient *bus.Client) {
 	t.Helper()
-	waitFor(t, 45*time.Second, func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		return intakeHoldsSubscription(keeper)
 	}, func() string {
 		return fmt.Sprintf("the standby process never took the delivery durable over while the holder was cut off: the holder's subscription is live = %t, the standby's = %t, and the server reports the durable bound = %t",
@@ -639,15 +643,23 @@ func awaitDurableTakenOver(t *testing.T, holder, keeper *Intake, keeperClient *b
 // that restore has ended would read a fan-out that had not happened yet. The hook is what the
 // wait reads, rather than the client holding a subscription, because a client whose registration
 // the intake gave up with its hold comes back holding none.
-func awaitHolderConnectedAgain(t *testing.T, holderClient *bus.Client, hooked <-chan struct{}, within time.Duration) {
+//
+// Both waits end where the test binary's deadline leaves (untilTheBinaryDeadline), not at a span
+// of their own. Neither is for an event a correct run can lose: the row restores the link to a
+// server it runs, so the client reconnects, in place or by the bus's recovery, which retries
+// until it is healthy, and the bus runs the reconnect hooks after either (a run a second drop
+// supersedes is run again); the channel holds the hook's value until it is read. A machine that
+// slows the dial, the handshake or the hooks' run only makes the wait longer.
+func awaitHolderConnectedAgain(t *testing.T, holderClient *bus.Client, hooked <-chan struct{}) {
 	t.Helper()
+	within := untilTheBinaryDeadline(t)
 	select {
 	case <-hooked:
 	case <-time.After(within):
 		t.Fatalf("the client cut off from NATS never ran its reconnect hooks in %s once the link was restored: connected = %t, holds a subscription = %t",
 			within, holderClient.Connected(), holderClient.SubOK())
 	}
-	waitFor(t, 30*time.Second, holderClient.Connected, func() string {
+	waitFor(t, untilTheBinaryDeadline(t), holderClient.Connected, func() string {
 		return "the client cut off from NATS ran its reconnect hooks and still reports no live connection"
 	})
 }

@@ -16,6 +16,9 @@ import (
 // The control is two sweeps of one name, started at the same instant: they pass together, so the
 // reading tells passes in phase from passes apart.
 func TestTwoListenersStartedTogetherSweepOutOfPhase(t *testing.T) {
+	// Not parallel: on the wall clock it requires two sweeps of one phase to pass within about
+	// 0.67 s of each other, and two whose phases lie 1.34 s apart to pass at least that far apart
+	// (half the phases' distance in a 4 s interval).
 	const interval = 4 * time.Second
 	pods := [2]string{"listener-6c9d8f7b5-q2x7k", "listener-6c9d8f7b5-w7r3t"}
 	phases := [2]time.Duration{}
@@ -75,6 +78,7 @@ func TestTwoListenersStartedTogetherSweepOutOfPhase(t *testing.T) {
 // and the wait to the next pass; a sweep that counted from its start would wait a whole interval at
 // every reading.
 func TestASweepsPassesFallAtItsPhaseOfTheClock(t *testing.T) {
+	t.Parallel()
 	const interval, phase = 5 * time.Minute, 90 * time.Second
 	boundary := time.Unix(1_800_000_000-1_800_000_000%300, 0)
 	for _, row := range []struct {

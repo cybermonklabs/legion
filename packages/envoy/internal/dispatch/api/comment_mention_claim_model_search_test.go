@@ -331,6 +331,7 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 // TestALostRefreshNeverRevivesALapsedClaim and TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
 // on the database and TestAHandOffAfterTheRetryCheckIsNotDropped on a sender with stub statements.
 func TestTheMentionSenderClaimModel(t *testing.T) {
+	// Not parallel: it swaps the default logger (slog.SetDefault).
 	if model.DeliveryClaimLapse != cmLapsePeriods*mentionClaimRefresh {
 		t.Fatalf("the model counts a claim's lease as %d refresh periods; model.DeliveryClaimLapse is %v and mentionClaimRefresh %v",
 			cmLapsePeriods, model.DeliveryClaimLapse, mentionClaimRefresh)

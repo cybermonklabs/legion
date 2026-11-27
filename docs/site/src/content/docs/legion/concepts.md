@@ -95,20 +95,19 @@ is not the status of the phase it stands in, so a longer interval slows that rep
 slot is never a reason for the controller to take an issue: it takes only what a person hands over
 and the clear defects Legion's agents report.
 
-No Legion agent files an issue for a problem it finds outside its own issue. A defect with a clear
-fix in code the agent's own tree touches or depends on is fixed in that tree's pull request, while
-the agent is there. Any other goes to the controller with its evidence, and the controller gives it
-to the running tree whose code it is. Only when no tree owns that code does it file the issue with
-the `legion` label, so Legion works it without asking you. A problem that needs a decision of
-yours goes into a Dispatch ask on
-Legion's daily report issue instead, naming the issue it came from and where the fix belongs (the
-repository or layer, and saying so when it is not Legion), with its evidence and a recommendation,
-and you decide whether it needs an issue. The controller files that issue, with the `legion` label
-only when your answer asks Legion to work it. An architect also files the children of its own
-issue.
+No Legion agent files an issue for a problem it finds outside its own issue. The agent fixes a
+defect with a clear fix itself, in its own pull request or a separate pull request of its tree, in
+whichever repository the defect is. When its token does not reach the repository, the controller
+files the issue with the `legion` label, so Legion works it without
+asking you; the controller passes no message from one agent to another. A problem that needs a
+decision of yours goes into a Dispatch ask instead, naming the
+issue it came from and where the fix belongs (the repository or layer, and saying so when it is
+not Legion), with its evidence and a recommendation, and you decide whether it needs an issue.
+The controller files that issue, with the `legion` label only when your answer asks Legion to work
+it. An architect also files the children of its own issue.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
-whoever files an issue). It reads pull requests as the review App, and never touches a tree's work.
+whoever files an issue). It reads pull requests as the review App.
 
 ## Trees and the architect
 
@@ -273,6 +272,14 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
 project board's order.
 
+A P0 issue, one Dispatch resolves to P0 (its own priority, else the priority of the nearest issue
+above it on its Dispatch parent chain that has one), needs no free slot: it starts at the next
+admission pass outside the cap, and the cap counts only the issues holding a slot that are not P0.
+Every other hold on a start still holds it. `admission_p0_bound` can limit how many P0 issues hold a
+slot at once to a whole number from 1 to 2147483647; it has no value unless the configuration gives
+one, and a person can set or clear it while the daemon runs with `legion project set-p0-bound` and
+`clear-p0-bound`. At the bound, a P0 issue waits first in the line.
+
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
 architect, a child at the start of its first phase. An issue holds one of the cap's slots while it
 stands in a phase that keeps one, from the moment the daemon starts it until it is done or Dispatch
@@ -325,27 +332,40 @@ never under `admission.active`, which is how you tell it from an issue a person 
 in none of the three.
 
 The line is ordered by Dispatch priority first, and `legion state` prints it in the order the
-daemon promotes it: the issues at P0, then at P1, P2 and P3, and then the issues with no priority.
-An issue waits at its own priority, else at its tree root's, and after P3 when neither has one.
-Within one priority the line has two parts: the issues whose work came back, oldest first by the
-moment it came back, and then the issues that have not started, by the Dispatch rank of each
-issue's tree root and then its own. So an issue whose work came back goes ahead of every issue of
-its priority that has not started, and never ahead of an issue of a higher priority. A re-rank on
-the board moves an issue inside its priority's second part, and never ahead of an issue of its
-priority whose work came back; a change of the issue's priority in Dispatch moves it to the
-place of its new priority at the daemon's next admission pass. Priority orders the line and
-nothing else: it takes no slot back from work that runs, an issue that still waits on another
-issue is placed by its priority and passed over while that wait lasts, and an issue that already
-holds its slot is placed by its priority and resumes whatever the cap says. The members of a
-re-admitted tree stay out of the line until their root's promotion, whatever their own priority.
+daemon promotes it: P0, then P1, P2 and P3, and then issues with no priority.
+An issue waits at the priority Dispatch resolves for it (its own, or the nearest ancestor's on its
+Dispatch parent chain that has one), and after P3 when Dispatch resolves none.
+With an older Dispatch release that sends no `resolved_priority`, an issue waits at its own
+priority, else at its tree root's, for the order of the line alone, and that fallback never makes
+an issue P0.
+Within one priority, the line has two parts.
+First stand the issues whose work came back, oldest first by the moment it came back.
+Next stand the issues that have not started, ordered by the Dispatch rank of each issue's tree
+root and then its own.
+An issue whose work came back goes ahead of every issue of its priority that has not started, and
+never ahead of an issue of a higher priority.
+A re-rank on the board moves an issue inside its priority's second part, and never ahead of an
+issue of its priority whose work came back.
+A priority change in Dispatch moves the issue to its new priority at the next admission pass.
+A P0 start needs no free regular slot.
+Priority takes no slot back from work that runs.
+An issue that still waits on another issue stands at its priority and is passed over while that
+wait lasts.
+An issue that already holds its slot stands at its priority and resumes whatever the cap says.
+The members of a re-admitted tree stay out of the line until their root's promotion, whatever
+their own priority.
 Every issue the workflow records carries `priority` in `legion state --json`, its own Dispatch
-priority: 0 for P0 to 3 for P3, or null for none. Each waiting issue carries `waitingLine` there:
-its `place` and the line's `length`, its `priority`, the one that placed it (its own, else its
-tree root's, or null for an issue that waits after P3), its `part` (`returned` or `starting`) and
-`kind`, its `partPlace` and `partLength` within its priority and part, `holdsSlot` where it
-already holds its admission slot and so resumes whatever the cap says, the key that placed it
-within its part — `since`, the moment the work came back, or `rootRank`, `ownRank` and `rootKey`
-for an issue that has not started — and `reason`, the daemon's own sentence for that place.
+priority (0 for P0 to 3 for P3, or null for none).
+It also carries `resolvedPriority` (the priority Dispatch resolves for it, 0 to 3 or null, absent
+when Dispatch sent none) and `priorityFrom` (the issue key it inherits from, absent when the
+priority is its own or none).
+Each waiting issue carries `waitingLine` there: its `place` and the line's `length`, its
+`priority` (the priority that placed it, 0 for P0 to 3 for P3, or null for an issue that waits
+after P3), its `part` (`returned` or `starting`) and `kind`, its `partPlace` and `partLength`
+within its priority and part, `holdsSlot` where it already holds its admission slot and so resumes
+whatever the cap says, the key that placed it within its part (`since` when work came back, or
+`rootRank`, `ownRank` and `rootKey` for an issue that has not started), and `reason`, the daemon's
+own sentence for that place.
 Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
@@ -361,7 +381,7 @@ An issue gets the label in one of three ways:
 - **A person hands it over**, from the issue header in the Dispatch dashboard.
 - **A person asks the controller to**, in a message, a Slack request, or the answer to one of its
   asks, and the controller sets the label for them.
-- **A Legion agent reports a clear defect** no running tree owns, one whose fix needs no choice of
+- **A Legion agent reports a clear defect**, one whose fix needs no choice of
   yours, and the controller files it with the label.
 
 A free slot stays free until an issue gets the label one of these ways: the controller never takes
@@ -666,7 +686,7 @@ head conflicting, and, where the task has a reviewer step, asks the reviewer to 
 (`git show --remerge-diff`) and approve the new head; the merger merges that head once the
 approval is on the pull request. On a task with no reviewer step, the merger goes on at the new
 head. It may ask the implementer, the tester or the reviewer what they know over Envoy, and it
-sends the issue back with `request_backward_move` only when the fix is a change to the change's
+sends the issue back with `request_backward_move` when the fix is a change to the change's
 own logic that no merge of the base resolves, saying why. A merge queue that takes the pull
 request out because its checks failed comes to the merger the same way, as a check that failed.
 
@@ -714,9 +734,8 @@ when production does not carry the merge yet, or an observation a requirement na
 happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
 look whether or not production carries the merge, or a defect, naming the issue, the pull
 request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
-controller, which gives it to the tree that owns that code and files an issue only when none does.
-One that needs a decision is a Dispatch ask on Legion's
-daily report issue, so you decide whether it needs an issue.
+controller, which files an issue.
+Only one that needs a decision is a Dispatch ask, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
 Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
 stored microseconds unchanged. That field alone selects a report on that check: without it,
@@ -731,19 +750,19 @@ next look. A time less than 60 seconds ahead becomes 60 seconds ahead, and a tim
 check's own bound starts no look of its own, because the look at that bound already stands.
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
-A look is bounded at two hours, and a look nobody reported — its two hours or an operator's
-hold — starts the next look two hours later. An agent whose claim fails, in a look or after it
-ended, backs the check off: the next look comes two hours later after the first such look, and
-twice as long after each failed look in a row after it (four hours, eight, and so on, never past
-the check's bound), until a look the agent reports sets it back to two hours. That look tries the
-agent once more, with one attempt left of the budget its failure spent, so an agent that cannot
-start is launched once a look rather than a whole budget's worth of times; a failure that spent no
-budget, a provider error's, starts a fresh run. The architect is told of each such failure, with
-its cause, how the agent's last pod ended and when the next look tries it. An operator's
-`legion claims retry` or the controller's fresh session gives the agent its whole budget again.
-A look that began before
-a pause of the project ended counts its two hours from the resume, or from its agent's last ready
-after the resume where that is later, and counts nothing while that agent is still starting.
+A look is bounded at two hours, and a look nobody reported — its two hours or a hold the
+operator or the controller put on the agent — starts the next look two hours later. An agent
+whose claim fails, in a look or after it ended, backs the check off: the next look comes two
+hours later after the first such look, and twice as long after each failed look in a row after it
+(four hours, eight, and so on, never past the check's bound), until a look the agent reports sets
+it back to two hours. That look tries the agent once more, with one attempt left of the budget its
+failure spent, so an agent that cannot start is launched once a look rather than a whole budget's
+worth of times; a failure that spent no budget, a provider error's, starts a fresh run. The
+architect is told of each such failure, with its cause, how the agent's last pod ended and when the
+next look tries it. An operator's `legion claims retry`, or the controller's retry or fresh session,
+gives the agent its whole budget again. A look that began before a pause of the project ended
+counts its two hours from the resume, or from its agent's last ready after the resume where that is
+later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen
 days, by default): the look at that bound is the last, and a `pending` there closes the check
 as not run, which the agent writes on the pull request. `legion state` prints how many checks

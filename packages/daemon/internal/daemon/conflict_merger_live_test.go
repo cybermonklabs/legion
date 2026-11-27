@@ -25,7 +25,7 @@
 // LEGION_TEST_PG_DSN, which it starts none of.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
-// other whole-daemon proofs boot it (startDaemonWithin, through conflictLive's bootLogged), so the
+// other whole-daemon proofs boot it (startDaemonLogging, through conflictLive's bootLogged), so the
 // proof exercises the real configuration, the real store and its migrations, the real HTTP API,
 // the real claim supervision and its worker stream, the real openWorkflow, the real JetStream
 // consumers, the real merge-state reads and the real outbox lanes — the lane that runs the second
@@ -113,6 +113,9 @@ type conflictMergerLive struct {
 // on the new head told to the merger and not the implementer, GitHub's merge closing the issue
 // with no move into implementing at any point, and the merger's prompt as its launch carries it.
 func TestAConflictPastTheReviewIsTheMergersLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newConflictMergerLive(t)
 	r.step("step1-a-conflict-in-accepting-is-recorded-and-asks-nobody", r.acceptingRecordsTheConflict)
 	r.step("step2-sign-off-and-retro-ask-nothing-and-merging-asks-the-merger", r.mergingAsksTheMerger)

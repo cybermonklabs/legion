@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -11,48 +12,64 @@ import (
 )
 
 // growthStep is how many times larger the full input of a row of this file is than its small
-// input, and linearSlack how many times more than growthStep the CPU time of the work may grow
-// between them: work whose steps grow with the input grows about growthStep times (10 to 22 times
-// as measured, with what grows with the log of the input), under linearSlack*growthStep = 48, and
-// work whose steps grow with the square of the input about growthStep² = 256 times, less the part
-// of the work that stays linear. A step of 8, as pmdoc's growth tests take, let a quadratic lookup
-// over these rows grow 21 times at sizes that -race runs in time, under 8's bound of 24. The bound
-// is a ratio of two measures of one machine, so a constant factor that slows each step, such as the
-// race detector or a loaded machine, cancels; a fixed limit of wall time does not, and failed under
-// -race.
+// input, and linearSlack how many times more CPU time one call at the full size may take than
+// growthStep calls at the small size: work whose steps grow with the input takes about as long for
+// both (0.95 to 1.9 times as measured, alone and beside burners that share its cores, with what
+// grows with the log of the input), under linearSlack = 3, and work whose steps grow with the square
+// of the input 5 to 33 times as long in the three planted controls. The bound is a ratio of two measures
+// of one machine, so a constant factor that slows each step, such as the race detector or a loaded
+// machine, cancels; a fixed limit of wall time does not, and failed under -race.
 const (
 	growthStep  = 16
 	linearSlack = 3
 )
 
-// growsLinearly fails t unless the CPU time of the work at full grows from its time at
-// full/growthStep by at most linearSlack*growthStep times. prepare builds the input of one call at
-// a size, untimed, and returns the call, which must not use t: it runs on a goroutine of its own
-// that keeps running when testwait.Receive gives up, and a call of t after the test ends panics.
-// Each call's time is the CPU time of the thread that it runs on (cputest.OnThread), so another
-// test that runs beside it and the garbage collector's workers are left out; the small size is
-// timed three times and the fastest kept, and the full size again, up to three times, only while
-// its fastest is over the bound. Each call's time is taken with testwait.Receive, whose one bound
-// is the test binary's deadline less its margin: a slow call on a loaded machine passes, and work
+// growsLinearly fails t unless the CPU time of one call at full is at most linearSlack times the
+// CPU time of growthStep calls at full/growthStep. prepare builds the input of one call at a size,
+// untimed, and returns the call, which must not use t: it runs on a goroutine of its own that keeps
+// running when testwait.Receive gives up, and a call of t after the test ends panics.
+//
+// The two measures do the same work when the work grows with the input: the small one runs
+// growthStep calls, each over an input of its own, so it holds as much input and runs about as long
+// as the full call. A stall, a preemption or a phase of the garbage collector that another test's
+// allocations start then reaches both measures alike. One small call, a fiftieth of the full call's
+// time, could run between such phases and set a denominator that the full call could not meet: at
+// a load average near 600 the earlier form measured 64.4 times against its bound of 48. The two
+// measures are taken in turns, for up to three rounds, with the fastest of each kept, and a new
+// round runs only while the fastest full measure is over the bound. Each measure is the CPU time of
+// the thread that it runs on (cputest.OnThread), so another test that runs beside it and the
+// garbage collector's workers are left out. Each is taken with testwait.Receive, whose one bound is
+// the test binary's deadline less its margin: a slow call on a loaded machine passes, and work
 // whose steps grow with the square of the input that has not ended by then fails by this row's
-// name, not at the package's timeout.
+// name, not at the package's timeout. Each round ends with the full call, so what that call writes
+// is what the row reads after.
 func growsLinearly(t *testing.T, what string, full int, prepare func(size int) func()) {
 	t.Helper()
 	small := full / growthStep
-	timed := func(size int) time.Duration {
-		call := prepare(size)
+	timed := func(label string, call func()) time.Duration {
 		took := make(chan time.Duration, 1)
 		go func() { took <- cputest.OnThread(call) }()
-		return testwait.Receive(t, fmt.Sprintf("%s at %d", what, size), took)
+		return testwait.Receive(t, label, took)
 	}
-	before := min(timed(small), timed(small), timed(small))
-	after := timed(full)
-	for i := 1; i < 3 && after > linearSlack*growthStep*before; i++ {
-		after = min(after, timed(full))
+	smalls := func() func() {
+		calls := make([]func(), growthStep)
+		for i := range calls {
+			calls[i] = prepare(small)
+		}
+		return func() {
+			for _, call := range calls {
+				call()
+			}
+		}
 	}
-	verdict := fmt.Sprintf("%s took %s of CPU at %d and %s at %d, %.1f times for %d times the input", what, before, small, after, full, float64(after)/float64(before), growthStep)
-	if after > linearSlack*growthStep*before {
-		t.Errorf("%s; work whose steps grow with the input grows at most %d times", verdict, linearSlack*growthStep)
+	before, after := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+	for round := 0; round < 3 && (round == 0 || after > linearSlack*before); round++ {
+		before = min(before, timed(fmt.Sprintf("%s, %d calls at %d", what, growthStep, small), smalls()))
+		after = min(after, timed(fmt.Sprintf("%s at %d", what, full), prepare(full)))
+	}
+	verdict := fmt.Sprintf("%s took %s of CPU for %d calls at %d and %s for one call at %d, %.2f times", what, before, growthStep, small, after, full, float64(after)/float64(before))
+	if after > linearSlack*before {
+		t.Errorf("%s; work whose steps grow with the input takes at most %d times", verdict, linearSlack)
 		return
 	}
 	t.Log(verdict)

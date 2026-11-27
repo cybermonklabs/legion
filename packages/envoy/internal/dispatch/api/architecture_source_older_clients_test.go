@@ -63,6 +63,7 @@ func captureSourceWarnings(t *testing.T) func() []string {
 // so a client and server that ship separately do not turn every create into "Could not check".
 // Each call logs one WARN naming the route and the project.
 func TestArchitectureSourceSingularReadForOlderClients(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureSourceWarnings, logtest.SetDefault).
 	warnings := captureSourceWarnings(t)
 	handler, _ := newArchitectureSourceServer(t, twoSourceFake())
 	createTestProject(t, handler, "CORE")
@@ -101,6 +102,7 @@ func TestArchitectureSourceSingularReadForOlderClients(t *testing.T) {
 // client. An access failure is recorded on its row rather than refused with a 409. Each call logs
 // one WARN naming the route and the project.
 func TestArchitectureSourceSingularSyncForOlderClients(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureSourceWarnings, logtest.SetDefault).
 	sync := func(t *testing.T, handler http.Handler, project string) *httptest.ResponseRecorder {
 		t.Helper()
 		return agentRequest(t, handler, http.MethodPost, "/api/v1/projects/"+project+"/architecture-source/sync", nil, "agent-token")

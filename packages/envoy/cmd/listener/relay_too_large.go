@@ -242,7 +242,7 @@ func noticeField(text string) (string, bool) {
 // GitHub's own limits names no GitHub repository, and cutting it would name another one, so it is
 // left out whole.
 func noticeRepo(data []byte) (string, bool) {
-	owner, name, named := eventRepository(data)
+	owner, name, named, _ := eventRepository(data)
 	if !named {
 		return "", false
 	}

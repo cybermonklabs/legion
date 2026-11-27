@@ -271,6 +271,8 @@ func next(t *testing.T, pull *SessionPull) SessionMessage {
 // deadline alone takes the ack wait's redelivery as the nak's.
 func nextBefore(t *testing.T, pull *SessionPull, end time.Time, why string) SessionMessage {
 	t.Helper()
+	// The bound under test, not a wait: end tells a message back by the row's own cause from the
+	// ack wait's redelivery (above), so it stays the row's.
 	ctx, cancel := context.WithDeadline(testwait.Context(t), end)
 	defer cancel()
 	msg, err := pull.Next(ctx)
@@ -286,6 +288,7 @@ func nextBefore(t *testing.T, pull *SessionPull, end time.Time, why string) Sess
 // cause, and a redelivery on the ack wait misses the end by half an ack wait, not by a timer's
 // latency.
 func beforeAckWait(ackWait time.Duration) time.Time {
+	// The bound under test, not a wait: half the ack wait, which a redelivery on it misses (above).
 	return time.Now().Add(ackWait / 2)
 }
 
@@ -916,6 +919,8 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 	// A request that outlives two heartbeats is kept alive by them.
 	consumers.pullExpires, consumers.pullHeartbeat = 5*time.Second, 500*time.Millisecond
 	quiet := pullSession(t, consumers, session)
+	// A window, not a wait: nothing is published, so the idle pull must hand over nothing and its
+	// Next must wait out these 2 s, four heartbeats, and answer context.DeadlineExceeded.
 	idle, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if msg, err := quiet.Next(idle); !errors.Is(err, context.DeadlineExceeded) {
@@ -1172,7 +1177,12 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 		t.Fatalf("ack %d: %v", first.StreamSeq, err)
 	}
 	// One pull request asks for a whole batch, so the server delivered all three: the two this
-	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	// row never read are what the consumer awaits, and Release returns them once the pull holds
+	// them. The row waits for the pull to hold both (waitForQueued), which is the state Release
+	// gives back from. The server's count of the two awaiting an ack is no wait for that: the
+	// server counts a message delivered before the message reaches the pull, and a Release run in
+	// between returned the one the pull held.
+	waitForQueued(t, pull, 2)
 	held := waitForAckPending(t, consumers, session, 2)
 	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
 	if returned, err := pull.Release(); returned != 2 || err != nil {
