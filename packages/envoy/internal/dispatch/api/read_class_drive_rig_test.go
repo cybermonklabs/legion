@@ -36,7 +36,12 @@ type drivenStatement struct {
 	writes   []string
 	readable bool
 	marked   bool
+	oracle   bool
 }
+
+// writingOracle marks only the writing-token comparison request and work deriving its context.
+// That request may persist results metadata; it is not a read-only request under test.
+type writingOracle struct{}
 
 // poolStatements records every statement run on the pool it traces, whatever context it runs on:
 // the request's own, the work a request detaches from it, and the server's own context, where a
@@ -57,7 +62,7 @@ func (p *poolStatements) record(ctx context.Context, sql string) {
 	writes, readable := driveWritesOf(sql)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.statements = append(p.statements, drivenStatement{sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil})
+	p.statements = append(p.statements, drivenStatement{sql: sql, writes: writes, readable: readable, marked: ctx.Value(countedRead{}) != nil, oracle: ctx.Value(writingOracle{}) != nil})
 }
 
 func (p *poolStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -106,8 +111,20 @@ func (p *poolStatements) auditGap(t *testing.T, what string) {
 		return
 	}
 	statements := p.since(p.checked)
-	requireReadsWrites(t, "between windows "+what, statements)
 	p.checked += len(statements)
+	requireReadsWrites(t, "between windows "+what, nonOracleStatements(statements))
+}
+
+// nonOracleStatements filters a snapshot in place, never the tracer's recorded statements.
+// Only the writer comparison's own context and contexts derived from it are exempt.
+func nonOracleStatements(statements []drivenStatement) []drivenStatement {
+	checked := statements[:0]
+	for _, statement := range statements {
+		if !statement.oracle {
+			checked = append(checked, statement)
+		}
+	}
+	return checked
 }
 
 // driveWindowLimit bounds each request's work and each extra background observation.

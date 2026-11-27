@@ -545,6 +545,9 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // after its last row, so an unregistered worker cannot escape by writing between requests or
 // after the last response. Such a failure may name the following row or the end of the world,
 // rather than the row that started the worker.
+// The writing-token oracle's own context and its descendants are exempt from gap policy, as in
+// the base test: a writing results read may persist metadata. Unmarked work is never exempt,
+// including an unregistered worker that writes while the oracle is serving.
 //
 // In each world, before its first row, a calibration window, GET /api/v1/limits under the
 // deployment's shared token, joins known workers and observes two more seconds for an unknown
@@ -581,7 +584,7 @@ func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing
 					})
 				}
 				tail := world.tracer.window(t, "after the world's last row", driveCalibrationWindow, func() {})
-				requireReadsWrites(t, "after the world's last row", tail)
+				requireReadsWrites(t, "after the world's last row", nonOracleStatements(tail))
 				writes := make([]string, 0, len(tally.writes))
 				for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
 					writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
@@ -716,7 +719,9 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 			t.Errorf("%s: the window holds no statement matching %s among %d: the tracer did not see the handler's read:\n%s",
 				what, drive.statement, len(statements), statementList(statements))
 		}
-		answered := w.rig.serve(writer.request(t, target))
+		oracle := writer.request(t, target)
+		oracle = oracle.WithContext(context.WithValue(oracle.Context(), writingOracle{}, true))
+		answered := w.rig.serve(oracle)
 		w.tracer.settle(t, "after "+writer.who+" on "+target)
 		if answer.Code != status {
 			t.Errorf("%s: answered %d %s, want %d", what, answer.Code, cutBody(answer.Body.String()), status)
