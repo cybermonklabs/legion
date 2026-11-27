@@ -31,7 +31,34 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 sums=$(mktemp)
 graph=$(mktemp)
-trap 'rm -f "$sums" "$graph"' EXIT
+saved=$(mktemp -d)
+
+# In a workspace, `go mod download` writes every hash it computes into go.work.sum, and with
+# GOSUMDB=off those hashes are ones no checksum database verified. A go.work.sum that keeps one
+# stops every later build asking the database for it, so a run here that left it would have a
+# developer commit an unverified hash by following the refusal below. So go.work.sum and every
+# tracked go.sum are copied before the download and put back byte for byte on every exit, an
+# interrupted run's too (INT and TERM end the script through the EXIT trap); a file that was not
+# there is removed again.
+mapfile -d '' modfiles < <(printf 'go.work.sum\0'; git ls-files -z '*go.sum')
+for i in "${!modfiles[@]}"; do
+  [ ! -e "${modfiles[$i]}" ] || cp -p -- "${modfiles[$i]}" "$saved/$i"
+done
+restore() {
+  local i
+  for i in "${!modfiles[@]}"; do
+    if [ -e "$saved/$i" ]; then
+      cp -p -- "$saved/$i" "${modfiles[$i]}"
+    else
+      rm -f -- "${modfiles[$i]}"
+    fi
+  done
+  rm -rf -- "$saved"
+  rm -f -- "$sums" "$graph" "$graph.err"
+}
+trap restore EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Every committed hash: go.work.sum and each module's go.sum, as `<module> <version>[/go.mod] <hash>`.
 { cat go.work.sum; git ls-files -z '*go.sum' | xargs -0 -r cat; } > "$sums"

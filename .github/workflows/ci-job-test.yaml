@@ -466,6 +466,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum"')
         run: .github/scripts/check-go-work-sum.sh
 
+      # After setup-go: its fixtures run the real go over a scratch workspace whose requirement a
+      # file proxy serves, with a module cache of their own, so it downloads nothing.
+      - name: Test the go.work.sum check over a fixture workspace and a file proxy
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-go-work-sum.test.sh .github/scripts/check-go-work-sum.test.sh
+
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
