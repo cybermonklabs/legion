@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 
+import { issue } from "../../__tests__/issue-picks";
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -610,4 +611,54 @@ test("the issue log reads a receipt the post's delete appended as the delete end
   expect(
     eventDescription(receipt("message.delivery", "failed", false, "no live session planner"))
   ).toEqual(["Message failed: Aside"]);
+});
+
+test.each([
+  {
+    changed: ["resolved_priority"],
+    resolved_priority: 0,
+    priority_from: "ACME-1",
+    line: "Priority now P0, from ACME-1",
+  },
+  {
+    changed: ["resolved_priority", "priority_from"],
+    resolved_priority: null,
+    priority_from: null,
+    line: "Priority now none",
+  },
+  {
+    changed: ["priority_from"],
+    resolved_priority: 0,
+    priority_from: "ACME-3",
+    line: "Priority now P0, from ACME-3",
+  },
+])("the issue activity line says $line", ({ line, ...change }) => {
+  const payload = {
+    ...issue,
+    ...change,
+    key: "ACME-2",
+    number: 2,
+    priority: null,
+    parent: change.priority_from,
+    project: "ACME",
+    labels: [],
+    blocked_by: [],
+    external_links: [],
+    claim: null,
+    components: { mode: "inherit" as const, ids: [], unknown: [], reason: null, inherited_from: null },
+    created_by: { id: "alice", kind: "user" as const },
+    changed: [...change.changed],
+  };
+  const event: DispatchEvent = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-11-02T09:15:00Z",
+    id: 11,
+    issue_key: payload.key,
+    notify: false,
+    payload,
+    project: payload.project,
+    seq: 11,
+    type: "issue.updated",
+  };
+  expect(eventDescription(event), "issue activity line for the inherited-priority change").toEqual([line]);
 });

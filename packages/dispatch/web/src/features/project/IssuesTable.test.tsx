@@ -37,6 +37,8 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     title: `Work ${key}`,
     status: "todo",
     priority: null,
+    resolved_priority: overrides.priority ?? null,
+    priority_from: null,
     rank: key,
     labels: [],
     parent: null,
@@ -2203,6 +2205,30 @@ function listedKeys(): string[] {
     .filter((row) => row.hasAttribute("data-issue-row"))
     .map((row) => row.getAttribute("data-issue-row") ?? "");
 }
+
+const priorityRows = [
+  issue("ACME-1", { priority: 0 }),
+  issue("ACME-3", { priority: 2 }),
+  issue("ACME-2", { parent: "ACME-1", resolved_priority: 0, priority_from: "ACME-1" }),
+];
+
+test("the List's Priority column shows the inherited level and links its source", async () => {
+  table(priorityRows);
+  const row = await screen.findByRole("row", { name: "ACME-2 Work ACME-2" });
+  const picker = within(row).getByRole("combobox", { name: "Priority of ACME-2" });
+  const cell = picker.closest("td");
+  expect(cell, "List Priority cell for ACME-2").toHaveTextContent("P0 · from ACME-1");
+  if (cell === null) throw new Error("List Priority cell missing");
+  expect(within(cell).getByRole("link", { name: "ACME-1" }), "List Priority source").toHaveAttribute(
+    "href", "/issues/ACME-1"
+  );
+});
+
+test("the List sorts an inherited P0 with its own P0s, above P2", async () => {
+  table(priorityRows, "?sort=priority,key");
+  await screen.findByRole("row", { name: "ACME-2 Work ACME-2" });
+  expect(listedKeys(), "List sorted by Priority").toEqual(["ACME-1", "ACME-2", "ACME-3"]);
+});
 
 test("a scoped table lists the issues the server answers for the priority, over every project", async () => {
   const { listing } = table(

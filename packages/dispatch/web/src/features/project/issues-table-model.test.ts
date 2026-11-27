@@ -30,6 +30,8 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     title: key,
     status: "todo",
     priority: null,
+    resolved_priority: overrides.priority ?? null,
+    priority_from: null,
     rank: key,
     parent: null,
     blocked_by: [],
@@ -65,6 +67,23 @@ const items = buildItems(
   ],
   (actor) => actor.id
 );
+
+test("the List's P0 filter keeps an inherited P0 alongside its own P0s", () => {
+  const rows = buildItems(
+    [
+      issue("ACME-1", { priority: 0 }),
+      issue("ACME-2", { parent: "ACME-1", resolved_priority: 0, priority_from: "ACME-1" }),
+      issue("ACME-3", { parent: "ACME-1", priority: 2 }),
+      issue("ACME-4"),
+    ],
+    (actor) => actor.id
+  );
+  const p0 = [{ id: "priority", value: ["0"] }];
+  expect(
+    rows.filter((row) => matchesFilters(row, p0)).map(({ issue }) => issue.key),
+    "List issues kept by the P0 filter"
+  ).toEqual(["ACME-1", "ACME-2"]);
+});
 
 test("labels require every picked value case-insensitively, alongside a Title filter", () => {
   const filters = [

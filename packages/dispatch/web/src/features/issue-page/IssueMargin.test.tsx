@@ -350,6 +350,29 @@ function detailsRow(name: string): HTMLElement {
   return row;
 }
 
+test("the Details Priority row shows the inherited P0 and links to its source", async () => {
+  const api = stubIssueApi();
+  const inherited = {
+    ...issue,
+    parent: "ACME-1",
+    priority: null,
+    resolved_priority: 0,
+    priority_from: "ACME-1",
+  };
+  api.getIssue.mockResolvedValue(inherited);
+  const { unmount } = renderDetails();
+  try {
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.priority));
+    expect(row, "Details Priority row").toHaveTextContent("P0 · from ACME-1");
+    expect(within(row).getByRole("link", { name: "ACME-1" }), "Details Priority source").toHaveAttribute(
+      "href", "/issues/ACME-1"
+    );
+  } finally {
+    unmount();
+    api.restore();
+  }
+});
+
 /** The row of Details a control elsewhere on the page opens it at (`details-rows.ts`). */
 function rowAt(row: DetailsRow): HTMLElement {
   const found = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="${row}"]`);

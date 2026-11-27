@@ -63,6 +63,8 @@ function issue(key: string, title: string): IssueDetails {
     decisions_artifact_id: "",
     primary_artifact_id: "spec",
     priority: 1,
+    resolved_priority: 1,
+    priority_from: null,
     project: "CORE",
     rank: "U",
     referenced_by_count: 0,
@@ -175,6 +177,33 @@ test("the card opens only after the hover delay, loads populated, and closes whe
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(first).not.toHaveAttribute("aria-describedby");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+test("the issue preview card shows the inherited P0 and links its source", async () => {
+  const inherited = {
+    ...issue("CORE-2", "Second target"),
+    parent: "ACME-1",
+    priority: null,
+    resolved_priority: 0,
+    priority_from: "ACME-1",
+  };
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(inherited);
+  const view = render(<Harness />);
+  try {
+    await act(async () => {
+      screen.getByRole("link", { name: "second" }).focus();
+    });
+    const card = screen.getByRole("tooltip");
+    await waitFor(() => expect(card, "issue preview loaded its issue").toHaveTextContent("Second target"));
+    expect(card, "issue preview priority").toHaveTextContent("P0 · from ACME-1");
+    expect(
+      card.querySelector('a[href="/issues/ACME-1"]'),
+      "issue preview source link"
+    ).toHaveTextContent(/^ACME-1$/);
   } finally {
     view.unmount();
     getIssue.mockRestore();

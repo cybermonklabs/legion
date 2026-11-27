@@ -21,11 +21,14 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { eventRefreshTargets } from "../../api/event-refresh";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   AskRead,
   Comment,
   CredentialPendingRow,
+  DispatchEvent,
   InboxRow,
   Issue,
 } from "../../api/types";
@@ -2607,6 +2610,103 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+const inheritedP0 = { resolved_priority: 0, priority_from: "ACME-1" } as const;
+const childPriority = { ...inheritedP0, priority: null } as const;
+const ownP0 = { priority: 0, resolved_priority: 0, priority_from: null } as const;
+
+test("the Inbox ask and Reply tags show P0 and give the source in their name and tooltip", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("own-p0", "ACME-1", "Root question", ownP0),
+    inboxIssue("child", "ACME-2", "Child question", childPriority),
+  ];
+  const inheritedReply = replyRow("child-thread", {
+    ...inheritedP0,
+    issue: { key: "ACME-2", title: "Child issue" },
+    project: "ACME",
+    ref: "/issues/ACME-2/comments/child-thread",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const threads = holdThreadsRead();
+  const { unmount } = renderInbox("/?group=priority&item=own-p0");
+  try {
+    await threads.land([inheritedReply]);
+    await screen.findByText("Root", { exact: true });
+    expect(headings(), "Inbox priority band for the own P0, inherited ask and Reply").toContain("P0 (3)");
+    for (const id of ["child", "reply:child-thread"]) {
+      const tag = within(shortRow(id)).getByTitle("P0, from ACME-1");
+      expect(tag, `Inbox ${id} priority tag text`).toHaveTextContent(/^P0$/);
+      expect(tag, `Inbox ${id} priority tag accessible name`).toHaveAccessibleName("P0, from ACME-1");
+    }
+  } finally {
+    unmount();
+    narrow();
+    threads.restore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("a resolved-priority issue event moves an Inbox ask to its new priority band", async () => {
+  const narrow = widenToReadingPane();
+  const child = inboxIssue("child", "ACME-2", "Child question", childPriority);
+  const newPriority = { ...childPriority, resolved_priority: 1 } as const;
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([child]);
+  const getAsk = mockAskReads([child]);
+  const getIssue = mockIssueReads();
+  const { queryClient, unmount } = renderInbox("/?group=priority");
+  try {
+    const list = await screen.findByTestId("inbox-list");
+    await within(list).findByText("Child question");
+    const before = headings();
+    getInbox.mockClear().mockResolvedValue([{ ...child, ...newPriority }]);
+    const event: DispatchEvent = {
+      type: "issue.updated",
+      actor: { id: "alice", kind: "user" },
+      created_at: "2026-10-12T01:00:00Z",
+      id: 2,
+      issue_key: "ACME-2",
+      notify: false,
+      payload: {
+        ...narrowIssueOf(child, "alice"),
+        ...newPriority,
+        parent: "ACME-1",
+        project: "ACME",
+        number: 2,
+        labels: [],
+        blocked_by: [],
+        external_links: [],
+        claim: null,
+        components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+        created_by: { id: "alice", kind: "user" },
+        ancestors: ["ACME-1"],
+        changed: ["resolved_priority"],
+      },
+      project: "ACME",
+      seq: 2,
+    };
+    await act(async () => {
+      refreshQueries(queryClient, eventRefreshTargets(event, "alice"));
+    });
+    await waitFor(() =>
+      expect(headings(), "Inbox priority band after the resolved-priority event").toContain("P1 (1)")
+    );
+    expect(before, "Inbox priority band before the event").toContain("P0 (1)");
+    expect(headings(), "Inbox's former priority band after the event").not.toContain("P0 (1)");
+    expect(shortRow("child"), "Inbox ask after its issue's priority change").toHaveTextContent("Child question");
+    expect(getInbox, "Inbox read prompted by the event").toHaveBeenCalled();
+  } finally {
+    unmount();
+    narrow();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
   }
 });
 

@@ -398,6 +398,8 @@ function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
     key: "CORE-1",
     parent: "CORE-0",
     priority: 1,
+    resolved_priority: 1,
+    priority_from: null,
     project: "CORE",
     status: "in_progress",
     title: "Ship the release",
@@ -637,6 +639,36 @@ const rules: Record<string, Rule> = {
         "steps",
       ],
     },
+  "a resolved_priority-only issue event refreshes its detail, Inbox ask rows and Inbox thread rows": {
+    event: event(
+      "issue.updated",
+      issue({
+        ancestors: ["CORE-0", "CORE-00"],
+        changed: ["resolved_priority"],
+        priority: null,
+        resolved_priority: 0,
+        priority_from: "CORE-0",
+      }),
+      { notify: false }
+    ),
+    refreshes: ["detail", "inbox", "inboxThreads"],
+    spares: ["unrelatedDetail", "otherProjectList"],
+  },
+  "a priority_from-only issue event refreshes the Inbox rows that name the new source": {
+    event: event(
+      "issue.updated",
+      issue({
+        ancestors: ["CORE-0", "CORE-00"],
+        changed: ["priority_from"],
+        priority: null,
+        resolved_priority: 0,
+        priority_from: "CORE-00",
+      }),
+      { notify: false }
+    ),
+    refreshes: ["detail", "inbox", "inboxThreads"],
+    spares: ["unrelatedDetail", "otherProjectList"],
+  },
   "a write of any field refreshes every ancestor's children, which show the subtree's newest activity":
     {
       event: event(

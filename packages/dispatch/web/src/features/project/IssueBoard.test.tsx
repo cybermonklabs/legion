@@ -20,8 +20,10 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { eventRefreshTargets } from "../../api/event-refresh";
 import { boardMoveMutationKey } from "../../api/queries";
-import type { Issue, IssueSummary, StatusChangeAnswer, UserState } from "../../api/types";
+import { refreshQueries } from "../../api/query-refresh";
+import type { DispatchEvent, Issue, IssueSummary, StatusChangeAnswer, UserState } from "../../api/types";
 import {
   answerStatusChanges,
   fixtureAnswer,
@@ -68,6 +70,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     rank: "U",
     priority: null,
+    resolved_priority: overrides.priority ?? null,
+    priority_from: null,
     status: "triage",
     title: "Plan the work",
     updated_at: "2026-09-13T00:00:00Z",
@@ -236,6 +240,8 @@ const patched: Issue = {
   primary_artifact_id: "artifact-1",
   verification_artifact_id: "",
   priority: null,
+  resolved_priority: null,
+  priority_from: null,
   project: "CORE",
   rank: "U",
   route: null,
@@ -529,6 +535,168 @@ test("within a lane, Shift+L moves a card to the next status in the same lane wi
     await waitFor(() =>
       expect(within(movedInProgress).getByRole("article", { name: "CORE-1 P0 card" })).toBeDefined()
     );
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+/** What the board and its priority picker read for the child of ACME-1. */
+const inheritedP0 = {
+  parent: "ACME-1",
+  priority: null,
+  resolved_priority: 0,
+  priority_from: "ACME-1",
+} as const;
+const priorityChild = issue({ ...inheritedP0, key: "CORE-1", status: "todo" });
+const ownP2Child = issue({
+  ...inheritedP0,
+  priority: 2,
+  resolved_priority: 2,
+  priority_from: null,
+  status: "todo",
+});
+
+function priorityCard(): HTMLElement {
+  return screen.getByRole("article", { name: "CORE-1 Plan the work" });
+}
+
+function priorityPicker(): HTMLElement {
+  return within(priorityCard()).getByRole("combobox", { name: "Priority of CORE-1" });
+}
+
+test("picking P1 on an inherited P0 board card gives it its own P1 before the answer", async () => {
+  const user = userEvent.setup();
+  const patchIssue = patchInFlight();
+  const { cleanup } = renderBoard({}, undefined, [priorityChild], "/projects/CORE", true);
+  try {
+    const card = await screen.findByRole("article", { name: "CORE-1 Plan the work" });
+    const before = card.textContent;
+    await user.selectOptions(priorityPicker(), "1");
+    await waitFor(() =>
+      expect(patchIssue, "board pick PATCH").toHaveBeenCalledWith("CORE-1", { priority: 1 }, keyedAttempt)
+    );
+    expect(
+      within(priorityCard()).queryByText("P1", { selector: "span" }),
+      "board's optimistic own P1 badge"
+    ).toBeVisible();
+    expect(
+      within(priorityCard()).queryByRole("link", { name: "ACME-1" }),
+      "board's own P1 has no source"
+    ).toBeNull();
+    expect(before, "board card's confirmed badge before the pick").toContain("P0 · from ACME-1");
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("clearing an own P2 on the board keeps P2 pending until the answer says it inherits P0", async () => {
+  const user = userEvent.setup();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const list = [ownP2Child];
+  const { cleanup } = renderBoard({}, undefined, list, "/projects/CORE", true);
+  try {
+    await screen.findByRole("article", { name: "CORE-1 Plan the work" });
+    await user.selectOptions(priorityPicker(), "");
+    await waitFor(() =>
+      expect(patchIssue, "board clear PATCH").toHaveBeenCalledWith("CORE-1", { priority: null }, keyedAttempt)
+    );
+    expect(
+      within(priorityCard()).queryByText("P2", { selector: "span" })?.textContent,
+      "board keeps the P2 badge while the clear is out"
+    ).toBe("P2");
+    expect(
+      priorityPicker().closest('[aria-busy="true"]'),
+      "board picker marks the clear pending"
+    ).not.toBeNull();
+    await act(async () => {
+      list[0] = priorityChild;
+      save.resolve({ ...patched, ...inheritedP0 });
+      await save.promise;
+    });
+    const p0 = screen.getByRole("region", { name: "P0 lane" });
+    const inherited = await within(p0).findByRole("article", { name: "CORE-1 Plan the work" });
+    expect(inherited, "board badge after the clear answers").toHaveTextContent("P0 · from ACME-1");
+    expect(priorityPicker().closest('[aria-busy="true"]'), "board picker is no longer pending").toBeNull();
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a resolved-priority event moves the board card to P1 with its source and sends no write", async () => {
+  const patchIssue = answerIssuePatches();
+  const list = [priorityChild];
+  const { cleanup, listIssues, queryClient } = renderBoard({}, undefined, list, "/projects/CORE", true);
+  try {
+    await screen.findByRole("article", { name: "CORE-1 Plan the work" });
+    const laneSelector = 'section[aria-label$=" lane"]';
+    const initialLane = priorityCard().closest(laneSelector)?.getAttribute("aria-label");
+    const updated = { ...inheritedP0, resolved_priority: 1, last_seq: 2 } as const;
+    const event: DispatchEvent = {
+      type: "issue.updated",
+      actor: { id: "alice", kind: "user" },
+      created_at: "2026-09-13T01:00:00Z",
+      id: 2,
+      issue_key: "CORE-1",
+      notify: false,
+      payload: {
+        ...patched,
+        ...updated,
+        labels: [],
+        blocked_by: [],
+        external_links: [],
+        claim: null,
+        components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+        created_by: { id: "alice", kind: "user" },
+        ancestors: ["ACME-1"],
+        changed: ["resolved_priority"],
+      },
+      project: "CORE",
+      seq: 2,
+    };
+    list[0] = { ...priorityChild, ...updated };
+    listIssues.mockClear();
+    await act(async () => {
+      refreshQueries(queryClient, eventRefreshTargets(event, "alice"));
+    });
+    await waitFor(() => expect(listIssues, "board listing after the event").toHaveBeenCalled());
+    await waitFor(() =>
+      expect(
+        priorityCard().closest(laneSelector)?.getAttribute("aria-label"),
+        "board card's lane after the event"
+      ).toBe("P1 lane")
+    );
+    expect(priorityCard(), "board badge after the event").toHaveTextContent("P1 · from ACME-1");
+    expect(initialLane, "board card's lane before the event").toBe("P0 lane");
+    expect(patchIssue, "board writes after the event").not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a refused board priority pick restores the inherited P0 and offers Retry", async () => {
+  const user = userEvent.setup();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  // The flat board keeps the same picker mounted while it draws the pick and its refusal.
+  const { cleanup } = renderBoard({}, undefined, [priorityChild]);
+  try {
+    await screen.findByRole("article", { name: "CORE-1 Plan the work" });
+    await user.selectOptions(priorityPicker(), "1");
+    await waitFor(() =>
+      expect(patchIssue, "refused board pick PATCH").toHaveBeenCalledWith("CORE-1", { priority: 1 }, keyedAttempt)
+    );
+    await act(async () => {
+      save.reject(new ApiError(403, { code: "FORBIDDEN", error: "write refused" }));
+    });
+    const alert = await within(priorityCard()).findByRole("alert");
+    expect(alert, "board priority refusal line").toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: "Retry" }), "board priority refusal Retry").toBeEnabled();
+    expect(priorityCard(), "board badge restored after refusal").toHaveTextContent("P0 · from ACME-1");
   } finally {
     cleanup();
     patchIssue.mockRestore();

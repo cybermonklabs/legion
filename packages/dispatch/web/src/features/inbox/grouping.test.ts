@@ -97,6 +97,24 @@ test("grouping bands by the chosen field, each field in its own order", () => {
   expect(keysOf(projects, "project")).toEqual(["CORE", "OPS", "none"]);
 });
 
+test.each(["ask", "reply"] as const)(
+  "Inbox groups an inherited P0 %s with the own P0 rows",
+  (kind) => {
+    const inherited = { resolved_priority: 0, priority_from: "ACME-1" } as const;
+    const ownP0 = { priority: 0, resolved_priority: 0, priority_from: null } as const;
+    const control = ask({ ...ownP0, id: "own-p0", issue_key: "ACME-1" });
+    const row =
+      kind === "ask"
+        ? ask({ ...inherited, id: "inherited", issue_key: "ACME-2", priority: null })
+        : thread({ ...inherited, thread_id: "inherited", issue: { key: "ACME-2", title: "Child" } });
+    const p0 = group([control, row], "priority", { now, titles, viewer }).find(({ key }) => key === "P0");
+    expect(p0?.rows.map(rowKey), `Inbox P0 band including its inherited ${kind}`).toEqual([
+      "own-p0",
+      "inherited",
+    ]);
+  }
+);
+
 test("Waiting on bands by whose turn it is, and a thread waits on the reader", () => {
   const rows = [
     ask({ id: "agent", waiting_on: "agent" }),
