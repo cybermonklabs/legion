@@ -3961,19 +3961,21 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
 // ------------------------------------------------------------------------------------------
 
 describe("every box the dashboard draws is in the writing list", () => {
-  test.each(
-    WRITING_SITES.map((site) => [site.at, site.construct, site.file] as const)
-  )("%s is %s", (_at, _construct, file) => {
-    expect(listing(file, WRITING_FILES, "DISPATCH_WRITING_BOXES")).toBe(file);
-  });
+  test.each(WRITING_SITES.map((site) => [site.at, site.construct, site.file] as const))(
+    "%s is %s",
+    (_at, _construct, file) => {
+      expect(listing(file, WRITING_FILES, "DISPATCH_WRITING_BOXES")).toBe(file);
+    }
+  );
 });
 
 describe("every surface the dashboard draws names its row of the reading list", () => {
-  test.each(
-    MOUNTS.map((mount) => [mount.at, mount.construct, mount] as const)
-  )("%s is %s", (_at, _construct, mount) => {
-    expect(mountComplaint(mount)).toBe(mount.at);
-  });
+  test.each(MOUNTS.map((mount) => [mount.at, mount.construct, mount] as const))(
+    "%s is %s",
+    (_at, _construct, mount) => {
+      expect(mountComplaint(mount)).toBe(mount.at);
+    }
+  );
 });
 
 describe("every mount of a record's text hands its construct that record", () => {
@@ -4096,11 +4098,12 @@ describe("every mount of the renderer or the projection on a stored text hands i
   test.each(TREE_MOUNTS.map((mount) => [mount.at, mount] as const))("%s", (at, mount) => {
     expect(mount.complaint ?? at).toBe(at);
   });
-  test.each(
-    UNTREED_ROWS.map((row) => [row.surface] as const)
-  )("%s still has a mount its text reaches with no tree", (surface) => {
-    expect(untreedRowComplaint(surface)).toBe(surface);
-  });
+  test.each(UNTREED_ROWS.map((row) => [row.surface] as const))(
+    "%s still has a mount its text reaches with no tree",
+    (surface) => {
+      expect(untreedRowComplaint(surface)).toBe(surface);
+    }
+  );
 });
 
 describe("every stored text the contract's scan cannot name keeps what its entry says of its tree", () => {
@@ -4142,11 +4145,12 @@ describe("every stored text the contract's scan cannot name keeps what its entry
         : `${file} hands ${field} to no call or element beside ${tree.written}`
     ).toBe(field);
   });
-  test.each(
-    HAND_NAMED_TEXTS.map((text) => [text.field] as const)
-  )("%s is a text no tree of the contract's names", (field) => {
-    expect(TREED_FIELDS).not.toContain(field);
-  });
+  test.each(HAND_NAMED_TEXTS.map((text) => [text.field] as const))(
+    "%s is a text no tree of the contract's names",
+    (field) => {
+      expect(TREED_FIELDS).not.toContain(field);
+    }
+  );
 });
 
 describe("every row drawn through the projection names the test that proves it", () => {
@@ -4177,16 +4181,17 @@ describe("no stored text is drawn as its characters outside a construct and the 
 });
 
 describe("every entry of the list of fields that hold no stored text is still a draw the walk finds", () => {
-  test.each(
-    NOT_STORED_TEXTS.map((entry) => [`${entry.file} ${entry.written}`, entry] as const)
-  )("%s", (label, entry) => {
-    const found = RAW_DRAWS.some(
-      (draw) => draw.file === entry.file && draw.written === entry.written
-    );
-    expect(found ? label : `${label} names no draw the walk finds: remove it from the list`).toBe(
-      label
-    );
-  });
+  test.each(NOT_STORED_TEXTS.map((entry) => [`${entry.file} ${entry.written}`, entry] as const))(
+    "%s",
+    (label, entry) => {
+      const found = RAW_DRAWS.some(
+        (draw) => draw.file === entry.file && draw.written === entry.written
+      );
+      expect(found ? label : `${label} names no draw the walk finds: remove it from the list`).toBe(
+        label
+      );
+    }
+  );
 });
 
 // ------------------------------------------------------------------------------------------
@@ -4194,85 +4199,91 @@ describe("every entry of the list of fields that hold no stored text is still a 
 // ------------------------------------------------------------------------------------------
 
 describe("every row of the writing list is a box the dashboard still draws", () => {
-  test.each(
-    DISPATCH_WRITING_BOXES.map((row) => [`${row.box} writing ${row.write}`, row] as const)
-  )("%s", (label: string, row: DispatchWritingBoxRow) => {
-    for (const file of row.files) {
-      expect(
-        LINES_BY_FILE.has(file) ? file : `${file} (named by ${label}) is not a source file`
-      ).toBe(file);
-    }
-    const drawn = row.files.some((file) => holdsAny(file, WRITING_CONSTRUCTS));
-    expect(drawn ? label : `${label} names no file that draws a box: ${row.files.join(", ")}`).toBe(
-      label
-    );
-    const named = row.files.some((file) => writesWord(file, row.box));
-    expect(named ? label : `no file of ${label} writes its box id: ${row.files.join(", ")}`).toBe(
-      label
-    );
-    if (row.covered) {
-      // A covered box takes the picker: a mount of the shared field in a file of it picks the
-      // row on its own attributes, or a file of it mounts an editor that hosts the picker and a
-      // file of it picks the row beside it (the document body's editor is mounted in one file
-      // and its picker picks the row in another). A comment naming the row, a string that is no
-      // pick, and a mount picking another row are none of these.
-      const editor = row.files.some((file) => holdsAny(file, [EDITOR_MOUNT]));
-      const picked = row.files.some((file) => picksBox(file, row.box, editor));
-      expect(
-        picked ? label : `no mount in a file of ${label} picks its row: ${row.files.join(", ")}`
-      ).toBe(label);
-      // A pull request runs the reference rows only where it changes a path the
-      // `dispatch_references` filter names (`REFERENCE_GATE`), so a covered box's file the filter
-      // misses is one a pull request can take the picker out of with none of those rows run.
+  test.each(DISPATCH_WRITING_BOXES.map((row) => [`${row.box} writing ${row.write}`, row] as const))(
+    "%s",
+    (label: string, row: DispatchWritingBoxRow) => {
       for (const file of row.files) {
         expect(
-          inReferenceFilter(file)
-            ? file
-            : `${file} (named by ${label}) is not in the dispatch_references filter of ${REFERENCE_GATE}`
+          LINES_BY_FILE.has(file) ? file : `${file} (named by ${label}) is not a source file`
         ).toBe(file);
       }
+      const drawn = row.files.some((file) => holdsAny(file, WRITING_CONSTRUCTS));
+      expect(
+        drawn ? label : `${label} names no file that draws a box: ${row.files.join(", ")}`
+      ).toBe(label);
+      const named = row.files.some((file) => writesWord(file, row.box));
+      expect(named ? label : `no file of ${label} writes its box id: ${row.files.join(", ")}`).toBe(
+        label
+      );
+      if (row.covered) {
+        // A covered box takes the picker: a mount of the shared field in a file of it picks the
+        // row on its own attributes, or a file of it mounts an editor that hosts the picker and a
+        // file of it picks the row beside it (the document body's editor is mounted in one file
+        // and its picker picks the row in another). A comment naming the row, a string that is no
+        // pick, and a mount picking another row are none of these.
+        const editor = row.files.some((file) => holdsAny(file, [EDITOR_MOUNT]));
+        const picked = row.files.some((file) => picksBox(file, row.box, editor));
+        expect(
+          picked ? label : `no mount in a file of ${label} picks its row: ${row.files.join(", ")}`
+        ).toBe(label);
+        // A pull request runs the reference rows only where it changes a path the
+        // `dispatch_references` filter names (`REFERENCE_GATE`), so a covered box's file the filter
+        // misses is one a pull request can take the picker out of with none of those rows run.
+        for (const file of row.files) {
+          expect(
+            inReferenceFilter(file)
+              ? file
+              : `${file} (named by ${label}) is not in the dispatch_references filter of ${REFERENCE_GATE}`
+          ).toBe(file);
+        }
+      }
     }
-  });
+  );
 
-  test.each(
-    DISPATCH_WRITING_BOXES.map((row) => [`${row.box} writing ${row.write}`, row] as const)
-  )("%s says why it is not covered", (label: string, row: DispatchWritingBoxRow) => {
-    // An excluded row with no reason is the one thing a list like this cannot leave behind:
-    // the box has no picker and nothing anywhere says why.
-    expect(reasonComplaint(label, row.covered, row.reason, row.files)).toBe(label);
-  });
+  test.each(DISPATCH_WRITING_BOXES.map((row) => [`${row.box} writing ${row.write}`, row] as const))(
+    "%s says why it is not covered",
+    (label: string, row: DispatchWritingBoxRow) => {
+      // An excluded row with no reason is the one thing a list like this cannot leave behind:
+      // the box has no picker and nothing anywhere says why.
+      expect(reasonComplaint(label, row.covered, row.reason, row.files)).toBe(label);
+    }
+  );
 });
 
 describe("every row of the reading list is a surface the dashboard still draws", () => {
-  test.each(
-    DISPATCH_READING_SURFACES.map((row) => [row.surface, row] as const)
-  )("%s", (label: string, row: DispatchReadingSurfaceRow) => {
-    for (const file of row.files) {
-      expect(
-        LINES_BY_FILE.has(file) ? file : `${file} (named by ${label}) is not a source file`
-      ).toBe(file);
+  test.each(DISPATCH_READING_SURFACES.map((row) => [row.surface, row] as const))(
+    "%s",
+    (label: string, row: DispatchReadingSurfaceRow) => {
+      for (const file of row.files) {
+        expect(
+          LINES_BY_FILE.has(file) ? file : `${file} (named by ${label}) is not a source file`
+        ).toBe(file);
+      }
+      if (row.rendered) {
+        // A rendered surface is a mount that names it, in a file of it: a mount in that file for
+        // another row stands in for nothing.
+        const drawn = MOUNTS.some(
+          (mount) => mount.surface === row.surface && row.files.includes(mount.file)
+        );
+        expect(drawn ? label : `${label} renders, but no mount in a file of it names it`).toBe(
+          label
+        );
+      }
+      if (row.reason !== undefined) {
+        // An excluded row's tie to the place it excuses: the site names the row rather than
+        // carrying a second copy of the reason that can drift from this one.
+        const pointed = row.files.some((file) => writesWord(file, row.surface));
+        expect(pointed ? label : `no file of ${label} points at it by name`).toBe(label);
+      }
     }
-    if (row.rendered) {
-      // A rendered surface is a mount that names it, in a file of it: a mount in that file for
-      // another row stands in for nothing.
-      const drawn = MOUNTS.some(
-        (mount) => mount.surface === row.surface && row.files.includes(mount.file)
-      );
-      expect(drawn ? label : `${label} renders, but no mount in a file of it names it`).toBe(label);
-    }
-    if (row.reason !== undefined) {
-      // An excluded row's tie to the place it excuses: the site names the row rather than
-      // carrying a second copy of the reason that can drift from this one.
-      const pointed = row.files.some((file) => writesWord(file, row.surface));
-      expect(pointed ? label : `no file of ${label} points at it by name`).toBe(label);
-    }
-  });
+  );
 
-  test.each(
-    DISPATCH_READING_SURFACES.map((row) => [row.surface, row] as const)
-  )("%s says why it is excluded", (label: string, row: DispatchReadingSurfaceRow) => {
-    expect(reasonComplaint(label, row.rendered && row.record, row.reason, row.files)).toBe(label);
-  });
+  test.each(DISPATCH_READING_SURFACES.map((row) => [row.surface, row] as const))(
+    "%s says why it is excluded",
+    (label: string, row: DispatchReadingSurfaceRow) => {
+      expect(reasonComplaint(label, row.rendered && row.record, row.reason, row.files)).toBe(label);
+    }
+  );
 });
 
 // ------------------------------------------------------------------------------------------
@@ -4280,25 +4291,26 @@ describe("every row of the reading list is a surface the dashboard still draws",
 // ------------------------------------------------------------------------------------------
 
 describe("no file imports a reader this change deleted", () => {
-  test.each(
-    DELETED_READERS.map((reader) => [reader.what, reader] as const)
-  )("%s is imported nowhere", (_what: string, reader: DeletedReader) => {
-    // The patterns are the reader's own, so one is built per deleted reader rather than per
-    // line of every file the walk reads.
-    const importPattern =
-      reader.module === undefined ? undefined : new RegExp(`from "[^"]*${reader.module}"`);
-    const namePatterns = reader.names.map((name) => new RegExp(`\\b${name}\\b`));
-    const offenders: string[] = [];
-    for (const file of SCANNED_FILES) {
-      const lines = LINES_BY_FILE.get(file) ?? [];
-      lines.forEach((line, index) => {
-        const importsModule = importPattern?.test(line) === true;
-        const writesName = namePatterns.some((pattern) => pattern.test(line));
-        if (importsModule || writesName) {
-          offenders.push(`${file}:${index + 1}`);
-        }
-      });
+  test.each(DELETED_READERS.map((reader) => [reader.what, reader] as const))(
+    "%s is imported nowhere",
+    (_what: string, reader: DeletedReader) => {
+      // The patterns are the reader's own, so one is built per deleted reader rather than per
+      // line of every file the walk reads.
+      const importPattern =
+        reader.module === undefined ? undefined : new RegExp(`from "[^"]*${reader.module}"`);
+      const namePatterns = reader.names.map((name) => new RegExp(`\\b${name}\\b`));
+      const offenders: string[] = [];
+      for (const file of SCANNED_FILES) {
+        const lines = LINES_BY_FILE.get(file) ?? [];
+        lines.forEach((line, index) => {
+          const importsModule = importPattern?.test(line) === true;
+          const writesName = namePatterns.some((pattern) => pattern.test(line));
+          if (importsModule || writesName) {
+            offenders.push(`${file}:${index + 1}`);
+          }
+        });
+      }
+      expect(offenders).toEqual([]);
     }
-    expect(offenders).toEqual([]);
-  });
+  );
 });

@@ -616,22 +616,25 @@ describe("session_copy's destination", () => {
     ["a `/` that climbs", "../dest"],
     ["a byte outside [A-Za-z0-9._-]", "dest x"],
     ["a leading `-`, which a later consumer could read as an option", "-rf"],
-  ])("a STEM of %s is refused by name before any key is listed, and nothing is written", (_, bad) => {
-    const c = copyInto(
-      `${stem}/`,
-      () => ({ [`${stem}/ok.jsonl`]: "SESSION-BYTES-ok\n" }),
-      undefined,
-      bad
-    );
-    expect(c.r.code).toBe(1);
-    expect(c.r.stderr).toBe(
-      `the sessions under ${stem}/ are not copied: their directory's name '${bad}' is not a plain name of [A-Za-z0-9._-] other than . and .., and not starting with -, in ${c.base}\n`
-    );
-    // No listing ran, so no name was derived; nothing appeared anywhere.
-    expect(c.r.sql).toBe("");
-    untouched(c);
-    expect(readdirSync(c.dest)).toEqual([]);
-  });
+  ])(
+    "a STEM of %s is refused by name before any key is listed, and nothing is written",
+    (_, bad) => {
+      const c = copyInto(
+        `${stem}/`,
+        () => ({ [`${stem}/ok.jsonl`]: "SESSION-BYTES-ok\n" }),
+        undefined,
+        bad
+      );
+      expect(c.r.code).toBe(1);
+      expect(c.r.stderr).toBe(
+        `the sessions under ${stem}/ are not copied: their directory's name '${bad}' is not a plain name of [A-Za-z0-9._-] other than . and .., and not starting with -, in ${c.base}\n`
+      );
+      // No listing ran, so no name was derived; nothing appeared anywhere.
+      expect(c.r.sql).toBe("");
+      untouched(c);
+      expect(readdirSync(c.dest)).toEqual([]);
+    }
+  );
 
   // The relocation the anchor closes: handed $evidence/review-pair/.. as a path, session_copy
   // canonicalised it to $evidence and every guard held there, so a key deriving to run.json
@@ -782,35 +785,38 @@ if record_pair; then echo recorded; else echo "record_pair failed $?"; fi`,
     ["`..`", `${sessions}/-legion-workspaces-pod/..`, ".."],
     ["`.`", `${sessions}/-legion-workspaces-pod/.`, "."],
     ["a space and a newline", `${sessions}/-legion-workspaces-pod/a b\nc.jsonl`, "a b\nc"],
-  ])("a recorded session file whose basename is %s is recorded, its subagents in review-pair/subagents and its stem as data", (_, pairSession, stem) => {
-    const runJson = '{"source":"the collector run metadata"}\n';
-    const agentBytes = '{"agent":"bytes an agent chose"}\n';
-    const r = recordPair(
-      pairSession,
-      {
-        [pairSession]: transcript,
-        [`${pairSession.replace(/\.jsonl$/, "")}/run.json`]: agentBytes,
-      },
-      `printf '%s' '${runJson}' >"$OUT/run.json"`
-    );
-    expect(r.code).toBe(0);
-    expect(r.stdout).toBe("recorded\n");
-    expect(r.stderr).toBe("");
-    expect(readFileSync(join(r.out, "run.json"), "utf8")).toBe(runJson);
-    expect(readdirSync(r.out).sort()).toEqual(["review-pair", "run.json"]);
-    const pair = join(r.out, "review-pair");
-    expect(readdirSync(pair).sort()).toEqual([
-      "reviewer.jsonl",
-      "session-stem",
-      "subagents",
-      "thermonuclear-code-quality.json",
-      "thermonuclear-deep-review.json",
-    ]);
-    expect(readFileSync(join(pair, "reviewer.jsonl"), "utf8")).toBe(transcript);
-    expect(readdirSync(join(pair, "subagents"))).toEqual(["run.json"]);
-    expect(readFileSync(join(pair, "subagents", "run.json"), "utf8")).toBe(agentBytes);
-    expect(readFileSync(join(pair, "session-stem"), "utf8")).toBe(`${stem}\n`);
-  });
+  ])(
+    "a recorded session file whose basename is %s is recorded, its subagents in review-pair/subagents and its stem as data",
+    (_, pairSession, stem) => {
+      const runJson = '{"source":"the collector run metadata"}\n';
+      const agentBytes = '{"agent":"bytes an agent chose"}\n';
+      const r = recordPair(
+        pairSession,
+        {
+          [pairSession]: transcript,
+          [`${pairSession.replace(/\.jsonl$/, "")}/run.json`]: agentBytes,
+        },
+        `printf '%s' '${runJson}' >"$OUT/run.json"`
+      );
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe("recorded\n");
+      expect(r.stderr).toBe("");
+      expect(readFileSync(join(r.out, "run.json"), "utf8")).toBe(runJson);
+      expect(readdirSync(r.out).sort()).toEqual(["review-pair", "run.json"]);
+      const pair = join(r.out, "review-pair");
+      expect(readdirSync(pair).sort()).toEqual([
+        "reviewer.jsonl",
+        "session-stem",
+        "subagents",
+        "thermonuclear-code-quality.json",
+        "thermonuclear-deep-review.json",
+      ]);
+      expect(readFileSync(join(pair, "reviewer.jsonl"), "utf8")).toBe(transcript);
+      expect(readdirSync(join(pair, "subagents"))).toEqual(["run.json"]);
+      expect(readFileSync(join(pair, "subagents", "run.json"), "utf8")).toBe(agentBytes);
+      expect(readFileSync(join(pair, "session-stem"), "utf8")).toBe(`${stem}\n`);
+    }
+  );
 });
 
 // collect_transcripts, the teardown's copy of every pod's session out of the session database

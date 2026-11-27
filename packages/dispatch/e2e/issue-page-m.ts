@@ -2,7 +2,7 @@ import type { PlanRecordInput, PlanTaskInput, StepExperimentInput } from "@legio
 import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { routeUrl } from "../web/src/api/paths";
-import type { HandoffBodies } from "../web/src/api/types";
+import type { GraphReferences, HandoffBodies } from "../web/src/api/types";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
@@ -16,7 +16,8 @@ import { settledState } from "./settled";
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
  * history, the runs and the handoffs it holds, the facts of the focused row, and the way to them;
  * `putStepExperiment` and `putPlan`, the two writes of their seeds that `e2e/api.ts` has no
- * wrapper for; and `daemonOf`, the Legion daemon of a project as their seed's writes name it.
+ * wrapper for, and `referencesTo`, the read of what references a node that a seed waits on;
+ * and `daemonOf`, the Legion daemon of a project as their seed's writes name it.
  *
  * This file is those rows' own, and the reading list's drivers of Details' history
  * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`: it
@@ -132,6 +133,19 @@ export function historyShowMoreState(
  *  too few of. */
 export function isOlderPageRead(url: URL, key: string): boolean {
   return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
+}
+
+/** Whether `url` is the read mark's read of issue `key`'s log (`IssueReadMark.tsx`, part L, on
+ *  `main`): the issue's newest event, `limit=1&order=desc` and nothing else, which the new page
+ *  sends to mark the issue read once the reader reaches the outline's end. It is no read of
+ *  Details, so a row that counts Details' reads leaves it out. */
+export function isReadMarkRead(url: URL, key: string): boolean {
+  return (
+    url.pathname === `/api/v1/issues/${key}/events` &&
+    [...url.searchParams.keys()].sort().join(",") === "limit,order" &&
+    url.searchParams.get("limit") === "1" &&
+    url.searchParams.get("order") === "desc"
+  );
 }
 
 /** The answer to the history's read of a page of issue `key`'s log older than the first, the
@@ -671,4 +685,25 @@ export async function putPlan(key: string, tasks: PlanTaskInput[]): Promise<void
     input,
     `write the plan of ${key}`
   );
+}
+
+/**
+ * What references `reference`, as the references read answers it under the agent bearer
+ * (`GET /api/v1/references?to=`), which the list of what references a row reads. A document's
+ * mention reaches it once the document's index has placed the mention in its block, after the
+ * version that holds it is written, and the list reads it once, when the reader opens it, so a
+ * seed waits on this for such a mention before the page loads. It throws, naming the reference,
+ * the status and the body, where the answer is not ok.
+ */
+export async function referencesTo(reference: string): Promise<GraphReferences> {
+  const response = await fetch(
+    new URL(routeUrl("/api/v1/references", {}, { to: reference }), baseUrl),
+    { headers: { Authorization: `Bearer ${e2eAgentToken}` } }
+  );
+  if (!response.ok) {
+    throw new Error(
+      `read what references ${reference} failed: ${response.status} ${await response.text()}`
+    );
+  }
+  return (await response.json()) as GraphReferences;
 }

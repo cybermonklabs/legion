@@ -138,10 +138,12 @@ import {
   historyShowMoreState,
   holdBodiesReads,
   isOlderPageRead,
+  isReadMarkRead,
   newestHistoryEntry,
   olderPageAnswered,
   putPlan,
   putStepExperiment,
+  referencesTo,
   rowFacts,
   runValuesUnread,
   type StepsReads,
@@ -1572,11 +1574,16 @@ test("the history leaves the comments of people out of its read of the log, so i
   try {
     const page = await context.newPage();
     // Each read of a page of the log that the page sends: 200 events long, as the history reads
-    // them, so the read of the first event past the read mark (`after`) is none of them.
+    // them, so the read of the first event past the read mark (`after`) is none of them, and nor
+    // is the read mark's read of the newest event (`isReadMarkRead`), which is no read of Details.
     const logReads: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
-      if (url.pathname === `/api/v1/issues/${issue.key}/events` && !url.searchParams.has("after")) {
+      if (
+        url.pathname === `/api/v1/issues/${issue.key}/events` &&
+        !url.searchParams.has("after") &&
+        !isReadMarkRead(url, issue.key)
+      ) {
         logReads.push(url.search);
       }
     });
@@ -3463,8 +3470,13 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
       return { first: first.id, key: issue.key, second: second.id };
     },
     async (page, seeded) => {
+      // Every request's path but the read mark's read of the newest event (`isReadMarkRead`),
+      // which the new page sends to mark the issue read and which is no read of Details.
       const read: string[] = [];
-      page.on("request", (request) => read.push(new URL(request.url()).pathname));
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (!isReadMarkRead(url, seeded.key)) read.push(url.pathname);
+      });
       const settling = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expect(tree(page)).toBeVisible();
@@ -5469,6 +5481,232 @@ test("what references the focused row names each task that serves it by the task
           ).not.toContain(name);
         }
       }
+    }
+  );
+});
+
+/** The first lines of the two tasks of the row below, each a whole sentence of at most 100
+ *  characters, so the outline's first-line rule draws each whole (`firstLineOf`). */
+const LONG_OPENER_TASK_LINES = [
+  "Draw the history in Details.",
+  "Read the history from the event log one page of two hundred events at a time, newest first.",
+] as const;
+
+// Decision 560, where a task's block opens with long attributes. The read's excerpt of a block is
+// its first 480 runes of markdown, the block's opening line included (`refs.BlockExcerpt`). A
+// task that serves many statements opens with a line longer than that, so its excerpt holds the
+// opening line alone; one that serves fewer holds the opening line and the start of its first
+// sentence. Neither may name its row by that excerpt: each row names its task by the task's own
+// first line, as the outline names a row, and draws no markup of its block.
+// Found by the tester on a running build of 621ddcba with a copy of INFRA-3570: its statement
+// spec#b-w-tasks drew `:::plan_task{#p-tasks serves="R1.` and `A and` for two of its rows.
+// SLOW(>=2s): a spec of 41 statements and a plan of two tasks written, the plan's index waited for,
+// and one load of the issue with the list opened.
+test("what references the focused row names a task whose block opens with long attributes by the task's first line", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const pads = Array.from({ length: 40 }, (_, index) => `r-p${String(index).padStart(2, "0")}`);
+      const issue = await createIssue({
+        project: "CORE",
+        spec: [
+          ":::requirement{#r-served}\nThe history is drawn in Details.\n:::\n",
+          ...pads.map((id) => `:::requirement{#${id}}\nStatement ${id}.\n:::\n`),
+        ].join("\n"),
+        title: "Two tasks with long openings serve a statement",
+      });
+      const address = (id: string) => `dispatch://${issue.key}/spec#b-${id}`;
+      // The opening line of a task that serves the statement and as many more as it takes for
+      // that line to reach `at least` runes.
+      const opener = (task: string, atLeast: number): string => {
+        const serves = [address("r-served")];
+        const line = () => `:::plan_task{#${task} serves="${serves.join(" ")}"}`;
+        for (const id of pads) {
+          if (line().length >= atLeast) break;
+          serves.push(address(id));
+        }
+        return line();
+      };
+      const long = opener("t-long", 520);
+      const cut = opener("t-cut", 420);
+      // The seed holds the shapes the row is about: the first opening line passes the excerpt's
+      // 480 runes, and the second ends before them with the cut inside its first sentence.
+      expect(
+        long.length,
+        "the first task's opening line is no longer than the excerpt"
+      ).toBeGreaterThan(480);
+      expect(
+        cut.length,
+        "the second task's opening line leaves its first sentence uncut"
+      ).toBeLessThan(480 - 20);
+      expect(
+        cut.length + 1 + LONG_OPENER_TASK_LINES[1].length,
+        "the excerpt's cut does not fall inside the second task's first sentence"
+      ).toBeGreaterThan(480);
+      const statement = address("r-served");
+      await createIssueArtifact(issue.key, {
+        content:
+          `How ${issue.key} is built.\n\n` +
+          `${long}\n${LONG_OPENER_TASK_LINES[0]} Each entry keeps its day.\n:::\n\n` +
+          `${cut}\n${LONG_OPENER_TASK_LINES[1]} The read mark stays.\n:::\n`,
+        name: "plan.md",
+      });
+      await expect
+        .poll(
+          async () =>
+            (await getIssueCoverage(issue.key)).requirements?.find(
+              (row) => row.block_id === "r-served"
+            )?.plan_tasks,
+          `the plan's two tasks never came to serve ${statement}`
+        )
+        .toBe(2);
+      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
+        (artifact) => artifact.primary
+      );
+      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      return { key: issue.key, statement: blockNode(spec.slug, "r-served") };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      const facts = await focusedRowFacts(page, seeded.statement);
+      const references = facts.locator("[data-node-references]");
+      await references
+        .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+        .click();
+      const rows = references.locator("li");
+      await expect(rows, "the list does not draw one row per serving task").toHaveCount(2);
+      for (const line of LONG_OPENER_TASK_LINES) {
+        await expect(
+          rows.getByRole("link", { exact: true, name: line }),
+          `no row names its task by the task's first line "${line}"`
+        ).toHaveCount(1);
+      }
+      for (const text of await rows.allTextContents()) {
+        for (const markup of [":::", "{#", "serves=", "dispatch://"]) {
+          expect(text, `a row of what references the statement draws "${markup}"`).not.toContain(
+            markup
+          );
+        }
+      }
+    }
+  );
+});
+
+/** The second line of the code of the note the row below seeds, under the line that quotes the
+ *  plan's task by its address: the code block's row draws its first line alone. */
+const QUOTING_CODE_NEXT_LINE = "read the log one page at a time";
+
+// Decision 565 (2): a code block of another document that quotes a plan task by its address is a
+// node that references the task, since the server records a mention from inside code as `main`
+// does (`text/refs.go`'s `InCode`). The task's list of what references it names the code block by
+// the first line of its code, drawn as code in the look a code span in a node's words takes (the
+// task's own row draws its words' code span so): its address as its author typed it, with no name
+// of the task in its place and no link of its own, beside the word for a document and the day.
+// SLOW(>=2s): a statement, a plan of one task and a note whose code quotes it written, the note's
+// mention waited for, and one load of the issue with the list opened.
+test("what references the focused row names a code block that quotes it by the first line of its code, as code", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: ":::requirement{#r-served}\nThe history is drawn in Details.\n:::\n",
+        title: "A note's code quotes a task",
+      });
+      const statement = `dispatch://${issue.key}/spec#b-r-served`;
+      const plan = await createIssueArtifact(issue.key, {
+        content:
+          `How ${issue.key} is built.\n\n` +
+          `:::plan_task{#t-draw serves="${statement}"}\n` +
+          `${SERVING_TASK_LINES[0]} Run \`make history\` first.\n:::\n`,
+        name: "plan.md",
+      });
+      const task = `dispatch://${issue.key}/artifact/${plan.artifact.slug}#b-t-draw`;
+      const notes = await createIssueArtifact(issue.key, {
+        content: `How the history is read.\n\n\`\`\`\nopen ${task}\n${QUOTING_CODE_NEXT_LINE}\n\`\`\`\n`,
+        name: "notes.md",
+      });
+      // The mention is placed in the note's code block by the note's index, after the version is
+      // written, and the list is read once, when the reader opens it: the seed waits for it there.
+      const document = `dispatch://${issue.key}/artifact/${notes.artifact.slug}`;
+      await expect
+        .poll(
+          async () =>
+            ((await referencesTo(task)).edges ?? []).some(
+              (edge) =>
+                edge.kind === "mentions" &&
+                edge.node.kind === "block" &&
+                edge.node.document === document
+            ),
+          `the note's code block never came to reference ${task}`
+        )
+        .toBe(true);
+      return {
+        key: issue.key,
+        line: `open ${task}`,
+        task: blockNode(plan.artifact.slug, "t-draw"),
+      };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expect(tree(page)).toBeVisible();
+      const facts = await focusedRowFacts(page, seeded.task);
+      const references = facts.locator("[data-node-references]");
+      await references
+        .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+        .click();
+      // The code block's row, once the names read of the list's citing blocks has answered.
+      const quoting = references.locator("li").filter({ has: page.locator("code") });
+      await expect(quoting, "no row draws the code block's line as code").toHaveCount(1);
+      const code = quoting.locator("code");
+      await expect(
+        code,
+        "the code block's row does not draw its code's first line as typed"
+      ).toHaveText(seeded.line);
+      await expect(
+        quoting.getByRole("link", { exact: true, name: seeded.line }),
+        "the code block's row is no link named by its code's first line"
+      ).toHaveCount(1);
+      await expect(code.locator("a"), "an address in the code is drawn as a link").toHaveCount(0);
+      // The look of a code span in a node's words: the task's own row draws `make history` so. Its
+      // font is a code span's; its colour is its link's ink, as the renderer draws a code span
+      // inside a link (`a code` takes the link's colour).
+      const spanned = rowWords(nodeRow(page, seeded.task)).locator("code").first();
+      await expect(spanned, "the task's row draws no code span of its words").toHaveCount(1);
+      const link = quoting.getByRole("link", { exact: true, name: seeded.line });
+      const [drawn, span, ink] = await Promise.all(
+        [code, spanned, link].map((element) =>
+          element.evaluate((node) => {
+            const style = getComputedStyle(node);
+            return { color: style.color, family: style.fontFamily, weight: style.fontWeight };
+          })
+        )
+      );
+      expect(
+        { family: drawn.family, weight: drawn.weight },
+        "the code block's line is not drawn in the font of a code span"
+      ).toEqual({ family: span.family, weight: span.weight });
+      expect(drawn.color, "the code block's line is not drawn in its link's ink").toBe(ink.color);
+      // The row is drawn and settled: its code was read whole above, so one read of its text is
+      // the state the row means to check.
+      const text = ((await quoting.textContent()) ?? "").replace(/\s+/gu, " ");
+      expect(text, "the code block's row does not say it is a document's").toContain(
+        NODE_REFERENCES_WORDS.kinds.block
+      );
+      expect(text, "the code block's row names the task its code quotes").not.toContain(
+        SERVING_TASK_LINES[0]
+      );
+      expect(text, "the code block's row draws its code's next line").not.toContain(
+        QUOTING_CODE_NEXT_LINE
+      );
+      await expect(quoting.locator("[data-reference-time]"), "the row draws no day").toHaveCount(1);
     }
   );
 });

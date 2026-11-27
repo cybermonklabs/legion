@@ -1,16 +1,19 @@
 import { expect, test } from "bun:test";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
-import type { DisplayTree, GraphEdge, GraphReferences } from "../../../api/types";
+import type { DisplayTree, GraphEdge, GraphReferences, ReferenceTarget } from "../../../api/types";
 import { buildDispatchReference } from "../../refs/routes";
 import { NODE_REFERENCES_WORDS } from "../page-words";
 import { issueItemWords, referenceRows } from "./references-list";
-import { servingTask } from "./serving-task-fixture";
+import { type ServingTask, servingTask, statementsReaching } from "./serving-task-fixture";
 
 const AT = "2026-11-15T10:00:00Z";
 
 /** No item of the issue has words the page holds. */
 const NO_WORDS: ReadonlyMap<string, string> = new Map();
+
+/** The page's batched names read has answered for no citing block. */
+const NO_TARGETS: readonly ReferenceTarget[] = [];
 
 /** No known reference names or edited marks: passed explicitly by cases that need neither. */
 const NO_KNOWN = { edited: new Set<string>(), names: new Map<string, string>() };
@@ -40,6 +43,28 @@ function commentWords(
     comments: Object.entries(comments).map(([id, tree]) => ({ body_tree: tree, id })),
     messages: undefined,
   });
+}
+
+/** The page's batched names read's member for the block at `ref`: the server's reading of the
+ *  block's own content (`text_tree`), one element of `content` per top-level block, and its
+ *  stored excerpt as its `name`, which no row reads. */
+function blockTarget(ref: string, content: readonly DisplayTree[], name = ""): ReferenceTarget {
+  return { gone: false, kind: "block", name, ref, text_tree: { content, type: "doc" } };
+}
+
+/** The rows of the tasks `tasks`, with the names read's member of each, for a statement of
+ *  `LAY-2`: no item of the issue holds words the page holds. */
+function taskRows(
+  tasks: readonly ServingTask[],
+  known: Parameters<typeof referenceRows>[3] = NO_KNOWN
+) {
+  return referenceRows(
+    NO_WORDS,
+    tasks.map((task) => task.edge),
+    tasks.map((task) => task.target),
+    known,
+    "LAY-2"
+  );
 }
 
 /** One edge of the references read, its excerpt with the server's reading of it where the read
@@ -105,6 +130,7 @@ test("one row per citing node, in the order the read answers them", () => {
         ref: "dispatch://LAY-2/artifact/verification-md#b-c1",
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -136,6 +162,7 @@ test("a node that cites the row twice is one row", () => {
         ref: "dispatch://LAY-2/comment/c-1",
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -169,6 +196,7 @@ test("a tuple of the model names the row over a mention, and keeps the mention's
         ref: "dispatch://LAY-2/artifact/plan-md#b-t8",
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -179,9 +207,9 @@ test("a tuple of the model names the row over a mention, and keeps the mention's
 });
 
 // A node that is no comment, message or question of this issue - another issue, a block of a
-// document, a comment of another issue - whose excerpt the read sent no reading of is named by
-// its word: the read's excerpt and the node's own text are its stored text, and no row draws
-// them.
+// document, a comment of another issue - that the page's batched names read has named nothing for
+// is named by its word: the read's excerpt and the node's own text are its stored text, and no row
+// draws them.
 test("a node outside this issue's items carries no line of the read's text", () => {
   const words = commentWords({ "c-1": reading("Thread 1 opens here.") });
   const rows = referenceRows(
@@ -212,6 +240,7 @@ test("a node outside this issue's items carries no line of the read's text", () 
         text: "It cites the statement from another issue.",
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -246,6 +275,7 @@ test("a citing item of this issue is named by the words of its tree, never its s
         text: stored,
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -275,6 +305,7 @@ test("a citing item is named by all of its words, with no cut", () => {
         ref: "dispatch://LAY-2/comment/c-1",
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -302,6 +333,7 @@ test("a citing item whose words cite a named node and one with no name draws all
         ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
       }),
     ],
+    NO_TARGETS,
     { edited: new Set(), names: new Map([[named, "The rail follows the statement"]]) },
     undefined
   );
@@ -330,6 +362,7 @@ test("a citing item's words name a reference whose post its author edited with i
         ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
       }),
     ],
+    NO_TARGETS,
     { edited: new Set([named]), names: new Map([[named, "The rail follows the statement"]]) },
     "LAY-2"
   );
@@ -361,6 +394,7 @@ test("a citing item whose words cite a project document's question with no name 
         ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -371,12 +405,14 @@ test("a node the read carries no words and no address of is still one row", () =
   const rows = referenceRows(
     NO_WORDS,
     [edge({ id: "s-1", kind: "mentions", nodeKind: "session" })],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
   expect(rows).toEqual([
     {
       at: AT,
+      code: false,
       key: "session:s-1",
       kind: "mentions",
       nodeKind: "session",
@@ -437,6 +473,7 @@ test("a block of a comment, a message or a question that mentions the row is tha
         parent: { id: "m-2", kind: "message", ref: "dispatch://LAY-2/message/m-2" },
       }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -472,6 +509,7 @@ test("a block of a document is not read as an item", () => {
         },
       },
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -495,6 +533,7 @@ test("a row carries where the citing node is from and when it referenced the row
       }),
       edge({ id: "a-1", kind: "mentions", nodeKind: "artifact", project: "LAY" }),
     ],
+    NO_TARGETS,
     NO_KNOWN,
     undefined
   );
@@ -506,18 +545,14 @@ test("a row carries where the citing node is from and when it referenced the row
 
 // Decision 560: a citing node is named by the first line of its own words, as the outline names
 // a row. Two tasks of one plan that serve the row each carry the first line of the server's
-// reading of its excerpt, cut at its first sentence end as R1's rule cuts a row's one line, so
-// the two rows read apart. They carried no words, and both were named "served by" alone.
+// reading of its content, which the page's batched names read answers for its address, cut at its
+// first sentence end as R1's rule cuts a row's one line, so the two rows read apart. They carried
+// no words, and both were named "served by" alone.
 test("two tasks of one plan that serve the row each carry the first line of its own words", () => {
-  const rows = referenceRows(
-    NO_WORDS,
-    [
-      servingTask("t1", "Draw the history in Details. Each entry keeps its day."),
-      servingTask("t2", "Read the history from the event log. It pages two hundred at a time."),
-    ],
-    NO_KNOWN,
-    "LAY-2"
-  );
+  const rows = taskRows([
+    servingTask("t1", "Draw the history in Details. Each entry keeps its day."),
+    servingTask("t2", "Read the history from the event log. It pages two hundred at a time."),
+  ]);
   expect(
     rows.map((row) => [row.key, row.words]),
     "each task is not named by its own first line"
@@ -527,6 +562,54 @@ test("two tasks of one plan that serve the row each carry the first line of its 
   ]);
 });
 
+// Decision 565 (1): the references read's excerpt of a block is its first 480 runes, its opening
+// line included (`refs.BlockExcerpt`), and the opening line of a task that serves many statements
+// is longer than that, so its excerpt is markup alone. The task is named by the first line of its
+// own content, which the names read answers with no opening line. Named from the excerpt, it read
+// `:::plan_task{#t1 serves="document document…`.
+test("a task whose opening line is longer than the excerpt is named by its first line", () => {
+  const task = servingTask(
+    "t1",
+    "Draw the history in Details. Each entry keeps its day.",
+    undefined,
+    statementsReaching("t1", 520)
+  );
+  expect(
+    task.edge.excerpt?.text,
+    "the excerpt holds the task's words, so the case proves nothing"
+  ).not.toContain("Draw the history");
+  const [row] = taskRows([task]);
+  expect(
+    row?.words,
+    "the task whose opening line passes the excerpt is not named by its first line"
+  ).toBe("Draw the history in Details.");
+  expect(row?.code).toBe(false);
+});
+
+// Decision 565 (1): a task whose first sentence crosses the excerpt's 480th rune has an excerpt cut
+// inside that sentence, with no ellipsis. The task is named by its own first sentence, which is
+// longer than a row's one line, cut as the outline cuts it, with the outline's ellipsis. Named from
+// the excerpt, it read "Read the history from the event log one pa".
+test("a task whose first sentence is longer than a row's line is named with the outline's ellipsis", () => {
+  const sentence =
+    "Read the history from the event log one page of two hundred events at a time, newest first, and keep the read mark where the reader left it.";
+  const task = servingTask(
+    "t1",
+    `${sentence} It pages on.`,
+    undefined,
+    statementsReaching("t1", 420)
+  );
+  const excerpt = task.edge.excerpt?.text ?? "";
+  expect(
+    excerpt.includes("Read the history") && !excerpt.includes(sentence),
+    "the excerpt is not cut inside the task's first sentence, so the case proves nothing"
+  ).toBe(true);
+  const [row] = taskRows([task]);
+  expect(row?.words, "the task's first sentence is not cut with the outline's ellipsis").toBe(
+    "Read the history from the event log one page of two hundred events at a time, newest first, and keep…"
+  );
+});
+
 // The line is the outline's one line of a node (`lineReading`, `firstLineOf`, `drawnLine`): read
 // from the first block of the reading that holds a word, a rule before it passed over, and cut at
 // a word within the hundred characters a line holds, with an ellipsis where the cut fell inside a
@@ -534,40 +617,36 @@ test("two tasks of one plan that serve the row each carry the first line of its 
 test("a citing block's line is cut as the outline cuts a row's one line", () => {
   const sentence =
     "Read every row of the outline at each width the page draws at, from the phone up to the widest screen it holds today";
-  const rows = referenceRows(
-    NO_WORDS,
-    [
-      servingTask("t1", `---\n\n${sentence}`, [
-        { type: "horizontal_rule" },
-        { content: [run(sentence)], type: "paragraph" },
-        { content: [run("A second paragraph.")], type: "paragraph" },
-      ]),
-    ],
-    NO_KNOWN,
-    "LAY-2"
-  );
+  const rows = taskRows([
+    servingTask("t1", `---\n\n${sentence}`, [
+      { type: "horizontal_rule" },
+      { content: [run(sentence)], type: "paragraph" },
+      { content: [run("A second paragraph.")], type: "paragraph" },
+    ]),
+  ]);
   expect(rows[0]?.words).toBe(
     "Read every row of the outline at each width the page draws at, from the phone up to the widest…"
   );
 });
 
-// A task's excerpt reads as the task whole (`api/display_trees.go`'s `graphExcerptRead`): a doc
-// holding the typed block, whose own content is the task's heading and the paragraph under it.
-// The outline reads a typed block from that content and draws its line from the first block of
-// it that holds a word (`lineReading`), so the row names the task by its heading's words alone.
-// It ran the heading into the paragraph: "Draw the history Each entry keeps its day.".
+// The names read answers a task with the server's reading of its own content, whose top-level
+// blocks are the task's heading and the paragraph under it, as the outline reads a typed block
+// (`tree-drafts.ts`'s `TreeContext.treeOf`). The outline draws its line from the first block of it
+// that holds a word (`lineReading`), so the row names the task by its heading's words alone. It ran
+// the heading into the paragraph: "Draw the history Each entry keeps its day."; and a task whose
+// opening line passes the excerpt was named by its markup.
 test("a task whose words open on a heading is named by the heading's words alone, as the outline names it", () => {
-  const rows = referenceRows(
-    NO_WORDS,
-    [
-      servingTask("t1", "## Draw the history\n\nEach entry keeps its day.", [
+  const rows = taskRows([
+    servingTask(
+      "t1",
+      "## Draw the history\n\nEach entry keeps its day.",
+      [
         { attrs: { level: 2 }, content: [run("Draw the history")], type: "heading" },
         { content: [run("Each entry keeps its day.")], type: "paragraph" },
-      ]),
-    ],
-    NO_KNOWN,
-    "LAY-2"
-  );
+      ],
+      statementsReaching("t1", 520)
+    ),
+  ]);
   expect(rows[0]?.words, "the task's line runs its heading into the paragraph under it").toBe(
     "Draw the history"
   );
@@ -579,11 +658,12 @@ test("a task whose words open on a heading is named by the heading's words alone
 test("a citing block's line names each reference it writes, never by its address", () => {
   const named = buildDispatchReference({ id: "c-2", key: "LAY-2", kind: "comment" });
   const unnamed = buildDispatchReference({ id: "a-3", key: "LAY-2", kind: "ask" });
-  const rows = referenceRows(
-    NO_WORDS,
+  const rows = taskRows(
     [servingTask("t1", `Answer ${unnamed} as ${named} asks. Then draw the panel.`)],
-    { edited: new Set(), names: new Map([[named, "The rail follows the statement"]]) },
-    "LAY-2"
+    {
+      edited: new Set(),
+      names: new Map([[named, "The rail follows the statement"]]),
+    }
   );
   const line = rows[0]?.words ?? "";
   expect(line).toBe(
@@ -592,11 +672,45 @@ test("a citing block's line names each reference it writes, never by its address
   expect(line, "the row draws an address").not.toContain("dispatch://");
 });
 
+// Decision 565 (2): a code block of another document that quotes the task by its address is a node
+// that references it. Code is literal, so the row names the code block by the first line of its
+// code as typed, the address in it written as its author wrote it, and no name of the task in its
+// place; the component draws it as code. Named as words are, it read "See Draw the history in
+// Details.", the task's own words in the code's place.
+test("a code block that quotes the row is named by its code's first line, as typed", () => {
+  const task = "dispatch://LAY-2/artifact/plan-md#b-t1";
+  const ref = "dispatch://LAY-2/artifact/notes-md#b-c9";
+  const code = `See ${task} for the history.\nThen read the log.`;
+  const [row, ...more] = referenceRows(
+    NO_WORDS,
+    [
+      edge({
+        excerpt: `\`\`\`\n${code}\n\`\`\``,
+        id: "notes-md#c9",
+        issueKey: "LAY-2",
+        kind: "mentions",
+        nodeKind: "block",
+        ref,
+      }),
+    ],
+    [blockTarget(ref, [{ content: [run(code)], type: "code_block" }], `\`\`\`\n${code}\n\`\`\``)],
+    { edited: new Set(), names: new Map([[task, "Draw the history in Details."]]) },
+    "LAY-2"
+  );
+  expect(more).toHaveLength(0);
+  expect(
+    [row?.code, row?.words],
+    "the code block is not named by its code's first line as typed, as code"
+  ).toEqual([true, `See ${task} for the history.`]);
+});
+
 // A comment of another issue reaches the list as the block of it that cites the row, and is named
-// by the first line of that block's words, with its issue. A comment of this issue whose words the
-// page holds is named by all of them, whatever reading the read sent of its excerpt.
+// by the first line of that block's words, which the names read answers for the block's address,
+// with its issue. A comment of this issue whose words the page holds is named by all of them,
+// whatever the names read answers.
 test("an item of another issue is named by the first line of its words, and one of this issue by all of them", () => {
   const said = "It cites the statement from another issue. Then it moves on.";
+  const block = "dispatch://LAY-9/comment/c-9#b1";
   const rows = referenceRows(
     commentWords({ "c-1": reading("Thread 1 opens here.", "Its second paragraph follows.") }),
     [
@@ -607,8 +721,7 @@ test("an item of another issue is named by the first line of its words, and one 
         kind: "mentions",
         nodeKind: "block",
         parent: { id: "c-9", kind: "comment", ref: "dispatch://LAY-9/comment/c-9" },
-        reading: reading(said),
-        ref: "dispatch://LAY-9/comment/c-9#b1",
+        ref: block,
       }),
       edge({
         excerpt: "Thread 1 opens here.",
@@ -620,6 +733,7 @@ test("an item of another issue is named by the first line of its words, and one 
         ref: "dispatch://LAY-2/comment/c-1",
       }),
     ],
+    [blockTarget(block, [{ content: [run(said)], type: "paragraph" }], said)],
     NO_KNOWN,
     "LAY-2"
   );
@@ -630,22 +744,19 @@ test("an item of another issue is named by the first line of its words, and one 
 });
 
 // A node with no words of its own carries none, and the component names it by its word: a task
-// whose reading holds no word, one whose excerpt the read sent no reading of, and an issue and a
-// document, whose excerpt is the issue's title and the document's file name, a reading the
-// server sends and no page reads.
+// whose reading holds no word, one the names read has not answered for, one it answered gone, and
+// an issue and a document, whose excerpt is the issue's title and the document's file name, a
+// reading the server sends and no page reads.
 test("a node with no words of its own carries none", () => {
+  const wordless = servingTask("t1", "---", [{ type: "horizontal_rule" }]);
+  const unanswered = servingTask("t2", "Draw the panel.");
+  const gone = servingTask("t3", "Read the panel.");
   const rows = referenceRows(
     NO_WORDS,
     [
-      servingTask("t1", "---", [{ type: "horizontal_rule" }]),
-      edge({
-        excerpt: "Draw the panel.",
-        id: "plan-md#t2",
-        issueKey: "LAY-2",
-        kind: "serves",
-        nodeKind: "block",
-        ref: "dispatch://LAY-2/artifact/plan-md#b-t2",
-      }),
+      wordless.edge,
+      unanswered.edge,
+      gone.edge,
       edge({
         excerpt: "The rail becomes an icon rail.",
         id: "LAY-9",
@@ -664,12 +775,14 @@ test("a node with no words of its own carries none", () => {
         ref: "dispatch://LAY-2/artifact/notes-md",
       }),
     ],
+    [wordless.target, { gone: true, kind: "block", name: "", ref: gone.target.ref }],
     NO_KNOWN,
     "LAY-2"
   );
   expect(rows.map((row) => [row.key, row.words])).toEqual([
     ["block:plan-md#t1", ""],
     ["block:plan-md#t2", ""],
+    ["block:plan-md#t3", ""],
     ["issue:LAY-9", ""],
     ["artifact:a-1", ""],
   ]);

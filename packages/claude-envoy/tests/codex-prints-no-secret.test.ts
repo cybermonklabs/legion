@@ -25,52 +25,53 @@ const refusal = (shown: string): string =>
   `The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed. The subject token was refused: the subject token was not minted for ${shown}, which is the audience this broker accepts from https://kubernetes.default.svc.`
 
 describe("the Codex server's stderr", () => {
-  test.each([
-    "whole",
-    "a run of it",
-  ] as const)("shows a broker's refusal echoing the subject token (%s) with the token withheld", async (form) => {
-    const root = makeDirectory()
-    const subject = fixtureSecret("pod")
-    const shown = form === "whole" ? subject : subject.slice(4, 18)
-    const broker = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch: () =>
-        Response.json(
-          { error: "invalid_request", error_description: refusal(shown) },
-          { status: 400 },
-        ),
-    })
-    stops.push(() => broker.stop(true))
-    const homes = codexHomes(root, {
-      enabled: true,
-      url: "http://127.0.0.1:9",
-      // The trade fails before any dial, so no hub answers here.
-      natsUrls: ["nats://127.0.0.1:9"],
-    })
-    const tokenFile = join(root, "pod-token")
-    writeFileSync(tokenFile, `${subject}\n`)
-    await recordFor(homes.pluginData, crypto.randomUUID(), homes)
-    const server = startCodexServer(
-      {
-        HOME: homes.home,
-        PLUGIN_DATA: homes.pluginData,
-        AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
-        AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-        AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
-        NATS_AUTH: "broker",
-      },
-      root,
-    )
-    stops.push(server.stop)
-    await until(
-      () => server.stderr().includes("the subject token was not minted for"),
-      "the server to print the broker's refusal",
-      30_000,
-      server.stderr,
-    )
-    const printed = server.stderr()
-    expect(printed).toContain("the subject token was not minted for <withheld>")
-    expect(printed).not.toContain(shown)
-  }, 60_000)
+  test.each(["whole", "a run of it"] as const)(
+    "shows a broker's refusal echoing the subject token (%s) with the token withheld",
+    async (form) => {
+      const root = makeDirectory()
+      const subject = fixtureSecret("pod")
+      const shown = form === "whole" ? subject : subject.slice(4, 18)
+      const broker = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: () =>
+          Response.json(
+            { error: "invalid_request", error_description: refusal(shown) },
+            { status: 400 },
+          ),
+      })
+      stops.push(() => broker.stop(true))
+      const homes = codexHomes(root, {
+        enabled: true,
+        url: "http://127.0.0.1:9",
+        // The trade fails before any dial, so no hub answers here.
+        natsUrls: ["nats://127.0.0.1:9"],
+      })
+      const tokenFile = join(root, "pod-token")
+      writeFileSync(tokenFile, `${subject}\n`)
+      await recordFor(homes.pluginData, crypto.randomUUID(), homes)
+      const server = startCodexServer(
+        {
+          HOME: homes.home,
+          PLUGIN_DATA: homes.pluginData,
+          AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+          AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+          AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+          NATS_AUTH: "broker",
+        },
+        root,
+      )
+      stops.push(server.stop)
+      await until(
+        () => server.stderr().includes("the subject token was not minted for"),
+        "the server to print the broker's refusal",
+        30_000,
+        server.stderr,
+      )
+      const printed = server.stderr()
+      expect(printed).toContain("the subject token was not minted for <withheld>")
+      expect(printed).not.toContain(shown)
+    },
+    60_000,
+  )
 })
