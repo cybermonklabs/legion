@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0042_onepassword_requests.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0052_onepassword_requests.up.sql
 -- onepassword_requests: the 1Password requests the whole deployment made, by hour, which every
 -- replica's 1Password store adds to and reads before a call (onepassword.NewBudget): one row an
 -- hour, and a spend deletes the rows past 48 hours. A deployment on another store never writes it.
