@@ -135,6 +135,54 @@ func TestAFixCompletionBeforeItsSynchronizeMovesTheNextStepToItsEnd(t *testing.T
 	}
 }
 
+// A person pushes P while the fix runs, and the fix's end E, a child of P, reaches the engine
+// before E's synchronize, with no step of the task running: the review returned the task to the
+// fix's own step. The record's head is P, which the fix's take rebased onto, so P lacks the fix's
+// commits. The way runs the steps after the fix again (way 2) with the tester's working copy moved
+// to E, which holds them and P's, and that start carries the fix's move. Its red is the head the
+// record holds taken wherever it moved from the fix's start (afterFix): the tester then started at
+// P without the fix's commits, and its start carried the move, so no later start brought them.
+func TestAPushWhileTheFixRunsLeavesTheNextStepAtTheFixsEnd(t *testing.T) {
+	r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.reviewedX()
+	r.move(TriggerReviewRejected, "", reviewReport("the review's report"))
+	r.personPushes(fixHead, headTwo)
+	if result := r.apply("fix-done", fixCompletion(headThree)); result.Refusal != nil {
+		t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+	}
+	r.assertWay(2, phase.Testing, claim.RoleTester, headThree, 1, reviewingTesting)
+	if fix := r.latestFix(); !fix.MoveCarried {
+		t.Fatalf("fix 1 after the way's start = %+v, want its move carried by that start", fix)
+	}
+}
+
+// A head pushed over the fix's end holds the fix's commits, so the way's start moves the next
+// step's working copy to that head, not back to the fix's end. Fix 1 runs beside the review step
+// that started at X and ends at E, whose push and synchronize arrive; a person then pushes P over
+// E, and the reviewer approves P: way 2 starts the tester with its copy moved to P. Its control is
+// the fix's end taken whatever the record's moves say: the tester then started at E, without P.
+func TestAHeadPushedOverTheFixsEndIsWhereTheNextStepStarts(t *testing.T) {
+	r := besideTheFix(t)
+	r.fixPushes(headTwo)
+	if result := r.apply("fix-done", fixCompletion(headTwo)); result.Refusal != nil {
+		t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+	}
+	r.reviewerCompletes()
+	r.personPushes(headTwo, headThree)
+	r.mergeStateAt(headThree, record.MergeStateClean)
+	r.reviewOf(1, "approved", headThree)
+
+	if way := r.fixWay(1); way != wayAfterFix {
+		t.Fatalf("fix 1 took way %d, want %d", way, wayAfterFix)
+	}
+	assertPhase(t, r.pool, phase.Testing)
+	if got := r.moveToOf(claim.RoleTester); got != headThree {
+		t.Fatalf("the tester's start moves its working copy to %q, want %s, the head pushed over the fix's end %s", got, headThree, headTwo)
+	}
+}
+
 // Row 2: an approval while the fix runs, and the fix made no commit: each step keeps its result,
 // so the fix's end reads the end again: the task waits for CI at X, where its check still fails
 // and its one fix ended, so its owner is told once; with each check passed there the retro

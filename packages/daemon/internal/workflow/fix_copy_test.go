@@ -107,3 +107,29 @@ func TestTheRetroAfterAFixAtTheEndMovesTheCopy(t *testing.T) {
 		}
 	})
 }
+
+// A head pushed over the fix's end holds the fix's commits, so the first start after the fix moves
+// the task's copy to that head, not back to the fix's end. On a task whose one step is the
+// implementation, a check fails at its end and a fix starts there; the fix's push of Y and its
+// synchronize arrive and the fix ends at Y; a person then pushes P over Y, and once CI passes at P
+// the retro starts with its copy moved to P. Its red is the fix's end taken whatever the record's
+// moves say (copyMoveAfterFix): the retro then started at Y, without P.
+func TestTheRetroAfterAPushOverTheFixsEndStartsAtThatPush(t *testing.T) {
+	r := newFixRig(t, returnEngine(), []string{"implementer"})
+	tickingClock(r.engine)
+	r.at(fixHead, jobRunning("k-ci"))
+	r.move(TriggerImplementationReady, "", record.PhaseRow{})
+	r.assertEndHold(record.HoldForCI)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.assertEndHold(record.HoldForFix)
+	r.fixPushes(headTwo)
+	if result := r.apply("fix-done", fixCompletion(headTwo)); result.Refusal != nil {
+		t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+	}
+	r.personPushes(headTwo, headThree)
+	r.at(headThree, noCIJob("k-unit"), ciPassing("k-ci2"), ciPassing("k-ci"))
+	if got := r.assertRetroStarted().MoveTo; got != headThree {
+		t.Fatalf("the retro's start moves the task's copy to %q, want %s, the head pushed over the fix's end %s", got, headThree, headTwo)
+	}
+}
