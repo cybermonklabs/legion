@@ -129,7 +129,6 @@ export type HistoryEntry =
       readonly kind: "handoff";
       readonly id: string;
       readonly at: string;
-      readonly author: Actor;
       readonly handoff: HandoffSummary;
       /** The id of its `handoff.recorded` event where the log holds it: its Pin. */
       readonly recorded: number | undefined;
@@ -663,7 +662,7 @@ const BEFORE_ALL = new Date(0).toISOString();
  */
 function runsOf(input: HistoryInput, recorded: ReadonlyMap<string, DispatchEvent>): Dated[] {
   const handoffs = new Map((input.handoffs ?? []).map((handoff) => [handoff.id, handoff]));
-  const runs: { at: string; report: string | null; row: StepRow; task: string }[] = [];
+  const runs: { at: string; id: string; report: string | null; row: StepRow; task: string }[] = [];
   if (input.runs !== undefined) {
     for (const [index, { rows, task }] of stepTasks(input.runs).entries()) {
       const records = input.runs.tasks?.[index]?.steps ?? [];
@@ -687,6 +686,7 @@ function runsOf(input: HistoryInput, recorded: ReadonlyMap<string, DispatchEvent
       for (const [place, row] of rows.entries()) {
         runs.push({
           at: places[place] ?? BEFORE_ALL,
+          id: `run:${row.id}`,
           report: records[place]?.report ?? null,
           row,
           task,
@@ -697,7 +697,7 @@ function runsOf(input: HistoryInput, recorded: ReadonlyMap<string, DispatchEvent
   // The run that holds each handoff the list holds and a run reports: the one that stands higher.
   const placeOfRun = (run: (typeof runs)[number]): HistoryPlace => ({
     at: run.at,
-    id: `run:${run.row.id}`,
+    id: run.id,
     seq: 0,
   });
   const holders = new Map<string, number>();
@@ -716,7 +716,7 @@ function runsOf(input: HistoryInput, recorded: ReadonlyMap<string, DispatchEvent
     return {
       at: run.at,
       handoff,
-      id: `run:${run.row.id}`,
+      id: run.id,
       kind: "run",
       recorded: handoff === undefined ? undefined : recorded.get(handoff.id)?.id,
       row: run.row,
@@ -729,7 +729,6 @@ function runsOf(input: HistoryInput, recorded: ReadonlyMap<string, DispatchEvent
     const event = recorded.get(handoff.id);
     entries.push({
       at: handoff.created_at,
-      author: handoff.author,
       handoff,
       id: `handoff:${handoff.id}`,
       kind: "handoff",

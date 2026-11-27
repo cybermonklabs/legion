@@ -8,8 +8,8 @@ import { issueStepsQuery } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import { pageFailedText, pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { standsFailed } from "../refs/reference-target";
-import { Time } from "../steps/StepsTab";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
+import { TimeValue } from "./history-entries";
 import { type LegionPlacePart, legionBlockOf, waitReadsDocuments } from "./legion-block";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -20,16 +20,6 @@ const LEGION = CONTROL_LABELS.legion;
 
 /** What stands between two parts of one line of the block. */
 const BETWEEN = " · ";
-
-/** An instant of the daemon's state, as the runs of Details write theirs (`Time` of the Steps
- *  tab): the date and the time of day, text the page did not write. */
-function LegionTime({ at }: { at: string }): ReactNode {
-  return (
-    <span {...authorText}>
-      <Time at={at} />
-    </span>
-  );
-}
 
 /** One part of the block's place and wait, in its words; each number, key and member of the wait
  *  is text the page did not write. "Waits on a person" links only where the block built a link
@@ -152,7 +142,7 @@ export function LegionBlock({ issueKey }: { issueKey: string }): ReactNode {
             <span className={pageMutedText} {...pageChrome}>
               {block.since.before ? LEGION.since_before : LEGION.since}
             </span>{" "}
-            <LegionTime at={block.since.at} />
+            <TimeValue at={block.since.at} />
           </p>
           {block.roles.length === 0 ? null : (
             <ul className={`flex min-w-0 flex-col text-sm ${pageInkText}`}>
@@ -189,7 +179,7 @@ export function LegionBlock({ issueKey }: { issueKey: string }): ReactNode {
               <span {...pageChrome}>
                 {block.read.failed ? LEGION.read_failed.before : LEGION.read_at}
               </span>{" "}
-              <LegionTime at={block.read.at} />
+              <TimeValue at={block.read.at} />
               {block.read.failed ? <span {...pageChrome}> {LEGION.read_failed.after}</span> : null}
             </p>
           )}

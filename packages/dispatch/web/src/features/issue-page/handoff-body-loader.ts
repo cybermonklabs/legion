@@ -1,5 +1,5 @@
 import { HANDOFF_BODIES_MAX_IDS } from "@legion/contracts";
-import { type QueryClient, skipToken } from "@tanstack/react-query";
+import { type QueryClient, queryOptions, skipToken } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
 import type { HandoffBodies, HandoffBody } from "../../api/types";
@@ -15,6 +15,16 @@ export function handoffBodyKey(id: string): readonly ["handoff-body", string] {
 
 /** A handoff's body as the page holds it: an entry of the bodies answer that holds a body. */
 export type HeldHandoffBody = HandoffBody & { readonly body: string };
+
+/** The query a handoff's body is held under for the page's life: no time limit, and no read of
+ *  its own, as only the loader sets its data (`HandoffBodyLoader`). */
+export function handoffBodyQuery(id: string) {
+  return queryOptions<HeldHandoffBody>({
+    gcTime: Number.POSITIVE_INFINITY,
+    queryFn: skipToken,
+    queryKey: handoffBodyKey(id),
+  });
+}
 
 /** What an entry reads of the read of its handoff's body. */
 export interface HandoffBodyState {
@@ -268,13 +278,9 @@ export class HandoffBodyLoader {
    *  read of its own before the data is set, since `setQueryData` alone would make it with the
    *  default 5 minutes, after which a body no entry draws would go. */
   #keep(body: HeldHandoffBody): void {
-    const queryKey = handoffBodyKey(body.id);
-    this.#client.getQueryCache().build(this.#client, {
-      gcTime: Number.POSITIVE_INFINITY,
-      queryFn: skipToken,
-      queryKey,
-    });
-    this.#client.setQueryData(queryKey, body);
+    const query = handoffBodyQuery(body.id);
+    this.#client.getQueryCache().build<HeldHandoffBody>(this.#client, query);
+    this.#client.setQueryData(query.queryKey, body);
   }
 
   /** Each entry's state, made again where it changed, and every listener told. */

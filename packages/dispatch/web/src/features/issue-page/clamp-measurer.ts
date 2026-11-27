@@ -12,7 +12,7 @@ const CUT_SLACK = 12;
 
 /** How far past the viewport, above it and below it, a row is near enough to be measured: one
  *  screen each way. */
-const NEAR_BAND = "100% 0px";
+export const NEAR_BAND = "100% 0px";
 
 /** How long one frame's slice of a batch reads for at most. One batch that read every near row
  *  of a large issue at once held the main thread for 414 ms; a batch of more rows goes on in the

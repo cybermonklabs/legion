@@ -418,6 +418,12 @@ export function getIssueDecisions(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/legion`: where Legion stands on the issue, the body the Legion
+ *  block's live view snapshots. */
+export function getLegionIssue(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/legion", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`

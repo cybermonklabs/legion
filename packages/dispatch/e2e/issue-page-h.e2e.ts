@@ -22,7 +22,13 @@ import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-mor
 import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { createPriority, getIssue, patchIssue, putProjectDefaultRepository } from "./api";
+import {
+  createPriority,
+  getIssue,
+  getLegionIssue,
+  patchIssue,
+  putProjectDefaultRepository,
+} from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -46,7 +52,6 @@ import {
   LEGION_PROJECT,
   legionBlock,
   legionLine,
-  legionRead,
   marginSection,
   marginSectionDisclosure,
   marginSlot,
@@ -1950,7 +1955,7 @@ test("the Details panel holds the Legion block with the phase, every role and th
     await openDetails(page);
     const block = legionBlock(page);
     await expect(block, `Details holds no block named ${LEGION.heading}`).toBeVisible();
-    const read = await legionRead(one);
+    const read = await getLegionIssue(one);
     if (read.state === null || read.read === null) throw new Error(`${one} read no Legion state`);
 
     // The phase and since when, every role with its word, the place and the read's time.
@@ -2251,7 +2256,7 @@ test("the Legion block names the place, the wait and a failed read in each state
       ),
       { timeout: 5_000 }
     );
-    const failed = await legionRead(one);
+    const failed = await getLegionIssue(one);
     await expect(readLine.locator("time")).toHaveAttribute("datetime", failed.read?.at ?? "");
     await expect(block, "the block draws the read's error text").not.toContainText("refused");
     await expect(legionLine(page, "phase")).toHaveText(

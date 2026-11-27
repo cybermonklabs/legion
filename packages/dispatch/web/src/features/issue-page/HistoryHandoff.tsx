@@ -1,5 +1,6 @@
-import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -21,15 +22,11 @@ import {
 } from "../../theme/classes";
 import { type HandoffField, handoffFields } from "../conversation/conversation-model";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { NEAR_BAND } from "./clamp-measurer";
 import { DetailsErrorLine, useRetryHandOff } from "./details-error";
-import { HandoffBodyLoader, type HeldHandoffBody, handoffBodyKey } from "./handoff-body-loader";
+import { HandoffBodyLoader, handoffBodyQuery } from "./handoff-body-loader";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, sentenceCase } from "./page-words";
-
-/** How far past the view of the box Details scrolls in, above it and below it, a handoff's entry
- *  is near enough for its body to be read: one screen each way, as `clamp-measurer.ts` measures
- *  the outline's rows. */
-const NEAR_BAND = "100% 0px";
 
 /** The box a list or an object at the top of a handoff's body is drawn in: at most 16 rem high,
  *  scrolling inside itself, so an entry's open height stays bounded, in the muted grey on the mark
@@ -220,7 +217,7 @@ class HandoffBand {
 
 /** What a handoff of the history reads of its body's read: the loader of the period Details is
  *  open, the last one's while it is shut, and the band its place is watched in. */
-export interface HandoffBodies {
+export interface HandoffBodyReads {
   readonly loader: HandoffBodyLoader | undefined;
   readonly watch: HandoffBand["watch"];
 }
@@ -236,7 +233,7 @@ export interface HandoffBodies {
 export function useHandoffBodies(
   issueKey: string,
   open: boolean
-): { readonly band: HandoffBand; readonly value: HandoffBodies } {
+): { readonly band: HandoffBand; readonly value: HandoffBodyReads } {
   const client = useQueryClient();
   const [held, setHeld] = useState(() => ({ band: new HandoffBand(), issue: issueKey }));
   let band = held.band;
@@ -276,7 +273,7 @@ export function HistoryHandoff({
   handoffId,
   onFold,
 }: {
-  bodies: HandoffBodies;
+  bodies: HandoffBodyReads;
   folded: boolean;
   handoffId: string;
   onFold: (folded: boolean) => void;
@@ -327,12 +324,7 @@ function HandoffFields({
   );
   const failures = read?.failures ?? 0;
   // The body the loader keeps for the page's life: this query never reads it itself.
-  const held = useQuery<HeldHandoffBody>({
-    gcTime: Number.POSITIVE_INFINITY,
-    queryFn: skipToken,
-    queryKey: handoffBodyKey(handoffId),
-    staleTime: Number.POSITIVE_INFINITY,
-  });
+  const held = useQuery({ ...handoffBodyQuery(handoffId), staleTime: Number.POSITIVE_INFINITY });
   const body = held.data;
   // What an answer brought is drawn: the loader's wait for the ids it left starts there.
   useEffect(() => {
@@ -468,7 +460,7 @@ function HandoffFields({
 /** A list or an object at the top of a handoff's body, which `handoffFields` gives as its JSON
  *  text: drawn by `HandoffData` in the box that bounds an entry's open height (`handoffBox`), and
  *  an empty one as None, which needs no box. */
-function TopLevelData({ text }: { text: string }): ReactNode {
+const TopLevelData = memo(function TopLevelData({ text }: { text: string }): ReactNode {
   // `handoffFields` gives a list or an object alone as JSON text.
   const value = JSON.parse(text) as object;
   if (Object.keys(value).length === 0) return <NoValue />;
@@ -477,10 +469,10 @@ function TopLevelData({ text }: { text: string }): ReactNode {
       <HandoffData value={value} />
     </div>
   );
-}
+});
 
 /** A value that holds nothing, read as every row of Details reads a property with no value. */
-function NoValue(): ReactNode {
+export function NoValue(): ReactNode {
   return (
     <span className={pageQuietText} {...pageChrome}>
       {CONTROL_LABELS.none}

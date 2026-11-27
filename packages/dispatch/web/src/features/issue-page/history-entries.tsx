@@ -28,7 +28,7 @@ import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { Identifier, Time } from "../steps/StepsTab";
 import type { StepRow } from "../steps/steps-model";
-import { type HandoffBodies, type HandoffFold, HistoryHandoff } from "./HistoryHandoff";
+import { type HandoffBodyReads, type HandoffFold, HistoryHandoff, NoValue } from "./HistoryHandoff";
 import {
   type HistoryBlock,
   type HistoryDay,
@@ -117,7 +117,7 @@ export function Entry({
    *  address names is (`Turn`). */
   addressed: string | undefined;
   /** The reads of the bodies of the history's handoffs (`useHandoffBodies`). */
-  bodies: HandoffBodies;
+  bodies: HandoffBodyReads;
   /** The id the entry is drawn under: its own, or a run's key (`runKeys`). */
   drawnId: string;
   entry: HistoryEntry;
@@ -317,7 +317,7 @@ function HandoffParts({
   pinned,
   recorded,
 }: {
-  bodies: HandoffBodies;
+  bodies: HandoffBodyReads;
   fold: HandoffFold;
   handoff: HandoffSummary;
   onPin: (eventId: number) => void;
@@ -355,17 +355,6 @@ function HandoffParts({
 /** The label of each field of a run, and how a run ended, in the page's words. */
 const STEP_FIELDS = CONTROL_LABELS.step_fields;
 const STEP_RESULTS = CONTROL_LABELS.step_results;
-
-/** A field the record does not hold - a merge GitHub made names no agent, a run that has not
- *  answered names no model, a run that has not ended no end - read as every row of Details reads
- *  a property with no value. */
-function NoField(): ReactNode {
-  return (
-    <span className={pageQuietText} {...pageChrome}>
-      {CONTROL_LABELS.none}
-    </span>
-  );
-}
 
 /** The colour each result Details has a word for is drawn in, as Details' other states are
  *  drawn: a run that runs in the in-progress blue, one that passed in the passed green, one that
@@ -405,7 +394,7 @@ function RunField({
  *  tab breaks it (`Identifier`), or None for one the record does not hold. */
 function IdentifierValue({ value }: { value: string }): ReactNode {
   return value === "" ? (
-    <NoField />
+    <NoValue />
   ) : (
     <span className="font-mono" {...authorText}>
       <Identifier value={value} />
@@ -415,9 +404,9 @@ function IdentifierValue({ value }: { value: string }): ReactNode {
 
 /** When a run started or ended, as the Steps tab writes it (`Time`), or None for a time the
  *  record does not hold. */
-function TimeValue({ at }: { at: string | null }): ReactNode {
+export function TimeValue({ at }: { at: string | null }): ReactNode {
   return at === null ? (
-    <NoField />
+    <NoValue />
   ) : (
     <span {...authorText}>
       <Time at={at} />
@@ -448,10 +437,10 @@ function RunFields({ row, task }: { row: StepRow; task: string }): ReactNode {
         </span>
       </RunField>
       <RunField field="role" label={STEP_FIELDS.role}>
-        {row.role === "" ? <NoField /> : <span {...authorText}>{row.role}</span>}
+        {row.role === "" ? <NoValue /> : <span {...authorText}>{row.role}</span>}
       </RunField>
       <RunField field="type" label={STEP_FIELDS.type}>
-        {row.type === "" ? <NoField /> : <span {...authorText}>{row.type}</span>}
+        {row.type === "" ? <NoValue /> : <span {...authorText}>{row.type}</span>}
       </RunField>
       <RunField field="agent" label={STEP_FIELDS.agent}>
         <IdentifierValue value={row.agent} />

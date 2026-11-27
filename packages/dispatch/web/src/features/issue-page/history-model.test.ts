@@ -1423,7 +1423,7 @@ describe("the timeline holds each run and the handoff it reports", () => {
     ).toEqual([`event:${events[1]?.id}`, "handoff:alone", `event:${events[0]?.id}`, "run:silent"]);
     const alone = entries.find((entry) => entry.kind === "handoff");
     expect(alone?.kind === "handoff" ? alone.at : undefined).toBe("2026-11-15T10:00:00Z");
-    expect(alone?.kind === "handoff" ? alone.author : undefined).toEqual(AGENT);
+    expect(alone?.kind === "handoff" ? alone.handoff.author : undefined).toEqual(AGENT);
   });
 
   // The event of a recorded handoff is no line of the history: its handoff is drawn from the

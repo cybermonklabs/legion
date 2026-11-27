@@ -1,12 +1,11 @@
 import type { Locator, Page } from "@playwright/test";
 
-import type { Actor, LegionIssueResponse } from "../web/src/api/types";
+import type { Actor } from "../web/src/api/types";
 import type { MarginSection } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { setLiveSessions } from "./agents";
 import {
-  baseUrl,
   claimIssue,
   createAsk,
   createComment,
@@ -26,7 +25,6 @@ import {
   requestApproval,
   reviewArtifact,
   syncArchitectureSource,
-  userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { type LegionStateSeed, seedLegionState } from "./legion-state-seed";
@@ -371,16 +369,6 @@ export function legionBlock(page: Page): Locator {
 /** One line of the Legion block: the phase and since when, the place and the wait, or the read. */
 export function legionLine(page: Page, line: "phase" | "place" | "read"): Locator {
   return legionBlock(page).locator(`[data-legion-line="${line}"]`);
-}
-
-/** `key`'s Legion read as alice reads it, `GET /api/v1/issues/{key}/legion`, from this process
- *  rather than the page, so a row reads the instants the block draws. */
-export async function legionRead(key: string): Promise<LegionIssueResponse> {
-  const response = await fetch(new URL(`/api/v1/issues/${key}/legion`, baseUrl), {
-    headers: await userHeaders("alice"),
-  });
-  if (!response.ok) throw new Error(`GET /api/v1/issues/${key}/legion answered ${response.status}`);
-  return (await response.json()) as LegionIssueResponse;
 }
 
 /** What the page's live socket carried of the `legion_issue` view (`routeLiveLegion`). */
