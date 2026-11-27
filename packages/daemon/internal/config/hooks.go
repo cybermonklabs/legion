@@ -216,7 +216,7 @@ func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 			return nil, fmt.Errorf("%s names %q, which is no move the daemon counts: a move is written \"<from>-<to>\", two workflow phases, which differ but in step-step", key, move)
 		}
 		if !plan.CanMoveBack(from, to) {
-			return nil, fmt.Errorf("%s names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, and every tester, reviewer and acceptance step comes after the implementer's", key, move)
+			return nil, fmt.Errorf("%s names %q, which no task's line makes as a move back, so the hook would never fire: retro and merging end every line, in that order; the moves back are read off each task of at most %d steps that Legion takes (plan.MostEnumeratedSteps), and a longer task makes no move back those do not", key, move, plan.MostEnumeratedSteps)
 		}
 	}
 	return moves, nil

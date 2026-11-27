@@ -278,10 +278,20 @@ func CanMoveBack(from, to phase.Phase) bool {
 }
 
 // movesBackPairs is MovesBackPairs, built at its first read.
-var movesBackPairs = sync.OnceValue(func() []string { return movesBackPairsOf(mostSteps) })
+var movesBackPairs = sync.OnceValue(func() []string { return movesBackPairsOf(MostEnumeratedSteps) })
 
-// mostSteps is the most steps of a task movesBackPairs reads.
-const mostSteps = 3
+// MostEnumeratedSteps is the most steps of a task MovesBackPairs reads (eachTakenTask), which with
+// no bound would read tasks of every length. Three is enough. A move back leaves one place of a
+// line for an earlier one, each place a step or Legion's retro or merge, which end every line.
+// Taking steps out of a task Supported and Validate take gives them no cause, as long as its first
+// implementer step stays and the rest keep their order: each of their causes is of a step the task
+// holds, but no implementer at all and a step that reads a pull request with no implementer step
+// before it (stepReasons). So the task's first implementer step and the steps a move leaves and
+// reaches, at most three steps, are a task they take whose line makes that move back.
+// TestMovesBackPairsLoseNoPairPastMostEnumeratedSteps reads one step more and finds no pair more;
+// at two steps the set lacks implementing-testing, implementing-reviewing and
+// implementing-accepting, which only a task that names the implementer at two steps makes.
+const MostEnumeratedSteps = 3
 
 // movesBackPairsOf is each pair of phase.MovePairs, in its order, whose to stands before its from
 // on the Line of some task of at most most steps that Supported and Validate take (eachTakenTask).
