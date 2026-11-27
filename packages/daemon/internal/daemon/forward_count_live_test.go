@@ -184,8 +184,11 @@ func (l *forwardCountLive) acme() {
 	l.note("ACME-3: the retro of a task that ran the implementer alone returned it for an unmet requirement")
 }
 
-// decoy drives the five issues of DECOY, each a merger's return whose readers confirm a block, and
-// writes each merger's transcript as C7's table names it.
+// decoy drives the five issues of DECOY, each a merger's return whose reason states a block, and
+// writes each merger's transcript as C7's table names it. The readings of control-readings.jsonl
+// do not all confirm that block: reader 1 reads DECOY-1 merge-blocked false, and DECOY-2 true
+// with no reading of reader 2, so what each return resolves to comes from its records and its
+// readings together, never from the reason alone.
 func (l *forwardCountLive) decoy() {
 	p := l.project(forwardCountDECOY, []forwardCountIssue{
 		{title: "One loses data on a merge", spec: "A merge keeps both sides.\n"},

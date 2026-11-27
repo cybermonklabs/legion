@@ -32,12 +32,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// TestRigDaemon is the label's own case of the skill-scenario rig's daemon
-// (packages/pi-legion/scripts/skill-scenarios/label-texts.sh build): the label's whole daemon on
-// the rig of an issue that closes when its checks pass (done_by_checks_rig_test.go), with a real
+// TestRigDaemon is the skill-scenario rig's daemon in a check of its own: the label's whole daemon
+// on the rig of an issue that closes when its checks pass (done_by_checks_rig_test.go), with a real
 // PostgreSQL, a real NATS, a Dispatch of its own and a GitHub stand-in of its own, over the fake
 // runtime. The issue's task runs the steps `implementer reviewer acceptance:owner`, and fake
-// claimants work each step. It reads no request. Each case runs alone by its name:
+// claimants work each step. It reads no request. CI's daemon-go job runs it with the rest of the
+// package; `label-texts.sh build` (packages/pi-legion/scripts/skill-scenarios/label-texts.sh) runs
+// no case of it. From packages/daemon it runs alone as
+// `go test ./internal/daemon -run '^TestRigDaemon$'`, and each case alone by its name:
 //
 //	-run '^TestRigDaemon$/^the_route$'
 //	-run '^TestRigDaemon$/^the_transfer$'

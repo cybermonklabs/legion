@@ -99,8 +99,11 @@ if [ -z "$url" ] && [ -f "$config" ]; then
 fi
 [ -n "$url" ] || unknown "no Dispatch is named: set DISPATCH_URL, or give $config a dispatch.serverUrl"
 token_file="$private/dispatch-token"
+# The file is opened inside the subshell, after its umask 077, so it is made mode 0600: a
+# redirection of the subshell itself would open it before the umask runs, with the caller's umask.
 (
   umask 077
+  exec >"$token_file"
   if [ -n "${DISPATCH_TOKEN_FILE:-}" ]; then
     cat -- "$DISPATCH_TOKEN_FILE"
   elif [ -n "${DISPATCH_TOKEN:-}" ]; then
@@ -108,7 +111,7 @@ token_file="$private/dispatch-token"
   elif [ -f "$config" ]; then
     jq -r '.dispatch.token // empty' "$config"
   fi
-) >"$token_file"
+)
 [ -s "$token_file" ] || unknown "no Dispatch credential is named: set DISPATCH_TOKEN or DISPATCH_TOKEN_FILE, or give $config a dispatch.token"
 
 # GitHub is read through `gh api`, which the count runs itself when the run names no token file.

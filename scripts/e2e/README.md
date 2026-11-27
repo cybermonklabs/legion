@@ -6436,7 +6436,7 @@ The program writes each line it judges, so the script's own echo of a line canno
 | project | what walks | what the summary must hold |
 | :--- | :--- | :--- |
 | `ACME` | a merger's return for its own defect, a merger's return for the failed required check `unit-limits`, and a retro's return on a task that ran the implementer alone | `ACME-1 against-R23`, `ACME-2 exempt:ci`, `ACME-3 goal-check`, `against R23: 1`, `verdict: fail` |
-| `DECOY` | five mergers' returns whose readings confirm a block: one with GitHub reading the head clear, one whose reason names a conflict against that same clear answer, one whose block GitHub answered outside `gh`, one with no answer at all, and one whose payload stands only in text the role wrote and in a delivery | `DECOY-1 against-R23`, `DECOY-2 against-R23`, `DECOY-3 mixed`, `DECOY-4 pending`, `DECOY-5 pending`, `against R23: 2`, `pending: 2`, `verdict: fail` |
+| `DECOY` | five mergers' returns: one with GitHub reading the head clear, one whose reason names a conflict against that same clear answer, one whose block GitHub answered outside `gh`, one with no answer at all, and one whose payload stands only in text the role wrote and in a delivery. Their readings ([`control-readings.jsonl`](../../packages/pi-legion/scripts/forward-count/control-readings.jsonl)): reader 1 alone reads DECOY-1, `merge-blocked: false`, and DECOY-2, `merge-blocked: true`; readers 1 and 2 both read DECOY-3, DECOY-4 and DECOY-5 `merge-blocked: true` | `DECOY-1 against-R23`, `DECOY-2 against-R23`, `DECOY-3 mixed`, `DECOY-4 pending`, `DECOY-5 pending`, `against R23: 2`, `pending: 2`, `verdict: fail` |
 | `CLEAR` | one issue whose retro and merge pass, with no return | `last steps passed: 1`, `verdict: pass` |
 
 Its four controls, each of which bites on its own line and leaves every other line standing:
@@ -6445,7 +6445,7 @@ Its four controls, each of which bites on its own line and leaves every other li
 | :--- | :--- | :--- |
 | `--control unread` | `resolve` is given no readings | `verdict: unknown` for `ACME` and for `DECOY`, and every return of theirs `pending` |
 | `--control no-failure` | the stand-in reports the check run `unit-limits` passing at ACME-2's head | `ACME-2 unexplained`, where it reads `exempt:ci` |
-| `--control blocked` | DECOY-2's timeline holds a removal from the merge queue at its head, after the transcript time of its `clear` answer | `DECOY-2 mixed`, where it reads `against-R23` |
+| `--control blocked` | DECOY-2's timeline holds a removal from the merge queue at its head, after the transcript time of its `clear` answer | `DECOY-2 pending`, where it reads `against-R23`: reader 1 leaves it out, and the readings hold no reader 2 of it |
 | `--control captured` | DECOY-4's transcript gains the result of a `curl` to the GraphQL route that reads its head `CONFLICTING` | `DECOY-4 mixed`, with `DECOY-5 pending` in the same run |
 
 What the run stands in for lies outside the records: GitHub is the driver's own stand-in (`forwardCountGitHub`, which Dispatch's App, the three daemons and the count all read), the Apps' tokens are placeholders, Envoy's listener is the package's `noticeListener`, and no agent runs: each claim is launched by the package's fake runtime and played by the driver.

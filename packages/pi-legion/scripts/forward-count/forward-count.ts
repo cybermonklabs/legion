@@ -120,6 +120,14 @@ export interface CheckRead {
   /** The name of the check run a CI job writes, null for every other check. */
   ciCheck: string | null;
   passStands: "yes" | "no" | "unknown";
+  /**
+   * Dispatch's own reason for that answer: `fail` where a fail stands at the head, `no_result`
+   * where no result does, `read_failed` or `repository_unreadable` where a read did not answer,
+   * and `pass_and_fail` where a pass and a fail both count there. A pass that does not stand is
+   * not a check that failed: only `fail` says a result failed, and every other reason says the
+   * head was not read to an answer.
+   */
+  passReason: string;
 }
 
 /** Everything one return's records are read from. A null read is a read that did not answer. */
@@ -161,7 +169,17 @@ export interface ReturnLine {
   reasonRead: boolean;
   /** The sources that hold the return itself: Dispatch's step records, the transcript store, or both. */
   heldBy: ("steps" | "transcript")[];
-  sources: { transcript: "read" | "unread"; timeline: "read" | "unread" };
+  /**
+   * Whether each source of the line answered. `results` is the issue's results read at the head
+   * and `coverage` its requirements read, which state `ci`, `failed-check` and `goal-check`: a
+   * read that did not answer leaves its cause unread, never absent.
+   */
+  sources: {
+    transcript: "read" | "unread";
+    timeline: "read" | "unread";
+    results: "read" | "unread";
+    coverage: "read" | "unread";
+  };
   causes: CauseRecord[];
   answers: Answer[];
 }
@@ -359,11 +377,39 @@ function commandOf(args: Record<string, unknown>): string {
   return strings.join(" ");
 }
 
-/** The words that open a shell command, so `gh` at a command's start is found and `… | gh` too. */
-const COMMAND_START =
-  /(?:^|[;&|(]|&&|\|\||\$\(|\n)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;&|()]+)/g;
+/**
+ * The words of one simple command: its program, with any leading `VAR=value` assignments taken
+ * off. A command that holds a shell operator outside its quotes is no simple command, and this
+ * answers null for it. GitHub's answer is known by its channel, so a command that runs a second
+ * program — `echo '<payload>'; gh pr view 41` — must not be read as GitHub's: the payload in it
+ * is text the role wrote.
+ */
+function simpleCommand(command: string): string[] | null {
+  let quote = "";
+  for (let at = 0; at < command.length; at++) {
+    const letter = command[at] ?? "";
+    if (quote !== "") {
+      if (letter === quote) quote = "";
+      continue;
+    }
+    if (letter === "'" || letter === '"') {
+      quote = letter;
+      continue;
+    }
+    if (letter === "\\") {
+      at++;
+      continue;
+    }
+    if (";&|()`\n".includes(letter)) return null;
+    if (letter === "$" && command[at + 1] === "(") return null;
+  }
+  if (quote !== "") return null;
+  const words = command.trim().split(/\s+/);
+  while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "")) words.shift();
+  return words.length === 0 ? null : words;
+}
 
-/** Whether a call is a GitHub read: a `gh` command, or a request to a host of GitHub's API. */
+/** Whether a call is a GitHub read: one simple `gh` command, or one request to a host of GitHub's API. */
 function githubRead(
   entry: TranscriptEntry,
   apiHosts: string[]
@@ -372,25 +418,24 @@ function githubRead(
   if (command === "") return null;
   const tool = entry.tool ?? "";
   if (tool === "envoy_publish" || tool === "envoy_send" || tool === "legion") return null;
-  for (const match of command.matchAll(COMMAND_START)) {
-    const program = (match[1] ?? "").split("/").pop() ?? "";
-    if (program !== "gh") continue;
-    const after = command.slice((match.index ?? 0) + match[0].length);
-    const words = after.trim().split(/\s+/);
-    if (words[0] === "api") return { place: "gh api", merge: null };
-    if (words[0] === "pr" && words[1] === "merge") {
+  const words = simpleCommand(command);
+  if (words === null) return null;
+  const program = (words[0] ?? "").split("/").pop() ?? "";
+  if (program === "gh") {
+    const after = words.slice(1);
+    if (after[0] === "api") return { place: "gh api", merge: null };
+    if (after[0] === "pr" && after[1] === "merge") {
       const head = /--match-head-commit[= ]+([0-9a-f]{40})/.exec(command)?.[1] ?? null;
       return { place: "gh pr merge --match-head-commit", merge: head };
     }
-    if (words[0] === "pr" && words[1] !== undefined)
-      return { place: `gh ${words[0]} ${words[1]}`, merge: null };
+    if (after[0] === "pr" && after[1] !== undefined)
+      return { place: `gh ${after[0]} ${after[1]}`, merge: null };
     return { place: "gh", merge: null };
   }
   for (const url of command.matchAll(/https?:\/\/([A-Za-z0-9.:-]+)(\/[^\s"'\\]*)?/g)) {
     const host = (url[1] ?? "").toLowerCase();
     if (!apiHosts.includes(host)) continue;
-    const first = command.trim().split(/\s+/)[0] ?? "";
-    return { place: `${first.split("/").pop() ?? first} ${url[0]}`, merge: null };
+    return { place: `${program} ${url[0]}`, merge: null };
   }
   return null;
 }
@@ -421,6 +466,33 @@ export function answerOfPayload(text: string): { value: AnswerValue; head: strin
   return { value: clear ? "clear" : "indeterminate", head };
 }
 
+/**
+ * The words GitHub itself writes when it refuses a merge for the head's own state. A `gh pr
+ * merge` that failed for anything else — `gh: command not found`, a shim's refusal, an
+ * authentication error, a timeout — says nothing about the merge, so it is no answer about the
+ * head: the exit alone would make every failed call a block.
+ */
+const MERGE_REFUSAL_WORDS = [
+  "not mergeable",
+  "merge conflict",
+  "conflicts with the base branch",
+  "head branch was modified",
+  "base branch was modified",
+  "required status check",
+  "unstable status",
+  "approving review is required",
+  "merge commit cannot be created",
+  "protected branch",
+  "merge queue",
+  "changes requested",
+];
+
+/** Whether a failed `gh pr merge` says GitHub refused the merge, in GitHub's own words. */
+function refusedByGitHub(text: string): boolean {
+  const lower = text.toLowerCase();
+  return MERGE_REFUSAL_WORDS.some((word) => lower.includes(word));
+}
+
 /** Whether a call is the role's own `request_backward_move`, the cut every answer stands before. */
 function backwardMoveCall(entry: TranscriptEntry): boolean {
   if (entry.kind !== "call") return false;
@@ -431,10 +503,11 @@ function backwardMoveCall(entry: TranscriptEntry): boolean {
 /**
  * The answers a session holds about the merge, in transcript order: the result of each GitHub read
  * that stands before the role's own `request_backward_move` call. A result that holds no payload
- * about the merge gives no answer, and a refused `gh pr merge` gives a `blocked` answer about the
- * head its own `--match-head-commit` names, which the transcript joins to the result by the call's
- * id. Nothing else is an answer: no assistant message, no tool call's arguments, no delivery, and
- * no result of a command that is not a GitHub read.
+ * about the merge gives no answer, and a `gh pr merge` that GitHub refused in its own words
+ * (MERGE_REFUSAL_WORDS) gives a `blocked` answer about the head its own `--match-head-commit`
+ * names, which the transcript joins to the result by the call's id. Nothing else is an answer: no
+ * assistant message, no tool call's arguments, no delivery, no result of a command that is not a
+ * GitHub read, and no failure of a `gh pr merge` that says nothing about the head.
  */
 export function transcriptAnswers(
   entries: TranscriptEntry[],
@@ -452,7 +525,7 @@ export function transcriptAnswers(
     if (call === undefined) continue;
     const read = githubRead(call, options.apiHosts);
     if (read === null) continue;
-    if (read.merge !== null && entry.isError === true) {
+    if (read.merge !== null && entry.isError === true && refusedByGitHub(entry.text ?? "")) {
       answers.push({
         source: "transcript",
         place: read.place,
@@ -489,6 +562,14 @@ export interface ReasonFacts {
   ciJobNames: string[];
   /** The block ids of the issue's spec's requirements. */
   requirementIds: string[];
+  /**
+   * Whether the results read answered, and whether the coverage read did. Where one did not, its
+   * ids are empty for a reason other than a reason that names none, so the cause it would state
+   * is read from the reason's own words instead, and its record is `unread`. Without this a
+   * failed read drops the cause, and the return resolves on evidence nothing was read for.
+   */
+  checksRead: boolean;
+  coverageRead: boolean;
 }
 
 /** The words of `merge-blocked`, matched at the start of a word, in any case. */
@@ -504,6 +585,15 @@ const BLOCK_WORDS = [
 
 /** The words of `ci`, matched anywhere, in any case. */
 const CI_WORDS = ["failed_checks", "merge_group", "required check"];
+
+/**
+ * The words by which a reason names a check of the issue's Verification document, and the words
+ * by which it names an unmet requirement of its spec. They are read where the results or the
+ * coverage did not answer, so that the cause is stated with an `unread` record rather than left
+ * out of the line.
+ */
+const CHECK_WORDS = ["check", "verification"];
+const GOAL_WORDS = ["requirement", "unmet", "the goal"];
 
 /** The words by which a reason names a person, and the words by which it names an asking. */
 const PERSON_WORDS = ["person", "owner", "human", "operator"];
@@ -545,6 +635,12 @@ function namesWord(text: string, name: string): boolean {
  * The causes a reason states, in the order of CAUSES. Each rule stands by itself, so one reason
  * can state several causes. No rule says what a reason does not hold, and nothing here decides
  * that the role's own defect caused the return. A reason that was not read states nothing.
+ *
+ * Where the results or the coverage did not answer, the ids that would be matched are missing for
+ * a reason of the read, not of the reason, so a retro's `failed-check` and `goal-check` are
+ * stated from the reason's own words instead. The record of each is then `unread`, which holds
+ * the return pending; without this a failed read would take the cause off the line and let the
+ * return resolve as though nothing had been claimed.
  */
 export function statedCauses(facts: ReasonFacts): StatedCause[] {
   const reason = facts.reason;
@@ -557,11 +653,15 @@ export function statedCauses(facts: ReasonFacts): StatedCause[] {
     CI_WORDS.some((word) => lower.includes(word.toLowerCase())) ||
     facts.ciJobNames.some((name) => namesWord(reason, name));
   if (ci) stated.push("ci");
-  if (facts.kind === "retro" && facts.checkIds.some((id) => namesWord(reason, id)))
-    stated.push("failed-check");
+  const namesCheck = facts.checksRead
+    ? facts.checkIds.some((id) => namesWord(reason, id))
+    : CHECK_WORDS.some((word) => lower.includes(word));
+  if (facts.kind === "retro" && namesCheck) stated.push("failed-check");
   if (NEWS.test(reason)) stated.push("news");
-  if (facts.kind === "retro" && facts.requirementIds.some((id) => namesWord(reason, id)))
-    stated.push("goal-check");
+  const namesGoal = facts.coverageRead
+    ? facts.requirementIds.some((id) => namesWord(reason, id))
+    : GOAL_WORDS.some((word) => lower.includes(word));
+  if (facts.kind === "retro" && namesGoal) stated.push("goal-check");
   if (namesPersonRequest(reason)) stated.push("person-request");
   return CAUSES.filter((cause) => stated.includes(cause));
 }
@@ -582,6 +682,8 @@ export function causeRecords(facts: ReturnFacts): CauseRecord[] {
       check.ciCheck === null ? [] : [check.ciCheck]
     ),
     requirementIds: facts.requirementIds ?? [],
+    checksRead: facts.checks !== null,
+    coverageRead: facts.requirementIds !== null,
   });
   const records: CauseRecord[] = [];
   for (const cause of stated) {
@@ -672,25 +774,38 @@ function authorKindOf(kind: string): PersonRequestRead["authorKind"] {
   return null;
 }
 
-/** The state of the record of a cause that is not `merge-blocked`. */
+/**
+ * The state of the record of a cause that is not `merge-blocked`.
+ *
+ * A check establishes `ci` or `failed-check` only where Dispatch says a fail stands at the head
+ * (`passStands` `no` for the reason `fail`). Every other answer — `no` for `no_result`, and
+ * `unknown` for `read_failed`, `repository_unreadable` or `pass_and_fail` — is a head that was
+ * not read to an answer, which gives `unread`: a pass that does not stand is not a check that
+ * failed, and a return must not be exempted on a read that found nothing.
+ */
 function otherRecord(
   cause: Exclude<StatedCause, "merge-blocked" | "person-request">,
   facts: ReturnFacts
 ): RecordState {
   if (facts.head === null || facts.head === "") return "unread";
   const reason = facts.reason ?? "";
+  /** The state a set of checks gives: a fail establishes, an unanswered read is unread. */
+  const stateOf = (checks: CheckRead[]): RecordState => {
+    if (checks.some((check) => check.passStands === "no" && check.passReason === "fail"))
+      return "established";
+    return checks.some((check) => check.passStands !== "yes") ? "unread" : "absent";
+  };
   switch (cause) {
     case "ci": {
       if (facts.checks === null) return "unread";
       const ciChecks = facts.checks.filter(
         (check) => check.ciCheck !== null && check.ciCheck !== ""
       );
-      return ciChecks.some((check) => check.passStands !== "yes") ? "established" : "absent";
+      return stateOf(ciChecks);
     }
     case "failed-check": {
       if (facts.checks === null) return "unread";
-      const named = facts.checks.filter((check) => namesWord(reason, check.blockId));
-      return named.some((check) => check.passStands !== "yes") ? "established" : "absent";
+      return stateOf(facts.checks.filter((check) => namesWord(reason, check.blockId)));
     }
     case "news": {
       if (facts.approvals === null) return "unread";
@@ -704,6 +819,9 @@ function otherRecord(
       return inRun ? "established" : "absent";
     }
     case "goal-check": {
+      // The coverage read names the requirements; where it did not answer, the cause stands on
+      // the reason's words alone and no record decides it.
+      if (facts.requirementIds === null) return "unread";
       const reviewed = facts.taskSteps.some(
         (step) => step.role === "reviewer" || step.role === "acceptance"
       );
@@ -1126,11 +1244,37 @@ function text(row: Record<string, unknown>, key: string): string {
       : String(value);
 }
 
+/**
+ * One day, as the SQL may hold it. The window's days reach the store's query as text, so each is
+ * checked here rather than in the shell alone: a day that is not a day reaches no query at all.
+ */
+function sqlDay(day: string, what: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new ReadFailed(`${what} is no day: ${day}`);
+  return day;
+}
+
+/**
+ * One session id, as the SQL may hold it. A session id of the daemon is letters, digits and
+ * hyphens; anything else is refused rather than quoted, since a backslash escapes a quote in a
+ * ClickHouse string and a dropped quote would not be enough.
+ */
+function sqlSession(session: string): string {
+  if (!/^[0-9A-Za-z-]+$/.test(session))
+    throw new ReadFailed(`the store holds no session of this id: ${session.slice(0, 80)}`);
+  return `'${session}'`;
+}
+
+/** The day after a day, so a window that ends on `to` holds every call of that day. */
+function dayAfter(day: string): string {
+  const at = Date.parse(`${sqlDay(day, "the window's last day")}T00:00:00Z`) + 86_400_000;
+  return new Date(at).toISOString().slice(0, 10);
+}
+
 /** The entries of each session the store holds, built from its calls and their results. */
 function storeSessions(sessions: string[], from: string): Map<string, TranscriptEntry[]> {
   const held = new Map<string, TranscriptEntry[]>();
   if (sessions.length === 0) return held;
-  const list = sessions.map((session) => `'${session.replace(/'/g, "")}'`).join(",");
+  const list = sessions.map(sqlSession).join(",");
   const rows = tqSql(
     `SELECT c.session_id AS session_id, c.call_id AS call_id, c.tool AS tool,
             toString(c.started_at) AS started_at, toString(c.ended_at) AS ended_at,
@@ -1139,7 +1283,7 @@ function storeSessions(sessions: string[], from: string): Map<string, Transcript
      LEFT JOIN (SELECT session_id, host, tool_call_id, any(text) AS text FROM messages
                 WHERE kind = 'tool_result' AND ts >= '${from}' GROUP BY session_id, host, tool_call_id) m
        ON m.session_id = c.session_id AND m.host = c.host AND m.tool_call_id = c.call_id
-     WHERE c.session_id IN (${list}) AND c.started_at >= '${from}'
+     WHERE c.session_id IN (${list}) AND c.started_at >= '${sqlDay(from, "the window's first day")}'
      ORDER BY c.session_id, c.started_at`
   );
   for (const row of rows) {
@@ -1171,27 +1315,37 @@ function storeSessions(sessions: string[], from: string): Map<string, Transcript
   return held;
 }
 
-/** Every `request_backward_move` call the store holds in the window, by session and time. */
+/**
+ * Every `request_backward_move` call the store holds in the window, by session and time. The
+ * window runs to the end of `to`, the day the batch names, as every other read of the window
+ * does: a bound at that day's midnight would drop its whole last day. A call the tool refused is
+ * no return — the phase did not move — so a result marked an error is left out here, where the
+ * count can still tell the two apart.
+ */
 function storeBackwardMoves(
   from: string,
   to: string
 ): { session: string; at: string; issue: string | null }[] {
   const rows = tqSql(
-    `SELECT c.session_id AS session_id, toString(c.started_at) AS started_at, c.command AS command
+    `SELECT c.session_id AS session_id, toString(c.started_at) AS started_at, c.command AS command,
+            c.is_error AS is_error
      FROM calls c
      WHERE c.tool = 'legion' AND c.command ILIKE '%request_backward_move%'
-       AND c.started_at >= '${from}' AND c.started_at < '${to}'
+       AND c.started_at >= '${sqlDay(from, "the window's first day")}'
+       AND c.started_at < '${dayAfter(to)}'
      ORDER BY c.started_at`
   );
-  return rows.map((row) => {
-    const command = text(row, "command");
-    const issue = /"issue"\s*:\s*"([A-Z][A-Z0-9]*-\d+)"/.exec(command)?.[1] ?? null;
-    return {
-      session: text(row, "session_id"),
-      at: `${text(row, "started_at").replace(" ", "T")}Z`,
-      issue,
-    };
-  });
+  return rows
+    .filter((row) => !(row.is_error === true || row.is_error === 1 || row.is_error === "1"))
+    .map((row) => {
+      const command = text(row, "command");
+      const issue = /"issue"\s*:\s*"([A-Z][A-Z0-9]*-\d+)"/.exec(command)?.[1] ?? null;
+      return {
+        session: text(row, "session_id"),
+        at: `${text(row, "started_at").replace(" ", "T")}Z`,
+        issue,
+      };
+    });
 }
 
 /** The entries of each session file of a directory, in the form the store imports. */
@@ -1216,7 +1370,7 @@ interface StepsAnswer {
   tasks: { task: string; steps: StepRecord[] }[];
 }
 
-interface StepRecord {
+export interface StepRecord {
   id: string;
   task: string;
   step: number;
@@ -1247,7 +1401,7 @@ interface ResultsRead {
   checks: {
     block_id: string;
     ci_check?: string;
-    pass_stands: { answer: string };
+    pass_stands: { answer: string; reason?: string };
   }[];
 }
 
@@ -1344,6 +1498,10 @@ async function collect(args: CollectArgs): Promise<void> {
     process.stderr.write(`${project}: ${issues.length} issues updated since ${args.from}\n`);
     const newestStep = new Map<string, { ended: number; passed: boolean }>();
     const found: { issue: string; record: StepRecord; task: string; steps: StepRecord[] }[] = [];
+    // Every retro and merge step record of the project, by the session that ran it, whatever its
+    // result and whatever day it ended: `addStoreOnly` files a `request_backward_move` the store
+    // holds only where one of these says that session ran a retro or a merge.
+    const phaseSteps = new Map<string, { issue: string; task: string; record: StepRecord }>();
     const reads = await mapLimit(issues, 8, async (issue) => {
       try {
         return await dispatch.get<StepsAnswer>(`/api/v1/issues/${issue.key}/steps`);
@@ -1357,6 +1515,8 @@ async function collect(args: CollectArgs): Promise<void> {
       for (const task of read.tasks) {
         for (const record of task.steps) {
           if (record.kind !== "retro" && record.kind !== "merge") continue;
+          if (record.session !== "")
+            phaseSteps.set(record.session, { issue: read.issue, task: task.task, record });
           const ended = timeOf(record.ended_at);
           if (ended === null || ended < windowFrom || ended >= windowTo) continue;
           const previous = newestStep.get(read.issue);
@@ -1402,7 +1562,14 @@ async function collect(args: CollectArgs): Promise<void> {
 
     if (args.transcripts.kind === "tq") {
       try {
-        addStoreOnly(lines, found, project, storeBackwardMoves(args.from, args.to), args);
+        addStoreOnly(
+          lines,
+          found,
+          project,
+          storeBackwardMoves(args.from, args.to),
+          args,
+          phaseSteps
+        );
       } catch (error) {
         process.stderr.write(
           `${project}: the store's backward moves did not answer: ${messageOf(error)}\n`
@@ -1417,6 +1584,12 @@ async function collect(args: CollectArgs): Promise<void> {
     lines.map((line) => `${JSON.stringify(line)}\n`).join(""),
     { mode: 0o644 }
   );
+  // The planted returns the readers read first, with the right reading and its note taken out.
+  // The key stays in the program's own file, which `resolve` grades the readings against.
+  const planted = plantedLines();
+  writeFileSync(path.join(args.out, "planted-for-readers.jsonl"), plantedForReaders(planted), {
+    mode: 0o644,
+  });
   const batch: Batch = {
     from: args.from,
     to: args.to,
@@ -1432,7 +1605,8 @@ async function collect(args: CollectArgs): Promise<void> {
     mode: 0o644,
   });
   process.stdout.write(
-    `collected ${lines.length} returns of ${args.projects.join(", ")} into ${args.out}; GitHub calls: ${github.madeCalls()}\n`
+    `collected ${lines.length} returns of ${args.projects.join(", ")} into ${args.out}; ` +
+      `${planted.length} planted returns for the readers; GitHub calls: ${github.madeCalls()}\n`
   );
 }
 
@@ -1485,13 +1659,17 @@ async function lineOf(input: {
 
   // With `--reasons none` the program reads no reason at all, so the return rests on no claim
   // about any cause and resolves `pending`, whatever the readings say: that is what the first
-  // control of `v-forward-count` asks of this run.
+  // control of `v-forward-count` asks of this run. A read that answered no message of the move
+  // is no reason read either: the reason is what the causes are read from, and a return with
+  // none rests on nothing, so `reasonRead` follows the reason itself, never the call's success.
   let reason: string | null = null;
   let reasonRead = false;
   if (args.reasons === "all") {
     try {
       reason = await reasonOf(dispatch, row.issue, record, at);
-      reasonRead = true;
+      reasonRead = reason !== null;
+      if (reason === null)
+        process.stderr.write(`${row.issue}: no message of the move stands near ${at}\n`);
     } catch (error) {
       process.stderr.write(`${row.issue}: the messages did not answer: ${messageOf(error)}\n`);
       reasonRead = false;
@@ -1515,6 +1693,7 @@ async function lineOf(input: {
           : check.pass_stands.answer === "no"
             ? "no"
             : "unknown") as CheckRead["passStands"],
+        passReason: check.pass_stands.reason ?? "",
       }));
     } catch (error) {
       process.stderr.write(`${row.issue}: the results did not answer: ${messageOf(error)}\n`);
@@ -1549,6 +1728,8 @@ async function lineOf(input: {
     checkIds: (checks ?? []).map((check) => check.blockId),
     ciJobNames: (checks ?? []).flatMap((check) => (check.ciCheck === null ? [] : [check.ciCheck])),
     requirementIds: requirementIds ?? [],
+    checksRead: checks !== null,
+    coverageRead: requirementIds !== null,
   });
   let timeline: MergeBlockedRead["timeline"] = { state: "read", items: [] };
   if (stated.includes("merge-blocked")) {
@@ -1590,7 +1771,12 @@ async function lineOf(input: {
     reason,
     reasonRead,
     heldBy: ["steps"],
-    sources: { transcript: transcriptRead.state, timeline: timeline.state },
+    sources: {
+      transcript: transcriptRead.state,
+      timeline: timeline.state,
+      results: checks === null ? "unread" : "read",
+      coverage: requirementIds === null ? "unread" : "read",
+    },
     causes: causeRecords(facts),
     answers: [...transcriptRead.answers, ...timeline.items],
   };
@@ -1678,11 +1864,16 @@ async function headOf(
   }
 }
 
-/** The reason of a return: the daemon's own message of the move, as backwardMoveReason writes it. */
-async function reasonOf(
-  dispatch: Dispatch,
+/**
+ * The reason of a return: the daemon's own message of the move, as backwardMoveReason writes it.
+ * It answers null where no message of this role's move stands in the window around the return,
+ * and the line that reads it holds `reasonRead` to that answer: a reason nothing answered is a
+ * reason not read, and the return rests on no claim at all.
+ */
+export async function reasonOf(
+  dispatch: { get: <T>(path: string) => Promise<T> },
   issue: string,
-  record: StepRecord,
+  record: { role: string },
   at: string
 ): Promise<string | null> {
   const messages = await dispatch.get<MessageRead[]>(`/api/v1/issues/${issue}/messages`);
@@ -1762,14 +1953,25 @@ async function timelineOf(
   }
 }
 
-/** Each `request_backward_move` the store holds that Dispatch's step records do not: a return of
- * that source alone, listed with it. */
-function addStoreOnly(
+/**
+ * Each `request_backward_move` the store holds that Dispatch's step records do not: a return of
+ * that source alone, listed with it.
+ *
+ * It files a call only where Dispatch's step records say that session ran a retro or a merge of
+ * this project. R23 is about those two steps, and nothing else returns a task the same way: an
+ * architect's move at its acceptance is a return the spec keeps, and its call is the one a
+ * `request_backward_move` names an issue in (`tools.test.ts`), so filing every call that names an
+ * issue would file every architect's move as a retro of unknown role that nothing can resolve,
+ * and no window holding one could ever read `pass`. The step record also gives the line its
+ * issue, its task, its kind and its role, so a store-only return is named as the step names it.
+ */
+export function addStoreOnly(
   lines: ReturnLine[],
   found: { issue: string; record: StepRecord; task: string; steps: StepRecord[] }[],
   project: string,
   calls: { session: string; at: string; issue: string | null }[],
-  args: CollectArgs
+  args: { from: string; to: string },
+  phaseSteps: Map<string, { issue: string; task: string; record: StepRecord }>
 ): void {
   const byId = new Map(lines.map((line) => [line.id, line]));
   const collected = new Set(found.map((row) => row.record.session));
@@ -1783,19 +1985,22 @@ function addStoreOnly(
       }
       continue;
     }
+    const step = phaseSteps.get(call.session);
+    if (step === undefined) continue;
     const when = timeOf(call.at);
     if (when === null || when < windowFrom || when >= windowTo) continue;
-    if (call.issue === null || !call.issue.startsWith(`${project}-`)) continue;
-    const id = `${call.issue}/unknown/unknown/1`;
+    if (!step.issue.startsWith(`${project}-`)) continue;
+    const kind = step.record.kind === "retro" ? "retro" : "merge";
+    const id = `${step.issue}/${step.task}/${kind}/${step.record.attempt}`;
     if (byId.has(id)) continue;
     const line: ReturnLine = {
       id,
       project,
-      issue: call.issue,
-      task: "unknown",
-      kind: "retro",
-      attempt: 1,
-      role: "unknown",
+      issue: step.issue,
+      task: step.task,
+      kind,
+      attempt: step.record.attempt,
+      role: step.record.role,
       session: call.session,
       at: call.at,
       day: call.at.slice(0, 10),
@@ -1803,13 +2008,98 @@ function addStoreOnly(
       reason: null,
       reasonRead: false,
       heldBy: ["transcript"],
-      sources: { transcript: "read", timeline: "unread" },
+      sources: {
+        transcript: "read",
+        timeline: "unread",
+        results: "unread",
+        coverage: "unread",
+      },
       causes: [],
       answers: [],
     };
     byId.set(id, line);
     lines.push(line);
   }
+}
+
+// ---------------------------------------------------------------------------
+// The planted returns, and the readings of them
+// ---------------------------------------------------------------------------
+
+/** One planted return: a line of the same shape as a real one, with the reading it must get. */
+export interface PlantedLine extends ReturnLine {
+  /** The reading of this return that is right, which a reader must not be given. */
+  true: { own: boolean; confirmed: Record<string, boolean> };
+  /** Why that reading is right, for the person who reads the grades, not for the reader. */
+  note: string;
+}
+
+/** The file of the planted returns, which stands beside this program. */
+const PLANTED_FILE = path.join(import.meta.dir, "planted.jsonl");
+
+/** Every planted return, or [] where the file is missing. */
+function plantedLines(): PlantedLine[] {
+  if (!existsSync(PLANTED_FILE)) return [];
+  return readFileSync(PLANTED_FILE, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as PlantedLine);
+}
+
+/**
+ * The planted returns as a reader may see them: the right reading and its note taken out, and
+ * each source a bare state, as a real line writes it. A reader given the answers grades nothing,
+ * and a reader that can tell a planted line from a real one by its shape reads it as a test.
+ */
+export function plantedForReaders(planted: PlantedLine[]): string {
+  return planted
+    .map((line) => {
+      const { true: _answer, note: _note, ...rest } = line;
+      const state = (source: unknown): "read" | "unread" =>
+        isObject(source) && source.state === "unread" ? "unread" : "read";
+      const sources = rest.sources as unknown as Record<string, unknown>;
+      return `${JSON.stringify({
+        ...rest,
+        sources: {
+          transcript: state(sources.transcript),
+          timeline: state(sources.timeline),
+          results: state(sources.results),
+          coverage: state(sources.coverage),
+        },
+      })}\n`;
+    })
+    .join("");
+}
+
+/**
+ * Each reading of a planted return that is wrong, by its reader. The planted returns are the
+ * readers' own control: a reader that reads one of them wrongly has shown that it reads the rule
+ * wrongly, so `resolve` refuses its readings rather than counting them. A reader that read no
+ * planted return is not refused here; the run that gave it none is.
+ */
+export function plantedFaults(planted: PlantedLine[], readings: Reading[]): string[] {
+  const faults: string[] = [];
+  for (const line of planted) {
+    for (const reading of readings.filter((one) => one.return === line.id)) {
+      const causes = new Set([
+        ...Object.keys(line.true.confirmed),
+        ...Object.keys(reading.confirmed),
+      ]);
+      const wrong: string[] = [];
+      if (reading.own !== line.true.own)
+        wrong.push(`own ${reading.own}, where the return is ${line.true.own}`);
+      for (const cause of causes) {
+        const read = reading.confirmed[cause] === true;
+        const right = line.true.confirmed[cause] === true;
+        if (read !== right) wrong.push(`${cause} ${read}, where it is ${right}`);
+      }
+      if (wrong.length > 0)
+        faults.push(
+          `reader ${reading.reader} (${reading.model}) read the planted return ${line.id} wrongly: ${wrong.join("; ")}. ${line.note}`
+        );
+    }
+  }
+  return faults;
 }
 
 // ---------------------------------------------------------------------------
@@ -1830,7 +2120,10 @@ function resolve(out: string, readingsFile: string): void {
           .filter((line) => line.trim() !== "")
           .map((line) => JSON.parse(line) as Reading);
 
-  const faults = readerTwoFaults(returns, readings);
+  const faults = [
+    ...plantedFaults(plantedLines(), readings),
+    ...readerTwoFaults(returns, readings),
+  ];
   if (faults.length > 0) {
     for (const fault of faults) process.stderr.write(`readings refused: ${fault}\n`);
     process.exit(1);

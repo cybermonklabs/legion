@@ -7,10 +7,10 @@
  *   world.json      ForwardWorldFile: `daemon: "label"`, the role and the moment of the agent, the
  *                   issue and its title, the task's steps, the repository and pull request the
  *                   label's test builds, `passes` (each check of verification.md that the label's
- *                   test records a pass of at the head it builds), the rubric's item a message is
- *                   read by, and the parts of a world that has them: the review thread of W4, the
- *                   defects the fake implementer reports in W5 (`reported`), the children of W6, the person's
- *                   comments of W6 and W7
+ *                   test records a pass of at the head it builds, at least one), the rubric's item
+ *                   a message is read by, and the parts of a world that has them: the review
+ *                   thread of W4, the defects the fake implementer reports in W5 (`reported`), the
+ *                   children of W6, the person's comments of W6 and W7
  *   spec.md         the issue's spec
  *   verification.md the issue's Verification document
  *   fixtures.json   the gh stand-in's routes (gh-standin.ts); a route may hold `{{HEAD}}`
@@ -42,7 +42,11 @@ export const ForwardWorldFile = z.strictObject({
   repository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
   defaultBranch: nonEmpty,
   pull: z.number().int().positive(),
-  passes: z.array(nonEmpty),
+  // At least one: forwardWorldProblems refuses a before_merge check of verification.md that passes
+  // does not name, so a world that names none holds no before_merge check, and the label's test
+  // (passAtHead in packages/daemon/internal/daemon/rig_daemon_pane_test.go) would record no pass
+  // and launch its pane past a gate that holds nothing.
+  passes: z.array(nonEmpty).min(1),
   item: z.union([z.literal(1), z.literal(2)]),
   thread: z
     .strictObject({ id: nonEmpty, comment: z.number().int().positive(), url: nonEmpty })

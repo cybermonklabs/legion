@@ -3904,24 +3904,62 @@ function agentParts(runDir: string): AgentPart[] {
   );
 }
 
+/** The tools whose call sends a message (C5's list) that a person or another role reads. */
+const MESSAGE_TOOLS = [
+  "envoy_publish",
+  "envoy_send",
+  "dispatch_comment",
+  "dispatch_message",
+  "dispatch_ask",
+];
+/** A `write` call's path that names a message tool's device, in any case: an Oh My Pi pane calls
+ * the Envoy tools so, with the tool's arguments as JSON text in the call's `content`. */
+const MESSAGE_DEVICE = new RegExp(`^xd://(${MESSAGE_TOOLS.join("|")})$`, "i");
+/** Eval code that calls a message tool through the tool bridge, as
+ * `await tool.envoy_publish({…})` does. */
+const MESSAGE_BRIDGE = new RegExp(String.raw`\btool\.(${MESSAGE_TOOLS.join("|")})\s*\(`, "g");
+
+/** A device call's arguments: its `content` parsed as JSON when that is an object, else the
+ * content itself, so that a message whose text is no JSON is never lost. */
+function deviceArguments(content: unknown): unknown {
+  if (typeof content !== "string") return content;
+  try {
+    const parsed: unknown = JSON.parse(content);
+    return typeof parsed === "object" && parsed !== null ? parsed : content;
+  } catch {
+    return content;
+  }
+}
+
 /** The messages one tool call sends (C5's list): an Envoy publish or send, a Dispatch comment,
- * message or ask, a `gh pr comment` or `gh pr review`, and a reply on a review thread. */
+ * message or ask, a `gh pr comment` or `gh pr review`, and a reply on a review thread. A message
+ * tool is read in each form an agent calls it by: the tool by its own name, a `write` to its
+ * `xd://` device (MESSAGE_DEVICE), and eval code that calls it (MESSAGE_BRIDGE). */
 function messagesOf(tool: string, args: unknown): { addressee: string; text: string }[] {
   const named = (...names: string[]) =>
     names.map((name) => text(args, name)).find((value) => value !== "");
+  // The call's arguments whole, for a message whose text no field names: a device's content that
+  // is no JSON object is that text itself.
+  const whole = typeof args === "string" ? args : JSON.stringify(args ?? {});
   switch (tool) {
+    case "write": {
+      const device = MESSAGE_DEVICE.exec(text(args, "path").trim())?.[1];
+      return device === undefined
+        ? []
+        : messagesOf(device.toLowerCase(), deviceArguments(field(args, "content")));
+    }
     case "envoy_publish":
       return [
         {
           addressee: named("topic") ?? "a topic",
-          text: named("message", "body", "text") ?? JSON.stringify(args),
+          text: named("message", "body", "text") ?? whole,
         },
       ];
     case "envoy_send":
       return [
         {
-          addressee: named("session", "to", "recipient") ?? "a session",
-          text: named("message", "body", "text") ?? JSON.stringify(args),
+          addressee: named("session_id", "session", "to", "recipient") ?? "a session",
+          text: named("message", "body", "text") ?? whole,
         },
       ];
     case "dispatch_comment":
@@ -3930,7 +3968,7 @@ function messagesOf(tool: string, args: unknown): { addressee: string; text: str
       return [
         {
           addressee: `${tool.replace("_", " ")} ${named("issue") ?? ""}`.trim(),
-          text: named("body", "question", "message") ?? JSON.stringify(args),
+          text: named("body", "question", "message") ?? whole,
         },
       ];
     case "bash":
@@ -3944,6 +3982,9 @@ function messagesOf(tool: string, args: unknown): { addressee: string; text: str
         sent.push({ addressee: `gh pr ${hit[1]}`, text: code });
       if (/\baddPullRequestReviewThreadReply\b|\/comments\/\d+\/replies\b/.test(code))
         sent.push({ addressee: "a review thread", text: code });
+      if (tool === "eval")
+        for (const hit of code.matchAll(MESSAGE_BRIDGE))
+          sent.push({ addressee: (hit[1] ?? "").replace("_", " "), text: code });
       return sent;
     }
     default:
@@ -4110,12 +4151,19 @@ function forwardClauses(
         after.find((call) => isCall(call, ROUTES.report) && call.status === 200)?.answer,
         "defect"
       );
-      const replies = gh.flatMap((line) =>
-        line.reply !== undefined && [thread.id, String(thread.comment)].includes(line.reply.thread)
-          ? [line.reply.body]
-          : []
+      // The stand-in records a reply or a resolve whatever its call exits with: GitHub took it only
+      // when the call exited 0.
+      const threadNames = [thread.id, String(thread.comment)];
+      const replied = gh.filter(
+        (line) => line.reply !== undefined && threadNames.includes(line.reply.thread)
       );
-      const resolved = gh.some((line) => line.resolved === thread.id);
+      const resolves = gh.filter((line) => line.resolved === thread.id);
+      const replies = replied.flatMap((line) => (line.exit === 0 ? [line.reply?.body ?? ""] : []));
+      const resolved = resolves.some((line) => line.exit === 0);
+      const refused = [...replied, ...resolves].filter((line) => line.exit !== 0).length;
+      // The daemon's id as a whole name, with neither a letter, a digit nor a hyphen beside it, so
+      // that d-4 is not found in d-45.
+      const namesId = new RegExp(`(?<![A-Za-z0-9-])${escaped(id)}(?![A-Za-z0-9-])`);
       clauses = [
         clause(
           "a",
@@ -4126,8 +4174,8 @@ function forwardClauses(
           "b",
           id !== "" &&
             resolved &&
-            replies.some((reply) => reply.startsWith("Reported as defect ") && reply.includes(id)),
-          `the daemon's id ${id || "none"}, resolved ${resolved}: ${replies.join(" | ")}`
+            replies.some((reply) => reply.startsWith("Reported as defect ") && namesId.test(reply)),
+          `the daemon's id ${id || "none"}, resolved ${resolved}, ${refused} replies or resolves GitHub refused: ${replies.join(" | ")}`
         ),
         clause("c", moved.length === 0 && !failedRetro, backEvidence),
         clause("d", completed.length > 0, `${completed.length} completions`),

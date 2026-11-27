@@ -2,8 +2,11 @@
 // Stand-in for `gh` on a skill scenario's PATH. Each call is recorded to
 // $SKILL_SCENARIO_RUN/calls.jsonl (argv, the contents of any file or stdin it hands GitHub a body
 // through, its exit status, and the pull request body it kept, if any), then answered from the
-// first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". A call no
-// route matches answers `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
+// first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>", each
+// `-F <key>=@<file>` field with the file's or stdin's content in place of `@<file>`, as GitHub
+// reads the call: a query sent through a heredoc (`-F query=@-`) is routed by its mutation, as one
+// given inline is. A call no route matches answers `gh: Not Found (HTTP 404)` and exits 1.
+// Nothing is sent anywhere.
 // `--json a,b` picks those fields of the answer, or of each object of a list answer (`gh pr list`),
 // and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr edit --body`,
 // `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an object that
@@ -13,7 +16,9 @@
 // `repos/<o>/<r>/pulls/<n>/comments/<id>/replies`, or a new review comment whose `in_reply_to`
 // names the thread's first comment, is recorded as `reply: {thread, body}`: the thread's node id,
 // or for REST its first comment's id. A `resolveReviewThread` is recorded as
-// `resolved: <thread node id>`. A route's answer that holds `{{HEAD}}` gets the head of
+// `resolved: <thread node id>`. Both are recorded whatever the call exits with, so the record
+// keeps a reply that no route took; GitHub took one only when its `exit` is 0 (score.ts
+// forwardOnly counts no other). A route's answer that holds `{{HEAD}}` gets the head of
 // $SKILL_SCENARIO_RUN/ready.json in its place, the head the label's test built (rig.sh
 // run_forward); with no such head the call fails, naming the file.
 //   gh-standin.ts gh <args...>
@@ -65,6 +70,9 @@ let body: string | undefined;
 const given: Record<string, string> = {};
 /** The body this call left the pull request with, once the routes serve it. */
 let kept: string | undefined;
+/** The call's arguments as routes match them: a `-F <key>=@<file>` field holds the file's or
+ * stdin's content in place of `@<file>`. */
+const routed = [...args];
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index] ?? "";
   const next = args[index + 1];
@@ -80,6 +88,7 @@ for (let index = 0; index < args.length; index += 1) {
     if ((arg === "-F" || arg === "--field") && value.startsWith("@")) {
       files[value.slice(1)] = await readSource(value.slice(1));
       value = files[value.slice(1)] ?? "";
+      routed[index + 1] = `${key}=${value}`;
     }
     if (prPatch && key === "body") body = value;
     given[key] = value;
@@ -98,7 +107,7 @@ if (prPatch && input !== undefined) {
     body = parsed.body;
   }
 }
-const joined = `${as} ${args.join(" ")}`;
+const joined = `${as} ${routed.join(" ")}`;
 const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
 // A review thread's reply and resolution, as GraphQL names their fields: a literal string, or a
 // `$variable` that a field of the call gives.

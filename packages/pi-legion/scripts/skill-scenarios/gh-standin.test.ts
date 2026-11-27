@@ -154,6 +154,55 @@ test("a reply on a review thread, over GraphQL and over REST, and its resolution
   ]);
 });
 
+// GitHub reads a `-F query=@-` field from stdin and a `-F query=@<file>` field from the file: the
+// stand-in routes such a call by that content, as it routes a query given inline, so a reply sent
+// through a heredoc is not refused for want of its mutation's name in argv. A call that no route
+// matches still answers 404 and exits 1, and its record keeps the reply with that exit, which
+// score.ts forwardOnly counts as no reply.
+test("a GraphQL query from stdin or a file is routed by its content, and a call no route matches still exits 1", () => {
+  const routes = [
+    {
+      match: "^gh api graphql.*addPullRequestReviewThreadReply",
+      stdout: { data: { addPullRequestReviewThreadReply: { comment: { id: "c1" } } } },
+    },
+    {
+      match: "^gh api graphql.*resolveReviewThread",
+      stdout: { data: { resolveReviewThread: { thread: { isResolved: true } } } },
+    },
+  ];
+  const reply =
+    "mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}";
+  const replyArgs = ["api", "graphql", "-F", "query=@-", "-F", "id=PRRT_1"];
+  const run = runWith(routes);
+  expect(ghWith(run, reply, ...replyArgs, "-f", "body=Reported as defect d-7.").code).toBe(0);
+  const resolve = path.join(run, "resolve.graphql");
+  writeFileSync(
+    resolve,
+    "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}\n"
+  );
+  expect(gh(run, "api", "graphql", "-F", `query=@${resolve}`, "-F", "id=PRRT_1").code).toBe(0);
+  expect(
+    recorded(run).map((line) => ({
+      reply: line.reply ?? null,
+      resolved: line.resolved ?? null,
+      exit: line.exit,
+    }))
+  ).toEqual([
+    { reply: { thread: "PRRT_1", body: "Reported as defect d-7." }, resolved: null, exit: 0 },
+    { reply: null, resolved: "PRRT_1", exit: 0 },
+  ]);
+  // Control: with no route for it, the same heredoc reply is refused, and recorded as refused.
+  const unrouted = runWith([]);
+  const refused = ghWith(unrouted, reply, ...replyArgs, "-f", "body=Reported as defect d-7.");
+  expect({ code: refused.code, stderr: refused.stderr }).toEqual({
+    code: 1,
+    stderr: "gh: Not Found (HTTP 404)\n",
+  });
+  expect(recorded(unrouted).map((line) => ({ reply: line.reply, exit: line.exit }))).toEqual([
+    { reply: { thread: "PRRT_1", body: "Reported as defect d-7." }, exit: 1 },
+  ]);
+});
+
 // GitHub also takes a thread's reply as a new review comment that names the thread's first comment
 // in `in_reply_to`: the record names that comment as the thread.
 test("a reply sent as a new review comment with in_reply_to is recorded with its thread", () => {

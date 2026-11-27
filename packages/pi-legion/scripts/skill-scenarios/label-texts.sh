@@ -176,22 +176,39 @@ run_test() {
 }
 
 # run_daemon <request> <ready> <status> <record> runs the built daemon binary's TestRigDaemonLive
-# in its package's directory until it ends, passing SIGTERM and SIGINT on to it, and exits 1
-# unless it passed and wrote the three files.
+# in its package's directory until it ends, passing SIGTERM and SIGINT on to it and its output on to
+# stderr as it prints it, and exits 1 unless it passed and wrote the three files.
 run_daemon() {
   local request=$1 ready=$2 status_file=$3 record=$4
-  local binary postgres log pid status=0
+  local binary postgres log log_write log_read stream tee_pid pid status=0
   binary=$(require_binary daemon)
   if ! postgres=$(jq -er '.postgresUrl | strings | select(. != "")' "$request" 2>/dev/null); then
     echo "label-texts: the daemon request $request names no postgresUrl" >&2
     exit 2
   fi
   rm -f -- "$ready" "$status_file" "$record"
+  # The binary's output goes to stderr as the binary prints it, not once it has ended. The rig's
+  # bounded stops (forward_ready, forward_wait and forward_end in rig.sh) end this script's whole
+  # tree with SIGKILL, and each of their messages names the rig's log of this script's stderr
+  # ($R/logs/entry.log), which must then hold what the binary printed before the kill. tee also
+  # writes the output to a file whose name is removed at once, so a killed run leaves no file
+  # behind; the checks below read that file through log_read once the binary and tee have ended.
+  # tee ignores SIGTERM and SIGINT, which this script passes on to the binary: a tee that they
+  # ended would leave the binary writing its last lines to a closed pipe.
   log=$(mktemp)
-  (cd "$daemon/internal/daemon" &&
+  exec {log_write}>"$log" {log_read}<"$log"
+  rm -f -- "$log"
+  exec {stream}> >(trap '' TERM INT; exec tee "/dev/fd/$log_write" >&2)
+  tee_pid=$!
+  # The binary gets the pipe as its stdout and stderr, and no other descriptor this script holds,
+  # so tee ends once the binary, and each process it gave its stdout or stderr, has ended.
+  (exec {log_read}<&- {log_write}>&- {stream}>&-
+    cd "$daemon/internal/daemon" &&
     RIG_TEXTS_REQUEST=$request RIG_TEXTS_READY=$ready RIG_TEXTS_STATUS=$status_file RIG_TEXTS_RECORD=$record \
-      LEGION_TEST_PG_DSN=$postgres exec "$binary" -test.run '^TestRigDaemonLive$' -test.v) >"$log" 2>&1 &
+      LEGION_TEST_PG_DSN=$postgres exec "$binary" -test.run '^TestRigDaemonLive$' -test.v) >&"$stream" 2>&1 &
+  # $! is the binary's pid, not tee's, so the status the waits below read is the binary's own.
   pid=$!
+  exec {stream}>&-
   # A wait that a trapped signal cuts short returns at once, and the next wait still returns the
   # binary's own status, once it has ended.
   trap 'kill -TERM "$pid" 2>/dev/null || true' TERM INT
@@ -200,10 +217,11 @@ run_daemon() {
   done
   wait "$pid" || status=$?
   trap - TERM INT
+  # tee may still hold the binary's last lines; the file has them once tee has ended.
+  wait "$tee_pid" || true
   local output
-  output=$(<"$log")
-  rm -f -- "$log"
-  printf '%s\n' "$output" >&2
+  output=$(cat <&"$log_read")
+  exec {log_read}<&- {log_write}>&-
   if [ "$status" -ne 0 ]; then
     echo "label-texts: TestRigDaemonLive failed: $binary exited $status" >&2
     exit 1

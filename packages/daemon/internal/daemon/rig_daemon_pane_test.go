@@ -432,9 +432,10 @@ func (d rigDispatch) checks(issue string) ([]worldCheck, error) {
 
 // passAtHead records a pass at head of each check the world names in passes, as the session
 // rigChecksSession in the role tester, then reads the issue's results again. A check of the world's
-// passes the issue's Verification document lacks is an error, and so is each before_merge check
-// with no pass at head, named: the retro's gate would send the task back for it, a cause that
-// stays, so the run must launch no pane.
+// passes the issue's Verification document lacks is an error. So is a read of the results that
+// names no check, which enumerated nothing, and so is each before_merge check with no pass at
+// head, named: the retro's gate would send the task back for it, a cause that stays, so the run
+// must launch no pane.
 func passAtHead(d rigDispatch, issue, head string, passes []string) error {
 	checks, err := d.checks(issue)
 	if err != nil {
@@ -455,6 +456,10 @@ func passAtHead(d rigDispatch, issue, head string, passes []string) error {
 	}
 	if checks, err = d.checks(issue); err != nil {
 		return fmt.Errorf("read the results of %s again: %w", issue, err)
+	}
+	// A read that names no checks enumerated nothing: it is no evidence that every check passed.
+	if len(checks) == 0 {
+		return fmt.Errorf("the results of %s name no check, so no before_merge check can be read as passed at %s", issue, head)
 	}
 	var unpassed []string
 	for _, check := range checks {
@@ -807,6 +812,29 @@ func TestRigDaemonLiveRefusesAHeadWithoutItsPasses(t *testing.T) {
 	}
 	if err := passAtHead(d, "ACME-1", head, []string{"c-missing"}); err == nil || !strings.Contains(err.Error(), "c-missing") {
 		t.Errorf("a pass of a check the document lacks is answered %v, want a refusal naming c-missing", err)
+	}
+}
+
+// A read of the results that names no check enumerated nothing, so it is no evidence that every
+// before_merge check has a pass at the head: with no pass to record, a read whose checks are an
+// empty list or null is a refusal that says so. The control: a read that names one check, after
+// the merge, needs no pass and is answered with none.
+func TestRigDaemonLiveRefusesAResultsReadThatNamesNoCheck(t *testing.T) {
+	t.Parallel()
+	head := stepRecordsHead
+	answered := func(checks []map[string]any) error {
+		server := httptest.NewServer(&rigResultsStandIn{checks: checks})
+		t.Cleanup(server.Close)
+		return passAtHead(rigDispatch{base: server.URL, token: "rig-agent-token"}, "ACME-1", head, nil)
+	}
+	for name, checks := range map[string][]map[string]any{"an empty list": {}, "null": nil} {
+		if err := answered(checks); err == nil || !strings.Contains(err.Error(), "the results of ACME-1 name no check") {
+			t.Errorf("a read whose checks are %s is answered %v, want the refusal that the results of ACME-1 name no check", name, err)
+		}
+	}
+	after := map[string]any{"block_id": "c-after", "when": "after_merge", "surface": "cli", "run": "bun test c-after", "results": []any{}}
+	if err := answered([]map[string]any{after}); err != nil {
+		t.Errorf("a read that names the after_merge check c-after alone is answered %v, want none", err)
 	}
 }
 

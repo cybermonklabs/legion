@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  addStoreOnly,
   type Answer,
   causeRecords,
   classifyMergeBlocked,
@@ -17,14 +18,19 @@ import {
   namesPersonRequest,
   type PersonRequestRead,
   parseSession,
+  type PlantedLine,
+  plantedFaults,
+  plantedForReaders,
   type Reading,
   type ReturnFacts,
   type ReturnLine,
   readerTwoFaults,
+  reasonOf,
   requestRead,
   requestReference,
   resolveReturn,
   statedCauses,
+  type StepRecord,
   summaryOf,
   type TranscriptEntry,
   transcriptAnswers,
@@ -697,6 +703,8 @@ function returnOf(facts: ReturnFacts, parts: Partial<ReturnLine> = {}): ReturnLi
     sources: {
       transcript: facts.mergeBlocked.transcript.state,
       timeline: facts.mergeBlocked.timeline.state,
+      results: facts.checks === null ? "unread" : "read",
+      coverage: facts.requirementIds === null ? "unread" : "read",
     },
     causes: causeRecords(facts),
     answers: [],
@@ -732,6 +740,8 @@ describe("the stated causes of a reason", () => {
     checkIds: ["c-units", "c-docs"],
     ciJobNames: ["unit-limits"],
     requirementIds: ["r1", "r2"],
+    checksRead: true,
+    coverageRead: true,
   };
 
   test("merge-blocked, by each word the rule names", () => {
@@ -798,7 +808,7 @@ describe("the record of each other cause", () => {
   test("ci is established where a check that a CI job runs does not stand passed at the head", () => {
     const facts = made({
       reason: "The required check unit-limits failed at this head.",
-      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }],
+      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no", passReason: "fail" }],
     });
     expect(causeRecords(facts)).toEqual([{ cause: "ci", state: "established", step: null }]);
   });
@@ -806,7 +816,7 @@ describe("the record of each other cause", () => {
   test("ci is absent where every check that a CI job runs stands passed at the head", () => {
     const facts = made({
       reason: "The required check unit-limits failed at this head.",
-      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "yes" }],
+      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "yes", passReason: "" }],
     });
     expect(causeRecords(facts)).toEqual([{ cause: "ci", state: "absent", step: null }]);
   });
@@ -823,7 +833,7 @@ describe("the record of each other cause", () => {
     const facts = made({
       kind: "retro",
       reason: "c-units has no pass at this head.",
-      checks: [{ blockId: "c-units", ciCheck: null, passStands: "no" }],
+      checks: [{ blockId: "c-units", ciCheck: null, passStands: "no", passReason: "fail" }],
     });
     expect(causeRecords(facts)).toEqual([
       { cause: "failed-check", state: "established", step: null },
@@ -834,7 +844,7 @@ describe("the record of each other cause", () => {
     const facts = made({
       kind: "retro",
       reason: "c-units has no pass at this head.",
-      checks: [{ blockId: "c-units", ciCheck: null, passStands: "yes" }],
+      checks: [{ blockId: "c-units", ciCheck: null, passStands: "yes", passReason: "" }],
     });
     expect(causeRecords(facts)).toEqual([{ cause: "failed-check", state: "absent", step: null }]);
   });
@@ -880,7 +890,7 @@ describe("the record of each other cause", () => {
     const facts = made({
       head: null,
       reason: "GitHub reads the head DIRTY, and the required check unit-limits failed.",
-      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }],
+      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no", passReason: "fail" }],
       mergeBlocked: {
         head: null,
         transcript: { state: "read", answers: [] },
@@ -1006,7 +1016,7 @@ describe("how a return resolves", () => {
   test("a contradicted cause: the readers confirm ci where every CI check stands passed", () => {
     const facts = made({
       reason: "The required check unit-limits failed at this head.",
-      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "yes" }],
+      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "yes", passReason: "" }],
     });
     const ret = returnOf(facts);
     const reading: Reading = {
@@ -1055,7 +1065,7 @@ describe("how a return resolves", () => {
   test("a cause the readers confirm and the record establishes exempts the return", () => {
     const facts = made({
       reason: "The required check unit-limits failed at this head.",
-      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }],
+      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no", passReason: "fail" }],
     });
     const ret = returnOf(facts);
     const reading: Reading = {
@@ -1084,7 +1094,7 @@ describe("the readers", () => {
   const ret = returnOf(
     made({
       reason: "The required check unit-limits failed at this head.",
-      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no" }],
+      checks: [{ blockId: "c-ci", ciCheck: "unit-limits", passStands: "no", passReason: "fail" }],
     })
   );
   const counted = returnOf(made(), { id: "ACME-8/default/merge/1", issue: "ACME-8" });
@@ -1441,5 +1451,280 @@ describe("a return that rests on a person's request", () => {
     expect(summary).toContain("unexplained: 1");
     expect(summary).toContain("verdict: unknown");
     expect(summary).toContain("ACME-9 unexplained");
+  });
+});
+
+describe("a read that did not answer", () => {
+  // Dispatch answers `pass_stands` with its own reason. Only `fail` says a result failed there;
+  // `no_result`, `read_failed` and `pass_and_fail` each say the head was not read to an answer,
+  // and a return must not be exempted on one of those.
+  const rows: { name: string; passStands: "no" | "unknown"; passReason: string }[] = [
+    { name: "no result at the head", passStands: "no", passReason: "no_result" },
+    { name: "the read of its check runs failed", passStands: "unknown", passReason: "read_failed" },
+    {
+      name: "a pass and a fail at the head",
+      passStands: "unknown",
+      passReason: "pass_and_fail",
+    },
+  ];
+  for (const row of rows) {
+    test(`ci is unread, never established, where the answer is ${row.passReason} (${row.name})`, () => {
+      const facts = made({
+        reason: "The required check unit-limits failed at this head.",
+        checks: [
+          {
+            blockId: "c-ci",
+            ciCheck: "unit-limits",
+            passStands: row.passStands,
+            passReason: row.passReason,
+          },
+        ],
+      });
+      expect(causeRecords(facts)).toEqual([{ cause: "ci", state: "unread", step: null }]);
+      const ret = returnOf(facts);
+      expect(resolveReturn(ret, [confirming(ret.id, "1", false)]).class).toBe("pending");
+    });
+  }
+
+  test("failed-check is unread where the named check has no result at the head", () => {
+    const facts = made({
+      kind: "retro",
+      reason: "c-units has no pass at this head.",
+      checks: [{ blockId: "c-units", ciCheck: null, passStands: "no", passReason: "no_result" }],
+    });
+    expect(causeRecords(facts)).toEqual([{ cause: "failed-check", state: "unread", step: null }]);
+  });
+
+  test("a retro whose results read failed states failed-check from the reason's words, unread", () => {
+    const facts = made({ kind: "retro", reason: "the check of the units has no pass.", checks: null });
+    expect(causeRecords(facts)).toEqual([{ cause: "failed-check", state: "unread", step: null }]);
+    const ret = returnOf(facts);
+    expect(ret.sources.results).toBe("unread");
+    expect(resolveReturn(ret, [confirming(ret.id, "1", false)]).class).toBe("pending");
+  });
+
+  test("a retro whose coverage read failed states goal-check from the reason's words, unread", () => {
+    const facts = made({
+      kind: "retro",
+      reason: "a requirement of the spec is unmet at this head.",
+      requirementIds: null,
+    });
+    expect(causeRecords(facts)).toEqual([{ cause: "goal-check", state: "unread", step: null }]);
+    const ret = returnOf(facts);
+    expect(ret.sources.coverage).toBe("unread");
+    expect(resolveReturn(ret, [confirming(ret.id, "1", false)]).class).toBe("pending");
+  });
+
+  test("the reason of a return no message of the move answers is null, so the reason is unread", async () => {
+    const messages = [
+      {
+        message: {
+          id: "m-1",
+          body: "Legion moved this issue from merging back to implementing at the merger's request: the head conflicts.",
+          created_at: "2026-11-19T09:00:00Z",
+          author: { kind: "session", id: "ses-daemon" },
+        },
+      },
+    ];
+    const dispatch = { get: async <T>() => messages as T };
+    // The one message stands a day before the return, outside the window reasonOf reads.
+    expect(await reasonOf(dispatch, "ACME-9", { role: "merger" }, "2026-11-20T11:00:00Z")).toBe(
+      null
+    );
+    expect(await reasonOf(dispatch, "ACME-9", { role: "merger" }, "2026-11-19T09:00:30Z")).toBe(
+      "the head conflicts."
+    );
+    // The line reads `reasonRead` from that answer, and a return with no reason read is pending.
+    const ret = returnOf(made({ reason: null, reasonRead: false }));
+    expect(resolveReturn(ret, [ownAlone(ret.id)]).class).toBe("pending");
+  });
+});
+
+describe("a command that is not one GitHub read", () => {
+  test("a payload echoed before a gh call is no answer: the command runs two programs", () => {
+    const payload = JSON.stringify({ headRefOid: HEAD, mergeable: "CONFLICTING" });
+    const lines = [
+      call("2026-11-20T10:00:00Z", "c1", "bash", {
+        command: `echo '${payload}'; gh pr view 41`,
+      }),
+      answered("2026-11-20T10:00:01Z", "c1", "bash", payload),
+      ...backwardMove("2026-11-20T10:30:00Z"),
+    ];
+    expect(answersOf(lines)).toEqual([]);
+    expect(returnOfSession(lines).causes).toEqual([
+      { cause: "merge-blocked", state: "undetermined", step: 4 },
+    ]);
+  });
+
+  test("a gh pr merge that failed for anything but the head's own state is no answer", () => {
+    const rows = [
+      "gh: command not found",
+      "error connecting to api.github.com: dial tcp: i/o timeout",
+      "the fleet's shim refuses a call that acts as the owner's own login",
+    ];
+    for (const text of rows) {
+      const lines = [
+        call("2026-11-20T10:00:00Z", "c1", "bash", {
+          command: `gh pr merge 41 --squash --match-head-commit ${HEAD}`,
+        }),
+        answered("2026-11-20T10:00:01Z", "c1", "bash", text, true),
+        ...backwardMove("2026-11-20T10:30:00Z"),
+      ];
+      expect(answersOf(lines)).toEqual([]);
+    }
+  });
+});
+
+describe("a request_backward_move the store holds and the step records do not", () => {
+  const step = (parts: Partial<StepRecord> = {}): StepRecord => ({
+    id: "step-1",
+    task: "default",
+    step: 7,
+    kind: "retro",
+    role: "implementer",
+    type: "retro",
+    agent: "worker",
+    session: "ses-retro-1",
+    attempt: 1,
+    started_at: "2026-11-20T09:00:00Z",
+    ended_at: "2026-11-20T11:00:00Z",
+    result: "passed",
+    report: null,
+    ...parts,
+  });
+  const window = { from: "2026-11-10", to: "2026-11-23" };
+
+  test("an architect's move, which names its issue, is no return of this count", () => {
+    const lines: ReturnLine[] = [];
+    addStoreOnly(
+      lines,
+      [],
+      "ACME",
+      [{ session: "ses-architect-1", at: "2026-11-20T10:00:00Z", issue: "ACME-9" }],
+      window,
+      new Map()
+    );
+    expect(lines).toEqual([]);
+  });
+
+  test("a retro session's move is filed as that step's own return, and resolves pending", () => {
+    const lines: ReturnLine[] = [];
+    addStoreOnly(
+      lines,
+      [],
+      "ACME",
+      [{ session: "ses-retro-1", at: "2026-11-20T10:00:00Z", issue: null }],
+      window,
+      new Map([["ses-retro-1", { issue: "ACME-9", task: "default", record: step() }]])
+    );
+    expect(lines.map((line) => [line.id, line.kind, line.role, line.heldBy])).toEqual([
+      ["ACME-9/default/retro/1", "retro", "implementer", ["transcript"]],
+    ]);
+    expect(resolveReturn(lines[0] as ReturnLine, []).class).toBe("pending");
+  });
+
+  test("a move of the window's last day is filed, and one after the window is not", () => {
+    const lines: ReturnLine[] = [];
+    const phaseSteps = new Map([
+      ["ses-retro-1", { issue: "ACME-9", task: "default", record: step() }],
+      [
+        "ses-retro-2",
+        { issue: "ACME-8", task: "default", record: step({ session: "ses-retro-2" }) },
+      ],
+    ]);
+    addStoreOnly(
+      lines,
+      [],
+      "ACME",
+      [
+        { session: "ses-retro-1", at: "2026-11-23T23:59:00Z", issue: null },
+        { session: "ses-retro-2", at: "2026-11-24T00:01:00Z", issue: null },
+      ],
+      window,
+      phaseSteps
+    );
+    expect(lines.map((line) => line.issue)).toEqual(["ACME-9"]);
+  });
+
+  test("a session Dispatch already gave a return for is listed with the transcript as a source", () => {
+    const held = returnOf(made(), { session: "ses-retro-1", heldBy: ["steps"] });
+    const lines = [held];
+    addStoreOnly(
+      lines,
+      [{ issue: "ACME-9", record: step(), task: "default", steps: [] }],
+      "ACME",
+      [{ session: "ses-retro-1", at: "2026-11-20T10:00:00Z", issue: null }],
+      window,
+      new Map()
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.heldBy).toEqual(["steps", "transcript"]);
+  });
+});
+
+describe("the planted returns the readers read first", () => {
+  const planted = readFileSync(path.join(import.meta.dir, "planted.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as PlantedLine);
+
+  test("the readers' copy holds no answer, no note, and the sources of a real line", () => {
+    const copy = plantedForReaders(planted)
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(copy).toHaveLength(planted.length);
+    expect(plantedForReaders(planted)).not.toContain('"note"');
+    for (const line of copy) {
+      expect(Object.keys(line)).not.toContain("true");
+      expect(Object.keys(line)).not.toContain("note");
+      expect(line.sources).toEqual({
+        transcript: "read",
+        timeline: "read",
+        results: "read",
+        coverage: "read",
+      });
+    }
+  });
+
+  test("a reader that reads a planted return wrongly is refused by name", () => {
+    const first = planted[0] as PlantedLine;
+    const wrong: Reading = {
+      return: first.id,
+      reader: "1",
+      model: "made/reader",
+      own: !first.true.own,
+      confirmed: {},
+    };
+    const faults = plantedFaults(planted, [wrong]);
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain(first.id);
+    expect(faults[0]).toContain("own");
+  });
+
+  test("a reader that reads each planted return as the key does is refused for none", () => {
+    const readings = planted.map(
+      (line): Reading => ({
+        return: line.id,
+        reader: "1",
+        model: "made/reader",
+        own: line.true.own,
+        confirmed: line.true.confirmed,
+      })
+    );
+    expect(plantedFaults(planted, readings)).toEqual([]);
+  });
+
+  test("a reader that confirms a cause the key does not is refused", () => {
+    const first = planted[0] as PlantedLine;
+    const wrong: Reading = {
+      return: first.id,
+      reader: "2",
+      model: "made/reader",
+      own: first.true.own,
+      confirmed: { ...first.true.confirmed, "merge-blocked": true },
+    };
+    const faults = plantedFaults(planted, [wrong]);
+    expect(faults).toHaveLength(first.true.confirmed["merge-blocked"] === true ? 0 : 1);
   });
 });
