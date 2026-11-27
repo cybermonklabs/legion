@@ -86,7 +86,8 @@ func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, binary, append([]string{"--dir", t.TempDir()}, c.args...)...)
+			// CONTROL ONLY: every run stalls 31 s before the binary starts.
+			cmd := exec.CommandContext(ctx, "/bin/sh", append([]string{"-c", `/bin/sleep 31; exec "$0" "$@"`, binary, "--dir", t.TempDir()}, c.args...)...)
 			output, err := cmd.CombinedOutput()
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != exitUsageError {

@@ -1256,6 +1256,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		reportPending(stderr, c.baseURL, shownID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
 		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
+		// CONTROL ONLY: ENVOY_CONTROL_STALL_WAIT holds the process this long once its wait began.
+		if stall, err := time.ParseDuration(os.Getenv("ENVOY_CONTROL_STALL_WAIT")); err == nil {
+			time.Sleep(stall)
+		}
 		// backoff is the sleep before the next read after one that came back undecided before
 		// the wait it asked had run out. The broker holds a read until the request is decided or
 		// that wait passes, so a pending answer that comes sooner is from a broker before ?wait=,
