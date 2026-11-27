@@ -2248,71 +2248,73 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
 // nothing for it, and the draft stays as the reader wrote it. Chromium and Firefox mark such a
 // key `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode 229.
 // A plain Escape after it is the reader's, and asks before it drops the draft.
-test.each(
-  COMPOSITION_MARKS
-)("an Escape that ends an IME composition, marked by %s, closes nothing and keeps the draft", async (_mark, composing) => {
-  const user = userEvent.setup();
-  const { view } = renderComposer();
+test.each(COMPOSITION_MARKS)(
+  "an Escape that ends an IME composition, marked by %s, closes nothing and keeps the draft",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const { view } = renderComposer();
 
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("still composing");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, { ...composing, key: "Escape" });
-    expect(screen.queryByText("Discard draft?")).not.toBeInTheDocument();
-    expect(field.value).toBe("still composing");
-    expect(field).toHaveFocus();
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+      await user.click(field);
+      await user.keyboard("{Control>}a{/Control}");
+      await user.paste("still composing");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, { ...composing, key: "Escape" });
+      expect(screen.queryByText("Discard draft?")).not.toBeInTheDocument();
+      expect(field.value).toBe("still composing");
+      expect(field).toHaveFocus();
 
-    await user.keyboard("{Escape}");
-    expect(screen.getByText("Discard draft?")).toBeInTheDocument();
-    expect(field.value).toBe("still composing");
-  } finally {
-    view.unmount();
+      await user.keyboard("{Escape}");
+      expect(screen.getByText("Discard draft?")).toBeInTheDocument();
+      expect(field.value).toBe("still composing");
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // A reply is the composer's too: the Escape that ends an IME composition leaves it as it is, and
 // a plain Escape after it ends it.
-test.each(
-  COMPOSITION_MARKS
-)("an Escape that ends an IME composition, marked by %s, leaves the reply open", async (_mark, composing) => {
-  await warmMarkdownRenderer();
-  const user = userEvent.setup();
-  let cancelled = 0;
-  const { view } = renderComposer({
-    onCancelReply: () => {
-      cancelled += 1;
-    },
-    replyParent: { deleted_at: null, deleted_by: null, edited_at: null },
-    replyTo: {
-      actor: plannerAuthor,
-      excerpt: "Once the build is green.",
-      id: "comment-9",
-      parentKind: "comment",
-      to: "/issues/CORE-1/comments/comment-9",
-    },
-  });
+test.each(COMPOSITION_MARKS)(
+  "an Escape that ends an IME composition, marked by %s, leaves the reply open",
+  async (_mark, composing) => {
+    await warmMarkdownRenderer();
+    const user = userEvent.setup();
+    let cancelled = 0;
+    const { view } = renderComposer({
+      onCancelReply: () => {
+        cancelled += 1;
+      },
+      replyParent: { deleted_at: null, deleted_by: null, edited_at: null },
+      replyTo: {
+        actor: plannerAuthor,
+        excerpt: "Once the build is green.",
+        id: "comment-9",
+        parentKind: "comment",
+        to: "/issues/CORE-1/comments/comment-9",
+      },
+    });
 
-  try {
-    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    await user.click(field);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.paste("still composing");
-    // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
-    // 229), so the composition's Escape is sent as the event itself.
-    fireEvent.keyDown(field, { ...composing, key: "Escape" });
-    expect(cancelled).toBe(0);
-    expect(field.value).toBe("still composing");
-    expect(field).toHaveFocus();
+    try {
+      const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+      await user.click(field);
+      await user.keyboard("{Control>}a{/Control}");
+      await user.paste("still composing");
+      // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+      // 229), so the composition's Escape is sent as the event itself.
+      fireEvent.keyDown(field, { ...composing, key: "Escape" });
+      expect(cancelled).toBe(0);
+      expect(field.value).toBe("still composing");
+      expect(field).toHaveFocus();
 
-    await user.keyboard("{Escape}");
-    expect(cancelled).toBe(1);
-  } finally {
-    view.unmount();
+      await user.keyboard("{Escape}");
+      expect(cancelled).toBe(1);
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);

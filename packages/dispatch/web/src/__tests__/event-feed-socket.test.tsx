@@ -507,48 +507,49 @@ const downloadEnds = [
   ],
 ] as const;
 
-test.each(
-  downloadEnds
-)("an event waiting on the map's download asks no read once the feed has stopped and the download %s", async (_ends, end) => {
-  jest.useFakeTimers();
-  const queryClient = newClient();
-  signIn(queryClient);
-  // A detail the next app on this client still renders, which the event's refresh would fetch.
-  let fetches = 0;
-  const unsubscribe = new QueryObserver(queryClient, {
-    queryFn: async () => {
-      fetches += 1;
-      return { key: "CORE-1" };
-    },
-    queryKey: ["issue", "CORE-1"],
-  }).subscribe(() => {});
-  const wholeCache = countWholeCacheRefreshes(queryClient);
-  const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
-  const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
-    () => download.promise
-  );
-  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
-  try {
-    await waitFor(() => expect(fetches).toBe(1));
-    const { socket, sub } = openFeed("0", true);
-    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
-    receive(socket, eventFrame(sub, issueUpdated(1)));
-    hook.unmount();
+test.each(downloadEnds)(
+  "an event waiting on the map's download asks no read once the feed has stopped and the download %s",
+  async (_ends, end) => {
+    jest.useFakeTimers();
+    const queryClient = newClient();
+    signIn(queryClient);
+    // A detail the next app on this client still renders, which the event's refresh would fetch.
+    let fetches = 0;
+    const unsubscribe = new QueryObserver(queryClient, {
+      queryFn: async () => {
+        fetches += 1;
+        return { key: "CORE-1" };
+      },
+      queryKey: ["issue", "CORE-1"],
+    }).subscribe(() => {});
+    const wholeCache = countWholeCacheRefreshes(queryClient);
+    const download = Promise.withResolvers<eventRefreshLoad.EventRefreshMap>();
+    const load = spyOn(eventRefreshLoad, "loadEventRefresh").mockImplementationOnce(
+      () => download.promise
+    );
+    const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    try {
+      await waitFor(() => expect(fetches).toBe(1));
+      const { socket, sub } = openFeed("0", true);
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      receive(socket, eventFrame(sub, issueUpdated(1)));
+      hook.unmount();
 
-    end(download);
-    // Past the batch window, a whole-cache refresh's first one, and the scheduler's interval.
-    await advance(2_000);
-    expect(fetches).toBe(1);
-    expect(queryClient.getQueryState(["issue", "CORE-1"])?.isInvalidated).toBe(false);
-    expect(wholeCache.count()).toBe(0);
-  } finally {
-    hook.unmount();
-    unsubscribe();
-    load.mockRestore();
-    wholeCache.restore();
-    realClock();
+      end(download);
+      // Past the batch window, a whole-cache refresh's first one, and the scheduler's interval.
+      await advance(2_000);
+      expect(fetches).toBe(1);
+      expect(queryClient.getQueryState(["issue", "CORE-1"])?.isInvalidated).toBe(false);
+      expect(wholeCache.count()).toBe(0);
+    } finally {
+      hook.unmount();
+      unsubscribe();
+      load.mockRestore();
+      wholeCache.restore();
+      realClock();
+    }
   }
-});
+);
 
 // A write's own event ends its hold on its queries' reads (`holdBackReads`), and the feed hears it
 // as it arrives (`hearLiveEvent`), before the event waits on the map's chunk for its refresh: the
@@ -722,26 +723,27 @@ const firstOpenAfterFailure = [
   ["an online event", () => window.dispatchEvent(new Event("online"))],
 ] as const;
 
-test.each(
-  firstOpenAfterFailure
-)("the open after a first handshake that failed refreshes everything (%s)", async (_reopen, reopen) => {
-  const random = spyOn(Math, "random").mockReturnValue(0);
-  const queryClient = newClient();
-  const wholeCache = countWholeCacheRefreshes(queryClient);
-  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
-  try {
-    // What a network change does to a handshake: it fails before the socket opens.
-    act(() => sockets.latest().fail());
-    act(() => reopen());
-    await waitFor(() => expect(sockets.sockets).toHaveLength(2));
-    openFeed();
-    await waitFor(() => expect(wholeCache.count()).toBe(1));
-  } finally {
-    hook.unmount();
-    random.mockRestore();
-    wholeCache.restore();
+test.each(firstOpenAfterFailure)(
+  "the open after a first handshake that failed refreshes everything (%s)",
+  async (_reopen, reopen) => {
+    const random = spyOn(Math, "random").mockReturnValue(0);
+    const queryClient = newClient();
+    const wholeCache = countWholeCacheRefreshes(queryClient);
+    const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    try {
+      // What a network change does to a handshake: it fails before the socket opens.
+      act(() => sockets.latest().fail());
+      act(() => reopen());
+      await waitFor(() => expect(sockets.sockets).toHaveLength(2));
+      openFeed();
+      await waitFor(() => expect(wholeCache.count()).toBe(1));
+    } finally {
+      hook.unmount();
+      random.mockRestore();
+      wholeCache.restore();
+    }
   }
-});
+);
 
 test("the first subscription resumes from the sign-in check's event head", async () => {
   jest.useFakeTimers();

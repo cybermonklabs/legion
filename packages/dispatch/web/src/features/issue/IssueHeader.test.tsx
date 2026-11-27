@@ -283,29 +283,32 @@ test.each(
   (["route", "parent"] as const).flatMap((editor) =>
     COMPOSITION_MARKS.map(([mark, marked]) => [editor, mark, marked] as const)
   )
-)("an Escape that ends an IME composition in the %s's editor, marked by %s, leaves the editor open with its draft", async (editor, _mark, marked) => {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = renderHeader(client, <Header state={unpinnedState} />);
-  try {
-    const field = await editors[editor](view.user);
-    await waitFor(() => expect(field).toHaveFocus());
-    await view.user.clear(field);
-    await view.user.type(field, "CORE-7");
-    // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
-    // 229), so the composition's Escape is sent as the event itself.
-    fireEvent.keyDown(field, { ...marked, key: "Escape" });
-    expect(field).toBeInTheDocument();
-    expect(field).toHaveValue("CORE-7");
-    expect(field).toHaveFocus();
+)(
+  "an Escape that ends an IME composition in the %s's editor, marked by %s, leaves the editor open with its draft",
+  async (editor, _mark, marked) => {
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const view = renderHeader(client, <Header state={unpinnedState} />);
+    try {
+      const field = await editors[editor](view.user);
+      await waitFor(() => expect(field).toHaveFocus());
+      await view.user.clear(field);
+      await view.user.type(field, "CORE-7");
+      // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+      // 229), so the composition's Escape is sent as the event itself.
+      fireEvent.keyDown(field, { ...marked, key: "Escape" });
+      expect(field).toBeInTheDocument();
+      expect(field).toHaveValue("CORE-7");
+      expect(field).toHaveFocus();
 
-    await view.user.keyboard("{Escape}");
-    expect(field).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
+      await view.user.keyboard("{Escape}");
+      expect(field).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
   }
-});
+);
 
 // The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
 // word being composed, and the Escape that cancels one drops it: each is the input method's key
@@ -317,41 +320,44 @@ test.each(
   (["Enter", "Escape"] as const).flatMap((key) =>
     COMPOSITION_MARKS.map(([mark, marked]) => [key, mark, marked] as const)
   )
-)("an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit", async (key, _mark, marked) => {
-  const client = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
-    patchAnswer(issue, input)
-  );
-  const view = renderHeader(client, <Header state={unpinnedState} />);
-  try {
-    await view.user.click(view.q.getByRole("heading", { level: 1, name: issue.title }));
-    const title = view.q.getByRole("textbox", { name: "Issue title" });
-    await view.user.clear(title);
-    await view.user.paste("Pin it from the header");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(title, { ...marked, key });
-    expect(title).toBeInTheDocument();
-    expect(title).toHaveValue("Pin it from the header");
-    expect(title).toHaveFocus();
-    expect(patchIssue).not.toHaveBeenCalled();
-
-    await view.user.keyboard(`{${key}}`);
-    expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
-    if (key === "Escape") {
-      expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
+)(
+  "an %s that ends a composition in the title's editor, marked by %s, leaves the editor open with its draft and writes nothing, and a plain one ends the edit",
+  async (key, _mark, marked) => {
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+      patchAnswer(issue, input)
+    );
+    const view = renderHeader(client, <Header state={unpinnedState} />);
+    try {
+      await view.user.click(view.q.getByRole("heading", { level: 1, name: issue.title }));
+      const title = view.q.getByRole("textbox", { name: "Issue title" });
+      await view.user.clear(title);
+      await view.user.paste("Pin it from the header");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(title, { ...marked, key });
+      expect(title).toBeInTheDocument();
+      expect(title).toHaveValue("Pin it from the header");
+      expect(title).toHaveFocus();
       expect(patchIssue).not.toHaveBeenCalled();
-    } else {
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      expect(patchIssue).toHaveBeenCalledWith(
-        "CORE-1",
-        { title: "Pin it from the header" },
-        keyedAttempt
-      );
+
+      await view.user.keyboard(`{${key}}`);
+      expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+      if (key === "Escape") {
+        expect(view.q.getByRole("heading", { level: 1, name: issue.title })).toBeInTheDocument();
+        expect(patchIssue).not.toHaveBeenCalled();
+      } else {
+        await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+        expect(patchIssue).toHaveBeenCalledWith(
+          "CORE-1",
+          { title: "Pin it from the header" },
+          keyedAttempt
+        );
+      }
+    } finally {
+      view.unmount();
+      patchIssue.mockRestore();
     }
-  } finally {
-    view.unmount();
-    patchIssue.mockRestore();
   }
-});
+);

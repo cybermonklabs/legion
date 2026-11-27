@@ -67,7 +67,8 @@ export interface ApiRequests {
   /** The count per route, most sent first and then by route, so two runs print one order. */
   byRoute(): readonly RouteCount[];
   /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
-   *  only the ones counted here. This is how the recorded baseline measures one load
+   *  only the ones counted here, save those a document left in flight when the next one began
+   *  loading (see `watchApiRequests`). This is how the recorded baseline measures one load
    *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
@@ -105,11 +106,31 @@ export function apiRoute(pathname: string): string {
     .join("/");
 }
 
+/** Whether `request` loads a new document into the page's main frame. Playwright throws when a
+ *  navigation request's frame does not exist yet; the main frame exists as long as the page does,
+ *  so such a request belongs to a new frame and never to the main frame. */
+function startsMainDocument(page: Page, request: Request): boolean {
+  if (!request.isNavigationRequest()) return false;
+  try {
+    return request.frame() === page.mainFrame();
+  } catch {
+    return false;
+  }
+}
+
 export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
   const inFlight = new Set<Request>();
   let lastSettledAt = Date.now();
   page.on("request", (request) => {
+    // A request of the document a navigation tears down never fires `requestfinished` or
+    // `requestfailed`, so it would stay in flight for good and the page would never go quiet
+    // again: issue-page-q.e2e.ts's "an address the view draws no row for draws the outline's
+    // line for it in the view's place" loads eleven addresses under one watcher and waited out
+    // its 30 s about half its runs. A new main-frame document therefore drops what the old one
+    // left in flight, before its own request is added; a same-document navigation (a change of
+    // the fragment alone) sends no request and drops nothing.
+    if (startsMainDocument(page, request)) inFlight.clear();
     inFlight.add(request);
     const url = new URL(request.url());
     if (!url.pathname.startsWith("/api/")) return;

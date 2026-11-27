@@ -1339,34 +1339,37 @@ test("Agents sends without an issue through the agent message route", async () =
 // `isComposing`, but Safari sends that key after the composition's end, unmarked, with keyCode
 // 229, so the composer keeps it from the keymap too. A plain Escape after it is the composer's
 // alone: over a draft it asks first, and the focus does not go back to the row as well.
-test.each(
-  COMPOSITION_MARKS
-)("an Escape that ends an IME composition in an agent's composer, marked by %s, leaves the draft and the focus there", async (_mark, composing) => {
-  const user = userEvent.setup();
-  const page = renderAgents();
+test.each(COMPOSITION_MARKS)(
+  "an Escape that ends an IME composition in an agent's composer, marked by %s, leaves the draft and the focus there",
+  async (_mark, composing) => {
+    const user = userEvent.setup();
+    const page = renderAgents();
 
-  try {
-    const region = await screen.findByRole("region", { name: "Agents" });
-    const planner = card(region, "Planner");
-    await expand(user, planner, "Planner");
-    const comment = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    await type(user, comment, "Still composing");
-    // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
-    // 229), so the composition's Escape is sent as the event itself.
-    fireEvent.keyDown(comment, { ...composing, key: "Escape" });
-    expect(comment).toHaveFocus();
-    expect(comment.value).toBe("Still composing");
-    expect(within(planner).queryByText("Discard draft?")).not.toBeInTheDocument();
+    try {
+      const region = await screen.findByRole("region", { name: "Agents" });
+      const planner = card(region, "Planner");
+      await expand(user, planner, "Planner");
+      const comment = within(planner).getByRole<HTMLTextAreaElement>("textbox", {
+        name: "Comment",
+      });
+      await type(user, comment, "Still composing");
+      // fireEvent: user-event types no key an input method marks (`isComposing`, or Safari's keyCode
+      // 229), so the composition's Escape is sent as the event itself.
+      fireEvent.keyDown(comment, { ...composing, key: "Escape" });
+      expect(comment).toHaveFocus();
+      expect(comment.value).toBe("Still composing");
+      expect(within(planner).queryByText("Discard draft?")).not.toBeInTheDocument();
 
-    await user.keyboard("{Escape}");
-    expect(within(planner).getByText("Discard draft?")).toBeInTheDocument();
-    expect(comment).toHaveFocus();
-    expect(comment.value).toBe("Still composing");
-  } finally {
-    page.view.unmount();
-    page.restore();
+      await user.keyboard("{Escape}");
+      expect(within(planner).getByText("Discard draft?")).toBeInTheDocument();
+      expect(comment).toHaveFocus();
+      expect(comment.value).toBe("Still composing");
+    } finally {
+      page.view.unmount();
+      page.restore();
+    }
   }
-});
+);
 
 const coreIssue: IssueSummary = {
   advances: [],

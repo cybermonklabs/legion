@@ -1586,7 +1586,7 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
       after.resume("alice");
       await settle();
       expect(send).toHaveBeenCalledTimes(1);
-      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(key);
+      expect((send.mock.calls[0]?.[1] as WriteBounds | undefined)?.key).toBe(key);
       expect(after.rows()).toEqual([]);
     } finally {
       send.mockRestore();
@@ -3120,7 +3120,7 @@ test("a resumed write that never left the page goes out under a key older than t
       const writes = neverSent(tab, spent, Date.now());
       await tick(60_000);
       expect(send).toHaveBeenCalledTimes(1);
-      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(spent);
+      expect((send.mock.calls[0]?.[1] as WriteBounds | undefined)?.key).toBe(spent);
       expect(writes.rows()).toEqual([]);
     } finally {
       send.mockRestore();
@@ -3147,7 +3147,7 @@ test("a resumed write that never left the page comes back interrupted, not expir
       writes.retry(resumed?.id ?? 0);
       await settle();
       expect(send).toHaveBeenCalledTimes(1);
-      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(spent);
+      expect((send.mock.calls[0]?.[1] as WriteBounds | undefined)?.key).toBe(spent);
     } finally {
       send.mockRestore();
       tab.close();
@@ -3217,7 +3217,7 @@ test("a resumed write that sends no key goes out under a key older than the life
       await tick(60_000);
       expect(send).toHaveBeenCalledTimes(1);
       expect(send.mock.calls[0]?.[0]).toEqual(put);
-      expect((send.mock.calls[0]?.[1] as WriteBounds).key).toBe(spent);
+      expect((send.mock.calls[0]?.[1] as WriteBounds | undefined)?.key).toBe(spent);
       expect(writes.rows()).toEqual([]);
     } finally {
       send.mockRestore();
@@ -3262,7 +3262,9 @@ test("a Retry of a write whose key is spent goes out under a new key", async () 
       writes.retry(row(writes)?.id ?? 0);
       await settle();
       expect(send).toHaveBeenCalledTimes(1);
-      expect((send.mock.calls[0]?.[1] as WriteBounds).key).not.toBe(spent);
+      const bounds = send.mock.calls[0]?.[1] as WriteBounds | undefined;
+      expect(bounds).toBeDefined();
+      expect(bounds?.key).not.toBe(spent);
       expect(writes.rows()).toEqual([]);
       expect(tab.kept(spent)).toBeUndefined();
     } finally {

@@ -179,28 +179,29 @@ test("Tab and Shift+Tab leave the focus in the box, and the open stands", async 
 // surface: the open stands, and what the reader typed stays. Chromium marks that Escape
 // `isComposing`; Safari sends it after its compositionend with `isComposing` false and keyCode
 // 229 (WebKit bug 165004).
-test.each(
-  COMPOSITION_MARKS
-)("an Escape that ends a composition, marked by %s, leaves the open standing with what was typed", async (_mark, marked) => {
-  const user = userEvent.setup();
-  const { promise, resolve } = Promise.withResolvers<typeof Surface>();
-  const view = render(<Shell source={chunk(() => promise)} />);
-  try {
-    await user.click(screen.getByRole("button", { name: "Open" }));
-    const box = screen.getByRole("textbox", { name: LOADING });
-    // fireEvent: an input method writes its text with no key of its own, so the text arrives as one
-    // change event and the composition's Escape as the event itself; user-event types no
-    // composition.
-    fireEvent.change(box, { target: { value: "日本" } });
-    fireEvent.keyDown(box, { ...marked, key: "Escape" });
-    expect(box).toHaveFocus();
-    await act(async () => resolve(Surface));
-    expect(screen.getByText('Surface with "日本"')).toBeDefined();
-  } finally {
-    resolve(Surface);
-    view.unmount();
+test.each(COMPOSITION_MARKS)(
+  "an Escape that ends a composition, marked by %s, leaves the open standing with what was typed",
+  async (_mark, marked) => {
+    const user = userEvent.setup();
+    const { promise, resolve } = Promise.withResolvers<typeof Surface>();
+    const view = render(<Shell source={chunk(() => promise)} />);
+    try {
+      await user.click(screen.getByRole("button", { name: "Open" }));
+      const box = screen.getByRole("textbox", { name: LOADING });
+      // fireEvent: an input method writes its text with no key of its own, so the text arrives as one
+      // change event and the composition's Escape as the event itself; user-event types no
+      // composition.
+      fireEvent.change(box, { target: { value: "日本" } });
+      fireEvent.keyDown(box, { ...marked, key: "Escape" });
+      expect(box).toHaveFocus();
+      await act(async () => resolve(Surface));
+      expect(screen.getByText('Surface with "日本"')).toBeDefined();
+    } finally {
+      resolve(Surface);
+      view.unmount();
+    }
   }
-});
+);
 
 // A press elsewhere takes the focus out of the box, and that calls the open off too.
 test("the focus leaving the box calls the open off", async () => {

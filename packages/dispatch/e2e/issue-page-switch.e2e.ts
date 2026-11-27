@@ -1,6 +1,7 @@
 import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
+import { editTitleButton } from "./issue-page-p";
 import { closeRail, openRail } from "./rail";
 import {
   FRAME_SHELL_CHUNK,
@@ -548,7 +549,9 @@ test("another tab turning the new issue page on while this tab's frame is on the
   // width; today's shell does not.
   const frameMain = page.locator("main[data-no-hover-preview]");
   await expect(frameMain, "the frame was drawn with its chunk held").toHaveCount(0);
-  await newPageHeading(page).click();
+  // The header lays its Edit title over the title's heading (`IssueTitleRow.tsx`), and that
+  // button opens the editor, as a reader's click on the title does.
+  await editTitleButton(page).click();
   const title = page.getByRole("textbox", { exact: true, name: "Issue title" });
   const unsent = "Ship the release notes, not sent yet";
   await title.fill(unsent);

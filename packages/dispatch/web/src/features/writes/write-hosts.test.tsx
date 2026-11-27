@@ -346,23 +346,24 @@ async function failTheIndicatorOverAHeldWrite(): Promise<{
 // be shown, with a Reload: never silence, since the indicator's rows are where a refused write
 // offers Retry and Discard, and the sign-in page's list is the reader's one warning of the writes
 // a sign-in as someone else drops. The reader did not open the list, so the alert takes no focus.
-test.each(
-  lists
-)("the %s whose render throws draws an alert in its place", async (_list, Host, region, list) => {
-  const logged = quietConsoleError();
-  const { view } = drawARefusedWrite(Host, <Fault />);
-  try {
-    const alert = await screen.findByRole("alert", { name: `Could not show ${list}.` });
-    expect(alert).toHaveTextContent(`Could not show ${list}.`);
-    expect(within(alert).getByRole("button", { name: "Reload" })).toBeDefined();
-    expect(screen.queryByRole("region", { name: region })).not.toBeInTheDocument();
-    expect(document.body).toHaveFocus();
-    expect(logged).toHaveBeenCalled();
-  } finally {
-    logged.mockRestore();
-    view.unmount();
+test.each(lists)(
+  "the %s whose render throws draws an alert in its place",
+  async (_list, Host, region, list) => {
+    const logged = quietConsoleError();
+    const { view } = drawARefusedWrite(Host, <Fault />);
+    try {
+      const alert = await screen.findByRole("alert", { name: `Could not show ${list}.` });
+      expect(alert).toHaveTextContent(`Could not show ${list}.`);
+      expect(within(alert).getByRole("button", { name: "Reload" })).toBeDefined();
+      expect(screen.queryByRole("region", { name: region })).not.toBeInTheDocument();
+      expect(document.body).toHaveFocus();
+      expect(logged).toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+      view.unmount();
+    }
   }
-});
+);
 
 // A chunk that fails to download online under the pending-writes indicator draws no alert, and
 // never nothing: a line in the indicator's place, drawn from the store's rows with no chunk

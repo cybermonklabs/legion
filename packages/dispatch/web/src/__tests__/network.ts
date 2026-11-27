@@ -155,7 +155,8 @@ const network = defineNetwork({
   },
 });
 
-network.enable();
+// `enable()` may answer a promise (msw's `MaybePromise`): the preload's tests start once it settles.
+await network.enable();
 
 /** The routes this test answers, for the rest of it: the preload forgets them after each test. */
 export function answerRequests(...handlers: RequestHandler[]): void {
