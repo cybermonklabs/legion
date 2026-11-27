@@ -344,6 +344,54 @@ test("a press the browser answers inside an atom, past the end of its last line,
   }
 });
 
+/** A line's last text, which ends with a space the line's end collapses. */
+const LINE_END = "the second line ends with ";
+/** A picture whose reference names no artifact, as the view draws it: a link with no words. */
+const EMPTY_LINK = '<a data-row-written="" href="/CORE-1"></a>';
+
+/** A press past the end of the line `LINE_END` begins, in a paragraph of `LINE_END` and then
+ *  `rest`, which Chromium answers in `LINE_END`, before its last space. */
+function pressBeforeLastSpace(rest: string): CaretAt {
+  return pressIn(`<p>${LINE_END}${rest}</p>`, LINE_END, LINE_END.length - 1);
+}
+
+// Chromium answers a point past the end of a line whose last text ends with a space with a place
+// in that text before the space, which the line's end collapses, and so before what follows the
+// text on the line: a picture whose reference names no artifact, drawn as a link with no words in
+// one box of no width. Such a place stands at the end of its line, so the press counts the space
+// and goes past the atom, to the hard break that ends the line or to the words' end, and says it
+// is past the atom. An element drawn in a box after the place keeps the press where the browser
+// answered it, before that element.
+test("a press the browser answers before a line's last space, with an empty atom after it, goes to the end of the line", () => {
+  const empty = [new DOMRect(718, 495, 0, 19)];
+  expect(withLines(empty, () => pressBeforeLastSpace(`${EMPTY_LINK}<br>Next line.`))).toEqual({
+    x: 1,
+    y: 2,
+    offset: LINE_END.length,
+    pastAtom: true,
+  });
+});
+
+test("a press the browser answers before the words' last space, with an empty atom that ends them, goes to their end", () => {
+  const empty = [new DOMRect(718, 519, 0, 19)];
+  expect(withLines(empty, () => pressBeforeLastSpace(EMPTY_LINK))).toEqual({
+    x: 1,
+    y: 2,
+    offset: LINE_END.length,
+    pastAtom: true,
+  });
+});
+
+test("a press the browser answers before a line's last space stays there where an element in a box follows it", () => {
+  const drawn = [new DOMRect(678, 495, 58, 19)];
+  expect(withLines(drawn, () => pressBeforeLastSpace(`${HTML_ATOM}<br>Next line.`))).toEqual({
+    x: 1,
+    y: 2,
+    offset: LINE_END.length - 1,
+    word: ["ends ", "with", " \nNext", 4],
+  });
+});
+
 /** The press at the end of `NOTE` at the point (`x`, `y`): it stays inside the atom after the
  *  note, at its start, or with `pastAtom`, goes after it. */
 function noteEnd(x: number, y: number, pastAtom?: true): CaretAt {
