@@ -27,6 +27,8 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
+	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -188,6 +190,12 @@ type bucketAccess struct {
 // kind and no impersonation chain; and nothing is uploaded through a signed address. A signed
 // download is HTTPS on workspace.CloudStorageHost, path style.
 //
+// Every word Google's side answers is another party's, and a production request carries the
+// pod's bearer, which whatever answers in Google's place can quote: each failure of a Storage or
+// IAM Credentials call is read by the rule with every credential its requests carried redacted
+// (oauth2call.Scope over the client's oauth2call.RefusalClient), and no field of an answer prints
+// as it came. The account the metadata server names is held to the rule too (openBucketAt).
+//
 // Where STORAGE_EMULATOR_HOST is set, it must be a loopback host:port (emulatorHost), refused
 // before any request otherwise. Storage and IAM Credentials requests then go to http://<host> with
 // no credential, the identity is EmulatorEmail, and an address names
@@ -199,6 +207,18 @@ func openBucket(ctx context.Context, name string, repo ghrepo.Repository) (*buck
 
 // openBucketAt is openBucket with a production bucket's Storage and IAM Credentials requests sent
 // to at, a test's seam: emulator mode takes its one address from STORAGE_EMULATOR_HOST.
+//
+// A production bucket's Storage and IAM Credentials clients send through one HTTP client of the
+// cache's, which carries the token: oauth2.Transport sets the bearer on each request, over a
+// RefusalClient that records each request as sent, bearer and all, so the rule reads each call's
+// failure with it redacted; and the client follows no redirect (redirects.Refused), since
+// oauth2.Transport would set the bearer on a redirect's request as well, to whatever host its
+// Location names, and Cloud Storage's JSON API and IAM Credentials answer none a call must follow
+// (a resumable upload's 308 names no Location, which net/http hands back as the answer). The
+// clients add no credential of their own and look for none (option.WithoutAuthentication: the
+// Storage client would otherwise look for application default credentials). The metadata server's
+// account is refused where the rule does not print it as it came (oauth2call.Field), before any
+// address is signed as it or any refusal names it.
 func openBucketAt(ctx context.Context, name string, repo ghrepo.Repository, at googleEndpoints) (*bucket, error) {
 	if name == "" {
 		return nil, nil
@@ -220,17 +240,35 @@ func openBucketAt(ctx context.Context, name string, repo ghrepo.Repository, at g
 		})
 	}
 	identity := metadata.NewWithOptions(&metadata.Options{})
-	email, err := identity.EmailWithContext(ctx, "default")
+	// The metadata request carries no credential, so its error is read by the rule with nothing
+	// to redact: the rule's reading of the metadata server's words.
+	read := oauth2call.Scope[string](ctx)
+	email, err := oauth2call.Call(read.Read(identity.EmailWithContext(read.Context(), "default")))
 	if err != nil {
 		return nil, fmt.Errorf("read the cache's Google service account from the metadata server: %w", err)
 	}
 	if email == "" {
 		return nil, errors.New("the metadata server names no Google service account for the cache")
 	}
-	tokens := option.WithTokenSource(oauth2.ReuseTokenSourceWithExpiry(nil, metadataTokens{identity}, tokenEarlyExpiry))
+	// The account is signed as and named in each refusal of a signature, so one the rule does not
+	// print as it came is refused here, in words that name none of it.
+	if oauth2call.Field(email) != email {
+		return nil, errors.New("the metadata server names a Google service account the rule does not print as it came (not printed)")
+	}
+	tokens := oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(metadataTokens{identity}), tokenEarlyExpiry)
+	signed := &oauth2.Transport{
+		Source: oauth2call.TokenSource(tokens),
+		Base:   oauth2call.RefusalClient(&http.Client{}).Transport,
+	}
+	client := option.WithHTTPClient(oauth2call.RefusalClient(redirects.Refused(&http.Client{Transport: signed})))
 	// The address's Hostname is set, so that no environment variable moves a production address
 	// elsewhere: storage.SignedURL takes STORAGE_EMULATOR_HOST's host where no Hostname is set.
-	production := bucketAccess{email: email, hostname: workspace.CloudStorageHost, storage: []option.ClientOption{tokens}, iam: []option.ClientOption{tokens}}
+	production := bucketAccess{
+		email:    email,
+		hostname: workspace.CloudStorageHost,
+		storage:  []option.ClientOption{option.WithoutAuthentication(), client},
+		iam:      []option.ClientOption{option.WithoutAuthentication(), client},
+	}
 	if at.storage != "" {
 		production.storage = append(production.storage, option.WithEndpoint(at.storage))
 	}
@@ -267,13 +305,14 @@ func newBucket(ctx context.Context, name string, repo ghrepo.Repository, through
 }
 
 // emulatorHost is value, STORAGE_EMULATOR_HOST's, where it is a loopback host:port: an address of
-// 127.0.0.0/8 or ::1, or localhost, then a port. Anything else is refused, naming it, a URL and a
-// bare host among them: emulator mode sends every Storage and IAM Credentials request to that
-// address with no credential and signs downloads for it, so it takes only a double on the cache's
-// own host.
+// 127.0.0.0/8 or ::1, or localhost, then a port. Anything else is refused, a URL and a bare host
+// among them, naming the variable alone: a refused value is no loopback host:port, so it can be a
+// URL with user information or anything else a person put there, and is printed nowhere. Emulator
+// mode sends every Storage and IAM Credentials request to that address with no credential and
+// signs downloads for it, so it takes only a double on the cache's own host.
 func emulatorHost(value string) (string, error) {
 	refuse := func() error {
-		return fmt.Errorf("%s is %q, not a loopback host:port (an address of 127.0.0.0/8 or ::1, or localhost, then a port): the cache takes a Cloud Storage emulator only on its own host", emulatorHostEnv, value)
+		return fmt.Errorf("%s is not a loopback host:port (an address of 127.0.0.0/8 or ::1, or localhost, then a port): the cache takes a Cloud Storage emulator only on its own host", emulatorHostEnv)
 	}
 	host, port, err := net.SplitHostPort(value)
 	if err != nil {
@@ -304,7 +343,10 @@ type metadataTokens struct {
 }
 
 // Token asks the metadata server for the account's token, for tokenScope. Its error never quotes
-// the answer, which may hold a token.
+// an answer that holds a token: one the metadata server answered 200 is read here and refused in
+// fixed words. Another status is metadata's error, which quotes the answer's body; the metadata
+// request carries no credential for it to echo, and the bucket's client reads the error through
+// the rule all the same (oauth2call.TokenSource, openBucketAt).
 func (m metadataTokens) Token() (*oauth2.Token, error) {
 	answer, err := m.client.GetWithContext(context.Background(), "instance/service-accounts/default/token?scopes="+url.QueryEscape(tokenScope))
 	if err != nil {
@@ -331,10 +373,12 @@ type iamSigner struct {
 }
 
 // Sign answers IAM Credentials' signature of payload, decoded from the signedBlob it answers in
-// base64; the request ends with ctx.
+// base64; the request ends with ctx. Its failure is read by the rule with the credential the
+// request carried redacted (openBucketAt).
 func (s iamSigner) Sign(ctx context.Context, payload []byte) ([]byte, error) {
 	request := &iamcredentials.SignBlobRequest{Payload: base64.StdEncoding.EncodeToString(payload)}
-	answer, err := s.service.Projects.ServiceAccounts.SignBlob("projects/-/serviceAccounts/"+s.email, request).Context(ctx).Do()
+	call := oauth2call.Scope[*iamcredentials.SignBlobResponse](ctx)
+	answer, err := oauth2call.Call(call.Read(s.service.Projects.ServiceAccounts.SignBlob("projects/-/serviceAccounts/"+s.email, request).Context(call.Context()).Do()))
 	if err != nil {
 		return nil, fmt.Errorf("sign as %s through IAM Credentials: %w", s.email, err)
 	}
@@ -371,17 +415,21 @@ func (b *bucket) objectName(path string) (string, error) {
 // list is every pack and index of the repository in the bucket, by object name: the objects under
 // its prefix, which the list request names (storage.Query.Prefix), so that Cloud Storage answers
 // nothing of another repository's, and of those each whose name is one the cache writes
-// (clonePath). Every other name the list answered is in ignored, for its caller to log; the
-// caller never deletes one, since the cache did not write it.
+// (clonePath). Every other name the list answered is in ignored, for its caller to count: such a
+// name is Cloud Storage's words, which can quote the bearer the list carried, and prints nowhere.
+// The caller never deletes one, since the cache did not write it. The list's requests, one a page,
+// are recorded in one scope, which reads its failure.
 func (b *bucket) list(ctx context.Context) (objects map[string]storedObject, ignored []string, err error) {
 	objects = map[string]storedObject{}
-	it := b.handle.Objects(ctx, &storage.Query{Prefix: b.prefix})
+	call := oauth2call.Scope[struct{}](ctx)
+	it := b.handle.Objects(call.Context(), &storage.Query{Prefix: b.prefix})
 	for {
 		attrs, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			return objects, ignored, nil
 		}
 		if err != nil {
+			_, err = oauth2call.Call(struct{}{}, call.Err(err))
 			return nil, nil, fmt.Errorf("list %s in bucket %s: %w", b.prefix, b.name, err)
 		}
 		if _, err := b.clonePath(attrs.Name); err != nil {
@@ -398,7 +446,9 @@ func (b *bucket) list(ctx context.Context) (objects map[string]storedObject, ign
 // for the file where its size, CRC32C and sha256Metadata are all the file's, with nothing uploaded;
 // one that differs in any of them is an error naming the name and the field, and is left as it is:
 // put never replaces or deletes an object, since a pack's name is its checksum and an object of
-// that name holding other bytes is a fault to report, not a pack to overwrite.
+// that name holding other bytes is a fault to report, not a pack to overwrite. Each read and the
+// upload is a call of its own, whose failure is read by the rule with the credential its requests
+// carried redacted (openBucketAt).
 //
 // The upload streams the file (a storage.Writer holds one chunk of it at a time), creates the
 // object only where none of its name exists (ifGenerationMatch=0), sets sha256Metadata to the
@@ -414,20 +464,23 @@ func (b *bucket) put(ctx context.Context, name string, local localObject) (uploa
 		return false, fmt.Errorf("upload %s: %w", name, err)
 	}
 	object := b.handle.Object(name)
-	attrs, err := object.Attrs(ctx)
+	read := oauth2call.Scope[*storage.ObjectAttrs](ctx)
+	attrs, err := oauth2call.Call(read.Read(object.Attrs(read.Context())))
 	switch {
 	case err == nil:
-		return false, b.reuse(storedOf(attrs), local)
+		return false, b.reuse(name, storedOf(attrs), local)
 	case !errors.Is(err, storage.ErrObjectNotExist):
 		return false, fmt.Errorf("read %s in bucket %s: %w", name, b.name, err)
 	}
-	created, err := upload(ctx, object, local)
+	write := oauth2call.Scope[storedObject](ctx)
+	created, err := oauth2call.Call(write.Read(upload(write.Context(), object, local)))
 	if statusOf(err) == http.StatusPreconditionFailed {
-		attrs, err := object.Attrs(ctx)
+		again := oauth2call.Scope[*storage.ObjectAttrs](ctx)
+		attrs, err := oauth2call.Call(again.Read(object.Attrs(again.Context())))
 		if err != nil {
 			return false, fmt.Errorf("read %s in bucket %s again, after another upload created it first: %w", name, b.name, err)
 		}
-		return false, b.reuse(storedOf(attrs), local)
+		return false, b.reuse(name, storedOf(attrs), local)
 	}
 	if err != nil {
 		return false, fmt.Errorf("upload %s to bucket %s: %w", name, b.name, err)
@@ -469,11 +522,12 @@ func upload(ctx context.Context, object *storage.ObjectHandle, local localObject
 	return storedOf(w.Attrs()), nil
 }
 
-// reuse takes o, the object already under its name, for local's file where it holds the same
-// bytes (differs), and otherwise refuses it, leaving it as it is.
-func (b *bucket) reuse(o storedObject, local localObject) error {
+// reuse takes o, the object already under name, for local's file where it holds the same bytes
+// (differs), and otherwise refuses it, leaving it as it is. The refusal names the object by name,
+// the name the cache asked for: o's own is Cloud Storage's words.
+func (b *bucket) reuse(name string, o storedObject, local localObject) error {
 	if field := o.differs(local); field != "" {
-		return fmt.Errorf("bucket %s already holds %s with another %s: the cache never replaces an object, so it leaves it as it is", b.name, o.Name, field)
+		return fmt.Errorf("bucket %s already holds %s with another %s: the cache never replaces an object, so it leaves it as it is", b.name, name, field)
 	}
 	return nil
 }
@@ -490,7 +544,8 @@ func (b *bucket) delete(ctx context.Context, name string, generation int64) erro
 	if generation <= 0 {
 		return fmt.Errorf("delete %s: %d is no generation of an object", name, generation)
 	}
-	err := b.handle.Object(name).If(storage.Conditions{GenerationMatch: generation}).Delete(ctx)
+	call := oauth2call.Scope[struct{}](ctx)
+	_, err := oauth2call.Call(struct{}{}, call.Err(b.handle.Object(name).If(storage.Conditions{GenerationMatch: generation}).Delete(call.Context())))
 	if err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
 		return fmt.Errorf("delete %s (generation %d) from bucket %s: %w", name, generation, b.name, err)
 	}
@@ -534,16 +589,20 @@ func storedOf(attrs *storage.ObjectAttrs) storedObject {
 }
 
 // differs names the first of the size, the CRC32C and the sha256Metadata in which o is not
-// local's, with both values, or answers "" where all three match: the one test of whether an
-// object in the bucket holds the local file's bytes.
+// local's, or answers "" where all three match: the one test of whether an object in the bucket
+// holds the local file's bytes. A size and a CRC32C are named with both values, figures the cache
+// reads as numbers. The sha256Metadata o states is Cloud Storage's words, which can quote the
+// bearer the read carried, so it is named only as missing or as not the local file's.
 func (o storedObject) differs(local localObject) string {
 	switch {
 	case o.Size != local.Size:
 		return fmt.Sprintf("size (%d bytes, the local file's %d)", o.Size, local.Size)
 	case o.CRC32C != local.CRC32C:
 		return fmt.Sprintf("CRC32C (%08x, the local file's %08x)", o.CRC32C, local.CRC32C)
+	case o.SHA256 != local.SHA256 && o.SHA256 == "":
+		return fmt.Sprintf("%s metadata (none, the local file's %s)", sha256Metadata, local.SHA256)
 	case o.SHA256 != local.SHA256:
-		return fmt.Sprintf("%s metadata (%q, the local file's %s)", sha256Metadata, o.SHA256, local.SHA256)
+		return fmt.Sprintf("%s metadata (not the local file's %s)", sha256Metadata, local.SHA256)
 	}
 	return ""
 }

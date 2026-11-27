@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The repository cache's refusal of an object already in its bucket no longer quotes what Cloud
+  Storage answered of it. It named the object by the name the answer stated, and a sha256 metadata
+  that was not the local file's by the value the answer stated, both of which whatever answers in
+  Cloud Storage's place can make the bearer the read carried. It now names the object by the name
+  the cache asked for, and the sha256 metadata as `(not the local file's <digest>)`, or
+  `(none, the local file's <digest>)` for an object that states none. A size and a CRC32C still
+  print with both values.
+time: 2026-11-27T01:55:21Z
+custom:
+    Issue: pr4368

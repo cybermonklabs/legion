@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The repository cache's Cloud Storage and IAM Credentials calls no longer print the pod's bearer
+  or send it where a redirect points. A refusal's message, which Google's client library quotes and
+  whatever answers in Google's place can write to echo the request, and the failure of a call that
+  got no answer, are read by the redaction rule with every credential the call's requests carried
+  redacted. Both clients send through one HTTP client of the cache's, which sets the metadata
+  server's token on each request and follows no redirect: a 3xx is the call's refusal by its
+  status, and the host its `Location` names is sent nothing. The metadata server's refusal of a
+  token is read by the rule as well.
+time: 2026-11-27T01:55:21Z
+custom:
+    Issue: pr4368

@@ -996,8 +996,8 @@ func testRestartCountsFromItsOwnSwitch(t *testing.T) {
 // testOtherPrefixesUntouched: with objects of another repository of the owner, of one whose name
 // begins with this one's, of this one's names in their configured case, and a file under the
 // prefix that is no pack, beside a stray pack of the cache's own, syncs over two hours delete the
-// stray alone, send no other delete, leave each other object at its generation, and log the file
-// that is no pack once.
+// stray alone, send no other delete, leave each other object at its generation, and count the file
+// that is no pack once in the log, naming it nowhere.
 func testOtherPrefixesUntouched(t *testing.T) {
 	r := newPacksRig(t)
 	file := strings.TrimPrefix(strayName(t), testPrefix)
@@ -1032,14 +1032,17 @@ func testOtherPrefixesUntouched(t *testing.T) {
 	if !slices.Equal(deleted, []string{own}) {
 		t.Errorf("the syncs sent deletes of %q, not of %s alone", deleted, own)
 	}
-	notes := 0
+	counted := 0
 	for _, line := range r.log.all() {
-		if strings.Contains(line, testPrefix+"notes.txt") {
-			notes++
+		if strings.Contains(line, "notes.txt") {
+			t.Errorf("the log names the file under the prefix that is no pack: %q", line)
+		}
+		if strings.Contains(line, "no pack or index the cache writes, 1 of them not seen before") {
+			counted++
 		}
 	}
-	if notes != 1 {
-		t.Errorf("the file under the prefix that is no pack was logged %d times, not once: %q", notes, r.log.all())
+	if counted != 1 {
+		t.Errorf("the file under the prefix that is no pack was counted %d times, not once: %q", counted, r.log.all())
 	}
 }
 

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The repository cache no longer prints a `STORAGE_EMULATOR_HOST` it refuses. The refusal of a
+  value that is not a loopback host:port quoted the value, so a URL with user information
+  (`http://user:password@host:port`) printed whole. It now names the variable alone, in the same
+  words for every value: `STORAGE_EMULATOR_HOST is not a loopback host:port (...)`.
+time: 2026-11-27T01:55:21Z
+custom:
+    Issue: pr4368

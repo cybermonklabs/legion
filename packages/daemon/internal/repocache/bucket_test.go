@@ -651,11 +651,13 @@ func testEmulatorSendsNoCredential(t *testing.T, mode bucketMode) {
 }
 
 // testEmulatorHostIsLoopback: a STORAGE_EMULATOR_HOST that is not a loopback address or localhost
-// with a port is refused, naming the value, and no request reaches the double; a loopback
-// host:port of each form opens a bucket, also with no request.
+// with a port is refused naming the variable, in the same words whatever the value, which it
+// prints nowhere, and no request reaches the double; a loopback host:port of each form opens a
+// bucket, also with no request.
 func testEmulatorHostIsLoopback(t *testing.T, mode bucketMode) {
 	d := mode.setup(t, &bucketClock{})
 	ctx := testwait.Context(t)
+	var refusal string
 	for _, value := range []string{
 		"storage.googleapis.com:443",
 		"localhost.example.com:4443",
@@ -670,8 +672,16 @@ func testEmulatorHostIsLoopback(t *testing.T, mode bucketMode) {
 		"127.0.0.1:65536",
 	} {
 		t.Setenv(emulatorHostEnv, value)
-		if b, err := openBucket(ctx, testBucket, testRepo); b != nil || err == nil || !strings.Contains(err.Error(), value) {
-			t.Errorf("STORAGE_EMULATOR_HOST=%s opened %v, %v, not a refusal naming it", value, b, err)
+		b, err := openBucket(ctx, testBucket, testRepo)
+		if b != nil || err == nil || !strings.Contains(err.Error(), emulatorHostEnv) {
+			t.Errorf("STORAGE_EMULATOR_HOST=%s opened %v, %v, not a refusal naming the variable", value, b, err)
+			continue
+		}
+		if refusal == "" {
+			refusal = err.Error()
+		}
+		if err.Error() != refusal {
+			t.Errorf("STORAGE_EMULATOR_HOST=%s was refused as %q, not in the words every value is refused in, %q", value, err, refusal)
 		}
 	}
 	_, port, _ := strings.Cut(d.running.Addr(), ":")

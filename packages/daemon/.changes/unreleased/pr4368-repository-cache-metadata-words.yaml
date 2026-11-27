@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The repository cache reads the metadata server's refusal of its account by the redaction rule,
+  which prints a URL in it without its user information or query values, and none of the refusal's
+  words where it cannot read every URL in them. An account the metadata server names that the rule
+  does not print as it came (one with `user:password@` before its domain, for example) is refused
+  when the bucket opens, in words that name none of it, where the cache signed its addresses as
+  it and quoted it in each refusal of a signature.
+time: 2026-11-27T01:55:21Z
+custom:
+    Issue: pr4368
