@@ -5335,6 +5335,18 @@ The replay never takes as made a change that its GitHub cannot hold.
 It refuses the change by name, and the replay is `HARNESS`: a GraphQL `mutation` and a REST `request` that `gh-standin.ts` recorded by those names, any other `gh pr` command, a change of a pull request that the replay's GitHub does not hold (a comment on an issue that is no pull request among them), a new pull request at another commit than its branch's head or on a branch that has an open pull request into that base, a merge or an enqueue of a pull request that is not open, and a close or a reopen of a merged pull request.
 Auto-merge and the merge queue are held, and not served: the daemon reads neither.
 
+The replay's GitHub sends the daemon no webhook.
+So the daemon hears of a review only from its own read of the issue's pull request (`readIssuePullRequest`, `readReviews`).
+A completion that the daemon took queues that read, and the read runs after the daemon has answered the completion.
+After a call whose `handoff_complete` the daemon answered `200`, and that is not a production check's report, the replay waits before it reads the phase.
+It waits for each deciding review (`APPROVED` or `CHANGES_REQUESTED`) that the role submitted in this replay, that the pull request's record has not seen, and that the daemon's own rule takes (`workflow.Engine.RefusesRound`, as `reviewToApply` asks it).
+The daemon has recorded a review when the record has seen that review or a newer one (`ReviewSeen`), or when its `processed_events` holds the fact that its read applied for the review.
+The replay asks again every 25 ms, and it asks the first time at once.
+After 30 s it reads the phase as it stands, and the effect that needs the move fails as an effect fails; the replay is not `HARNESS` for it.
+Only the test log names the wait: `replay.json` and `effects.json` hold no key and no value of it.
+The replay does not wait for a review that the daemon's rule refuses, because the daemon never records such a review: a review of another author, a review whose footer names another session than the reviewer claim's, another head than the pull request's, or no head, and a review submitted while the reviewer's claim records no session.
+It does not wait for a comment, for a review of the case's world, or after any other call or change: then it reads the phase at once.
+
 `outcome.ts` writes `workspace-ops.jsonl` and `workspace.pack` at the end of each lane R run (`git-world.ts record`): each jj operation of the run's workspace with its start, end and the commit `@-` named, and the objects of those commits.
 Those objects go into the replay workspace's object store at the start, on no ref, so a commit the role made and never pushed keeps its id, parents and tree, and is seen only once its recorded move or push is applied; the run's own `remote.git` and `workspace`, where present, serve as further sources of pushed commits.
 A capture made before `outcome.ts` recorded the workspace has no `workspace-ops.jsonl`: run `bun packages/pi-legion/scripts/skill-scenarios/git-world.ts record <workspace> <dir>` on a copy of its original job archive's run directory first.

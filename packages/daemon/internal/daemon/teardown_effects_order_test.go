@@ -15,7 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // Lane D's replay order (plan T4, lane D step 1): the run starts from the case's starting state, and
@@ -882,6 +887,103 @@ func teardownEffectsReviewFooter(body string, mine func(session string) bool, se
 		object = object[:v.start] + string(quoted) + object[v.stop:]
 	}
 	return body[:from] + object + body[from+end:]
+}
+
+// teardownEffectsReviewID is the id under which the scratch GitHub lists the review at index i of
+// a pull request's reviews (teardownEffectsGitHub.serve): GitHub's ids start at 1.
+func teardownEffectsReviewID(i int) int64 { return int64(i) + 1 }
+
+// teardownEffectsReadQueued reports whether replies, the requests one legion call sent the daemon,
+// hold a phase completion the daemon took: a handoff_complete answered 200 whose request names no
+// production check (no checkOpenedAt, which api's checkReport takes). Only such a completion queues
+// the daemon's read of the issue's pull request (api's handoffCompleted hook, the daemon's
+// readHandedOff), the one moment after its boot that the daemon reads a replay's reviews, since
+// the scratch GitHub sends no webhook. A completion the daemon refused, a check report, a call
+// that completes nothing, and a change, which is no call, queue no read.
+func teardownEffectsReadQueued(replies []teardownEffectsHTTP) bool {
+	return slices.ContainsFunc(teardownEffectsCompletions(replies), func(x teardownEffectsHTTP) bool {
+		var asked api.HandoffCompleteRequest
+		_ = json.Unmarshal(x.Body, &asked)
+		return x.Status == 200 && asked.CheckOpenedAt == nil
+	})
+}
+
+// teardownEffectsAwaitedReviews are the reviews of pr that the replay waits for the daemon to
+// record before it reads the phase after a call that queued the daemon's read of the issue
+// (teardownEffectsReadQueued), in the scratch GitHub's order, and none where the replay reads the
+// phase at once. reviews is the scratch GitHub's list of pr's reviews, in its order, and own the
+// number of them the case's world gave pr: each review after those is one the role submitted in
+// this replay (teardownEffectsScratch.change). pr is the pull request as that read judges its
+// reviews: the record's, with the newest review the record has seen (record.PullRequest.ReviewSeen),
+// at the head the read follows the record to first. engine judges a review as the daemon does, and
+// reviewerSession is the session the reviewer's claim records (workflow.Engine.ReviewerSession).
+//
+// Each review is judged as the daemon's read judges a review it lists (reviewToApply): read from
+// the list, it decides (approved or changes_requested), it is newer than the review the record has
+// seen, and the daemon's own rule refuses it nothing (workflow.Engine.RefusesRound). The read
+// applies the newest of them, and the record then holds its order, which is after every other.
+// The daemon never records a review its rule refuses, so the replay does not wait for one, and a
+// refused review costs no run the bound: another author's review, which the daemon never takes
+// from the list, whatever write access GitHub gives the author, so that access is not read here; a
+// review whose footer names a session that is not the reviewer's, another head or no head; and a
+// review that waits until the reviewer's claim records a session. A comment decides nothing, and a
+// review of the case's world is not the role's: the replay waits for neither.
+func teardownEffectsAwaitedReviews(pr record.PullRequest, reviews []teardownEffectsReview, own int, engine *workflow.Engine, reviewerSession string) []intake.PullRequestReview {
+	var awaited []intake.PullRequestReview
+	for i := own; i < len(reviews); i++ {
+		listed := reviews[i]
+		review := intake.PullRequestReview{Repo: pr.Repo, Number: pr.Number, ID: teardownEffectsReviewID(i), SubmittedAt: listed.At,
+			State: strings.ToLower(listed.State), CommitID: listed.Commit, Author: listed.Author, Body: listed.Body, ReadFromList: true}
+		if review.Decides() && review.Order().After(pr.ReviewSeen) && engine.RefusesRound(review, pr, reviewerSession).Reason == "" {
+			awaited = append(awaited, review)
+		}
+	}
+	return awaited
+}
+
+// teardownEffectsSettle is how the replay reads the phase after a legion call (phaseAfter): bound
+// and poll are how long it waits for the daemon to record the reviews the call left it to record,
+// and how often it asks; unrecorded answers those of the reviews it is given that the daemon has
+// not recorded yet; phase reads the issue's phase as the daemon holds it now; and logf writes the
+// test log, the one place the wait is named.
+type teardownEffectsSettle struct {
+	bound, poll time.Duration
+	unrecorded  func([]intake.PullRequestReview) []intake.PullRequestReview
+	phase       func() string
+	logf        func(format string, args ...any)
+}
+
+// phaseAfter is the phase after the legion call named call, which left awaited
+// (teardownEffectsAwaitedReviews) for the daemon to record. With none awaited it is read at once.
+// Otherwise it is read once the daemon has recorded each, asked every poll from the first moment,
+// or once bound has passed, as the phase stands then. A phase read at the bound is judged as any
+// phase is, so an effect it does not show fails as an effect fails, and the replay is not HARNESS
+// for it. The wait is named in the test log alone: the call's record holds the phase and nothing
+// of the wait, so replay.json and effects.json read as those of a call that did not wait, which is
+// what heldout-reader-receipt.ts, reading both as strict objects, takes.
+func (s teardownEffectsSettle) phaseAfter(call string, awaited []intake.PullRequestReview) string {
+	if len(awaited) == 0 {
+		return s.phase()
+	}
+	started, left := time.Now(), awaited
+	if testwait.Holds(s.bound, s.poll, func() bool {
+		left = s.unrecorded(left)
+		return len(left) == 0
+	}) {
+		s.logf("%s: waited %s for the daemon to record %s before reading the phase", call, time.Since(started).Round(time.Millisecond), teardownEffectsReviewsText(awaited))
+	} else {
+		s.logf("%s: the daemon did not record %s within %s; the phase is read as it stands", call, teardownEffectsReviewsText(left), s.bound)
+	}
+	return s.phase()
+}
+
+// teardownEffectsReviewsText names reviews, as the test log names them.
+func teardownEffectsReviewsText(reviews []intake.PullRequestReview) string {
+	named := make([]string, len(reviews))
+	for i, review := range reviews {
+		named[i] = fmt.Sprintf("review %d (%s) of pull request %s#%d", review.ID, review.State, review.Repo, review.Number)
+	}
+	return strings.Join(named, ", ")
 }
 
 // teardownEffectsScratch is the replay's scratch GitHub as a pull request change reads and makes it:
@@ -2241,6 +2343,244 @@ func TestTeardownEffectsReviewFooterNamesTheReplaysSession(t *testing.T) {
 			read := intake.PullRequestReview{Body: got}
 			if read.LegionSession() != row.session || read.LegionHead() != row.head {
 				t.Fatalf("the daemon reads the session %q and the head %q, want %q and %q", read.LegionSession(), read.LegionHead(), row.session, row.head)
+			}
+		})
+	}
+}
+
+// The reviews the tests of the replay's wait for a review are made of: rev-double-write's
+// known-good approval, its footer naming the replay's session and the pull request's head, the
+// pull request it reviews, and the daemon's judgement of a review.
+const (
+	teardownEffectsTestSession = "01b7c2d4-5e6f-4a8b-9c0d-1e2f3a4b5c6d"
+	teardownEffectsTestHead    = "17ce09f6fa69fce39aaf7b56e7c81d2abe3ef0dd"
+	teardownEffectsTestSaid    = "I read the change at the head: t1 is delivered as its block asks, and check k1 passes at the head.\n\nFast-follow: none\n\n"
+)
+
+var teardownEffectsTestSubmitted = time.Date(2030, 1, 7, 15, 4, 0, 0, time.UTC)
+
+// teardownEffectsTestFooter is the review body the role wrote, its Legion footer naming session
+// and head.
+func teardownEffectsTestFooter(session, head string) string {
+	return teardownEffectsTestSaid + `<!-- legion: {"session":"` + session + `","phase":"review","head":"` + head + `","entry":"1"} -->`
+}
+
+// teardownEffectsTestReview is a review the review App submitted with body, minutes after the
+// case's review time.
+func teardownEffectsTestReview(state, body string, minutes int) teardownEffectsReview {
+	return teardownEffectsReview{Author: teardownEffectsReviewer, State: state, Commit: teardownEffectsTestHead, Body: body, At: teardownEffectsTestSubmitted.Add(time.Duration(minutes) * time.Minute)}
+}
+
+// teardownEffectsTestPull is the pull request the reviews are of, whose record has seen seen.
+func teardownEffectsTestPull(seen record.ReviewOrder) record.PullRequest {
+	return record.PullRequest{Issue: "ACME-12", Repo: "acme/widgets", Number: 7, HeadSHA: teardownEffectsTestHead, State: record.PullRequestOpen, ReviewSeen: seen}
+}
+
+// teardownEffectsTestEngine judges a review as the daemon does, with the review App's login the
+// scratch GitHub's reviews carry.
+func teardownEffectsTestEngine() *workflow.Engine {
+	return workflow.New(record.NewStore(), workflow.Config{Project: "ACME", ReviewAppLogin: teardownEffectsReviewer}, quietLogger())
+}
+
+// Before the replay reads the phase after a call that queued the daemon's read of the issue, it
+// waits for the daemon to record each deciding review the role submitted in this replay that the
+// daemon's own rule takes (workflow.Engine.RefusesRound, as the daemon's read of the reviews asks
+// it) and that the pull request's record has not seen. A review the record has seen, no deciding
+// review, a comment, a review of the case's world, and a review the rule refuses (another author's,
+// a footer naming another session, another head or none, or one that waits for the reviewer's
+// session) make no wait, since the daemon records none of them: the phase is read at once.
+func TestTeardownEffectsAwaitsTheReviewTheDaemonTakes(t *testing.T) {
+	t.Parallel()
+	const other = "567aff47ddca30e9e9847574796288439ef204e3"
+	engine := teardownEffectsTestEngine()
+	review, footer, session, head := teardownEffectsTestReview, teardownEffectsTestFooter, teardownEffectsTestSession, teardownEffectsTestHead
+	approval := review("APPROVED", footer(session, head), 1)
+	changes := review("CHANGES_REQUESTED", footer(session, head), 1)
+	person := approval
+	person.Author = "octocat"
+	for _, row := range []struct {
+		name    string
+		reviews []teardownEffectsReview
+		// own is the number of reviews the case's world gave the pull request.
+		own     int
+		seen    record.ReviewOrder
+		session string
+		// want is each review awaited, by its id and state.
+		want []string
+	}{
+		{name: "an approval the role submitted, which the record has not seen", reviews: []teardownEffectsReview{approval}, session: session, want: []string{"1 approved"}},
+		{name: "a request for changes the role submitted, which the record has not seen", reviews: []teardownEffectsReview{changes}, session: session, want: []string{"1 changes_requested"}},
+		{name: "an approval the record has seen", reviews: []teardownEffectsReview{approval}, seen: record.ReviewOrder{ID: teardownEffectsReviewID(0), SubmittedAt: approval.At}, session: session},
+		{name: "an approval older than the review the record has seen", reviews: []teardownEffectsReview{approval}, seen: record.ReviewOrder{ID: 9, SubmittedAt: approval.At.Add(time.Minute)}, session: session},
+		{name: "no review", session: session},
+		{name: "a comment", reviews: []teardownEffectsReview{review("COMMENTED", footer(session, head), 1)}, session: session},
+		{name: "a person's approval, which the daemon reads from the list and never takes", reviews: []teardownEffectsReview{person}, session: session},
+		{name: "an approval whose footer names another session", reviews: []teardownEffectsReview{review("APPROVED", footer("ses-controller", head), 1)}, session: session},
+		{name: "an approval whose footer names another head", reviews: []teardownEffectsReview{review("APPROVED", footer(session, other), 1)}, session: session},
+		{name: "an approval with no footer", reviews: []teardownEffectsReview{review("APPROVED", teardownEffectsTestSaid, 1)}, session: session},
+		{name: "an approval while the reviewer's claim records no session", reviews: []teardownEffectsReview{approval}},
+		{name: "the world's approval, which the record has not seen", reviews: []teardownEffectsReview{approval}, own: 1, session: session},
+		{name: "the role's approval after the world's, which the record has seen", reviews: []teardownEffectsReview{review("APPROVED", footer(session, head), -60), approval}, own: 1, seen: record.ReviewOrder{ID: 1, SubmittedAt: teardownEffectsTestSubmitted.Add(-time.Hour)}, session: session, want: []string{"2 approved"}},
+		{name: "a request for changes and then an approval: each", reviews: []teardownEffectsReview{changes, review("APPROVED", footer(session, head), 2)}, session: session, want: []string{"1 changes_requested", "2 approved"}},
+		{name: "a newer review the rule refuses hides no older one it takes", reviews: []teardownEffectsReview{approval, review("CHANGES_REQUESTED", footer("ses-controller", head), 2)}, session: session, want: []string{"1 approved"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			pr := teardownEffectsTestPull(row.seen)
+			var got []string
+			for _, awaited := range teardownEffectsAwaitedReviews(pr, row.reviews, row.own, engine, row.session) {
+				if awaited.Repo != pr.Repo || awaited.Number != pr.Number || !awaited.SubmittedAt.Equal(row.reviews[awaited.ID-1].At) {
+					t.Fatalf("awaits %+v, which is not review %d of %s#%d as the scratch GitHub lists it", awaited, awaited.ID, pr.Repo, pr.Number)
+				}
+				got = append(got, fmt.Sprintf("%d %s", awaited.ID, awaited.State))
+			}
+			if !slices.Equal(got, row.want) {
+				t.Fatalf("awaits %q, want %q", got, row.want)
+			}
+		})
+	}
+}
+
+// After a completion the daemon took, the replay reads the phase once the daemon has recorded each
+// review it awaits, asking from the first moment on, so a deciding review the daemon applies only
+// after it answered the completion is read in the phase the review moves the issue to. A phase
+// that never moves is read at the bound as it stands, so an effect that needs the move fails as an
+// effect fails, and the test log names the wait. With no deciding review the phase is read at
+// once, and nothing is logged. The record of a call that waited encodes as that of a call that
+// did not: the same bytes for the same phase, and only the keys heldout-reader-receipt.ts takes.
+func TestTeardownEffectsReadsThePhaseOnceTheDaemonRecordsTheReview(t *testing.T) {
+	t.Parallel()
+	const call = "rev-double-write good trace, action 4"
+	engine := teardownEffectsTestEngine()
+	pr := teardownEffectsTestPull(record.ReviewOrder{})
+	taken := []teardownEffectsHTTP{{Method: "POST", Path: teardownEffectsComplete, Status: 200, Body: json.RawMessage(`{"grantId":"g","summary":"Reviewed the head and approved it.","verdict":""}`), Answer: json.RawMessage(`{}`)}}
+	approval := teardownEffectsTestReview("APPROVED", teardownEffectsTestFooter(teardownEffectsTestSession, teardownEffectsTestHead), 1)
+	comment := teardownEffectsTestReview("COMMENTED", teardownEffectsTestFooter(teardownEffectsTestSession, teardownEffectsTestHead), 1)
+	// settled is the phase read after the taken completion, once the role submitted reviews, from a
+	// daemon that records them at the applies-th read of its record (never, for 0), moving the issue
+	// from reviewing to accepting as it records them; with how often the record was read, and the
+	// lines the test log was given.
+	settled := func(reviews []teardownEffectsReview, applies int, bound time.Duration) (string, int, []string) {
+		var awaited []intake.PullRequestReview
+		if teardownEffectsReadQueued(taken) {
+			awaited = teardownEffectsAwaitedReviews(pr, reviews, 0, engine, teardownEffectsTestSession)
+		}
+		reads, applied := 0, false
+		var logged []string
+		read := teardownEffectsSettle{bound: bound, poll: time.Millisecond,
+			unrecorded: func(left []intake.PullRequestReview) []intake.PullRequestReview {
+				reads++
+				if applies != 0 && reads >= applies {
+					applied = true
+					return nil
+				}
+				return left
+			},
+			phase: func() string {
+				if applied {
+					return string(phase.Accepting)
+				}
+				return string(phase.Reviewing)
+			},
+			logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+		}.phaseAfter(call, awaited)
+		return read, reads, logged
+	}
+	t.Run("a deciding review the daemon applies after the completion's answer is read in the phase after it", func(t *testing.T) {
+		t.Parallel()
+		got, reads, logged := settled([]teardownEffectsReview{approval}, 3, time.Minute)
+		if got != string(phase.Accepting) || reads != 3 || len(logged) != 1 || !strings.HasPrefix(logged[0], call+": waited ") || !strings.Contains(logged[0], "review 1 (approved) of pull request acme/widgets#7") {
+			t.Fatalf("read %s after %d reads of the record, logging %q; want accepting after 3 reads, and the wait for review 1 logged", got, reads, logged)
+		}
+	})
+	t.Run("a phase that never moves is read at the bound as it stands, and the log names the wait", func(t *testing.T) {
+		t.Parallel()
+		const bound = 50 * time.Millisecond
+		started := time.Now()
+		got, reads, logged := settled([]teardownEffectsReview{approval}, 0, bound)
+		want := call + ": the daemon did not record review 1 (approved) of pull request acme/widgets#7 within 50ms; the phase is read as it stands"
+		if spent := time.Since(started); got != string(phase.Reviewing) || spent < bound || reads < 2 || len(logged) != 1 || logged[0] != want {
+			t.Fatalf("read %s after %s and %d reads of the record, logging %q; want reviewing at the bound of %s, logging %q", got, spent, reads, logged, bound, want)
+		}
+	})
+	t.Run("a trace with no deciding review reads the phase at once", func(t *testing.T) {
+		t.Parallel()
+		if got, reads, logged := settled([]teardownEffectsReview{comment}, 0, time.Minute); got != string(phase.Reviewing) || reads != 0 || len(logged) != 0 {
+			t.Fatalf("read %s after %d reads of the record, logging %q; want reviewing read at once, with no read of the record and nothing logged", got, reads, logged)
+		}
+	})
+	t.Run("the replay record of a call that waited encodes as one that did not wait", func(t *testing.T) {
+		t.Parallel()
+		waited, _, logged := settled([]teardownEffectsReview{approval}, 2, time.Minute)
+		if len(logged) != 1 {
+			t.Fatalf("the call logged %q, want the one line of its wait", logged)
+		}
+		// The same completion, where the daemon had recorded the review before it: nothing is
+		// awaited, and the phase the completion moved is read at once.
+		atOnce := teardownEffectsSettle{phase: func() string { return string(phase.Accepting) }}.phaseAfter(call, nil)
+		encoded := func(phaseAfter string) []byte {
+			replay := teardownEffectsNewReplayRecord("5c2b9a4e-1d3f-4e6a-8b7c-9d0e1f2a3b4c")
+			replay.Verdict = "ok"
+			replay.Calls = append(replay.Calls, teardownEffectsReplayCall{Call: call, Op: "handoff_complete", At: teardownEffectsTestSubmitted, Before: []teardownEffectsChange{},
+				State: teardownEffectsState{Phase: string(phase.Reviewing), Pulls: []teardownEffectsPullState{}}, Standin: []teardownEffectsAnswerRef{}, Daemon: []teardownEffectsAnswerRef{}, PhaseAfter: phaseAfter})
+			data, err := json.Marshal(replay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data
+		}
+		if string(encoded(waited)) != string(encoded(atOnce)) {
+			t.Fatalf("the call that waited encodes as\n%s\nand the one that did not as\n%s", encoded(waited), encoded(atOnce))
+		}
+		var decoded struct {
+			Calls []map[string]json.RawMessage `json:"calls"`
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(encoded(waited), &top); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(encoded(waited), &decoded); err != nil || len(decoded.Calls) != 1 {
+			t.Fatalf("decode the record's calls: %v, %d calls", err, len(decoded.Calls))
+		}
+		keys := func(object map[string]json.RawMessage) []string { return slices.Sorted(maps.Keys(object)) }
+		// ReplayRecord and ReplayCall of heldout-reader-receipt.ts, which refuse any other key.
+		if got, want := keys(top), []string{"after", "calls", "end", "id", "notReplayed", "seed", "verdict"}; !slices.Equal(got, want) {
+			t.Fatalf("the record of a call that waited has the keys %q, want %q", got, want)
+		}
+		if got, want := keys(decoded.Calls[0]), []string{"at", "before", "call", "client", "daemon", "op", "phaseAfter", "standin", "state"}; !slices.Equal(got, want) {
+			t.Fatalf("the call that waited has the keys %q, want %q", got, want)
+		}
+	})
+}
+
+// The daemon reads an issue's pull request, its reviews among it, after it took a phase completion
+// of the issue and at no other moment of a replay (api's handoffCompleted hook): not after a
+// completion it refused, nor after a production check's report it took, nor after a call that
+// completes nothing, nor after a change, which is no call.
+func TestTeardownEffectsOnlyATakenCompletionQueuesTheDaemonsRead(t *testing.T) {
+	t.Parallel()
+	complete := func(status int, body, answer string) teardownEffectsHTTP {
+		return teardownEffectsHTTP{Method: "POST", Path: teardownEffectsComplete, Status: status, Body: json.RawMessage(body), Answer: json.RawMessage(answer)}
+	}
+	const completion = `{"grantId":"g","summary":"Reviewed the head and approved it.","verdict":""}`
+	recordRead := teardownEffectsHTTP{Method: "GET", Path: "/legion/v1/issues/ACME-12/record", Status: 200, Answer: json.RawMessage(`{}`)}
+	for _, row := range []struct {
+		name    string
+		replies []teardownEffectsHTTP
+		want    bool
+	}{
+		{"a completion the daemon took", []teardownEffectsHTTP{complete(200, completion, `{}`)}, true},
+		{"a completion taken beside the extension's own read", []teardownEffectsHTTP{recordRead, complete(200, completion, `{}`)}, true},
+		{"a completion the daemon refused", []teardownEffectsHTTP{complete(409, completion, `{"code":"HANDOFF_NO_PULL_REQUEST"}`)}, false},
+		{"a completion the daemon had already received", []teardownEffectsHTTP{complete(409, completion, `{"code":"HANDOFF_ALREADY_RECORDED"}`)}, false},
+		{"a production check's report the daemon took", []teardownEffectsHTTP{complete(200, `{"grantId":"g","summary":"looked","verdict":"pending","wakeAt":"2030-01-08T13:00:00Z","checkOpenedAt":"2030-01-08T11:58:00Z"}`, `{}`)}, false},
+		{"a call that completes nothing", []teardownEffectsHTTP{recordRead}, false},
+		{"a change, which is no call", nil, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			if got := teardownEffectsReadQueued(row.replies); got != row.want {
+				t.Fatalf("the daemon reads the issue's pull request after the requests %+v: %t, want %t", row.replies, got, row.want)
 			}
 		})
 	}
