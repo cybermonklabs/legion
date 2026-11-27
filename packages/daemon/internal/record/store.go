@@ -142,11 +142,12 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // and awaiting_answered_step) only beside the answer it was written with, the one fence
 // awaiting_answered_document_at = awaiting_answered_at: a daemon of an earlier release writes a
 // later answer and leaves the four columns as they were, and that answer then reads as one with
-// no document (PutIssue). The four issues.memory_* columns are no part of it: what a unit was
-// drawn is an assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this
-// release's daemon runs reads the columns but the back-fill of
+// no document (PutIssue). It reads claim_left, the entry of the newest claim release that left the
+// issue's claim (RecordClaimLeft), as the JSON it stores, null for none. The four issues.memory_*
+// columns are no part of it: what a unit was drawn is an assignment row of its own (AssignmentsOf,
+// AssignmentsFor), and nothing this release's daemon runs reads the columns but the back-fill of
 // 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), coalesce(awaiting_answered_document_at = awaiting_answered_at, false), coalesce(awaiting_answered_version, 0), coalesce(awaiting_answered_artifact, ''), coalesce(awaiting_answered_step, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), coalesce(awaiting_answered_document_at = awaiting_answered_at, false), coalesce(awaiting_answered_version, 0), coalesce(awaiting_answered_artifact, ''), coalesce(awaiting_answered_step, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from, claim_left`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -348,24 +349,27 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		}
 		childrenWaitChildren = issue.ChildrenWait.Children
 	}
-	// Thirteen columns are named nowhere in the update set, so a copy of the issue read before a
+	// Fourteen columns are named nowhere in the update set, so a copy of the issue read before a
 	// write of any of them never writes the stored value back: repo, default_branch and
 	// github_repo; repo_before and repo_corrected_at, which are CorrectIssueRepository's alone;
 	// repo_change_pending and repo_change_reason, which are NoteIssueRepositoryChange's and which
 	// CorrectIssueRepository clears; handout_seq, declared_seq and declared_at, which are
 	// StartHandout's, TakeInThrough's, Declare's and ClearDeclared's alone; moved_at, which is
 	// MarkIssueMoved's; released_for_wait_at, which is ReleaseSlotForWait's, ClearReleasedForWait's
-	// and ReleaseTreeSlots's; and members_owed, which is OweMembers's and ClearMembersOwed's. For
-	// the repository that is what lets a correction stand: an observation prepared before it
-	// carries the old repository and writes none of it, so it neither writes over repo_before nor
-	// restores a pending change the correction cleared, and a correction has a writer of its own,
-	// CorrectIssueRepository, beside which this release's rename pass writes a configured rename's
-	// new name (RenameIssueRepository). For the movement it is what keeps it safe, since every
-	// write site that marks one holds a copy of the issue read before its own fact and records the
-	// issue through this statement in that same transaction. An insert names moved_at nowhere
-	// either, so a newly recorded issue takes the column's default, the moment of its own write,
-	// and tree_stalled_told_at, which is MarkTreeStalledTold's alone, is named in neither half,
-	// so a root recorded again carries the stall it was already told about with it. The four
+	// and ReleaseTreeSlots's; members_owed, which is OweMembers's and ClearMembersOwed's; and
+	// claim_left, which is RecordClaimLeft's. For the repository that is what lets a correction
+	// stand: an observation prepared before it carries the old repository and writes none of it,
+	// so it neither writes over repo_before nor restores a pending change the correction cleared,
+	// and a correction has a writer of its own, CorrectIssueRepository, beside which this
+	// release's rename pass writes a configured rename's new name (RenameIssueRepository). For the
+	// movement it is what keeps it safe, since every write site that marks one holds a copy of the
+	// issue read before its own fact and records the issue through this statement in that same
+	// transaction. An insert names moved_at nowhere either, so a newly recorded issue takes the
+	// column's default, the moment of its own write, and tree_stalled_told_at, which is
+	// MarkTreeStalledTold's alone, is named in neither half, so a root recorded again carries the
+	// stall it was already told about with it. claim_left is named in neither half either: a claim
+	// release runs on a lane of its own, so a copy read before it wrote its entry would write the
+	// entry away, and a copy that carries an older entry would write that one back. The four
 	// memory_* columns are named here no more than they are on Issue, which no longer carries
 	// them: nothing writes those columns from this release on, since what a unit was drawn is an
 	// assignment row of its own now (PutAssignments), and nothing this release's daemon runs reads
@@ -752,6 +756,7 @@ func scanIssue(row scanner) (*Issue, error) {
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
 	var childrenWaitChildren []string
 	var priority, resolvedPriority *int
+	var claimLeft []byte
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &repoBefore, &repoCorrectedAt, &repoChangePending, &repoChangeReason,
@@ -760,7 +765,8 @@ func scanIssue(row scanner) (*Issue, error) {
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
-		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From); err != nil {
+		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From,
+		&claimLeft); err != nil {
 		return nil, err
 	}
 	// The columns' checks hold both to Dispatch's 0 to 3 or null, each of which DispatchPriority
@@ -817,6 +823,14 @@ func scanIssue(row scanner) (*Issue, error) {
 	if childrenWaitedAt != nil {
 		utc := childrenWaitedAt.UTC()
 		issue.ChildrenWaitedAt = &utc
+	}
+	if claimLeft != nil {
+		var left ClaimLeft
+		if err := json.Unmarshal(claimLeft, &left); err != nil {
+			return nil, fmt.Errorf("issue %s: decode the claim a release left: %w", issue.Key, err)
+		}
+		left.At = left.At.UTC()
+		issue.ClaimLeft = &left
 	}
 	issue.Generation = uint64(generation)
 	return &issue, nil
@@ -1417,6 +1431,58 @@ func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session
 		return false, fmt.Errorf("read the claims of session %s: %w", session, err)
 	}
 	return claims, nil
+}
+
+// SessionOfTree reads both halves in one statement. The current half is SessionClaimsTree's read,
+// the tree's claims by claims_tree. The left half joins the tree's claims to their holds of the
+// name, each under the claim's own project, so it needs no project argument. Neither half may scan
+// a table whole: claims has no index on session, and claim_sessions holds every name each claim of
+// every project sharing the database recorded, so the statement reads by claims_tree,
+// claim_sessions' primary key and claims' own.
+func (s *Postgres) SessionOfTree(ctx context.Context, tx pgx.Tx, tree, session string) (TreeSession, error) {
+	if session == "" {
+		return TreeSessionNone, nil
+	}
+	var current, left bool
+	if err := tx.QueryRow(ctx, `select
+		exists (select 1 from claims where tree = $1 and session = $2 and session <> ''),
+		exists (select 1 from claims
+			join claim_sessions held on held.project = claims.project and held.kind = 'session' and held.name = $2
+			where claims.tree = $1 and held.claim = claims.token and claims.session <> $2)`,
+		tree, session).Scan(&current, &left); err != nil {
+		return TreeSessionNone, fmt.Errorf("read whether session %s is one of %s's: %w", session, tree, err)
+	}
+	switch {
+	case current:
+		return TreeSessionCurrent, nil
+	case left:
+		return TreeSessionLeft, nil
+	}
+	return TreeSessionNone, nil
+}
+
+// SessionClaim reads the hold by claim_sessions' primary key and its claim by claims' own, in one
+// statement. A hold of no claim (an empty claim, a name two claims recorded) joins no row, and
+// neither does a hold whose claim's row is gone: a hold outlives its claim's row, with no foreign
+// key between them.
+func (s *Postgres) SessionClaim(ctx context.Context, tx pgx.Tx, project, session string) (SessionClaim, bool, error) {
+	if session == "" {
+		return SessionClaim{}, false, nil
+	}
+	var found SessionClaim
+	var role string
+	err := tx.QueryRow(ctx, `select claims.token, claims.tree, claims.issue, claims.role, claims.session
+		from claim_sessions held join claims on claims.token = held.claim
+		where held.project = $1 and held.kind = 'session' and held.name = $2 and held.claim <> ''`,
+		project, session).Scan(&found.Token, &found.Tree, &found.Issue, &role, &found.Session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SessionClaim{}, false, nil
+	}
+	if err != nil {
+		return SessionClaim{}, false, fmt.Errorf("read the claim of %s that holds session %s: %w", project, session, err)
+	}
+	found.Role = claim.Role(role)
+	return found, true, nil
 }
 
 // ProjectClaims reads the claims of one project as the quiet measure reads them, in one
@@ -3192,6 +3258,28 @@ func (s *Postgres) ClearMembersOwed(ctx context.Context, tx pgx.Tx, key string) 
 	tag, err := tx.Exec(ctx, "update issues set members_owed = false where key = $1", key)
 	if err != nil {
 		return fmt.Errorf("clear the return owed to the members of %s: %w", key, err)
+	}
+	noteRowsWritten(ctx, tag)
+	return nil
+}
+
+// RecordClaimLeft is the one writer of claim_left: PutIssue names the column nowhere, so a copy
+// of the issue read before a claim release wrote its entry never writes it away or writes an older
+// one back. A nil entry writes null, which clears it. A key with no record matches no row and
+// writes nothing. The column is no observed column (observedIssueColumns), so the write queues no
+// state change. It keeps the record mark as every writer of an issues row does, and names no issue
+// among IssuesWritten, since the end of a step's run reads nothing of it.
+func (s *Postgres) RecordClaimLeft(ctx context.Context, tx pgx.Tx, key string, left *ClaimLeft) error {
+	var entry []byte
+	if left != nil {
+		var err error
+		if entry, err = json.Marshal(left); err != nil {
+			return fmt.Errorf("record the claim left on %s: %w", key, err)
+		}
+	}
+	tag, err := tx.Exec(ctx, "update issues set claim_left = $2 where key = $1", key, entry)
+	if err != nil {
+		return fmt.Errorf("record the claim left on %s: %w", key, err)
 	}
 	noteRowsWritten(ctx, tag)
 	return nil
