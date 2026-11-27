@@ -204,6 +204,10 @@ type bootConfig struct {
 	// would have built: meaning search answers keyword-only and the embedding queue does nothing.
 	// Only DISPATCH_TEST_EMBEDDER_OFF=1, under the test hooks, sets it.
 	EmbedderOff bool
+	// CreateStaged makes this process create each element its manifest stages for the next
+	// version (pmdoc.CreateStagedForTest); only DISPATCH_TEST_CREATE_STAGED=1, under the test
+	// hooks, sets it.
+	CreateStaged bool
 	// ReconcileAtStart makes the delivery reconcile run one pass as it starts rather than only after
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
@@ -437,6 +441,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A test process told to creates the elements its manifest stages for the next version. The
+	// switch is set before the first install and is apart from the manifest, so no reinstall
+	// clears it.
+	if boot.CreateStaged {
+		pmdoc.CreateStagedForTest()
+		slog.Warn("dispatch: this test process creates the elements its block schema stages for the next version", "setting", "DISPATCH_TEST_CREATE_STAGED=1")
+	}
 	// A type is a node of the store, and the schema this process validates writes against and
 	// serves to an editor is built from those nodes (migration 20261109051232). The first
 	// install is here, beside the migration run: a process serving on a schema that is not the
@@ -1773,6 +1784,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}{
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
+		{"DISPATCH_TEST_CREATE_STAGED", &boot.CreateStaged},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {

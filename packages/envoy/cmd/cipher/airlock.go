@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/fileowner"
 )
 
@@ -46,12 +47,6 @@ const (
 	slotAWSSecretAccessKey = "aws-" + "secret-access-key"
 	slotAWSSessionToken    = "aws-session-token"
 )
-
-// airlockProxyUser is the user name of the Proxy-Authorization credential. The proxy reads the
-// password alone and names the user part unread (proxy.proxyPassword), so it is a fixed
-// word that says which program built the URL rather than the secret's name — a name in a proxy
-// URL reaches a proxy log and a client's own error text.
-const airlockProxyUser = "agent-secrets"
 
 // airlockFixedNoProxy are the entries every airlock child's NO_PROXY carries beside the
 // inherited ones: the loopback addresses, the suffixes of a cluster's and a tailnet's own names,
@@ -845,7 +840,7 @@ func airlockProxyURL(release *AirlockRelease) (string, error) {
 	if parsed.Host == "" {
 		return "", errors.New("the broker's airlock proxy URL (proxy_url) names no host")
 	}
-	parsed.User = url.UserPassword(airlockProxyUser, release.ProxyPassword)
+	parsed.User = url.UserPassword(cipheraddr.AirlockProxyUser, release.ProxyPassword)
 	return parsed.String(), nil
 }
 
