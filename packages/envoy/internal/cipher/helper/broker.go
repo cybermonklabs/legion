@@ -419,10 +419,10 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // BrokerError holds a part of the credential either. Its words read cipheraddr.WordsNotPrinted
 // beside an address that is not clean, and are empty beside a clean one, so a machine login's
 // device authorization prints it as "broker <n>" and those words (BrokerError.Error).
-// requestReach.settle reads its status, so a 4xx refusal is reported as one and not as an unknown
-// outcome, and any other status, a 3xx or a 5xx, stays unknown. It reads the broker's own answer
-// (redact.BrokerAnswer), never errors.As, which also reaches an answer Class or Masked holds:
-// another server's, whose words they withheld.
+// requestReach.settle reads its status, so a 4xx refusal but a 408 is reported as one and not as an
+// unknown outcome, and any other status, a 408, a 3xx or a 5xx, stays unknown (settle says why). It
+// reads the broker's own answer (redact.BrokerAnswer), never errors.As, which also reaches an
+// answer Class or Masked holds: another server's, whose words they withheld.
 // The redactor printed the answer whole exactly when its Cause, which is what it prints of the
 // failure without a call's operation and URL, is the answer's own text. That holds under a
 // caller's %w too, whose words it drops while it still prints the answer, which is why this asks
@@ -2115,17 +2115,21 @@ func traceReach(ctx context.Context) (context.Context, *requestReach) {
 // unknown outcome (outcomeUnknown) when the request may have changed the broker's state, and as
 // it came otherwise.
 //
-// A 4xx answer is known: the broker decides its refusals before it writes anything. So is the
-// broker's own 503 MEMBER_KIND_UNCHECKABLE (uncheckableCode), which it answers when it cannot
-// learn whether Dispatch calls the login's person a restricted member, before it writes anything:
-// nothing was enrolled, and the same request made later is asked afresh. Every other failure of a
-// request that was sent is unknown: a transport error after the write (a reset, a timeout, the
-// op's context ending at its bound), any other 5xx (a front door's 502 or 504 can come after the
-// broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or one
-// that lacks what the caller needs). A failure of a request that was never sent in full is
-// known: a refused dial, a context that ended before the transport held a connection, a failed
-// write. So is a failure before any request: signing a proof, reading the operator file, a
-// sign-in's trade.
+// A 4xx answer but a 408 is known: the broker decides its refusals before it writes anything, and
+// a 429 is a rate limit, the broker's or a front door's, answered before the request runs. A 408
+// is not known: the broker writes none, and a front door's runs out on its own clock, which can
+// be after it forwarded the request (an Envoy proxy's stream_idle_timeout, Google's load
+// balancer's client_timed_out), as mayHaveReachedServer in @legion/contracts/http-status says.
+// The broker's own 503 MEMBER_KIND_UNCHECKABLE (uncheckableCode) is known too: it answers it when
+// it cannot learn whether Dispatch calls the login's person a restricted member, before it writes
+// anything, so nothing was enrolled, and the same request made later is asked afresh. Every other
+// failure of a request that was sent is unknown: a transport error after the write (a reset, a
+// timeout, the op's context ending at its bound), a 408, any other 5xx (a front door's 502 or 504
+// can come after the broker wrote), and a 2xx the helper could not read (a body that will not
+// read or decode, or one that lacks what the caller needs). A failure of a request that was never
+// sent in full is known: a refused dial, a context that ended before the transport held a
+// connection, a failed write. So is a failure before any request: signing a proof, reading the
+// operator file, a sign-in's trade.
 //
 // The record is complete when the round trip returns, on every path but one. HTTP/1 waits for
 // its write loop before it returns an error (persistConn.mapRoundTripError reads writeLoopDone),
@@ -2141,7 +2145,8 @@ func (r *requestReach) settle(err error) error {
 		return nil
 	}
 	var be *BrokerError
-	if errors.As(err, &be) && (be.Status >= 400 && be.Status < 500 || be.Status == http.StatusServiceUnavailable && be.Code == uncheckableCode) {
+	if errors.As(err, &be) && (be.Status >= 400 && be.Status < 500 && be.Status != http.StatusRequestTimeout ||
+		be.Status == http.StatusServiceUnavailable && be.Code == uncheckableCode) {
 		return err
 	}
 	ended := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)

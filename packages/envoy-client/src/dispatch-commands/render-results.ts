@@ -15,9 +15,8 @@ import { leftOutAt, orLeftOut } from "./as-of";
  *  that stands at none of the compared commits, and the whole of every other one. */
 const BRIEF_READING_CHARACTERS = 200;
 
-/** The three reasons a check compared its results with nothing, and the two a result's commit
- *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
- *  no_pull_request_or_branch, so the check's set types this map and answers both. Each takes the
+/** The reasons a check compared its results with nothing or a result's commit cannot be placed,
+ *  in words a reader acts on. The check's set types this map and answers both. Each takes the
  *  repository the answer is about where the server names one (`repo`): a result whose commit is
  *  taken to be of a repository the issue links a pull request in is decided by that repository,
  *  and "the repository" would read as the issue's own. Keyed by `compared_nothing`'s reasons, so a
@@ -33,6 +32,7 @@ const COMPARISON_REASONS: Readonly<
     repo === undefined
       ? "a read Dispatch made did not answer"
       : `a read Dispatch made of ${repo} did not answer`,
+  not_merged: () => "the work has no merge that Dispatch knows",
 };
 
 /** Whether a reason the server sent is one this build words. The server gives the reasons its
@@ -80,7 +80,12 @@ function basisText(basis: CheckBasis): string {
         : `${pullRequestName(basis, basis.pull_request)} `;
     return `the head of ${pullRequest}at ${basis.commit ?? "an unnamed commit"}${learned}`;
   }
-  if (basis.kind === "branch") return `branch ${branchName(basis)}${learned}`;
+  if (basis.kind === "branch") {
+    if (basis.merge_commit === undefined) return `branch ${branchName(basis)}${learned}`;
+    const repository = basis.repo === undefined ? "" : `in ${basis.repo} `;
+    const merged = basis.merge_commit === undefined ? "" : `, merged at ${basis.merge_commit}`;
+    return `${repository}branch ${basis.branch ?? "unnamed"}${merged}${learned}`;
+  }
   return `the commit you named, ${basis.commit ?? ""}${learned}`;
 }
 
@@ -142,13 +147,69 @@ function checkWordsText(check: CheckBlock, result: CheckResult, asOf: string | u
     : `The check's words did not move after this result (${versions})`;
 }
 
-/** R5 for one check: whether a pass of it stands, and from which roles. At a cut (`asOf`) it is
- *  left out: it is read from GitHub now. */
-function passStandsText(pass: CheckPassStands | undefined, asOf: string | undefined): string {
+/** Head checks and CI keep their wording; branch checks name the fact that decides them. At a cut
+ *  (`asOf`) whether a pass stands is left out: it is read from GitHub and the deploys now. */
+function passStandsText(
+  pass: CheckPassStands | undefined,
+  asOf: string | undefined,
+  check?: CheckBlock,
+  repository?: string
+): string {
   if (pass === undefined) {
     return asOf === undefined
       ? "Whether a pass stands is not known: this Dispatch server does not say"
       : `Whether a pass stands is ${leftOutAt(asOf)}`;
+  }
+  const branch =
+    check !== undefined &&
+    (check.when === "after_merge" || check.when === "default_branch") &&
+    !(check.compared_with ?? []).some((basis) => basis.kind === "named");
+  if (branch && check !== undefined) {
+    const results = check.results ?? [];
+    const deciding = pass.results ?? [];
+    const passed = results.find(
+      (result) => result.verdict === "pass" && deciding.includes(result.id)
+    );
+    const failed = results.find(
+      (result) => result.verdict === "fail" && deciding.includes(result.id)
+    );
+    const result = results.find((result) => deciding.includes(result.id));
+    const repo = repository ?? check.compared_with?.[0]?.repo ?? "the repository";
+    const deploy = pass.deploy;
+    const program = deploy?.program ?? check.program ?? "the program";
+    const roles = (pass.roles ?? []).join(", ");
+    if (pass.answer === "yes" && passed !== undefined)
+      return `A pass stands: yes, from ${roles}, as the newest result is pass ${passed.id} at ${pass.commit ?? passed.commit_sha}`;
+    switch (pass.reason) {
+      case "fail":
+        if (failed !== undefined)
+          return `A pass stands: no, as the newest result is fail ${failed.id} at ${pass.commit ?? failed.commit_sha}`;
+        break;
+      case "no_result":
+        return "A pass stands: no, as no result counts at a commit that holds the merge";
+      case "pass_and_fail":
+        if (passed !== undefined && failed !== undefined)
+          return `A pass stands: not known, as pass ${passed.id} and fail ${failed.id} both count at ${pass.commit ?? passed.commit_sha}. A retraction of the wrong one ends it`;
+        break;
+      case "not_placed":
+        if (result !== undefined)
+          return `A pass stands: not known, as Dispatch could not place ${result.verdict} ${result.id} at ${pass.commit ?? result.commit_sha}`;
+        break;
+      case "read_failed":
+        return "A pass stands: not known, as a read Dispatch made did not answer";
+      case "program_not_named":
+        return `A pass stands: not known, as ${repo} runs more than one program and this check names none`;
+      case "no_deploy":
+        return `A pass stands: not known, as Dispatch holds no deploy of ${program} in ${repo}`;
+      case "deploy_not_merged":
+        if (deploy !== undefined)
+          return `A pass stands: not known, as ${program} runs ${deploy.commit} since ${deploy.deployed_at}, which does not hold the merge`;
+        break;
+      case "no_result_from_deploy":
+        if (deploy !== undefined)
+          return `A pass stands: not known, as no result counts for ${program} at ${deploy.commit}, deployed ${deploy.deployed_at}`;
+        break;
+    }
   }
   if (pass.answer === "yes") {
     const roles = pass.roles ?? [];
@@ -193,6 +254,8 @@ function resultLines(
       `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
     );
   }
+  if (result.not_counted !== undefined && result.not_counted !== "")
+    lines.push(`    It counts for nothing: ${result.not_counted}.`);
   return [...lines, ...readingLines(result, brief)];
 }
 
@@ -242,12 +305,22 @@ function comparedText(check: CheckBlock, asOf: string | undefined): string {
  *  check's own words once, then every result recorded against it. A read at a cut (`asOf`)
  *  reads nothing from GitHub, so a check CI proves reads as any other, its derived result left
  *  out. */
-function checkLines(check: CheckBlock, brief: boolean, asOf: string | undefined): string[] {
+function checkLines(
+  check: CheckBlock,
+  brief: boolean,
+  asOf: string | undefined,
+  repository?: string
+): string[] {
   if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
   const compared = comparedText(check, asOf);
   const results = check.results ?? [];
   return [
-    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands, asOf)}.`,
+    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands, asOf, check, repository)}.`,
+    ...(check.pass_stands?.deploy === undefined
+      ? []
+      : [
+          `  Program ${check.pass_stands.deploy.program} runs ${check.pass_stands.deploy.commit} since ${check.pass_stands.deploy.deployed_at}; a pass of this check must come from this deploy.`,
+        ]),
     `  The check's words: ${check.text}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]
@@ -261,10 +334,12 @@ function checkLines(check: CheckBlock, brief: boolean, asOf: string | undefined)
  *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
  *  check with no result says so, and an issue with no Verification document says that instead of
  *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
- *  null, so that is what is compared. At a cut (`asOf`) what GitHub says now is left out. */
+ *  null, so that is what is compared. At a cut (`asOf`) what GitHub and the deploys say now is
+ *  left out. */
 export function formatCheckResults(
   results: IssueCheckResults,
   brief = false,
+  repositories?: Readonly<Record<string, string>>,
   asOf?: string
 ): string {
   if (results.verification_artifact_id === "") {
@@ -274,6 +349,8 @@ export function formatCheckResults(
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const blocks = checks.map((check) => checkLines(check, brief, asOf).join("\n"));
+  const blocks = checks.map((check) =>
+    checkLines(check, brief, asOf, repositories?.[check.issue_key]).join("\n")
+  );
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }

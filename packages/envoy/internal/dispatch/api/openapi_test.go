@@ -175,7 +175,18 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 	}
-	hooks := openAPIHookRoutes()
+	// The hooks are read as the rows a server with its test hooks mounts and one without does not,
+	// rather than off the declarations' TestHook, which is what the emitter marks by.
+	served := map[string]bool{}
+	for _, route := range (&server{}).routes() {
+		served[route.Method+" "+route.Pattern] = true
+	}
+	hooks := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if name := route.Method + " " + route.Pattern; !served[name] {
+			hooks[name] = true
+		}
+	}
 	if len(hooks) != 15 {
 		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
 	}
@@ -202,8 +213,8 @@ func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
 	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
 	plain := openAPISchemaPrefix + "ErrorBody"
 	checked := 0
-	for name, shape := range routeShapes {
-		method, pattern, _ := strings.Cut(name, " ")
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name, method, pattern, shape := route.Method+" "+route.Pattern, route.Method, route.Pattern, route.Shape
 		for _, refusal := range shape.Refusals {
 			status := fmt.Sprint(refusal.Status)
 			operation, _ := paths[pattern].(map[string]any)[strings.ToLower(method)].(map[string]any)
@@ -305,15 +316,16 @@ func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
 	declaredElsewhere := map[string]string{"GET /api/v1/search": "GET /api/v1/search/results"}
 	asOf := parameter{Name: asOfParameter, In: "query"}
 	answers := 0
-	for _, name := range slices.Sorted(maps.Keys(readClasses)) {
+	reads := declaredReads()
+	for _, name := range slices.Sorted(maps.Keys(reads)) {
 		read := get(name)
 		if read == nil {
 			t.Errorf("the document has no %s", name)
 			continue
 		}
 		declared := slices.Contains(read.Parameters, asOf)
-		kind := readClasses[name].AsOf
-		note := readClasses[name].AtACut
+		kind := reads[name].AsOf
+		note := reads[name].AtACut
 		switch {
 		case kind == asOfAnswers && (note == "" || !strings.Contains(read.Description, note)):
 			t.Errorf("%s answers as_of, and its description in the document does not say what it answers at a cut: write it in its read entry's AtACut (read_classes.go)",

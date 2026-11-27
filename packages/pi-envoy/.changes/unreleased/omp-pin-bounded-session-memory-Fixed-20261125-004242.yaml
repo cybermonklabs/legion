@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: omp-pin-bounded-session-memory
+body: |-
+  A person's Send or Aside from Dispatch reaches the session as input from outside it
+  (`origin: "outside"`), as a line typed at the terminal does. After OpenAI refuses a session's
+  content for cyber policy, Oh My Pi sends no request to an OpenAI route until such input, so on
+  the new pin the person's turn ends that hold, where it would have been held itself. A card that
+  relays a person's message is still input from inside the session.

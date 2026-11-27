@@ -26,7 +26,7 @@ type TextVersions struct {
 }
 
 // TextVersionsRules is the version of the fill's event rules that the relation needs
-// (textversions' rulesVersion): version 2 reads the edit of an issue message and the delete of a
+// (textversions' RulesVersion): version 2 reads the edit of an issue message and the delete of a
 // comment or a message, which version 1 passed. A cursor row that an earlier version wrote lacks
 // the rows of those events below its cursor until the fill reads them again, and only that read
 // raises the row's rules, so no time is reached while the cursor row records an earlier version.

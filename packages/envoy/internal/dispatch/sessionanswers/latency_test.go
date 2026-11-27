@@ -11,6 +11,7 @@ import (
 // so once the last has ended a moment past SlowRead finds nothing slow. A read left running would
 // hold the fill paused for as long as the process lives.
 func TestEveryAnswersReadThatEndedRunsNoLonger(t *testing.T) {
+	t.Parallel()
 	latency := NewLatency(time.Now)
 	const readers, reads = 16, 200
 	var wg sync.WaitGroup

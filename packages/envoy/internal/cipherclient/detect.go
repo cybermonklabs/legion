@@ -470,6 +470,42 @@ func credentialFileFailure(fields credentialFields) string {
 	return ""
 }
 
+// CredentialsFileFailure is why a credentials file must not be handed to Google's library, in
+// words that print no path and no part of it, and "" where it may be. A file that is not JSON
+// (json.Valid) answers "", for its reader's own refusal, and so does a file of another type than
+// external_account, of which this client reads only its type, as every reader decodes it. An
+// external_account file is refused where it repeats a key (repeatsKey), or where it does not
+// decode into the types the library decodes it into, so that the library refuses it too (a field
+// the library reads that holds another JSON type, such as a token_url that is a number), or where
+// it is an X.509 certificate's whose files cannot be used (certificateFailure). Any reader that
+// hands a credentials file to the library calls it first, on the bytes it hands over: the secret
+// forms' sign-in (cmd/cipher), as the machine source does in Token.
+func CredentialsFileFailure(credential []byte) string {
+	const unread = "it is not an external_account credential that Google's library reads"
+	if !json.Valid(credential) {
+		return ""
+	}
+	var kind struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(credential, &kind) != nil || kind.Type != string(credentials.ExternalAccount) {
+		return ""
+	}
+	if repeated, err := repeatsKey(credential, credentialFieldsType); err != nil {
+		return unread
+	} else if repeated {
+		return "it repeats a key, which Google's library could read as another credential than this client does"
+	}
+	fields, err := readCredentialFields(credential)
+	if err != nil {
+		return unread
+	}
+	if fields.certificate() == nil {
+		return ""
+	}
+	return certificateFailure(*fields.certificate())
+}
+
 // certificateFailure is why an X.509 credential's files cannot be used, and "" where each can be:
 // its trust chain; its certificate configuration, the one it names or else the default one
 // (GOOGLE_API_CERTIFICATE_CONFIG, else gcloud's), which Google's library finds the same way; and

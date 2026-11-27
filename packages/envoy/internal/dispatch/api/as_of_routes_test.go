@@ -9,7 +9,6 @@ package api
 
 import (
 	"fmt"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,8 +22,8 @@ import (
 )
 
 // thePlansAnswersRows is every row of kind asOfAnswers, written out from the plan's table
-// "Routes and their kinds" (INFRA-4620) and not read from readClasses, so a row that joins the
-// kind or leaves it is a decision made here on purpose.
+// "Routes and their kinds" (INFRA-4620) and not read from the routes' declarations, so a row that
+// joins the kind or leaves it is a decision made here on purpose.
 var thePlansAnswersRows = []string{
 	"GET /api/v1/issues/{key}",
 	"GET /api/v1/issues",
@@ -76,11 +75,25 @@ func asOfKindName(kind asOfKind) string {
 	return fmt.Sprintf("asOfKind(%d), which is no kind", int(kind))
 }
 
-// rowAnswersAsOf reports whether the row named name answers as_of. It reads readClasses and not
-// the row (apiRoute.Read), as readOnlyAnswer does, so a table routes() stamped wrong fails the
-// walk rather than agreeing with the gate. A row that is not a GET row answers no as_of.
+// declaredReads is the read class of every GET route the package declares, test hooks included,
+// by "<method> <pattern>": each route's own declaration (routeDecl.Read), read off the registry
+// and not off a mounted row.
+func declaredReads() map[string]readEntry {
+	reads := map[string]readEntry{}
+	for _, route := range routeRegistry {
+		if route.Method == http.MethodGet {
+			reads[route.Method+" "+route.Pattern] = route.Read
+		}
+	}
+	return reads
+}
+
+// rowAnswersAsOf reports whether the row named name answers as_of. It reads the route's
+// declaration (declared) and not the mounted row (apiRoute.Read), as readOnlyAnswer does, so a
+// table routes() built wrong fails the walk rather than agreeing with the gate. A row that is not
+// a GET row answers no as_of.
 func rowAnswersAsOf(route apiRoute) bool {
-	return route.Method == http.MethodGet && readClasses[route.Method+" "+route.Pattern].AsOf == asOfAnswers
+	return route.Method == http.MethodGet && declared(route.Method+" "+route.Pattern).Read.AsOf == asOfAnswers
 }
 
 // asOfNotServedMessage is the message of the 400 AS_OF_NOT_SERVED a row that holds no history
@@ -123,12 +136,14 @@ func (c *cutRecorder) handler(w http.ResponseWriter, r *http.Request) {
 
 // TestEveryGETRowNamesItsAsOfKind walks every GET row of the table with its test hooks in
 // (readOnlyTable), read off the table and not listed, so a GET row added later fails here until
-// its read entry names its as_of kind. It fails once, naming each GET row whose entry leaves AsOf
-// unset or holds no kind. Then it takes the as_of kind away from one row's entry and holds
-// register to refuse the table, naming that row, as it refuses a GET row with no entry. Register
-// also refuses asOfCaller on a row but GET /api/v1/whoami, which would answer a token's cut with
-// the present, a row of kind answers whose entry says nothing of what it answers at a cut
-// (AtACut), and a row of another kind whose entry says it, naming the row each time.
+// its declaration's read class names its as_of kind. It fails once, naming each GET row whose
+// class leaves AsOf unset or holds no kind. Then it takes the as_of kind away from one route's
+// declaration and holds register to refuse the table, naming that route, as it refuses a GET route
+// stating no class. Register also refuses asOfCaller on a route but GET /api/v1/whoami, which
+// would answer a token's cut with the present, a route of kind answers whose class says nothing
+// of what it answers at a cut (AtACut), and a route of another kind whose class says it, naming
+// the route each time. The refusals replace the package's declarations for their length
+// (withRouteRegistry), so the test is not parallel.
 func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 	gets := 0
 	kinds := map[asOfKind]int{}
@@ -139,12 +154,12 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 		}
 		gets++
 		name := route.Method + " " + route.Pattern
-		kind := readClasses[name].AsOf
+		kind := declared(name).Read.AsOf
 		kinds[kind]++
 		switch kind {
 		case asOfAnswers, asOfNoHistory, asOfCaller:
 		default:
-			problems = append(problems, name+": its read entry's AsOf is "+asOfKindName(kind)+", want asOfAnswers, asOfNoHistory or asOfCaller")
+			problems = append(problems, name+": its read class's AsOf is "+asOfKindName(kind)+", want asOfAnswers, asOfNoHistory or asOfCaller")
 		}
 	}
 	if gets == 0 {
@@ -153,21 +168,31 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 	t.Logf("walked %d GET rows of the table (test hooks in): %d answer as_of, %d hold no history, %d describe the caller now",
 		gets, kinds[asOfAnswers], kinds[asOfNoHistory], kinds[asOfCaller])
 	if len(problems) > 0 {
-		t.Errorf("the as_of kinds (read_classes.go) have %d problems:\n%s", len(problems), strings.Join(problems, "\n"))
+		t.Errorf("the as_of kinds (each route's Read) have %d problems:\n%s", len(problems), strings.Join(problems, "\n"))
+	}
+
+	// plant is register's refusal of the declarations with change made to row's read class.
+	plant := func(t *testing.T, row string, change func(*readEntry)) string {
+		t.Helper()
+		planted := slices.Clone(routeRegistry)
+		index := slices.IndexFunc(planted, func(route routeDecl) bool { return route.Method+" "+route.Pattern == row })
+		if index < 0 {
+			t.Fatalf("no route declares %s", row)
+		}
+		change(&planted[index].Read)
+		withRouteRegistry(t, planted)
+		return registerRefusal(t)
 	}
 
 	t.Run("register refuses a GET row whose AsOf is unset, naming the row", func(t *testing.T) {
-		kept := readClasses
-		t.Cleanup(func() { readClasses = kept })
 		if refusal := registerRefusal(t); refusal != "" {
 			t.Fatalf("api.Register refused the read class as it stands: %s", refusal)
 		}
 		for _, row := range []string{"GET /api/v1/issues/{key}", "GET /api/v1/limits"} {
-			readClasses = maps.Clone(kept)
-			entry := readClasses[row]
-			entry.AsOf = asOfUnset
-			readClasses[row] = entry
-			refusal := registerRefusal(t)
+			refusal := plant(t, row, func(entry *readEntry) {
+				entry.AsOf = asOfUnset
+				entry.AtACut = ""
+			})
 			if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, row+": ") || !strings.Contains(refusal, "AsOf") {
 				t.Errorf("with %s's AsOf unset, api.Register refused %q, want a refusal of the read class naming the row and its AsOf", row, refusal)
 			}
@@ -175,8 +200,6 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 	})
 
 	t.Run("register refuses asOfCaller on a row but whoami, and an AtACut on a row of the wrong kind", func(t *testing.T) {
-		kept := readClasses
-		t.Cleanup(func() { readClasses = kept })
 		for _, row := range []struct {
 			name   string
 			row    string
@@ -188,11 +211,7 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 			{name: "a no-history row with an AtACut", row: "GET /api/v1/limits", change: func(entry *readEntry) { entry.AtACut = "At a cut the route answers the present." }, want: "AtACut"},
 			{name: "the caller row with an AtACut", row: whoamiRow, change: func(entry *readEntry) { entry.AtACut = "At a cut the route answers the present." }, want: "AtACut"},
 		} {
-			readClasses = maps.Clone(kept)
-			entry := readClasses[row.row]
-			row.change(&entry)
-			readClasses[row.row] = entry
-			refusal := registerRefusal(t)
+			refusal := plant(t, row.row, row.change)
 			if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, row.row+": ") || !strings.Contains(refusal, row.want) {
 				t.Errorf("with %s (%s), api.Register refused %q, want a refusal of the read class naming the row and %s", row.name, row.row, refusal, row.want)
 			}
@@ -221,7 +240,7 @@ func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 		if route.Method != http.MethodGet {
 			continue
 		}
-		switch readClasses[name].AsOf {
+		switch declared(name).Read.AsOf {
 		case asOfAnswers:
 			answers[name] = true
 		case asOfCaller:
@@ -234,7 +253,7 @@ func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 		case !mounted[name]:
 			problems = append(problems, name+": the plan's table says it answers as_of, and the table mounts no such row")
 		case !answers[name]:
-			problems = append(problems, name+": the plan's table says it answers as_of, and its read entry's AsOf is "+asOfKindName(readClasses[name].AsOf))
+			problems = append(problems, name+": the plan's table says it answers as_of, and its read class's AsOf is "+asOfKindName(declared(name).Read.AsOf))
 		}
 	}
 	for name := range answers {

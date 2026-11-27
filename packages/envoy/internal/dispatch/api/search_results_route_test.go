@@ -20,7 +20,7 @@ import (
 // filters a person chose.
 var searchNarrowingMembers = []string{"number_project", "status", "author", "updated_since", "keywords_only"}
 
-// The two paths one handler serves (routes_table.go).
+// The two paths one handler serves (their route files).
 const (
 	searchPath        = "/api/v1/search"
 	searchResultsPath = "/api/v1/search/results"

@@ -69,9 +69,11 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 // H): of each check, what it compared its results with, why it compared them with nothing, and
 // whether a pass of it stands; of a check that CI proves, what CI's run said (ci), and the result
 // that the present read derives from that run, which the read at a cut does not make; and of each
-// result, where its commit stands and the currency that older clients print. Whether the words of
-// a check moved after a result is given where the check's digest at the cut is
-// (checkBlocksAtTheCut), and is left out with the digest elsewhere (reason E).
+// result, where its commit stands and the currency that older clients print. Of each result of a
+// check that the present read compares with the program's current deploy (readsTheLiveDeploy), it
+// leaves out not_counted, which the present read writes from that deploy now (markNotCounted).
+// Whether the words of a check moved after a result is given where the check's digest at the cut
+// is (checkBlocksAtTheCut), and is left out with the digest elsewhere (reason E).
 func checksAtTheCut(ctx context.Context, checks []model.CheckBlock) {
 	at := elementsOf("/checks")
 	for index := range checks {
@@ -85,6 +87,9 @@ func checksAtTheCut(ctx context.Context, checks []model.CheckBlock) {
 		for number := range check.Results {
 			result := resultAt(number)
 			leaveOut(ctx, result+"/commit_stands", result+"/currency")
+			if readsTheLiveDeploy(*check) {
+				leaveOut(ctx, result+"/not_counted")
+			}
 			if check.SHA256 == "" {
 				leaveOut(ctx, result+"/check_words_moved")
 				continue

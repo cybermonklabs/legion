@@ -88,7 +88,6 @@ type fixtureFile struct {
 var fixtureProtectedFiles = map[string]string{
 	"workspaces":                       "cybermonklabs/legion/infra-2009/packages/daemon/go.mod",
 	"repos":                            "github.com/cybermonklabs/legion/.jj/repo/store/op_heads",
-	"feed":                             "issue.json",
 	"scratch/state":                    "planner/omp/profile.json",
 	"scratch/data":                     "omp/sessions.sqlite",
 	"go/mod":                           "github.com/sjawhar/legion@v0.1.0/go.mod",
@@ -261,13 +260,12 @@ func (f *trimFixture) keep(path string, at time.Time) {
 
 // assertKeptBuilt counts, before any sweep, the files of the case's tree the trimmer must never
 // touch, as they stand on the volume: one under each protected path — the workspaces, the clone,
-// the feed, a role's state home, the data home, the Go module cache, uv's two directories,
-// ms-playwright, legion-claude-code and the leak check — the role's own work and a directory's
-// notes in $TMPDIR outside any `go-build` tree, and the Go build cache's three names that are no
-// entry. Every case builds its tree in newTrimFixture, which asks this, so every sweeping case
-// asserts the count before its sweep as well as after it (assertProtected), and a fixture that
-// built none of one kind fails here rather than passing a case that never showed the trimmer
-// leaving that kind alone.
+// a role's state home, the data home, the Go module cache, uv's two directories, ms-playwright,
+// legion-claude-code and the leak check — the role's own work and a directory's notes in $TMPDIR
+// outside any `go-build` tree, and the Go build cache's three names that are no entry. Every case
+// builds its tree in newTrimFixture, which asks this, so every sweeping case asserts the count
+// before its sweep as well as after it (assertProtected), and a fixture that built none of one kind
+// fails here rather than passing a case that never showed the trimmer leaving that kind alone.
 func (f *trimFixture) assertKeptBuilt() {
 	f.t.Helper()
 	present := 0
@@ -3848,12 +3846,12 @@ func TestTheSweepAfterOneThatTookEveryEligibleEntryPausesTenIntervals(t *testing
 // A panic in the trimmer's own work is recovered and logged with its stack, the interval is
 // passed over, and three in a row stop the trimmer for the life of the launcher process with
 // one last report saying so. The recovery is a departure from this daemon's practice, whose
-// production code recovers no other panic of its own work but in two cases: leakguard's compile
-// recovers one only to turn regexp.MustCompile's into an error, and the memory guard recovers its
-// loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers its loop
-// (Guest.step) and its wake's reader (readModified), for the trimmer's reason: that code runs in
-// PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles container, so
-// its crash costs six live roles their round over a cache sweep.
+// production code recovers no other panic of its own work but in two cases: leakguard's
+// compileRules recovers one only to turn regexp.MustCompile's into an error, and the memory guard
+// recovers its loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers
+// its loop (Guest.step) and its wake's reader (readModified), for the trimmer's reason: that code
+// runs in PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles
+// container, so its crash costs six live roles their round over a cache sweep.
 func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 	t.Parallel()
 	f := newTrimFixture(t, 1)

@@ -161,7 +161,9 @@ var (
 // the comment.answered of a delivery callback's reply) began at or before the cut. Its
 // created_at is not that clock: the insert takes clock_timestamp(), later than its transaction's
 // start. Columns no write changes after the insert are the row's (id, issue_key, author,
-// reply_to, created_at, ask_id, artifact_id, turn, written_version, replies_to_block, answers).
+// reply_to, created_at, ask_id, artifact_id, turn, written_version, replies_to_block, answers,
+// and replies_to_quote and replies_to_occurrence, which the reply's insert writes beside
+// replies_to_block and no edit changes, 20261125133328).
 //   - node_kind and node_address: the row's, the address of the comment's node in graph_nodes
 //     (20261109022248). It names the comment, not anything it holds, so it is the same at every
 //     time; a writer of an older build left it null, and a later pass fills it.
@@ -201,7 +203,9 @@ func commentsShadow(cut string) string {
 		c.node_kind as node_kind,
 		c.node_address as node_address,
 		c.deleted_at as deleted_at,
-		c.deleted_by as deleted_by
+		c.deleted_by as deleted_by,
+		c.replies_to_quote as replies_to_quote,
+		c.replies_to_occurrence as replies_to_occurrence
 	from public.comments c
 	cross join lateral (
 		select from public.events e
@@ -236,7 +240,9 @@ func commentsShadow(cut string) string {
 //     carries none, as no message was edited then.
 //   - deleted_at and deleted_by: the present values (decision 14).
 //   - search: what the messages_search trigger computes, from the body at the cut.
-//   - Every other column: the row's, which no write changes after the insert.
+//   - Every other column: the row's, which no write changes after the insert. replies_to_quote and
+//     replies_to_occurrence (20261125133328) are among them: the reply's insert writes them beside
+//     replies_to_block, and no edit changes them.
 func messagesShadow(cut string) string {
 	return `select m.id as id,
 		m.issue_key as issue_key,
@@ -251,7 +257,9 @@ func messagesShadow(cut string) string {
 		m.replies_to_block as replies_to_block,
 		(p.payload->>'edited_at')::timestamptz as edited_at,
 		m.deleted_at as deleted_at,
-		m.deleted_by as deleted_by
+		m.deleted_by as deleted_by,
+		m.replies_to_quote as replies_to_quote,
+		m.replies_to_occurrence as replies_to_occurrence
 	from public.messages m
 	left join lateral (
 		select e.id, e.payload from public.events e

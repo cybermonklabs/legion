@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // standInReader stands in for the stream's read of a stored message: it answers stored, or, when
@@ -45,6 +46,7 @@ func (r *standInReader) NextStoredMessage(ctx context.Context, _ string, _ uint6
 // stood in for, and so is the read, which answers nothing until the request's budget ends. The
 // control is the same verdict with a read that answers the copy at once, which is the answer.
 func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
+	t.Parallel()
 	const seq = 7
 	item := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_slow_read", Text: "read slowly"},
 		"notifications.team.slow-read", publishDedupePrefix+uuid.NewString())
@@ -108,6 +110,7 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 // its start (bus.defaultKeepInterval), and a pass between the cut and the forget keeps the id
 // under 72 hours again, so the row holds the keeper off.
 func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
+	t.Parallel()
 	rig, _ := newSenderLimitRigOnServer(t, bus.WithKeepInterval(backgroundReadsHeld))
 	js := rig.harness.client.JS()
 	const sender = "ses_forgotten_id"
@@ -151,11 +154,26 @@ const forgottenIdWindow = 3 * time.Second
 // so the bound and the reading they hold the cut to are one.
 func awaitARepeatStoredOnceForgotten(t *testing.T, rig *senderLimitRig, sender, subject string, key map[string]any, first heldAnswer) heldAnswer {
 	t.Helper()
+	// The wait is for a product time, the stream's duplicate window, and each caller has just cut
+	// it, so its failure says how long it has been since the cut, the window cut to and the window
+	// the stream reports now. A repeat not yet stored as a new copy, refused or answered as a
+	// duplicate, after many times the window is either a window that is not the one the row set or
+	// a server that has not pruned its duplicate table, and the two read differently here.
 	var fresh heldAnswer
-	waitFor(t, 30*time.Second, "a repeat to be stored once the stream forgets the id", func() bool {
+	cutAt := time.Now()
+	if !testwait.Holds(listenerWaitBound(t), testwait.Poll, func() bool {
 		fresh = held(t, rig.publishFrom(t, sender, subject, key))
 		return fresh.status == http.StatusOK && !fresh.Duplicate
-	})
+	}) {
+		window := "unreadable"
+		if latest, infoErr := rig.harness.client.JS().StreamInfo(bus.Stream); infoErr == nil {
+			window = latest.Config.Duplicates.String()
+		} else {
+			window = "unreadable: " + infoErr.Error()
+		}
+		t.Fatalf("a repeat was still not stored as a new copy %s after the duplicate window was cut to %s (the stream now reports %s): the last answer was %d, duplicate %t, %s; want a 200 that is no duplicate once the stream forgets the id",
+			time.Since(cutAt).Round(time.Millisecond), forgottenIdWindow, window, fresh.status, fresh.Duplicate, fresh.raw)
+	}
 	if fresh.envelope.EventID == first.envelope.EventID {
 		t.Fatalf("the repeat after the stream forgot the id answered the first copy's event %s, want its own", fresh.envelope.EventID)
 	}

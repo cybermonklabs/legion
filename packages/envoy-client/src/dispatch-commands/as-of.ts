@@ -136,6 +136,7 @@ export const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   ci: "the CI result of each check",
   commit_stands: "where the commit of each result stands now",
   currency: "the GitHub currency of each result",
+  not_counted: "why a result counts for nothing against the program's deploy now",
   "checks/*/version": "the document version of each check",
   sha256: "the digest of the words of each check",
   check_words_moved: "whether the words of a check moved after each result",

@@ -293,6 +293,7 @@
     "/checks/*/results/*/check_words_moved",
     "/checks/*/results/*/commit_stands",
     "/checks/*/results/*/currency",
+    "/checks/*/results/*/not_counted",
     "/checks/*/sha256",
     "/checks/*/version"
   ],

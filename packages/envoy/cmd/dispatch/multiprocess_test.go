@@ -9,6 +9,13 @@
 // Its own build tag, and its own CI job (dispatch-multiprocess), for the reason the memory tests
 // have theirs: a row here waits for a durable hand-over or for a maintenance loop's tick, tens of
 // seconds each, and go test's default ten-minute deadline is one package's whole run.
+//
+// Every row runs beside the others: it calls t.Parallel first and reserves the Dispatch processes
+// it runs at once (dispatchSlots.reserve) before its first start. Each row already has a database
+// cloned for it (storetest.Open) and a NATS server of its own (multiprocessNATS), and spends its
+// run waiting rather than computing: run one after another, the rows kept 0.13 of one core of CI's
+// four busy over 13 minutes (2026-11-27). A row that runs one process at a time reserves nothing,
+// since its next start waits for a slot only once its last process has exited.
 
 package main
 
@@ -313,6 +320,8 @@ func (p *dispatchProcess) pollBehindHorizon(t *testing.T, what string, condition
 // only its own writes, but a relay over `listen dispatch_events`, so what either process commits
 // every process publishes.
 func TestALiveStreamOnOneProcessCarriesTheOtherProcessesEvent(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "XPR")
 	pair.a.createProject(t, project, "Cross process")
@@ -728,6 +737,8 @@ const (
 // role's holder - a core subscriber that is handed every forward and answers none, as a session
 // does - takes exactly one forward per event. Nothing crosses the role's own topic.
 func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	rig := newSessionRig(t, pair.nats)
 	conn := rig.conn
@@ -1603,6 +1614,8 @@ func startOutboxPair(t *testing.T) *dispatchPair {
 // designed (job 128324773698, 2026-11-07). The take-over bound is what the product promises, and
 // it is what the first assertion holds the gap to.
 func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	// samplingSpan is how long /healthz is read on both processes. It outruns the take-over bound
 	// the gaps are judged against, so a gap that breaks the promise is seen whole.
 	const samplingSpan = 12 * time.Second
@@ -1849,6 +1862,8 @@ func outboxLinesAround(pair *dispatchPair, logged map[*dispatchProcess][]outboxL
 // order: the watcher on the issues' topic families, the role's holder through the outbox's forward
 // with its receipt, the thread's author on its agent subject.
 func TestEachSessionTakesEachEventOnceAndInOrderAcrossTwoProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 10, 4, 3)
 	scene.writeAll(t, 200, pair.a, pair.b)
@@ -1864,6 +1879,8 @@ func TestEachSessionTakesEachEventOnceAndInOrderAcrossTwoProcesses(t *testing.T)
 // written after the kill, each within 10 s of it, and every session still takes each comment once
 // and in order across the hand-over.
 func TestAKilledPublisherIsReplacedWithin10Seconds(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	publisher, _ := waitForPublisher(t, pair, takeOverWithin)
@@ -1895,6 +1912,8 @@ const restartedPublishesWithin = 10 * time.Second
 // had in flight is dropped with its connection, as a dead host's sends that never reached the
 // server are, so nothing of comment 1 reaches the stream but what the restarted process publishes.
 func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t *testing.T) {
+	t.Parallel()
+	// One Dispatch process at a time: each exits before the next starts, so it reserves no slots.
 	pair := newPair(t)
 	proxy := testnats.StartProxy(t, pair.nats)
 	tap := startNATSTap(t, proxy.URL())
@@ -2113,6 +2132,8 @@ func (tap *natsTap) hasSent(text string) bool {
 // leaves its connection open and silent. Either way the publisher releases the hold for NATS lost,
 // and every session takes each comment once and in order.
 func TestAPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	t.Run("cut", func(t *testing.T) {
@@ -2169,6 +2190,8 @@ func (s *outboxScene) handOver(t *testing.T, publisher *dispatchProcess, what st
 // started after it was stopped, and it neither takes the hold again nor releases a hold that is no
 // longer its own.
 func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	publisher, _ := waitForPublisher(t, pair, takeOverWithin)
@@ -2227,6 +2250,8 @@ func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
 // stream has not acknowledged it - and the event reaches the holder the move made, once, with
 // no copy left for the holder it left.
 func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startOutboxPair(t)
 	rig := newSessionRig(t, pair.nats)
 	project := uniqueProjectKey(t, "RHM")
@@ -2621,6 +2646,8 @@ func (f *githubFake) URL() string { return f.server.URL }
 // Every failure prints both processes' whole output (pair.buffers), so the state that failed is
 // in the job that failed.
 func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	seedDeliverySettings(t, pair.database)
 	fake := startGitHubFake(t)
@@ -2701,6 +2728,9 @@ func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
 // token, and the process standing by takes each durable over within one bind interval. The peer
 // that refuses it has no GitHub App, so its intakes take nothing.
 func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T) {
+	t.Parallel()
+	// Three Dispatch processes at once: the peer, the process waiting for admission and the standby.
+	dispatchSlots.reserve(t, 3)
 	pair := newPair(t)
 	seedDeliverySettings(t, pair.database)
 	fake := startGitHubFake(t)
@@ -2830,6 +2860,8 @@ const frozenHolderHandledWithin = 60 * time.Second
 // durable ends with nothing pending, nothing unacknowledged and its ack floor at what it
 // delivered.
 func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	seedMergedPullRequestSettings(t, pair.database)
 	fake := newMergedPullRequestFake()
@@ -3301,6 +3333,8 @@ func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStream
 // (deliverySecondFetchWindow) by a chance of about that second in minutes: in almost every run it
 // comes outside the row, rather than inside it.
 func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	durable := bus.DispatchDeliveryDurable
 	// The merged pull request the row publishes. Its author has to be one the settings name: a
 	// merge by an author outside the population costs no GitHub call at all
@@ -3718,7 +3752,7 @@ func waitForDurableBinder(t *testing.T, pair *dispatchPair, js natsgo.JetStreamC
 			t.Fatalf("%s exited before %s was one process's to deliver from: NATS has it %s, and %s logged a bind of it.\n%s",
 				processNames(pair, gone), durable, binding, processNames(pair, bound), pair.buffers())
 		case time.Now().After(deadline):
-			t.Fatalf("%s was not one process's to deliver from within %v: NATS has it %s, and %s logged a bind of it. A process polls its durables every two seconds once it has read the delivery settings, and the first of the two to take the durable's hold binds it.\n%s",
+			t.Fatalf("%s was not one process's to deliver from within %v: NATS has it %s, and %s logged a bind of it. A process polls its durables every two seconds, the delivery intake's once its settings cache's first read has answered, and the first of the two to take the durable's hold binds it.\n%s",
 				durable, within, binding, processNames(pair, bound), pair.buffers())
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -3763,6 +3797,8 @@ func (p *dispatchPair) buffers() string {
 // socket, nobody is disconnected, A closes no room, and the reader that comes next reads the
 // current document.
 func TestADocumentWriteOnOneProcessReachesTheOpenEditorOnTheOther(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "DOC")
 	pair.a.createProject(t, project, "Documents")
@@ -3802,6 +3838,8 @@ func storedHead(t *testing.T, pair *dispatchPair, artifactID string) int64 {
 // queued on the table lock. Once the lock goes, the setup finishes and the marker leaves the
 // document it opened as it was.
 func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SYNC")
 	pair.a.createProject(t, project, "Documents")
@@ -4115,6 +4153,8 @@ const (
 // taken only at a boot with DISPATCH_PARENT_STATUS_RULE on, which this row does not set
 // (api.TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess holds what its lease is for).
 func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	waitOutABucketBoundary(t, time.Hour)
 	fake := startGitHubFake(t)
@@ -4226,6 +4266,8 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 // cursor that pass advanced: no wake is lost to another process's pass, and neither process
 // judges what the other judged.
 func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	gate := lockTables(t, pair.database, "exclusive", "suggestion_outcome_cursor")
 	pair.start(t, nil)
@@ -4279,6 +4321,8 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 // period's inside the row in some runs, and the second process would then sweep a period of its
 // own.
 func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	waitOutABucketBoundary(t, duty.LeasePeriod(redeliver.Interval))
 	fake := startGitHubFake(t)
@@ -4366,6 +4410,8 @@ const multiprocessServerURL = "http://dispatch.multiprocess.test"
 // processes name the person on that cookie. Before INFRA-555 the state was held by the process
 // that started the sign-in, and B answered 400 "invalid or expired state".
 func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, multiprocessServerURL+"/auth/callback")
 	env := cookieSignIn(issuer)
@@ -4435,6 +4481,8 @@ func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 // a key no live peer shares refuses to start (TestAProcessWhoseKeySetALivePeerDoesNotShareRefusesToStart),
 // so no third process with a key of its own serves beside these two.
 func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
@@ -4475,6 +4523,10 @@ const quickProcessHeartbeat = time.Second
 // the pair never does. A process given the pair's key first and another second, the first step of
 // a rotation, starts beside them.
 func TestAProcessWhoseKeySetALivePeerDoesNotShareRefusesToStart(t *testing.T) {
+	t.Parallel()
+	// Three Dispatch processes at once: the pair, and beside it each refused process in turn, then the
+	// rotating one.
+	dispatchSlots.reserve(t, 3)
 	// Every process here takes that pace, the pair included: the refusal stands only while the
 	// refusing process keeps heartbeating inside the window the refused one judges it by, and a
 	// pair beating slower than that window would lapse between beats and refuse nobody.
@@ -4510,6 +4562,8 @@ func TestAProcessWhoseKeySetALivePeerDoesNotShareRefusesToStart(t *testing.T) {
 // the very thing the boot refusal is there to prevent. Whichever of the two stops - exits, or stops
 // answering /healthz 200 so the Service takes it out - the pair must not stay serving side by side.
 func TestAProcessThatResumesBesideAPeerWhoseKeySetItDoesNotShareDoesNotServeBesideIt(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	frozen := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{NATSURL: pair.nats, SigningKey: multiprocessSigningKey, OwnProcessGroup: true})
 	frozen.waitHealthy(t)
@@ -4611,6 +4665,8 @@ const (
 // which opens that K1 seal. A cookie minted on A, under K1, is answered on B. Before INFRA-555 a
 // DISPATCH_SIGNING_KEY of two keys was one key, so each process refused the other's cookie.
 func TestAKeyRotationKeepsPeopleSignedInAcrossTwoProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
@@ -4743,6 +4799,8 @@ const (
 // precondition of that apply: run it then, and every cookie signed under generation 0 has already
 // expired on its own, so the drop refuses nobody who is still signed in.
 func TestAStagedKeyRotationAcrossThreeAppliesKeepsPeopleSignedIn(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
@@ -4868,6 +4926,8 @@ const fleetQuiet = 2*5*time.Second + time.Second
 // the announcements, whichever build that process itself runs. Each announcement row the two
 // builds' own main wrote lists refs.TupleKinds, the relation kinds graph_edges' tuple arm renders.
 func TestTwoProcessesAnnounceTheirBuildOnce(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	c1 := cmdtest.BuildStamped(t, "envoy-dispatch-c1", fleetBuildC1)
 	c2 := cmdtest.BuildStamped(t, "envoy-dispatch-c2", fleetBuildC2)
@@ -5624,6 +5684,8 @@ func announceAwarenessClients(socket *gws.Conn, artifactID string, first, count,
 // other's typing and cursors within a second, and nobody is disconnected. Each subtest has a
 // document of its own, so one behaviour failing does not decide another's.
 func TestTwoEditorsOnTwoProcessesSeeEachOthersEditsAndCursorsLive(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "LIVE")
 	pair.a.createProject(t, project, "Live across processes")
@@ -5827,6 +5889,8 @@ func reconnectWithScope(t *testing.T, process *dispatchProcess, login, artifactI
 // transaction that changes nothing commits no update - so both rooms stand at the stored head
 // when the issue closes: what closes their sockets, if anything does, is the close.
 func TestClosingAndReopeningAnIssueChangesEveryProcessesRooms(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SHUT")
 	pair.a.createProject(t, project, "Closed across processes")
@@ -6063,6 +6127,8 @@ func decodeAuthors(t *testing.T, version int, authors string) []model.Actor {
 // closed and reconnects writable, his keystroke is stored, and the settlement the reopened
 // document owes leaves the ask open.
 func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoomUntilItsReopen(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	const settleDelay = 2 * time.Second
 	pair := newPair(t)
 	pair.startSettling(t, nil, settleDelay, settleDelay)
@@ -6140,6 +6206,8 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // read once through A's own API, is past the one the close left and holds bob's keystroke and the
 // block resolved, and the ask still reads withdrawn on both processes.
 func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	const settleDelay = 2 * time.Second
 	pair := newPair(t)
 	pair.startSettling(t, nil, settleDelay, settleDelay)
@@ -6187,6 +6255,8 @@ func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 // living only in B's memory. With her, that fallback names alice, and only an author recorded
 // where A can read it names bob.
 func TestAnAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	pair.startSettling(t, nil, 0, 10*time.Minute)
 	project := uniqueProjectKey(t, "ASKA")
@@ -6301,6 +6371,8 @@ func decodeLostEdit(t *testing.T, answer httpAnswer) lostEditAnswer {
 // second tab of his there that shows when B's room has applied his delete; A holds no room of
 // the document, so the agent's write forks it from the store. Each case has its own document.
 func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "AGNT")
 	pair.b.createProject(t, project, "Agent writes across processes")
@@ -6457,6 +6529,8 @@ func (p *dispatchPair) reconnectSynced(t *testing.T, process *dispatchProcess, l
 
 // Spec item 5: a read never returns text older than the store holds, whichever process serves it.
 func TestAReadOnTheOtherProcessIsNeverOlderThanTheStore(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "READ")
 	pair.a.createProject(t, project, "Reads across processes")
@@ -6576,6 +6650,8 @@ func (p *dispatchPair) resumedBetween(t *testing.T, artifactID string, from, to 
 // settle delay, so no settlement runs inside the row: an owed settlement stays owed for the
 // resumption to find, and no settlement loads a room.
 func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	pair.startSettling(t, nil, 10*time.Minute, 10*time.Minute)
 	project := uniqueProjectKey(t, "MAIN")
@@ -6735,6 +6811,8 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 // reads its name from the host (no setting names it otherwise), so each must answer this host's
 // name.
 func TestEachDocumentSocketNamesItsServingProcess(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
@@ -7302,6 +7380,8 @@ const sweepWait = 30 * time.Second
 // subtest kills the process earlier, after the message is stored and before anything is resolved
 // or claimed: the attempt the storing transaction wrote is what the survivor sends.
 func TestADeliveryAKilledProcessLeftPendingIsSentByTheOther(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	t.Run("killed while sending", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
 		sends := listener.hold(listenerSend)
@@ -7401,6 +7481,8 @@ func cancelOnceHeld(t *testing.T, p *dispatchProcess, listener *fakeListener, pa
 // and read sent, with no Retry. No attempt here is a minute old, and nothing back-dates one, so
 // the delivery sweep owes none of them: only the request's own send can deliver them.
 func TestASendWhoseRequestIsCancelledAfterItsCommitReachesItsRecipient(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	listener := startFakeListener(t, resumeSession)
 	pair := startPair(t, listener.processEnv())
 	project := uniqueProjectKey(t, "CNL")
@@ -7511,6 +7593,8 @@ const quickTakeoverWindow = time.Second
 // And a process killed while it waits leaves its attempts pending under the claim it renewed
 // last, which the other process's delivery sweep sends.
 func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	t.Run("sent during the take-over", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
 		// No attempt here is back-dated, so the delivery sweep owes none and only each request's
@@ -7715,6 +7799,7 @@ func backDateRedeliveryClaim(t *testing.T, natsURL, guid string, by time.Duratio
 // claim's time back past the deadline rather than waiting it out, and the second run asks GitHub
 // for the delivery, once.
 func TestAWebhookRedeliveryWhoseProcessDiedAfterItsClaimIsRequestedAgain(t *testing.T) {
+	t.Parallel()
 	_, natsURL := multiprocessNATS(t)
 	key, pemText := githubapptest.Key(t)
 	const clientID = "Iv1.multiprocess"
@@ -7839,6 +7924,8 @@ func (p *dispatchProcess) proxyRead(t *testing.T, path string) (status int, retr
 // is sent nothing more under the installation's token. B's installation lookup and token mint are
 // the App's calls, under the App's own limit, and may still reach GitHub.
 func TestARateLimitOneProcessMetStopsTheOtherFromCallingGitHub(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	github := startRateLimitGitHub(t)
 	pair := startPair(t, githubAppEnv(t, github.server.URL))
 
@@ -7870,6 +7957,8 @@ func TestARateLimitOneProcessMetStopsTheOtherFromCallingGitHub(t *testing.T) {
 // opened on A carries the `at` its ask.answered event was created at. No process's clock can
 // produce either equality.
 func TestClaimAndAnswerTimesComeFromTheDatabaseOnEitherProcess(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	ctx := context.Background()
 	project := uniqueProjectKey(t, "CLK")
@@ -7942,6 +8031,8 @@ const misconfiguredRun = int64(38041790209)
 // access line for its read is written after the read's warning, so once both are in, a warning
 // either process wrote is in too.
 func TestAConfigurationWarningIsLoggedOnceAcrossTheProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := newPair(t)
 	seedDeliverySettings(t, pair.database)
 	ctx := context.Background()
@@ -8089,6 +8180,8 @@ func (f *architectureGitHub) releaseHeld() { f.releaseOnce.Do(func() { close(f.r
 // Y's, and A answers the row at Y. The source is disabled so the import ticker adds no sync of
 // its own.
 func TestTwoProcessesSyncingOneProjectNeverWriteTheOlderCommit(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	const older, newer = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
 	github := startArchitectureGitHub(t, older, map[string]map[string]string{
 		older: {"api.md": "---\ntitle: API\n---\nThe API.\n"},
@@ -8246,6 +8339,8 @@ func (p *dispatchProcess) liveRoutesPage(t *testing.T, project string, limit, of
 // page read on B after the listener's list has flipped holds the rest of the issues A's page was
 // cut from, never issues judged against B's own later copy.
 func TestBothProcessesJudgeARouteAgainstOneRoster(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	sre := listenerSession{SessionID: "sre-holder", Title: "sre", Roles: []string{"sre"}, Capabilities: []string{}}
 	reviewer := listenerSession{SessionID: "reviewer-holder", Title: "reviewer", Roles: []string{"reviewer"}, Capabilities: []string{}}
 
@@ -8370,6 +8465,8 @@ func requireSocketClosed(t *testing.T, ended <-chan streamEnd, code int, within 
 // hook called on A answers on A's acknowledgement alone rather than waiting out the timeout for a
 // process that no longer exists.
 func TestEveryTestHookActsOnBothProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startHookPair(t)
 	project := uniqueProjectKey(t, "HKS")
 	pair.a.createProject(t, project, "Test hooks")
@@ -8500,6 +8597,8 @@ func getAsset(client *http.Client, p *dispatchProcess, path string, want []byte)
 // alone: a page one process served asks the other for its chunks. Every file of either build
 // answers 200 with its bytes from both processes.
 func TestDashboardServesEveryFileOfEitherBuildFromBothProcesses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	database := (&dispatchPair{database: storetest.Open(t)}).databaseURL(t)
 	builds := []dashboardBuild{writeDashboardBuild(t, "a"), writeDashboardBuild(t, "b")}
 	processes := []*dispatchProcess{startOnBuild(t, database, builds[0]), startOnBuild(t, database, builds[1])}
@@ -8519,6 +8618,8 @@ func TestDashboardServesEveryFileOfEitherBuildFromBothProcesses(t *testing.T) {
 // concurrent requests for build A's files, every one but the shared chunk missing from B's disk, is
 // answered 200 with each file's bytes by B.
 func TestDashboardServesABurstOfTheOtherBuildsFiles(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	database := (&dispatchPair{database: storetest.Open(t)}).databaseURL(t)
 	a := writeDashboardBuild(t, "a")
 	startOnBuild(t, database, a)
@@ -8556,6 +8657,8 @@ func TestDashboardServesABurstOfTheOtherBuildsFiles(t *testing.T) {
 // bytes and leaves every stored asset row as it was, renewing only the build's last start, and the
 // restarted process still serves every file.
 func TestDashboardRestartOnTheSameBuildWritesNoAssetBytes(t *testing.T) {
+	t.Parallel()
+	// One Dispatch process at a time: each exits before the next starts, so it reserves no slots.
 	ctx := context.Background()
 	pair := &dispatchPair{database: storetest.Open(t)}
 	database := pair.databaseURL(t)
@@ -8619,6 +8722,8 @@ func dashboardBuildsOf(t *testing.T, p *dispatchProcess) (serving string, live [
 // is; and a process that stopped beating without deregistering drops out once its heartbeat is
 // older than the live window, aged here in the database rather than waited for.
 func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	ctx := context.Background()
 	pair := &dispatchPair{database: storetest.Open(t)}
 	database := pair.databaseURL(t)
@@ -8689,6 +8794,8 @@ const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Secon
 // binary's deadline (textversionstest.AwaitRowsUntil). Every batch before the kill is the first
 // process's and every batch after is the second's, and every event has exactly its row.
 func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writes := recordKeywordFillWrites(t, database)
@@ -8725,6 +8832,8 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 // the test waits between its reads. Every wait of the row is bounded by the test binary's deadline
 // alone.
 func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
+	t.Parallel()
+	// One Dispatch process at a time: each exits before the next starts, so it reserves no slots.
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writes := recordKeywordFillWrites(t, database)
@@ -8782,6 +8891,8 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 // ended by the batch's own idle_in_transaction_session_timeout, and any batch the resumed process
 // begins finds in duty_holds that the hold is not its own (filler.batch).
 func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writes := recordKeywordFillWrites(t, database)

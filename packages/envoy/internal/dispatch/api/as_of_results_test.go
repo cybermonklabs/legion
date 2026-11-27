@@ -113,12 +113,23 @@ func newPastResultsRig(t *testing.T, statements *markedStatements) (http.Handler
 // check's words moved. The tracer finds no write of it to pull_request_heads, branch_commits or
 // events, and the counts of those rows do not move. ?at= with a cut is refused 400
 // AS_OF_NOT_SERVED naming at, and asks GitHub nothing either.
+// pastResultsChecks is the Verification document's two recorded checks: k1, which its pull request
+// heads answer, and k2, which the default branch answers, so the present read compares k2's
+// commit with the default branch and stores that branch's answer (branch_commits). An after-merge
+// check is compared with a merged pull request alone, which this issue has none of.
+const pastResultsChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\" negative_control=\"Break it and watch it fail.\"}\n" +
+	"The server records a result against a check.\n" +
+	":::\n\n" +
+	":::check{#k2 when=\"default_branch\"}\n" +
+	"The default branch answers at the merged commit.\n" +
+	":::\n"
+
 func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 	statements := &markedStatements{}
 	handler, github, served := newPastResultsRig(t, statements)
 	database := served.deps.Store
 	issue := issueInRepository(t, handler, "RPST", "acme/widgets", "Results read at a cut")
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks+"\n"+ciCheckBlock("c1", ciCheckKept))
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", pastResultsChecks+"\n"+ciCheckBlock("c1", ciCheckKept))
 	for _, result := range []struct{ check, commit string }{{"k1", newHeadCommit}, {"k2", mergeCommit}} {
 		if recorded := recordResult(t, handler, issue.Key, resultBody(result.check, "pass", result.commit, nil)); recorded.Code != http.StatusCreated {
 			t.Fatalf("record a result of %s: status=%d body=%s", result.check, recorded.Code, recorded.Body.String())

@@ -32,7 +32,7 @@ func TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut(t *testing.T) {
 	}
 	listed := asOfGuideMembers(t, string(guide))
 	var answers []string
-	for name, entry := range readClasses {
+	for name, entry := range declaredReads() {
 		if entry.AsOf == asOfAnswers {
 			answers = append(answers, name)
 		}

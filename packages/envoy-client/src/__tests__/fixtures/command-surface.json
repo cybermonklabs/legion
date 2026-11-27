@@ -1,5 +1,5 @@
 {
-  "commands": 43,
+  "commands": 45,
   "refusals": 29,
   "runs": [
     {
@@ -86,15 +86,6 @@
       },
       "requests": [
         {
-          "method": "GET",
-          "path": "/api/v1/issues/DSP-1/artifacts",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret"
-          },
-          "body": null
-        },
-        {
           "method": "POST",
           "path": "/api/v1/markdown/round-trip",
           "headers": {
@@ -103,8 +94,18 @@
             "Content-Type": "application/json"
           },
           "body": {
-            "markdown": "# Design\n"
+            "markdown": "# Design\n",
+            "new_document": true
           }
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/artifacts",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
         },
         {
           "method": "POST",
@@ -487,6 +488,57 @@
       "outcome": "result",
       "text": [
         "Deleted message 01234567-0000-4000-8000-000000000001 on DSP-1. No read of it gives its body again; the events of a reply's creation and of each edit of the reply written before the delete keep the preview of it they carried."
+      ]
+    },
+    {
+      "tool": "dispatch_deploy",
+      "call": "valid",
+      "args": {
+        "commit": "1111111111111111111111111111111111111111",
+        "program": "worker",
+        "repo": "acme/widgets"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/deploys",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "commit": "1111111111111111111111111111111111111111",
+            "program": "worker",
+            "repo": "acme/widgets"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "worker: 1111111111111111111111111111111111111111 since 2026-01-02T03:04:05Z (source: route, recorded by session session-1)."
+      ]
+    },
+    {
+      "tool": "dispatch_deploys",
+      "call": "valid",
+      "args": {
+        "repo": "acme/widgets"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/deploys?repo=acme/widgets",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "worker: 1111111111111111111111111111111111111111 since 2026-01-02T03:04:05Z (source: route, recorded by session session-1)."
       ]
     },
     {
@@ -1164,7 +1216,7 @@
       "outcome": "result",
       "text": [
         "1 issue in PROJ (showing 251-251 of 1)",
-        "DSP-1 [todo] P1 Native workspace ·  open asks"
+        "DSP-1 [todo] P1 Native workspace · labels infra ·  open asks"
       ]
     },
     {

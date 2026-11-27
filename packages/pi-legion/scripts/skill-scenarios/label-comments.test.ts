@@ -450,11 +450,11 @@ test("the gateway route posts to <gateway>/v1/messages with the key the key comm
   }
 });
 
-test("a 429, a 5xx or a reply that skips a question is asked again", async () => {
+test("a 408, a 429, a 5xx or a reply that skips a question is asked again", async () => {
   const out = path.join(dir("retried"), "labels");
   const { fetch } = world((comment, attempt) => {
-    if (comment === "Too long." && attempt < 3) {
-      return new Response("overloaded", { status: attempt === 1 ? 529 : 429 });
+    if (comment === "Too long." && attempt < 4) {
+      return new Response("overloaded", { status: [529, 429, 408][attempt - 1] });
     }
     if (comment === "What is a <widget> & why?") {
       // The first reply answers one question only. The second answers each in another layout.

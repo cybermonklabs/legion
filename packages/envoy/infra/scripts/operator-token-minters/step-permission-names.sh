@@ -7,21 +7,20 @@ step="permission names"
 mark
 checked_names=("${CONTAINER_PERMISSIONS[@]}" "${GSA_PERMISSIONS[@]}" "${SQL_PERMISSIONS[@]}" "${FLEET_PERMISSIONS[@]}"
   "${IAM_WRITE_PERMISSIONS[@]}" "${DEPLOYMENT_MANAGER_PERMISSIONS[@]}" secretmanager.versions.access storage.objects.get)
-declare -A roles_used=() role_holds=()
+declare -A roles_used=()
 for permission in "${checked_names[@]}"; do
   granting_role "$permission"
   role="$GRANTING_ROLE"
   if [ -z "${roles_used[$role]:-}" ]; then
     roles_used[$role]="read"
-    if role_perms "$role"; then
-      while IFS= read -r held; do role_holds["$role $held"]=1; done <"$ROLE_FILE"
-    else
+    if ! role_perms "$role"; then
       roles_used[$role]=failed
       unknown "$step" "$ROLE_ERROR"
     fi
   fi
   [ "${roles_used[$role]}" != failed ] || continue
-  [ -n "${role_holds["$role $permission"]:-}" ] ||
+  role_file "$role"
+  role_listed "$permission" ||
     unknown "$step" "$permission is not in $role's includedPermissions, so no check that names it can find a holder"
 done
 if unchanged; then

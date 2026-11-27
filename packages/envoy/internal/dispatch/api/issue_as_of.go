@@ -39,6 +39,18 @@ func refuseListingFilterAtCut(w http.ResponseWriter, r *http.Request) bool {
 			"the pins of a person keeps no history, so a listing at a past time cannot filter by pinned")
 }
 
+// refuseThreadPageAtCut refuses a page of threads at a cut (refuseParameterAtCut): order names
+// the page of the three issue thread lists (parseThreadPage), and this build reads the page's
+// threads, their last activity and their rows at the present only, where the list at a cut
+// leaves out of its rows what the records at the cut do not give (issueAsksAtTheCut,
+// commentsAtTheCut, messagesAtTheCut). Each list calls it before it parses the page or reads
+// anything, so the refusal stands whatever else the page's keys say. It reports whether it
+// answered.
+func refuseThreadPageAtCut(w http.ResponseWriter, r *http.Request) bool {
+	return refuseParameterAtCut(w, r, "order",
+		"a page of threads is answered at the present only, so a list at a past time answers no page")
+}
+
 // issueAtTheCut completes the issue read at the cut ctx carries. The read does not read the route
 // roster, which keeps no past state: an issue with a route leaves out the route's reach, and an
 // issue a session holds leaves out the holder's liveness, where the present read reads the roster

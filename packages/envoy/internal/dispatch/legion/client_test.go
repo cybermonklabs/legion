@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // stateServer is a daemon stand-in answering GET /legion/v1/state with body, and anything else
@@ -196,6 +198,56 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 	}
 }
 
+// TestTheStateReadStatesNoContractAndKeepsP0Holders: the sampler's read states no plugin
+// contract, so a daemon places it in no pod and serves it the body of the daemon's own contract,
+// which carries `admission.p0Holders` (the daemon's api.contractsFor; the daemon's own row,
+// TestACallerInNoPodStatingNoContractIsServedTheP0Holders, pins that side). The decode keeps the
+// number and the read's admission observation records it, which is what the board's header
+// copies (dispatch://INFRA-5636). A read that stated a contract below the P0 start's entry would
+// be served no number, and every board would give null.
+func TestTheStateReadStatesNoContractAndKeepsP0Holders(t *testing.T) {
+	const body = `{"admission":{"cap":2,"p0Holders":3,"active":["ACME-1","ACME-2","ACME-3","ACME-4","ACME-5"]},
+	  "issues":{"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}}}}`
+	asked := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case asked <- r.Header.Clone():
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	state, _, err := New(server.URL).State(t.Context())
+	if err != nil {
+		t.Fatalf("read a state carrying admission.p0Holders: %v", err)
+	}
+	var header http.Header
+	select {
+	case header = <-asked:
+	default:
+		t.Fatal("the daemon was asked nothing, so this test proves nothing")
+	}
+	// The daemon's pluginContractHeader (packages/daemon/internal/api/shaping.go).
+	if stated := header.Values("Legion-Plugin-Contract"); len(stated) != 0 {
+		t.Errorf("the read states Legion-Plugin-Contract %v, want none: the daemon serves its own body, P0 holders included, to a caller in no pod that states none", stated)
+	}
+	if state.Admission == nil || state.Admission.P0Holders == nil || *state.Admission.P0Holders != 3 {
+		t.Fatalf("the decoded admission = %+v, want the daemon's 3 P0 holders", state.Admission)
+	}
+	for _, observation := range state.Observations() {
+		if observation.IssueKey != AdmissionKey || observation.Field != FieldAdmission {
+			continue
+		}
+		if recorded := AdmissionOf(observation.Value); recorded == nil || recorded.P0Holders == nil || *recorded.P0Holders != 3 {
+			t.Errorf("the read records the admission block %s, want the daemon's 3 P0 holders in it", observation.Value)
+		}
+		return
+	}
+	t.Fatal("the read records no admission block, so the board has no number to copy")
+}
+
 // TestAMalformedOrRefusedAnswerIsAFailedRead: a body that is not the route's JSON, and a status
 // that is not 200, are each a failed read, so the sampler records the failure and leaves the last
 // good observations standing.
@@ -244,11 +296,10 @@ func TestAStateReadFollowsNoRedirect(t *testing.T) {
 // is the transport's reason without the URL net/http's *url.Error carries or the host and port
 // its *net.OpError names.
 func TestAFailedCallNamesNoAddress(t *testing.T) {
-	// A port nothing listens on: the dial fails, which is the failure a daemon that is down
-	// gives, and the one whose text names the address.
-	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	address := strings.TrimPrefix(closed.URL, "http://")
-	closed.Close()
+	// A port that refuses every dial: the dial fails, which is the failure a daemon that is down
+	// gives, and the one whose text names the address. The test holds the port until it ends; a
+	// closed server's port is any process's to take, and one that takes it answers.
+	address := testport.Refused(t)
 
 	_, _, err := New("http://" + address).State(t.Context())
 	if !errors.Is(err, ErrUnavailable) {

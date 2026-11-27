@@ -50,9 +50,9 @@
 # released version wins, a released version that is not X.Y.Z is refused
 # rather than falling through, a package that released nothing takes its
 # newest tag, and a newest tag that is no release prints nothing.
-# The `release` cases run against a stub `gh` first on PATH, which answers `gh
-# release view` for a release that does not exist, is a draft or is published,
-# can fail an upload, an edit or a create, and logs every call it gets. The
+# The `release` cases run against a stub `gh` first on PATH, which answers the
+# GraphQL release lookup for a release that does not exist, is a draft or is
+# published, can fail an upload, an edit or a create, and logs every call it gets. The
 # `release-section` cases drive that stub too: it answers `gh release view
 # --json body` with the body each case leaves it and keeps what an edit's
 # --notes-file held, so each case reads the body release-section would write,
@@ -169,10 +169,10 @@ leak_host="quartz-lantern.marble-otter.$tailnet_suffix"
 # The rule file the leak guard reads out of the checkout the script under test runs from, and
 # leak_rules_into <tree>, which puts a copy of it where a copy of that script at
 # <tree>/.github/scripts/release-push.sh looks for it, as a real checkout holds both.
-leak_rules_file="$script_dir/../../packages/daemon/internal/leakguard/private-names.toml"
+leak_rules_file="$script_dir/../private-names.toml"
 leak_rules_into() {
-  mkdir -p "$1/packages/daemon/internal/leakguard"
-  cp "$leak_rules_file" "$1/packages/daemon/internal/leakguard/private-names.toml"
+  mkdir -p "$1/.github"
+  cp "$leak_rules_file" "$1/.github/private-names.toml"
 }
 
 identity() {
@@ -843,37 +843,71 @@ echo
 echo "Case 11: release creates a missing release, publishes a draft, and reuses a published one"
 # The stub gh, first on PATH. It logs each call to $GH_TEST_DIR/calls as one
 # line, each argument in brackets, so an argument the script splits or joins
-# shows up as a different log line. `gh release view <tag> ... --json isDraft
-# -q .isDraft` answers for $GH_TEST_RELEASE: none (exit 1, as gh does for a
-# missing release), draft or published (true or false), or odd (a value gh
-# never prints); `--json body -q .body` prints $GH_TEST_DIR/body.md, the
+# shows up as a different log line. The REST tag route (`gh api
+# repos/example/repo/releases/tags/<tag> --jq .draft`) answers a published
+# release (false, what its --jq prints) and a 404 otherwise, as GitHub serves a
+# published release alone there. The GraphQL release lookup (`gh api graphql
+# ... -f tag=<tag> --jq ...`) answers for $GH_TEST_RELEASE what its --jq prints:
+# none (GitHub answers a release that does not exist with null), draft or
+# published (true or false), or odd (a value the lookup never prints), and is
+# refused as GitHub refuses a GraphQL call where $GH_TEST_GRAPHQL_SPENT is set;
+# `gh release view --json body -q .body` prints $GH_TEST_DIR/body.md, the
 # release's body as the case left it, for the release-section cases below, and
 # `--json name,body` prints $GH_TEST_DIR/name.md and that same body, the draft
 # the lane reads back before it publishes it. An upload, edit or create fails
 # when $GH_TEST_FAIL names it, and the file an
 # edit's --notes-file names is copied to $GH_TEST_DIR/edited.md, the body that
 # edit would write. Any other call fails as unexpected, so a call the command
-# should not make shows up as an error.
+# should not make shows up as an error. gh-read.sh's own read of the rate_limit
+# route, which it makes after a command whose answer it cannot read exits 1, is
+# answered apart, as its --jq filter reads a document with both budgets whole,
+# or the graphql budget spent where $GH_TEST_GRAPHQL_SPENT is set, and logged
+# to $GH_TEST_DIR/rate-calls.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
+if [ "$1 $2" = "api rate_limit" ]; then
+  printf '%s\n' "$*" >> "$GH_TEST_DIR/rate-calls"
+  graphql=5000
+  [ -z "${GH_TEST_GRAPHQL_SPENT:-}" ] || graphql=0
+  jq -n --argjson graphql "$graphql" --argjson reset "$(($(date +%s) + 3600))" \
+    '{resources: {core: {remaining: 5000, reset: $reset}, graphql: {remaining: $graphql, reset: $reset}}}' |
+    jq -r "$4"
+  exit 0
+fi
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
-  "release view")
-    if [[ " $* " == *" --json name,body "* ]]; then
-      cat "$GH_TEST_DIR/name.md" "$GH_TEST_DIR/body.md"
-    elif [[ " $* " == *" --json body -q .body "* ]]; then
-      cat "$GH_TEST_DIR/body.md"
-    elif [[ " $* " == *" --json isDraft -q .isDraft "* ]]; then
+  "api repos/example/repo/releases/tags/"*)
+    if [ "$GH_TEST_RELEASE" = published ]; then
+      echo false
+    else
+      echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+    fi ;;
+  "api graphql")
+    if [[ " $* " != *" -f tag="* ]]; then
+      echo "a GraphQL call that is no release lookup: $*" >&2
+      exit 3
+    elif [ -n "${GH_TEST_GRAPHQL_SPENT:-}" ]; then
+      echo '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 1."}]}'
+      echo "gh: API rate limit already exceeded for installation ID 1." >&2
+      exit 1
+    else
       case $GH_TEST_RELEASE in
-        none) echo "release not found" >&2; exit 1 ;;
+        none) echo none ;;
         draft) echo true ;;
         published) echo false ;;
         odd) echo null ;;
         *) echo "unknown GH_TEST_RELEASE $GH_TEST_RELEASE" >&2; exit 3 ;;
       esac
+    fi ;;
+  "release view")
+    if [[ " $* " == *" --json name,body "* ]]; then
+      cat "$GH_TEST_DIR/name.md" "$GH_TEST_DIR/body.md"
+    elif [[ " $* " == *" --json body -q .body "* ]]; then
+      cat "$GH_TEST_DIR/body.md"
     else
-      echo "view without --json isDraft or --json body: $*" >&2
+      echo "view without --json name,body or --json body: $*" >&2
       exit 3
     fi ;;
   "release upload" | "release edit" | "release create")
@@ -896,16 +930,23 @@ release_run() {
   local state=$1 fail=$2
   shift 2
   : > "$work/calls"
+  : > "$work/rate-calls"
   set +e
   out=$(cd "$work" && GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE="$state" \
-    GH_TEST_FAIL="$fail" LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
+    GH_TEST_FAIL="$fail" GH_TEST_GRAPHQL_SPENT="${graphql_spent:-}" LEAK_REFUSE="$leak_refuse" \
+    PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
   rc=$?
   set -e
   calls=$(<"$work/calls")
 }
 # argv <arg>...: one call as the stub logs it.
 argv() { printf '[%s]' "$@"; }
-view=$(argv release view pkg-v1.0.1 --repo example/repo --json isDraft -q .isDraft)
+# The release lookups release-push.sh makes, as the stub logs them: the REST tag route, then, where
+# that answers no published release, the GraphQL lookup. A published release takes the first alone.
+lookup_query='query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }'
+lookup_jq='.data.repository.release | if . == null then "none" else .isDraft end'
+rest_view=$(argv api repos/example/repo/releases/tags/pkg-v1.0.1 --jq .draft)
+view=$rest_view$'\n'$(argv api graphql -f "query=$lookup_query" -f owner=example -f name=repo -f tag=pkg-v1.0.1 --jq "$lookup_jq")
 upload=$(argv release upload pkg-v1.0.1 a.tgz b.tgz --repo example/repo --clobber)
 publish=$(argv release edit pkg-v1.0.1 --repo example/repo --draft=false)
 # The assets these cases name, as the files they are: the leak guard lists an
@@ -923,6 +964,14 @@ release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none: exits 0" "$(is "$rc" 0)"
 check "none: creates it from the pushed tag, with generated notes" "$(is "$calls" "$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --generate-notes --verify-tag)")"
 check "none: the title reaches gh as one argument" "$(contains "$calls" '\[--title\]\[Pkg v1\.0\.1\]\[')"
+# A re-run of a published release while the graphql budget is spent (another job spent it): the
+# REST tag route answers it on the core budget, so the release is reused with no GraphQL call and
+# no rate_limit read. A GraphQL lookup alone was refused there and read the spent budget.
+graphql_spent=yes
+release_run published "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
+graphql_spent=''
+check "published, the graphql budget spent: reused after the REST read alone, with no rate_limit read" \
+  "$(is "$rc|$calls|$(wc -l < "$work/rate-calls" | tr -d ' ')" "0|$rest_view|0")"
 release_run none "" --notes "Fixed notes, in a few words." pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none, --notes: creates it with those notes" "$(is "$calls" "$view"$'\n'"$(argv release create pkg-v1.0.1 a.tgz b.tgz --repo example/repo --title "Pkg v1.0.1" --notes "Fixed notes, in a few words." --verify-tag)")"
 check "none, --notes: the notes reach gh as one argument" "$(contains "$calls" '\[--notes\]\[Fixed notes, in a few words\.\]\[')"
@@ -932,11 +981,11 @@ check "draft: uploads this run's assets over its own, reads the draft back, then
 check "draft: says it published the draft" "$(contains "$out" '^Published the draft release pkg-v1\.0\.1 with this run.s assets$')"
 release_run published "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "published: exits 0" "$(is "$rc" 0)"
-check "published: reuses it, touching nothing" "$(is "$calls" "$view")"
+check "published: reuses it, touching nothing" "$(is "$calls" "$rest_view")"
 check "published: says it reused it" "$(contains "$out" '^Release pkg-v1\.0\.1 already exists; reusing it$')"
 release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "published, --upload-to-published: exits 0" "$(is "$rc" 0)"
-check "published, --upload-to-published: uploads this run's assets over its own, and edits nothing" "$(is "$calls" "$view"$'\n'"$upload")"
+check "published, --upload-to-published: uploads this run's assets over its own, and edits nothing" "$(is "$calls" "$rest_view"$'\n'"$upload")"
 release_run draft upload pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "draft, upload fails: exits 1" "$(is "$rc" 1)"
 check "draft, upload fails: never publishes the draft" "$(is "$calls" "$view"$'\n'"$upload")"
@@ -953,7 +1002,7 @@ check "published, --upload-to-published, upload fails: exits 1" "$(is "$rc" 1)"
 check "published, --upload-to-published, upload fails: says so" "$(contains "$out" "^::error::Uploading this run's assets to the published release pkg-v1\.0\.1 failed\.$")"
 release_run odd "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "a view answer that is neither true nor false: exits 1, uploading and creating nothing" "$(is "$rc|$calls" "1|$view")"
-check "a view answer that is neither true nor false: the error names it" "$(contains "$out" '^::error::gh release view pkg-v1\.0\.1 printed null for isDraft, not true or false$')"
+check "a view answer that is neither true nor false: the error names it" "$(contains "$out" "^::error::GitHub's release lookup for pkg-v1\.0\.1 answered null for isDraft, not true or false$")"
 release_run none "" pkg-v1.0.1 "Pkg v1.0.1"
 check "no asset: exits 2, calling no gh" "$(is "$rc|$calls" "2|")"
 release_run none "" --draft pkg-v1.0.1 "Pkg v1.0.1" a.tgz
@@ -1138,10 +1187,12 @@ echo "Case 11b: restart leaves the release to a later unfinished run that holds 
 # lands a merge on origin's main from that clone, as a merge landing while the runs are listed
 # does, and lists that merge's queued run, number 101. `gh workflow run` prints a run URL, as gh
 # 2.102.0 does (nothing when $GH_TEST_QUIET is set). Either fails when $GH_TEST_FAIL names it
-# (list or run). Any other call fails as unexpected.
+# (list or run). Any other call fails as unexpected; gh-read.sh's read of the rate_limit route
+# after a call that exits 1 is answered apart, as in the stub above.
 mkdir -p "$work/restart-bin"
 cat > "$work/restart-bin/gh" <<'GH'
 #!/usr/bin/env bash
+[ "$1 $2" != "api rate_limit" ] || { echo 0; exit 0; }
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
   "run list")
@@ -1369,11 +1420,11 @@ printf 'Pkg v1.0.1\n' > "$work/name.md"
 leak_refuse=$leak_host
 release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" "$leak_host.tgz"
 check "the upload to the published release, refused over an asset's file name: exits 1, the stub logged the view alone" \
-  "$(is "$rc|$calls" "1|$view")"
+  "$(is "$rc|$calls" "1|$rest_view")"
 leak_refuse=''
 release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" "$leak_host.tgz"
 check "the upload to the published release, a passing engine: uploaded" \
-  "$(is "$rc|$calls" "0|$view"$'\n'"$leaky_name_upload")"
+  "$(is "$rc|$calls" "0|$rest_view"$'\n'"$leaky_name_upload")"
 # An asset that is no archive this lane lists is read as the file it is, which is the SHA256SUMS
 # a legion and an envoy-infra release each ship; an asset it cannot list at all is a setup
 # failure, named by its position so the log carries no name of its own.
@@ -1491,12 +1542,12 @@ echo "Case: a rule file that is absent, and one that does not parse, each refuse
 # of the script under test in a tree holding no rule file at all, and one in a tree whose rule
 # file is no TOML. Each refuses the write as a setup failure of its own and says which it met.
 k7="$work/k7"
-mkdir -p "$k7/none/.github/scripts" "$k7/bad/.github/scripts" "$k7/bad/packages/daemon/internal/leakguard"
+mkdir -p "$k7/none/.github/scripts" "$k7/bad/.github/scripts"
 cp "$release_push" "$k7/none/.github/scripts/release-push.sh"
 cp "$release_push" "$k7/bad/.github/scripts/release-push.sh"
 cp "$script_dir/gh-read.sh" "$k7/none/.github/scripts/gh-read.sh"
 cp "$script_dir/gh-read.sh" "$k7/bad/.github/scripts/gh-read.sh"
-printf 'this file is no TOML at all {{{\n' > "$k7/bad/packages/daemon/internal/leakguard/private-names.toml"
+printf 'this file is no TOML at all {{{\n' > "$k7/bad/.github/private-names.toml"
 # k7_run <tree>: the `release` create from that tree's copy of the script, against the stub gh.
 k7_run() {
   : > "$work/calls"
@@ -1512,7 +1563,7 @@ k7_run "$k7/none"
 check "the rule file absent: exits 1, the stub logged the view alone and no create" \
   "$(is "$rc|$calls" "1|$view")"
 check "the rule file absent: says the guard could not run and names the file it did not find" \
-  "$(is "$(contains "$out" 'the leak guard could not run, so the release create is refused')|$(contains "$out" 'packages/daemon/internal/leakguard/private-names\.toml is not in this checkout')" 'true|true')"
+  "$(is "$(contains "$out" 'the leak guard could not run, so the release create is refused')|$(contains "$out" '\.github/private-names\.toml is not in this checkout')" 'true|true')"
 k7_run "$k7/bad"
 check "the rule file unparseable: exits 1, the stub logged the view alone and no create" \
   "$(is "$rc|$calls" "1|$view")"

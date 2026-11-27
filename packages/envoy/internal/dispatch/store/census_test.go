@@ -1127,6 +1127,26 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
+// pendingCensus is the census, under options, of the embedded set's migrations numbered up to
+// through, over a database at base. It answers the report, the index of version's entry in
+// report.Pending, and that entry. It fails the test when the census returns an error, and when
+// version is not pending.
+func pendingCensus(t *testing.T, base, through, version int, options pgmigrate.CensusOptions) (*pgmigrate.Report, int, *pgmigrate.MigrationCensus) {
+	t.Helper()
+	store := openMigratedTestStore(t, base)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, through), options)
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for i := range report.Pending {
+		if report.Pending[i].Migration.Version == version {
+			return report, i, &report.Pending[i]
+		}
+	}
+	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+	return nil, 0, nil
+}
+
 // queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
 // connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
 // and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
@@ -1138,31 +1158,19 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 // table the limit would not have refused anyway.
 func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
 	t.Helper()
-	store := openMigratedTestStore(t, 20261111212235)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261114081436), pgmigrate.CensusOptions{TableLimit: 1})
-	if err != nil {
-		t.Fatalf("census: %v", err)
+	report, _, entry := pendingCensus(t, 20261111212235, 20261114081436, version, pgmigrate.CensusOptions{TableLimit: 1})
+	if len(entry.Refusals) != 0 {
+		t.Fatalf("%s refused: %v", entry.Migration.Name, entry.Refusals)
 	}
-	for i := range report.Pending {
-		entry := &report.Pending[i]
-		if entry.Migration.Version != version {
-			continue
-		}
-		if len(entry.Refusals) != 0 {
-			t.Fatalf("%s refused: %v", entry.Migration.Name, entry.Refusals)
-		}
-		if len(entry.Tables) == 0 {
-			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
-		}
-		for _, table := range entry.Tables {
-			if !table.Exists || table.Bytes <= 1 {
-				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
-			}
-		}
-		return entry
+	if len(entry.Tables) == 0 {
+		t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
 	}
-	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
-	return nil
+	for _, table := range entry.Tables {
+		if !table.Exists || table.Bytes <= 1 {
+			t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+		}
+	}
+	return entry
 }
 
 // 20261114081434 drops both delivery state checks without cascade, adds each back with queued as
@@ -1204,6 +1212,26 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 	}
 	if len(entry.Tables) != 1 || entry.Tables[0].Name != "message_deliveries" {
 		t.Errorf("tables = %+v, want message_deliveries alone", entry.Tables)
+	}
+}
+
+// btreeGinVersion is one create extension that names no table, so the census admits it at any size
+// of every table: with the limit at one byte, its entry holds no table and no refusal, and its census
+// counts 0. The database is at 20261121060636, so every migration from 20261121130000 to
+// 20261125005337 is pending before it, 20261123080000, which writes graph_nodes and graph_tuples,
+// among them. Only this migration's entry is read, never the verdict of the whole set, for the
+// reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
+	t.Parallel()
+	report, i, entry := pendingCensus(t, 20261121060636, btreeGinVersion, btreeGinVersion, pgmigrate.CensusOptions{TableLimit: 1})
+	if i == 0 {
+		t.Fatalf("%s is the first pending migration, and the test needs another pending before it; report:\n%s", entry.Migration.Name, reportText(report))
+	}
+	if len(entry.Refusals) != 0 || len(entry.Tables) != 0 {
+		t.Fatalf("%s at a table limit of 1 byte: refusals %q, tables %+v; want neither", entry.Migration.Name, entry.Refusals, entry.Tables)
+	}
+	if entry.Count == nil || *entry.Count != 0 {
+		t.Fatalf("%s's census does not count 0; report:\n%s", entry.Migration.Name, reportText(report))
 	}
 }
 
@@ -1285,28 +1313,16 @@ func requireCensusAdmitsLateIndexes(t *testing.T, versions ...int) {
 // less, which no limit the tests set could refuse.
 func blockRefsIndexCensus(t *testing.T, version int, options pgmigrate.CensusOptions) *pgmigrate.MigrationCensus {
 	t.Helper()
-	store := openMigratedTestStore(t, beforeBlockRefsSourceIndex)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, dropBlockRefsTargetIndex), options)
-	if err != nil {
-		t.Fatalf("census: %v", err)
+	report, _, entry := pendingCensus(t, beforeBlockRefsSourceIndex, dropBlockRefsTargetIndex, version, options)
+	if len(entry.Tables) == 0 {
+		t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
 	}
-	for i := range report.Pending {
-		entry := &report.Pending[i]
-		if entry.Migration.Version != version {
-			continue
+	for _, table := range entry.Tables {
+		if !table.Exists || table.Bytes <= 1 {
+			t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to refuse or exempt it from", entry.Migration.Name, table.Name, table.Bytes)
 		}
-		if len(entry.Tables) == 0 {
-			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
-		}
-		for _, table := range entry.Tables {
-			if !table.Exists || table.Bytes <= 1 {
-				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to refuse or exempt it from", entry.Migration.Name, table.Name, table.Bytes)
-			}
-		}
-		return entry
 	}
-	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
-	return nil
+	return entry
 }
 
 // blockRefsSourceIndex is a plain create index on block_refs, in the runner's one transaction. The
@@ -1554,12 +1570,26 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 // still prints its report rather than exiting without one. Here the read waits on an ACCESS
 // EXCLUSIVE holder under a statement timeout shorter than the lock timeout, so Postgres cancels it
 // as a statement timeout (57014), as it cancels a slow count of a large table.
+//
+// The held read never ends while the holder holds its lock, so it outlasts TableReadTimeout
+// however long that is, and at 1 s, under the census's 5 s lock_timeout, it ends as 57014 however
+// loaded the machine is: the statement timeout starts with the statement, lock_timeout only once
+// the read waits, and Postgres reports the one due first when both have run out. That 1 s bounds
+// the held read alone: the read fails, which aborts its savepoint, and Postgres gives the
+// transaction back CensusStatementTimeout, a minute, for every other statement of the census. The
+// migration's census shows it: it answers 0 only when the statement timeout it runs under is that
+// minute. So a short bound that reached the census's other statements again adds a refusal on
+// every machine, and not only on one too loaded to read pg_event_trigger within a second, as CI's
+// was. LongTransaction is an hour, so the holder, opened just before the census, is never old
+// enough to refuse.
 func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access exclusive")), 10)
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{StatementTimeout: time.Second})
+	underTheCensusBound := "select case when current_setting('statement_timeout')::interval = interval '" +
+		strconv.FormatInt(pgmigrate.CensusStatementTimeout.Milliseconds(), 10) + " milliseconds' then 0 else 1 end"
+	report, err := census(ctx, url, withCheck(underTheCensusBound), pgmigrate.CensusOptions{TableReadTimeout: time.Second, LongTransaction: time.Hour})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}

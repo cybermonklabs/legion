@@ -2,12 +2,15 @@ package sandbox
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The two counts a deployment under dispatch_token_broker reads before it removes
@@ -17,16 +20,18 @@ import (
 
 // beforeTheBroker is a tester and an implementer of two issues, each in a pod of its own that a
 // daemon before dispatch_token_broker built (dispatchBearer), so neither pod carries an exchange
-// identity.
+// identity. Its launches, and those of every daemon restartedUnder restarts over it, must not give
+// up, so their waits are bounded by the test binary's deadline (withWaitsToTheDeadline).
 func beforeTheBroker(t *testing.T) (*rig, runtime.Locator, runtime.Locator) {
 	t.Helper()
 	g := newRig(t, nil, withOptions(dispatchBearer))
 	return g, g.spawn(workerSpec(t)), g.spawn(childSpec(t))
 }
 
-// restartedUnder is a daemon restarted over g's running pods under move, with the launcher of each
-// of locs connected to it and reporting the generation loc records, as a real launcher does once it
-// has redialled the restarted daemon.
+// restartedUnder is a daemon restarted over g's running pods under move, inheriting g's
+// BootTimeout through secondRuntime, with the launcher of each of locs connected to it and
+// reporting the generation loc records, as a real launcher does once it has redialled the restarted
+// daemon.
 func restartedUnder(t *testing.T, g *rig, move func(*Options), locs ...runtime.Locator) *Runtime {
 	t.Helper()
 	r := secondRuntime(t, g, move)()
@@ -65,13 +70,16 @@ func resumedInto(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) runtime.
 }
 
 // adoptedAndObserved adopts locs into r as a daemon's boot does (ReconcileOrphans), starts its
-// Observe, and returns the channel once it has delivered one observation of each, failing the test
-// unless each is Alive.
+// Observe, and returns the channel once it has delivered one Alive observation of each claim. An
+// informer may requeue a claim before another's first observation, so firstOfEach skips same-claim
+// repeats rather than treating a count of observations as a count of adopted claims.
 func adoptedAndObserved(t *testing.T, g *rig, r *Runtime, locs ...runtime.Locator) <-chan runtime.Observation {
 	t.Helper()
 	var known []runtime.Known
+	claims := make([]claim.Token, 0, len(locs))
 	for _, loc := range locs {
 		known = append(known, runtime.Known{Claim: loc.Claim, Locator: &loc})
+		claims = append(claims, loc.Claim)
 	}
 	if err := r.ReconcileOrphans(g.ctx, known, time.Hour); err != nil {
 		t.Fatal(err)
@@ -80,8 +88,8 @@ func adoptedAndObserved(t *testing.T, g *rig, r *Runtime, locs ...runtime.Locato
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range locs {
-		if obs := next(t, observations); obs.Kind != runtime.Alive {
+	for _, obs := range firstOfEach(t, observations, claims...) {
+		if obs.Kind != runtime.Alive {
 			t.Fatalf("%s of %s: %s, want Alive", obs.Kind, obs.Locator.Claim, obs.Detail)
 		}
 	}
@@ -89,36 +97,41 @@ func adoptedAndObserved(t *testing.T, g *rig, r *Runtime, locs ...runtime.Locato
 }
 
 // replacedByItsRound ends loc's pod as its update round does (ReplacePod) and waits for the Gone
-// that pod's end is observed as, which lets loc's process go from the watch.
+// that pod's end is observed as, which lets loc's process go from the watch. Observe delivers that
+// Gone from a goroutine of its own once the pod store has lost the pod, and blocks until it is read,
+// so it is never dropped; the wait is bounded by the test binary's deadline (testwait.Context), as
+// next's is, never by a span a loaded machine can put the observer off past.
 func replacedByItsRound(t *testing.T, g *rig, r *Runtime, observations <-chan runtime.Observation, loc runtime.Locator) {
 	t.Helper()
 	if err := r.ReplacePod(g.ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}, stillDue); err != nil {
 		t.Fatalf("ReplacePod %s: %v", loc.Claim, err)
 	}
-	deadline := time.After(time.Second)
+	ended := testwait.Context(t)
 	for {
 		select {
-		case obs := <-observations:
+		case obs, ok := <-observations:
+			if !ok {
+				t.Fatalf("the observation channel closed before the Gone of %s", loc.Claim)
+			}
 			if obs.Locator.Claim == loc.Claim && obs.Kind == runtime.Gone {
 				return
 			}
-		case <-deadline:
-			t.Fatalf("no Gone of %s within a second of its pod's replacement", loc.Claim)
+		case <-ended.Done():
+			t.Fatalf("no Gone of %s before the test binary's deadline after its pod's replacement", loc.Claim)
 		}
 	}
 }
 
-// liveLaunches waits a second for r's count of live launches carrying a Dispatch token to reach
-// want, failing the test with the count it last read.
+// liveLaunches waits for r's count of live launches carrying a Dispatch token to reach want: the
+// observer lets a process go (forgetIf) once it has delivered the process's Gone, so the count can
+// fall a moment after replacedByItsRound returns. The wait is bounded by the test binary's deadline
+// (testwait.Until), and its failure prints the count it last read.
 func liveLaunches(t *testing.T, r *Runtime, want int, when string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for live := r.DispatchTokens().LiveLaunches; live != want; live = r.DispatchTokens().LiveLaunches {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s the live launches carrying a Dispatch token number %d, want %d", when, live, want)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("%s, the live launches carrying a Dispatch token to number %d", when, want), func() (int, bool) {
+		live := r.DispatchTokens().LiveLaunches
+		return live, live == want
+	})
 }
 
 // logged is every record of logs written with msg, each decoded whole.
@@ -147,6 +160,7 @@ func logged(t *testing.T, logs *lockedLog, msg string) []map[string]any {
 // still run, and none of its own boot's transition launches; replacing one pod by its update round
 // lets its process go, and the count falls to 1, then, with the other, to 0.
 func TestTheDispatchTokenCountsFollowTheLaunches(t *testing.T) {
+	t.Parallel()
 	g, tester, implementer := beforeTheBroker(t)
 	logs := &lockedLog{}
 	r2 := restartedUnder(t, g, func(o *Options) {
@@ -231,6 +245,7 @@ func rewriteRecord(t *testing.T, g *rig, loc runtime.Locator, edit func(map[stri
 // which gave every launch the token while Dispatch was configured, so it counts; one recorded as
 // carrying none does not.
 func TestARestartCountsGenerationsAnEarlierDaemonStarted(t *testing.T) {
+	t.Parallel()
 	g, tester, implementer := beforeTheBroker(t)
 	rewriteRecord(t, g, tester, func(record map[string]any) { delete(record, "dispatchToken") })
 	rewriteRecord(t, g, implementer, func(record map[string]any) { record["dispatchToken"] = false })

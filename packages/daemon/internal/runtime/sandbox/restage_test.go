@@ -25,8 +25,9 @@ const (
 	movedDaemonURL = "http://192.0.2.9:13370"
 )
 
-// secondRuntime builds another Runtime over g's same fake cluster state, with testOptions edited by
-// move (the addresses a restarted daemon hands its role processes), on g's own context and store:
+// secondRuntime builds another Runtime over g's same fake cluster state, with testOptions' shape,
+// g's BootTimeout, and move's changes (the addresses a restarted daemon hands its role processes),
+// on g's own context and store:
 // the fake controller started in newRig, which goes on reconciling whichever Runtime's patches
 // land, is this package's stand-in for the one real Agent Sandbox controller that ever serves a
 // cluster, whatever daemon address last wrote its Sandboxes. This is how a daemon's own move to a
@@ -38,6 +39,7 @@ func secondRuntime(t *testing.T, g *rig, move func(*Options)) (restarted func() 
 	opts := testOptions()
 	opts.Conns = g.conns
 	opts.Now = func() time.Time { return *g.now.Load() }
+	opts.BootTimeout = g.opts.BootTimeout
 	if g.store != nil {
 		opts.Store = g.store
 	}
@@ -46,9 +48,7 @@ func secondRuntime(t *testing.T, g *rig, move func(*Options)) (restarted func() 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.start(g.ctx, g.clients); err != nil {
-		t.Fatal(err)
-	}
+	g.startWatched(func() error { return r.start(g.ctx, g.clients) })
 	return func() *Runtime {
 		g.r = r
 		return r
@@ -670,7 +670,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	cache := CacheSandboxName(testProject, spec.Repository)
 	// reading is what k5 records of one owner-set state: whether the runtime reports the pod's gh
 	// address moved, the GH_CONFIG_DIR the role's generation is started with, the repository cache
-	// its pod's fetch is addressed at, and the owner that cache's token is minted for.
+	// workspace-init is addressed at, and the owner that cache's token is minted for.
 	type reading struct {
 		moved                           bool
 		configDir, cacheURL, cacheToken string
@@ -681,7 +681,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 		return reading{
 			moved:      moved,
 			configDir:  startEnv(lastStart(t, g, workerToken))["GH_CONFIG_DIR"],
-			cacheURL:   g.fetchEnv(loc.Sandbox.Name)["LEGION_REPOSITORY_CACHE_URL"],
+			cacheURL:   g.initEnv(loc.Sandbox.Name)["LEGION_REPOSITORY_CACHE_URL"],
 			cacheToken: string(g.secret(cacheSecretName(cache)).Data[provisionTokenKey]),
 		}
 	}

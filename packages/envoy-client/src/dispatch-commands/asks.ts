@@ -293,12 +293,18 @@ export async function openAsksCommand(
   const asOf = reading.cut?.asOf;
   if (project !== undefined) {
     const response = await client.openAsksForProject(project, reading.cut);
-    return { text: formatOpenAsksSummary(response, linkBase, asOf), details: { ...response } };
+    return {
+      text: formatOpenAsksSummary(response, linkBase, project, asOf),
+      details: { ...response },
+    };
   }
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error("host session id is required for dispatch open-asks");
   const response = await client.openAsks(sessionId, undefined, reading.cut);
-  return { text: formatOpenAsksSummary(response, linkBase, asOf), details: { ...response } };
+  return {
+    text: formatOpenAsksSummary(response, linkBase, undefined, asOf),
+    details: { ...response },
+  };
 }
 
 /** `dispatch ask`: open an ask on the issue, or on a passage of a document. */

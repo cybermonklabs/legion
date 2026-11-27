@@ -60,6 +60,9 @@ const (
 		"or the author deleted the post after the cut."
 	// H
 	reasonGitHub = "This field is a GitHub read now. A past-time answer makes no GitHub read."
+	// H, for a result of a check that reads the program's deploy: the plan's list predates the
+	// deploys (api/results_deploys.go), and this is a read now as a GitHub read is.
+	reasonCurrentDeploy = "This field compares the result with the program's current deploy now. A past-time answer reads no current deploy."
 	// S
 	reasonBroadened = "Broadening reads search_term_stats, which counts only the present text. A past-time search does not broaden."
 )
@@ -75,12 +78,14 @@ const (
 // reach (routeReachFields), each reply of an ask's thread (commentFields), the documents of an
 // approval request in the inbox (askFields), the place of an anchored block, and of the blocks
 // that the text route gives, the anchored counts and the ids of a table's rows and cells, which
-// the block routes leave out too (blockFields). The list's snippet tree of a search result is here
-// for an ask hit alone, whose wording at the cut no record may give (searchFields): a past-time
-// search draws every other snippet tree from the headline of the text at the cut. A route that
-// the plan lists with no field has an empty list. A past-time answer names a member in the
-// Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
-// this table holds for its route (WriteHeaders, which tests check with ValidAbsent).
+// the block routes leave out too (blockFields), and whether a result of a check that reads the
+// program's current deploy counts (not_counted, reasonCurrentDeploy). The list's snippet tree of a
+// search result is here for an ask hit alone, whose wording at the cut no record may give
+// (searchFields): a past-time search draws every other snippet tree from the headline of the text
+// at the cut. A route that the plan lists with no field has an empty list. A past-time answer
+// names a member in the Dispatch-As-Of-Absent header only when it leaves that member out, and it
+// names only members this table holds for its route (WriteHeaders, which tests check with
+// ValidAbsent).
 //
 // The comment beside a route whose entry names no member of an ask's wording says why the route
 // gives none that can be unknown at the cut.
@@ -171,6 +176,7 @@ var AbsentFields = map[string][]AbsentField{
 		{"/checks/*/ci", reasonGitHub},
 		{"/checks/*/results/*/commit_stands", reasonGitHub},
 		{"/checks/*/results/*/currency", reasonGitHub},
+		{"/checks/*/results/*/not_counted", reasonCurrentDeploy},
 		{"/checks/*/version", reasonUnindexedVersion},
 		{"/checks/*/sha256", reasonUnindexedVersion},
 		{"/checks/*/results/*/check_words_moved", reasonUnindexedVersion},

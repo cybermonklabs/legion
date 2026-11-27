@@ -1,5 +1,6 @@
 import { createIssue, createProject, patchIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { openIssueDetails } from "./issue-details";
 import { type Browser, expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -42,6 +43,8 @@ async function expectChecksPill(
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}`);
+    // The issue's pull requests are a row of the header's Details.
+    await openIssueDetails(page);
     const link = page.getByRole("link", { name: `#7 ${title}` });
     await expect(link).toHaveAttribute("title", `${repository}#7: ${title}`);
     await expect(link.getByText(/^checks: /)).toHaveText(`checks: ${checks}`);

@@ -10,8 +10,8 @@
 // cut, which answers no results at it.
 //
 // The rows are one per route of kind answers (asOfEqualityRows), and
-// TestEveryAnswersRouteHasAnEqualityRow holds them to readClasses, so a route that joins the kind
-// later fails there until it has a row here.
+// TestEveryAnswersRouteHasAnEqualityRow holds them to the routes' declarations (routeDecl.Read),
+// so a route that joins the kind later fails there until it has a row here.
 package api
 
 import (
@@ -717,7 +717,7 @@ func movedSinceTheCut(then, present asOfAnswer) bool {
 // caller without person on a route that needs it, and 404 for a read of what only the writes
 // after the cut made.
 func servedAtTheCut(route string, read asOfRead, caller asOfReader, answer asOfAnswer) string {
-	needsPerson := slices.Contains(routeScopes[route], model.ScopePerson)
+	needsPerson := slices.Contains(declared(route).OAuthScopes, model.ScopePerson)
 	if needsPerson && !caller.person {
 		var refusal refusalAnswer
 		_ = json.Unmarshal(answer.body, &refusal)
@@ -1323,9 +1323,9 @@ func abbreviateAnswer(body []byte) string {
 	return text[:most] + fmt.Sprintf("… (%d bytes)", len(text))
 }
 
-// TestEveryAnswersRouteHasAnEqualityRow holds the harness's rows to the routes of kind answers in
-// readClasses, both ways and each once: a route that answers as_of with no row, and a row whose
-// route does not answer as_of, each fail by name.
+// TestEveryAnswersRouteHasAnEqualityRow holds the harness's rows to the routes of kind answers
+// their declarations state (declaredReads), both ways and each once: a route that answers as_of
+// with no row, and a row whose route does not answer as_of, each fail by name.
 func TestEveryAnswersRouteHasAnEqualityRow(t *testing.T) {
 	rows := map[string]bool{}
 	var problems []string
@@ -1336,13 +1336,13 @@ func TestEveryAnswersRouteHasAnEqualityRow(t *testing.T) {
 		rows[row.route] = true
 	}
 	answers := map[string]bool{}
-	for name, entry := range readClasses {
+	for name, entry := range declaredReads() {
 		if entry.AsOf == asOfAnswers {
 			answers[name] = true
 		}
 	}
 	if len(answers) == 0 {
-		t.Fatal("readClasses holds no route of kind asOfAnswers, so the rows are held to nothing")
+		t.Fatal("no route's declaration states kind asOfAnswers, so the rows are held to nothing")
 	}
 	for name := range answers {
 		if !rows[name] {
@@ -1351,11 +1351,11 @@ func TestEveryAnswersRouteHasAnEqualityRow(t *testing.T) {
 	}
 	for name := range rows {
 		if !answers[name] {
-			problems = append(problems, name+": the harness holds an equality row for it, and its read entry's AsOf is "+asOfKindName(readClasses[name].AsOf))
+			problems = append(problems, name+": the harness holds an equality row for it, and its read class's AsOf is "+asOfKindName(declared(name).Read.AsOf))
 		}
 	}
 	slices.Sort(problems)
-	t.Logf("%d equality rows; readClasses holds %d routes of kind asOfAnswers", len(rows), len(answers))
+	t.Logf("%d equality rows; the declarations state %d routes of kind asOfAnswers", len(rows), len(answers))
 	if len(problems) > 0 {
 		t.Errorf("the equality rows differ from the routes of kind answers in %d ways:\n%s", len(problems), strings.Join(problems, "\n"))
 	}
@@ -1519,6 +1519,67 @@ func TestThePastTimeIssueListingRefusesAFilterWithNoHistory(t *testing.T) {
 			if past.Code != http.StatusBadRequest || refusal.Code != contracts.DispatchAsOfNotServed || !strings.Contains(refusal.Error, filter.parameter) {
 				t.Errorf("%s as of the cut: status=%d body=%s, want 400 %s naming %s",
 					target, past.Code, past.Body.String(), contracts.DispatchAsOfNotServed, filter.parameter)
+			}
+		})
+	}
+}
+
+// TestAPastTimeThreadListRefusesAPageOfThreads: the three issue thread lists answer a page of
+// threads (?order=activity) at the present, and refuse it at a cut 400 AS_OF_NOT_SERVED naming
+// order (refuseThreadPageAtCut), before the list parses the page or reads anything. A page whose
+// limit the present refuses 400 INVALID_QUERY is refused at the cut for its order all the same,
+// and neither request at the cut runs a statement but the as_of gate's read of the database's
+// clock, so the list's handler read nothing. The same list at the cut with no order answers 200.
+func TestAPastTimeThreadListRefusesAPageOfThreads(t *testing.T) {
+	database := storetest.Open(t)
+	counter := &roundTrips{}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
+		store: traced,
+		// The caller's identity is resolved on the untraced pool, so the count is the request's
+		// own statements and not the sign-in lookup every request makes.
+		identity: headerIdentity(database),
+		settle:   time.Hour,
+	})
+	const project = "ASOP"
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "The thread pages"}, "alice")
+	issue := asOfIssue(t, handler, map[string]any{"project": project, "title": "An issue whose threads are paged"})
+	safeHorizon(t, served)
+	cut := databaseCut(t, database)
+	for _, list := range []string{"asks", "comments", "messages"} {
+		t.Run(list, func(t *testing.T) {
+			base := "/api/v1/issues/" + issue.Key + "/" + list
+			page := base + "?" + url.Values{"order": {"activity"}}.Encode()
+			if present := listRead(t, handler, page, listReadOptions{}); present.Code != http.StatusOK || !strings.Contains(present.Body.String(), `"threads"`) {
+				t.Fatalf("%s at the present: status=%d body=%s, want 200 with a page of threads", page, present.Code, present.Body.String())
+			}
+			unparsed := base + "?" + url.Values{"order": {"activity"}, "limit": {"0"}}.Encode()
+			if present := listRead(t, handler, unparsed, listReadOptions{}); present.Code != http.StatusBadRequest {
+				t.Fatalf("%s at the present: status=%d body=%s, want 400: the page's limit is out of range", unparsed, present.Code, present.Body.String())
+			}
+			for _, target := range []string{page, unparsed} {
+				counter.take()
+				past := listRead(t, handler, withAsOf(t, target, cut), listReadOptions{counted: true})
+				counted := counter.take()
+				var refusal refusalAnswer
+				_ = json.Unmarshal(past.Body.Bytes(), &refusal)
+				if past.Code != http.StatusBadRequest || refusal.Code != contracts.DispatchAsOfNotServed || !strings.HasPrefix(refusal.Error, "order: ") {
+					t.Errorf("%s as of the cut: status=%d body=%s, want 400 %s naming order",
+						target, past.Code, past.Body.String(), contracts.DispatchAsOfNotServed)
+				}
+				var ran []string
+				for _, statement := range counted {
+					if strings.TrimSpace(statement) != "select now()" {
+						ran = append(ran, statement)
+					}
+				}
+				if len(ran) > 0 {
+					t.Errorf("%s as of the cut ran %d statements besides the as_of gate's clock read, want none: the list read before it refused the page:\n%s",
+						target, len(ran), strings.Join(roundTripLines(ran), "\n"))
+				}
+			}
+			if past := listRead(t, handler, withAsOf(t, base, cut), listReadOptions{}); past.Code != http.StatusOK {
+				t.Errorf("%s as of the cut: status=%d body=%s, want 200: the list with no order answers at a cut", base, past.Code, past.Body.String())
 			}
 		})
 	}

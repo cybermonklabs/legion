@@ -104,8 +104,8 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 	if record.Title != "a known session" || !slices.Equal(record.Capabilities, []string{"aside"}) {
 		t.Errorf("record = %#v, want the registration's title and capabilities", record)
 	}
-	if record.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("record.LastSeen = %d, want the write's clock %d", record.LastSeen, rig.clock.UnixMilli())
+	if record.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("record.LastSeen = %d, want the write's clock %d", record.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if got := knownMatchedIDs(rig.known, team); !slices.Equal(got, []string{"ses_registered"}) {
 		t.Errorf("MatchEach of the team topic = %v, want the session just registered", got)
@@ -129,7 +129,7 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 		t.Fatal("the registration wrote no known-session record")
 	}
 
-	rig.clock = rig.clock.Add(time.Minute)
+	rig.clock.Advance(time.Minute)
 	rig.stop(t, "ses_stopping")
 
 	stopped, ok := rig.known.Get("ses_stopping")
@@ -139,8 +139,8 @@ func TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen(t *testing.T) {
 	if !slices.Equal(stopped.Topics, registered.Topics) {
 		t.Errorf("the stopped record's topics are %v, want the registered %v", stopped.Topics, registered.Topics)
 	}
-	if stopped.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("the stopped record's last_seen = %d, want the stop's clock %d", stopped.LastSeen, rig.clock.UnixMilli())
+	if stopped.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("the stopped record's last_seen = %d, want the stop's clock %d", stopped.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if stopped.LastSeen <= registered.LastSeen {
 		t.Errorf("the stop left last_seen at %d, want it past the registration's %d", stopped.LastSeen, registered.LastSeen)
@@ -167,7 +167,7 @@ func TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice(t *testing.T) {
 	}
 	for i := range heartbeats {
 		if i > 0 {
-			rig.clock = rig.clock.Add(step)
+			rig.clock.Advance(step)
 		}
 		rig.subscribe(t, "ses_heartbeat", topics)
 	}
@@ -208,7 +208,7 @@ func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
 		t.Fatalf("ses_refollow's entry is %#v, want one that records consumer delivery", entry)
 	}
 
-	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
+	rig.clock.Advance(session.KnownSessionRefreshAge + time.Minute)
 	body, err := json.Marshal(map[string]any{"session_id": "ses_refollow", "topics": []string{dropped}})
 	if err != nil {
 		t.Fatal(err)
@@ -225,8 +225,8 @@ func TestARefollowWritesTheKnownSessionRecord(t *testing.T) {
 	if !slices.Contains(after.Topics, kept) {
 		t.Errorf("the record's topics are %v, want the topic the session still follows", after.Topics)
 	}
-	if after.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("the record's last_seen = %d, want the unsubscribe's clock %d", after.LastSeen, rig.clock.UnixMilli())
+	if after.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("the record's last_seen = %d, want the unsubscribe's clock %d", after.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if filter := rig.filters(t, "ses_refollow"); slices.Contains(filter, dropped) {
 		t.Errorf("the consumer filter %v still holds the unsubscribed %q", filter, dropped)
@@ -249,7 +249,7 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 		t.Fatalf("the registered record's topics are %v, want the team topic the removal will take", registered.Topics)
 	}
 
-	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
+	rig.clock.Advance(session.KnownSessionRefreshAge + time.Minute)
 	recorder := httptest.NewRecorder()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_admin_removed", nil))
 	if recorder.Code != http.StatusNoContent {
@@ -263,8 +263,8 @@ func TestRemovingASessionsInterestsThroughTheAdminRouteEmptiesItsRecord(t *testi
 	if len(after.Topics) != 0 {
 		t.Errorf("the record's topics are %v, want none: the route removed every interest the session had", after.Topics)
 	}
-	if after.LastSeen != rig.clock.UnixMilli() {
-		t.Errorf("the record's last_seen = %d, want the removal's clock %d", after.LastSeen, rig.clock.UnixMilli())
+	if after.LastSeen != rig.clock.Now().UnixMilli() {
+		t.Errorf("the record's last_seen = %d, want the removal's clock %d", after.LastSeen, rig.clock.Now().UnixMilli())
 	}
 	if got := knownMatchedIDs(rig.known, team); len(got) != 0 {
 		t.Errorf("the team topic still matches %v, so a publish on it would count a session that no longer follows it", got)
@@ -290,6 +290,8 @@ func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
 // grant does not let it read. This is a listener whose hub's grant does not carry the bucket, and
 // the store it holds there is open for business in every way but the bucket.
 func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
 	t.Setenv("NATS_NKEY_SEED", seed)

@@ -18,7 +18,9 @@ type shadow struct {
 var shadows = [...]shadow{
 	// An event exists at the cut when the transaction that wrote it began at or before the cut:
 	// created_at is that transaction's start. The index events_created_at (created_at, id) holds
-	// the events at the cut in its first key.
+	// the events at the cut in its first key. refused_destinations (20261116112354), which the
+	// outbox writes after the insert as it writes published_destinations, is the row's as it
+	// stands: no read at a cut reads it.
 	{Table: "events", Definition: createdByTheCut("events")},
 	{Table: "issues", Definition: issuesShadow},
 	{Table: "issue_links", Definition: issueLinksShadow},

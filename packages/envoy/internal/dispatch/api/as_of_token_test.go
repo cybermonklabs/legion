@@ -90,17 +90,17 @@ func databaseClock(t *testing.T, rig *brokerTokenRig) time.Time {
 const malformedAsOf = "yesterday"
 
 // TestACutTokenIsAnsweredAsOfItsCutWhateverAsOfItSends reads every route of kind answers, taken
-// from readClasses, with a read-only token cut at the cut. The world is the t-routes harness's
-// (seedAsOfWorld), written again after the cut (writeAfterTheCut), and each read is the harness's
-// read of that route (asOfEqualityRows). For each read, the read-only token that holds person
-// and no cut, sent as_of at the cut, gives the answer the cut token must give: 200 naming the
-// cut in Dispatch-As-Of, or 404 for what the world holds only after the cut. The cut token, the
-// same token but for its cut, sends the read four times: with no as_of, with an as_of an hour
-// before the cut, before the world was written, with an as_of later than the cut, the database's
-// clock after the later writes, and with an as_of that is no time (yesterday), which a token with
-// no cut is refused 400. Each answer must be that answer: the same status, the same
-// Dispatch-As-Of and Dispatch-As-Of-Absent, and the same body but for took_ms. A token whose cut
-// lost to its as_of, whose as_of was read at all, or that was answered the present, answers
+// from the routes' declarations (declaredReads), with a read-only token cut at the cut. The world
+// is the t-routes harness's (seedAsOfWorld), written again after the cut (writeAfterTheCut), and
+// each read is the harness's read of that route (asOfEqualityRows). For each read, the read-only
+// token that holds person and no cut, sent as_of at the cut, gives the answer the cut token must
+// give: 200 naming the cut in Dispatch-As-Of, or 404 for what the world holds only after the cut.
+// The cut token, the same token but for its cut, sends the read four times: with no as_of, with an
+// as_of an hour before the cut, before the world was written, with an as_of later than the cut,
+// the database's clock after the later writes, and with an as_of that is no time (yesterday),
+// which a token with no cut is refused 400. Each answer must be that answer: the same status, the
+// same Dispatch-As-Of and Dispatch-As-Of-Absent, and the same body but for took_ms. A token whose
+// cut lost to its as_of, whose as_of was read at all, or that was answered the present, answers
 // otherwise.
 func TestACutTokenIsAnsweredAsOfItsCutWhateverAsOfItSends(t *testing.T) {
 	rig := newAsOfRig(t)
@@ -128,8 +128,9 @@ func TestACutTokenIsAnsweredAsOfItsCutWhateverAsOfItSends(t *testing.T) {
 		rows[row.route] = row
 	}
 	answers := 0
-	for _, name := range slices.Sorted(maps.Keys(readClasses)) {
-		if readClasses[name].AsOf != asOfAnswers {
+	reads := declaredReads()
+	for _, name := range slices.Sorted(maps.Keys(reads)) {
+		if reads[name].AsOf != asOfAnswers {
 			continue
 		}
 		answers++
@@ -159,7 +160,7 @@ func TestACutTokenIsAnsweredAsOfItsCutWhateverAsOfItSends(t *testing.T) {
 		})
 	}
 	if answers == 0 {
-		t.Fatal("readClasses holds no route of kind asOfAnswers, so the token was sent to none")
+		t.Fatal("no route's declaration states kind asOfAnswers, so the token was sent to none")
 	}
 }
 
@@ -213,11 +214,11 @@ func cutTokenAnswerDifference(want, got asOfAnswer) string {
 // TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken builds every row's own chain as register
 // does (routeHandler), test hooks in, and sends each its probe body and a valid Idempotency-Key
 // under a read-only token cut an hour before the database's clock. The rows are read off the
-// table, not listed, and their kinds off readClasses, not off the row (apiRoute.Read). The walk
-// runs four times: with no as_of, with an as_of half an hour after the token's cut, with an as_of
-// an hour after the database's clock, and with an as_of that is no time (yesterday). A token with
-// no cut is refused each of the last two 400 INVALID_AS_OF on a row of kind answers. On every
-// pass:
+// table, not listed, and their kinds off their declarations (declared), not off the row
+// (apiRoute.Read). The walk runs four times: with no as_of, with an as_of half an hour after the
+// token's cut, with an as_of an hour after the database's clock, and with an as_of that is no
+// time (yesterday). A token with no cut is refused each of the last two 400 INVALID_AS_OF on a
+// row of kind answers. On every pass:
 //
 //   - a row of kind answers runs its handler, replaced by a recorder, once under the token's cut,
 //     and its answer names that cut in Dispatch-As-Of;
@@ -255,7 +256,7 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 			walked, answered, refused, readOnly, scopes := 0, 0, 0, 0, 0
 			for _, route := range table {
 				name := route.Method + " " + route.Pattern
-				entry := readClasses[name]
+				entry := declared(name).Read
 				recorder := &cutRecorder{}
 				route.Handler = recorder.handler
 				if name == whoamiRow {
