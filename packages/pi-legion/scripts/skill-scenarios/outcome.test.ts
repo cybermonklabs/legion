@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { parseHeldoutFile, parseOutcome } from "./heldout-case";
+import { type OutcomeRecord, parseHeldoutFile, parseOutcome } from "./heldout-case";
 import { writeOutcome } from "./outcome";
 
 const data = path.join(import.meta.dir, "testdata");
@@ -411,4 +411,162 @@ test("A case takes the selected task's returned report, not the host paraphrase"
   expect(outcome.agentReport).toBe("The report.");
   expect(outcome.lastText).toBe("My paraphrase.");
   expect(() => writeOutcome(dir, "plan-gap-analyst")).toThrow("exactly one task call");
+});
+
+// A run's Dispatch gives each seeded record an id of its own, and the seed writes each seeded
+// handoff's and comment's Dispatch id by its case id to dispatch-ids.json (seed.ts
+// seedCaseDispatch). The role names the Dispatch id and the case's rubric names the case's, so every
+// string of the run's actions, the other writes, the report and the last text names a seeded id by
+// the case's: the whole id, or its first 8 hexadecimal characters where no other seeded id begins
+// so. An id is read only as a whole token: one that a lower-case hexadecimal character precedes or
+// follows is part of a longer run, and a whole uuid, seeded or not, is one token.
+
+/** A comment the event log holds after the seed, by `actor`, with `payload`. */
+function commentEvent(seq: number, fraction: string, actor: object, payload: object) {
+  return {
+    seq,
+    created_at: `2026-01-07T15:00:02.${fraction}Z`,
+    type: "comment.created",
+    issue_key: "ACME-12",
+    actor,
+    payload,
+  };
+}
+
+/** The fields of each comment among `outcome`'s actions. */
+function commentFields(outcome: OutcomeRecord) {
+  return outcome.actions.flatMap((action) =>
+    action.kind === "dispatch" && action.command === "comment" ? [action.fields] : []
+  );
+}
+
+const ROLE = { kind: "session", id: "ses-synthetic" };
+
+test("a comment body that names a seeded handoff's Dispatch id, whole or by its first 8 characters, is written with the case's id", () => {
+  const { dir, write, caseHead } = syntheticRun();
+  const test1 = "5f2c8a1e-3b4d-4e6f-8a9b-0c1d2e3f4a5b";
+  const test2 = "9d4e7b20-6c1a-4f3e-9b8d-2e5f6a7c8d90";
+  // The comment's id begins as the run's head commit does, so it is read as a Dispatch id before
+  // any commit is.
+  const departure = "aaaaaaaa-1b2c-4d3e-8f40-5a6b7c8d9e0f";
+  write(
+    "dispatch-ids.json",
+    JSON.stringify({
+      "hnd-acme-12-test-1": test1,
+      "hnd-acme-12-test-2": test2,
+      "cmt-acme-12-departure": departure,
+    })
+  );
+  const tester = { kind: "session", id: "ses-acme-12-tester" };
+  addEvents(
+    dir,
+    commentEvent(12, "000000007", ROLE, {
+      body: `The test handoff was written twice, ${test1} and ${test2.slice(0, 8)} (dispatch://ACME-12/comment/${departure}), at ${"a".repeat(40)}.`,
+      reply_to: departure,
+    }),
+    commentEvent(13, "000000008", tester, { body: `Only ${test1.slice(0, 8)} is mine.` })
+  );
+  write(
+    "sessions/example.jsonl",
+    [
+      { type: "session", id: ROLE.id },
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", name: "task", id: "task-1", arguments: { agent: "plan-reviewer" } },
+          ],
+        },
+      },
+      {
+        message: {
+          role: "toolResult",
+          toolCallId: "task-1",
+          content: [{ type: "text", text: `Read dispatch://ACME-12/handoff/${test1}.` }],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: `${test2} repeats ${test1.slice(0, 8)}.` }],
+        },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")
+  );
+  const got = writeOutcome(dir, "plan-reviewer");
+  expect(commentFields(got)).toEqual([
+    {
+      body: `The test handoff was written twice, hnd-acme-12-test-1 and hnd-acme-12-test-2 (dispatch://ACME-12/comment/cmt-acme-12-departure), at ${caseHead}.`,
+      reply_to: "cmt-acme-12-departure",
+    },
+  ]);
+  expect(got.otherWrites).toMatchObject([
+    { command: "comment", fields: { body: "Only hnd-acme-12-test-1 is mine." }, actor: tester },
+  ]);
+  expect(got.agentReport).toBe("Read dispatch://ACME-12/handoff/hnd-acme-12-test-1.");
+  expect(got.lastText).toBe("hnd-acme-12-test-2 repeats hnd-acme-12-test-1.");
+  expect(parseOutcome(readFileSync(path.join(dir, "outcome.json"), "utf8"))).toEqual(got);
+});
+
+test("an id that no seed wrote, and a prefix two seeded ids share, are left as they are", () => {
+  const { dir, write } = syntheticRun();
+  const first = "00000000-0000-4000-8000-000000000001";
+  const second = "00000000-0000-4000-8000-000000000002";
+  const departure = "5f2c8a1e-3b4d-4e6f-8a9b-0c1d2e3f4a5b";
+  // No seed wrote this id, though it begins as the seeded comment's does.
+  const unseeded = "5f2c8a1e-0000-4000-8000-0000000000ff";
+  write(
+    "dispatch-ids.json",
+    JSON.stringify({
+      "hnd-acme-12-test-1": first,
+      "hnd-acme-12-test-2": second,
+      "cmt-acme-12-departure": departure,
+    })
+  );
+  addEvents(
+    dir,
+    commentEvent(12, "000000007", ROLE, {
+      body: `${unseeded} and 7c3e9a10 are no seed's, 00000000 begins both handoffs, and ${second} is the second.`,
+    })
+  );
+  expect(commentFields(writeOutcome(dir))).toEqual([
+    {
+      body: `${unseeded} and 7c3e9a10 are no seed's, 00000000 begins both handoffs, and hnd-acme-12-test-2 is the second.`,
+    },
+  ]);
+});
+
+test("a seeded id, or its first 8 characters, inside a longer hexadecimal run is left as it is", () => {
+  const { dir, write } = syntheticRun();
+  const test1 = "5f2c8a1e-3b4d-4e6f-8a9b-0c1d2e3f4a5b";
+  const prefix = test1.slice(0, 8);
+  write("dispatch-ids.json", JSON.stringify({ "hnd-acme-12-test-1": test1 }));
+  addEvents(
+    dir,
+    commentEvent(12, "000000007", ROLE, {
+      body: `Inside a run: f${test1}, ${test1}0, 0${prefix} and ${prefix}c. Beside a dash or a stop: ${test1}-v2, handoff/${prefix}.`,
+    })
+  );
+  expect(commentFields(writeOutcome(dir))).toEqual([
+    {
+      body: `Inside a run: f${test1}, ${test1}0, 0${prefix} and ${prefix}c. Beside a dash or a stop: hnd-acme-12-test-1-v2, handoff/hnd-acme-12-test-1.`,
+    },
+  ]);
+});
+
+test("a run with no dispatch-ids.json is written as before", () => {
+  const { dir, caseHead } = syntheticRun();
+  const test1 = "5f2c8a1e-3b4d-4e6f-8a9b-0c1d2e3f4a5b";
+  addEvents(
+    dir,
+    commentEvent(12, "000000007", ROLE, {
+      body: `${test1} (${test1.slice(0, 8)}) at ${"a".repeat(40)}.`,
+    })
+  );
+  expect(existsSync(path.join(dir, "dispatch-ids.json"))).toBe(false);
+  expect(commentFields(writeOutcome(dir))).toEqual([
+    { body: `${test1} (${test1.slice(0, 8)}) at ${caseHead}.` },
+  ]);
 });

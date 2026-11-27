@@ -324,6 +324,48 @@ function shifted(at: bigint, offset: bigint): string {
   return new Date(Number(seconds) * 1000).toISOString().replace(/\.000Z$/, `.${fractional}Z`);
 }
 
+/** A Dispatch id: a uuid, lower-case, as Dispatch gives each record. */
+const DispatchId = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+/** What dispatch-ids.json holds (seed.ts seedCaseDispatch): the Dispatch id the seed was given for
+ * each handoff and comment of the case, by the case's id. */
+const SeededIds = z.record(z.string(), z.string().regex(DispatchId));
+
+/** Write each seeded Dispatch id in every string of `value` as the case's id: the whole id, or its
+ * first 8 hexadecimal characters where no other seeded id begins so. A token is a whole uuid or 8
+ * hexadecimal characters, read only where no lower-case hexadecimal character precedes or follows
+ * it, so an id or a prefix inside a longer run stays. A whole uuid is one token whether a seed wrote
+ * it or not, so its first 8 characters are never read apart from it and no uuid is half replaced. */
+function translateDispatchIds<T>(value: T, seeded: z.infer<typeof SeededIds>): T {
+  const whole = new Map<string, string>();
+  const prefixes = new Map<string, string | undefined>();
+  for (const [caseId, id] of Object.entries(seeded)) {
+    whole.set(id, caseId);
+    const prefix = id.slice(0, 8);
+    // A prefix two seeded ids share names neither.
+    prefixes.set(prefix, prefixes.has(prefix) ? undefined : caseId);
+  }
+  const hex = /[0-9a-f]/;
+  const translate = (item: unknown): unknown => {
+    if (typeof item === "string")
+      return item.replace(
+        /[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{8}/g,
+        (word, offset: number) => {
+          const inRun =
+            hex.test(item[offset - 1] ?? "") || hex.test(item[offset + word.length] ?? "");
+          return (inRun ? undefined : (word.length === 8 ? prefixes : whole).get(word)) ?? word;
+        }
+      );
+    if (Array.isArray(item)) return item.map(translate);
+    if (item !== null && typeof item === "object") {
+      return Object.fromEntries(
+        Object.entries(item).map(([key, field]) => [key, translate(field)])
+      );
+    }
+    return item;
+  };
+  return translate(value) as T;
+}
+
 /** Raw logs use the same host clock. Compare full precision, breaking exact ties by input order,
  * then move actions onto the fixture's timeline. No seeded write is scored, and of the Dispatch
  * writes after the seed only those of the role's own sessions are its actions: the run's session
@@ -430,6 +472,14 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const inverse = Object.fromEntries(
     Object.entries(mapping).map(([caseId, actual]) => [actual, caseId])
   );
+  // A run seeded before the seed wrote dispatch-ids.json holds none, and its ids stay as they are.
+  const seededIds = existsSync(file("dispatch-ids.json"))
+    ? SeededIds.parse(JSON.parse(readFileSync(file("dispatch-ids.json"), "utf8")))
+    : {};
+  // Each Dispatch id is read before any commit is: a uuid's run of hexadecimal characters can begin
+  // as a commit does.
+  const translate = <T>(value: T): T =>
+    translateCommits(translateDispatchIds(value, seededIds), inverse);
   const ordered = actions
     .map((action) => ({ action, ns: nanos(action.at) }))
     .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0))
@@ -447,12 +497,12 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const result = parseOutcome(
     JSON.stringify({
       id: randomUUID(),
-      actions: translateCommits(ordered, inverse),
-      ...(others.length === 0 ? {} : { otherWrites: translateCommits(others, inverse) }),
-      ...(agentReport === undefined ? {} : { agentReport: translateCommits(agentReport, inverse) }),
+      actions: translate(ordered),
+      ...(others.length === 0 ? {} : { otherWrites: translate(others) }),
+      ...(agentReport === undefined ? {} : { agentReport: translate(agentReport) }),
       skillReads: skillReads(role),
       dispatchFirstInjected: dispatchFirstInjected(role, onWire),
-      lastText: translateCommits(lastText, inverse),
+      lastText: translate(lastText),
     })
   );
   // The jj operation record of the run's workspace, beside the other records lane D's replay
