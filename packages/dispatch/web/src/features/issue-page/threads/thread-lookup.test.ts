@@ -121,6 +121,17 @@ function recordOf(lookup: ThreadLookup): string | undefined {
   return lookup.kind === "found" ? lookup.record.id : undefined;
 }
 
+/** Has `route` fail with a 5xx past the app's two retries, its 404's body under the status 503,
+ *  while the other two routes answer 404, so the lookup draws the failed read. */
+async function failOn(lookups: Routes, route: Route): Promise<void> {
+  const bodies = { ask: ask404Body, comment: comment404Body, message: message404Body };
+  for (const other of ["ask", "comment", "message"] as const) {
+    if (other !== route) await lookups.answer(other, { error: new ApiError(404, bodies[other]) });
+  }
+  await lookups.answer(route, { error: new ApiError(503, bodies[route]) });
+  await tick(2_000);
+}
+
 let reads: Routes | undefined;
 let view: RenderHookResult<ThreadLookup, Pages> | undefined;
 /** The query client of the lookup drawn last, which a case refreshes as the app does. */
@@ -312,6 +323,26 @@ test("three 404s draw the line for an address that names no record, and no route
   expect(reads.asked).toEqual({ ask: [ASK_ID], comment: [ASK_ID], message: [ASK_ID] });
 });
 
+test("three 404s keep the line while a page that may hold the id is read again, and no route is read again once it answers", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await reads.answer("ask", { error: ASK_404() });
+  await reads.answer("comment", { error: COMMENT_404() });
+  await reads.answer("message", { error: MESSAGE_404() });
+  expect(view.result.current.kind).toBe("missing");
+  // Each event of the issue reads the list's pages again, and one of them may hold the id.
+  view.rerender({ held: undefined });
+  await jump(0);
+  expect(view.result.current.kind, "the line went while a page was read again").toBe("missing");
+  view.rerender({ held: false });
+  await jump(0);
+  expect(view.result.current.kind, "the line went once the page answered").toBe("missing");
+  await tick(5_000);
+  expect(reads.asked).toEqual({ ask: [ASK_ID], comment: [ASK_ID], message: [ASK_ID] });
+});
+
 test("neither a window focus nor a refresh of every read reads a route that answered 404 again", async () => {
   jest.useFakeTimers();
   reads = routes();
@@ -376,6 +407,97 @@ test("a route that fails with a 5xx draws the failed read with Retry, and Retry 
     if (failed.kind === "failed") failed.retry();
   });
   await jump(0);
+  await reads.answer("ask", { body: ASK });
+  expect(recordOf(view.result.current)).toBe(ASK_ID);
+  expect(reads.asked.comment).toEqual([ASK_ID]);
+  expect(reads.asked.message).toEqual([ASK_ID]);
+});
+
+test("a failed read keeps its line and Retry while a page that may hold the id is read again, and is not read again once that page answers", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await failOn(reads, "ask");
+  expect(view.result.current.kind).toBe("failed");
+  // Each event of the issue reads the list's pages again, and one of them may hold the id.
+  view.rerender({ held: undefined });
+  await jump(0);
+  expect(view.result.current.kind, "the failed read went while a page was read again").toBe(
+    "failed"
+  );
+  view.rerender({ held: false });
+  await jump(0);
+  expect(view.result.current.kind, "the failed read went once the page answered").toBe("failed");
+  await tick(5_000);
+  expect(view.result.current.kind).toBe("failed");
+  expect(reads.asked).toEqual({
+    ask: [ASK_ID, ASK_ID, ASK_ID],
+    comment: [ASK_ID],
+    message: [ASK_ID],
+  });
+});
+
+test("a message event's refresh reads a failed message lookup no more, and its line stays while the pages are read again", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await failOn(reads, "message");
+  expect(view.result.current.kind).toBe("failed");
+  // A message event of the issue refreshes every message read under the issue's key, the
+  // lookup's among them (`api/event-refresh.ts`), and then the list's pages are read again.
+  act(() => {
+    void drawnClient?.invalidateQueries({ queryKey: ["issue-message", KEY] });
+  });
+  await jump(0);
+  expect(
+    drawnClient?.getQueryState(["issue-message", KEY, "thread", ASK_ID])?.isInvalidated,
+    "the refresh did not reach the message lookup"
+  ).toBe(true);
+  expect(view.result.current.kind, "the failed read went as the event refreshed it").toBe("failed");
+  view.rerender({ held: undefined });
+  await jump(0);
+  expect(view.result.current.kind, "the failed read went while a page was read again").toBe(
+    "failed"
+  );
+  view.rerender({ held: false });
+  await jump(0);
+  expect(view.result.current.kind, "the failed read went once the page answered").toBe("failed");
+  await tick(5_000);
+  expect(reads.asked.message).toEqual([ASK_ID, ASK_ID, ASK_ID]);
+});
+
+test("Retry while a page that may hold the id is out reads the failed route again: reading while it is out, failed again if it fails, and the record once it answers", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await failOn(reads, "ask");
+  view.rerender({ held: undefined });
+  await jump(0);
+  const failed = view.result.current;
+  expect(failed.kind, "the failed read went while a page was read again").toBe("failed");
+  reads.again("ask");
+  await act(async () => {
+    if (failed.kind === "failed") failed.retry();
+  });
+  await jump(0);
+  expect(view.result.current.kind, "the failed read stayed while Retry read the route").toBe(
+    "reading"
+  );
+  await reads.answer("ask", { error: new ApiError(503, ask404Body) });
+  expect(view.result.current.kind, "the failed read came back before its retries").toBe("reading");
+  await tick(2_000);
+  const again = view.result.current;
+  expect(again.kind).toBe("failed");
+  expect(reads.asked.ask).toEqual(Array(6).fill(ASK_ID));
+  reads.again("ask");
+  await act(async () => {
+    if (again.kind === "failed") again.retry();
+  });
+  await jump(0);
+  expect(view.result.current.kind).toBe("reading");
   await reads.answer("ask", { body: ASK });
   expect(recordOf(view.result.current)).toBe(ASK_ID);
   expect(reads.asked.comment).toEqual([ASK_ID]);

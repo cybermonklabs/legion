@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { CommentThreadPage, MessageThreadPage } from "@legion/contracts";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 
@@ -15,7 +15,7 @@ import commentsInBody from "./fixtures/comments-in.json";
 import message404Body from "./fixtures/message-404.json";
 import messagesInBody from "./fixtures/messages-in.json";
 import messagesNoneBody from "./fixtures/messages-none.json";
-import { answerThreads, drawThreads, stubWindow, threadsAt } from "./threads-view-fixture";
+import { answerThreads, drawThreads, KEY, stubWindow, threadsAt } from "./threads-view-fixture";
 
 /**
  * The addresses of Threads (dispatch://INFRA-5704/spec#b-r-addresses, R12, R15) over the server's
@@ -250,6 +250,50 @@ describe("lookups in the view: record and line (R12, R15)", () => {
       expect(record()).toBeNull();
       expect(drawn.sent).toEqual({ asks: 1, comments: 1, messages: 1 });
     } finally {
+      drawn.done();
+    }
+  });
+
+  test("the line for an address that names no record stays drawn while an event reads the list's pages again, and no lookup is sent again", async () => {
+    const drawn = drawAt(threadsAt(NOBODY), { lookups: true });
+    const asks = Promise.withResolvers<void>();
+    // The text of the main column at each moment it drew something other than the line.
+    const gone: string[] = [];
+    const watch = new MutationObserver(() => {
+      const text = main()?.textContent ?? "";
+      if (!text.includes(ANSWER_LINES.threads_not_found)) gone.push(text);
+    });
+    try {
+      await waitFor(() => expect(main()).toHaveTextContent(ANSWER_LINES.threads_not_found));
+      await waitFor(() => expect(drawn.client.isFetching(), "a read is still out").toBe(0));
+      // The asks' pages read again are held until the case answers them.
+      let asksRead = 0;
+      answerRequests(
+        http.get("/api/v1/issues/:key/asks", async () => {
+          asksRead += 1;
+          await asks.promise;
+          return Response.json(asksThreadBody);
+        })
+      );
+      watch.observe(document.body, { characterData: true, childList: true, subtree: true });
+      // An ask event of the issue reads the asks' pages again (`api/event-refresh.ts`).
+      await act(async () => {
+        void drawn.client.invalidateQueries({ queryKey: ["asks", KEY] });
+      });
+      await waitFor(() =>
+        expect(asksRead, "the asks' pages were not read again").toBeGreaterThan(0)
+      );
+      expect(main(), "the line went while the asks' pages were read again").toHaveTextContent(
+        ANSWER_LINES.threads_not_found
+      );
+      await act(async () => asks.resolve());
+      await waitFor(() => expect(drawn.client.isFetching(), "a read is still out").toBe(0));
+      expect(gone, "the main column drew no line for a moment").toEqual([]);
+      expect(main()).toHaveTextContent(ANSWER_LINES.threads_not_found);
+      expect(drawn.sent).toEqual({ asks: 1, comments: 1, messages: 1 });
+    } finally {
+      watch.disconnect();
+      asks.resolve();
       drawn.done();
     }
   });
