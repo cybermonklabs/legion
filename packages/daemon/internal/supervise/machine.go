@@ -4397,7 +4397,11 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, res
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
 		return runtime.Locator{}, wayFile, err
 	}
-	spec.ResumeSessionFile, spec.ResumeSessionID = m.claim.SessionFile, m.claim.Session
+	// CONTROL BRANCH, never merged (dispatch://INFRA-4112, check v-one-key, control 3): the launch
+	// keeps the claim and its recorded session id, and names a new session file, as a daemon that
+	// wrote a new session for the step would. The pane registers the session it runs, so the step
+	// records still name one agent and one session; only the launch spec disagrees.
+	spec.ResumeSessionFile, spec.ResumeSessionID = strings.TrimSuffix(m.claim.SessionFile, ".jsonl")+"-control-new.jsonl", m.claim.Session
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if !errors.Is(err, runtime.ErrSessionFileMissing) {
 		return loc, wayFile, err
