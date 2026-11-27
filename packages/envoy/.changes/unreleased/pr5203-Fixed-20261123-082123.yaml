@@ -5,8 +5,8 @@ body: |-
   only through a topic the filter built from its stored row drops is no longer counted: a Legion
   controller notice lane whose role the session does not hold (an earlier build's row, or the
   record of a session that lost the role, which a stopped session kept for 30 days), another
-  session's inbox, a failed-delivery lane, a wildcard reaching one, or a topic the deployed stream
-  does not store. Such a publish answered `recipients 1` for a message no consumer delivered; it
+  session's inbox, a failed-delivery lane, or a wildcard reaching one. Such a publish
+  answered `recipients 1` for a message no consumer delivered; it
   now answers `recipients 0` where no other session follows the topic. The count and every stored
   row's filter judge a stored topic with one function. A controller lane's claim is read from the
   role bucket stream's leader, for the count (within 500 ms; a read that does not answer leaves

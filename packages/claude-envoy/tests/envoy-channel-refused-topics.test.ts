@@ -1,8 +1,8 @@
-// The topics a channel session's registration may not carry: a topic no stream subject captures,
-// which no registration names, and a topic an edge listener refuses for the session's projects,
-// which the session drops.
+// The topics a channel session's registration may not carry: a topic an edge listener refuses for
+// the session's projects, which the session drops. A topic no stream subject this build compiles
+// captures is registered all the same, since the listener judges capture on the deployed stream's
+// subjects (envoy-channel-registry.test.ts).
 import { expect, test } from "bun:test"
-import { uncapturedTopicRefusal } from "@legion/contracts"
 import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
@@ -23,62 +23,6 @@ import { isolatePaneEnvironment } from "./pane-environment"
 isolatePaneEnvironment()
 
 const scratchState = useScratchState()
-
-// A topic the stream captures nothing of is left out of every registration
-// (`registrationTopics`), since the listener stores none: it drops such a topic from the row and
-// names it in a warning (INFRA-771). It is followed all the same when it came back from the
-// interest row a resume reads, and `follow`, which is the tool's call and nothing else, refuses
-// one its caller named itself, in the listener's own words.
-test("never registers a topic no stream subject captures, however it was followed", async () => {
-  const calls: string[] = []
-  const nats = new FakeNats(calls)
-  const stateDirectory = scratchState()
-  const subscribes: Array<readonly string[]> = []
-  const client = recordingClient(calls, {
-    getInterest: async () => ({
-      ...noInterest(),
-      // The row an earlier build left: it expanded `notifications.team.>` to the bare base
-      // beside it, which this build's stream captures nothing of.
-      topics: [directSubject, "notifications.team", "notifications.team.deploys"],
-    }),
-    subscribe: async (input) => {
-      subscribes.push(input.topics)
-      return noInterest()
-    },
-  })
-  const session = await startChannelSession(
-    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
-      connection: nats,
-      client,
-    }),
-  )
-
-  try {
-    // The bare base came back with the row and is followed; no registration carried it.
-    expect(session.topics()).toEqual([
-      directSubject,
-      "notifications.team",
-      "notifications.team.deploys",
-    ])
-    expect(subscribes).toEqual([[directSubject, "notifications.team.deploys"]])
-
-    // The caller named the uncaptured topic itself, so the call is refused by name, in the one
-    // sentence the listener's own warning is generated from, and follows nothing of that call.
-    await expect(
-      session.follow(["notifications.lxspec.probe", "notifications.team.>"]),
-    ).rejects.toThrow(uncapturedTopicRefusal("notifications.lxspec.probe", "ses_claude"))
-    expect(session.topics()).not.toContain("notifications.lxspec.probe")
-
-    expect(await session.follow(["notifications.team.>"])).toEqual(["notifications.team.>"])
-    expect(subscribes.at(-1)).toEqual([
-      directSubject,
-      "notifications.team.deploys",
-      "notifications.team.>",
-    ])
-  } finally {
-    await session.shutdown()
-  }
-})
 
 // An edge listener refuses a whole registration that names a topic of no project of the session's
 // token, naming each refused topic. The session drops exactly those, so its next heartbeat is not

@@ -428,8 +428,8 @@ func listenerOwnLanePrefix(lane string) string {
 // and the listener's own lanes (listenerOwnStreamLanes).
 var streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes)
 
-// privateStreamSubjects are the subjects of streamSubjects a topic under which ever carries one
-// agent session's private payload, read from the code that publishes it. A session may register
+// privateStreamSubjects are the subjects of streamCarriedSubjects a topic under which ever carries
+// one agent session's private payload, read from the code that publishes it. A session may register
 // no interest reaching one but its own agent subject and its own project's controller notice lane
 // (ReachesPrivateStreamSubject, which POST /v1/interests/subscribe applies), since a registered
 // interest is any topic a caller names and the stored topics drive both the listener's fan-out and

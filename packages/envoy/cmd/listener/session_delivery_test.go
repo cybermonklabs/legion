@@ -74,6 +74,7 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 // subscribeAnswer is what a test reads of a registration's answer.
 type subscribeAnswer struct {
 	raw      string
+	Warnings []string `json:"warnings"`
 	Delivery *struct {
 		Mode          string `json:"mode"`
 		Subject       string `json:"subject"`

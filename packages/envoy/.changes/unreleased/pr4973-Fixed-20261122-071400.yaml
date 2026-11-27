@@ -1,10 +1,13 @@
 kind: Fixed
 body: |-
   A message the deployed stream cannot store is refused with a retryable error, and never sent
-  over core NATS and answered as delivered. While the deployed `ENVOY_NOTIFICATIONS` stream, as the
-  client last read its subjects, does not capture a topic this build stores (a hub move's quiesce
-  narrows it, or an operator edits it), every publish sends nothing and fails with
-  `bus.ErrSubjectNotDeployed`. A sender now gets a `503` with `Retry-After: 1` from
+  over core NATS and answered as delivered. While the deployed `ENVOY_NOTIFICATIONS` stream does
+  not capture a topic this build stores (a hub move's quiesce narrows it, or an operator edits it),
+  as a read of the stream's subjects that started after the publish asked confirms, every publish
+  sends nothing and fails with `bus.ErrSubjectNotDeployed`; a publish that the client's last read
+  alone would refuse reads the subjects again first, and is stored when that read captures the
+  topic, so a roll's newer stream is not refused on a list up to a minute old. A sender now gets a
+  `503` with `Retry-After: 1` from
   `POST /v1/messages/send` and `POST /v1/messages/publish`, whose `error` starts
   `envoy: the message was not sent, and may be sent again later: ` (not `the message bus did not
   answer`, since the bus was never asked) and whose request line records the outcome

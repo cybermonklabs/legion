@@ -77,6 +77,23 @@ export interface Registration {
   readonly relaySubscribed: boolean;
 }
 
+/** The listener's interest entry a row's sessions register with (`bootConsumer`'s `registry`). */
+export interface InterestEntry {
+  readonly topics: Set<string>;
+  /** The topics of every release a session asked for, landed or refused, in order. */
+  readonly releases: string[][];
+  /** While set, every release fails, as a listener that is down fails it, and the entry keeps
+   *  the topics. */
+  refusing: boolean;
+}
+
+/** An empty interest entry for a row's sessions (`bootConsumer`'s `registry`). */
+export const interestEntry = (): InterestEntry => ({
+  topics: new Set(),
+  releases: [],
+  refusing: false,
+});
+
 interface SentCard {
   readonly content: string;
   readonly customType?: string;
@@ -131,6 +148,15 @@ export async function bootConsumer(
     readonly refuseCard?: (message: SentCard) => boolean;
     /** Answers `POST /v1/interests/unsubscribe` (`{}` without it); a throw is no answer. */
     readonly unsubscribe?: () => Response;
+    /**
+     * The listener's interest entry for the session: a registration it accepts merges its
+     * topics in, a release takes them out, and a read of the interests answers it. Without it a
+     * read answers no topic and every release lands (`unsubscribe` answers it then).
+     */
+    readonly registry?: InterestEntry;
+    /** The host refuses to append an entry of each custom type this answers true for, as a
+     *  session file that cannot be written refuses it. */
+    readonly refuseEntry?: (customType: string) => boolean;
   } = {}
 ) {
   process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -169,6 +195,7 @@ export async function bootConsumer(
           { status: refusing.status }
         );
       }
+      for (const topic of body.topics) options.registry?.topics.add(topic);
       return response({
         session_id: SESSION,
         machine_id: "test",
@@ -180,11 +207,27 @@ export async function bootConsumer(
         }),
       });
     }
+    if (url.pathname === "/v1/interests/unsubscribe" && options.registry !== undefined) {
+      const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+        readonly topics: readonly string[];
+      };
+      options.registry.releases.push([...body.topics]);
+      if (options.registry.refusing) {
+        return new Response(JSON.stringify({ error: "the listener is down" }), { status: 409 });
+      }
+      for (const topic of body.topics) options.registry.topics.delete(topic);
+      return response({});
+    }
     if (url.pathname === "/v1/interests/unsubscribe" && options.unsubscribe !== undefined) {
       return options.unsubscribe();
     }
     if (url.pathname.startsWith("/v1/interests/") && url.pathname !== "/v1/interests/unsubscribe") {
-      return response({ session_id: SESSION, machine_id: "test", dir: "/tmp", topics: [] });
+      return response({
+        session_id: SESSION,
+        machine_id: "test",
+        dir: "/tmp",
+        topics: [...(options.registry?.topics ?? [])],
+      });
     }
     const read = await options.dispatch?.(url);
     if (read !== undefined) return read;
@@ -234,6 +277,12 @@ export async function bootConsumer(
       events.push(`handed ${message.details?.event_id ?? message.content}`);
       if (turn === "idle") void write(message);
       else held.push(message);
+    },
+    appendEntry: (customType: string, data: unknown) => {
+      if (options.refuseEntry?.(customType) === true) {
+        throw new Error("the session file could not be written");
+      }
+      fixture.pi.appendEntry(customType, data);
     },
   } as unknown as PiApi);
   const prior = options.entries ?? [];
@@ -387,6 +436,11 @@ export async function bootConsumer(
       fixture.tools
         .find((tool) => tool.name === "envoy_subscribe")
         ?.execute("", { topics: [topic] }),
+    /** The person unfollows `topics` (`envoy_unsubscribe`). */
+    unfollow: (topics: readonly string[]) =>
+      fixture.tools
+        .find((tool) => tool.name === "envoy_unsubscribe")
+        ?.execute("", { topics: [...topics] }),
     /** A session event that keeps the session's id (a tree navigation): its pass registers. */
     navigate: () => fixture.handlers.get("session_tree")?.({}, context),
     stop: () => fixture.handlers.get("session_shutdown")?.({}, context),

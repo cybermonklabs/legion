@@ -97,7 +97,7 @@ func TestThePublishPathOfEachTopicKind(t *testing.T) {
 	t.Parallel()
 	withDeployed := func(deployed []string) *Client {
 		client := &Client{}
-		client.deployedSubjects.Store(&deployed)
+		client.deployedSubjects.Store(&subjectsRead{subjects: deployed})
 		return client
 	}
 	type row struct {

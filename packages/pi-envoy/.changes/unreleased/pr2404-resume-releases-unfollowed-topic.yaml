@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A topic that the person unfollows now stays unfollowed across a resume when the listener does
+  not release it. On a resume in a new process, or when the host switches back to the session,
+  `recoverRegisteredInterests` follows each topic of the registry entry and of the newest ledger
+  state. Before this change, when the release of a topic that `envoy_unsubscribe` or a
+  `subscription.removed` frame removed failed, the entry still listed the topic, and the resume
+  followed it again.
+
+  Now the `envoy-replay-state` entry records each such unfollow in the new
+  `unfollowed` field. The resume releases each topic that the registry entry lists and that the
+  newest state records as unfollowed after its last follow, and it does not follow that topic. It
+  follows each other topic of the entry, also a topic that the state does not name: a follow whose
+  state write failed, the base `X` of an `X.>` follow, and a topic that another process of the
+  session followed. A release that the listener accepts removes the record. When the release
+  fails again, the next resume releases the topic. A client of an earlier release reads the entry
+  as before and ignores the new field.
+time: 2026-11-18T05:10:01.000000000Z
+custom:
+    Issue: pr2404

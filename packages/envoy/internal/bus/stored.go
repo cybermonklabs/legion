@@ -471,6 +471,24 @@ func CheckFilterSubject(subject string) error {
 	return nil
 }
 
+// CanFilterOn reports whether a session's consumer filters on topic, a topic its interest row
+// holds: a notification topic (NotificationTopicPrefix) a stored-message read can filter on
+// (CheckFilterSubject) that is no role lane or exception lane of one. It asks nothing of the
+// stream's subjects. nats-server (v2.15.1) takes a consumer filter subject no stream subject
+// captures, on create and on update alike, since its consumer check (checkConsumerCfg) asks only
+// that each filter be a valid subject that overlaps no other, and such a filter matches what the
+// stream stores on it once a subject captures it. A topic out of the filter when that happens
+// would lose every message stored on it before the filter took it in, because the consumer moves
+// past a message its filter does not match as soon as it looks for its next one, at a pull request
+// or a message on a subject it does filter on, and a filter update keeps that position. A role
+// lane reaches its holder as a forward on the holder's agent subject, which the filter carries, and
+// the stream never stores a role lane itself. Each topic it takes is filtered on in every form a
+// reader takes it in (SessionConsumerFilters).
+func CanFilterOn(topic string) bool {
+	return strings.HasPrefix(topic, NotificationTopicPrefix) && CheckFilterSubject(topic) == nil &&
+		!subjectsCapture(roleLaneSubjects, topic)
+}
+
 // SubjectContains reports whether every subject that subject matches is also matched by pattern,
 // under NATS wildcard rules: `*` matches one token and `>`, as the last token, one or more. Either
 // may hold wildcards; a wildcard in subject is contained only by a wildcard in pattern at least as

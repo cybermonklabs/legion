@@ -30,8 +30,15 @@ type notDeployedRig struct {
 
 func newNotDeployedRig(t *testing.T) *notDeployedRig {
 	t.Helper()
+	return newNotDeployedRigReading(t, 100*time.Millisecond)
+}
+
+// newNotDeployedRigReading is newNotDeployedRig whose listener's client reads the deployed subjects
+// every refresh on its own, beside the reads a judgement makes.
+func newNotDeployedRigReading(t *testing.T, refresh time.Duration) *notDeployedRig {
+	t.Helper()
 	url := testnats.URL(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithStreamSubjectsRefresh(100*time.Millisecond))
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithStreamSubjectsRefresh(refresh))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
@@ -322,4 +329,37 @@ func TestARoleSendWhileTheDeployedStreamLacksItsHoldersAgentSubjectAnswers504And
 		t.Fatalf("after the restore the stream holds %d messages on %s, want none", got, agent)
 	}
 	rig.requireCount(t, sender, false)
+}
+
+// A publish to a topic this build stores is refused as one the deployed stream does not capture
+// (bus.ErrSubjectNotDeployed) only on a read of the stream's subjects made for it, never on the
+// subjects the listener's client last read: during a roll the newer build's start gives the stream
+// back a subject a narrowing took, and a refusal from a list up to a minute old rejects a message
+// the stream stores. The client here holds a narrowed list, read by a judgement of an ad-hoc topic
+// (bus.SubjectsAsk.Uncaptured), and reads the subjects on its own only every hour; the stream is
+// then restored behind its back. The publish reads the subjects again
+// (bus.Client.PublishAckOn), finds the topic captured, and is stored once and answered 200.
+func TestAPublishTheHeldSubjectsWouldRefuseIsStoredOnceAFreshReadCapturesItsTopic(t *testing.T) {
+	t.Parallel()
+	const (
+		topic  = "notifications.team.fresh"
+		adhoc  = "notifications.lxspec.fresh-read"
+		sender = "ses_fresh_read_publisher"
+	)
+	rig := newNotDeployedRigReading(t, time.Hour)
+	client := rig.harness.client
+	original := bustest.NarrowStream(t, rig.js, nil)
+	if !client.AskDeployedSubjects().Uncaptured(t.Context(), adhoc) {
+		t.Fatalf("UNKNOWN: the read made for %s found it captured; the client must hold the narrowed list", adhoc)
+	}
+	if client.DeployedStreamCaptures(topic) {
+		t.Fatalf("UNKNOWN: the client's list captures %s after the read of the narrowed stream", topic)
+	}
+	bustest.RestoreStream(t, rig.js, original)
+	if client.DeployedStreamCaptures(topic) {
+		t.Fatalf("UNKNOWN: the client read the restored stream before the publish, so the publish judges nothing stale")
+	}
+
+	rig.publishFrom(t, sender, topic, nil).requireStatus(t, "a publish the client's held list does not capture", http.StatusOK)
+	rig.requireStoredOnce(t, topic)
 }

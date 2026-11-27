@@ -1,0 +1,24 @@
+kind: Changed
+body: |-
+    `POST /v1/interests/subscribe` now keeps a followed `notifications.` topic that no stream
+    subject captures yet, if the topic is no role lane and reaches no private stream subject. The
+    topic stays in the interest record, and in the session consumer's filter where NATS takes it as
+    a filter subject, and the answer is still 200. Its warning now reads: `<topic> is registered,
+    but no stream subject captures it yet, so nothing is delivered to <session> on it until one
+    does; to hear what agents publish, follow a notifications.team.<name> topic`. Before, the
+    listener left the topic out and warned
+    `<topic> was not registered: no stream subject captures it, so nothing would be delivered to
+    <session> on it; follow a notifications.team.<name> topic instead`. The Go function that builds
+    the text is now `listenerwire.UncapturedTopicWarning`, in the listener's wire package, generated
+    from `uncapturedTopicWarning` in `@legion/contracts`. It was `contracts.UncapturedTopicRefusal`.
+
+    The clients (`@legion/envoy-client`, pi-envoy and claude-envoy) no longer refuse a topic that
+    no stream subject captures. They send every followed topic, except a topic that reaches a
+    private stream subject that the session may not register. Every listener that those clients
+    support takes such a registration. The oldest, `legion-envoy-v27.1.0` (#2446), stores every
+    topic that reaches no private stream subject. Listeners from `legion-envoy-v30.8.0` (#2603)
+    until this change leave an uncaptured topic out with their own warning and store the other
+    topics.
+time: 2026-11-17T02:00:02.000000000Z
+custom:
+    Issue: pr2404

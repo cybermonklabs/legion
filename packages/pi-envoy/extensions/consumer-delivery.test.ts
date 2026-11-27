@@ -15,6 +15,8 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import {
   bootConsumer,
+  type InterestEntry,
+  interestEntry,
   peer,
   RELAY,
   removal,
@@ -384,5 +386,113 @@ describe("consumer delivery", () => {
     } finally {
       stopSink();
     }
+  });
+
+  /** The person unfollows `topics` while the listener refuses every release, so the entry keeps
+   *  them; answers the tool's result, which names the refusal (`registrationError`). */
+  async function unfollowRefused(
+    session: {
+      readonly unfollow: (
+        topics: readonly string[]
+      ) => Promise<{ readonly details?: unknown } | undefined> | undefined;
+    },
+    registry: InterestEntry,
+    topics: readonly string[]
+  ) {
+    registry.refusing = true;
+    const answer = await session.unfollow(topics);
+    registry.refusing = false;
+    expect(answer?.details).toMatchObject({ registrationError: expect.any(String) });
+    return answer;
+  }
+
+  // A resume follows every topic the listener's entry holds but one the person unfollowed whose
+  // release at the listener failed, which it releases instead (`recoverRegisteredInterests`):
+  // `releasedOnResume` in @legion/envoy-client/delivery-ledger is the rule, and each row below
+  // holds one side of it. The person's unfollow is recorded in the newest ledger state; a topic
+  // that state does not name is no evidence, and it is followed again from the entry.
+  test("a resume releases a topic the person unfollowed whose release failed, and does not follow it again", async () => {
+    const base = "notifications.dispatch.issue.INFRA-557";
+    const topic = `${base}.>`;
+    const registry = interestEntry();
+    const first = await bootConsumer("resume-releases-a", { registry });
+    await first.follow(topic);
+    await settle();
+    await unfollowRefused(first, registry, [topic]);
+    // The process stops before anything released them: the entry still holds the topic and the
+    // base its follow derived.
+    expect([...registry.topics]).toEqual(expect.arrayContaining([topic, base]));
+    await first.stop();
+
+    const second = await bootConsumer("resume-releases-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).not.toContain(topic);
+    expect(second.registrations.at(-1)?.topics).not.toContain(base);
+    expect([...registry.topics]).not.toContain(topic);
+    expect([...registry.topics]).not.toContain(base);
+    // The release landed, so the newest ledger state holds no record of the unfollow any more.
+    const states = second.fixture.entries.filter(
+      (entry) => entry.customType === REPLAY_STATE_ENTRY
+    );
+    expect(states.at(-1)?.data).not.toHaveProperty("unfollowed");
+  });
+
+  test("a resume follows again a topic whose follow the ledger never wrote, and releases the person's unfollow", async () => {
+    const unfollowed = "notifications.team.alpha";
+    const unwritten = "notifications.team.deploys";
+    const registry = interestEntry();
+    let refusingState = false;
+    const first = await bootConsumer("resume-unwritten-a", {
+      registry,
+      refuseEntry: (customType) => refusingState && customType === REPLAY_STATE_ENTRY,
+    });
+    await first.follow(unfollowed);
+    await settle();
+    await unfollowRefused(first, registry, [unfollowed]);
+    // From here the session file takes no ledger state, as one that cannot be written refuses it.
+    refusingState = true;
+    await first.follow(unwritten);
+    await settle();
+    // The registration took the follow; the ledger state did not.
+    expect([...registry.topics]).toContain(unwritten);
+    const states = first.fixture.entries.filter((entry) => entry.customType === REPLAY_STATE_ENTRY);
+    expect(JSON.stringify(states.at(-1)?.data)).not.toContain(unwritten);
+    await first.stop();
+
+    const releasesBefore = registry.releases.length;
+    const second = await bootConsumer("resume-unwritten-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).toContain(unwritten);
+    expect([...registry.topics]).toContain(unwritten);
+    expect(second.registrations.at(-1)?.topics).not.toContain(unfollowed);
+    expect([...registry.topics]).not.toContain(unfollowed);
+    // The resume released the person's unfollow and nothing the state merely does not name.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([unfollowed]);
+  });
+
+  test("a resume follows again the base an X.> follow derived after the person unfollowed it, and releases the person's unfollow", async () => {
+    const base = "notifications.dispatch.issue.INFRA-558";
+    const wildcard = `${base}.>`;
+    const unfollowed = "notifications.team.alpha";
+    const registry = interestEntry();
+    const first = await bootConsumer("resume-derived-a", { registry });
+    await first.follow(base);
+    await first.follow(unfollowed);
+    await settle();
+    const answer = await unfollowRefused(first, registry, [base, unfollowed]);
+    expect(answer?.details).toMatchObject({ removed: [base, unfollowed] });
+    // The `X.>` follow derives the base again: a follow after the person's unfollow of it.
+    await first.follow(wildcard);
+    await settle();
+    expect(first.registrations.at(-1)?.topics).toEqual(expect.arrayContaining([base, wildcard]));
+    await first.stop();
+
+    const releasesBefore = registry.releases.length;
+    const second = await bootConsumer("resume-derived-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).toEqual(expect.arrayContaining([base, wildcard]));
+    expect([...registry.topics]).toEqual(expect.arrayContaining([base, wildcard]));
+    expect(second.registrations.at(-1)?.topics).not.toContain(unfollowed);
+    expect([...registry.topics]).not.toContain(unfollowed);
+    // The base was never released, not even for the registration to add it back: the resume
+    // released the person's unfollow alone.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([unfollowed]);
   });
 });

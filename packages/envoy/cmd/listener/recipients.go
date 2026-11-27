@@ -22,10 +22,10 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // recipientCounts is how many sessions, other than sender, a message published on topic is for,
 // as listenerwire.PublishResponse carries the two numbers: recipients is every session the topic
 // is for and connected how many of those are live now, a pointer each so that a count of zero is
-// sent as the number it is. A count is nil when a cache it is read from cannot be served, and the
-// publish route leaves each nil field out of its answer on its own, rather than send a number that
-// means something narrower than the one it names (plan D16). The counts read three caches, and
-// each is checked before it is read:
+// sent as the number it is. A count is nil when a cache it is read from cannot be served or the
+// send takes core NATS (below), and the publish route leaves each nil field out of its answer on
+// its own, rather than send a number that means something narrower than the one it names (plan
+// D16). The counts read three caches, and each is checked before it is read:
 //
 //   - the known-session store (session.KnownSessions.Opened: no store at all, one whose NATS grant
 //     does not open the bucket yet, one whose first read of the bucket has not completed, or one
@@ -50,13 +50,33 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // applies, and the row's merges of the fifth kind, carriedFor): either store can name a topic that
 // filter drops, and its consumer delivers nothing on it. A row an earlier build stored can name
 // another session's inbox, a failed-delivery lane, a wildcard reaching one, a topic the filter
-// cannot take (a role lane, one that does not begin with notifications., or one the server refuses
-// as a filter subject), or a wildcard that feeds a merge reaching another session's subjects, and a
-// row or a record can name the notice lane of a controller role the session no longer holds: a
-// record keeps the lane of a role taken from its session for the record's 30 days when that
-// session had stopped, since nothing rewrites a stopped session's record. A session the judgment
-// leaves with no topic matching the message is no recipient of it, and a publish no session
-// follows that way answers recipients 0, as any stored topic no session follows does.
+// cannot take (filterTakes, bus.CanFilterOn: one outside bus.NotificationTopicPrefix, a role lane,
+// or one the server refuses as a filter subject), or a wildcard that feeds a merge reaching
+// another session's subjects, and a row or a record can name the notice lane of a controller role
+// the session no longer holds: a record keeps the lane of a role taken from its session for the
+// record's 30 days when that session had stopped, since nothing rewrites a stopped session's
+// record. A session the judgment leaves with no topic matching the message is no recipient of it,
+// and a publish no session follows that way answers recipients 0, as any stored topic no session
+// follows does.
+//
+// That judgment holds a topic no stream subject captures yet as it holds any other (filterTakes),
+// so it cannot say whether the stream stores the message at all, and the count asks that first,
+// before any session is matched. It asks no subjects of its own: jetStream is the send's own
+// decision of its transport, which the publish route takes once (bus.Client.PublishTakesJetStream)
+// and publishes on (bus.Client.PublishAckOn), so the count and the send cannot read the deployed
+// subjects apart: a count that judged the transport again could count sessions for a message the
+// send takes over core NATS, on a read made between the two that captures the topic. A core
+// decision leaves both counts out, as a lane read that did not answer does. The route refuses a
+// topic no stream subject captures once a read made for the request agrees
+// (bus.SubjectsAsk.Uncaptured), so a core decision here means no read found it uncaptured: none
+// could be made, or the transport fell back to the subjects the client holds. Whether a stream
+// stores the message is then unknown: during a roll a newer build's subject can capture it, and a
+// core publish of a topic the stream captures is stored too (bus.Client.PublishTakesJetStream),
+// for a consumer whose filter holds the topic to deliver. So 0 could be false, and so could a
+// count of the sessions that follow the topic. A topic this build stores always takes JetStream,
+// so it is counted whatever the deployed stream captures, and a session whose topic a narrowed
+// stream does not store is not left out: a publish the bus then refuses, on a read of the
+// subjects made for it (bus.ErrSubjectNotDeployed), answers 503 with no counts at all.
 //
 // connected is how many of those sessions the session registry holds a live entry for, by the
 // rule every reader of a session's age reads (session.SessionRegistry.Lookup, session.StateOf): an
@@ -64,17 +84,21 @@ const recipientLaneReadTimeout = 500 * time.Millisecond
 // number a reader acts on: against 30 days of records a team topic almost never counts zero, so
 // recipients alone would never again tell a sender that nobody is there to read its message.
 //
-// Every read here is of memory but one: each check reads its watcher's state alone, both matchers
-// answer from their caches' subject indexes and the session registry from its cache, so counting
-// the publish of a topic that is no controller notice lane makes no JetStream API call and the
-// publish it precedes waits on no round trip of its own. A publish on a controller notice lane
-// reads that lane's role claim from the role bucket stream's leader, once, within
-// recipientLaneReadTimeout of ctx (store.Registry.ReadLaneHolders), the read a filter built from a
-// stored row makes for it; a read that did not answer or failed leaves both counts out, as a cache
-// that cannot be served does.
-func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string) (recipients, connected *int) {
-	if !d.known.Opened() || d.registry.Servable() != nil {
+// Every read here is of memory but one: each check reads its watcher's state alone, the stream's
+// capture is the send's decision the caller hands in, both matchers answer from their caches'
+// subject indexes and the session registry from its cache, so counting the publish of a topic that
+// is no controller notice lane makes no JetStream API call and the publish it precedes waits on no
+// round trip of the count's. A publish on a controller notice lane reads that lane's role claim
+// from the role bucket stream's leader, once, within recipientLaneReadTimeout of ctx
+// (store.Registry.ReadLaneHolders), the read a filter built from a stored row makes for it; a read
+// that did not answer or failed leaves both counts out, as a cache that cannot be served does.
+func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string, jetStream bool) (recipients, connected *int) {
+	if !jetStream || !d.known.Opened() || d.registry.Servable() != nil {
 		return nil, nil
+	}
+	// connected stays nil, and no entry is looked up, while the session copy cannot be served.
+	if d.sessions.Servable() == nil {
+		connected = new(int)
 	}
 	judged := recipientJudgment{subject: topic}
 	// A lane is a literal, so the lane the message is published on is the one lane whose holder
@@ -89,10 +113,6 @@ func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string)
 		judged.holders = holders
 	}
 	judged.literal = !bus.OverlapsPrivateStreamSubject(topic) && filterTakes(topic)
-	// connected stays nil, and no entry is looked up, while the session copy cannot be served.
-	if d.sessions.Servable() == nil {
-		connected = new(int)
-	}
 	counted := map[string]struct{}{}
 	count := func(sessionID string, topics []string) {
 		if sessionID == sender {

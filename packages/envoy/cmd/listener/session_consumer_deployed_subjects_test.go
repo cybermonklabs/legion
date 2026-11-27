@@ -11,15 +11,16 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A topic under a subject only a newer build's stream carries (notifications.x.>, which this build
 // does not compile) is registered through this build's listener with no warning, and the session's
 // consumer filters on it, so a message stored on it while the two builds run is the consumer's to
-// deliver. The registration route and the consumer filter judge the one deployed stream: a route
-// that stored the topic and a filter that left it out would answer the session 200 for a topic it
-// is never delivered. A topic no stream captures is still left out of the registration with the
-// warning, and out of the filter.
+// deliver. A topic no stream captures is registered and filtered on too, with the warning that
+// nothing is delivered on it until a stream subject captures it: neither the registration route
+// nor the consumer filter asks the stream's subjects, so the filter carries both topics the route
+// stored, and the consumer delivers what the stream stores on a topic once a subject captures it.
 func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.T) {
 	t.Parallel()
 	const (
@@ -51,15 +52,15 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 	if err := json.Unmarshal([]byte(raw), &answer); err != nil {
 		t.Fatalf("decode the registration's answer %s: %v", raw, err)
 	}
-	if want := []string{contracts.UncapturedTopicRefusal(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
+	if want := []string{listenerwire.UncapturedTopicWarning(uncaptured, sessionID)}; !slices.Equal(answer.Warnings, want) {
 		t.Fatalf("warnings = %q, want only %q: %s is captured by the deployed stream and %s by no stream", answer.Warnings, want, captured, uncaptured)
 	}
-	if !slices.Contains(answer.Topics, captured) || slices.Contains(answer.Topics, uncaptured) {
-		t.Fatalf("answered topics = %v, want %s among them and %s not", answer.Topics, captured, uncaptured)
+	if !slices.Contains(answer.Topics, captured) || !slices.Contains(answer.Topics, uncaptured) {
+		t.Fatalf("answered topics = %v, want %s and %s among them", answer.Topics, captured, uncaptured)
 	}
-	want := []string{"notifications.agent.*." + sessionID, contracts.LegacyAgentSubject(sessionID), captured}
+	want := []string{"notifications.agent.*." + sessionID, contracts.LegacyAgentSubject(sessionID), uncaptured, captured}
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
-		t.Fatalf("consumer filters %v, want %v: the filter must carry the topic the registration stored, and leave out the one it did not", got, want)
+		t.Fatalf("consumer filters %v, want %v: the filter must carry every topic the registration stored", got, want)
 	}
 
 	rig.store(t, captured)

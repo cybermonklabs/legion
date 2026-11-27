@@ -29,9 +29,9 @@ import (
 var errStoredCopyUnread = errors.New("no stored copy read")
 
 // storedPublish is the publish of an envelope on its own topic that returns the stream's
-// acknowledgement: bus.Client.PublishAckWithin for both routes in the listener, and a function of
-// the test's own where a test stands in for an answer of the stream's, as keptRolePublish is for
-// a keep.
+// acknowledgement: bus.Client.PublishAckWithin for the send route, bus.Client.PublishAckOn bound
+// to the transport the publish route decided for that route, and a function of the test's own
+// where a test stands in for an answer of the stream's, as keptRolePublish is for a keep.
 type storedPublish func(ctx context.Context, item contracts.Envelope) (bus.StoredAck, error)
 
 // storedReader reads the message the stream holds on a subject at a sequence or after it:

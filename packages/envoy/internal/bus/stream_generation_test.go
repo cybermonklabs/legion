@@ -299,12 +299,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 				t.Fatalf("%s takes JetStream before any stream captures it", topic)
 			}
 
-			newer := current
-			newer.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.x.>")
-			newer.Metadata = map[string]string{generationKey: "2"}
-			if _, err := js.UpdateStream(&newer); err != nil {
-				t.Fatalf("the newer build adds its subject: %v", err)
-			}
+			addNewerSubject(t, js)
 			testwait.Until(t, "the client to send "+topic+" through JetStream once the stream captured it (the last read is whether it still sent it over core NATS)", func() (bool, bool) {
 				core := client.UsesCoreTransport(topic)
 				return core, !core

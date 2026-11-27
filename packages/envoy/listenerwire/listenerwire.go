@@ -107,6 +107,22 @@ type APIError struct {
 	Expected []string `json:"expected,omitempty"`
 }
 
+// SenderRateLimited is the 429 a send or a publish gets when the sending session's count on the
+// listener pod that took it is empty. Error is what the agent reads: each client shows a refusal's
+// error as it is written and does not send the request again on a 429 (packages/envoy-client's
+// transport sends a request again only on a 5xx or a 408), so the sentence alone says that the
+// session's sending is limited, that this message went nowhere, and when to send it again. Reason
+// is sender_rate_limited, the outcome the listener's request log line records. RetryAfterSeconds
+// is the whole seconds the Retry-After header names too, and MessagesPerMinute and Burst are the
+// pod's limit.
+type SenderRateLimited struct {
+	Error             string `json:"error"`
+	Reason            string `json:"reason"`
+	RetryAfterSeconds int    `json:"retry_after_seconds"`
+	MessagesPerMinute int    `json:"messages_per_minute"`
+	Burst             int    `json:"burst"`
+}
+
 // CodeMaybeStored is the code of a send's or a publish's 503 after which the stream may hold the
 // message: its publish went out and was never acknowledged, or its request ended while the stream
 // was still storing an earlier publish under the same message id, an earlier attempt of the same
@@ -338,9 +354,12 @@ type PublishResponse struct {
 	// many of those are live now. They are pointers so that a count of zero is carried rather
 	// than omitted - "no other session subscribes" is the answer that matters most - and nil,
 	// left out, where there is no count to give: a listener whose known-session store does not
-	// answer, or whose interest copy cannot be served, sends neither; one whose session registry
-	// copy cannot be served sends recipients alone; and a role send sends neither, its answer
-	// naming its holder. An older client reads neither field.
+	// answer, or whose interest copy cannot be served, sends neither, and so does one that takes
+	// the publish over core NATS, since whether the stream stores it is then unknown, and one
+	// whose count's read of a controller notice lane's claim did not answer (the listener's
+	// recipientCounts); one whose session registry copy cannot be served sends recipients alone;
+	// and a role send sends neither, its answer naming its holder. An older client reads neither
+	// field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
 	// Duplicate reports that the stream already held another request's copy of this message,
@@ -574,7 +593,10 @@ type SubscribeResume struct {
 }
 
 // SubscribeResponse is the answer to a registration the listener stored: the interest record it
-// wrote, the warnings naming each topic it left out, and the session's delivery.
+// wrote, its warnings, and the session's delivery. A topic reaching a private stream subject that
+// is not the session's own is left out of the record and named in a warning; a topic no stream
+// subject captures yet is kept in the record and in the consumer's filter and named in a warning
+// too (UncapturedTopicWarning), as is a GitHub topic the listener has a note on.
 type SubscribeResponse struct {
 	Interest
 	Warnings []string `json:"warnings,omitempty"`

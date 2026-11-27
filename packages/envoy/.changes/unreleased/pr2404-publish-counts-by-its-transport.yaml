@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    A publish (`POST /v1/messages/publish`) that goes over core NATS now leaves `recipients` and
+    `recipients_connected` out of its answer, as a count the listener cannot make does. A read of
+    the stream's subjects that finds the topic uncaptured refuses the publish, so the route takes
+    core NATS only where that read could not be made. Whether a stream stores the message, and a
+    consumer delivers it, is then unknown: during a roll a newer build's subject can capture the
+    topic. Absent counts mean the listener does not know them. The count and the send take one
+    judgement of the transport (`bus.Client.PublishTakesJetStream`), made once for each publish,
+    so a read of the stream's subjects that lands between the two cannot set them apart. A delivery
+    exception about a stored message is published on its one judgement of its lane too.
+time: 2026-11-24T07:40:00.000000000Z
+custom:
+    Issue: pr2404

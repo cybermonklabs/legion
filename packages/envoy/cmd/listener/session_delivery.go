@@ -181,13 +181,13 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
-	// stream is the client whose verdict decides which topics /v1/interests/subscribe adds to a
-	// session's row (splitUncapturedTopics, bus.Client.ReachesNoSession): every topic but one
-	// neither the deployed stream, as the client last read its subjects, nor this build captures.
-	// A consumer's filter does not read it: the filter carries every topic of the row whatever the
-	// deployed stream captures (sessionConsumerFilter), so a narrowing of the stream takes no
-	// topic out of it. main gives it the listener's own client. nil judges the subjects this build
-	// compiles, which only a test's listener does.
+	// stream is the client whose read of the deployed stream's subjects decides which topics
+	// /v1/interests/subscribe names in its warning that no stream subject captures them yet
+	// (uncapturedTopics). It decides neither the topics a registration stores nor those a
+	// consumer's filter carries (sessionConsumerFilter): neither asks the stream's subjects, so a
+	// narrowing of the stream takes no topic out of either. main gives it the listener's own
+	// client. nil judges the subjects this build compiles (bus.Client.DeployedStreamCaptures),
+	// which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
 	// relay hears each registration that records consumer delivery, and at the edge each role claim
@@ -355,11 +355,11 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
-// whose verdict decides which requested topics a registration adds to the session's row
-// (sessionDelivery.stream); no consumer filter is judged on it (sessionConsumerFilter). options
-// are the connection's own beside its name: in edge mode, the listener's inbox prefix
-// (edgeGrant.connectOptions), and, from main's start, the start's credential wait
-// (startSessionDelivery, natsStart.option).
+// whose read of the deployed stream's subjects decides only which topics a registration's answer
+// warns that no stream subject captures (sessionDelivery.stream); no consumer filter is judged on
+// it (sessionConsumerFilter). options are the connection's own beside its name: in edge mode, the
+// listener's inbox prefix (edgeGrant.connectOptions), and, from main's start, the start's
+// credential wait (startSessionDelivery, natsStart.option).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane. main
@@ -1299,17 +1299,22 @@ func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 // stored row (storedRowFilter: storedFilterStep, sessionRelays.storedFilter, registeredTarget)
 // and both passes of a fenced write - builds the same filter from the same row, and a narrowing of
 // the stream, a hub move's quiesce or an operator's edit, takes no topic out of it. nats-server
-// takes a filter subject the stream does not capture, on a create and on an update, and delivers
-// on it once the stream captures it again, so a message stored on a topic of the row after a
-// narrowing ends reaches the session (internal/bus's
-// TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream). A topic only a newer
-// build's subjects capture, which this build stores on the session's row while the two builds
-// run, is in the filter too, and a topic an earlier build's row left that no subject captures
-// enters it and matches nothing stored. A Legion controller's notice lane
+// takes a filter subject no stream subject captures, on a create and on an update (bus.CanFilterOn
+// states where), and delivers on it once the stream captures it, so a message stored on a topic of
+// the row after a narrowing ends reaches the session (internal/bus's
+// TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream). A topic only a newer build's
+// subjects capture, which this build stores on the session's row while the two builds run, is in
+// the filter too, and so is one no stream subject captures yet, which /v1/interests/subscribe
+// stores with a warning (uncapturedTopics). A topic left out until a subject captures it would be
+// lost: the consumer keeps its position through a filter write and moves past a message its filter
+// does not match as soon as it looks for its next one, at a pull request or a message on its agent
+// subject (fenceFilterWrite's doc states that cost), so a message stored before the next
+// registration widened the filter would never be delivered. A Legion controller's notice lane
 // (notifications.legion.<project>.controller) is one of the row's topics while the session holds
 // that project's controller role, and this filter is the whole of how it reaches the controller,
 // so a notice published while the controller was away is delivered from the stream when it
-// returns. SessionConsumers reduces the list to filters that do not overlap.
+// returns. SessionConsumers filters on every form of each subject the list names, reduced to
+// filters that do not overlap (bus.SessionConsumerFilters).
 //
 // These kinds of topic are left out, though the row may store them:
 //
@@ -1646,16 +1651,17 @@ func skipLeftOutInterest(logger *logging.Logger, interest store.Interest, subjec
 	return true
 }
 
-// filterTakes reports whether sessionFilter keeps topic on its own: a filter subject the server
-// takes (bus.CheckFilterSubject), no role lane or exception lane of one (bus.RoleLane), and a topic
-// that begins with the literal bus.NotificationTopicPrefix. What the deployed stream captures
-// plays no part: the filter holds a stored topic whatever the stream captures now
-// (sessionConsumerFilter). It leaves out the two kinds that turn on more than the topic: a wildcard
-// reaching a private stream subject, which the row's rule leaves out with the controller roles the
-// session holds (store.LaneHolders.Keeps), and a wildcard that fed a merge reaching another
-// session's subjects, which only the whole row tells (sessionFilter, carriedFor).
+// filterTakes reports whether sessionFilter keeps topic on its own (bus.CanFilterOn): a filter
+// subject the server takes (bus.CheckFilterSubject), no role lane or exception lane of one
+// (bus.RoleLane), and a topic that begins with the literal bus.NotificationTopicPrefix, whether or
+// not a stream subject captures it yet. What the deployed stream captures plays no part: the
+// filter holds a stored topic whatever the stream captures now (sessionConsumerFilter). It leaves
+// out the two kinds that turn on more than the topic: a wildcard reaching a private stream
+// subject, which the row's rule leaves out with the controller roles the session holds
+// (store.LaneHolders.Keeps), and a wildcard that fed a merge reaching another session's subjects,
+// which only the whole row tells (sessionFilter, carriedFor).
 func filterTakes(topic string) bool {
-	return bus.CheckFilterSubject(topic) == nil && !bus.RoleLane(topic) && strings.HasPrefix(topic, bus.NotificationTopicPrefix)
+	return bus.CanFilterOn(topic)
 }
 
 // storedTopicFiltered reports whether the consumer filter built from a stored row of sessionID
@@ -1690,7 +1696,8 @@ func storedTopicFiltered(holders store.LaneHolders, sessionID, topic string) boo
 // then. A topic the filter leaves out by its fourth or fifth kind is one a registration of this
 // build keeps out of the row (planWithoutLeftOut), so the row that holds one is an earlier build's
 // or another writer's, and each is logged (filterLeftOutLine, from stored_row) until the session's
-// next registration takes it out of the row and names it.
+// next registration takes it out of the row and names it. A nil m, which only a test calls it on,
+// logs nothing. It asks nothing of the deployed stream's subjects (sessionConsumerFilter).
 func (m *sessionDelivery) storedRowFilter(ctx context.Context, registry *store.Registry, sessionID string, topics []string) ([]string, error) {
 	holders, err := registry.ReadLaneHolders(ctx, topics)
 	if err != nil {

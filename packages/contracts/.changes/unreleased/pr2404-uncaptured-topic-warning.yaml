@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `uncapturedTopicRefusal` is now `uncapturedTopicWarning`, and `scripts/gen-go.ts` emits it as
+  `listenerwire.UncapturedTopicWarning`, in the Envoy listener's wire package, in place of
+  `contracts.UncapturedTopicRefusal`. The listener now keeps a followed topic that no stream
+  subject captures yet. Thus the sentence no longer
+  says that the listener did not register the topic. It now reads: `<topic> is registered, but no
+  stream subject captures it yet, so nothing is delivered to <session> on it until one does; to
+  hear what agents publish, follow a notifications.team.<name> topic`.
+time: 2026-11-17T02:00:00.000000000Z
+custom:
+    Issue: pr2404
