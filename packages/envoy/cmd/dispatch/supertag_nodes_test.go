@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,11 +79,12 @@ const backfillVersion = 20261121060636
 // first holds: a v34.11.x store meets it after its backfill all the same.
 var unreleasedVersionsBelowTheBackfill = []int{
 	20261110224508, 20261116015042, 20261116015056, 20261116015736, 20261116035709, 20261116081157,
-	20261116085957, 20261116232217, 20261117025900, 20261117025901, 20261117025902, 20261117025903,
-	20261117025904, 20261117025905, 20261117025906, 20261117025907, 20261117025908, 20261117025909,
-	20261117025910, 20261117100008, 20261117100010, 20261117100015, 20261117100016, 20261118161237,
-	20261118181230, 20261119020700, 20261119020800, 20261119020900, 20261119021000, 20261120020130,
-	20261120023712, 20261120131444, 20261120150130, 20261120204136, 20261121043859,
+	20261116085957, 20261116112354, 20261116232217, 20261117025900, 20261117025901, 20261117025902,
+	20261117025903, 20261117025904, 20261117025905, 20261117025906, 20261117025907, 20261117025908,
+	20261117025909, 20261117025910, 20261117100008, 20261117100010, 20261117100015, 20261117100016,
+	20261118161237, 20261118181230, 20261118212431, 20261119020700, 20261119020800, 20261119020900,
+	20261119021000, 20261120020130, 20261120023712, 20261120131444, 20261120150130, 20261120204136,
+	20261121043859,
 }
 
 // releasedThroughTheBackfill is how many migrations each v34.11.x release holds, all of them
@@ -153,6 +156,7 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
 	drift.report(t)
 	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
+	requireEveryBlockTypeCarriesTheFilesVersion(t, ctx, pool, file)
 	requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t, ctx)
 	requireNoRouteOrCommandWritesAType(t)
 	requireTheServedSchemaFollowsTheNodes(t, ctx, pool)
@@ -171,10 +175,12 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // migrations runs with its table limit at one byte (censusLimit), the store census tests' size
 // fixture, under which every table that holds a row is above the limit, so an admission here holds
 // at any size: it must admit each pending migration that writes graph_nodes, for bounded writes of
-// graph_nodes and graph_tuples, with no refusal. The forgotten rows are put back, the runner
-// applies the rest, and the store is held to the file as
-// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and to leaving every
-// node and tuple the backfill wrote as it was.
+// graph_nodes and graph_tuples, with no refusal. It judges there the type migrations through the
+// first of appliedBeforeLaterMigrations; the forgotten rows are put back, the runner applies the
+// migrations through that one, and the census runs again over the store that leaves, judging the
+// type migrations up to the next one, and so on, as a deployment meets them. The runner applies
+// the rest, and the store is held to the file as TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt
+// holds a fresh one, and to leaving every node and tuple the backfill wrote as it was.
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
 	t.Parallel()
 	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
@@ -186,8 +192,18 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	runTheBackfill(t, ctx, database)
 	backfilled := backfilledRows(t, ctx, pool)
 	held := forgetVersions(t, ctx, pool, unreleasedVersionsBelowTheBackfill)
-	requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool)
+	through := append(slices.Clone(appliedBeforeLaterMigrations), math.MaxInt)
+	judged := requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool, "the backfilled store", through[0])
 	putVersionsBack(t, ctx, pool, held)
+	for i, alone := range appliedBeforeLaterMigrations {
+		if err := database.MigrateThrough(ctx, alone); err != nil {
+			t.Fatalf("apply the migrations through %d over the backfilled store: %v", alone, err)
+		}
+		judged += requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool, fmt.Sprintf("the backfilled store migrated through %d", alone), through[i+1])
+	}
+	if judged == 0 {
+		t.Fatalf("no pending migration writes graph_nodes, so the census judged no type migration over the backfilled store")
+	}
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("apply the migrations after %d over the backfilled store: %v", backfillVersion, err)
 	}
@@ -199,10 +215,20 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
 	drift.report(t)
 	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
+	requireEveryBlockTypeCarriesTheFilesVersion(t, ctx, pool, file)
 	if after := backfilledRows(t, ctx, pool); !slices.Equal(backfilled, after) {
 		t.Errorf("the migrations after %d moved what the backfill wrote\nbefore: %v\nafter:  %v", backfillVersion, backfilled, after)
 	}
 }
+
+// appliedBeforeLaterMigrations is each migration whose release a deployment applies before any
+// release that holds a later migration, in ascending order: 20261125125703_btree_gin, whose `create
+// extension` takes the census's size exemptions from every pending migration after it, so its
+// release note (the change entry btree-gin-extension of packages/envoy) requires its release to be
+// applied first. A deployment meets each type migration numbered above one of these over a store
+// where it is applied already, and the census judges it there
+// (TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema).
+var appliedBeforeLaterMigrations = []int{20261125125703}
 
 // backfillComments is how many comments writeRowsBeforeTheStore writes, each a node and its tuples
 // once the backfill states them.
@@ -397,18 +423,24 @@ func pendingCensus(t *testing.T, ctx context.Context, pool *store.Pool, over str
 }
 
 // requireTheCensusAdmitsEachTypeMigrationAboveTheLimit takes the migration census of this binary's
-// migrations over the backfilled store (pendingCensus), and holds each type migration pending there
-// to being admitted for bounded writes of graph_nodes and of graph_tuples, which the census read
-// above the limit, with no refusal at all. The type migrations are each pending migration that
-// writes rows of graph_nodes (writesGraphNodes), whatever its number: those numbered above
-// backfillVersion, written after the backfill, and those of unreleasedVersionsBelowTheBackfill,
-// which a store of the v34.11.x releases meets after its backfill too. Any other pending migration
-// is not judged here: its refusal at one byte says nothing about a type migration. A census that
-// judged no type migration fails, since it proved nothing.
-func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx context.Context, pool *store.Pool) {
+// migrations over the backfilled store (pendingCensus), over as its log names it, and holds each
+// type migration pending there and numbered at most through to being admitted for bounded writes of
+// graph_nodes and of graph_tuples, which the census read above the limit, with no refusal at all.
+// The type migrations are each pending migration that writes rows of graph_nodes
+// (writesGraphNodes), whatever its number: those numbered above backfillVersion, written after the
+// backfill, and those of unreleasedVersionsBelowTheBackfill, which a store of the v34.11.x releases
+// meets after its backfill too. A pending migration numbered above through is judged by a later
+// census, over the store a deployment meets it in (appliedBeforeLaterMigrations). Any other pending
+// migration is not judged here: its refusal at one byte says nothing about a type migration. It
+// answers how many type migrations it judged; a run that judged none in all fails, since it proved
+// nothing.
+func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx context.Context, pool *store.Pool, over string, through int) int {
 	t.Helper()
 	judged := 0
-	for _, entry := range pendingCensus(t, ctx, pool, "the backfilled store").Pending {
+	for _, entry := range pendingCensus(t, ctx, pool, over).Pending {
+		if entry.Migration.Version > through {
+			continue
+		}
 		admitted := map[string]bool{}
 		for _, table := range entry.Tables {
 			if table.Name != "graph_nodes" && table.Name != "graph_tuples" {
@@ -430,12 +462,10 @@ func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx cont
 			}
 		}
 		for _, refusal := range entry.Refusals {
-			t.Errorf("the census refuses %s over a backfilled store: %s", name, refusal)
+			t.Errorf("the census refuses %s over %s: %s", name, over, refusal)
 		}
 	}
-	if judged == 0 {
-		t.Fatalf("no pending migration writes graph_nodes, so the census judged no type migration over the backfilled store")
-	}
+	return judged
 }
 
 // requireClosedSupertagList holds the store to one supertag node per name of the closed list and
@@ -569,6 +599,37 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 		t.Fatalf("no type node carries an attribute value, so the comparison of rows with their tuples proved nothing")
 	}
 	t.Logf("every type node's %d attribute value(s) are the newest value tuples out of it", compared)
+}
+
+// requireEveryBlockTypeCarriesTheFilesVersion holds each live block type's supertag node to the
+// file's version, the version every type migration moves all the block types to together, as
+// 20261123080000 and each later one state. The schema the nodes build takes the highest version any
+// of them carries (schemanodes.Read), so a migration that forgot one type, leaving its row and its
+// version tuple both at the version before, leaves the served version right and every other check
+// here true; this check names the type it forgot. A row and its newest value tuple agree already
+// (requireTypeNodeValuesAreTheirTuples), so the row is read. A store with no live block type
+// fails, since then nothing was compared.
+func requireEveryBlockTypeCarriesTheFilesVersion(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema) {
+	t.Helper()
+	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindSupertag)
+	if err != nil {
+		t.Fatalf("read the supertag nodes: %v", err)
+	}
+	want := strconv.Itoa(file.Version)
+	compared := 0
+	for _, node := range nodes {
+		if blockType, _ := node.Attributes["block_type"].(bool); !blockType || node.State != graphstore.StateLive {
+			continue
+		}
+		compared++
+		if got, carried := node.Attributes["version"]; !carried || fmt.Sprint(got) != want {
+			t.Errorf("block type %s carries version %v, and %s declares version %s: a type migration moves every block type's supertag node to the file's version, and writes %s",
+				node.ID, got, blockSchemaFile, want, typeMigrationShape)
+		}
+	}
+	if compared == 0 {
+		t.Fatalf("the store holds no live block type's supertag node, so no version was compared with the file's")
+	}
 }
 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,

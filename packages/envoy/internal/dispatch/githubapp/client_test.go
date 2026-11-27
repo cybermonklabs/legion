@@ -541,7 +541,7 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 				body, status, _, err := client.ReadConditionalWithin(ctx, "installation-token", tc.path, tc.etag, limit)
 				return fmt.Sprintf("status %d, body %q, error %v", status, body, err)
 			}
-			ctx, attempt := githubreads.Begin(context.Background())
+			ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 			withAttempt := read(ctx)
 			if without := read(context.Background()); without != withAttempt {
 				t.Fatalf("with an attempt the read answers %s, and without one %s; want the same answer", withAttempt, without)
@@ -728,7 +728,7 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new client: %v", err)
 		}
-		ctx, attempt := githubreads.Begin(context.Background())
+		ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if readErr == nil {
 			t.Fatal("a read of a port that refuses every dial succeeded")
@@ -744,7 +744,7 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 		saved := RequestTimeout
 		RequestTimeout = 50 * time.Millisecond
 		t.Cleanup(func() { RequestTimeout = saved })
-		ctx, attempt := githubreads.Begin(context.Background())
+		ctx, attempt := githubreads.Begin(context.Background(), githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if !errors.Is(readErr, context.DeadlineExceeded) {
 			t.Fatalf("a read past RequestTimeout: err = %v, want the deadline", readErr)
@@ -764,7 +764,7 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 			<-arrived
 			end()
 		}()
-		ctx, attempt := githubreads.Begin(caller)
+		ctx, attempt := githubreads.Begin(caller, githubreads.CIReconcile)
 		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
 		if !errors.Is(readErr, context.Canceled) {
 			t.Fatalf("a read whose caller ended: err = %v, want the cancel", readErr)

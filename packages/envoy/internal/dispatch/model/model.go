@@ -762,9 +762,9 @@ type PriorityRow struct {
 // and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
 // which is work finished rather than work standing.
 //
-// NewestEventAt is the newest event on any issue that advances the priority, `max(created_at)`
-// over their events: a comment moves it although it writes no issue row, which `issues.updated_at`
-// would not. It is null for a priority no issue advances.
+// NewestEventAt is the newest created_at among the events of last_seq of the issues that advance
+// the priority, one event of each issue read by the unique (issue_key, seq) of events, and it is
+// null when none of those issues has an event.
 type PriorityWork struct {
 	ByStatus        map[string]int `json:"by_status"`
 	Claimed         int            `json:"claimed"`
@@ -2015,7 +2015,9 @@ type CheckResultRetraction struct {
 // content whole, links and references kept, as the reader is shown it, present only for a
 // caller that sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored:
 // code, production or graph, and "" where the block names none, which reads as code. Program is
-// the deployed program it reads, its `program` as stored, "" where it names none.
+// the deployed program it reads, its `program` as stored, "" where it names none. Serves is the
+// references the block's `serves` attribute names, each as the block writes it, in the block's
+// order, and absent on a block that names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -2027,6 +2029,7 @@ type CheckBlock struct {
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
+	Serves          []string      `json:"serves,omitempty"`
 	CICheck         string        `json:"ci_check,omitempty"`
 	Subject         string        `json:"subject,omitempty" enum:"code,production,graph"`
 	Program         string        `json:"program,omitempty"`
@@ -2877,6 +2880,12 @@ type MyReplyRow struct {
 	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
 	DeletedBy *Actor       `json:"deleted_by,omitempty"`
 	Reply     MyReplyReply `json:"reply"`
+	// RootAuthor is the actor who wrote the thread's root, in the shape of Reply.Author and as it
+	// is stored: an ask's asker, a comment thread's root comment's author or a message thread's
+	// root message's author, so a root the Legion daemon wrote reads as its session,
+	// legion-daemon:<PROJECT>. Only the Reply scan sets it (readMyReplyRows, api/replies.go); an
+	// Agent row, whose root is always the caller's own message, carries none.
+	RootAuthor *Actor `json:"root_author,omitempty"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`
@@ -3103,6 +3112,19 @@ const DeliveryTakenStatesSQL = "('" + DeliveryStateSent + "', '" + DeliveryState
 func DeliveryTaken(state string) bool {
 	return state == DeliveryStateSent || state == DeliveryStateQueued
 }
+
+// PersonWordsEventTypesSQL is the five event types that carry a person's words to a session, as
+// the SQL list an `in` test over an event's type takes: an answer (ask.answered), a comment
+// (comment.created), a new message (message.created), a reply to a message (message.answered),
+// and an ask's resolution (ask.resolved). Each query that asks it reads this one definition: the
+// agents' answers read (sessionanswers.query, its reached_by_destination), which lists only the
+// declines among the resolutions (declinedResolution), and the rule for the window it is measured
+// over and its sessions (answerswindow.DeliveredPersonEvent and answerswindow.SessionsQuery),
+// whose predicates test the type alone and so hold for every ask.resolved. The predicates of the
+// partial indexes that read is served by hold the same list in the same order, written out in
+// their migrations, which Go cannot reach (events_person_words_with_declines, 20261111002444, and
+// events_person_words_destinations, 20261125131000): a change of this list is a new index too.
+const PersonWordsEventTypesSQL = "('ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved')"
 
 // MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
 // (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a
@@ -4105,26 +4127,53 @@ type StepRecord struct {
 	Variant      *string    `json:"variant"`
 }
 
-// StepTask is one task of an issue with every run of its steps, in the order they ran.
+// StepTask is one task of an issue: what the issue's newest plan says of it, and every run of its
+// steps, in the order they ran. Needs are the tasks of that plan this task needs, each by its id,
+// as the plan node records them, [] for a task that needs none; null where the node did not record
+// them (a daemon of the release before wrote the plan, or a Dispatch of the release before took the
+// write and dropped its needs) and for a task the plan does not hold. It is a pointer, as
+// PlanTask.Needs is, so null and [] are two values of the type and not a nil and an empty slice.
+// Planned are the steps that plan gives the task, in order, each with where it stands; absent for
+// a task the plan does not hold, which only its runs show. Steps are [] for a task of the plan
+// none of whose steps ran.
 type StepTask struct {
-	Task  string       `json:"task"`
-	Steps []StepRecord `json:"steps"`
+	Task    string        `json:"task"`
+	Needs   *[]string     `json:"needs"`
+	Planned []PlannedStep `json:"planned,omitempty"`
+	Steps   []StepRecord  `json:"steps"`
 }
 
-// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
-// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
-// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+// PlannedStep is one step a plan gives a task, as the steps read answers it: its place in the task,
+// from 1, the plan's word for it (a role or `role:key`), and where it stands in the run of the
+// issue the plan is of, read from that run's records alone: `not started` where none of them is a
+// run of the step, `running` while the newest such run has no end, and that run's result
+// (`passed`, `failed` or `stopped`) once it has one. The enum tag is contracts'
+// PLANNED_STEP_STATES, which a tag cannot name; TestTheStepRouteNamesContractsWords holds it to
+// them.
+type PlannedStep struct {
+	Step  int    `json:"step"`
+	Name  string `json:"name"`
+	State string `json:"state" enum:"not started,running,passed,failed,stopped"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan, in the
+// plan's order, each with its needs, its planned steps and every run of them; then every other
+// task with a run, in the order of each such task's first run. An issue with no plan and no run
+// answers no task; a key no issue carries answers 404 NOT_FOUND, and no IssueSteps.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), and
-// its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), its
+// steps in order, each a role or `role:key`, and the tasks of the plan it needs, each by its id, []
+// for a task that needs none and null where the write that recorded the plan carried no needs. It
+// has the fields of workflowstore.PlanTask, which the route converts it from.
 type PlanTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs"`
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that

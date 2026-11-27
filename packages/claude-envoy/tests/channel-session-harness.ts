@@ -386,6 +386,21 @@ export class FakeNotifier implements ChannelNotifier {
   }
 }
 
+/** A notifier whose writes resolve only when the test lets them. */
+export function heldNotifier() {
+  const written: ChannelNotification[] = []
+  const pending: PromiseWithResolvers<void>[] = []
+  const notifier: ChannelNotifier = {
+    notification(notification) {
+      written.push(notification)
+      const held = Promise.withResolvers<void>()
+      pending.push(held)
+      return held.promise
+    },
+  }
+  return { notifier, written, pending }
+}
+
 export type FakeClient = Pick<
   EnvoyClient,
   "subscribe" | "unsubscribe" | "unregisterSession" | "setRole" | "getRole" | "getInterest"

@@ -232,7 +232,7 @@ jobs:
       # root README.md's "Development" section documents, over the whole tree, so a fixture,
       # config or test file that Biome would rewrite fails here instead of on the next person who
       # runs it. The script runs `biome check .` with every diagnostic shown, and also fails on each
-      # file Biome skips for its size, which Biome reports only as an info diagnostic while it exits 0.
+      # file Biome skips for its size, which Biome reports only in a warning while it exits 0.
       # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Check the whole tree with Biome
         run: .github/scripts/check-biome-tree.sh

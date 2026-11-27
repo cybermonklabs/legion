@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -245,6 +246,42 @@ func knownBucketGrant() []string {
 		"$JS.API.CONSUMER.CREATE." + stream + ".>",
 		"$JS.API.CONSUMER.DELETE." + stream + ".>",
 		"$JS.FC." + stream + ".>",
+	}
+}
+
+// An attempt to open the bucket while nats.go reconnects the connection fails as
+// bus.ErrReconnecting, and the start's one WARN names the reconnect. nats.go refuses the bucket's
+// lookup then before it sends anything, with words of its own
+// (`nats: key-value requires at least server version 2.6.2`), since a reconnecting connection
+// reports no server version, and those words name no reconnect.
+func TestAKnownBucketOpenWhileNATSReconnectsFailsByName(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	client, err := bus.Connect([]string{uri}, bus.WithName(t.Name()))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	srv.Stop(t)
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return client.Conn.Status() == nats.RECONNECTING }) {
+		t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", client.Conn.Status())
+	}
+
+	if _, err := openKnownBucket(context.Background(), client.Conn, 1); !errors.Is(err, bus.ErrReconnecting) {
+		t.Fatalf("the open while NATS reconnects failed with %v, want bus.ErrReconnecting", err)
+	}
+
+	logs := &lockedWriter{}
+	known, err := OpenKnownSessions(t.Context(), client.Conn,
+		WithKnownSessionReplicas(1),
+		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
+		// The retry waits an hour, so the start's own attempt is the one the WARN reports.
+		withKnownSessionRetry(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("open the store while NATS reconnects: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+	if warned := logs.Lines("the known-session bucket is not open"); !strings.Contains(warned, "bus: NATS is reconnecting") {
+		t.Fatalf("the start's WARN reads %q, want it to name the reconnect: bus: NATS is reconnecting", warned)
 	}
 }
 

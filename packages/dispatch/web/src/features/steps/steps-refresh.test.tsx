@@ -89,7 +89,11 @@ test("an event of the issue redraws the Steps tab's rows with what the records n
     let answer: IssueSteps = {
       issue: "CORE-1",
       tasks: [
-        { steps: [stepRecord({ ended_at: null, id: "implement-1", result: "" })], task: "default" },
+        {
+          needs: null,
+          steps: [stepRecord({ ended_at: null, id: "implement-1", result: "" })],
+          task: "default",
+        },
       ],
     };
     const tab = renderLiveTab(() => answer);
@@ -100,7 +104,7 @@ test("an event of the issue redraws the Steps tab's rows with what the records n
 
       answer = {
         issue: "CORE-1",
-        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+        tasks: [{ needs: null, steps: [stepRecord({ id: "implement-1" })], task: "default" }],
       };
       tab.deliver();
       await tick(1_500);
@@ -127,7 +131,7 @@ test("a record written 30 seconds after its event shows with no other event and 
       await tick(30_000, 1_000);
       answer = {
         issue: "CORE-1",
-        tasks: [{ steps: [stepRecord({ id: "late-run" })], task: "default" }],
+        tasks: [{ needs: null, steps: [stepRecord({ id: "late-run" })], task: "default" }],
       };
       await tick(14_000, 1_000);
       expect(screen.queryByRole("table")).toBeNull();
@@ -223,7 +227,7 @@ test("two events 100 ms apart read once, and again when the second ends with wha
       await tick(100, 100);
       answer = {
         issue: "CORE-1",
-        tasks: [{ steps: [stepRecord({ id: "second-run" })], task: "default" }],
+        tasks: [{ needs: null, steps: [stepRecord({ id: "second-run" })], task: "default" }],
       };
       const secondAt = Date.now();
       tab.deliver();
@@ -291,13 +295,14 @@ test("a read still out at the next deadline lands and is drawn, and the deadline
 
       read = () => ({
         issue: "CORE-1",
-        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+        tasks: [{ needs: null, steps: [stepRecord({ id: "implement-1" })], task: "default" }],
       });
       const landedAt = Date.now();
       held.resolve({
         issue: "CORE-1",
         tasks: [
           {
+            needs: null,
             steps: [stepRecord({ ended_at: null, id: "implement-1", result: "" })],
             task: "default",
           },
@@ -444,7 +449,7 @@ test("a catch-up read that fails after one that answered keeps the rows, under t
       }
       return {
         issue: "CORE-1",
-        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+        tasks: [{ needs: null, steps: [stepRecord({ id: "implement-1" })], task: "default" }],
       };
     });
     const rowsUnderFailure = () => {
