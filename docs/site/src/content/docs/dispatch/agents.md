@@ -393,10 +393,10 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   restarted or a session resumed with `omp --continue`, shows the turns it had before, up to its
   newest 200 messages. The newer of its last summary and its last `/clear` decides where they
   start: after a summary, the turns that summary kept and those after it; after a `/clear`, only
-  the turns after it. Where a summary kept only the end of a turn, the live view shows that part,
-  which the terminal hides. A session that summarised inside its last 200 messages can show fewer
-  turns than it did before the restart. A `!` command run before the restart shows as your
-  message and the session's reply.
+  the turns after it. Where a summary kept only the end of a turn, the live view shows that part;
+  the terminal hides it when another user turn starts before the summary. A session that
+  summarised inside its last 200 messages can show fewer turns than it did before the restart. A
+  `!` command run before the restart shows as your message and the session's reply.
 
 A session whose plugin does not stream its conversation shows none of it here.
 The live view says so, and still shows your messages and their replies.

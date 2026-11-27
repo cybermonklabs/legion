@@ -208,11 +208,12 @@ on a branch with none, cuts it instead, and the ring is filled from the turns af
 newest 200 messages it carries, and 512 KiB for the replay's `frames` array, which the reply's
 envelope adds a few bytes to. So a person who opens the session after a restart sees the turns
 after that cut, within those bounds. Oh My Pi's terminal draws a resumed session from the same
-compaction cut by default (`display.collapseCompacted`), but hides the start of a kept turn the
-cut left partial, which the replay shows. The process before the restart may have replayed more:
-its ring kept the turns from before a compaction it ran. A session that starts fresh has no turns
-to read back. The ring keys a card that names no id, such as one of the plugin's own notices, by
-what it says, since Oh My Pi hands `message_end` a copy of the message `message_start` was handed.
+compaction cut by default (`display.collapseCompacted`), but where the cut left the first kept
+turn partial and a later user turn starts before the compaction, it hides that partial turn; the
+replay does not trim it. The process before the restart may have replayed more: its ring kept the
+turns from before a compaction it ran. A session that starts fresh has no turns to read back. The
+ring keys a card that names no id, such as one of the plugin's own notices, by what it says, since
+Oh My Pi hands `message_end` a copy of the message `message_start` was handed.
 
 ## A `task` subagent
 
