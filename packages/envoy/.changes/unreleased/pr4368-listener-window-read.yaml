@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A listener answer whose body read Dispatch's call window ended no longer prints net/http's error
+  of the read as it came. The client's window error is a timeout, whose text the rule passes
+  whole, and it held the read's error raw, so a stand-in in the listener's place that wrote the
+  call's credentials into a line net/http could not parse, such as a chunked body's trailer, put
+  them into Dispatch's log and the error an API answer carries. The body is now read through
+  `redact.StreamAnswer` under the window: such a read prints the failure's class (`the request
+  failed`) beside the window's words; a transport failure and the window's own end
+  (`context deadline exceeded`) come back as before.
+time: 2026-11-27T04:15:11Z
+custom:
+    Issue: pr4368

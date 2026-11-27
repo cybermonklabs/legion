@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -350,7 +351,11 @@ const CallWindow = 5 * time.Second
 // own context ended is not ErrCallWindow, so a caller tells its own bound's end from the window's.
 var ErrCallWindow = errors.New("envoy listener call window ended")
 
-// callWindowError is a call's error once its window ended and its caller's context had not.
+// callWindowError is a call's error once its window ended and its caller's context had not. Its
+// text is the error it holds and fixed words, and it is a timeout, whose text redact passes whole
+// (Cause, ReadAnswer), so each one that leaves this client holds the rule's reading of net/http's
+// error: a call's holds redact.Cause's, which transportCause puts in place of the request's own
+// error before do hands it on, and a body read's redact.StreamAnswer's (roundTrip).
 type callWindowError struct {
 	err    error
 	window time.Duration
@@ -451,7 +456,11 @@ func New(baseURL string, options ...Option) *Client {
 // roundTrip sends request within the client's window on the client's clock. The window covers
 // reading the answer's body as well as its head, as http.Client.Timeout does, so its end is
 // released when the caller closes the body. A call or a body read the window ended fails with
-// ErrCallWindow beside its own error (windowEnded).
+// ErrCallWindow beside its own error (windowEnded). The body is read through redact.StreamAnswer
+// under the window (windowedBody), so a read's failure is the rule's reading before the window's
+// words go beside it: net/http's text of a body it could not read can quote a line the answer
+// wrote, and a callWindowError is a timeout, whose text ReadAnswer passes whole. The stream has
+// no bound of its own: decodeAnswer, which reads every answer of this client, bounds each.
 func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
 	parent := request.Context()
 	ctx, cancel := c.clock.WithTimeout(parent, c.window)
@@ -461,12 +470,12 @@ func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
 		cancel()
 		return nil, err
 	}
-	response.Body = windowedBody{ReadCloser: response.Body, client: c, ctx: ctx, parent: parent, cancel: cancel}
+	response.Body = windowedBody{ReadCloser: redact.StreamAnswer(response, math.MaxInt64), client: c, ctx: ctx, parent: parent, cancel: cancel}
 	return response, nil
 }
 
-// windowedBody is an answer's body whose reads report the end of the window roundTrip opened for
-// its call (windowEnded), and whose Close also ends that window.
+// windowedBody is an answer's body as redact.StreamAnswer reads it, whose reads report the end of
+// the window roundTrip opened for its call (windowEnded), and whose Close also ends that window.
 type windowedBody struct {
 	io.ReadCloser
 	client      *Client
