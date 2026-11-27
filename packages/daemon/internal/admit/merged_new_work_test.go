@@ -407,11 +407,11 @@ type mnwPlacement struct {
 	ownTree bool
 }
 
-// closedRoot records mnwRoot closed at generation 1 with its merge and its approved gate. With
+// mnwClosedRoot records mnwRoot closed at generation 1 with its merge and its approved gate. With
 // lingers set its linger runs and its tree's lifecycle stands open; without it the tree's cleanup
 // was reserved after the linger ended. Its architect's claim stands suspended. With members set
 // mnwMember stands mid-phase in implementing.
-func closedRoot(t *testing.T, pool *pgxpool.Pool, lingers, members bool) {
+func mnwClosedRoot(t *testing.T, pool *pgxpool.Pool, lingers, members bool) {
 	t.Helper()
 	root := mnwIssue(mnwRoot, mnwRoot, nil, phase.Done, "done", 1)
 	if lingers {
@@ -441,12 +441,12 @@ func mnwPlacements() []mnwPlacement {
 	return []mnwPlacement{
 		{
 			name: "root, its linger still running", subject: mnwRoot, generation: 1, move: rootTodo,
-			seed: func(t *testing.T, pool *pgxpool.Pool, members bool) { closedRoot(t, pool, true, members) },
+			seed: func(t *testing.T, pool *pgxpool.Pool, members bool) { mnwClosedRoot(t, pool, true, members) },
 			tree: mnwRoot, gateFrom: mnwRoot, root: mnwRoot, others: []string{mnwMember},
 		},
 		{
 			name: "root, its runtime tree gone", subject: mnwRoot, generation: 1, move: rootTodo,
-			seed: func(t *testing.T, pool *pgxpool.Pool, members bool) { closedRoot(t, pool, false, members) },
+			seed: func(t *testing.T, pool *pgxpool.Pool, members bool) { mnwClosedRoot(t, pool, false, members) },
 			tree: mnwRoot, gateFrom: mnwRoot, root: mnwRoot, others: []string{mnwMember},
 		},
 		{
@@ -583,7 +583,7 @@ func TestMergedNewWorkUsesOneContinuationFromEveryDoor(t *testing.T) {
 	t.Run("a request read twice starts one change", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
-		closedRoot(t, pool, true, false)
+		mnwClosedRoot(t, pool, true, false)
 		move := mnwMove(mnwRoot, "", "todo", mnwSeq+1, "person")
 		apply(t, pool, admission, "mnw-twice-1", move, admission.engine)
 		apply(t, pool, admission, "mnw-twice-2", move, admission.engine)
@@ -669,11 +669,12 @@ func mnwClass(t *testing.T, pool *pgxpool.Pool, key string) record.MergeHistoryC
 	return class
 }
 
-// unread is the merge read's report that its search of key's merge ended with no answering
-// candidate (intake.MergeUnread), which the outbox's executor posts once.
-func unread(t *testing.T, pool *pgxpool.Pool, admission *Admission, key string, generation uint64) {
+// mnwUnread is the merge read's report that its search of key's merge ended with no answering
+// candidate (intake.MergeUnread), as the outbox's executor posts it, under an event id of its own
+// for each attempt, so a second report is a second fact and not a redelivery of the first.
+func mnwUnread(t *testing.T, pool *pgxpool.Pool, admission *Admission, key string, generation uint64, attempt int) {
 	t.Helper()
-	applyFact(t, pool, admission, "mnw-unread-"+key, intake.MergeUnread{Issue: key, Generation: generation, Cause: "no candidate answered"})
+	applyFact(t, pool, admission, fmt.Sprintf("mnw-unread-%s-%d", key, attempt), intake.MergeUnread{Issue: key, Generation: generation, Cause: "no candidate answered"})
 }
 
 // A closed root and a closed child at generation 1, on the repository Dispatch resolves them to,
@@ -701,7 +702,7 @@ func TestAnIssueWithNoEvidenceWaitsUnread(t *testing.T) {
 		if after := mnwState(t, pool, mnwMember); after != member {
 			t.Fatalf("%s while its root waits = %s, want %s", mnwMember, after, member)
 		}
-		unread(t, pool, admission, mnwRoot, 1)
+		mnwUnread(t, pool, admission, mnwRoot, 1, 1)
 		if told := mnwCount(t, pool, mnwRoot, "controller_notice", "merge-unread"); told != 1 {
 			t.Fatalf("merge-unread notices of %s = %d, want one", mnwRoot, told)
 		}
@@ -723,8 +724,8 @@ func TestAnIssueWithNoEvidenceWaitsUnread(t *testing.T) {
 		if told := mnwCount(t, pool, mnwChild, "notice", "child-status"); told != 0 {
 			t.Fatalf("child-status notices of %s = %d, want none: nothing re-entered it", mnwChild, told)
 		}
-		unread(t, pool, admission, mnwChild, 1)
-		unread(t, pool, admission, mnwChild, 1)
+		mnwUnread(t, pool, admission, mnwChild, 1, 1)
+		mnwUnread(t, pool, admission, mnwChild, 1, 2)
 		if told := mnwCount(t, pool, mnwChild, "controller_notice", "merge-unread"); told != 1 {
 			t.Fatalf("merge-unread notices of %s = %d, want one", mnwChild, told)
 		}
@@ -882,7 +883,7 @@ func TestAMergeDecisionRejectsPossibleRenameLoss(t *testing.T) {
 			move.ResolvedRepo = tc.resolved
 			mnwMoves(t, pool, admission, move)
 			mnwWaits(t, pool, mnwChild, 1, claim.RoleController)
-			unread(t, pool, admission, mnwChild, 1)
+			mnwUnread(t, pool, admission, mnwChild, 1, 1)
 			if told := mnwCount(t, pool, mnwChild, "controller_notice", "merge-unread"); told != 1 {
 				t.Fatalf("merge-unread notices of %s = %d, want one", mnwChild, told)
 			}
@@ -898,7 +899,7 @@ func TestAMergeDecisionRejectsPossibleRenameLoss(t *testing.T) {
 func TestARootContinuationKeepsMemberWorkAndArchitectTask(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 4)
-	closedRoot(t, pool, true, true)
+	mnwClosedRoot(t, pool, true, true)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: mnwRoot, Role: claim.RoleArchitect,
 			Claim: architectToken(t, mnwRoot), Entry: 2, EntryTask: "Work the tree."}); err != nil {
@@ -967,7 +968,7 @@ func TestARootContinuationKeepsMemberWorkAndArchitectTask(t *testing.T) {
 func TestStrandedMergedChildrenUseTheContinuation(t *testing.T) {
 	seed := func(t *testing.T, pool *pgxpool.Pool) {
 		t.Helper()
-		closedRoot(t, pool, false, false)
+		mnwClosedRoot(t, pool, false, false)
 		child := mnwIssue(mnwChild, mnwRoot, new(mnwRoot), phase.Done, "done", 1)
 		child.HandedOver = false
 		putIssue(t, pool, child)
@@ -1035,11 +1036,11 @@ func TestEveryMergedContinuationSetsItsBranchOrigin(t *testing.T) {
 	t.Run("the ordinary root", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
-		closedRoot(t, pool, false, false)
+		mnwClosedRoot(t, pool, false, false)
 		mnwMoves(t, pool, admission, mnwMove(mnwRoot, "", "todo", mnwSeq+1, "person"))
 		tick(t, pool, admission, "mnw-branch-pass")
 		branched(t, pool, mnwRoot)
-		if task := architectStartTask(t, pool, mnwRoot); !strings.Contains(task, workflow.RequestInstructionLabel) {
+		if task := mnwArchitectTask(t, pool, mnwRoot); !strings.Contains(task, workflow.RequestInstructionLabel) {
 			t.Fatalf("the promoted architect's start task = %q, want the request's instruction", task)
 		}
 	})
@@ -1062,7 +1063,7 @@ func TestEveryMergedContinuationSetsItsBranchOrigin(t *testing.T) {
 	t.Run("the stranded child", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
-		closedRoot(t, pool, false, false)
+		mnwClosedRoot(t, pool, false, false)
 		child := mnwIssue(mnwChild, mnwRoot, new(mnwRoot), phase.Done, "done", 1)
 		child.HandedOver = false
 		putIssue(t, pool, child)
@@ -1077,7 +1078,7 @@ func TestEveryMergedContinuationSetsItsBranchOrigin(t *testing.T) {
 	t.Run("a member on its own next change in the promotion's member loop", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
-		closedRoot(t, pool, false, false)
+		mnwClosedRoot(t, pool, false, false)
 		member := mnwIssue(mnwMember, mnwRoot, new(mnwRoot), phase.Implementing, "in_progress", 2)
 		member.NextChange, member.NextChanges = 2, 1
 		putIssue(t, pool, member)
@@ -1088,8 +1089,8 @@ func TestEveryMergedContinuationSetsItsBranchOrigin(t *testing.T) {
 	})
 }
 
-// architectStartTask is the task of the last start of key's architect that carries one, "" for none.
-func architectStartTask(t *testing.T, pool *pgxpool.Pool, key string) string {
+// mnwArchitectTask is the task of the last start of key's architect that carries one, "" for none.
+func mnwArchitectTask(t *testing.T, pool *pgxpool.Pool, key string) string {
 	t.Helper()
 	task := ""
 	for _, start := range startsOf(t, pool, key) {
@@ -1107,7 +1108,7 @@ func architectStartTask(t *testing.T, pool *pgxpool.Pool, key string) string {
 func TestHandoverAndReopenHaveOneWinner(t *testing.T) {
 	seed := func(t *testing.T, pool *pgxpool.Pool) {
 		t.Helper()
-		closedRoot(t, pool, true, false)
+		mnwClosedRoot(t, pool, true, false)
 		child := mnwIssue(mnwChild, mnwRoot, new(mnwRoot), phase.Done, "todo", 1)
 		child.HandedOver = false
 		putIssue(t, pool, child)
@@ -1169,7 +1170,7 @@ func TestANonMergedRerunAndAnUnfinishedCarryRunAsToday(t *testing.T) {
 	t.Run("an unfinished handed run is carried", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
-		closedRoot(t, pool, true, false)
+		mnwClosedRoot(t, pool, true, false)
 		midPhaseChild(t, pool, mnwRoot, mnwChild, phase.Implementing, "in_progress")
 		mnwSnapshot(t, pool, mnwChild)
 		inTx(t, pool, func(tx pgx.Tx) {
@@ -1209,7 +1210,7 @@ func TestANonMergedRerunAndAnUnfinishedCarryRunAsToday(t *testing.T) {
 func TestAnEarlierLingerCannotCloseAReopenedTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 4)
-	closedRoot(t, pool, true, true)
+	mnwClosedRoot(t, pool, true, true)
 	mnwMoves(t, pool, admission, mnwMove(mnwRoot, "", "todo", mnwSeq+1, "person"))
 	root := mnwStarted(t, pool, mnwRoot, 2, mnwRoot, nil, record.RequesterPerson)
 	member := mnwState(t, pool, mnwMember)
