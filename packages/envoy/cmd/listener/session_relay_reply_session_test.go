@@ -857,6 +857,7 @@ func TestANakReMarkWhoseWriteFailsStillOwesAFreshMark(t *testing.T) {
 // on a closed connection; the clear runs on the relay's working registry. Control: the same steps
 // with the re-mark's write working keep a mark owed on the entry too.
 func TestARepositoryGapSentForgetsOnlyTheMarkTheFrameCarried(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	_, reader := openOwningStreamRegistry(t, "reader")

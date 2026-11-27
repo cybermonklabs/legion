@@ -2272,7 +2272,7 @@ func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T
 			service := cacheService(cache, "uid-cache")
 			tc.edit(service)
 			logs := &logBuffer{}
-			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs))
+			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs), withTestBootTimeout())
 
 			_, err := g.r.Spawn(g.ctx, spec)
 			if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache) || !strings.Contains(err.Error(), tc.says) {
@@ -2307,11 +2307,19 @@ func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
 	spec := rootSpec(t)
 	cache := CacheSandboxName(testProject, spec.Repository)
 	logs := &logBuffer{}
-	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs))
+	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs), withTestBootTimeout())
 	g.r.serviceFeed.record(errors.New(`services is forbidden: User "legion-daemon" cannot watch resource "services"`), time.Now())
 	says := "cannot be checked: the Service store may be stale"
 
+	start := time.Now()
 	_, err := g.r.Spawn(g.ctx, spec)
+	// Remove the two-second bound and the launch waits on the stale Service store to the test
+	// deadline, then refuses with the same message: this row passes vacuously after about 210 s. The
+	// guard fails it by name instead; one minute is far above the single bounded wait and far below
+	// the deadline.
+	if elapsed := time.Since(start); elapsed > time.Minute {
+		t.Fatalf("Spawn took %s, want it bounded by the two-second boot timeout", elapsed)
+	}
 	if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache+" "+says) {
 		t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, says)
 	}
