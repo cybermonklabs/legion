@@ -20,6 +20,7 @@ import (
 // message's event, and no held_by, since nothing read who holds the role (deliveredGraph,
 // addressedRoles).
 func TestARoleTargetedMessageGivesItsRoleANodeAndAPage(t *testing.T) {
+	t.Parallel()
 	const role = "targeted-message-reader"
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -57,6 +58,7 @@ func TestARoleTargetedMessageGivesItsRoleANodeAndAPage(t *testing.T) {
 //     resolves the role's holder, and the message's naming of it, read first, does not take that
 //     resolution away, so the role keeps its held_by.
 func TestARoleAnEventNamesGetsANodeAndAPageWithoutARoute(t *testing.T) {
+	t.Parallel()
 	const first, second = "first-route-of-the-issue", "second-route-of-the-issue"
 	routeEvent := func(t *testing.T, database *store.Store, broker *events.Broker, actor model.Actor, role string) model.Event {
 		t.Helper()

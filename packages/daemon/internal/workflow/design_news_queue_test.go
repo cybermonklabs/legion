@@ -16,6 +16,7 @@ import (
 // control is the same move of a member whose holder took the approved version already, which is
 // owed nothing and queues none.
 func TestAMoveIntoAcceptingOfAnOwedMemberQueuesTheReconcile(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		took int
@@ -54,6 +55,7 @@ func TestAMoveIntoAcceptingOfAnOwedMemberQueuesTheReconcile(t *testing.T) {
 // reconcile reads what each holder is owed when it runs. A new version that closes the gate queues
 // none, since a closed gate owes nobody anything.
 func TestAGateWriteThatRaisesTheApprovedVersionQueuesOneReconcile(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})

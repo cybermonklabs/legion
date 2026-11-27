@@ -40,6 +40,7 @@ import (
 // (indexVersionAsThePreviousRelease), and then runs this build's ticks while that release serves
 // and once it has left.
 func TestADeferredVersionThePreviousReleaseIndexesAfterThisBuildsTickReadItReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -88,7 +89,7 @@ func TestADeferredVersionThePreviousReleaseIndexesAfterThisBuildsTickReadItReach
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 	var tick BlockIndexTick
-	if _, err := service.readEventsAfterCursor(ctx, &tick); err != nil {
+	if _, _, err := service.readEventsAfterCursor(ctx, &tick); err != nil {
 		t.Fatalf("read the events after this build's cursor: %v", err)
 	}
 	t.Logf("the read of the events after this build's cursor read %d event(s), marked %d document(s), another build %t",

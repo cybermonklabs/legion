@@ -70,6 +70,7 @@ func getMyAnswers(t *testing.T, handler http.Handler, login, query string) myAns
 }
 
 func TestListMyAnswersReturnsOwnAnswersAndRepliesNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	firstIssue := createInteractionIssue(t, handler, "TEST", "First answer", "A spec")
 	secondIssue := createAnswerListIssue(t, handler, "Second answer")
@@ -160,6 +161,7 @@ func TestListMyAnswersReturnsOwnAnswersAndRepliesNewestFirst(t *testing.T) {
 // every login stored them: the answer's ask.answered event in its actor and its answer, and the
 // reply's author. Alice's page lists both.
 func TestListMyAnswersListsAnAnswerStoredInAnotherCase(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Answers stored in another case", "A spec")
 	answeredAsk := createAnswerListAsk(t, handler, issue.Key, "Answered under another case")
@@ -221,6 +223,7 @@ func TestListMyAnswersListsAnAnswerStoredInAnotherCase(t *testing.T) {
 }
 
 func TestListMyAnswersIncludesDocumentAnswers(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key":  "TEST",
@@ -252,6 +255,7 @@ func TestListMyAnswersIncludesDocumentAnswers(t *testing.T) {
 }
 
 func TestListMyAnswersCollapsesRestoredAnswerEvents(t *testing.T) {
+	t.Parallel()
 	handler, database := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Restored answer", "decision", transportAsk, "Which transport?")
 	before := readBlockAsk(t, handler, askID)
@@ -313,6 +317,7 @@ func TestListMyAnswersCollapsesRestoredAnswerEvents(t *testing.T) {
 }
 
 func TestListMyAnswersMarksAChangedAnswerAsNoLongerCurrent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Changed answer page", "A spec")
 	ask := createChangeableAsk(t, handler, issue.Key)
@@ -346,6 +351,7 @@ func TestListMyAnswersMarksAChangedAnswerAsNoLongerCurrent(t *testing.T) {
 // the case alone, as an earlier build stored them; the trim is the function's own, and it is held
 // here, on the function alone.
 func TestUserThreadsLoginReadsALoginAsCanonicalLoginDoes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	for _, login := range []string{"alice", "Alice ", " ALICE@Example.COM\t", "\n\v\f\ralice\r\n"} {
 		var read string

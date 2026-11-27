@@ -26,6 +26,7 @@ import (
 // would have carried, with GitHub's updated_at as its clock, so the record stands at the head
 // GitHub shows.
 func TestThePerIssueReadFollowsAStaleRecordedHead(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
@@ -58,6 +59,7 @@ func TestThePerIssueReadFollowsAStaleRecordedHead(t *testing.T) {
 // applies the opened that webhook would have carried, which records it and moves the issue on; it
 // then reads that pull request, as it reads a recorded one.
 func TestThePerIssueReadFindsThePullRequestOfTheIssuesBranch(t *testing.T) {
+	t.Parallel()
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedUnrecorded(t, pool, "handoff")
@@ -83,6 +85,7 @@ func TestThePerIssueReadFindsThePullRequestOfTheIssuesBranch(t *testing.T) {
 // pull request there and tells the issue's architect - once per handoff commit, however often the
 // read runs.
 func TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedUnrecorded(t, pool, "handoff")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +113,7 @@ func TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest(t *testing.T) {
 // read is queued by the completion and made on the runtime's own goroutine, for that issue alone -
 // another issue's pull request is not read, and its record stands where its own webhooks left it.
 func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
@@ -248,6 +252,7 @@ func (s *issueReadStandIn) counts() map[string]int {
 // stamp must be no later than the first request the read makes after GitHub's answer, here the
 // activity read, which the stand-in holds for a moment to stand in for a slow follow.
 func TestTheReadStampIsWhenGitHubAnsweredNotWhenTheHeadFollowEnded(t *testing.T) {
+	t.Parallel()
 	updated := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})

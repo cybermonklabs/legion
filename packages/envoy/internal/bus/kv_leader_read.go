@@ -178,6 +178,17 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	return entry, nil
 }
 
+// LeaderReads is a bucket handle that answers a read from the stream's leader itself, in place of
+// the stream: the fault seam for a test whose wrapper of a handle (NewKeyValue, KeyValue.Legacy)
+// plants a fault in every read of the bucket, the leader's included. NewestFromLeader, and so
+// GetFromLeader and ReadFromLeader, asks a handle that implements it after its own refusals and
+// sends nothing to the stream. No nats.go handle implements it, so every production read goes to
+// the stream's leader, and a wrapper that does not implement it leaves the leader's reads to the
+// stream, as a copy that is behind leaves them.
+type LeaderReads interface {
+	NewestFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error)
+}
+
 // NewestFromLeader is GetFromLeader with the delete and purge markers answered rather than
 // reported as a key that is not there: key's newest message on the bucket's stream, read from the
 // stream's leader, whose Operation is nats.KeyValueDelete or nats.KeyValuePurge for a marker and
@@ -195,6 +206,9 @@ func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyVa
 	if err := kv.RefusesRead(key); err != nil {
 		return nil, err
 	}
+	if reads, ok := kv.legacy.(LeaderReads); ok {
+		return reads.NewestFromLeader(ctx, key)
+	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, RequestTimeout)
@@ -206,8 +220,9 @@ func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyVa
 	}
 	// The legacy JetStream context of the connection this handle reads the bucket's stream
 	// through: building one sends nothing, and these reads are its only callers, so it is built
-	// here rather than kept on the handle.
-	js, err := kv.streams.Conn().JetStream()
+	// here rather than kept on the handle. Its read names a refusal while nats.go reconnects
+	// (namedRequests).
+	js, err := JetStreamOn(kv.streams.Conn())
 	if err != nil {
 		return nil, named(err)
 	}

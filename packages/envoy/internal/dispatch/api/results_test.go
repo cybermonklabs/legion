@@ -20,9 +20,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -148,24 +150,42 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 }
 
 // writeHeadOnBase stores one pull request head row whose base branch the caller names: the
-// row delivery.BaseBranchMergedFor answers an issue's merged branch from, where the row is
-// merged. The conflict clause writes every column either caller means to write, so a second
+// row delivery.Attributor.MergeOfIssue answers an issue's merges from, where the row is merged.
+// The conflict clause writes every column either caller means to write, so a second
 // row for the same pull request leaves none of them as the first write left it.
+//
+// A merged row holds a time of merge, mergedHeadsAt and its number in seconds, so of two merged
+// pull requests the one of the higher number merged later, as every caller means, and the rule
+// this build judges by (delivery.AttributionRuleVersion), so a read that orders merged rows has
+// no row to ask GitHub about. A row that is not merged holds no time of merge, and its rule is
+// the column's default or the one it held.
 func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
 	t.Helper()
 	var attributed *string
 	if issueKey != "" {
 		attributed = &issueKey
 	}
+	var mergedAt *time.Time
+	rule := 0
+	if state == "merged" {
+		at := mergedHeadsAt.Add(time.Duration(number) * time.Second)
+		mergedAt, rule = &at, delivery.AttributionRuleVersion
+	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at)
-		values ($1, $2, $3, 'legion/work', $4, $5, $6, now(), now())
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at,
+			merged_at, attribution_rule)
+		values ($1, $2, $3, 'legion/work', $4, $5, $6, now(), now(), $7, $8)
 		on conflict (repo, number) do update set head_sha = excluded.head_sha, base_ref = excluded.base_ref,
-			state = excluded.state, issue_key = excluded.issue_key
-	`, repo, number, sha, baseRef, state, attributed); err != nil {
+			state = excluded.state, issue_key = excluded.issue_key, merged_at = excluded.merged_at,
+			attribution_rule = case when excluded.state = 'merged'
+				then excluded.attribution_rule else pull_request_heads.attribution_rule end
+	`, repo, number, sha, baseRef, state, attributed, mergedAt, rule); err != nil {
 		t.Fatalf("store the head of %s#%d on %s: %v", repo, number, baseRef, err)
 	}
 }
+
+// mergedHeadsAt is the time writeHeadOnBase's merged rows count their merge from.
+var mergedHeadsAt = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 // recordMerge records one issue's merged pull request as production records a merge, through
 // the writer that seeds the one fact the merge itself proves: the base branch held the merge
@@ -183,6 +203,29 @@ func recordMerge(t *testing.T, database *store.Store, repo string, number int, i
 		MergeCommitSHA: baseMergeCommit,
 	}); err != nil {
 		t.Fatalf("record the merge of %s#%d into %s: %v", repo, number, baseRef, err)
+	}
+}
+
+// writeKnownMergeOnBase fills the historical row without a cached branch answer. These tests
+// exercise the comparison reader; the writer's permanent seed has its own route witness.
+func writeKnownMergeOnBase(t *testing.T, database *store.Store, repo string, number int, head, issue, base, merge string) {
+	t.Helper()
+	writeHeadOnBase(t, database, repo, number, head, "merged", issue, base)
+	if _, err := database.Pool.Exec(context.Background(),
+		`update pull_request_heads set merge_commit_sha = $3, merged_at = $4,
+		 attribution_rule = $5, checked_at = clock_timestamp()
+		 where repo = $1 and number = $2`, repo, number, merge,
+		time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC), delivery.AttributionRuleVersion); err != nil {
+		t.Fatalf("fill the merge of %s#%d: %v", repo, number, err)
+	}
+}
+
+func writeKnownBranchLanding(t *testing.T, database *store.Store, number int, from, to, head, merge string) {
+	t.Helper()
+	writeKnownMergeOnBase(t, database, "acme/widgets", number, head, "", to, merge)
+	if _, err := database.Pool.Exec(context.Background(),
+		`update pull_request_heads set head_ref = $2 where repo = 'acme/widgets' and number = $1`, number, from); err != nil {
+		t.Fatalf("name the branch landing in pull request %d: %v", number, err)
 	}
 }
 
@@ -207,6 +250,7 @@ func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha st
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
 // word boundary and marked, a short one prints whole, and a result with no reading says so.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -259,6 +303,7 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 // the pull-request body line. An id neither holds is refused, and one two of them share is
 // refused until the caller names which document it means.
 func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	parent := createInteractionIssue(t, handler, "RES", "Parent", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", twoChecks)
@@ -337,6 +382,7 @@ func TestResultRecordsAgainstAChecksOfTheIssueAndOfAnAncestor(t *testing.T) {
 // takes one result per check — `dispatch results` prints results[0] — takes the last recorded
 // rather than the first.
 func TestCheckResultsComeBackNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESN", "Newest first", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -365,6 +411,7 @@ func TestCheckResultsComeBackNewestFirst(t *testing.T) {
 
 // A pass that counts a skipped case contradicts itself.
 func TestResultRefusesAPassThatCountsASkippedCase(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESC", "Contradiction", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -385,6 +432,7 @@ func TestResultRefusesAPassThatCountsASkippedCase(t *testing.T) {
 // stays refused. A comment is no such write: a closed issue takes one, and this states that the
 // result route's exemption is not what lets it through.
 func TestClosedIssueTakesAnAfterMergeResultAndStillRefusesADocumentWrite(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESX", "Closed", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
@@ -427,6 +475,7 @@ func TestClosedIssueTakesAnAfterMergeResultAndStillRefusesADocumentWrite(t *test
 // The issue resolves to a repository the App can read, which is what makes "this commit heads
 // no pull request I know" another commit rather than an unknown.
 func TestBeforeMergeResultFollowsTheHeadAndTheChecksWords(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESH", "acme/widgets", "Heads")
@@ -671,17 +720,26 @@ func resultsGitHubAnswering(
 // delivery.BranchCommitStaleAfter and which a test can reach no other way, since it cannot
 // wait five minutes out. readThroughGitHub answers the same for the read-through's cache.
 // checkRuns, where it is not nil, answers `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`
-// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404.
+// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404. routes are further
+// routes the stand-in answers (gitHubRoute), such as a pull request's own read.
 func resultsGitHubServed(
 	t *testing.T,
 	repos, held map[string]bool,
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns))
+	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns, routes...))
 	return handler, database, served
+}
+
+// gitHubRoute is one more route a results stand-in answers (resultsGitHubOptions): a
+// http.ServeMux pattern and its handler.
+type gitHubRoute struct {
+	pattern string
+	handler http.HandlerFunc
 }
 
 // resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
@@ -693,6 +751,7 @@ func resultsGitHubOptions(
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) testServerOptions {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -750,6 +809,9 @@ func resultsGitHubOptions(
 	if checkRuns != nil {
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
 	}
+	for _, route := range routes {
+		mux.HandleFunc(route.pattern, route.handler)
+	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
@@ -763,6 +825,7 @@ func resultsGitHubOptions(
 // held — a mistyped head, a commit of a branch nobody pushed — never becomes a row a reader
 // takes for the real head.
 func TestResultAtACommitTheRepositoryDoesNotHoldIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHubHolding(t, map[string]bool{"acme/widgets": true},
 		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESQ", "acme/widgets", "Unknown commit")
@@ -811,6 +874,7 @@ func resultEventsOn(t *testing.T, database *store.Store, key string) int {
 // commit was asked about at all: the row stands under its check and the event is on the
 // check's issue.
 func TestResultAtACommitTheRepositoryHoldsIsStored(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHubHolding(t, map[string]bool{"acme/widgets": true},
 		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESY", "acme/widgets", "Held commit")
@@ -841,6 +905,7 @@ func TestResultAtACommitTheRepositoryHoldsIsStored(t *testing.T) {
 // with nothing for that reason, since nothing can teach Dispatch that repository's heads
 // either.
 func TestResultAtAnUnreadableRepositoryIsStoredAndComparesWithNothing(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHubHolding(t, map[string]bool{"acme/widgets": true},
 		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
 	hidden := issueInRepository(t, handler, "RESZ", "acme/hidden", "Unreadable")
@@ -873,6 +938,7 @@ func TestResultAtAnUnreadableRepositoryIsStoredAndComparesWithNothing(t *testing
 // repository. Asked under the old name, every such result would be stored instead, since an
 // unreadable repository refuses nothing. The pair is seeded by SQL before the server is built.
 func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *testing.T) {
+	t.Parallel()
 	options := resultsGitHubOptions(t, map[string]bool{"acme/gadgets": true}, map[string]bool{headCommit: true}, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
 	options.store, options.renames = renamedRepositoryStore(t, "RESN", "oldco/gadgets", "acme/gadgets")
@@ -899,11 +965,13 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 // linkedGitHub is the GitHub the tests of a repository the issue links a pull request in read
 // (TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn,
 // TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead,
-// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository and the
-// tests of results_linked_test.go). It is resultsGitHubHolding's fixture with five differences:
-// each repository holds commits of its own, each pull request an issue links answers its state,
-// the read-through of a commit names the pull request heads says that commit is the head of,
-// each repository's compare read answers from the commits each of its branches carries, and
+// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository,
+// TestAResultBeforeTheLinkedMergeDoesNotCount and the tests of results_linked_test.go). It is
+// resultsGitHubHolding's fixture with five differences: each repository holds commits of its own,
+// each pull request an issue links answers its state, and a merged one the whole pull request
+// where the test names it (merged), the read-through of a commit names the pull request heads
+// says that commit is the head of, each repository's compare read answers from the commits each
+// of its branches carries, and
 // each read of a pull request's state, each ask of the read-through and each compare read is
 // counted by repository. Eight lists take a repository out of the App's reach: one the App is not
 // installed on, one whose installation token GitHub will not mint, one whose commit reads GitHub
@@ -919,6 +987,12 @@ type linkedGitHub struct {
 	// keyed `owner/repo#n`: open, merged, or closed, which is closed without a merge. A pull
 	// request it does not name is GitHub's 404.
 	pulls map[string]string
+	// merged is, for a pull request pulls names merged, keyed `owner/repo#n`, the whole pull request
+	// GET /repos/{owner}/{repo}/pulls/{number} answers in place of the short merged body below: the
+	// read that refreshes a merged row gives Dispatch its merge commit and its time from it. A
+	// merged pull request it does not name answers the short body. A test that adds to it after
+	// the server starts holds mu.
+	merged map[string]linkedMerge
 	// heads is the open pull request whose head each commit is, keyed `owner/repo@sha`, which
 	// GET /repos/{owner}/{repo}/commits/{sha}/pulls names. A commit it does not name heads no
 	// pull request.
@@ -963,6 +1037,32 @@ type linkedGitHub struct {
 	// pull requests of a commit (GET /repos/{owner}/{repo}/commits/{sha}/pulls), and compares
 	// the compare reads, by repository.
 	stateReads, readThroughs, compares map[string]int
+}
+
+// linkedMerge is a merged pull request as GitHub answers its read in full (linkedGitHub.merged): its
+// title, the branch and final head it merged from, the base it merged into, its merge commit and
+// when it merged.
+type linkedMerge struct {
+	title, headRef, headSHA, base, mergeCommit, mergedAt string
+}
+
+// serve answers the read of pull request number of repo with merge. Its updated_at is the time of
+// the read, so a refresh of a row whose last event is older applies.
+func (merge linkedMerge) serve(w http.ResponseWriter, repo, number string) {
+	body, err := json.Marshal(map[string]any{
+		"number": json.Number(number), "title": merge.title, "body": "",
+		"html_url": fmt.Sprintf("https://github.com/%s/pull/%s", repo, number),
+		"user":     map[string]any{"login": "alice"}, "labels": []any{},
+		"state": "closed", "merged": true, "merged_at": merge.mergedAt, "merge_commit_sha": merge.mergeCommit,
+		"created_at": "2026-11-13T00:00:00Z", "updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"head": map[string]any{"ref": merge.headRef, "sha": merge.headSHA, "repo": map[string]any{"full_name": repo}},
+		"base": map[string]any{"ref": merge.base},
+	})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 // counts is how often each repository's pull request state was read and the read-through asked
@@ -1068,10 +1168,18 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 			fmt.Fprint(w, `{"message":"Server Error"}`)
 			return
 		}
-		switch linked.pulls[repo+"#"+number] {
+		key := repo + "#" + number
+		linked.mu.Lock()
+		merge, full := linked.merged[key]
+		linked.mu.Unlock()
+		switch linked.pulls[key] {
 		case "open":
 			fmt.Fprintf(w, `{"number":%s,"state":"open","merged":false,"merged_at":null}`, number)
 		case "merged":
+			if full {
+				merge.serve(w, repo, number)
+				return
+			}
 			fmt.Fprintf(w, `{"number":%s,"state":"closed","merged":true,"merged_at":"2026-11-14T00:00:00Z"}`, number)
 		case "closed":
 			fmt.Fprintf(w, `{"number":%s,"state":"closed","merged":false,"merged_at":null}`, number)
@@ -1135,6 +1243,7 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 // run in order on one issue, each in a subtest of its own, so a row that fails does not stop
 // the rows after it.
 func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
+	t.Parallel()
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "7777777777777777777777777777777777777777"
 	const (
@@ -1327,6 +1436,7 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 // no head. A link to a pull request of the issue's own repository adds nothing, since the
 // attribution alone decides which pull requests of that repository are the issue's.
 func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
+	t.Parallel()
 	const (
 		// linkedCommit, movedCommit and closedCommit are commits acme/tools holds, and ownCommit
 		// one acme/widgets holds.
@@ -1404,16 +1514,16 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 // read 404 for a commit that repository does not hold, and the result would read unknown for
 // good. The record stores the repository it found the commit in beside the result, and only
 // for such a result: a result at a commit of the issue's own repository stores none and is
-// compared there, at the one compare read it always cost.
+// compared there only where Dispatch holds an own merge of the work.
 //
 // The first issue's linked pull request merged into the second repository's default branch, so
 // its `after_merge` result is asked about that branch alone, in one compare read, and stands at
 // it, and its `default_branch` result at the same commit stands at it from the same answer. The
 // second issue's merged into an integration branch, so its `after_merge` result is asked about
 // that branch first and stands at it, while its `default_branch` result is asked about the trunk
-// alone and stands at another commit. The checks name their own repository's branches as their
-// bases throughout.
+// alone and stands at another commit. Each check names its own bases and its linked bases.
 func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository(t *testing.T) {
+	t.Parallel()
 	const (
 		// toolsMerge is the commit acme/tools#9 merged into main as, and integrationMerge the
 		// one acme/tools#10 merged into integration/x as; acme/widgets holds neither. ownMerge
@@ -1428,6 +1538,12 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 			"acme/tools":   {toolsMerge, integrationMerge},
 		},
 		pulls: map[string]string{"acme/tools#9": "merged", "acme/tools#10": "merged"},
+		merged: map[string]linkedMerge{
+			"acme/tools#9": {title: "The work", headRef: "work", headSHA: headCommit, base: "main",
+				mergeCommit: toolsMerge, mergedAt: "2026-11-20T12:00:00Z"},
+			"acme/tools#10": {title: "The integration work", headRef: "integration", headSHA: newHeadCommit, base: "integration/x",
+				mergeCommit: integrationMerge, mergedAt: "2026-11-21T12:00:00Z"},
+		},
 		branches: map[string][]string{
 			"acme/widgets:main":        {ownMerge},
 			"acme/tools:main":          {toolsMerge},
@@ -1473,25 +1589,25 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 	standsAt(t, read, "k5", linkedDefault.ID,
 		"a default_branch result at the merge commit of the linked pull request", model.CommitAtBasis, false)
 	ownStands := standsAt(t, read, "k4", own.ID,
-		"an after_merge result at a commit of the issue's own trunk", model.CommitAtBasis, false)
-	if basis := ownStands.Basis; basis == nil || basis.Branch != "main" || basis.Repo != "" {
-		t.Fatalf("the after_merge result at the issue's own trunk stands at %+v, want the branch main of no other repository", basis)
+		"an after_merge result at a commit of the issue's own trunk with no own merge", model.CommitOtherCommit, false)
+	if ownStands.Basis != nil {
+		t.Fatalf("the own result stands at %+v, want no basis without an own merge", ownStands)
 	}
-	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 1 || compared[0].Branch != "main" ||
-		compared[0].Repo != "" {
-		t.Fatalf("the after_merge check compared with %+v, want its own repository's main alone", compared)
+	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 2 || compared[0].Branch != "main" ||
+		compared[0].Repo != "" || compared[0].MergeCommit != "" || compared[1].Repo != "acme/tools" ||
+		compared[1].Branch != "main" || compared[1].MergeCommit != toolsMerge {
+		t.Fatalf("the after_merge check compared with %+v, want own main without a merge and linked main at its merge", compared)
 	}
 	if stood := checkOf(t, read, "k5").PassStands; stood.Answer != model.PassStandsYes {
 		t.Fatalf("the default_branch check answers pass_stands %+v, want yes", stood)
 	}
-	// One compare read of each repository: acme/tools for the linked commit, whose answer the
-	// default_branch check's question about the same branch shares, and acme/widgets for the
-	// issue's own commit alone. The linked commit is never asked of acme/widgets.
-	if got := linked.compareReads("acme/tools") - toolsBefore; got != 1 {
-		t.Errorf("the read made %d compare reads of acme/tools, want 1", got)
+	// Refreshing the linked merge already seeded its permanent branch yes. Neither check
+	// makes a compare read there. With no own merge, neither makes an own-repository read.
+	if got := linked.compareReads("acme/tools") - toolsBefore; got != 0 {
+		t.Errorf("the refreshed merge already seeded its branch, but the read asked GitHub %d times", got)
 	}
-	if got := linked.compareReads("acme/widgets") - widgetsBefore; got != 1 {
-		t.Errorf("the read made %d compare reads of acme/widgets, want 1", got)
+	if got := linked.compareReads("acme/widgets") - widgetsBefore; got != 0 {
+		t.Errorf("the read made %d compare reads of acme/widgets, want 0", got)
 	}
 
 	onIntegration := recordStored(t, handler, integration, "k4", integrationMerge)
@@ -1507,55 +1623,36 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 		"a default_branch result at a commit only the linked integration branch carries", model.CommitOtherCommit, false)
 }
 
-// An after-merge result of an issue Dispatch holds no pull request of at all stands at the
-// repository's default branch for a commit that branch carries, and at another commit for one
-// of an unmerged branch. Both answers are stored, so a second read of the same results asks
-// GitHub nothing. The fallback itself, with the rows that choose a branch present and naming
-// none for this issue, is TestAfterMergeResultFallsBackToTheTrunkWithoutAMergeOfTheIssue
-// below.
-func TestAfterMergeResultWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) {
+// An after-merge check waits for this work's merge, even when the repository's default branch
+// carries one result commit already. With no merge, it asks no branch-commit question.
+func TestAfterMergeResultWithNoPullRequestWaitsForAMerge(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	handler, _ := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		calls++
-		if base != "main" {
-			return "diverged"
-		}
-		if head == mergeCommit {
+		if base == "main" && head == mergeCommit {
 			return "behind"
 		}
 		return "diverged"
 	})
-	createTestProject(t, handler, "RESD")
-	setDefaultRepository(t, handler, "RESD", "acme/widgets")
-	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
-		map[string]any{"project": "RESD", "title": "Default branch", "spec": "A spec\n"}, "alice"))
+	issue := issueInRepository(t, handler, "RESM", "acme/widgets", "Merged results")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
-
-	merged := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
-	unmerged := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", newHeadCommit, nil)))
-	read := readResults(t, handler, issue.Key)
-	// The check names the one branch it compares with, under the name delivery resolved.
-	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 ||
-		compared[0].Kind != model.CheckBasisBranch || compared[0].Branch != "main" {
-		t.Fatalf("the after-merge check compared with %+v, want the default branch main alone", compared)
-	}
-	stands := standsAt(t, read, "k2", merged.Result.ID,
-		"a result at a default-branch commit", model.CommitAtBasis, false)
-	if stands.Basis == nil || stands.Basis.Branch != "main" {
-		t.Fatalf("a result at a default-branch commit stands at %+v, want the branch main", stands.Basis)
-	}
-	standsAt(t, read, "k2", unmerged.Result.ID,
-		"a result at an unmerged branch's commit", model.CommitOtherCommit, false)
-	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsYes ||
-		len(stood.Roles) != 1 || stood.Roles[0] != "implementer" {
-		t.Fatalf("the after-merge check answers pass_stands %+v, want yes from the implementer", stood)
-	}
-	// Neither commit is asked about again: a yes is kept for good, and a no stands for five
-	// minutes, so a second read inside them makes no GitHub call at all.
+	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
+	offTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
 	before := calls
+	if before != 0 {
+		t.Fatalf("recording a result made %d compare calls, want none", before)
+	}
+	read := readResults(t, handler, issue.Key)
+	comparedNothing(t, read, "k2", model.ReasonNotMerged, model.PassStandsNo)
+	standsAt(t, read, "k2", onTrunk.Result.ID, "a trunk result before this work merged", model.CommitOtherCommit, false)
+	standsAt(t, read, "k2", offTrunk.Result.ID, "an unmerged-branch result before this work merged", model.CommitOtherCommit, false)
+	if spent := calls - before; spent != 0 {
+		t.Fatalf("an issue without a merge asked %d branch questions, want none", spent)
+	}
 	readResults(t, handler, issue.Key)
-	if calls != before {
-		t.Fatalf("a second read made %d compare calls, want none (both answers are stored)", calls-before)
+	if spent := calls - before; spent != 0 {
+		t.Fatalf("a second read without a merge asked %d branch questions, want none", spent)
 	}
 }
 
@@ -1571,6 +1668,7 @@ func TestAfterMergeResultWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) 
 // branch asked about: a key of the repository and the commit alone would hand the
 // default-branch check the integration branch's yes.
 func TestAfterMergeResultFollowsTheBranchTheIssueMergedInto(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		calls++
@@ -1581,7 +1679,7 @@ func TestAfterMergeResultFollowsTheBranchTheIssueMergedInto(t *testing.T) {
 	})
 	issue := issueInRepository(t, handler, "RESM", "acme/widgets", "Merged into an integration branch")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", afterMergeAndDefaultChecks)
-	writeHeadOnBase(t, database, "acme/widgets", 41, headCommit, "merged", issue.Key, "integration/x")
+	writeKnownMergeOnBase(t, database, "acme/widgets", 41, headCommit, issue.Key, "integration/x", integrationCommit)
 
 	onBase := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", integrationCommit, nil)))
 	offBase := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", strayCommit, nil)))
@@ -1591,11 +1689,10 @@ func TestAfterMergeResultFollowsTheBranchTheIssueMergedInto(t *testing.T) {
 	// the document, so its question about integrationCommit is asked after that commit has
 	// already been answered yes for the integration branch.
 	read := readResults(t, handler, issue.Key)
-	// The after-merge check names both branches, the merge's own first, and the
-	// default-branch check names the trunk alone.
-	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 2 ||
-		compared[0].Branch != "integration/x" || compared[1].Branch != "main" {
-		t.Fatalf("the after-merge check compared with %+v, want integration/x and then main", compared)
+	// The integration branch is named on its own: no landing of this work has reached main.
+	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 1 ||
+		compared[0].Branch != "integration/x" || compared[0].MergeCommit != integrationCommit {
+		t.Fatalf("the after-merge check compared with %+v, want integration/x at its merge", compared)
 	}
 	if compared := checkOf(t, read, "k5").ComparedWith; len(compared) != 1 || compared[0].Branch != "main" {
 		t.Fatalf("the default-branch check compared with %+v, want main alone", compared)
@@ -1627,6 +1724,7 @@ func TestAfterMergeResultFollowsTheBranchTheIssueMergedInto(t *testing.T) {
 // `when`s, and it is why a check that must speak for the trunk is written `default_branch`
 // rather than `after_merge`.
 func TestDefaultBranchResultStaysOnTheTrunkForAnIssueMergedElsewhere(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		switch {
 		case base == "integration/x" && head == integrationCommit:
@@ -1638,7 +1736,8 @@ func TestDefaultBranchResultStaysOnTheTrunkForAnIssueMergedElsewhere(t *testing.
 	})
 	issue := issueInRepository(t, handler, "RESJ", "acme/widgets", "Trunk check of an integration-branch issue")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", afterMergeAndDefaultChecks)
-	writeHeadOnBase(t, database, "acme/widgets", 42, headCommit, "merged", issue.Key, "integration/x")
+	writeKnownMergeOnBase(t, database, "acme/widgets", 42, headCommit, issue.Key, "integration/x", integrationCommit)
+	writeKnownBranchLanding(t, database, 142, "integration/x", "main", integrationCommit, mergeCommit)
 
 	onIntegration := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k5", "pass", integrationCommit, nil)))
 	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k5", "pass", mergeCommit, nil)))
@@ -1651,14 +1750,10 @@ func TestDefaultBranchResultStaysOnTheTrunkForAnIssueMergedElsewhere(t *testing.
 		"a default-branch result at a commit the default branch holds", model.CommitAtBasis, false)
 }
 
-// An issue Dispatch holds no merge of is compared with the repository's default branch, as
-// every after-merge result was before a branch was chosen at all. The row that chooses the
-// branch must be merged and must be the check's issue's own: this issue's pull request is
-// still open, and the merge into an integration branch belongs to a neighbour, so neither
-// names a branch for this issue. Its result stands at the default branch for a commit that
-// branch carries, and at another commit for the neighbour's integration-branch commit, which
-// that branch does hold.
-func TestAfterMergeResultFallsBackToTheTrunkWithoutAMergeOfTheIssue(t *testing.T) {
+// An open issue does not borrow its neighbour's merge. Its after-merge check compares with
+// nothing even where main carries one of its result commits.
+func TestAfterMergeResultDoesNotBorrowANeighboursMerge(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		switch {
 		case base == "main" && head == mergeCommit:
@@ -1681,18 +1776,17 @@ func TestAfterMergeResultFallsBackToTheTrunkWithoutAMergeOfTheIssue(t *testing.T
 	read := readResults(t, handler, issue.Key)
 	standsAt(t, read, "k2", onTrunk.Result.ID,
 		"an after-merge result of an issue Dispatch holds no merge of, at a default-branch commit",
-		model.CommitAtBasis, false)
+		model.CommitOtherCommit, false)
 	standsAt(t, read, "k2", onNeighboursBranch.Result.ID,
 		"an after-merge result of an issue Dispatch holds no merge of, at a commit only another issue's integration branch holds",
 		model.CommitOtherCommit, false)
+	comparedNothing(t, read, "k2", model.ReasonNotMerged, model.PassStandsNo)
 }
 
-// A merged row carrying no base branch at all — the shape a `pull_request` envelope published
-// before Dispatch carried the field leaves behind — is no branch to compare with, and the
-// repository's default branch answers instead. The default branch here is `trunk`, so a
-// result compared with a hard-coded `main` would stand at another commit and this test would
-// say so.
-func TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T) {
+// A merged row with no base branch leaves its merge requirement unknown. The actual default
+// branch is still named; a result on it is unknown, while a result off it is at another commit.
+func TestAfterMergeResultWaitsWhenTheMergedRowNamesNoBaseBranch(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHubWithDefaultBranch(t, map[string]bool{"acme/widgets": true}, nil, "trunk",
 		func(base, head string) string {
 			if base == "trunk" && head == mergeCommit {
@@ -1716,7 +1810,7 @@ func TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T
 	}
 	standsAt(t, read, "k2", onTrunk.Result.ID,
 		"an after-merge result of an issue whose merged row names no base branch, at a commit the default branch carries",
-		model.CommitAtBasis, false)
+		model.CommitUnknown, false)
 	standsAt(t, read, "k2", offTrunk.Result.ID,
 		"an after-merge result of an issue whose merged row names no base branch, at a commit no branch carries",
 		model.CommitOtherCommit, false)
@@ -1727,12 +1821,14 @@ func TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T
 // is the other kind of nothing: there is no pull request and no branch, so its results stand
 // at another commit and no pass of them stands.
 func TestAfterMergeResultIsUnknownWhenTheAppCannotReadTheRepository(t *testing.T) {
-	handler, _ := resultsGitHub(t, map[string]bool{}, func(string, string) string { return "behind" })
+	t.Parallel()
+	handler, database := resultsGitHub(t, map[string]bool{}, func(string, string) string { return "behind" })
 	createTestProject(t, handler, "RESU")
 	setDefaultRepository(t, handler, "RESU", "acme/hidden")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESU", "title": "Unreadable", "spec": "A spec\n"}, "alice"))
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	writeHeadOnBase(t, database, "acme/hidden", 70, headCommit, "merged", issue.Key, "")
 
 	recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
 	read := readResults(t, handler, issue.Key)
@@ -1766,6 +1862,7 @@ func TestAfterMergeResultIsUnknownWhenTheAppCannotReadTheRepository(t *testing.T
 // branch is never read for another, which the stored row and the memo of one read are both
 // keyed by the branch to keep.
 func TestAfterMergeResultReadsTheBaseBranchOrTheDefaultBranch(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		calls++
@@ -1779,7 +1876,8 @@ func TestAfterMergeResultReadsTheBaseBranchOrTheDefaultBranch(t *testing.T) {
 	})
 	issue := issueInRepository(t, handler, "RESB", "acme/widgets", "Merged into an integration branch that landed")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", afterMergeAndDefaultChecks)
-	writeHeadOnBase(t, database, "acme/widgets", 46, headCommit, "merged", issue.Key, "integration/x")
+	writeKnownMergeOnBase(t, database, "acme/widgets", 46, headCommit, issue.Key, "integration/x", integrationCommit)
+	writeKnownBranchLanding(t, database, 146, "integration/x", "main", integrationCommit, mergeCommit)
 
 	onBase := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", integrationCommit, nil)))
 	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", mergeCommit, nil)))
@@ -1815,6 +1913,7 @@ func TestAfterMergeResultReadsTheBaseBranchOrTheDefaultBranch(t *testing.T) {
 // was compared with one branch. The merge's own branch is the default branch under the name
 // delivery resolved, so the check names that branch once and the walk asks about it once.
 func TestAfterMergeResultOfAnIssueMergedIntoTheTrunkSpendsOneCompareReadACommit(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		calls++
@@ -1825,7 +1924,7 @@ func TestAfterMergeResultOfAnIssueMergedIntoTheTrunkSpendsOneCompareReadACommit(
 	})
 	issue := issueInRepository(t, handler, "RESO", "acme/widgets", "Merged into the trunk")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
-	writeHeadOnBase(t, database, "acme/widgets", 47, headCommit, "merged", issue.Key, "main")
+	writeKnownMergeOnBase(t, database, "acme/widgets", 47, headCommit, issue.Key, "main", mergeCommit)
 
 	landed := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
 	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
@@ -1857,6 +1956,7 @@ func TestAfterMergeResultOfAnIssueMergedIntoTheTrunkSpendsOneCompareReadACommit(
 // recorded that commit as on its base branch when it recorded the merge, and a yes is kept
 // for good (delivery.UpsertPullRequestHead).
 func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHubWithDeletedBranch(t, map[string]bool{"acme/widgets": true}, nil,
 		"main", "integration/x", func(base, head string) string {
 			if base == "main" && head == mergeCommit {
@@ -1867,6 +1967,7 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 	issue := issueInRepository(t, handler, "RESD2", "acme/widgets", "Merged into a branch since deleted")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/widgets", 48, issue.Key, "integration/x")
+	writeKnownBranchLanding(t, database, 148, "integration/x", "main", baseMergeCommit, mergeCommit)
 
 	// mergeCommit is the squash the trunk carries, baseMergeCommit the merge GitHub made on
 	// the branch it has since deleted, and strayCommit a commit neither ever carried.
@@ -1889,21 +1990,10 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 		model.CommitOtherCommit, false)
 }
 
-// The same squash-merged issue once the App has lost the repository. The merge commit stands
-// at the base branch still: Dispatch recorded that yes when it recorded the merge, a yes is
-// kept for good, and the stored row is read before any call to GitHub, so the branch's name
-// is the whole of what the answer needs (delivery.Branches.CommitOnBranch). The branch the
-// check compares with is named from the default branch this process resolved before the App
-// lost the repository, which delivery keeps across a read that can say nothing exactly so
-// that this answer survives (delivery/branch.go:261-273).
-//
-// This pins the reviewer's finding on pull request #3530 (dispatch://INFRA-1522):
-// branchBases compared with nothing as soon as the repository read answered unreadable, so
-// the branches were never asked and the stored yes was never reached. One failed App read
-// turned every `after_merge` and every `default_branch` result of the repository from
-// `at_basis` to `unknown` — the squash merge of a deleted base branch among them, which
-// nothing else can ever place.
+// A stored merge's branch yes survives loss of GitHub access. It places that merge commit, but
+// cannot place a newer result with no stored answer, so the check's newest decision is unknown.
 func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepository(t *testing.T) {
+	t.Parallel()
 	// The test owns the map the fixture reads per request, so taking the repository out of it
 	// is the App losing it: GitHub refuses the read of the repository and every compare read
 	// of it from that moment on.
@@ -1946,12 +2036,12 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 	if stands.Basis == nil || stands.Basis.Branch != "integration/x" {
 		t.Fatalf("the merge commit stands at %+v, want the base branch integration/x", stands.Basis)
 	}
-	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 2 ||
-		compared[0].Branch != "integration/x" || compared[1].Branch != "main" {
-		t.Fatalf("the after-merge check of a repository the App cannot read compared with %+v, want the base branch and the trunk", compared)
+	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 ||
+		compared[0].Branch != "integration/x" || compared[0].MergeCommit != baseMergeCommit {
+		t.Fatalf("the unreadable repository compared with %+v, want its known integration merge alone", compared)
 	}
-	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsYes {
-		t.Fatalf("the check answers pass_stands %+v, want yes: the pass at the merge commit stands", stood)
+	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsUnknown || stood.Reason != "not_placed" {
+		t.Fatalf("the check answers pass_stands %+v, want unknown: its newer result could not be placed", stood)
 	}
 	// A commit no branch holds a stored answer for is unknown all the same: nothing can be
 	// asked while the App cannot read the repository, and that is no evidence about the work.
@@ -1966,22 +2056,10 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 	}
 }
 
-// The merged issue of a repository this process has never named a default branch for: the
-// restart whose first `GET /repos/{owner}/{repo}` failed, which delivery.Branches holds for
-// delivery.BranchCommitStaleAfter, and every repository of a deployment holding no App key.
-// The branch the work merged into is read from the database (delivery.BaseBranchMergedFor)
-// and costs no call to GitHub, so the check compares with that branch alone and the stored
-// yes at it places the merge commit.
-//
-// This pins the second half of the reviewer's finding on pull request #3530
-// (dispatch://INFRA-1522): branchBases answered nothing at all as soon as the default branch
-// had no name, so a branch nothing about GitHub turns on was never asked, and the squash
-// merge of a deleted base branch — which nothing else can ever place — read `unknown`.
-//
-// A commit no stored row answers for is unknown rather than another commit: the trunk, which
-// would have decided, was never asked, and "not on the branch the work merged into" is no
-// evidence about it.
+// The merged branch and its stored yes place the merge even when no default branch was ever
+// named. A newer result without a stored answer remains unknown and decides the check that way.
 func TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed(t *testing.T) {
+	t.Parallel()
 	// The issue resolves to acme/hidden, which the App is not installed on, so no read of
 	// this process ever names that repository's default branch: server.branches holds no name
 	// for it, as it holds none for any repository after a restart whose first read failed.
@@ -2004,8 +2082,8 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed(t *test
 	if stands.Basis == nil || stands.Basis.Branch != "integration/x" {
 		t.Fatalf("the merge commit stands at %+v, want the base branch integration/x", stands.Basis)
 	}
-	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsYes {
-		t.Fatalf("the check answers pass_stands %+v, want yes: the pass at the merge commit stands", stood)
+	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsUnknown || stood.Reason != "not_placed" {
+		t.Fatalf("the check answers pass_stands %+v, want unknown: its newer result could not be placed", stood)
 	}
 	unplaced := standsAt(t, read, "k2", stray.Result.ID,
 		"an after-merge result at a commit nothing is stored for, no default branch named",
@@ -2015,17 +2093,10 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed(t *test
 	}
 }
 
-// The same merged issue in a deployment holding no App key, where deps.GitHub is nil, every
-// read of GitHub answers githubapp.ErrNoAppKey and no repository has a default branch named.
-// The branch the issue merged into is a fact of Dispatch's own database and the yes at it a
-// row kept for good, so the merge commit stands at that branch with no GitHub at all — which
-// is the whole of what such a deployment can answer, and more than the nothing it answered
-// before (dispatch://INFRA-1522).
-//
-// A commit the stored row says that branch does not carry is unknown and never another
-// commit: the walk is short of the default branch, which nothing could name, so the branch
-// that would have decided — the trunk an integration branch lands on — was never asked.
+// The merged branch's stored yes also places the merge with no App key. It cannot settle the
+// newer result, which leaves the check unknown rather than reviving the older pass.
 func TestAfterMergeResultStandsAtItsMergedBranchWithNoAppKey(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {
 		t.Fatalf("the fixture holds a GitHub client, want the deployment that holds no App key")
@@ -2050,8 +2121,8 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoAppKey(t *testing.T) {
 	if stands.Basis == nil || stands.Basis.Branch != "integration/x" {
 		t.Fatalf("the merge commit stands at %+v, want the base branch integration/x", stands.Basis)
 	}
-	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsYes {
-		t.Fatalf("the check answers pass_stands %+v, want yes: the pass at the merge commit stands", stood)
+	if stood := checkOf(t, read, "k2").PassStands; stood.Answer != model.PassStandsUnknown || stood.Reason != "not_placed" {
+		t.Fatalf("the check answers pass_stands %+v, want unknown: its newer result could not be placed", stood)
 	}
 	unplaced := standsAt(t, read, "k2", stray.Result.ID,
 		"an after-merge result the merged branch is stored as not carrying, with no default branch to ask",
@@ -2075,6 +2146,7 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoAppKey(t *testing.T) {
 // five minutes. The default branch's own "no" is stored for that span, as every no is, so the
 // second read spends the base branch's call and no other.
 func TestAfterMergeResultIsUnknownWhenTheBaseBranchReadFails(t *testing.T) {
+	t.Parallel()
 	compares := 0
 	handler, database := resultsGitHubAnswering(t, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(base, _ string) (int, string) {
@@ -2120,6 +2192,7 @@ func TestAfterMergeResultIsUnknownWhenTheBaseBranchReadFails(t *testing.T) {
 // read the repository the same commit stands at another commit, which is what makes the
 // answer worth reading.
 func TestBeforeMergeResultIsUnknownWhenDispatchCannotSeeTheRepository(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 
@@ -2165,6 +2238,7 @@ func TestBeforeMergeResultIsUnknownWhenDispatchCannotSeeTheRepository(t *testing
 // at another commit, while the readable issue's own result at the same commit stands at its
 // head.
 func TestBeforeMergeResultStaysUnknownAtAnotherRepositorysHead(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	seen := issueInRepository(t, handler, "RESY", "acme/widgets", "Readable")
@@ -2189,6 +2263,7 @@ func TestBeforeMergeResultStaysUnknownAtAnotherRepositorysHead(t *testing.T) {
 // for reads GitHub through the App and stores every pull request it names, so the result
 // stands at that head without a webhook ever arriving.
 func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -2244,6 +2319,7 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 // another repository's issue first. Judged through the route, which is where a reviewer's
 // approval condition is actually read.
 func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsAtIt(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -2305,6 +2381,7 @@ func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsA
 // the App about the old name, whose installation GitHub answers 404 for: the read-through learned
 // no pull request, and the result was unknown rather than placed at a head.
 func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -2365,6 +2442,7 @@ func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *test
 // The answer to a record carries the moment the row was written, not the zero time: created_at
 // is a declared field of the contract, and a reader takes it for when the run happened.
 func TestRecordedResultAnswersTheTimeItWasStored(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESA", "Stored at", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -2391,6 +2469,7 @@ func TestRecordedResultAnswersTheTimeItWasStored(t *testing.T) {
 // pull request answers for nothing on the parent's tab. What stands there is the parent's own
 // result at a head of the parent's own pull request.
 func TestChildsResultAgainstAnAncestorsCheckStandsAtNoBasisAtTheChildsHead(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	parent := issueInRepository(t, handler, "RESX", "acme/widgets", "Parent")
@@ -2420,6 +2499,7 @@ func TestChildsResultAgainstAnAncestorsCheckStandsAtNoBasisAtTheChildsHead(t *te
 // request is never learned, and the child's result stands at no head on the parent's tab
 // although GitHub would name a pull request for that commit in the child's repository.
 func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -2595,6 +2675,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 // will not run again — so the read of the results asks GitHub itself, and the result stands
 // at that head.
 func TestAResultStandsAtItsCommitOnceAPullRequestOpensThere(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESO", "acme/widgets", "Opened after the record")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -2642,6 +2723,7 @@ func TestAResultStandsAtItsCommitOnceAPullRequestOpensThere(t *testing.T) {
 // per refetch for ever, since nothing about such a commit is ever stored
 // (delivery.CommitPullReadStaleAfter).
 func TestTwoResultReadsSpendOneReadThroughOfACommit(t *testing.T) {
+	t.Parallel()
 	handler, _, _, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESC", "acme/widgets", "Bounded")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -2664,6 +2746,7 @@ func TestTwoResultReadsSpendOneReadThroughOfACommit(t *testing.T) {
 // all, and a commit that already heads a pull request attributed to the check's own issue is
 // answered from that row, so neither the record nor the read asks GitHub anything.
 func TestAResultsReadReadsThroughNeitherAnUnseenRepositoryNorAKnownHead(t *testing.T) {
+	t.Parallel()
 	handler, database, _, fake := readThroughGitHub(t, "acme/widgets")
 	hidden := issueInRepository(t, handler, "RESJ", "acme/hidden", "Unreadable")
 	seen := issueInRepository(t, handler, "RESK", "acme/widgets", "Readable")
@@ -2701,6 +2784,7 @@ func TestAResultsReadReadsThroughNeitherAnUnseenRepositoryNorAKnownHead(t *testi
 // tab left open would spend the call again every delivery.CommitPullReadStaleAfter for as long
 // as the result is read.
 func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESP", "acme/widgets", "Pushed past")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -2761,6 +2845,7 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 // read inside the span places the commit elsewhere and asks GitHub nothing, which is what
 // bounds the cost, and a read past the span asks once and stands the result at its head.
 func TestAPullRequestOpenedAtASettledCommitIsSeenOnceTheSpanEnds(t *testing.T) {
+	t.Parallel()
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESS", "acme/widgets", "Opened at a settled commit")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -2831,6 +2916,7 @@ func TestAPullRequestOpenedAtASettledCommitIsSeenOnceTheSpanEnds(t *testing.T) {
 // check by the rule itself, whatever GitHub answers (R4, api/results_comparison.go,
 // readThroughHead).
 func TestAChildsResultOnTheParentsTabAsksGitHubNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	parent := issueInRepository(t, handler, "RESN", "acme/widgets", "Parent")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", siblingChecks)
@@ -2860,6 +2946,7 @@ func TestAChildsResultOnTheParentsTabAsksGitHubNothing(t *testing.T) {
 // the eligibility test skipped for one result must not stand as the answer for the rest: both
 // results at the head stand at it, whichever check recorded them and whenever.
 func TestEveryResultOfAnIssueAtAPullRequestsHeadStandsAtIt(t *testing.T) {
+	t.Parallel()
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESZ", "acme/widgets", "Two checks at one head")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecks)
@@ -2894,6 +2981,7 @@ func TestEveryResultOfAnIssueAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 // is eligible for one, so the parent's results stand at the parent's head and the child's
 // commit costs no call.
 func TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	parent := issueInRepository(t, handler, "RESY", "acme/widgets", "Parent")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", siblingChecks)
@@ -2933,6 +3021,7 @@ func TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck(t *test
 // head, so a failure of either test above is the eligibility test refusing the call and not
 // the read-through failing to repair the result (api/results_comparison.go, readThroughHead).
 func TestACheckWithOneResultAtAPullRequestsHeadStandsAtIt(t *testing.T) {
+	t.Parallel()
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESX", "acme/widgets", "One result")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecks)
@@ -2953,6 +3042,7 @@ func TestACheckWithOneResultAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 // it as a pull request Dispatch holds would leave the result standing at no basis for good.
 // The read asks GitHub and the result stands at the new head.
 func TestAClosedPullRequestsHeadDoesNotHoldOffTheReadThrough(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESW", "acme/widgets", "Opened again from the same head")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecks)
@@ -2975,6 +3065,7 @@ func TestAClosedPullRequestsHeadDoesNotHoldOffTheReadThrough(t *testing.T) {
 // asked what the results say about one commit, and nothing about that question turns on what
 // GitHub holds now. A value that is not a commit of 40 lowercase hex characters is refused.
 func TestResultsReadAtACommitComparesEveryCheckWithThatCommit(t *testing.T) {
+	t.Parallel()
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RESAT", "acme/widgets", "Read at a commit")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -3040,6 +3131,7 @@ func readResultsAt(t *testing.T, handler http.Handler, issue, at string) issueRe
 // The two were one answer before dispatch://INFRA-1522, and a reviewer could not tell a check
 // nothing proves from one Dispatch could not read.
 func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 
@@ -3066,6 +3158,7 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	// 3. A repository that resolves and that the App cannot read.
 	hidden := issueInRepository(t, handler, "NON3", "acme/hidden", "Unreadable")
 	uploadDocument(t, handler, "/api/v1/issues/"+hidden.Key, "verification.md", twoChecks)
+	writeHeadOnBase(t, database, "acme/hidden", 71, headCommit, "merged", hidden.Key, "")
 	unseen := decodeBody[recordedResult](t, recordResult(t, handler, hidden.Key, resultBody("k2", "pass", mergeCommit, nil)))
 	hiddenRead := readResults(t, handler, hidden.Key)
 	comparedNothing(t, hiddenRead, "k2", model.ReasonRepositoryUnreadable, model.PassStandsUnknown)
@@ -3078,7 +3171,7 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	// 4. An issue that resolved to a repository, merged into a branch, and resolves to none
 	// now, its project's default cleared after the merge — the issue whose project's default
 	// was removed, and the issue whose parent moved. This pins the deep review's finding on
-	// #3530: the merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
+	// #3530: the merged row delivery.Attributor.MergeOfIssue reads by issue key alone keeps naming
 	// `integration/x`, so a branch walk chosen before anything tests the repository reached
 	// onNamedBranch with none and answered `unknown`/`read_failed` for every result, against
 	// what the surface's own rule says — an issue that resolves to no repository is never
@@ -3118,6 +3211,7 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 // `no_pull_request_or_branch` and `pass_stands` no; a repository that resolves is every other
 // test of this file, TestPassStandsNamesTheRolesWhosePassesStand among them.
 func TestAResolveThatDidNotAnswerIsUnknownAndNotAVerdict(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 
@@ -3206,12 +3300,14 @@ func TestAResolveThatDidNotAnswerIsUnknownAndNotAVerdict(t *testing.T) {
 	})
 }
 
-// The gate's question over several results of one check. A fail stands for nothing, a pass at
-// a commit no basis names does not stand, and the two passes at the head do, so the check
-// answers yes and names both roles. Rewording the check takes every one of them away: a pass
-// whose check's words moved is no pass that stands (R5), although each result stands at the
-// head exactly as it did, which is the separation the two fields keep.
+// The gate's question over several results of one check. A fail at a commit no basis names
+// stands for nothing, a pass there does not stand either, and the two passes at the head do, so
+// the check answers yes and names both roles. (A pass and a fail at the head itself would read not
+// known, R4.) Rewording the check takes every one of them away: a pass whose check's words moved
+// is no pass that stands (R5), although each result stands at the head exactly as it did, which is
+// the separation the two fields keep.
 func TestPassStandsNamesTheRolesWhosePassesStand(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESPS", "acme/widgets", "Several results")
@@ -3219,7 +3315,7 @@ func TestPassStandsNamesTheRolesWhosePassesStand(t *testing.T) {
 	uploadDocument(t, handler, owner, "verification.md", siblingChecks)
 	writeHead(t, database, "acme/widgets", 63, headCommit, "open", issue.Key)
 
-	recordResult(t, handler, issue.Key, resultBody("k1", "fail", headCommit, map[string]any{"failed": 1}))
+	recordResult(t, handler, issue.Key, resultBody("k1", "fail", newHeadCommit, map[string]any{"failed": 1}))
 	recordResult(t, handler, issue.Key, resultBody("k1", "pass", newHeadCommit, map[string]any{"role": "tester"}))
 	byImplementer := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key,
 		resultBody("k1", "pass", headCommit, nil)))
@@ -3251,6 +3347,7 @@ func TestPassStandsNamesTheRolesWhosePassesStand(t *testing.T) {
 // and its actor, the result itself is unchanged and still stands at the head, and the pass it
 // recorded no longer stands.
 func TestARetractedPassDoesNotStand(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESRT", "acme/widgets", "Retracted")
@@ -3279,12 +3376,113 @@ func TestARetractedPassDoesNotStand(t *testing.T) {
 	}
 }
 
+// respelledCheck is a Verification document as another renderer version stored it, in a
+// spelling no build writes that reads as the tree this build writes otherwise: check k1's
+// paragraph escapes the full stop that ends it, which needs no escape. A check holds paragraphs
+// alone, so this, and not a list, is how its text can be spelled otherwise.
+// respelledCheckParagraph and respelledCheckBlock are the paragraph's and the check's slices of
+// it, as that renderer's build indexed them, and checkParagraph is the paragraph as every build
+// writes it.
+const (
+	checkParagraph          = "The server records a result against a check."
+	respelledCheckParagraph = "The server records a result against a check\\."
+	respelledCheckBlock     = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\n" + respelledCheckParagraph + "\n:::"
+	respelledCheck          = respelledCheckBlock + "\n\n" +
+		":::check{#k3 surface=\"cli\" run=\"go test ./...\"}\n" +
+		"A sibling check nobody reworded.\n" +
+		":::\n"
+)
+
+// respellVerification makes version number of Verification document artifactID, uploaded as
+// respelledCheck, what another renderer version stored and indexed: the version holds
+// respelledCheck, stamped with the renderer version before this build's, and check k1 and its
+// paragraph, changed at that version, carry the sums and excerpts of their slices of it, which
+// document_block_texts records as their texts there. Every other block's slice is the same in
+// both spellings.
+func respellVerification(t *testing.T, database *store.Store, artifactID string, number int) {
+	t.Helper()
+	ctx := context.Background()
+	var written, paragraph string
+	if err := database.Pool.QueryRow(ctx, `
+		select (select text from document_block_texts where artifact_id = $1 and block_id = 'k1' and version = $2),
+		       (select block_id from document_block_texts where artifact_id = $1 and version = $2 and text = $3)
+	`, artifactID, number, checkParagraph).Scan(&written, &paragraph); err != nil {
+		t.Fatalf("read check k1 and its paragraph at version %d: %v", number, err)
+	}
+	if written == respelledCheckBlock {
+		t.Fatalf("this build writes check k1 as %q; the test needs a spelling no build writes", written)
+	}
+	another := pmdoc.RendererVersion - 1
+	storeVersionAs(t, database, artifactID, number, respelledCheck, &another)
+	for id, body := range map[string]string{"k1": respelledCheckBlock, paragraph: respelledCheckParagraph} {
+		indexed, err := database.Pool.Exec(ctx, `
+			update document_blocks set text_sha256 = $3, excerpt = $4
+			where artifact_id = $1 and block_id = $2 and changed_version = $5
+		`, artifactID, id, refs.BlockTextSum(body), text.HeadRunes(body, refs.BlockExcerptRunes), number)
+		if err != nil || indexed.RowsAffected() != 1 {
+			t.Fatalf("index block %s as %q at version %d: %d rows (%v)", id, body, number, indexed.RowsAffected(), err)
+		}
+		recorded, err := database.Pool.Exec(ctx, `
+			update document_block_texts set text = $3 where artifact_id = $1 and block_id = $2 and version = $4
+		`, artifactID, id, body, number)
+		if err != nil || recorded.RowsAffected() != 1 {
+			t.Fatalf("record block %s as %q at version %d: %d rows (%v)", id, body, number, recorded.RowsAffected(), err)
+		}
+	}
+}
+
+// A pass recorded against a check whose version another renderer version stored keeps its
+// words when the next version, which rewords another check, writes the check in this build's
+// spelling: the check's digest moves, but its words did not, and the block index keeps its
+// changed version (refs.BlockIndexing.KeepRespelled), so the pass reads check_words_moved false
+// and stands. A version that rewords the check itself moves its words, and the pass no longer
+// stands.
+func TestAPassKeepsItsChecksWordsAcrossAnotherRenderersSpelling(t *testing.T) {
+	t.Parallel()
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
+		func(string, string) string { return "diverged" })
+	issue := issueInRepository(t, handler, "RESRS", "acme/widgets", "Respelled")
+	owner := "/api/v1/issues/" + issue.Key
+	uploaded := uploadDocument(t, handler, owner, "verification.md", respelledCheck)
+	writeHead(t, database, "acme/widgets", 65, headCommit, "open", issue.Key)
+	respellVerification(t, database, uploaded.Artifact.ID, uploaded.Version.Number)
+
+	pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+	if pass.Result.CheckVersion != uploaded.Version.Number || pass.Result.CheckSHA256 != refs.BlockTextSum(respelledCheckBlock) {
+		t.Fatalf("the pass recorded check version %d and digest %s, want version %d and the digest of %q",
+			pass.Result.CheckVersion, pass.Result.CheckSHA256, uploaded.Version.Number, respelledCheckBlock)
+	}
+
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, "A sibling check nobody reworded.", "A sibling check, reworded.", 1))
+	read := readResults(t, handler, issue.Key)
+	standsAt(t, read, "k1", pass.Result.ID,
+		"a pass recorded against the check as another renderer version spelled it", model.CommitAtBasis, false)
+	check := checkOf(t, read, "k1")
+	if check.PassStands.Answer != model.PassStandsYes {
+		t.Errorf("the check answers pass_stands %+v after another check was reworded, want yes", check.PassStands)
+	}
+	if check.Version != pass.Result.CheckVersion || check.SHA256 == pass.Result.CheckSHA256 {
+		t.Errorf("the check is at version %d with digest %s, want the pass's version %d under a digest other than the pass's",
+			check.Version, check.SHA256, pass.Result.CheckVersion)
+	}
+
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, respelledCheckParagraph, "The server records a result against a check, reworded.", 1))
+	reworded := readResults(t, handler, issue.Key)
+	standsAt(t, reworded, "k1", pass.Result.ID, "a pass recorded before the check was reworded", model.CommitAtBasis, true)
+	if stood := checkOf(t, reworded, "k1").PassStands; stood.Answer != model.PassStandsNo {
+		t.Errorf("the reworded check answers pass_stands %+v, want no: a pass whose words moved does not stand", stood)
+	}
+}
+
 // A check CI proves takes no result from any role: a tester's and an implementer's are both
 // refused, 409 CHECK_PROVED_BY_CI naming the block and the check run, and nothing is stored. The
 // refusal comes before the commit is asked of GitHub: the commit here is one the repository does
 // not hold, which would otherwise be refused as RESULT_COMMIT_UNKNOWN. The same call against an
 // ordinary check of the same document is recorded.
 func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHubHolding(t, map[string]bool{"acme/widgets": true},
 		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESCI", "acme/widgets", "Proved by CI")
@@ -3317,6 +3515,7 @@ func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
 // settlement takes the inert ci_check off the block holding results, with one block.invalid
 // naming the fourth rule, and keeps its sibling's.
 func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
+	t.Parallel()
 	documents, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "RESCR", "Raced", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
@@ -3362,13 +3561,13 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 // checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
 // read of a check CI proves asks for it, and the count of the pages asked for each commit. A
 // test sets the runs of a commit, a status and body every read answers in place of the listing,
-// or a hold that keeps every read waiting until its caller gives up.
+// or a hold that keeps every read waiting until its caller gives up (ciHeldRead).
 type checkRunsFake struct {
 	mu        sync.Mutex
 	runs      map[string][]map[string]any
 	fault     int
 	faultBody string
-	hold      bool
+	hold      *ciHeldRead
 	asked     map[string]int
 }
 
@@ -3396,11 +3595,15 @@ func (f *checkRunsFake) failWithBody(status int, body string) {
 	f.fault, f.faultBody = status, body
 }
 
-// holdEveryRead makes every read wait until its caller gives up.
-func (f *checkRunsFake) holdEveryRead() {
+// holdEveryRead makes every read wait until its caller gives up, or until t ends, and answers the
+// hold, which says when a read reached GitHub and when its caller gave up.
+func (f *checkRunsFake) holdEveryRead(t *testing.T) *ciHeldRead {
+	t.Helper()
+	held := newCIHeldRead(t)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.hold = true
+	f.hold = held
+	return held
 }
 
 // reads is how many pages of sha's check runs GitHub has been asked for.
@@ -3433,11 +3636,8 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	f.asked[sha]++
 	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
 	f.mu.Unlock()
-	if hold {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
+	if hold != nil {
+		hold.wait(r)
 		return
 	}
 	if fault != 0 {
@@ -3494,24 +3694,18 @@ func ciRunURL(id int64) string {
 }
 
 // issueOfProject is a further issue of project with verification as its Verification document.
+// The route's force field permits deliberately similar fixtures. A POSSIBLE_DUPLICATE refusal
+// is correct for their shared wording, not evidence of a flaky create.
 func issueOfProject(t *testing.T, handler http.Handler, project, title, verification string) string {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
-		map[string]any{"project": project, "title": title, "spec": "A spec\n"}, "alice")
+		map[string]any{"project": project, "title": title, "spec": "A spec\n", "force": true}, "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create issue of %s: status=%d body=%s", project, response.Code, response.Body.String())
 	}
 	key := decodeBody[model.Issue](t, response).Key
 	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", verification)
 	return key
-}
-
-// shortenCIReadDeadline sets the bound of one head's check-runs read for the test.
-func shortenCIReadDeadline(t *testing.T, deadline time.Duration) {
-	t.Helper()
-	before := ciReadDeadline
-	ciReadDeadline = deadline
-	t.Cleanup(func() { ciReadDeadline = before })
 }
 
 // ciVerdictLineOf is the pull-request body line of a check written by ciCheckBlock whose run
@@ -3576,6 +3770,7 @@ func assertDerived(t *testing.T, check model.CheckBlock, id int64, run, conclusi
 // timed_out and a conclusion the list does not name are a fail. The named run on page two of a
 // head carrying 101 runs is read, because the read pages.
 func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issueInRepository(t, handler, "RESCO", "acme/widgets", "Outcomes")
 	others := make([]map[string]any, 100)
@@ -3652,8 +3847,13 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 
 // A read Dispatch could not make is no verdict: GitHub's 500, a read held past the deadline and
 // a deployment holding no App key each leave the check with no result and a detail saying what
-// GitHub answered, never a pass and never a fail.
+// GitHub answered, never a pass and never a fail. The held read is cut at the deadline: the fake
+// answers a held read nothing until its caller gives up, the GitHub client's own bound on a call
+// (githubapp.RequestTimeout) is raised past any run, so the deadline the read's context carries is
+// the one thing that can end it, and the detail names that deadline.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
+	// Not parallel: it writes the package variables ciReadDeadline (shortenCIReadDeadline) and
+	// githubapp.RequestTimeout.
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
@@ -3665,13 +3865,22 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 		"status 500", "Server Error at the check runs of "+headCommit)
 
 	fake.failWith(0)
-	fake.holdEveryRead()
-	shortenCIReadDeadline(t, 300*time.Millisecond)
-	started := time.Now()
-	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), "no answer within 300ms")
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the held read answered after %s, want it cut at the deadline", elapsed)
+	// A read held until its caller gives up: the test ends the read's bound as ciReadDeadline would,
+	// once the read has reached GitHub, so no clock decides whether the read ended in time.
+	bounds := holdCIReadBounds(t)
+	held := fake.holdEveryRead(t)
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
+	}()
+	ciAwait(t, "the read to reach GitHub", held.entered)
+	bounds.expire(t)
+	ciAwait(t, "the held read to see its context end", held.cancelled)
+	response := ciAwait(t, "the results read to answer", answered)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the results of %s: status=%d body=%s", issue.Key, response.Code, response.Body.String())
 	}
+	assertUnread(t, checkOf(t, decodeBody[issueResults](t, response), "c1"), "no answer within "+ciReadDeadline.String())
 
 	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {
@@ -3689,6 +3898,7 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 // names the status alone for a body that is not JSON, and is cut to 2,000 runes where the message
 // itself is longer.
 func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCB", "acme/widgets", "Large refusal")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
@@ -3744,6 +3954,7 @@ func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
 // server and a database of its own, so no limit one case's 429 leaves recorded holds a read of
 // the other.
 func TestCIResultDetailNamesTheStatusAndMessageOfARateLimit(t *testing.T) {
+	t.Parallel()
 	// fields is the JSON GitHub answers a limit with, up to its closing brace: its message first.
 	const fields = `{"message":"API rate limit exceeded for installation ID 1.","documentation_url":"https://docs.github.com/rest/rate-limit"`
 	padding := strings.Repeat("x", 1<<16)
@@ -3776,6 +3987,7 @@ func TestCIResultDetailNamesTheStatusAndMessageOfARateLimit(t *testing.T) {
 // failure is a fail. The first case lists the lower id first and the second the higher, so
 // neither the first match nor the last answers both.
 func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCH", "acme/widgets", "Retried")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
@@ -3797,6 +4009,7 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 // seen in the editor, and docs.CarriesCICheck already trims the value, so the write path and the
 // read must agree on which run the block names (dispatch://INFRA-3204, tester round 1).
 func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	keys := []string{issueInRepository(t, handler, "RESCP", "acme/widgets", "Padded 0").Key}
 	for index, padded := range []string{" " + ciCheckRun, ciCheckRun + " ", "\t" + ciCheckRun + " "} {
@@ -3836,6 +4049,7 @@ func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T
 // spaces names no run: the check is an ordinary one, with no ci member and no result, and GitHub
 // is asked for nothing.
 func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issueInRepository(t, handler, "RESCT", "acme/widgets", "Trimmed")
 
@@ -3869,6 +4083,7 @@ func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
 // the merged pull request of the highest number is read: the answer keeps speaking after the
 // merge, current at that merged head. The older merged head is never read.
 func TestCIResultIsReadAtTheOpenHeadOverAnOlderMergedOne(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCM", "acme/widgets", "Open over merged")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
@@ -3897,6 +4112,7 @@ func TestCIResultIsReadAtTheOpenHeadOverAnOlderMergedOne(t *testing.T) {
 // One answer reads one head's check runs once, however many checks CI proves at it, and an issue
 // holding no check CI proves asks GitHub for none at all.
 func TestCIResultReadsOneHeadOnceAndAnIssueWithoutOneNotAtAll(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESC3", "acme/widgets", "Three checks")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
@@ -3928,6 +4144,7 @@ func TestCIResultReadsOneHeadOnceAndAnIssueWithoutOneNotAtAll(t *testing.T) {
 // The run's output title and summary are carried together cut to 2,000 runes, counted as runes
 // and not bytes, between the conclusion and the run's URL, and the answer is not refused.
 func TestCIResultCutsTheRunsOutputToTwoThousandRunes(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCL", "acme/widgets", "Long summary")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
@@ -3952,6 +4169,7 @@ func TestCIResultCutsTheRunsOutputToTwoThousandRunes(t *testing.T) {
 // reads no_head, and GitHub is asked nothing. So does an issue whose one pull request closed
 // without merging, whose head is no head.
 func TestCIResultIsNoHeadForAnIssueWithNoPullRequest(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCN", "acme/widgets", "No pull request")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
@@ -3978,6 +4196,7 @@ func TestCIResultIsNoHeadForAnIssueWithNoPullRequest(t *testing.T) {
 // the old one. Once Dispatch holds the new head, the run at that head decides, and a head no run
 // of that name has reached yet holds no result.
 func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCC", "acme/widgets", "Currency")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
@@ -4007,6 +4226,377 @@ func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
 	}
 }
 
+// TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter: a read-only caller's read of an
+// issue's results reads GitHub as a writer's read does, answers what a writer's read answers on
+// the same stored rows, stores nothing — no pull_request_heads row, no branch_commits row and no
+// event — and keeps nothing after its request (plan D32). So a second read-only read asks GitHub
+// all over again, as a writer's read with no row of its own would, and a writer's read after both
+// still asks GitHub and stores exactly what it stores at the base.
+//
+// Each row reads one issue three times on one state (readOnlyThenWriter). Since the read-only
+// reads store nothing and keep nothing, the second reads the state the first read, and the
+// writer's read reads the very state they read, which is what lets its answer stand as the one
+// theirs must equal.
+func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
+	t.Parallel()
+	t.Run("a before_merge result at the head of a pull request no row holds", func(t *testing.T) {
+		rig, github := readOnlyResultsRig(t)
+		issue := issueInRepository(t, rig.handler, "RORP", "acme/widgets", "Opened after the record")
+		uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+		recorded := decodeBody[recordedResult](t, recordResult(t, rig.handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+		// The pull request opens at the result's commit after the record, and nothing tells
+		// Dispatch: no row heads the commit, and the read asks GitHub.
+		github.answersPulls(openPullAt(91, issue.Key))
+
+		readOnly, writer := readOnlyThenWriter(t, rig, github, issue.Key, readOnlyDrive{
+			pullAsks: 1,
+			// The writer stores the pull request's head row and records its attribution to the
+			// issue: one event.
+			stored: storedRows{heads: 1, events: 1},
+		})
+		for _, answered := range []struct {
+			who  string
+			read issueResults
+		}{{"the read-only read", readOnly.read}, {"the writer's read", writer.read}} {
+			stands := standsAt(t, answered.read, "k1", recorded.Result.ID,
+				answered.who+" of a result at the head of a pull request no row held", model.CommitAtBasis, false)
+			if stands.Basis == nil || stands.Basis.PullRequest == nil || *stands.Basis.PullRequest != 91 {
+				t.Fatalf("%s stands the result at %+v, want pull request 91", answered.who, stands.Basis)
+			}
+		}
+	})
+
+	t.Run("after_merge and default_branch results beside a merge the read learns", func(t *testing.T) {
+		rig, github := readOnlyResultsRig(t)
+		issue := issueInRepository(t, rig.handler, "RORB", "acme/widgets", "Merged into an integration branch")
+		uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md",
+			":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\nThe server records a result against a check.\n:::\n\n"+
+				afterMergeAndDefaultChecks)
+		record := func(check, commit string) string {
+			return decodeBody[recordedResult](t, recordResult(t, rig.handler, issue.Key, resultBody(check, "pass", commit, nil))).Result.ID
+		}
+		atHead := record("k1", headCommit)
+		atMerge := record("k4", baseMergeCommit)
+		onIntegration := record("k4", integrationCommit)
+		onTrunk := record("k5", mergeCommit)
+		// The integration branch really landed on main. Its final head contains the work's
+		// merge, and each recorded result holds the merge required on its own branch.
+		landingMerge := strings.Repeat("f1", 20)
+		landingAt := time.Date(2026, time.November, 6, 7, 15, 8, 0, time.UTC)
+		if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+			Repo: "acme/widgets", Number: 51, HeadSHA: baseMergeCommit,
+			HeadRef: "integration/x", BaseRef: "main", State: "merged",
+			MergeCommitSHA: landingMerge, MergedAt: &landingAt, EventAt: &landingAt,
+		}); err != nil {
+			t.Fatalf("store the integration branch's landing on main: %v", err)
+		}
+		if _, err := rig.database.Pool.Exec(context.Background(), `
+			insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at)
+			values ('acme/widgets', $1, $2, true, $5), ('acme/widgets', $3, $4, true, $5)
+		`, integrationCommit, baseMergeCommit, mergeCommit, landingMerge, landingAt); err != nil {
+			t.Fatalf("store the fixture's commit-history facts: %v", err)
+		}
+		// GitHub names one pull request for the head: merged into integration/x, its merge commit
+		// baseMergeCommit, which no event told Dispatch of. A writer's read stores its head row and
+		// the merge commit's yes on integration/x (delivery.UpsertPullRequestHead), and measures the
+		// after_merge check against integration/x and then main. Two compare reads are left:
+		// integration/x carries integrationCommit and main carries mergeCommit. The merge commit is
+		// answered by the merge itself and costs no compare read.
+		github.answersPulls(func(repo, sha string) string {
+			if sha != headCommit {
+				return `[]`
+			}
+			return fmt.Sprintf(`[{"number":50,"title":%q,"body":"","html_url":"https://github.com/%s/pull/50",
+				"state":"closed","merged_at":"2026-11-05T07:15:08Z","merge_commit_sha":%q,
+				"updated_at":"2026-11-05T07:15:08Z",
+				"head":{"ref":"legion/x","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"integration/x"}}]`,
+				issue.Key+" the work", repo, baseMergeCommit, headCommit, repo)
+		})
+		github.answersCompare(func(base, head string) string {
+			if (base == "integration/x" && head == integrationCommit) || (base == "main" && head == mergeCommit) {
+				return "behind"
+			}
+			return "diverged"
+		})
+
+		readOnly, writer := readOnlyThenWriter(t, rig, github, issue.Key, readOnlyDrive{
+			pullAsks:    1,
+			compareAsks: 2,
+			// The head row and its attribution event, and three branch answers: the merge's own
+			// yes and the two compare reads'. A branch answer records no event at the base.
+			stored: storedRows{heads: 1, branches: 3, events: 1},
+		})
+		for _, answered := range []struct {
+			who  string
+			read issueResults
+		}{{"the read-only read", readOnly.read}, {"the writer's read", writer.read}} {
+			if compared := checkOf(t, answered.read, "k4").ComparedWith; len(compared) != 2 ||
+				compared[0].Branch != "integration/x" || compared[1].Branch != "main" {
+				t.Fatalf("%s compared the after_merge check with %+v, want integration/x and then main", answered.who, compared)
+			}
+			stands := standsAt(t, answered.read, "k1", atHead, answered.who+" of the merged head", model.CommitAtBasis, false)
+			if stands.Basis == nil || stands.Basis.PullRequest == nil || *stands.Basis.PullRequest != 50 {
+				t.Fatalf("%s stands the merged head at %+v, want pull request 50", answered.who, stands.Basis)
+			}
+			for _, branched := range []struct{ check, result, what, branch string }{
+				{"k4", atMerge, "the merge commit", "integration/x"},
+				{"k4", onIntegration, "a commit integration/x carries", "integration/x"},
+				{"k5", onTrunk, "a commit main carries", "main"},
+			} {
+				stands := standsAt(t, answered.read, branched.check, branched.result,
+					answered.who+" of "+branched.what, model.CommitAtBasis, false)
+				if stands.Basis == nil || stands.Basis.Branch != branched.branch {
+					t.Fatalf("%s stands %s at %+v, want the branch %s", answered.who, branched.what, stands.Basis, branched.branch)
+				}
+			}
+		}
+	})
+}
+
+// readOnlyResultsGitHub is the GitHub TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter
+// reads. The App is installed on acme/widgets alone, whose default branch is main and which holds
+// every commit asked about. A commit's pull requests are what the test set last, none until it
+// sets any; each pull request's commit messages are an empty page; and a compare read answers the
+// status the test set last, diverged until it sets one. It counts the two reads a results read
+// makes for its answer: a commit's pull requests, and a compare.
+type readOnlyResultsGitHub struct {
+	mu          sync.Mutex
+	pulls       func(repo, sha string) string
+	compare     func(base, head string) string
+	pullAsks    int
+	compareAsks int
+}
+
+// answersPulls sets the JSON array of pull requests GitHub names for a commit from now on.
+func (g *readOnlyResultsGitHub) answersPulls(body func(repo, sha string) string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pulls = body
+}
+
+// answersCompare sets the compare status GitHub answers for a branch and a commit from now on.
+func (g *readOnlyResultsGitHub) answersCompare(status func(base, head string) string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.compare = status
+}
+
+// asks is how often GitHub has been asked for a commit's pull requests, and for a compare.
+func (g *readOnlyResultsGitHub) asks() (pulls, compares int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pullAsks, g.compareAsks
+}
+
+// readOnlyResultsRig is the package's test server with the stub broker beside it, whose GitHub is
+// a readOnlyResultsGitHub.
+func readOnlyResultsRig(t *testing.T) (*brokerTokenRig, *readOnlyResultsGitHub) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	github := &readOnlyResultsGitHub{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("owner")+"/"+r.PathValue("repo") != "acme/widgets" {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
+	})
+	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"sha":%q}`, r.PathValue("sha"))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
+		github.mu.Lock()
+		github.pullAsks++
+		answer := github.pulls
+		github.mu.Unlock()
+		if answer == nil {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		fmt.Fprint(w, answer(r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("sha")))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `[]`)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
+		base, head, _ := strings.Cut(r.PathValue("basehead"), "...")
+		github.mu.Lock()
+		github.compareAsks++
+		status := github.compare
+		github.mu.Unlock()
+		answer := "diverged"
+		if status != nil {
+			answer = status(base, head)
+		}
+		fmt.Fprintf(w, `{"status":%q}`, answer)
+	})
+	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
+	rig := newBrokerTokenRigOn(t, testServerOptions{
+		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
+		githubAPIBase: upstream,
+	})
+	return rig, github
+}
+
+// storedRows counts what a read of an issue's results can store: pull request head rows, branch
+// answers and events.
+type storedRows struct {
+	heads, branches, events int
+}
+
+func countStoredRows(t *testing.T, database *store.Store) storedRows {
+	t.Helper()
+	var rows storedRows
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from pull_request_heads), (select count(*) from branch_commits),
+			(select count(*) from events)
+	`).Scan(&rows.heads, &rows.branches, &rows.events); err != nil {
+		t.Fatalf("count the stored rows: %v", err)
+	}
+	return rows
+}
+
+// readOnlyDrive is what one read of an issue costs GitHub and what a writer's read stores, where
+// nothing holds the read off: the reads of a commit's pull requests, the compare reads, and the
+// rows.
+type readOnlyDrive struct {
+	pullAsks, compareAsks int
+	stored                storedRows
+}
+
+// timedResultsRead is one read of an issue's results: the body as sent, decoded, and the moments
+// just before the request went out and just after its answer came back.
+type timedResultsRead struct {
+	body          string
+	read          issueResults
+	before, after time.Time
+}
+
+func readResultsTimed(t *testing.T, what string, serve func() *httptest.ResponseRecorder) timedResultsRead {
+	t.Helper()
+	before := time.Now()
+	response := serve()
+	after := time.Now()
+	if response.Code != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s", what, response.Code, response.Body.String())
+	}
+	return timedResultsRead{body: response.Body.String(), read: decodeBody[issueResults](t, response), before: before, after: after}
+}
+
+// readOnlyThenWriter reads issueKey's results three times on one state: with a read-only token,
+// with it again, and as a writer (alice), once every document has settled so nothing else writes
+// meanwhile. Each read-only read must make the GitHub reads drive names and store nothing: the
+// first keeps nothing after its request, so the second asks GitHub all over again. The writer's
+// read must still make the GitHub reads drive names and store the rows it names, as at the base.
+// Each read reads the state the first read-only read read, since the read-only reads stored
+// nothing, so each answer must be the first read-only answer, but for the moment each read learned
+// a pull request's head, which is each read's own clock (answerButReadTimes). It answers the first
+// read-only read and the writer's.
+func readOnlyThenWriter(
+	t *testing.T, rig *brokerTokenRig, github *readOnlyResultsGitHub, issueKey string, drive readOnlyDrive,
+) (readOnly, writer timedResultsRead) {
+	t.Helper()
+	caller := newBrokerCaller(t)
+	const token = "a-token-that-only-reads"
+	rig.broker.Says(token, readOnlyToken(caller.jkt))
+	path := "/api/v1/issues/" + issueKey + "/results"
+	awaitSettledDocuments(t, rig.database)
+	before := countStoredRows(t, rig.database)
+	drives := []struct {
+		what  string
+		serve func() *httptest.ResponseRecorder
+		drive readOnlyDrive
+	}{
+		{"the first read-only read", func() *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, http.MethodGet, path, token, nil))
+		}, readOnlyDrive{pullAsks: drive.pullAsks, compareAsks: drive.compareAsks}},
+		{"the second read-only read", func() *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, http.MethodGet, path, token, nil))
+		}, readOnlyDrive{pullAsks: drive.pullAsks, compareAsks: drive.compareAsks}},
+		{"the writer's read", func() *httptest.ResponseRecorder {
+			return dispatchRequest(t, rig.handler, http.MethodGet, path, nil, "alice")
+		}, drive},
+	}
+	reads := make([]timedResultsRead, 0, len(drives))
+	for _, step := range drives {
+		pulls, compares := github.asks()
+		reads = append(reads, readResultsTimed(t, step.what, step.serve))
+		pullsAfter, comparesAfter := github.asks()
+		if pullsAfter-pulls != step.drive.pullAsks || comparesAfter-compares != step.drive.compareAsks {
+			t.Fatalf("%s asked GitHub for a commit's pull requests %d times and made %d compare reads, want %d and %d",
+				step.what, pullsAfter-pulls, comparesAfter-compares, step.drive.pullAsks, step.drive.compareAsks)
+		}
+		after := countStoredRows(t, rig.database)
+		stored := storedRows{heads: after.heads - before.heads, branches: after.branches - before.branches, events: after.events - before.events}
+		if stored != step.drive.stored {
+			t.Fatalf("%s left %d more pull request heads, %d more branch answers and %d more events, want %d, %d and %d",
+				step.what, stored.heads, stored.branches, stored.events,
+				step.drive.stored.heads, step.drive.stored.branches, step.drive.stored.events)
+		}
+	}
+	first := answerButReadTimes(t, "the first read-only read", reads[0])
+	if second := answerButReadTimes(t, "the second read-only read", reads[1]); second != first {
+		t.Fatalf("the second read-only read answered\n%s\nwant the first's answer on the same state\n%s", second, first)
+	}
+	if writer := answerButReadTimes(t, "the writer's read", reads[2]); writer != first {
+		t.Fatalf("the read-only read answered\n%s\nwant the writer's answer on the same state\n%s", first, writer)
+	}
+	return reads[0], reads[2]
+}
+
+// answerButReadTimes is a read's answer as JSON with each moment a pull request head was read at
+// cleared, once that moment is shown to be the read's own: within the read, to the microsecond
+// the database keeps. Every other member is as the read answered it.
+func answerButReadTimes(t *testing.T, who string, answered timedResultsRead) string {
+	t.Helper()
+	var read issueResults
+	if err := json.Unmarshal([]byte(answered.body), &read); err != nil {
+		t.Fatalf("decode %s: %v", who, err)
+	}
+	clearReadTime := func(basis *model.CheckBasis) {
+		if basis == nil || basis.LearnedAt == nil || basis.LearnedAt.Kind != model.BasisLearnedReadAt {
+			return
+		}
+		if at := basis.LearnedAt.At; at.Before(answered.before.Truncate(time.Microsecond)) || at.After(answered.after) {
+			t.Fatalf("%s learned the head %s at %s, want a moment of its own, between %s and %s",
+				who, basis.Commit, at, answered.before, answered.after)
+		}
+		basis.LearnedAt.At = time.Time{}
+	}
+	for index := range read.Checks {
+		check := &read.Checks[index]
+		for basis := range check.ComparedWith {
+			clearReadTime(&check.ComparedWith[basis])
+		}
+		for subject := range check.PassStands.Subjects {
+			clearReadTime(&check.PassStands.Subjects[subject].Basis)
+		}
+		for result := range check.Results {
+			if stands := check.Results[result].CommitStands; stands != nil {
+				clearReadTime(stands.Basis)
+			}
+		}
+	}
+	encoded, err := json.Marshal(read)
+	if err != nil {
+		t.Fatalf("encode %s: %v", who, err)
+	}
+	return string(encoded)
+}
+
 // resultRowsOn is how many check_results rows the check's issue key holds.
 func resultRowsOn(t *testing.T, database *store.Store, key string) int {
 	t.Helper()
@@ -4030,6 +4620,7 @@ func resultRowsOn(t *testing.T, database *store.Store, key string) int {
 // do. Read as a read that did not answer, the result would be stored under acme/tools, at a
 // commit no readable repository was shown to hold, or refused for a retry no retry can answer.
 func TestALinkedPullRequestDispatchCannotReadCountsAsNoLink(t *testing.T) {
+	t.Parallel()
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	linked := &linkedGitHub{
@@ -4084,6 +4675,7 @@ func TestALinkedPullRequestDispatchCannotReadCountsAsNoLink(t *testing.T) {
 // whole reason to its first 1024 bytes, is the bound that acts on it: the refusal holds the start
 // of the page and says it was cut.
 func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
+	t.Parallel()
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	for _, row := range []struct {
@@ -4180,6 +4772,7 @@ func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 // again, and nothing is stored. Stored under acme/widgets, as a record whose every linked read
 // answered is, the result would sit at a commit no read showed any repository to hold.
 func TestAnUnreadOwnRepositoryBesideALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
+	t.Parallel()
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	linked := &linkedGitHub{
@@ -4225,6 +4818,7 @@ func TestAnUnreadOwnRepositoryBesideALinkedReadThatDidNotAnswerRefusesTheRecordF
 // stored, since the links are read only where GitHub does not say the issue's own repository
 // holds the commit: so nothing the record reads before the links fails on the renamed table.
 func TestAFailedReadOfTheLinkedRepositoriesRefusesTheRecord(t *testing.T) {
+	t.Parallel()
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	for _, row := range []struct {
@@ -4289,6 +4883,7 @@ func TestAFailedReadOfTheLinkedRepositoriesRefusesTheRecord(t *testing.T) {
 // read it, where GitHub hides acme/tools from it. The `after_merge` result at a commit of
 // acme/tools its main does not carry walks acme/tools' main and is at another commit of it.
 func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
+	t.Parallel()
 	const (
 		// oldCommit is a commit acme/tools holds that no pull request heads, offBranch one no
 		// branch of acme/tools carries, and ownCommit a commit of acme/widgets that heads no
@@ -4303,14 +4898,16 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 				"acme/widgets": {ownCommit},
 				"acme/tools":   {oldCommit, offBranch, headCommit},
 			},
-			pulls: map[string]string{"acme/tools#7": "open"},
+			pulls: map[string]string{"acme/tools#7": "merged"},
+			merged: map[string]linkedMerge{"acme/tools#7": {title: "The linked work", headRef: "work", headSHA: headCommit,
+				base: "main", mergeCommit: headCommit, mergedAt: "2026-11-20T12:00:00Z"}},
 			heads: map[string]int{},
 		}
 		handler, database := linkedRepositoriesGitHub(t, linked)
 		issue := issueInRepository(t, handler, "RELS", "acme/widgets", "Answers that name the linked repository").Key
 		uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 		linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
-		writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+		writeKnownMergeOnBase(t, database, "acme/tools", 7, headCommit, "", "main", headCommit)
 
 		atOld := recordStored(t, handler, issue, "k1", oldCommit)
 		own := recordStored(t, handler, issue, "k1", ownCommit)
@@ -4358,6 +4955,7 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 // that name: its halves would go into the paths as they are, and `..` asks about a path above
 // the repository's, so the read splits the name with refs.SplitGitHubRepo first.
 func TestACIReadOfAStoredHeadRowSendsGitHubNoNameItDoesNotAllow(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)

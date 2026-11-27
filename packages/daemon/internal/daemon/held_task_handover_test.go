@@ -42,6 +42,7 @@ const (
 // (supervise's Deps.RootTask, the daemon's rootTask), and what the record still shows in this
 // root's tree is what goes.
 func TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild(t *testing.T) {
+	t.Parallel()
 	rig := newHeldTaskRig(t)
 	rig.waitForSlot()
 	onTheRoot := rig.decide(heldTaskRoot)
@@ -102,6 +103,7 @@ func TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild(t *testing.T)
 // claim (supervise.Claim.DeliveredRows) so no retry gives it again, and a prompt would tell this
 // architect a decision of a tree it no longer holds.
 func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) {
+	t.Parallel()
 	rig := newHeldTaskRig(t)
 	rig.waitForSlot()
 	onTheChild := rig.decide(heldTaskChild)
@@ -147,6 +149,7 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 // The control is the same delivery of no entry, which a release before the architect held an
 // entry queued, and whose narrowing is the decisions' own text alone.
 func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -177,8 +180,9 @@ func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t 
 		key, kept.Ref, string(kept.Decision), kept.Actor, kept.At, string(token), replaced.Ref, at.Add(time.Hour)); err != nil {
 		t.Fatalf("keep the decisions of %s, the first held by the architect's task: %v", key, err)
 	}
+	decided, _ := workflow.KeptDecisionsTask(workflow.KeptGates{}, steps, key, named)
 	derived := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
-		Decided: workflow.KeptDecisionsTask(key, named)})
+		Decided: decided})
 	if !strings.Contains(derived, workflow.ArchitectCarriedPhaseLabel) {
 		t.Fatalf("the derived task = %q, want the carried shape: the case's premise", derived)
 	}
@@ -199,7 +203,7 @@ func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t 
 		}
 		return task
 	}
-	stays := workflow.KeptDecisionsTask(key, record.KeptDecisions{Decisions: []record.DecisionMark{kept}})
+	stays, _ := workflow.KeptDecisionsTask(workflow.KeptGates{}, steps, key, record.KeptDecisions{Decisions: []record.DecisionMark{kept}})
 	task := narrow(1)
 	want := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
 		Decided: stays})
@@ -344,7 +348,8 @@ func (r *heldTaskRig) decide(issue string) string {
 			return err
 		}
 		outcome, err = record.RelayParkedDecision(r.ctx, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: r.at}, 0, "", nil)
+			record.ParkedDecision{Ref: ref, Decision: record.DecisionAskAnswered,
+				Actor: "user:alice", At: r.at}, record.Notice{}, nil)
 		return err
 	}); err != nil {
 		r.t.Fatalf("keep the decision %s: %v", ref, err)

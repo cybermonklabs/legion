@@ -1,8 +1,14 @@
-import { expect, test } from "bun:test";
-
+import { beforeAll, expect, test } from "bun:test";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { NodeAnswer, TreeNode } from "./issue-tree";
 import { threadMarks } from "./outline-thread-read";
 import type { NodeType } from "./page-words";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const KEY = "CORE-1";
 

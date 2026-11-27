@@ -24,6 +24,7 @@ const otherProjectRole = "legion-infra-reviewer"
 // which shows the observer sees a delivery to that holder; and the edge's publish on INFRA's own
 // form of the lane is refused by the server.
 func TestAnEdgeRoleMessageReachesNoHolderOfAnotherProjectsRole(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLiveRig(t, edgeLiveGrant(t))
 	shared := rig.startShared(t)
 	shared.waitHealthy(t)
@@ -34,7 +35,7 @@ func TestAnEdgeRoleMessageReachesNoHolderOfAnotherProjectsRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registerConsumerSession(shared.port, holder); err != nil {
+	if _, err := registerConsumerSession(shared.port, holder); err != nil {
 		t.Fatal(err)
 	}
 	postListener(t, shared.port, "/v1/roles/set", `{"session_id":"`+holder+`","role":"`+otherProjectRole+`"}`)

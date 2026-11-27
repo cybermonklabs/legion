@@ -110,9 +110,17 @@ export type StaleExemption = {
  * the suite no longer holds, or one naming a row that now drives a browser — so this list cannot
  * quietly grow stale.
  *
- * It ships empty: every row of the suite drives a browser.
+ * It holds one entry: `artifact-dry-run.e2e.ts`'s table, whose claim needs the real command as its
+ * own process and a real Dispatch together.
  */
-export const exemptions: readonly Exemption[] = [];
+export const exemptions: readonly Exemption[] = [
+  {
+    file: "artifact-dry-run.e2e.ts",
+    title: "combination",
+    reason:
+      "`dispatch artifact --dry-run` is held to the call, each run of the real command its own process against a real Dispatch, over every row of api/testdata/text-refusals.json: a bun test has only a fake Dispatch and a Go test has no command, so no other layer holds both halves of the claim",
+  },
+];
 
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */

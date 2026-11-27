@@ -1,0 +1,21 @@
+kind: Changed
+body: |-
+  The release of a pod no claim owns and the close of a left pod with no live claim delete the
+  pod's disk only after a read of its workspace finds nothing that no branch or tag on origin holds
+  (R6 of #5285). No role process runs in such a pod, so the pod's launcher makes the read, with
+  the count a role's shim makes: its hello says `readsWorkspace`, and it answers the
+  `workspace-work` frame on its own connection. The release queues that check before its teardown,
+  and the close queues it alone and suspends the Sandbox only after a clean read, fenced on the
+  turn start the pass read. A read that finds work keeps the pod (`unowned_unpushed_work`) until a
+  start or a turn of a claim of the issue after that read, when the pod is read again; a read that
+  cannot be made, such as a pod whose launcher predates the read, keeps it too
+  (`unowned_workspace_unread`), asked again after an hour or a start. The issue's architect
+  gets one `workspace-kept` notice for each pod kept so, naming each claim's state and what the read
+  found, a failed read's error in quotes; where that architect will not hold its role again, the
+  controller gets the notice instead. The daemon pushes and saves nothing. A release of a pod whose
+  Sandbox keeps a volume the issue's next pod mounts deletes no disk and reads nothing, whatever
+  earlier read failed. The launcher runs the read's jj with an environment and a home of the read's
+  own, so jj loads no user, repository or workspace configuration, and behind the guards the
+  daemon's own jj commands run: a workspace that is not where the layout puts it, or whose
+  `.jj/repo` names another repository, is not read, and a legacy configuration file jj would
+  migrate is removed before the read.

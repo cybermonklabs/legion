@@ -3,7 +3,7 @@ import { act } from "@testing-library/react";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Comment } from "../../api/types";
-import { KEY } from "./decisions-filter/decisions-fixtures";
+import { KEY } from "../decision-card/decision-fixture";
 
 /**
  * What the outline's unit tests share (`IssueTree.test.tsx`, `outline-reads.test.tsx`, and the

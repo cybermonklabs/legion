@@ -29,6 +29,7 @@ import (
 // Both closes are driven here against the real Dispatch server, each with one unrelated event
 // between the row's read and its write, and each must end with Dispatch showing done.
 func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		close func(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string)
@@ -49,7 +50,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 			// status is untouched, and Dispatch has moved the issue's sequence on. The merge's
 			// close carries no reason, so its write is refused ISSUE_CHANGED and its retry decides;
 			// close_root's posts its reason and reads the issue after it, so its write lands first.
-			client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+			client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 				dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "any news?"}, nil)
 			}}
 			runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client,
@@ -76,6 +77,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 // that one: writing it would close the issue the person just reopened. The row names the
 // generation it closed, so its retry reads the record and finishes having written nothing.
 func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "in_progress")
@@ -86,7 +88,7 @@ func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *
 
 	reopenTheIssue(t, pool, records, issue)
 
-	client := &interleaving{Client: dispatch.New(baseURL, token), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "reopening this"}, nil)
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client,
@@ -123,6 +125,7 @@ func (d *failingStatus) SetStatusAt(context.Context, dispatch.Issue, string) (di
 // attempt must write nothing: the close it carries is of the run before the reopen, and writing
 // it would close the issue the person just took back.
 func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "in_progress")
@@ -135,7 +138,7 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 	// itself answers no error — a row whose attempt failed is recorded and backed off, which is
 	// what keeps one issue's failure from ending the pass — so what the attempt did is read from
 	// the row it left and from the client it reached.
-	failing := &failingStatus{Client: dispatch.New(baseURL, token)}
+	failing := &failingStatus{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil))}
 	first := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: failing,
 		handlers: []intake.Handler{engine}, now: time.Now, log: quietLogger()}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -158,7 +161,7 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 		t.Fatalf("let the row's backoff go: %v", err)
 	}
 
-	restarted := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+	restarted := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		handlers: []intake.Handler{engine}, now: time.Now, log: quietLogger()}
 	if err := restarted.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run the close after the restart: %v", err)

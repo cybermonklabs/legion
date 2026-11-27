@@ -151,10 +151,11 @@ test.skipIf(skip)(
       toolCallId: evidence.toolCallId,
     });
 
-    // The notice's own record check reads this issue's record and never the whole project body
-    // (dispatch://INFRA-2694): the stall evidence takes that reader from the plugin's wiring.
+    // The notice asks the daemon what this claim owes for the architect that owns it, and never
+    // reads the whole project body (dispatch://INFRA-2694): the stall evidence takes that reader
+    // from the plugin's wiring.
     const paths = pane.requests.map((request) => request.path);
-    expect(paths).toContain(`/legion/v1/issues/${ISSUE}/record`);
+    expect(paths).toContain("/legion/v1/claims/owed");
     expect(paths).not.toContain("/legion/v1/state");
 
     // The first step: the child, and only the child — the cell's own child gone, this session's
@@ -606,8 +607,8 @@ test.skipIf(skip)(
     // quiet altogether is the daemon's backstop to end, not this watch's.
     //
     // The wait is what makes the emptiness mean something: the call declared its own deadline,
-    // so a record still open would be overdue a grace later and written up by the next
-    // 5-second sweep. This waits past that moment and several sweeps beyond it. Driven: with
+    // so a record still open would be overdue a grace later and written up by the next sweep
+    // (`SWEEP_MS`). This waits past that moment and several sweeps beyond it. Driven: with
     // every close of the entry cut — `executionEnded`, `resultDelivered` and the `turnEnded`
     // of both `turn_end` and `agent_end` — this case is red, the sweep writing the evidence
     // and the ladder's steps for the backgrounded `bash` call. Cutting the two closing by id

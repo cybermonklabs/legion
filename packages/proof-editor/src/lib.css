@@ -913,7 +913,10 @@ span[data-dispatch="ask"] {
  * A reference drawn as its target's title (see ../reference-decorations.ts). The stored text
  * stays in the document and is only hidden while its title stands in its place, so the title
  * takes one line however long it is: a paragraph a reference sits in must not reflow around a
- * document's name, and a title too long for the line is cut with an ellipsis.
+ * document's name, and a title too long for the line is cut with an ellipsis. It is never wider
+ * than the block it sits in, so a narrow column (a phone) cuts it there rather than scroll. In a
+ * table cell the cap is 24em alone: a cell's width comes from what it holds, so a percentage of
+ * it is ignored while the column is sized, which would size the column to the whole title.
  */
 .dispatch-reference-text {
   display: none;
@@ -921,12 +924,16 @@ span[data-dispatch="ask"] {
 
 .dispatch-reference {
   display: inline-block;
-  max-width: 24em;
+  max-width: min(24em, 100%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
   cursor: pointer;
+}
+
+:is(td, th) .dispatch-reference {
+  max-width: 24em;
 }
 
 /*
@@ -939,4 +946,10 @@ span[data-dispatch="ask"] {
 .proof-collab-cursor__label.proof-collab-cursor__label--inward {
   left: auto;
   right: 1px;
+}
+
+/* A title whose target opens no page - a person, whom no page shows - is drawn as a span, no
+   link, and points like the words around it. */
+span.dispatch-reference {
+  cursor: default;
 }

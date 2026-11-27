@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -89,6 +90,10 @@ type goingCapability struct {
 // A credential that names nobody is refused here, before anything is recorded
 // (codeGoingAskerNamesNobody): the stream would serve its run to no reader at all.
 //
+// A credential that names one project asks of any project, and of every project at once. Such a
+// credential is answered 404 PROJECT_NOT_FOUND, before anything is recorded, for a project that
+// does not exist and for a private project that it does not name (errProjectNotFound).
+//
 // A deployment with no model configured records the question exactly the same way and stores the
 // run's error frame instead of answering it (startGoingRun), so a caller learns that from the
 // stream, where every other failure of a run is reported, rather than from a status of this
@@ -138,11 +143,22 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// The project comes from the body, not from the address, so this row is classed
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
-	// (issue_create.go). It runs before the row is written: a credential that may write one
-	// project asks only of that project, and asking of every project is asking outside it.
-	if covers, scoped := s.callerProject(r); scoped && covers != project {
-		refuseWriteOutsideProjectScope(w, covers, project)
-		return
+	// (issue_create.go). It runs before the row is written. A credential that names one project
+	// asks of every project that access.CredentialCovers covers, and of all projects at once,
+	// which the empty project names. The one exception is a private project it does not name.
+	// Such a caller is answered 404 PROJECT_NOT_FOUND for that project, and for a project that
+	// does not exist, with one body for both, so it cannot tell the two apart. A credential that
+	// names no project is answered as before: its question of a project no row holds is recorded.
+	if covers, scoped := s.callerProject(r); scoped && project != "" {
+		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !found || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private) {
+			s.writeHandlerError(w, errProjectNotFound())
+			return
+		}
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the
@@ -204,7 +220,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	err := s.deps.Answerer.Run(answering, going.Request{
 		Words:  request.Words,
 		Search: s.goingSearch(request.Project, request.Author),
-		Bodies: s.goingBodies,
+		Bodies: s.goingBodies(request.ID),
 	}, emit)
 	switch {
 	case err == nil:
@@ -221,9 +237,10 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It searches as the run's author, the credential that
-// asked the question and the only one the stream serves, so the answer is drawn from what that
-// credential may read and no more.
+// search past what the caller asked of. It reads every kind the index holds, as the question is
+// of all of them. It searches as the run's author, the credential that asked the question and the
+// only one the stream serves, so the answer is drawn from what that credential may read and no
+// more.
 func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
@@ -253,9 +270,21 @@ func goingHitTitle(result model.SearchResult) string {
 }
 
 // goingBodies is each hit's own stored text, the text search ranked, cut to
-// contracts.GoingHitRuneMax runes a hit and keyed as going.Hit.Key keys it (goingItemText).
-func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]string, error) {
-	return goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
+// contracts.GoingHitRuneMax runes a hit and keyed as going.Hit.Key keys it (goingItemText), read
+// for run requestID: the comments and messages among them are recorded as the run's before the
+// texts are handed on (recordGoingPosts), so a delete of one withdraws the run's answer
+// (goingWithdrawal).
+func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit) (map[string]string, error) {
+	return func(ctx context.Context, hits []going.Hit) (map[string]string, error) {
+		texts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.recordGoingPosts(ctx, requestID, hits, texts); err != nil {
+			return nil, err
+		}
+		return texts, nil
+	}
 }
 
 // streamGoingAnswer writes one run's answer as server-sent events: GET
@@ -266,7 +295,8 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 // A run past its ends_at with no terminal frame stored is ended by this reader, with the
 // deadline's error, and the stream ends on whatever terminal frame that write answers
 // (endGoingRun settles which one). That is how a stream ends when the pod that took the POST is
-// gone: nothing else would ever store that run's ending until the sweep ran.
+// gone: nothing else would ever store that run's ending until the sweep ran. A run given a post
+// that has since been deleted is written goingWithdrawal's frame and nothing else.
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -
@@ -323,6 +353,19 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run under this reader
 			// (contracts.GoingRequestTTL); either way there is nothing left to read.
+			return
+		}
+		if state.Withdrawn {
+			// None of the frames this poll read is written: the withdrawal stands in the place of
+			// the run's ending, unless this reader already holds that ending (goingWithdrawal).
+			ending, err := s.goingWithdrawal(ctx, id, state)
+			if err != nil {
+				slog.Warn("dispatch going: end a withdrawn run", "request", id, "error", err)
+				return
+			}
+			if after < ending.Sequence && writeGoingFrame(w, ending) == nil {
+				_ = stream.Flush()
+			}
 			return
 		}
 		for _, frame := range frames {

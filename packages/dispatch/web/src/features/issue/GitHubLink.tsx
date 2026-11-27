@@ -97,11 +97,22 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
   return [...newest.values()];
 }
 
+const GITHUB_REFERENCE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/;
+
+/** Whether `link` is a GitHub pull request, read from its address as `GitHubLink` draws it: the
+ *  server stores a link the CLI or an agent sends with no kind as `url`, so a pull request
+ *  linked that way is told by its address alone. */
+export function isPullRequestLink(link: ExternalLink): boolean {
+  return safeExternalHref(link.url)?.match(GITHUB_REFERENCE)?.[3] === "pull";
+}
+
 /**
- * One external link on the issue header's details line. A GitHub issue or pull request is
- * shown as its number and title (the repository while the title is unknown — loading, or no
- * GitHub App installation for the repository), never as the raw address, so it fits the line on a
- * phone; the title is truncated and carried in full by the link's tooltip.
+ * One external link in today's issue header's Details, under Pull requests or Links. A GitHub
+ * issue or pull request is shown as its number and title (the repository while the title is
+ * unknown — loading, or no GitHub App installation for the repository), never as the raw address,
+ * so it fits its row on a phone; the title is truncated and carried in full by the link's tooltip.
+ * The link is one group: the number and the title (or the address), then a pull request's state
+ * and its checks, which stay beside them.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
  * `title`, so what the tooltip said is drawn instead: a GitHub
@@ -118,8 +129,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const href = safeExternalHref(link.url);
-  const match =
-    href?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/) ?? null;
+  const match = href?.match(GITHUB_REFERENCE) ?? null;
   const isPullRequest = match?.[3] === "pull";
   const githubReference = useQuery({
     enabled: match !== null,
@@ -168,9 +178,11 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
 
   if (href === null) {
     return page === null ? (
+      // Cut to its cell, so its title carries the whole address and why it is not a link: the
+      // reader reads what was cut there, and it stays text no click opens (dispatch://INFRA-5200).
       <span
-        className={`inline-block max-w-[18ch] truncate text-sm sm:max-w-[32ch] ${textMutedOnSurface}`}
-        title="Unsafe external link"
+        className={`inline-block max-w-[min(18ch,100%)] truncate text-sm sm:max-w-[min(32ch,100%)] ${textMutedOnSurface}`}
+        title={`Unsafe external link, not opened: ${link.url}`}
       >
         {link.url}
       </span>
@@ -186,7 +198,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   if (match === null) {
     return page === null ? (
       <a
-        className={`inline-block max-w-[18ch] truncate text-sm underline sm:max-w-[32ch] ${linkText} ${linkHoverText}`}
+        className={`inline-block max-w-[min(18ch,100%)] truncate text-sm underline sm:max-w-[min(32ch,100%)] ${linkText} ${linkHoverText}`}
         href={href}
         title={link.url}
       >
@@ -205,7 +217,8 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   const repository = `${match[1]}/${match[2]}`;
   const number = `#${match[4]}`;
   // The reference (title, state) and the checks are separate lookups: a failed check-runs or
-  // workflow-runs read only drops the checks pill and never the title and state already loaded.
+  // workflow-runs read shows the checks as unavailable, and never takes the title and state
+  // already loaded.
   const reference = githubReference.isError ? undefined : githubReference.data;
   const unavailable =
     reference === undefined &&
@@ -266,18 +279,21 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
           {state}
         </span>
       )}
-      {isPullRequest && !checks.isError && checks.data !== undefined ? (
+      {/* A checks read that failed says so where its result would stand, beside the title and the
+          state it leaves in place, so a reader tells it from one that has not answered yet
+          (dispatch://INFRA-5200). */}
+      {isPullRequest && (checks.isError || checks.data !== undefined) ? (
         <span
           className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
           {...page?.pageChrome}
         >
           {page === null ? (
-            <>checks: {checks.data}</>
+            <>checks: {checks.isError ? "unavailable" : checks.data}</>
           ) : (
             <>
               {page.CONTROL_LABELS.github_checks}:{" "}
               <span className="max-w-full [overflow-wrap:anywhere]" {...page.authorText}>
-                {checks.data}
+                {checks.isError ? "unavailable" : checks.data}
               </span>
             </>
           )}

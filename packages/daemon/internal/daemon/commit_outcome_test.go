@@ -147,6 +147,7 @@ func (r *reconcileRig) reconcile(ctx context.Context) error {
 // its slot, so the slot's line is in the log, and the reconcile answers nil. A retry finds the
 // slot taken and takes no other.
 func TestAReconcileWhoseCommitReplyComesAfterTheCancelLogsTheSlotItTook(t *testing.T) {
+	t.Parallel()
 	rig := newReconcileRig(t)
 	fired := rig.fault.HoldReply(faultMatch, 300*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -179,6 +180,7 @@ func TestAReconcileWhoseCommitReplyComesAfterTheCancelLogsTheSlotItTook(t *testi
 // A reconcile whose connection is cut before its COMMIT reaches the server committed nothing: no
 // slot and no slot line. Its retry takes the slot and logs it once.
 func TestAReconcileCutBeforeItsCommitTakesNoSlotUntilItsRetry(t *testing.T) {
+	t.Parallel()
 	rig := newReconcileRig(t)
 	fired := rig.fault.Cut(faultMatch, testdb.CutBeforeCommit)
 	err := rig.reconcile(context.Background())
@@ -288,6 +290,7 @@ func (r *noticeRig) due(t *testing.T) int {
 // notice's lane is woken, the release's line is in the log, and the release answers nil. A retry
 // finds nothing waiting and wakes nothing more.
 func TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes(t *testing.T) {
+	t.Parallel()
 	rig := newNoticeRig(t)
 	fired := rig.fault.HoldReply("update outbox set next_at", 300*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -322,6 +325,7 @@ func TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes(t *testi
 // A release whose connection is cut before its COMMIT reaches the server committed nothing: no
 // notice is due, no lane is woken and no line is logged. Its retry releases them.
 func TestANoticeReleaseCutBeforeItsCommitWakesNothingUntilItsRetry(t *testing.T) {
+	t.Parallel()
 	rig := newNoticeRig(t)
 	fired := rig.fault.Cut("update outbox set next_at", testdb.CutBeforeCommit)
 	err := rig.release(t, context.Background())
@@ -358,6 +362,7 @@ func TestANoticeReleaseCutBeforeItsCommitWakesNothingUntilItsRetry(t *testing.T)
 // Once the store answers again, the retry is a duplicate, since the release committed, and the
 // hold clears, with the one slot line of the root the release admitted.
 func TestAHeldReleaseWhoseCommitOutcomeIsUnknownReleasesOnceTheStoreAnswers(t *testing.T) {
+	t.Parallel()
 	direct, faulted, fault := faultedPools(t)
 	logged, log := watchedLog()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)

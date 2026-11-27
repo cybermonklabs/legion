@@ -1,6 +1,10 @@
 package workflow
 
-import "github.com/sjawhar/legion/daemon/internal/phase"
+import (
+	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/phase"
+)
 
 // TriggerKind names the observation that can advance a workflow phase.
 type TriggerKind string
@@ -52,42 +56,93 @@ type Row struct {
 
 func allow(Snapshot) bool { return true }
 
-// Table is the complete workflow transition table. Rows, not switch-case scheduling, define every
-// phase change. Backward rows exist for every allowed target so coverage detects a deleted edge.
-// No row carries a status of its own: every status a row writes is its target phase's, which
-// PhaseStatus holds.
-var Table = append([]Row{
-	{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: phase.Planning, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Planning, Trigger: TriggerPlannerCompleted, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Implementing, Trigger: TriggerImplementationReady, Guard: func(s Snapshot) bool { return s.HasOpenOrMergedPR }, To: phase.Testing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Testing, Trigger: TriggerTesterPassed, Guard: allow, To: phase.Reviewing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Testing, Trigger: TriggerTesterFailed, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Reviewing, Trigger: TriggerReviewApproved, Guard: allow, To: phase.Accepting, Effects: []EffectKind{EffectNotice}},
-	{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
+// hasOpenOrMergedPR is the guard of the implementer's move on: a completion moves an issue only on
+// a pull request that is open or merged (Snapshot).
+func hasOpenOrMergedPR(s Snapshot) bool { return s.HasOpenOrMergedPR }
+
+// Table is the table of today's line, phase.Order: every row an issue with no plan rows walks
+// (Walk), built once. TableOf(phase.Order) is the table the workflow had before a plan picked an
+// issue's line, row for row (TestAWalkWithNoPlanRowsMovesByTodaysTable).
+var Table = TableOf(phase.Order)
+
+// stepRows are the rows each phase of a line carries on its own role's trigger, in the table's
+// order: the step's move on to the next phase of the line (to ""), whichever phase the line puts
+// there, and the two returns, the tester's fail and a review's request for changes, to
+// implementing. A phase the line does not hold carries none of them. Retro's move on is to
+// merging, the phase after it in every line.
+var stepRows = []struct {
+	from    phase.Phase
+	trigger TriggerKind
+	guard   func(Snapshot) bool
+	to      phase.Phase
+}{
+	{phase.Planning, TriggerPlannerCompleted, allow, ""},
+	{phase.Implementing, TriggerImplementationReady, hasOpenOrMergedPR, ""},
+	{phase.Testing, TriggerTesterPassed, allow, ""},
+	{phase.Testing, TriggerTesterFailed, allow, phase.Implementing},
+	{phase.Reviewing, TriggerReviewApproved, allow, ""},
+	{phase.Accepting, TriggerSignOff, allow, ""},
+	{phase.Reviewing, TriggerReviewRejected, allow, phase.Implementing},
+	{phase.Retro, TriggerRetroCompleted, allow, ""},
+}
+
+// TableOf is the complete transition table of an issue whose task walks line: the phases of its
+// steps in the task's order, which holds implementing, then retro and merging (plan.Line of a plan
+// plan.Validate took). Rows, not switch-case scheduling, define every phase change. Its rows, in
+// this order: the gate's opening, out of admitted into the first phase of the line; each phase's
+// rows on its role's trigger (stepRows); the merge, out of merging into done; and a backward row
+// from each phase of the line to each phase before it in the line (backwardRows). A head that
+// conflicts with its base moves no phase (merge_forward.go). A row into accepting starts nobody,
+// because accepting's role is the tree's architect; every other row into a phase of the line
+// starts its role. No row carries a status of its own: every status a row writes is its target
+// phase's, which PhaseStatus holds.
+func TableOf(line []phase.Phase) []Row {
+	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], Effects: effectsInto(line[0])}}
+	for _, step := range stepRows {
+		at := slices.Index(line, step.from)
+		if at < 0 {
+			continue
+		}
+		to := step.to
+		if to == "" {
+			to = line[at+1]
+		}
+		rows = append(rows, Row{From: step.from, Trigger: step.trigger, Guard: step.guard, To: to, Effects: effectsInto(to)})
+	}
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
 	// GitHub's merge of the pull request as the phase's own terminating fact.
-	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
-}, backwardRows()...)
+	rows = append(rows, Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done,
+		Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}})
+	return append(rows, backwardRows(line)...)
+}
 
-// backwardRows is the edge from every phase back to each phase before it. Like every other row,
+// effectsInto is what a row into to does beyond the move: it starts to's role and tells the
+// architect, except into accepting, whose role is the architect, which no row starts.
+func effectsInto(to phase.Phase) []EffectKind {
+	if to == phase.Accepting {
+		return []EffectKind{EffectNotice}
+	}
+	return []EffectKind{EffectStart, EffectNotice}
+}
+
+// backwardRows is the edge from every phase of line back to each phase of line before it, by the
+// line's own order: each phase of the line paired with every phase before it in the line, in that
+// order. A line in today's order (a subsequence of phase.Order) so gets the pairs of
+// phase.BackwardPairs whose two phases it holds, in that list's order, and TableOf(phase.Order)
+// stays Table row for row; a line in another order goes back by its own order, so the line
+// `implementing reviewing testing` moves back from testing to reviewing, and not from reviewing to
+// testing, which is its move on (TestBackwardRowsOfEachLineAreItsOwnPairs). Like every other row,
 // each writes the status of the phase it enters, so a move back into planning writes in_progress,
 // the status an issue shows while Legion works it, rather than leaving Dispatch showing the phase
-// the issue left. The pairs come from phase.BackwardPairs, the one list the config loader reads
-// as well, so a pair added there becomes a row here and TestBackwardRowsMatchPhaseBackwardPairs
-// holds the two equal.
-func backwardRows() []Row {
-	pairs := phase.BackwardPairs()
-	rows := make([]Row, 0, len(pairs))
-	for _, text := range pairs {
-		from, to, _ := phase.ParsePair(text)
-		// Every pair comes from BackwardPairs, so ParsePair reads each one, and every pair of
-		// that list earns a row here: the phases of this workflow are the seven of phase.Order,
-		// and none of them waits for a merge somebody else makes, so there is no pair the table
-		// above carries as a row of its own (dispatch://INFRA-714).
-		rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,
-			Effects: []EffectKind{EffectStart, EffectNotice}})
+// the issue left. No phase of a line waits for a merge somebody else makes, so no pair is carried
+// by a row above instead (dispatch://INFRA-714).
+func backwardRows(line []phase.Phase) []Row {
+	rows := make([]Row, 0, len(line)*(len(line)-1)/2)
+	for at, from := range line {
+		for _, to := range line[:at] {
+			rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,
+				Effects: []EffectKind{EffectStart, EffectNotice}})
+		}
 	}
 	return rows
 }
@@ -111,14 +166,17 @@ var phaseStatus = map[phase.Phase]string{
 	phase.Admitted: "",
 	// The root keeps the status of the phase it waits in.
 	phase.AwaitingPerson: "",
-	phase.Planning:       "in_progress",
-	phase.Implementing:   "in_progress",
-	phase.Testing:        "testing",
-	phase.Reviewing:      "needs_review",
-	phase.Accepting:      "needs_review",
-	phase.Retro:          "retro",
-	phase.Merging:        "retro",
-	phase.Done:           "done",
+	// A parent waiting on its open children shows in_progress, as a child first shows that Legion
+	// works it: it holds no slot, but its work is under way, not stopped (dispatch://INFRA-3320 R11).
+	phase.AwaitingChildren: "in_progress",
+	phase.Planning:         "in_progress",
+	phase.Implementing:     "in_progress",
+	phase.Testing:          "testing",
+	phase.Reviewing:        "needs_review",
+	phase.Accepting:        "needs_review",
+	phase.Retro:            "retro",
+	phase.Merging:          "retro",
+	phase.Done:             "done",
 	// The issue waits on an unfinished Dispatch issue and runs nothing.
 	phase.Held: "",
 }

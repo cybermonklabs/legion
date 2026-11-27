@@ -1,10 +1,11 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type {
   ArchitectureTree,
   ArchitectureTreeIssueRef,
-  ArchitectureTreeNone,
+  ArchitectureTreeNoneRead,
   ArchitectureTreeRetired,
 } from "../../api/types";
 import { StatusPill } from "../../components/Pill";
@@ -14,7 +15,6 @@ import {
   borderDefault,
   card,
   dangerText,
-  inputClasses,
   linkHoverText,
   linkText,
   secondaryButtonCompact,
@@ -22,8 +22,10 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { type IssueComponentsWrite, useIssueComponents } from "../issue/useIssueComponents";
 import { statusText } from "../project/board-model";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { ComponentPicker } from "./ComponentPicker";
@@ -297,16 +299,20 @@ function UnassignedRow({
       </div>
       {reasonOpen && !write.pending ? (
         <form className="flex flex-wrap items-end gap-2" onSubmit={declareNone}>
-          <label className={`grid flex-1 gap-1 text-xs font-medium ${textSecondaryOnSurface}`}>
-            Why {issue.key} is not architectural
-            <textarea
-              className={`min-h-11 rounded-lg border px-2 py-1 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`}
-              onChange={(event) => setReason(event.target.value)}
-              required
-              rows={2}
-              value={reason}
-            />
-          </label>
+          {/* The form lays its boxes out in a row, so the label the field wraps the box in is
+              what flexes. An empty reason is refused by `declareNone` rather than by the
+              browser, the box being the shared field now. */}
+          <MentionField
+            body={reason}
+            className="min-h-11! text-sm"
+            issueKey={issue.key}
+            label={`Why ${issue.key} is not architectural`}
+            labelClassName={`grid flex-1 gap-1 text-xs font-medium ${textSecondaryOnSurface}`}
+            onChange={(change) => setReason(change.body)}
+            project={project}
+            rows={2}
+            writing={dispatchWritingBox("architecture-reason", "architecture-reason")}
+          />
           <button className={secondaryButton} type="submit">
             Save reason
           </button>
@@ -322,9 +328,9 @@ function NotArchitecturalRow({
   project,
   registry,
 }: {
-  issue: ArchitectureTreeNone;
+  issue: ArchitectureTreeNoneRead;
   project: string;
-  registry: InFlightRegistry<ArchitectureTreeNone>;
+  registry: InFlightRegistry<ArchitectureTreeNoneRead>;
 }): ReactNode {
   const write = useListWrite(issue, project, registry);
   return (
@@ -353,7 +359,17 @@ function NotArchitecturalRow({
           </button>
         )}
       </div>
-      <p className={`text-sm ${textSecondaryOnSurface}`}>{issue.reason}</p>
+      <p className={`text-sm ${textSecondaryOnSurface}`}>
+        {/* No `source`: why the reason is no record is the reading list's
+            `not-architectural-reason` (`DISPATCH_READING_SURFACES`). It is drawn from the tree
+            the architecture read sends of it (`reason_tree`). */}
+        <MarkdownBody
+          markdown={issue.reason}
+          surface="not-architectural-reason"
+          tree={issue.reason_tree}
+          variant="inline"
+        />
+      </p>
       <RowError error={write.error} />
     </div>
   );

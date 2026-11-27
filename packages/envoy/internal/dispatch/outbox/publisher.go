@@ -30,8 +30,11 @@ const (
 	// batchSize is the most events a batch sends, and the most it reads of one owner.
 	batchSize = 100
 	// dispatchTopicPrefix is the prefix of every owner's topic family: an issue's, a document's
-	// and a project's events are published under it.
-	dispatchTopicPrefix = "notifications.dispatch."
+	// and a project's events are published under it. It is Dispatch's lane, which only Dispatch's
+	// own NATS user may publish on directly. A session on a host user it shares with the host's
+	// listener can still have a message stored there by a stream update, until the host's
+	// sessions connect through the auth service (dispatch://INFRA-840; bus.DispatchTopicPrefix).
+	dispatchTopicPrefix = bus.DispatchTopicPrefix
 	documentTopicPrefix = dispatchTopicPrefix + "document."
 	// maxCommentThreadDepth bounds the reply_to walks in loadRootCommentAuthors and
 	// loadCommentRecipients so a malformed cycle (comments.reply_to has no acyclicity constraint)
@@ -98,13 +101,23 @@ type Deps struct {
 	Sessions   roles.SessionLookup
 	// KeptLanes is where the handover behind a keep reads the role's kept lane and its drain
 	// cursor, to tell whether the copy just kept is the one that lane's drain would hand over
-	// next (handOverKept). cmd/dispatch passes the same bus.Client it publishes through, whose
-	// grant covers that read. A nil reader makes no handover at all, as a nil role reader is
-	// errNoRoleReaders: the kept copy then waits for the listener's next handover of the lane -
-	// the role's next claim, a keep, the registration that makes a session holding the role live
-	// again or the claim route's refresh that does, or the sweep (handOverKept) - which is what
-	// this package's tests that publish through a stand-in with no stream behind it leave it to.
+	// next (handOverKept), and where the expiry pass reads the listeners' expiry notices, the
+	// copies they name and the stream's identity (passKeptExpiries). cmd/dispatch passes the same
+	// bus.Client it publishes through, whose grant covers those reads. A nil reader makes no
+	// handover at all, as a nil role reader is errNoRoleReaders: the kept copy then waits for the
+	// listener's next handover of the lane - the role's next claim, a keep, the registration that
+	// makes a session holding the role live again or the claim route's refresh that does, or the
+	// sweep (handOverKept) - which is what this package's tests that publish through a stand-in
+	// with no stream behind it leave it to. A nil reader reads no notice either.
 	KeptLanes KeptLaneReader
+	// PostIssueMessage posts message, written by actor, a system actor, on the issue
+	// message.IssueKey names, under the id message.ID, and answers the id of the message it
+	// stored: the message that tells the issue's people which events a role did not take within
+	// an hour's window, once each had ended undelivered (postUndeliveredNotes). A post made again
+	// under one id writes no second message. cmd/dispatch passes the API server's own writer of an
+	// issue message (api.Background.PostSystemMessage). A nil one posts nothing, and the windows
+	// wait.
+	PostIssueMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
 	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
 	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,
 	// which is what cmd/dispatch runs. A test sets it longer than its own run so that a forward
@@ -133,6 +146,24 @@ type Deps struct {
 	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
 	// need not wait a claim lease out; it is unexported, so no importer can.
 	heldCopyWarnAfter time.Duration
+	// clock is the time a role forward is judged at: its resolution's fence before it publishes,
+	// and its acknowledgement once the stream answers (roleForward.forward, roles.ResolutionTooOld,
+	// roles.ForwardStoredTooLate). nil is time.Now, which is what cmd/dispatch runs. A test moves
+	// it past a forward's fence and acknowledgement window while the forward waits, which no test
+	// could otherwise wait out; it is unexported, so no importer can.
+	clock func() time.Time
+	// holdRead, when set, runs inside a holder transaction right after its first, unlocked read of
+	// the publisher hold found the hold this process's (inHolderTransaction), before the
+	// transaction writes anything. A test takes the hold over there, so the transaction's final
+	// lock (lockPublisherHold) must see the takeover and roll back; it is unexported, and nil in
+	// cmd/dispatch.
+	holdRead func()
+	// holdLocked, when set, runs inside a holder transaction right after its final lock of the
+	// publisher hold's row found the hold this process's (lockPublisherHold, inHolderTransaction),
+	// and holds the transaction there, before its commit, until it returns. A test opens a
+	// takeover of the hold while a transaction holds that lock, which no test could time
+	// otherwise; it is unexported, and nil in cmd/dispatch.
+	holdLocked func()
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
@@ -147,6 +178,14 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// now is the outbox's clock (clock), time.Now unless a test set one.
+func (d Deps) now() time.Time {
+	if d.clock != nil {
+		return d.clock()
+	}
+	return time.Now()
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
@@ -204,18 +243,19 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 // in at most eight statements (loadLookups) and its role routes' holders read once per role
 // (resolveRoleHolders), and sends it through one window (Publisher.WindowUntil) as
 // chains: the sends of one owner's events to one destination key go one at a time, in id order,
-// each once the one before it reached its destination, and each send of the owner to a key other
-// than its topic family once the owner's earlier topic sends reached that family, while the chains
-// of different owners and destination keys proceed side by side (planChains, sendChains). That is
-// the order a receiver needs and the only one the batch keeps: a session takes an owner's events
-// in id order across its own subject and the owner's topic family it follows, while the sends to
-// different owners or destination keys land in whatever order their answers allow. A send that
-// fails holds back only its own chain, save a topic send, which holds back the owner's later sends
-// to every key, and an event that is not due holds back its owner's later events only from the
-// destinations it has not reached, and from every key while one of them is the topic family. An
-// event whose recipient read failed holds them back too, from every session key its
-// list neither names nor it already reached, until its retry. What an owner came to is written in
-// one statement, and what the owners left at the batch's end came to in one more (recordBatch).
+// each once the one before it reached its destination or was refused for good, and each send of
+// the owner to a key other than its topic family once the owner's earlier topic sends reached that
+// family or were refused for good, while the chains of different owners and destination keys
+// proceed side by side (planChains, sendChains). That is the order a receiver needs and the only
+// one the batch keeps: a session takes an owner's events in id order across its own subject and
+// the owner's topic family it follows, while the sends to different owners or destination keys
+// land in whatever order their answers allow. A send that fails holds back only its own chain,
+// save a topic send, which holds back the owner's later sends to every key, and an event that is
+// not due holds back its owner's later events only from the destinations it has neither reached
+// nor had refused, and from every key while one of them is the topic family. An event whose
+// recipient read failed holds them back too, from every session key its list neither names nor it
+// already reached or refused, until its retry. What an owner came to is written in one statement,
+// and what the owners left at the batch's end came to in one more (recordBatch).
 //
 // A failure is classified once every answer is in. A send that met a lost or replaced connection
 // (bus.ErrUnavailable) is no fault of its event, and its event is released with no attempt
@@ -263,11 +303,12 @@ func scanBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID) (ba
 // (sendChains), so its next events and the owners this batch left behind are read while the rest
 // of the batch is still sending: a chain waiting for a role forward's acknowledgement then holds
 // back its own owner's later events alone. An owner with a send that failed for the connection, one
-// with a send the hold's deadline fenced, one with a send the batch's stop left unmade, and every
-// owner of a batch whose context has ended wait for the batch's end instead, where the connection
-// check below decides what their sends came to: each of those is an owner an early settle would
-// release or leave unrecorded, so it is settled once, there. Whichever way an owner settles, every
-// lane the read took is given back before the batch returns.
+// with a send the hold's deadline fenced, one with a send the batch's stop left unmade or lost (a
+// refused send whose stand-in it left unmade among them), and every owner of a batch whose
+// context has ended wait for the batch's end instead, where the connection check below decides
+// what their sends came to: each of those is an owner an early settle would release or leave
+// unrecorded, so it is settled once, there. Whichever way an owner settles, every lane the read
+// took is given back before the batch returns.
 //
 // What an owner's own settle came to is the batch's too: its published events are counted, and
 // an event it released reports the batch blocked, so the scan stops after it (Outbox.scan,
@@ -281,7 +322,13 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	result := batchResult{}
 	events := make([]*batchEvent, len(pending))
 	for index := range pending {
-		events[index] = &batchEvent{pendingEvent: pending[index], delivered: publishedDestinationSet(pending[index].destinations)}
+		// What the event sends nothing to again: each subject it reached, and each NATS refused
+		// for good, so a retry of an event that also has a failed destination sends neither.
+		delivered := publishedDestinationSet(pending[index].destinations)
+		for subject := range pending[index].refused {
+			delivered[subject] = struct{}{}
+		}
+		events[index] = &batchEvent{pendingEvent: pending[index], delivered: delivered}
 		if pending[index].due {
 			result.sendable++
 		}
@@ -341,12 +388,12 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		for _, event := range owned {
 			if !event.due {
 				outcomes = append(outcomes, outcome{
-					id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil), owedKnown: true, owedSeq: event.ownerSeq,
+					id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil, nil), owedKnown: true, owedSeq: event.ownerSeq,
 				})
 				continue
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
-			event.outcome.owed, event.outcome.owedKnown, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), true, event.ownerSeq
+			event.outcome.owed, event.outcome.owedKnown, event.outcome.owedSeq = owedKeys(event, event.outcome.reached, event.outcome.refused), true, event.ownerSeq
 			outcomes = append(outcomes, event.outcome)
 			settled = append(settled, event)
 			switch event.outcome.state {
@@ -395,7 +442,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		}
 		for _, event := range byOwner[owner] {
 			for _, send := range event.sends {
-				if send.connection || send.fenced || send.state == unsent {
+				if send.connection || send.fenced || send.state == unsent || send.state == lost {
 					return
 				}
 			}
@@ -542,7 +589,8 @@ type settlement struct {
 type outcomeState string
 
 const (
-	// published: every destination of the event is reached.
+	// published: every destination of the event is reached, or refused for good (sendState
+	// refused), so no retry is left to make.
 	published outcomeState = "published"
 	// backedOff: the event failed, and waits retry.Delay of its attempts before it is tried again.
 	backedOff outcomeState = "backed_off"
@@ -576,8 +624,10 @@ const (
 type outcome struct {
 	id    int64
 	state outcomeState
-	// reached is every destination the batch reached, in the order of the event's destinations.
+	// reached is every destination the batch reached, in the order of the event's destinations,
+	// and refused every one NATS refused for good, with its error (sendState refused).
 	reached []string
+	refused []refusedDestination
 	// attempts and failure are the backed-off event's attempt count and why it failed.
 	attempts int
 	failure  string
@@ -604,7 +654,10 @@ type outcome struct {
 // for the two roads a mention's copy takes outside the chains (model.MentionCopyHolderSQL): the key
 // of every destination of its list that neither an earlier batch (batchEvent.delivered) nor this
 // one (reached) reached, by destination.key, the owner's topic family spelled
-// model.OwedTopicFamily. A role route is the exception: it is recorded as its role topic, not as
+// model.OwedTopicFamily. A destination NATS refused for good is not owed either: one an earlier
+// batch recorded refused is in batchEvent.delivered, and one this batch refused is in refused. The
+// outbox never sends it again, and planChains lets the owner's later events go past it. A role
+// route is the exception: it is recorded as its role topic, not as
 // the key of the holder it resolved to, because the holder can change before the event's next
 // record - a claim taken over, or one that could not be read becoming readable - and planChains
 // keys the route on whoever holds it at each batch; the copy's road reads the holder when it asks
@@ -617,7 +670,7 @@ type outcome struct {
 // or publish - its row did not scan, its list holds a null, or its actor or payload does not
 // decode (pendingEvent.failure) - owes nothing, as it holds nothing back. Whether the record
 // writes the answer is the outcome's owedKnown, never whether the answer is nil.
-func owedKeys(event *batchEvent, reached []string) []string {
+func owedKeys(event *batchEvent, reached []string, refused []refusedDestination) []string {
 	owed := []string{}
 	if event.failure != nil {
 		return owed
@@ -627,6 +680,9 @@ func owedKeys(event *batchEvent, reached []string) []string {
 	}
 	for _, dest := range event.destinationsOf {
 		if _, ok := event.delivered[dest.subject]; ok || slices.Contains(reached, dest.subject) {
+			continue
+		}
+		if slices.ContainsFunc(refused, func(r refusedDestination) bool { return r.subject == dest.subject }) {
 			continue
 		}
 		if dest.heldAsARow || (dest.forward != nil && dest.forward.skip != "") {
@@ -646,6 +702,13 @@ func owedKeys(event *batchEvent, reached []string) []string {
 	return owed
 }
 
+// refusedDestination is a destination NATS refused for good (sendState refused): its subject,
+// and the error the last send to it was refused with.
+type refusedDestination struct {
+	subject string
+	err     string
+}
+
 // settleEvent returns what event, sent by its batch, came to. An event that could not be read is
 // backed off. One with a send that met a lost connection or the process stopping is released, and
 // so is one whose destinations could not all be resolved because the process is stopping
@@ -659,7 +722,9 @@ func owedKeys(event *batchEvent, reached []string) []string {
 // mentioned session's own, or a role route's copy waiting for the mention its key comes from
 // (batchEvent.mentionPending) - is blocked: on its blockers (holdBack), and for
 // mentionPendingDelay at most when a copy of it waits on a mention; and one with neither is
-// published.
+// published. A destination NATS refused for good (sendState refused) is neither a failure nor a
+// hold: the outcome carries it, with its error, for refused_destinations, so an event whose sends
+// all reached their destinations or were refused is published and never sent again.
 // A held-back copy so blocks the event only when no send of it failed or was lost: a denied or
 // failed send backs the event off with its attempt counted, and a lost one releases it, as they
 // would without the mention.
@@ -681,6 +746,8 @@ func settleEvent(event *batchEvent, releaseUnacknowledged bool) outcome {
 		switch send.state {
 		case reached:
 			result.reached = append(result.reached, send.dest.subject)
+		case refused:
+			result.refused = append(result.refused, refusedDestination{subject: send.dest.subject, err: send.err.Error()})
 		case failed:
 			if releaseUnacknowledged && send.connection {
 				release = true
@@ -851,19 +918,20 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // recordBatch writes what each event of a batch came to, in one statement and so all of it or
 // none, and reports whether holder still held the publisher hold when it did. What is true whoever
 // holds the hold is written regardless: the destinations an event reached are added to its
-// published_destinations, and an event that reached every destination is marked published, its
-// publish_error cleared. A back-off (next_attempt_at on the database's clock, the attempt count and
-// publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until),
-// a release, and what the event still owes (owed_keys, from outcome.owed, and beside it owed_seq,
-// the owner's last_seq the batch read, from outcome.owedSeq) are written only while the hold is
-// holder's and has not lapsed, checked in the same statement, so a process that lost the hold
-// mid-batch schedules nothing beside the holder that took it and leaves the owed keys to that
-// holder's record: a record it skipped is one whose owed_seq the owner's next event leaves behind,
-// which holds a mention's copy until that holder writes it (model.MentionCopyHolderSQL). Each row
-// is guarded on published_at is null. An event the batch read only as a blocker, not due
-// (owedAgain), has its owed_keys and owed_seq written alone, and only when either changed, so an
-// owner whose events wait, and that no event was written to since, rewrites no row a batch finds
-// as it left it.
+// published_destinations, those NATS refused for good are merged into its refused_destinations
+// with their errors and kept out of published_destinations, and an event that reached or was
+// refused at every destination is marked published, its publish_error cleared. A back-off
+// (next_attempt_at on the database's clock, the attempt count and publish_error), a hold-back
+// (next_attempt_at alone, the earlier of its delay out and its until), a release, and what the
+// event still owes (owed_keys, from outcome.owed, and beside it owed_seq, the owner's last_seq the
+// batch read, from outcome.owedSeq) are written only while the hold is holder's and has not lapsed,
+// checked in the same statement, so a process that lost the hold mid-batch schedules nothing
+// beside the holder that took it and leaves the owed keys to that holder's record: a record it
+// skipped is one whose owed_seq the owner's next event leaves behind, which holds a mention's copy
+// until that holder writes it (model.MentionCopyHolderSQL). Each row is guarded on published_at is
+// null. An event the batch read only as a blocker, not due (owedAgain), has its owed_keys and
+// owed_seq written alone, and only when either changed, so an owner whose events wait, and that no
+// event was written to since, rewrites no row a batch finds as it left it.
 //
 // Beside the events' own rows it writes what the batch delivered into the node and tuple store
 // (deliveredGraph), as further arms of this one statement (graphstore.WriteArms): the nodes of
@@ -895,6 +963,8 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 	var reachedTopics []string
 	var owedIDs []int64
 	var owed []string
+	var refusedIDs []int64
+	var refusedSubjects, refusedErrors []string
 	for _, result := range outcomes {
 		ids = append(ids, result.id)
 		states = append(states, string(result.state))
@@ -921,13 +991,18 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			owedIDs = append(owedIDs, result.id)
 			owed = append(owed, key)
 		}
+		for _, destination := range result.refused {
+			refusedIDs = append(refusedIDs, result.id)
+			refusedSubjects = append(refusedSubjects, destination.subject)
+			refusedErrors = append(refusedErrors, destination.err)
+		}
 	}
 	// The store's arms are numbered after this statement's own parameters and bound after
 	// them, so the first arm's number is read off the list rather than written out: a column
 	// added to or dropped from the record statement would otherwise misnumber every $n the
 	// arms bind. A batch that reached no node of the store adds neither text nor parameter.
 	args := []any{publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,
-		owedKnown, owedIDs, owed, owedSeqs}
+		owedKnown, owedIDs, owed, owedSeqs, refusedIDs, refusedSubjects, refusedErrors}
 	arms, stored, err := graphstore.WriteArms(len(args)+1, reached.nodes, reached.tuples, reached.claims)
 	if err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
@@ -954,6 +1029,10 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			select id, array_agg(key order by position) as keys
 			from unnest($12::bigint[], $13::text[]) with ordinality as w(id, key, position)
 			group by id
+		), refused as (
+			select id, jsonb_object_agg(subject, reason) as subjects
+			from unnest($15::bigint[], $16::text[], $17::text[]) as f(id, subject, reason)
+			group by id
 		), recorded as (
 			update events e set
 				published_destinations = e.published_destinations || array(
@@ -961,6 +1040,10 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					where t.topic <> all(e.published_destinations)
 					order by t.position
 				),
+				refused_destinations = case
+					when f.id is null then e.refused_destinations
+					else coalesce(e.refused_destinations, '{}'::jsonb) || f.subjects
+				end,
 				published_at = case when o.state = 'published' then now() end,
 				publish_error = case
 					when o.state = 'published' then null
@@ -982,8 +1065,9 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			cross join hold h
 			left join reached r on r.id = o.id
 			left join owed w on w.id = o.id
+			left join refused f on f.id = o.id
 			where e.id = o.id and e.published_at is null
-			  and (o.state = 'published' or h.mine or r.id is not null)
+			  and (o.state = 'published' or h.mine or r.id is not null or f.id is not null)
 			  and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}') or e.owed_seq is distinct from o.owed_seq)
 		)`+arms+`
 		select mine from hold
@@ -1063,11 +1147,11 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 // already reaches is not added again, and neither is one a fallback row owns
 // (mentionDeliveries.held), which the fallback pass publishes or settles (publishFallbackCopies).
 // comment is the new comment whose mention attempts a settle or a hold of one of its copies writes
-// through, and delivered the destinations the event reached before this read. mentions is what
-// the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
-// was held back for a mention still being sent (leftTo). failed holds the settles and the holds
-// of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// through, and delivered the destinations the event reached, or NATS refused for good, before
+// this read (batchEvent.delivered). mentions is what the event's mentions did (a new comment's
+// alone), and mentionPending whether a session's copy was held back for a mention still being
+// sent (leftTo). failed holds the settles and the holds of held-back copies that failed, which
+// end no list: each backs the event off once the destinations the list does name are sent (err).
 type destinations struct {
 	list           []destination
 	seen           map[string]struct{}
@@ -1269,7 +1353,8 @@ func addRoute(d *destinations, route *string) error {
 	return nil
 }
 
-// addClaimantRoute delivers a person's answer, comment or untargeted message on an issue to
+// addClaimantRoute delivers a person's answer, comment or untargeted message on an issue - and
+// the edit or the delete of a post of either kind - to
 // claimant, the session that holds the issue's claim, on its own topic. Otherwise it reaches the
 // claimant only when the claimant subscribed to the whole issue, or happens to be the route, a
 // follower of the ask, or an author the thread or document names, and the session working the
@@ -1277,7 +1362,7 @@ func addRoute(d *destinations, route *string) error {
 // an agent's events reach nobody new through here, even the ones that notify. A new comment the
 // claimant's own mention of it delivers is left to that mention (destinations.addWorkingSession,
 // the mention rule); a claimant whose mention failed gets this copy instead, and the comment's
-// edit, resolution and reopening are never left to it. The claim is the one the batch
+// edit, delete, resolution and reopening are never left to it. The claim is the one the batch
 // read when the event is published (readBatch, routing), not when it was written, so a retry after
 // the claim moved reaches the new claimant. A claimant that is also the route, a follower or an
 // author gets one copy: destinations adds a subject once per event. The claimant's subject is an
@@ -1341,8 +1426,8 @@ func payloadPreviousClaimSession(payload any) string {
 // byte the text of the version it names, docs.MoveApprovalAsk) reaches no follower. The event's
 // own actor is skipped, and a follower whose own mention of a new comment delivers it is left to
 // that mention (destinations.addSession, the mention rule); a follower whose mention failed gets
-// this copy instead. Only the reply's creation is left to the mention; its edit, resolution and
-// reopening reach every follower. A topic the route already reaches is not added twice.
+// this copy instead. Only the reply's creation is left to the mention; its edit, delete,
+// resolution and reopening reach every follower. A topic the route already reaches is not added twice.
 func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	var askID string
 	switch event.Type {
@@ -1352,7 +1437,7 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 		}
 	case "ask.answered", "ask.handed_back", "ask.resolved":
 		askID = payloadString(event.Payload, "id")
-	case "comment.created", "comment.resolved", "comment.reopened", "comment.edited":
+	case "comment.created", "comment.resolved", "comment.reopened", "comment.edited", "comment.deleted":
 		askID = payloadString(event.Payload, "ask_id")
 	}
 	if askID == "" {
@@ -1373,11 +1458,11 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	return nil
 }
 
-// addPrimaryDocumentAuthors delivers a person's comment, or its edit, on an issue with no route and
-// no session claimant (takesPrimaryAuthors) to every session the issue's primary document credits,
-// each on its own topic: a session that writes an issue's spec without a claim still hears the
-// comments on it. The comment's own thread does not matter: a comment in an ask's thread, or a
-// reply, reaches those sessions too. The batch reads them
+// addPrimaryDocumentAuthors delivers a person's comment, its edit or its delete, on an issue
+// with no route and no session claimant (takesPrimaryAuthors) to every session the issue's
+// primary document credits, each on its own topic: a session that writes an issue's spec
+// without a claim still hears the comments on it. The comment's own thread does not matter: a
+// comment in an ask's thread, or a reply, reaches those sessions too. The batch reads them
 // for all such events in one query (loadLookups, loadPrimaryDocumentAuthors); when that query
 // failed, its error ends the event's destinations here. The actor is skipped (recipientFilter),
 // and a session whose own mention of the comment delivers it is left to that mention
@@ -1405,18 +1490,20 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // document, directly to the involved sessions' own topics, regardless of the issue's route (which
 // may point at an entirely different reviewer) and regardless of whether the event's owner is an
 // issue or a project document (which has no route at all). Without this, the sessions in a thread
-// never learn of the human's reply, resolution, reopening, or edit, and the agent that wrote a
-// document never learns of a new comment on it or of a person's edit to it.
+// never learn of the human's reply, resolution, reopening, edit or delete, and the agent that
+// wrote a document never learns of a new comment on it or of a person's edit to it.
 //
-// A reply (reply_to set), and its edit, reach every session that wrote a comment in the thread,
-// its root and each reply, and, where the claim below does not leave them out, every session the
-// thread's document credits, which the batch reads for all its replies in one query (loadLookups,
-// loadCommentRecipients); when that query failed, its error ends the event's destinations here. A
-// new comment on a document (no reply_to and no ask_id), and its edit, reach every session that
-// document credits under that same claim (loadDocumentSessionAuthors, whose failed query ends the
-// event's destinations here too); a new comment on an issue's conversation names no document and
-// reaches no author. A resolution or a reopening reaches the thread root's author only, so the
-// reopening a reply makes tells no new session twice.
+// A reply (reply_to set), its edit and its delete reach every session that wrote a comment in
+// the thread, its root and each reply, and, where the claim below does not leave them out, every
+// session the thread's document credits, which the batch reads for all its replies in one query
+// (loadLookups, loadCommentRecipients); when that query failed, its error ends the event's
+// destinations here. A new comment on a document (no reply_to and no ask_id), its edit and its
+// delete reach every session that document credits under that same claim
+// (loadDocumentSessionAuthors, whose failed query ends the event's destinations here too); a new
+// comment on an issue's conversation names no document and reaches no author. A message reply
+// (in_reply_to set), its edit and its delete reach the session that wrote the message it
+// answers. A resolution or a reopening reaches the thread root's author only, so the reopening a
+// reply makes tells no new session twice.
 // artifact.human_edited, which the notice sweep appends once a person's quiet window on a document
 // ends (docs.sendEditNotice), reaches every session the document its payload's artifact_id names
 // credits, read the same way. Ask threads are not walked here: their asker and repliers are the
@@ -1425,7 +1512,7 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // (destinations.addSession, the mention rule); an author whose mention failed is added instead.
 //
 // A session the read names as a credit of a document alone is left out where a person's comment,
-// or its edit, is on an issue a session claims: the credits of a document are
+// its edit or its delete is on an issue a session claims: the credits of a document are
 // not a second reason to deliver what the claimant already hears on its own topic. The conditions
 // are exactly those under which that claimant was added: both read the one predicate
 // (takesClaimantRoute, where the rule is stated) - the event names an issue, its actor is a
@@ -1523,7 +1610,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 	}
 
 	switch event.Type {
-	case "comment.created", "comment.edited":
+	case "comment.created", "comment.edited", "comment.deleted":
 		switch replyTo := payloadString(event.Payload, "reply_to"); {
 		case payloadString(event.Payload, "ask_id") != "":
 			// An ask's thread reaches the ask's followers (addFollowerRoutes).
@@ -1565,7 +1652,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 				return err
 			}
 		}
-	case "message.created", "message.answered":
+	case "message.created", "message.answered", "message.edited", "message.deleted":
 		if inReplyTo := payloadString(event.Payload, "in_reply_to"); inReplyTo != "" {
 			if err := considerLoaded(look.messageAuthor(inReplyTo)); err != nil {
 				return err
@@ -1641,9 +1728,9 @@ func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 		}
 		topic = documentTopicPrefix + event.Project + "." + slug + "." + event.Type
 	} else if event.IssueKey != nil {
-		topic = "notifications.dispatch.issue." + *event.IssueKey + "." + event.Type
+		topic = dispatchTopicPrefix + "issue." + *event.IssueKey + "." + event.Type
 	} else if event.Project != "" {
-		topic = "notifications.dispatch.project." + event.Project + "." + event.Type
+		topic = dispatchTopicPrefix + "project." + event.Project + "." + event.Type
 	} else {
 		return contracts.Envelope{}, fmt.Errorf("event requires an owner")
 	}
@@ -1714,7 +1801,8 @@ func payloadSummary(event model.Event, slug string) string {
 		detail = fmt.Sprintf("%v version %v", values["phase"], values["version"])
 	case strings.HasPrefix(event.Type, "ask."):
 		detail = text.HeadRunes(payloadString(event.Payload, "question"), 120)
-	case event.Type == "message.created", event.Type == "message.answered":
+	case event.Type == "message.created", event.Type == "message.answered",
+		event.Type == "message.edited", event.Type == "message.deleted":
 		detail = payloadString(event.Payload, "body")
 	case strings.HasPrefix(event.Type, "comment."), strings.HasPrefix(event.Type, "suggestion."):
 		detail = payloadString(event.Payload, "body")

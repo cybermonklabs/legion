@@ -1,0 +1,5 @@
+kind: Changed
+body: '`DISPATCH_READING_SURFACES` holds a row for every place the dashboard draws a stored text, not only the ones the renderer draws: a line that draws the plain-text projection, a text shown as the characters it is (a diff, a version''s summary, a credential request''s reason, a requirement''s flattened words, a handoff''s JSON), and the document body the Proof editor paints each have a row with its reason. `DispatchReadingSurface` names each row, so a mount of the renderer, of a reference card or of the projection is tied to its row by a typed `surface`. An event''s line, the live view''s switch answer, a held message, a handoff''s words and an answer''s chosen options (on `/answers`, on a search hit and in an earlier answer) are rendered rows; a backlink excerpt that is the head of a stored body is a rendered row, and the margin decision passage is a record.'
+time: 2026-11-16T05:10:21.887458634Z
+custom:
+    Issue: pr3125

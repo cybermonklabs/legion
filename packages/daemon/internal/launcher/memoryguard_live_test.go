@@ -11,7 +11,6 @@ import (
 	"io"
 	"maps"
 	"math"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -480,6 +479,8 @@ print("probe: done", flush=True)
 // LEGION_MEMORY_GUARD_LIVE=1 the test fails, and never skips, where it is not PID 1, finds no
 // python3, or cannot read the cgroup's files or meminfo.
 func TestControllerPodMemoryGuardLiveSandbox(t *testing.T) {
+	// Not parallel: the gated live test runs the guard on the whole machine's memory as the
+	// container's first process.
 	if os.Getenv(memoryGuardLiveEnv) != "1" {
 		t.Skip("the live test runs only where " + memoryGuardLiveEnv + "=1: it runs the controller pod's guard on this machine's own memory, as the container's first process")
 	}
@@ -703,6 +704,9 @@ func controllerLiveBandStart(limit uint64, act int) uint64 {
 // (controllerLiveWatch), and keeps the guard's trace in a scenario that prints it
 // (controllerLiveTraced).
 func (r *controllerLiveRun) startGeneration() string {
+	if err := helperCopyRefusal(); err != nil {
+		return err.Error()
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err.Error()
@@ -736,22 +740,21 @@ func (r *controllerLiveRun) startGeneration() string {
 		return previous(guard)
 	}
 	r.t.Cleanup(func() { newMemoryGuard = previous })
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err.Error()
-	}
-	r.t.Cleanup(func() { _ = listener.Close() })
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(r.t, token)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	cfg := Config{
-		Connect: "tcp://" + listener.Addr().String(), Token: "launcher-token", Sandbox: "legion-legion-controller",
+		Connect: "tcp://" + listener.Addr().String(), Token: token, Sandbox: "legion-legion-controller",
 		Role: "controller", PodUID: "pod-live", PrivateDir: shortTempDir(r.t),
 		Stdout:    &controllerLiveLines{out: r.out, name: "stdout"},
 		Stderr:    &controllerLiveLines{out: r.out, name: "stderr", onLine: r.noteLine},
 		StopGrace: controllerLiveStopGrace,
 	}
 	go func() {
-		result <- Run(ctx, cfg)
+		err := Run(ctx, cfg)
+		listener.codeReturned(err)
+		result <- err
 	}()
 	r.t.Cleanup(func() {
 		cancel()
@@ -765,7 +768,7 @@ func (r *controllerLiveRun) startGeneration() string {
 		}
 	})
 	conn := acceptRole(r.t, listener)
-	if conn.hello.Role != "controller" || conn.hello.Token != "launcher-token" {
+	if conn.hello.Role != "controller" || conn.hello.Token != token {
 		return fmt.Sprintf("the launcher's hello is %#v, want the controller's", conn.hello)
 	}
 	conn.acknowledgeWith(controllerDefaultsAck())

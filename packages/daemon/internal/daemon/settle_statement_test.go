@@ -96,6 +96,7 @@ func operatorSQL(t *testing.T, dsn, statement, conforming string) int64 {
 // its quotes doubled, as before; with the setting off the statement moves every row of the
 // table, the session another claim holds included.
 func TestTheSettleStatementMovesOnlyItsNameUnderEitherStringSetting(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -134,6 +135,7 @@ func TestTheSettleStatementMovesOnlyItsNameUnderEitherStringSetting(t *testing.T
 // machine still answers the hold it cached, and it resumes the session the rightful claim
 // resumes too.
 func TestAWrongSettleRunIsUndoneByTheDocumentedSteps(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
@@ -203,7 +205,7 @@ func readyUnder(t *testing.T, d *daemon, rt *fake.Runtime, token claim.Token, se
 	launch := lastLaunch(t, rt, token)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: file,
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s under %s = %d; body %s", token, session, status, body)

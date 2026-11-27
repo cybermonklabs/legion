@@ -24,6 +24,7 @@ import (
 // The test holds the serializer for a little longer than bootTimeout, the bound the boot's replay
 // gives each fact and the bound a live terminal fact had at 52f51bd6, then frees it.
 func TestALiveTerminalFactQueuedPastTheBootBudgetDoesNotStopTheWorkflow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}

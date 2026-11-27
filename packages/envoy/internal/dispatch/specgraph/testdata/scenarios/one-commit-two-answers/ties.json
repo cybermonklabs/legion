@@ -1,0 +1,8 @@
+{
+  "c1": {
+    "relay-answers-within-the-limit": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "relay-answers-on-linux-and-arm": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "relay-answers-once-per-request": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"],
+    "relay-refuses-a-malformed-request": ["packages/envoy/cmd/listener/*", "packages/envoy/go.mod"]
+  }
+}

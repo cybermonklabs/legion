@@ -111,6 +111,7 @@ var intakeHandlerLimitWindows = []struct {
 // cannot show: both numbers, which of the two decided the limit, `derived` and the clause,
 // across the windows where each of them turns over.
 func TestIntakeHandlerLimitLineNamesBothNumbersAndClausesOnlyAboveTheCeiling(t *testing.T) {
+	t.Parallel()
 	for _, row := range intakeHandlerLimitWindows {
 		t.Run(row.name, func(t *testing.T) {
 			// WorkerRPCTimeout is the only field the line reads, so it is the only one set.
@@ -174,6 +175,7 @@ type intakeBootRecord struct {
 // this file's own to keep correct. The handler is at Debug so that nothing is dropped by level
 // before the row reads it.
 func TestIntakeHandlerLimitBootLineWarnsOnlyAboveTheCeiling(t *testing.T) {
+	t.Parallel()
 	for _, row := range intakeHandlerLimitWindows {
 		t.Run(row.name, func(t *testing.T) {
 			cfg := config.Config{WorkerRPCTimeout: row.window}

@@ -37,13 +37,15 @@ var ErrHoldLost = errors.New("the hold no longer names this holder")
 // it. Renew is the interval between renewals, and also the bound on each renewal's wait for an
 // answer. Margin is how long before the TTL runs out, on this process's monotonic clock, the hold
 // reports itself lost. Token is the free text the holder records with the hold (SetToken changes
-// it).
+// it). Logger is where the renewal writes its lines - a renewal that failed, a hold lost to another
+// holder - and nil is the default logger as it is when the line is written (logTo).
 //
 // TTL must exceed Margin, Margin must not be negative, and Renew must be positive and shorter than
 // TTL - Margin, or no renewal could ever be confirmed before the hold reports itself lost.
 type HoldOptions struct {
 	TTL, Renew, Margin time.Duration
 	Token              string
+	Logger             *slog.Logger
 }
 
 // The statements a hold sends. Every duration crosses as float seconds into make_interval, which
@@ -268,10 +270,10 @@ func (h *Hold) renew(ctx context.Context) {
 		switch {
 		case err != nil:
 			if ctx.Err() == nil {
-				slog.Warn("renew hold failed; the loss deadline stays where it was", "hold", h.name, "deadline", h.Deadline(), "error", err)
+				logTo(h.opts.Logger).Warn("renew hold failed; the loss deadline stays where it was", "hold", h.name, "deadline", h.Deadline(), "error", err)
 			}
 		case tag.RowsAffected() == 0:
-			slog.Warn("hold lost: its row names another holder or none", "hold", h.name)
+			logTo(h.opts.Logger).Warn("hold lost: its row names another holder or none", "hold", h.name)
 			h.lose()
 			return
 		default:

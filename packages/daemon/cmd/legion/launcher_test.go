@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -25,6 +27,7 @@ type syncBuffer = testlog.Buffer
 // own directory, the pod's uid from POD_UID as the single-role launcher always took it, and a
 // log whose lines each name their role.
 func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	rolesDir := t.TempDir()
 	for _, role := range []string{"tester", "reviewer"} {
 		for _, name := range []string{"launcher", "private"} {
@@ -103,6 +106,7 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 // directory, and the controller pod's single form names one role. Each mixture is a usage error
 // before anything is dialled.
 func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
+	// Not parallel: it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -134,6 +138,7 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 // when a flag the launcher does not have follows it: `launcher role-inix --generation 1` is a
 // mistyped role-init, and naming --generation would send the reader to the wrong word.
 func TestTheLauncherCommandRefusesAWordItDoesNotKnowByTheWord(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		{"role-inix"},
 		{"role-inix", "--generation", "1"},
@@ -154,6 +159,7 @@ func TestTheLauncherCommandRefusesAWordItDoesNotKnowByTheWord(t *testing.T) {
 // know the flag would exit 2 on its usage, and one that parsed it and dropped it would take the
 // configuration for the other stores and dial the unreachable daemon until its context ends.
 func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *testing.T) {
+	// Not parallel: it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -179,6 +185,7 @@ func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *te
 // the flag would exit 2 on its usage, and one that parsed it and dropped it would dial the
 // unreachable daemon until its context ends.
 func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.T) {
+	// Not parallel: it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -210,6 +217,7 @@ func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.
 // the configuration's own check: an accepted run here would start the launcher, which listens on
 // the endpoint's fixed address and names it in this process's environment.
 func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testing.T) {
+	// Not parallel: it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -251,6 +259,7 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testi
 // started, so it exits launcher.RoleInitSetupFailedExit, the one status the launcher reports as a
 // setup failure, never the 2 a panic exits with.
 func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Usage:") || strings.Contains(stdout.String()+stderr.String(), "role-init") {
 		t.Fatalf("launcher --help: exit %d, stdout %q, stderr %q; want its usage on stdout without the hidden role-init", code, stdout.String(), stderr.String())
@@ -275,6 +284,7 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 // userinfo and no query, so a URL with a token in either reaches the launcher's log with neither,
 // its host and path kept.
 func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
+	t.Parallel()
 	const token = "FAKEtok3nZQ9x"
 	for _, value := range []string{
 		"https://legion-reader:" + token + "@d.example/status",
@@ -290,7 +300,11 @@ func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
 		if strings.Contains(printed, token) {
 			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
 		}
-		if want := `"https://d.example/status"`; !strings.Contains(stderr.String(), want) {
+		want := `"https://d.example/status"`
+		if strings.Contains(value, "@") {
+			want = `"https://` + redact.URLWithCredentials + `/status"`
+		}
+		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
 		}
 	}
@@ -306,6 +320,7 @@ func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
 // command line the launcher itself writes, with all four directories of the cover, is the case
 // after this one.
 func TestVolumeTrimDeleteIsHiddenAndTakesEveryDirectoryItCovers(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"legion", "launcher", "--help"}, &stdout, &stderr)
 	if code != 0 || !strings.Contains(stdout.String(), "Usage:") || strings.Contains(stdout.String()+stderr.String(), "volume-trim-delete") {
@@ -331,6 +346,7 @@ func TestVolumeTrimDeleteIsHiddenAndTakesEveryDirectoryItCovers(t *testing.T) {
 // flag.FlagSet (TestTheDeletersCommandLineNamesEveryDirectoryItCovers); this case reads it
 // through the command itself.
 func TestTheLaunchersCommandLineForItsDeleterIsOneVolumeTrimDeleteReads(t *testing.T) {
+	t.Parallel()
 	cover := launcher.RoleCover{
 		RolesDir: "/var/run/legion/roles", Home: "/home/legion",
 		HomeMounts: "/var/run/legion/home", FixedRoot: "/var/run/legion",
@@ -357,6 +373,7 @@ func TestTheLaunchersCommandLineForItsDeleterIsOneVolumeTrimDeleteReads(t *testi
 // name. And a --token-file the launcher cannot read is quoted in its refusal. Each line keeps the
 // URL's host and path, and no user name or query reaches the container's log.
 func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	connect := notADaemon(t, "moved to https://legion-reader@d.example/launch?token=planted-query-token-4")
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
@@ -375,7 +392,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 	// with a user name and a query, and fails.
 	bin := t.TempDir()
 	script := "#!/bin/sh\necho 'the test database at postgresql://legion-reader@127.0.0.1:5433/legion_test?token=planted-query-token-5 does not answer'\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "legion-testpg"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion-testpg"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -393,7 +410,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			name:    "the controller pod's container",
 			args:    []string{"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()},
 			until:   "launcher: daemon connection:",
-			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`},
+			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://[a URL with credentials]/launch"`},
 			planted: []string{"planted-query-token-4"},
 		},
 		{
@@ -401,8 +418,8 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			args:  []string{"--connect", connect, "--roles-dir", rolesDir, "--role", "tester", "--test-postgres"},
 			until: "tester: launcher: daemon connection:",
 			shown: []string{
-				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`,
-				"legion-testpg: the test database at postgresql://127.0.0.1:5433/legion_test does not answer",
+				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://[a URL with credentials]/launch"`,
+				"legion-testpg: the test database at postgresql://[a URL with credentials]/legion_test does not answer",
 			},
 			planted: []string{"planted-query-token-4", "planted-query-token-5"},
 		},
@@ -412,7 +429,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			code: 1,
 			// The query runs to the white space after it, so the ":" the line writes there goes
 			// with it.
-			shown:   []string{"launcher: token file https://d.example/token open https://d.example/token no such file"},
+			shown:   []string{"launcher: token file https://[a URL with credentials]/token open https://[a URL with credentials]/token no such file"},
 			planted: []string{"planted-query-token-6"},
 		},
 	} {
@@ -457,6 +474,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 // the rule finds no userinfo in what is left and keeps the start of the user name and the password
 // as the URL's host. The launcher writes no part of either.
 func TestTheLauncherCommandWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// Not parallel: it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	// The user name and the password go into the URL as the other tests of this package build one,
 	// so the pre-push leak check reads no credential in the source. The line's first 80 runes end
 	// inside the password, before the "@".

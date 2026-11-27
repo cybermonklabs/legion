@@ -20,7 +20,7 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 /**
  * The colours of each editor and its buttons, the new issue page's, which alone draws them, in a
  * row of Details: the box as the page's other boxes in Details are drawn (`RepoControl.tsx`'s box,
- * `AskCard.tsx`'s answer box) - the page's hairline rule, its paper and its ink, the placeholder in
+ * `AskBody.tsx`'s answer box) - the page's hairline rule, its paper and its ink, the placeholder in
  * the quiet grey, and `main`'s focus rule, the application's one focus indicator - and the route's
  * refusal in the failed red. Save is the page's bordered action (`ApprovalChip.tsx`'s): its rule,
  * its paper and the muted grey, which turns ink under the pointer while Save takes a press and
@@ -282,7 +282,7 @@ function ParentForm({
         saving={isClosed || saving}
       />
       <span className="sr-only" id="issue-parent-help">
-        Parent issue key in {issue.project}; leave empty to clear the parent.
+        Parent issue key, in {issue.project} or another project; leave empty to clear the parent.
       </span>
     </EditorForm>
   );

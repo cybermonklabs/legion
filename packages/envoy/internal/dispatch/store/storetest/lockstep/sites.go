@@ -42,13 +42,16 @@ var storeWriteCallSites = map[string]string{
 	// version states it right after its event (appendEvents, above).
 	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/artifacts.go#queueNewArtifact":             "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The comment path: the comment's node before the comments row that names it, then its
-	// tuples and its cause under the event appended after both, and who wrote it
-	// (graphstore.QueueNodes, QueueCaused and QueueAuthored, each called by the path itself).
-	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The comment path, which the comment route and the comment an issue write leaves share: the
+	// comment's node before the comments row that names it (queueCommentRow, through
+	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
+	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored).
+	"api/comment_create.go#queueCommentCreated": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_create.go#queueCommentRow":     "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
 	// attempt reached, and the one record both replies share of what their answer makes of the
 	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
@@ -57,11 +60,35 @@ var storeWriteCallSites = map[string]string{
 	"api/comment_delivery.go#queueAnsweredDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The node of every issue, document, ask and message a request creates, in the project or
+	// between the parties it belongs to: written before its row, and caused by the event the
+	// create appends after it. createIssue, storeArtifact with queueNewArtifact, and createAskFor
+	// are listed above for their block index and follow, and their drivers hold the node step too;
+	// these are the others. Their order - the owner lock their path already takes, the node before
+	// the row, the event before the tuples - is the order of the write they share (QueueNodes, then
+	// QueueCaused; a route that appends its event at once queues the cause in the event's own
+	// batch, appendCausingEvent), and api's TestEveryObjectNodeWriterTakesTheStoreLockOrder drives
+	// each of them through it.
+	"api/broadcasts.go#writeBroadcast":           "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/message_delivery.go#insertSessionReply": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/messages.go#createStoredMessage":        "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/reviews.go#openApprovalAsk":             "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"docs/ask_blocks.go#createAskBlock":          "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	// The removal of an untouched document states its node gone, before its row goes, caused by
+	// the artifact.removed event it appends after the row (Write of the node the document's
+	// create would have written, for a document an earlier build made with none, then
+	// node write it holds for its cause (PlanUncaused, QueueNodes), then the event and the gone
+	// statement in one batch, appendCausingEvent).
+	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
-	// tuple, which its one batch write states as a seeded database's own writer, and the session
-	// nodes of the followers its ask batch copies.
+	// tuple, which its one batch write states as a seeded database's own writer, the session
+	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
+	// each written in the batch that copies their rows, in its project, before any row of it.
+	"cmd/dispatch-seed/write_core.go#writeIssues":         "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	"cmd/dispatch-seed/write_items.go#writeAsks":          "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeComments":      "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "cmd/dispatch-seed#TestTheSeedsFollowerWriteTakesTheStoreLockOrder",
+	"cmd/dispatch-seed/write_items.go#writeMessages":      "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one
@@ -74,6 +101,21 @@ var storeWriteCallSites = map[string]string{
 	"refs/comment_nodes.go#Queue":                           "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_roles.go#writeRoleBatch":          "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_sessions.go#writeSessionBatch":    "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// The backfill's passes over the project of every node: the nodes of the issues, documents,
+	// asks and messages that their marker does not mark, in one node write (PlanUncaused,
+	// QueueNodes) and Caused over each run of the batch's nodes of one cause (a row's own create
+	// event, or the sentinel), after the owner locks a document's removal takes (lockObjectOwners)
+	// and under them, and the project of the comment and block nodes written before a node named
+	// one (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
+	"graphcensus/projects_backfill.go#writeObjectBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/projects_backfill.go#writeScopeBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// The fill itself appends what it states through Write; writeScopeBatch is its one caller, and
+	// its driver holds the fill's steps.
+	"graphstore/scope.go#FillScopes": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// The block-index tick's sweep of the documents a build before this one removed, which states
+	// each orphaned node gone as this build's removal does: the issue's owner lock, then the
+	// node's row, then the state tuple, under the removal's own event.
+	"graphcensus/orphans.go#StateOrphanedGone": "graphcensus#TestTheOrphanSweepTakesTheStoreLockOrder",
 	// graphstore's own writers that run another of them. QueueAuthored and QueueSessionRecorded
 	// are arms of one statement, and QueueReached is QueueSessionRecorded for an attempt that was
 	// sent. Write and Caused run QueueWrite and QueueCaused as a batch of their own, and

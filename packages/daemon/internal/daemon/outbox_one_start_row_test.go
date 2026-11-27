@@ -68,10 +68,12 @@ func theOneStartRow(t *testing.T, pool *store.Pool, issue string) wholeStartRow 
 }
 
 // oneStartRig is the fixture these cases share: an issue whose planner has just completed, the
-// implementer start that completion wrote, and the outbox over a supervisor of its own.
+// implementer start that completion wrote, the engine that applied it, and the outbox over a
+// supervisor of its own.
 type oneStartRig struct {
 	pool        *store.Pool
 	issue       record.Issue
+	engine      *workflow.Engine
 	runner      *outbox
 	sup         *supervisor
 	rt          *fake.Runtime
@@ -114,7 +116,7 @@ func newOneStartRig(t *testing.T) oneStartRig {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
 		},
 	}
-	return oneStartRig{pool: pool, issue: issue, runner: runner, sup: sup, rt: rt, token: token, provisioned: &provisioned}
+	return oneStartRig{pool: pool, issue: issue, engine: engine, runner: runner, sup: sup, rt: rt, token: token, provisioned: &provisioned}
 }
 
 // One outbox row does the whole start of a phase worker: it brings the worker's process back and
@@ -130,6 +132,7 @@ func newOneStartRig(t *testing.T) oneStartRig {
 // Each case drives the executor on the row the transition wrote, as the package's other start
 // cases do, and reads what the claim holds afterwards.
 func TestOneStartRowDoesTheWholeStart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("a role with no claim is created, provisioned, spawned and given the task", func(t *testing.T) {

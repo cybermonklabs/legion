@@ -31,6 +31,7 @@ import (
 // TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore drives through its version
 // write) index it first, and then drives this build's reconciliation until nothing is owed.
 func TestADeferredVersionThePreviousReleaseIndexesReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

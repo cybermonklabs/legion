@@ -31,8 +31,8 @@ type hookPublisher struct {
 	delivered []outboxPublish
 }
 
-func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
 }
 
 func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
@@ -89,7 +89,7 @@ func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root stri
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now)
 	}); err != nil {
 		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
 	}
@@ -127,10 +127,13 @@ func leaseCatchUp(t *testing.T, pool *store.Pool, records record.Store, root str
 	return leased, notice
 }
 
-// catchUpRows is every catch-up notice of root the outbox holds, oldest first.
-func catchUpRows(t *testing.T, pool *store.Pool, root string) []record.OutboxRow {
+// catchUpRows is every catch-up notice of root the outbox holds, oldest first, read through db: a
+// pool, or a transaction that reads its own writes.
+func catchUpRows(t *testing.T, db interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, root string) []record.OutboxRow {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
+	rows, err := db.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up' order by id`, string(record.OutboxKindNotice), root)
 	if err != nil {
 		t.Fatalf("read the catch-ups of %s: %v", root, err)
@@ -200,6 +203,7 @@ func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, r
 // decisions is left for its own ending to settle — here the publish, which forgets exactly what it
 // named — and the fresh catch-up names only what nobody claims.
 func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -223,7 +227,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now, time.Time{})
+			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now)
 		})
 	}}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
@@ -259,6 +263,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 // a fresh catch-up while the root has an architect to tell. Left to the row's deletion, those
 // decisions would wait unclaimed with nothing to name them while the architect worked the tree.
 func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -322,6 +327,7 @@ func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
 // confirms a delivery. Left to the row's deletion, the decision would wait unclaimed with nothing
 // to name it while the architect worked the tree.
 func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -373,6 +379,7 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 // architect to hear it, and waits KEPT, with nothing written, while it has none — a lingering
 // root's next start or ready names it.
 func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		lingers bool

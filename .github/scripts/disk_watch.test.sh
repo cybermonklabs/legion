@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for `disk_watch.py`: `start` writes the state file and leaves a sampler that outlives it,
+# Tests for `disk_watch.py`, whose `start` writes the state file and leaves a sampler that outlives it,
 # the sampler's least value falls when the watched file system fills, it writes a tick of the
 # series every second it is given and keeps the least memory and the greatest load it has seen,
 # a sampler held off the CPU leaves the seconds it never ran in out of the series rather than

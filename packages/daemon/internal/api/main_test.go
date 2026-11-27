@@ -11,13 +11,15 @@ import (
 )
 
 // guardKeep is what this package's guard keeps beyond fixtureenv's own test inputs: the operator's
-// inputs to the gated real-GitHub proof, each naming a repository or a binary and neither of them
-// a credential. LEGION_REAL_GITHUB gates the proof, and LEGION_GH_PATH names the real gh where a
-// pane's or a pod's own `gh` is the `legion gh` wrapper in front of it. Kept, the operator
-// commands of scripts/e2e/README.md still run under the guard. LEGION_TEST_PG_DSN and the four
-// LEGION_E2E_*_APP_* inputs the App lib reads need no entry: fixtureenv's own testInput keeps
-// every LEGION_TEST_ and LEGION_E2E name by prefix.
-var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH"}
+// inputs to the gated proofs, each naming a repository or a binary or switching a reading on, and
+// none of them a credential. LEGION_REAL_GITHUB gates the real-GitHub proof, and LEGION_GH_PATH
+// names the real gh where a pane's or a pod's own `gh` is the `legion gh` wrapper in front of it.
+// Kept, the operator commands of scripts/e2e/README.md still run under the guard.
+// LEGION_OWED_TIMING gates the owed route's timed reading on a large tree
+// (TestClaimOwedTimingOnAChainOf1024Issues), which a person runs to read the time the suite does
+// not hold. LEGION_TEST_PG_DSN and the four LEGION_E2E_*_APP_* inputs the App lib reads need no
+// entry: fixtureenv's own testInput keeps every LEGION_TEST_ and LEGION_E2E name by prefix.
+var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH", owedTimingEnabled}
 
 // guardedAtStart is what TestMain's own Guard kept, read before any test of this package ran.
 // TestTheGuardTestMainRanKeptTheGatedProofsInputs reads it rather than the live state, which a
@@ -58,24 +60,24 @@ func withRouteCensus(code int) int {
 	return code
 }
 
-// TestTheGuardTestMainRanKeptTheGatedProofsInputs holds this package's entry point to the two
-// names its gated proof reads, from what that Guard recorded rather than from a Guard of its own.
+// TestTheGuardTestMainRanKeptTheGatedProofsInputs holds this package's entry point to the three
+// names its gated proofs read, from what that Guard recorded rather than from a Guard of its own.
 // Without it, a TestMain that called fixtureenv.Guard() with no names would leave every test of
 // this package green — TestTheGuardKeepsTheGatedProofsInputs below runs its own Guard with
 // guardKeep, so it answers for the list rather than for the entry point — and the loss would show
 // only as an operator's gated proof skipping, with nothing red (dispatch://INFRA-917 R1).
 func TestTheGuardTestMainRanKeptTheGatedProofsInputs(t *testing.T) {
-	want := []string{"LEGION_GH_PATH", "LEGION_REAL_GITHUB"}
+	want := []string{"LEGION_GH_PATH", "LEGION_OWED_TIMING", "LEGION_REAL_GITHUB"}
 	kept := slices.Sorted(slices.Values(guardedAtStart))
 	if !slices.Equal(kept, want) {
 		t.Errorf("TestMain's guard kept %q, want the gated proofs' inputs %q", kept, want)
 	}
 }
 
-// TestTheGuardKeepsTheGatedProofsInputs holds guardKeep to the inputs the gated proof reads: with
-// each of the two set to a value of this test's, and a pod's own GIT_DIR, GIT_CONFIG_COUNT and
-// GH_TOKEN planted beside them, a Guard of guardKeep leaves both as the test set them and takes
-// the pod's three out. The two are written out here rather than read from guardKeep, so that
+// TestTheGuardKeepsTheGatedProofsInputs holds guardKeep to the inputs the gated proofs read: with
+// each of the three set to a value of this test's, and a pod's own GIT_DIR, GIT_CONFIG_COUNT and
+// GH_TOKEN planted beside them, a Guard of guardKeep leaves all three as the test set them and
+// takes the pod's three out. The three are written out here rather than read from guardKeep, so that
 // dropping a name from guardKeep fails this test naming it. Guard writes the package state
 // the rest of the run reads (RequireGuarded reads what the last Guard kept), so the cleanup runs
 // the package's own Guard again, as internal/fixtureenv's own guard test does.
@@ -88,6 +90,7 @@ func TestTheGuardKeepsTheGatedProofsInputs(t *testing.T) {
 	inputs := map[string]string{
 		"LEGION_REAL_GITHUB": "1",
 		"LEGION_GH_PATH":     "/usr/local/bin/gh",
+		"LEGION_OWED_TIMING": "1",
 	}
 	pod := map[string]string{
 		"GIT_DIR":          "/legion/repos/acme/widgets/.git",

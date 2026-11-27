@@ -5,7 +5,7 @@
 // this module runs nothing on import but the constants below.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
+import { stallSweepMs } from "@legion/pi-shared/stall-limits";
 import {
   type Block,
   type Cleanup,
@@ -61,9 +61,15 @@ export const ARCHITECT_TOPIC = `notifications.role.legion-${PROJECT}-${TREE.toLo
  * wedged cell is overdue one sweep after it starts rather than four hours later. */
 export const BOUND_MS = 6_000;
 
-/** The gap between the ladder's steps (`LEGION_STALL_STEP_MS`): four seconds, so each step lands
- * on the sweep after the one before it. */
-export const STEP_MS = 4_000;
+/** The gap between the ladder's steps (`LEGION_STALL_STEP_MS`): five seconds, which is the gap
+ * the steps had when they landed on the plugin's old 5-second sweep, and longer than the host's
+ * own `abort()` takes to end a turn (about five seconds, the measurements in
+ * `extensions/legion-stall-watchdog-omp.test.ts`'s header), so the step after the abort never
+ * runs while the abort is still landing. */
+export const STEP_MS = 5_000;
+
+/** How often the plugin sweeps its book on that gap (`stallSweepMs`): a quarter of it, 1.25 s. */
+export const SWEEP_MS = stallSweepMs({ stepMs: STEP_MS });
 
 /** The deadline the backgrounded-call case's shell command declares, which is the rule that
  * would judge that call were its record still open, and also when the host kills the job it
@@ -72,7 +78,7 @@ export const STEP_MS = 4_000;
 export const SHELL_DEADLINE_MS = 20_000;
 
 /** How long a case waits for something the pane owes it before failing: the pane's boot and the
- * three steps of the ladder, each a 5-second sweep apart. */
+ * three steps of the ladder, each `STEP_MS` apart. */
 export const DEADLINE_MS = 120_000;
 
 /** How long `settled()` waits for the pane to finish the line it is writing. One line is one
@@ -81,8 +87,8 @@ export const DEADLINE_MS = 120_000;
 const SETTLED_MS = 5_000;
 
 /** How long a case watches for something that must not happen: the bound, two of the plugin's
- * 5-second sweeps, and a margin. */
-export const QUIET_MS = BOUND_MS + 12_000;
+ * sweeps, and a margin. */
+export const QUIET_MS = BOUND_MS + 2 * SWEEP_MS + 2_000;
 
 export const cleanup: Cleanup = [];
 
@@ -186,42 +192,6 @@ export function warmedWedge(
     return [{ type: "text", text: then }];
   };
 }
-
-/** The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up (`src/phase-stall.ts`) has no reminder for this role and every turn a case
- * sees is one it asked for. */
-const MOVED_ON = {
-  daemon: {
-    project: PROJECT.toUpperCase(),
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  capabilities: [],
-  repositories: {
-    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-} satisfies LegionState;
 
 /**
  * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own
@@ -353,9 +323,9 @@ export interface StallPane {
 /**
  * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
  * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
- * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
- * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
- * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
+ * daemon's register, ready, activity, owed and grant routes and the Envoy listener, and the three
+ * stall numbers set low. The pane takes no NATS delivery of its own and is given a real server
+ * all the same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
  * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
  * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
  * the run-end self-check, a routing hint — is answered at once with one word, since none of them
@@ -411,11 +381,12 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    // The stall notice's record check and the phase reminder's both read one issue's record
-    // (dispatch://INFRA-2694); no reader of this pane asks for the whole project body.
-    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
-      return Response.json(MOVED_ON.issues[ISSUE]);
-    }
+    // The phase reminder asks the daemon what the claim owes, and the stand-in answers nothing,
+    // so the reminder puts nothing in front of this role and every turn a case sees is one it
+    // asked for. The stall watch's notice asks the same route for the architect that owns the
+    // claim, and the answer names none, so it goes to the tree's architect (`stallNoticeTopic`,
+    // `pi-legion/src/stall-evidence.ts`).
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({

@@ -121,9 +121,11 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 	q.expect(shimwire.TypeHelloAck)
 	short.next()
 	quiet := short.conn()
+	// The peer answers nothing, so the negotiation ahead of the prompt is what runs out, and no
+	// prompt frame was written.
 	err := awaitResult(t, async(func() error { return quiet.Prompt(context.Background(), "delivery-1", "verify #41") }))
-	if !errors.Is(err, ErrNoAnswer) {
-		t.Fatalf("Prompt with no answer = %v, want ErrNoAnswer", err)
+	if !errors.Is(err, runtime.ErrNoAnswer) || errors.Is(err, runtime.ErrPromptUnanswered) {
+		t.Fatalf("Prompt whose negotiation got no answer = %v, want runtime.ErrNoAnswer and not runtime.ErrPromptUnanswered: no prompt was written", err)
 	}
 }
 
@@ -158,8 +160,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 		// another.
 		isCase func(error) bool
 		// sentinel is the one error of sentinels this failure is, nil for a failure that is none
-		// of them, and reason the words the far side refused with — read by the supervisor (Oh
-		// My Pi's busy answer) or carried into its log (the shim's).
+		// of them, and reason the words the far side refused with — carried to the supervisor's
+		// log (Oh My Pi's, the shim's), never read to decide.
 		sentinel error
 		reason   string
 	}{
@@ -226,7 +228,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				_, result := h.prompt(p, "delivery-1", "verify #41")
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, ErrNoAnswer) },
+			isCase: func(err error) bool {
+				return errors.Is(err, runtime.ErrNoAnswer) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "the caller's deadline",
 			drive: func(h *harness, p *peer) error {
@@ -238,7 +242,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 				p.expect(shimwire.TypePrompt)
 				return awaitResult(h.t, result)
 			},
-			isCase: func(err error) bool { return errors.Is(err, context.DeadlineExceeded) },
+			isCase: func(err error) bool {
+				return errors.Is(err, context.DeadlineExceeded) && errors.Is(err, runtime.ErrPromptUnanswered)
+			},
 		},
 		{name: "OMP refuses the negotiation ahead of the prompt",
 			drive: func(h *harness, p *peer) error {
@@ -276,9 +282,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 					t.Fatalf("errors.Is(%v, %s) = %v, want %v", err, sentinel.name, got, want)
 				}
 			}
-			// The far side's own words reach the supervisor: Oh My Pi's, to tell its busy answer
-			// — a turn of its own, charged nothing — from a refusal of the work, and the shim's,
-			// which name the stale lock the adoption failed on, to carry into the log.
+			// The far side's own words reach the supervisor for its log: Oh My Pi's, beside the
+			// outcome minted from the refusal's code, and the shim's, which name the stale lock the
+			// adoption failed on.
 			if test.reason != "" {
 				if reason := runtime.RefusalReason(err); reason != test.reason {
 					t.Fatalf("runtime.RefusalReason(%v) = %q, want the far side's words %q", err, reason, test.reason)
@@ -483,7 +489,7 @@ func TestAPromptResultNamesTheDeliveryItsRequestIDCarries(t *testing.T) {
 	want := []Event{
 		TurnEnd{Claim: testClaim},
 		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", AgentInvoked: true},
-		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model"},
+		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun},
 	}
 	for _, want := range want {
 		if got := h.next(); got != want {
@@ -498,7 +504,7 @@ func TestAPromptResultNamesTheDeliveryItsRequestIDCarries(t *testing.T) {
 // reads what Oh My Pi writes however this package models it. The daemon must take it: a result
 // it drops is a prompt the supervisor waits on for the life of the process, and the next task
 // for that claim is refused as pending behind it. So the result reaches the supervisor whole —
-// the message and the four members a later decision reads, never the message parsed — and the
+// the message and the members a later decision reads, never the message parsed — and the
 // connection takes the next delivery.
 func TestATurnThatEndedInAProviderErrorStillReportsItsResult(t *testing.T) {
 	h := startListener(t, harnessOptions{})
@@ -529,6 +535,32 @@ func TestATurnThatEndedInAProviderErrorStillReportsItsResult(t *testing.T) {
 	p.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: true})
 	if err := awaitResult(t, next); err != nil {
 		t.Fatalf("the delivery after the failed turn: %v", err)
+	}
+}
+
+// Oh My Pi's class of a failure reaches the supervisor with the rest of the error object: a
+// gateway relays OpenAI's cyber-policy refusal as a 503, which on its status alone is "not now",
+// and only the code says that sending the same content again is refused again (supervise's
+// classifyProviderError). The line is the shape Oh My Pi's promptError writes, verbatim.
+func TestAPromptResultCarriesItsCodeToTheSupervisor(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	first, result := h.prompt(p, "delivery-1", "implement the plan")
+	p.send(shimwire.Response{ID: first.ID, Command: shimwire.TypePrompt, Success: true})
+	if err := awaitResult(t, result); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	p.send(shimwire.AgentEnd{})
+	p.writeRaw(`{"type":"prompt_result","id":"` + first.ID + `","agentInvoked":true,"status":"error","sessionSettled":true,` +
+		`"error":{"message":"503 cyber_policy: synthetic refusal text","provider":"openai","model":"gpt-5.5","retryable":false,"code":"cyber_policy","httpStatus":503}}` + "\n")
+	for _, want := range []Event{
+		TurnEnd{Claim: testClaim},
+		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", AgentInvoked: true, Error: "503 cyber_policy: synthetic refusal text",
+			HTTPStatus: 503, Provider: "openai", Model: "gpt-5.5", Code: "cyber_policy"},
+	} {
+		if got := h.next(); got != want {
+			t.Fatalf("event = %#v, want %#v", got, want)
+		}
 	}
 }
 
@@ -567,7 +599,8 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 	p.conn.Close()
 	want := []Event{
 		TurnStart{Claim: testClaim},
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", ConnSequence: conn.Sequence()},
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: runtime.OutcomeUnrecognised,
+			ConnSequence: conn.Sequence()},
 		Closed{Claim: testClaim},
 	}
 	var got []Event
@@ -581,11 +614,12 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 		t.Fatalf("further events = %#v, want none", rest)
 	}
 	logs := h.logs.Lines()
-	if len(logs) != 2 ||
+	if len(logs) != 3 ||
 		!strings.HasPrefix(logs[0], "worker-stream: prompt refused after its acknowledgement") ||
 		!strings.Contains(logs[0], "deliveryId=delivery-1") ||
-		!strings.HasPrefix(logs[1], "worker-stream: refusal for a prompt request this connection is not waiting on") {
-		t.Fatalf("logs = %q, want the late refusal and then the unattributable repeat", logs)
+		!strings.HasPrefix(logs[1], "worker-stream: the agent refused a prompt with no machine-readable code") ||
+		!strings.HasPrefix(logs[2], "worker-stream: refusal for a prompt request this connection is not waiting on") {
+		t.Fatalf("logs = %q, want the late refusal, that it carried no code, and then the unattributable repeat", logs)
 	}
 }
 
@@ -665,7 +699,8 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	replacement.send(shimwire.Response{ID: frame.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is busy"})
 	replacement.conn.Close()
 	want := []Event{
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Replayed: true, ConnSequence: replaced.Sequence()},
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: runtime.OutcomeUnrecognised,
+			Replayed: true, ConnSequence: replaced.Sequence()},
 		Closed{Claim: testClaim},
 	}
 	var got []Event

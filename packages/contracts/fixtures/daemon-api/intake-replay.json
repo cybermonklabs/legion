@@ -1,0 +1,30 @@
+{
+  "replayed": [
+    {
+      "id": 41,
+      "consumer": "legion-go-LEGION-dispatch",
+      "streamSeq": 6044801,
+      "outcome": "applied"
+    },
+    {
+      "id": 42,
+      "consumer": "legion-go-LEGION-dispatch",
+      "streamSeq": 6044802,
+      "outcome": "already applied"
+    },
+    {
+      "id": 43,
+      "consumer": "legion-go-LEGION-dispatch",
+      "streamSeq": 6044850,
+      "outcome": "no fact"
+    },
+    {
+      "id": 44,
+      "consumer": "legion-go-LEGION-dispatch",
+      "streamSeq": 6044896,
+      "outcome": "failed",
+      "error": "decode Envoy envelope: unexpected end of JSON input"
+    }
+  ],
+  "remaining": 1
+}

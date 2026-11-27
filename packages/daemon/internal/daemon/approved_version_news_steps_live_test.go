@@ -241,17 +241,19 @@ func (r *sessionsRun) publishedBy(architect sessionsTranscript, who string, memb
 	return ""
 }
 
-// Step off. Under gates.design off a root in implementing and its child in reviewing are each held
-// by a live worker, and the child has its own live architect, which its first phase start started,
-// as it starts every child's (workflow.Engine.StartFirstPhase). The root architect is asked to
-// write version 2 of the root's spec, which a deployment that gates nothing sends no news of: each
-// holder hears of it only from the architect, by its own envoy_publish to that holder's role
-// topic.
+// Step off. Under gates.design off a root in retro and its child in reviewing are each held by a
+// live worker, and the child has its own live architect, which its first phase start started, as
+// it starts every child's (workflow.Engine.StartFirstPhase). The root stands in retro, a phase the
+// wait on an open child does not hold: a root in planning through accepting with its child open
+// would be moved to awaiting_children at the first admission pass, its implementer stopped
+// (dispatch://INFRA-3320 R9). The root architect is asked to write version 2 of the root's spec,
+// which a deployment that gates nothing sends no news of: each holder hears of it only from the
+// architect, by its own envoy_publish to that holder's role topic.
 func (r *sessionsRun) off() (sessionsOutcome, string) {
-	root := &sessionsMember{phase: phase.Implementing, roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer}, tasks: map[claim.Role]string{}}
+	root := &sessionsMember{phase: phase.Retro, roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer}, tasks: map[claim.Role]string{}}
 	child := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleArchitect, claim.RoleReviewer}, tasks: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign+" The child issue builds the reader's fetch, and the root builds the cache in front of it.", sessionsLater), root, child)
-	root.tasks[claim.RoleImplementer] = holderStart(root.key, phase.Implementing)
+	root.tasks[claim.RoleImplementer] = holderStart(root.key, phase.Retro)
 	child.tasks[claim.RoleReviewer] = holderStart(child.key, phase.Reviewing)
 	r.boot()
 	r.checkArm(root, claim.RoleArchitect, sessionsArchitectMark)
@@ -260,7 +262,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 	}
 	r.deliver(root, claim.RoleArchitect, architectTask(
 		fmt.Sprintf("spec (document %s)", root.spec), root.key, sessionsDesign, sessionsDesignAgain,
-		fmt.Sprintf("%s, the root, in implementing, where its implementer holds it; %s, its child, in reviewing, where its reviewer holds it", root.key, child.key)))
+		fmt.Sprintf("%s, the root, in retro, where its implementer holds it; %s, its child, in reviewing, where its reviewer holds it", root.key, child.key)))
 	change := sessionsSpecChange
 	holders := []struct {
 		member *sessionsMember
@@ -303,7 +305,7 @@ func (r *sessionsRun) off() (sessionsOutcome, string) {
 
 // holderStart is the start task a holder of the a4 and off steps holds at the boot, at the entry the
 // daemon's start path raised for it, in place of that start's own task, the phase's resume task
-// (workflow.ResumePhaseTask: "Resume the existing phase work"). That task does not serve the step:
+// (workflow.Engine.ResumeTask: "Resume the existing phase work"). That task does not serve the step:
 // this proof runs no repository and no pull request, so a holder that resumed its phase would find
 // nothing to work on and spend its turns saying so. It waits instead, as a holder between turns
 // does, for what the step sends it.
@@ -315,7 +317,7 @@ func holderStart(issue string, p phase.Phase) string {
 
 // reviewerNote is the note a reviewer of the answers step holds at the boot in its start's own
 // task, the phase's resume task with the review round's two sentences that the daemon's start path
-// stores and sends (workflow.Engine.StartPromotedWorker, ResumePhaseTask), before those two
+// stores and sends (workflow.Engine.StartPromotedWorker, Engine.ResumeTask), before those two
 // sentences (sessionsRun.seedClaim). It says what the proof stands in for and what a review of the
 // pull request holds as fact: the proof runs no GitHub, so the pull request is the one this note
 // names; what that pull request changes, and that the review read it against version 1 of the

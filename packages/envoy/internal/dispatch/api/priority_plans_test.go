@@ -25,13 +25,13 @@ import (
 // The server's pool prepares every statement it sends (pgx's QueryExecModeCacheStatement), so a
 // connection runs a statement's first speedCustomPlans runs under plans made for their arguments
 // and may run every later one under the one generic plan Postgres then makes and keeps. The
-// statements of the priorities read take the relations' seed as two arrays. While the seed was
-// read through unnest, whose rows a generic plan sizes at 10 whatever the arrays hold, the four
-// statements over it touched 6.7 to 45.8 times the shared buffers of the plans made for their
-// arguments under the generic plan, which the held connection ran from its sixth run on
-// (PostgreSQL 18.6, 2026-11-22); priorityMemberTerms says how the seed is read now. The test reads
-// the plans a connection really ran, where the speed tests (priority_speed_test.go) count each
-// statement under a plan they force.
+// statements of the priorities read once took the relations' seed as two arrays. While the seed
+// was read through unnest, whose rows a generic plan sizes at 10 whatever the arrays hold, the
+// four statements over it touched 6.7 to 45.8 times the shared buffers of the plans made for
+// their arguments under the generic plan, which the held connection ran from its sixth run on
+// (PostgreSQL 18.6, 2026-11-22); each form's one statement now reads the relations itself
+// (priorityMemberTerms). The test reads the plans a connection really ran, where the speed tests
+// (priority_speed_test.go) count each statement under a plan they force.
 
 // planRuns is how many times the test runs each priorities read on the held connection: the
 // speedCustomPlans runs Postgres plans for their own arguments, then the runs it may answer with
@@ -62,6 +62,9 @@ const planBuffersRatio = 2
 // A run that reports a statement the baseline did not, misses one, or reports from another
 // connection fails, so a run that read nothing cannot pass, and each run's counts are printed.
 func TestPrioritiesReadKeepsItsPlans(t *testing.T) {
+	// Not parallel: it holds shared-buffer counts of its own statements to a ratio, and the
+	// shared buffers and their caching are the whole Postgres server's, which the package's
+	// parallel tests use at the same time; it runs alone, as it did on main.
 	corpus := seedSpeedCorpus(t)
 	database := corpus.server.deps.Store
 

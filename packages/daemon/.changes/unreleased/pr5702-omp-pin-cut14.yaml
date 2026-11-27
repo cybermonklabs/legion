@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+    The worker image carries Oh My Pi `18.18.6-sami.20261126-110039` of cybermonklabs/oh-my-pi,
+    which `.omp-pin` names, in place of `18.18.6-sami.20261125-164517`. After a session moves to
+    another model and back, a Claude model no longer receives the other model's thinking as text,
+    so Claude no longer refuses the request (`reasoning_extraction`), and an OpenAI Responses
+    request no longer fails on the `created_by` field of a replayed output item. Hindsight's
+    `last-turn` retain keeps its position in the session as a `hindsight_retain` custom entry, so
+    a resumed session does not retain again what an earlier process sent, and a recall's recorded
+    scope holds no hash of the API token. The new settings `retry.fallbackNotice` (default
+    `false`) and `task.namedModelFallback` (default `true`) keep today's behaviour unless an
+    overlay sets them. The build writes shell frames version 49: a frame stored by
+    `18.18.6-sami.20261125-164517` (version 37) is refused, not restored. Its SQL session store
+    makes and checks the same tables, indexes and grants as `18.18.6-sami.20261125-164517`, so a
+    deployment already on that pin needs no owner run before this one.
+time: 2026-11-26T13:44:26Z
+custom:
+    Issue: pr5702

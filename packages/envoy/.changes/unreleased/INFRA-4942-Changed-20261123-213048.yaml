@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    The example of `dispatch handoff-write --help` shows a handoff body of `head` and a `note`, in
+    place of `schemaVersion`, `phase` and `issue`.
+time: 2026-11-23T21:30:48Z
+custom:
+    Issue: INFRA-4942

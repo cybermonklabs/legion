@@ -42,13 +42,13 @@ func TestATakeOverStepTheGrantRefusesGivesUpAtOnce(t *testing.T) {
 		{"the delete", "delete NATS consumer to take it over", []string{"$JS.API.CONSUMER.DELETE." + bus.Stream + "." + bus.DispatchDeliveryDurable}, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			logs := captureLogs(t)
+			logs := captureIntakeLogs(t)
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
 			uri, owner := deniedIntakeServer(t, row.deny...)
 			if row.unbound {
 				// A durable no process delivers from, so the take-over deletes it and creates it again.
-				unbound := deliveryConsumerConfig()
+				unbound := deliveryConsumerConfig(tuningFor(t))
 				if _, err := owner.JS().AddConsumer(bus.Stream, &unbound); err != nil {
 					t.Fatalf("the admin creates the unbound durable: %v", err)
 				}

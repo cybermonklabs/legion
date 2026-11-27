@@ -32,6 +32,7 @@ import (
 // while a retirement keeps the task the claim was working and the retry sends that one, which is
 // why the row delivers none of its own to a retired claim.
 func TestTheStartRowBringsBackAClaimThatHoldsItsTaskWhenTheSlotComes(t *testing.T) {
+	t.Parallel()
 	const kept, owedTask = "Continue. Reason: the start the stop interrupted.", "Continue. Reason: the tree came back."
 	for _, tc := range []struct {
 		name  string

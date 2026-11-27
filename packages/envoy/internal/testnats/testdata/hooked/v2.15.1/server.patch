@@ -204,3 +204,23 @@ index 8c0a22d..67f64a5 100644
  
  	// If we are running any raftNodes transfer leaders.
  	if hadTransfers := s.transferRaftLeaders(); hadTransfers {
+diff --git a/server/stream.go b/server/stream.go
+index 13bc49f..998649d 100644
+--- a/server/stream.go
++++ b/server/stream.go
+@@ -2798,6 +2798,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool,
+ 			mset.ddtmr.Reset(time.Microsecond)
+ 		}
+ 		mset.ddMu.Unlock()
++		measureDedupeReset(mset, cfg.Name, ocfg.Duplicates, cfg.Duplicates, "dedupe.reset")
+ 
+ 		// Check for Sources.
+ 		if len(cfg.Sources) > 0 || len(ocfg.Sources) > 0 {
+@@ -5666,6 +5667,7 @@ func (mset *stream) purgeMsgIds() {
+ 		mset.ddarr = nil
+ 		mset.ddindex = 0
+ 	}
++	measureDedupePurged(mset, "dedupe.purged")
+ }
+ 
+ // storeMsgId will store the message id for duplicate detection.

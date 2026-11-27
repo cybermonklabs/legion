@@ -1,18 +1,17 @@
 package bus_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptClient is a client of the package's shared NATS server that owns the notification stream,
@@ -55,9 +54,10 @@ func keptEnvelope(role, eventID string) contracts.Envelope {
 // last_by_subj: nothing stored on the subject is nats.ErrMsgNotFound, and a subject written three
 // times answers the newest of the three, with its own sequence and subject.
 func TestLastStoredMessageAnswersTheNewestMessageOnTheSubject(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	subject := bus.KeptRoleSubject("last-stored-reader")
 
 	if _, err := client.LastStoredMessage(ctx, subject); !errors.Is(err, natsgo.ErrMsgNotFound) {
@@ -93,9 +93,10 @@ func TestLastStoredMessageAnswersTheNewestMessageOnTheSubject(t *testing.T) {
 // listener that could not deliver that message writes its copy under one id (KeptMsgID), so the
 // second write is collapsed into the first and the stream still holds one message on the subject.
 func TestPublishStoredAsKeepsTheEnvelopesOwnTopicAndCollapsesRepeats(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	const role = "kept-writer"
 	subject := bus.KeptRoleSubject(role)
 	item := keptEnvelope(role, "kept-1")
@@ -136,9 +137,10 @@ func TestPublishStoredAsKeepsTheEnvelopesOwnTopicAndCollapsesRepeats(t *testing.
 // error wraps ErrCursorMoved and leaves the cursor where it was; a write at the sequence the first
 // returned lands.
 func TestPublishCursorAtRefusesAWriteWhoseCursorMoved(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	subject := bus.KeptRoleCursorSubject("cursor-racer")
 
 	first, err := client.PublishCursorAt(ctx, subject, []byte(`{"seq":11}`), 0)
@@ -180,9 +182,10 @@ func TestPublishCursorAtRefusesAWriteWhoseCursorMoved(t *testing.T) {
 // no copy on is not on the list either, which is what makes a deployment with no kept copy cost
 // one round trip a pass.
 func TestKeptRoleLanesAnswersEveryRoleWithACopyOnItsLane(t *testing.T) {
+	t.Parallel()
 	client := keptClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	lanes, err := client.KeptRoleLanes(ctx)
 	if err != nil {

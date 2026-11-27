@@ -85,9 +85,9 @@ func requireRows(t testing.TB, database *store.Store, want []Written, only bool)
 // AwaitRowsUntil waits, through the shared wait (testwait.Until), until every event of ids has its
 // one row, running each between reads when it is set, bounded by the test binary's deadline alone,
 // whose failure names the events and the count of rows it read last. The fill writes an event's
-// row only once the event horizon has passed the event, and the horizon waits on every transaction
-// that holds a transaction id on the whole Postgres instance (events.Horizon, "Costs"): a fixed
-// span would measure how long another package's test on the same server held one, not the fill.
+// row only once the event horizon has passed the event, and the horizon waits on every event write
+// of the database open when it observes (events.Horizon, "Costs"), which a loaded machine can keep
+// open for seconds: a fixed span would measure how long such a write was held, not the fill.
 func AwaitRowsUntil(t *testing.T, database *store.Store, ids []int64, each func()) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("one row of each of the events %v, the rows counted", ids), func() (int, bool) {

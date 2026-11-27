@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The read list is gone, so one sentence of an earlier entry in these notes no longer holds. #4113's
+  entry "The secrets broker mints a Dispatch token that only reads" says that Dispatch serves such a
+  token on the routes its read list names, `GET /api/v1/projects/{key}/architecture` alone. This
+  change replaces that sentence: a read entry's token (`BROKER_EXCHANGE_READ_ACCOUNTS`) now reads
+  every route that Dispatch classes as a read, as every read-only token does, and every other route
+  still answers it `403 READ_ONLY_TOKEN`. The rest of that entry still holds.
+time: 2026-11-20T06:11:22Z
+custom:
+  Issue: pr4557

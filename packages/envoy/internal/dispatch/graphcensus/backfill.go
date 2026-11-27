@@ -2,9 +2,13 @@ package graphcensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -131,6 +135,9 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 // are that rule's. A test runs a backfill of another rule through it.
 func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
 	report := BackfillReport{}
+	if err := requireBackfillIndexes(ctx, database); err != nil {
+		return report, err
+	}
 	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
 	// reads as "no event recorded this write" and is exactly true of a row written before the
 	// store existed. The run appends no event of its own: events.Broker is the one writer of
@@ -148,6 +155,9 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 		return report, err
 	}
 	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
+	if err := analyzeWalkedColumns(ctx, database); err != nil {
+		return report, err
+	}
 	blocks := func(ctx context.Context, database *store.Store) (KindBackfill, error) {
 		return backfillBlocks(ctx, database, rule)
 	}
@@ -161,7 +171,49 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 		report.Kinds = append(report.Kinds, done)
 		writeKindBackfill(out, done)
 	}
-	return report, nil
+	// The project of every node, which a read limited to a project depends on: the node of each
+	// issue, document, ask and message written before its kind's writer wrote one, and the
+	// project of each comment and block node written before a node named its project. Both run
+	// after the passes above, so a comment or a block those passes wrote a node for takes its
+	// project from them, and the fill finds nothing of it to do. A row the object pass leaves
+	// because the store holds its node in another project (graphstore.ErrProjectMoved), which no
+	// second run cures, holds back neither the rest of that pass nor the fill: the run answers it
+	// after both.
+	var moved error
+	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
+		backfillObjectNodes, backfillScopes,
+	} {
+		done, err := write(ctx, database)
+		report.Kinds = append(report.Kinds, done...)
+		for _, kind := range done {
+			writeKindBackfill(out, kind)
+		}
+		switch {
+		case onlyProjectMoved(err):
+			moved = err
+		case err != nil:
+			return report, errors.Join(moved, err)
+		}
+	}
+	return report, moved
+}
+
+// onlyProjectMoved is whether err holds failures and every one is graphstore.ErrProjectMoved:
+// the rows backfillObjectNodes leaves while writing every other one.
+func onlyProjectMoved(err error) bool {
+	if err == nil {
+		return false
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return errors.Is(err, graphstore.ErrProjectMoved)
+	}
+	for _, one := range joined.Unwrap() {
+		if !errors.Is(one, graphstore.ErrProjectMoved) {
+			return false
+		}
+	}
+	return true
 }
 
 func writeKindBackfill(out io.Writer, done KindBackfill) {
@@ -183,10 +235,10 @@ const (
 // transaction id before the mark (events.Horizon.WriterFloor): from then every event at or below
 // the newest one the mark saw has committed or rolled back for good, and an event that commits
 // after the run's first read is above it. That is a proven safe horizon of the log. The Horizon's
-// own proof (Safe, Await) is not taken: a fresh Horizon proves nothing from its first
-// observation, and Await waits on every transaction id on the Postgres instance, an operator's
-// open session and any transaction holding a row lock included, where WriterFloor waits only on
-// the writers of the event log, which hold their transactions for one request.
+// own proof (Safe, Await) is not taken: Safe answers no H from a fresh Horizon's first observation
+// while an event writer older than its observer is open, and Await waits for an observation of
+// its own to be proven, where WriterFloor answers from the mark already taken. Both wait on the
+// same writers, the event writes of this database, which hold their transactions for one request.
 //
 // The table holds one row for each marking rule (refs.BlockIndexMarkingRule), and each run
 // replaces the row of its own rule and leaves the row of every other rule as it was. Whatever the
@@ -223,4 +275,140 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 		case <-time.After(wait):
 		}
 	}
+}
+
+// walkedColumnsAnalysis is the statement that gives the planner statistics of the column each walk
+// of the backfill reads its rows by, node_kind of the three projected tables.
+//
+// Migration 20261109022248 adds those columns with the first release that carries this backfill,
+// after any analysis of the tables, so until autovacuum next analyzes a table the planner holds no
+// statistics of its column and takes `node_kind is null` to match a fraction of a percent of the
+// rows. Where that guess is under one batch, a walk's plan reads every row still naming no node
+// through a bitmap and sorts them, once per batch, rather than reading one batch in order from the
+// cursor through the index that keeps it (document_blocks_naming_no_node,
+// block_refs_naming_no_node, comments_pkey): measured on a seeded copy of the schema the deploy
+// leaves, every comment batch read all 28,338 comments naming no node, and every block batch of a
+// tenth of that copy's blocks read all 27,405 of them. The statement samples each table's pages
+// as any analysis does, whatever the table's size, takes SHARE UPDATE EXCLUSIVE, which no read or
+// write waits on, and writes only the statistics catalog.
+const walkedColumnsAnalysis = `analyze document_blocks (node_kind), block_refs (node_kind), comments (node_kind)`
+
+// analyzeWalkedColumns runs walkedColumnsAnalysis.
+func analyzeWalkedColumns(ctx context.Context, database *store.Store) error {
+	if _, err := database.Pool.Exec(ctx, walkedColumnsAnalysis); err != nil {
+		return fmt.Errorf("analyze the columns the walks read their rows by: %w", err)
+	}
+	return nil
+}
+
+// BackfillIndex is one index the backfill's reads stand on, and the version of the migration that
+// builds it.
+type BackfillIndex struct {
+	Name    string
+	Version int
+}
+
+// BackfillIndexes are the indexes the backfill's reads stand on (migrations 20261119020700 to
+// 20261119021000): the two its batches probe events through for each row's event
+// (BlockRowsStatement, CommentRowsStatement), and the two its walks read one batch through in
+// their order (BlockRowsStatement, BlockRefRowsStatement). Without any one of them, each batch of
+// that read reads a whole table, and the run takes time growing with the square of the data: on a
+// seeded database of 270,539 blocks and 28,338 comments the block and comment passes took 31
+// minutes without them.
+var BackfillIndexes = []BackfillIndex{
+	{Name: "events_artifact_version_number", Version: 20261119020700},
+	{Name: "events_comment_created_id", Version: 20261119020800},
+	{Name: "document_blocks_naming_no_node", Version: 20261119020900},
+	{Name: "block_refs_naming_no_node", Version: 20261119021000},
+}
+
+// backfillIndexesNotUsable is the read requireBackfillIndexes makes: the place in $1, counted from
+// 1, of each of the indexes $1 names that the schema the runner made the tables in does not hold as
+// a valid index, one the planner may read, in their order; whether an index of that name stands
+// there invalid, as a concurrent build that failed leaves it; and that schema.
+const backfillIndexesNotUsable = `
+	select wanted.place::int, i.indexrelid is not null, current_schema()
+	from unnest($1::text[]) with ordinality as wanted (name, place)
+	left join pg_index i
+		on i.indexrelid = to_regclass(quote_ident(current_schema()) || '.' || quote_ident(wanted.name))
+	where i.indisvalid is not true
+	order by wanted.place`
+
+// requireBackfillIndexes refuses the run, naming each, while any of BackfillIndexes is absent or
+// invalid: the run would then read a whole table for each batch, for longer the more rows the
+// deployment holds, so a refusal before it writes anything costs less than a run that may not end.
+//
+// The command migrates the database before it runs this, so every index's version is recorded by
+// then, and the runner builds a recorded version no more: an index that is absent or invalid here
+// went so after its migration was recorded (its down file run by hand, or a concurrent build by
+// hand that failed), and no boot builds it again. So the refusal names the remedy that works in
+// that state, the build by hand (backfillIndexRemedy).
+func requireBackfillIndexes(ctx context.Context, database *store.Store) error {
+	names := make([]string, len(BackfillIndexes))
+	for i, index := range BackfillIndexes {
+		names[i] = index.Name
+	}
+	rows, err := database.Pool.Query(ctx, backfillIndexesNotUsable, names)
+	if err != nil {
+		return fmt.Errorf("read whether the indexes the backfill reads through are valid: %w", err)
+	}
+	type unusable struct {
+		place    int
+		invalid  bool
+		inSchema string
+	}
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (unusable, error) {
+		var u unusable
+		err := row.Scan(&u.place, &u.invalid, &u.inSchema)
+		return u, err
+	})
+	if err != nil {
+		return fmt.Errorf("read whether the indexes the backfill reads through are valid: %w", err)
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	missing := make([]string, 0, len(found))
+	for _, u := range found {
+		missing = append(missing, BackfillIndexes[u.place-1].Name)
+	}
+	statements := []string{"set search_path to " + pgx.Identifier{found[0].inSchema}.Sanitize() + ";"}
+	for _, u := range found {
+		build, err := backfillIndexRemedy(BackfillIndexes[u.place-1], u.invalid)
+		if err != nil {
+			return fmt.Errorf("refused: the index(es) %s are absent or invalid, and the statements that build them again cannot be read: %w", strings.Join(missing, ", "), err)
+		}
+		statements = append(statements, build...)
+	}
+	return fmt.Errorf("refused: the index(es) %s are absent or invalid, and without them each batch reads a whole table. "+
+		"Their migrations' versions are recorded, so no boot builds them again: build them by hand with the statements below, "+
+		"each run on its own outside a transaction (as psql runs them, one per line, in its default autocommit), then run this again:\n  %s",
+		strings.Join(missing, ", "), strings.Join(statements, "\n  "))
+}
+
+// backfillIndexRemedy is the statements that build index again by hand: a drop of the index
+// where one of its name stands invalid, which its migration's create ... if not exists would
+// otherwise leave as it is, and then the migration's own statement, read from the migration the
+// runner applies (store.MigrationText) with its comments left out and its words joined by single
+// spaces, so it prints on one line.
+func backfillIndexRemedy(index BackfillIndex, invalid bool) ([]string, error) {
+	text, err := store.MigrationText(index.Version)
+	if err != nil {
+		return nil, err
+	}
+	var code []string
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "--") {
+			code = append(code, trimmed)
+		}
+	}
+	build := strings.Join(strings.Fields(strings.Join(code, " ")), " ")
+	if !strings.HasPrefix(build, "create index concurrently if not exists "+index.Name+" ") || !strings.HasSuffix(build, ";") ||
+		strings.Count(build, ";") != 1 {
+		return nil, fmt.Errorf("migration %d is not one statement building %s: %q", index.Version, index.Name, build)
+	}
+	if invalid {
+		return []string{"drop index concurrently if exists " + pgx.Identifier{index.Name}.Sanitize() + ";", build}, nil
+	}
+	return []string{build}, nil
 }

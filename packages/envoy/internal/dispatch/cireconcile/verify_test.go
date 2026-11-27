@@ -42,11 +42,11 @@ func (r endingRecorder) Record(ctx context.Context, observation contracts.CIObse
 // fail (endingRecorder), and mountWebhook mounts it over the store itself again.
 func (h *harness) failWebhookWritesOf(check string) {
 	h.t.Helper()
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, endingRecorder{Store: h.listener, check: check})
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, endingRecorder{Store: h.listener, check: check}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 func (h *harness) mountWebhook() {
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, h.listener)
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, h.listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 // subscribeTo listens for the settlements of pull request number of the harness's repository.

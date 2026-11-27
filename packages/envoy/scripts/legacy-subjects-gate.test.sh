@@ -91,6 +91,13 @@ cat >"$root/bin/kubectl" <<'EOF'
 # after a line of another message.
 set -u
 printf '%s\n' "$*" >>"$FAKE/calls"
+# fields ROW splits one tab-separated row of the Job log into leg, arg, rc, out and err with the
+# shell's own read, a field left empty included: tab is a whitespace character to read, which joins
+# runs of it, so the row is read with the unit separator, which no row holds, in its place. A cut
+# per field would start four processes per row on every read of the log.
+fields() {
+  IFS=$'\x1f' read -r leg arg rc out err <<<"${1//$'\t'/$'\x1f'}"
+}
 args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -110,15 +117,16 @@ case "$*" in
     # @CENSUS_NAME@ in the fixture, then its end line unless census.cut says the log was cut short.
     census=$(jq -r '[.spec.template.spec.containers[0].env[]? | select(.name == "CENSUS_NAME") | .value] | first // "no-census-name"' "$FAKE/created-census-job.json" 2>/dev/null)
     while IFS= read -r row; do
-      [ "$(cut -f1 <<<"$row")" = census ] || continue
-      out=$(cut -f4 <<<"$row" | base64 -d | sed "s/@CENSUS_NAME@/${census:-no-census-name}/g" | base64 -w 0)
-      printf '%s\t%s\t%s\t%s\t%s\n' census "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$out" "$(cut -f5 <<<"$row")"
+      fields "$row"
+      [ "$leg" = census ] || continue
+      out=$(printf '%s' "$out" | base64 -d | sed "s/@CENSUS_NAME@/${census:-no-census-name}/g" | base64 -w 0)
+      printf '%s\t%s\t%s\t%s\t%s\n' census "$arg" "$rc" "$out" "$err"
     done <"$FAKE/job.log"
     [ -e "$FAKE/census.cut" ] || printf 'end\t-\t0\t\t\n' ;;
   "-n envoy logs job/"*)
     # The listener-identity Job's log: the fixture's rows but the census's.
     while IFS= read -r row; do
-      [ "$(cut -f1 <<<"$row")" = census ] || printf '%s\n' "$row"
+      [ "${row%%$'\t'*}" = census ] || printf '%s\n' "$row"
     done <"$FAKE/job.log" ;;
   "-n envoy get statefulset envoy-nats -o json")
     [ ! -e "$FAKE/statefulset.fail" ] || { echo 'Error from server (NotFound): statefulsets.apps "envoy-nats" not found' >&2; exit 1; }
@@ -456,9 +464,10 @@ readonly clean_users=(
 )
 hub_configmap "$base" "${clean_users[@]}"
 # The auth service's Deployment: its services, a listener's, Dispatch's, a daemon's, the
-# measurement job's and an edge listener's, which a hub behind its callout admits, and a status
-# settled on its spec, every replica of this generation and available, none terminating.
-jq -n --arg services "listener/host-a/*=system:serviceaccount:envoy:host-a dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch daemon/-/-=system:serviceaccount:legion:daemon measure/-/*=google:measure@example-project.iam.gserviceaccount.com edge-listener/edge-a/PRIV=system:serviceaccount:edge:edge-a" \
+# measurement job's, an edge listener's, the operator's and the hold probe's, which a hub behind
+# its callout admits, and a status settled on its spec, every replica of this generation and
+# available, none terminating.
+jq -n --arg services "listener/host-a/*=system:serviceaccount:envoy:host-a dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch daemon/-/-=system:serviceaccount:legion:daemon measure/-/*=google:measure@example-project.iam.gserviceaccount.com edge-listener/edge-a/PRIV=system:serviceaccount:edge:edge-a operator/-/*=system:serviceaccount:envoy-operator:envoy-operator probe/-/*=system:serviceaccount:envoy-operator:envoy-hold-probe" \
   '{metadata: {name: "envoy-broker", generation: 7}, spec: {replicas: 2, template: {spec: {containers: [{name: "envoy-broker",
     env: [{name: "BROKER_NATS_URLS", value: "nats://envoy-nats.envoy.svc.cluster.local:4222"}, {name: "BROKER_NATS_SERVICES", value: $services}]}]}}},
     status: {observedGeneration: 7, replicas: 2, updatedReplicas: 2, readyReplicas: 2, availableReplicas: 2, terminatingReplicas: 0}}' >"$base/broker.json"
@@ -515,10 +524,13 @@ reading() {
 # replace_row LEG ARG [LINE...] replaces, in the case's Job log, the one row that is the read LEG of
 # ARG with the lines given (none deletes it), failing the case unless exactly one row is that read.
 replace_row() {
-  local leg=$1 arg=$2 row matched=0
+  local leg=$1 arg=$2 row row_leg row_arg matched=0
   shift 2
   while IFS= read -r row; do
-    if [ "$(cut -f1 <<<"$row")" = "$leg" ] && [ "$(cut -f2 <<<"$row")" = "$arg" ]; then
+    row_leg=${row%%$'\t'*}
+    row_arg=${row#*$'\t'}
+    row_arg=${row_arg%%$'\t'*}
+    if [ "$row_leg" = "$leg" ] && [ "$row_arg" = "$arg" ]; then
       matched=$((matched + 1))
       [ "$#" = 0 ] || printf '%s\n' "$@"
     else
@@ -1757,7 +1769,7 @@ done
 # service gives its user: the edge listener's among them, since natsgrant.Edge publishes its
 # projects' agent and role subjects. The edge listener's entry is mapped to envoy-cluster, the
 # stack the deployment names the edge listener's replicas under (the scripts README, (a3)).
-new_case "(a3) behind an auth callout, the auth service's dispatch, edge listener and listener entries are publishers, and its daemon's and measurement job's are not"
+new_case "(a3) behind an auth callout, the auth service's dispatch, edge listener and listener entries are publishers, and its daemon's, measurement job's, operator's and hold probe's are not"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
 first_reading_secs 200 reading
@@ -1777,6 +1789,8 @@ reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: listener/host-a may publish a notification subject, and no --publisher maps it to a listener pin"
 expect_no_line "daemon/system:serviceaccount:legion:daemon may publish"
+expect_no_line "operator/system:serviceaccount:envoy-operator:envoy-operator may publish"
+expect_no_line "probe/system:serviceaccount:envoy-operator:envoy-hold-probe may publish"
 expect_line "UNKNOWN: (a3) the publishers: edge-listener/edge-a may publish a notification subject, and no --publisher maps it to a listener pin"
 done_case
 
