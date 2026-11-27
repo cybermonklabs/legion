@@ -8354,6 +8354,56 @@ a failed check prints `{"failed": "<why>"}` and exits 1, a usage error exits 2.
 The comment stays on the issue, so name a scratch one.
 `dispatch-keyed-comment.test.ts` (`bun test scripts/e2e/lib`) runs it against a stand-in Dispatch that keys comments, one that makes every POST, a `/healthz` without the field and a `503` with it, and with `--cli`.
 
+## lib/dispatch-thread-pages.ts
+
+The production check of an issue's thread pages, `order=activity` on `GET /api/v1/issues/{key}/comments`, `/messages` and `/asks`, and of a reply's quote: Verification's `c-production` runs it once production serves the merge.
+
+```sh
+bun scripts/e2e/lib/dispatch-thread-pages.ts --url https://<dispatch host> \
+  --bearer-file <token file> --issue <scratch issue key> \
+  --walk <issue key> [--walk <issue key>...] --weigh <issue key> [--weigh <issue key>...] \
+  --time-comments <issue key> --time-messages <issue key> --time-asks <issue key> [--session <id>]
+```
+
+The probe names no issue of its own: every key comes from a flag, since this repository is public.
+Every flag but `--session` is required, `--walk` and `--weigh` may each be given more than once, and every other flag is given once.
+It runs four steps in this order and stops at the first that fails.
+
+The walk reads, on each `--walk` issue, every page of `comments?order=activity&person=in`, `messages?order=activity&person=in`, `messages?order=activity&person=none` and `asks?order=activity&thread=1`, following each `before` until it is null.
+It requires the walk to hold the threads that R2, R4 and R5 select from the issue's lists read with no `order` (the ask list with `thread=1`), in their order, each with the `last_activity_at` R2 gives it: the newest `created_at` of its entries, and for an ask also the `at` of the answer and of the resolution it holds now, in UTC and cut to microseconds.
+It requires each page's `remaining` to be the number of threads the walk reads after that page, and 0 exactly on the page whose `before` is null.
+On the comment page, a thread is held where a person (an author of the kind `user`) wrote in it, where its first comment has an anchor, or where a reply in it shows `reply_block.quote`.
+A reply to a block of a post since deleted shows no `quote`, since every answer leaves it out (R8) while the page reads the stored one.
+So where such a reply, whose `reply_block.deleted_at` is set, is all that could put a thread on the comment page, the probe cannot tell, accepts the thread on the page or off it, and counts such threads as `either_way`.
+On the message pages, a thread whose root the issue's daemon wrote, `legion-daemon:` and the issue's project key, is on neither page.
+
+The weigh reads, on each `--weigh` issue, All's three first pages, `comments?order=activity&person=in`, `messages?order=activity&person=in` and `asks?order=activity&thread=1`, with `Dispatch-Trees: 1`.
+It requires each to hold `threads`, `before` and `remaining` and no other member, and each row to equal the row R2 builds for its thread from the lists read with the same header, but for `last_activity_at`.
+It prints each page's bytes, and their total against R7's 630,000 bytes as a measurement that fails nothing (`over_bound`), beside the bytes of `GET /api/v1/issues/{key}` and `GET /api/v1/issues/{key}/events?order=desc&limit=200` read with the same header.
+
+The walk and the weigh judge each read against the issue's lists read before the step's reads of that issue and again after them, and only where the two agree, since a busy issue gets writes while it is read.
+The two agree for a walk where they select the same threads, and for a page where they give its threads the same rows.
+A read whose lists differ is made again, up to three tries, the lists read after one try's reads being the lists read before the next try's, and a read with no try whose lists agree fails its step.
+
+The timing makes the seven first-page reads of R7, each with `Dispatch-Trees: 1`: All's three, Mine's three with `author=` a person's login, and Agents' `messages?order=activity&person=none`.
+The comment reads are of the `--time-comments` issue, the message reads of the `--time-messages` issue and the ask reads of the `--time-asks` issue.
+Mine's login is the person with the most entries on that issue's list of the route, or, where no person wrote on that one, on the first of its other lists, in the order comments, messages, asks, that a person wrote on, the smaller login at a tie;
+an issue no person wrote on fails the step.
+An ask's entries are R2's: the ask, each comment whose `ask_id` names it, and the answer and the resolution it holds now.
+Each read makes 5 warm-up reads and 30 timed ones, and the step fails where the nearest-rank 90th percentile of the time to the first byte is above 200 ms.
+That time includes the network from where the probe runs, so it is more than the time at the server.
+
+The quote step writes on `--issue`, as the bearer's session (`--session <id>`, `thread-pages-check-<uuid>` by default), a comment and an issue message whose one block holds the word `quokka` twice.
+It replies to each block with `quote` `quokka` and `occurrence` 1, and requires both values back in `reply_block` from `GET /api/v1/comments/{id}` and `GET /api/v1/issues/{key}/messages/{id}` of each reply.
+The four posts stay on the issue, so name a scratch one.
+
+Each step prints one JSON line per read it judges (`walk` per page, `weigh` per page and one total line per issue, `time` per read with its `p90_ms`, `quote` per read-back), then `{"ok":true}` and exit 0.
+A failed step prints `{"ok":false,"step":"<step>","read":"<method and path it read>","why":"<why>"}` and exits 1, and a usage error exits 2.
+A build before the pages answers the bare list to `order=activity`, so against it the probe prints `{"ok":false,"step":"walk","read":"GET /api/v1/issues/<key>/comments?order=activity&person=in",…}` at its first page read.
+A step fails where a read answers other than `200`, or `201` for a write, where a page read answers the bare list or no page, where a walk leaves out, adds, reorders or misdates a thread, and where a page's `remaining` is not the number of threads after it.
+It fails too where a page holds another member or a row the lists do not give, where no try's lists agree, where a timed read's percentile is above 200 ms, and where a reply's read-back holds no `quote` or another one.
+`dispatch-thread-pages.test.ts` (`bun test scripts/e2e/lib`) runs it against a stand-in Dispatch whose pages agree with its lists, one whose comment page leaves out the thread the lists cannot tell, one that answers the bare list, one whose page leaves out a thread, one whose page's `remaining` is one too many, one whose first comment list misses a reply, one whose first pages weigh over 630,000 bytes, one whose pages hold another member or another row, one whose Agents page answers late and one whose read-back holds no `quote`, and without each required flag.
+
 ## lib/stage4b-tools.jq
 
 What a tool returned in a role's Oh My Pi session, for a Stage 4b checkpoint to prove a tool ran rather than that the model said it did.
