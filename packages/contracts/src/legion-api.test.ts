@@ -4850,6 +4850,36 @@ test("a state change names a role exactly for a claim, and a value of its own fi
   ).toBeTrue();
 });
 
+// A move between two steps of roles the deployment defines moves no phase, so the step role is the
+// field its change names, from one role to the other, and the move out of the step names it going to
+// null. A claim of such a role names it as the claim's role. A step role is a name of the role
+// grammar, so a phase in its place is refused.
+test("a state change carries the step role and a claim of a role the deployment defines", () => {
+  expect(
+    legionStateMessage.safeParse(
+      changeMessage({ field: "stepRole", old: "checker", new: "linter" })
+    ).success
+  ).toBeTrue();
+  expect(
+    legionStateMessage.safeParse(changeMessage({ field: "stepRole", old: "linter", new: null }))
+      .success
+  ).toBeTrue();
+  expect(
+    legionStateMessage.safeParse(
+      changeMessage({ field: "claim", role: "checker", old: null, new: "working" })
+    ).success
+  ).toBeTrue();
+  expect(
+    legionStateMessage.safeParse(changeMessage({ field: "stepRole", old: null, new: "Checker" }))
+      .success
+  ).toBeFalse();
+  expect(
+    legionStateMessage.safeParse(
+      changeMessage({ field: "claim", role: "controller", old: null, new: "working" })
+    ).success
+  ).toBeFalse();
+});
+
 // A reader applies a message whose `firstSeq` follows the sequence it holds and reads a later one
 // as a gap, so the events of one message run from `firstSeq` to `seq` with none missing. The
 // project is the Dispatch project key, never the deployment's token.

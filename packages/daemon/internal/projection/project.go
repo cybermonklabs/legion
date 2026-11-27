@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -315,12 +314,6 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			if !lingering[issue.Tree] {
 				view.HoldReason = string(issue.Hold.Reason)
 			}
-		}
-		// The role of the running step, which no phase names, where the issue stands at step or its
-		// hold took it out of step, beside the phase that hold left (api.Issue.StepRole). At every
-		// other phase the phase names the role, so the view names none.
-		if issue.Phase == phase.Step || issue.Hold != nil && issue.Hold.From == phase.Step {
-			view.StepRole = string(issue.StepRole)
 		}
 
 		rows := phases[issue.Key]
@@ -754,12 +747,15 @@ func (l *listedIssue) showWorker(role claim.Role, worker shownWorker) {
 }
 
 // putListed puts onto view, an issue of either view of the state (Project, Observe), what
-// listIssues decided of it: the phase, the tree and the wait its own record decides, the slot it
-// holds, and the claims its `architect` and its `workers` show (putClaims). It is the one place
-// those members are built from the records, so each member the observed view reads (api's
-// observedOf) is the full view's.
+// listIssues decided of it: the phase, the tree, the wait and the running step's role its own
+// record decides, the slot it holds, and the claims its `architect` and its `workers` show
+// (putClaims). It is the one place those members are built from the records, so each member the
+// observed view reads (api's observedOf) is the full view's. The step role is named where the issue
+// stands at step or its hold took it out of step, beside the phase that hold left
+// (api.Issue.StepRole, record.ObservationOf); at every other phase the phase names the role, so the
+// view names none.
 func (l listedIssue) putListed(view *api.Issue, views map[claim.Token]api.ClaimView) {
-	view.Phase, view.WaitingOn = l.observed.Phase, l.observed.WaitingOn
+	view.Phase, view.WaitingOn, view.StepRole = l.observed.Phase, l.observed.WaitingOn, l.observed.StepRole
 	if l.observed.Tree != nil {
 		view.Tree = *l.observed.Tree
 	}

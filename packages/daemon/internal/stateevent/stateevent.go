@@ -51,25 +51,27 @@ type Change struct {
 // Field names one field of an issue that a state change can move.
 type Field string
 
-// The five fields Dispatch observes of an issue, named as the state route serves them.
+// The six fields Dispatch observes of an issue, named as the state route serves them. stepRole is
+// the role of the running step of an issue at step or held from it, a role the deployment defines.
 const (
 	FieldPhase     Field = "phase"
 	FieldTree      Field = "tree"
 	FieldSlot      Field = "slot"
 	FieldWaitingOn Field = "waitingOn"
 	FieldClaim     Field = "claim"
+	FieldStepRole  Field = "stepRole"
 )
 
 // Fields is every Field, which is every field a change may name.
-var Fields = []Field{FieldPhase, FieldTree, FieldSlot, FieldWaitingOn, FieldClaim}
+var Fields = []Field{FieldPhase, FieldTree, FieldSlot, FieldWaitingOn, FieldClaim, FieldStepRole}
 
 // FieldChange is one field a write moved. Role names the claim's role on a claim change, and is
 // empty on a change of any other field. Old and New are the field's values before and after the
 // write, each encoded as the state route serves it at that issue: a phase string, a tree key, a
-// slot's index, the waitingOn object, a claim's state, or null where the issue holds none (and as
-// Old on the issue's first write). They are raw JSON so that a null stays null and a value is the
-// route's own encoding. A change carries both, so a nil value is refused: null is written as null
-// (Null).
+// slot's index, the waitingOn object, a claim's state, the running step's role, or null where the
+// issue holds none (and as Old on the issue's first write). They are raw JSON so that a null stays
+// null and a value is the route's own encoding. A change carries both, so a nil value is refused:
+// null is written as null (Null).
 type FieldChange struct {
 	Field Field           `json:"field"`
 	Role  claim.Role      `json:"role,omitempty"`
@@ -137,7 +139,7 @@ func (c Change) Validate() error {
 			return fmt.Errorf("a state change of %s names the field %q, which is none of %v", c.Issue, change.Field, Fields)
 		}
 		if change.Field == FieldClaim && !claim.IsRole(change.Role) {
-			return fmt.Errorf("a claim change of %s names the role %q, which is none of a claim's six", c.Issue, change.Role)
+			return fmt.Errorf("a claim change of %s names the role %q, which is no role of a claim: one of Legion's six or a role of the deployment, a name of the role grammar that is not the controller's", c.Issue, change.Role)
 		}
 		if change.Field != FieldClaim && change.Role != "" {
 			return fmt.Errorf("a %s change of %s names the role %q; only a claim change names one", change.Field, c.Issue, change.Role)

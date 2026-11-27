@@ -147,13 +147,9 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 			}
 
 			// The role of the running step of an issue at step, a role the deployment defines, which
-			// metric 2 puts that step's hours on: the golden's LEGION-240 stands at the checker's
+			// metric 2 puts that step's hours on: each golden's LEGION-240 stands at the checker's
 			// step, and LEGION-241 is held from it, its step's role kept. An issue at no such step
-			// observes none. The observed view carries no stepRole yet, so only the whole state is
-			// held to it here.
-			if golden != "state.json" {
-				return
-			}
+			// observes none.
 			roles := map[string]string{}
 			for _, observation := range state.Observations() {
 				if observation.Field == FieldStepRole {

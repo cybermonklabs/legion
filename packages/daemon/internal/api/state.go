@@ -2185,11 +2185,13 @@ func (s ObservedState) MarshalJSON() ([]byte, error) {
 
 // ObservedIssue is one issue of the observed view: the members of the full view's issue (Issue) that
 // Dispatch observes, each spelled and valued as the full view spells and values it. Tree, Slot,
-// WaitingOn and Architect are absent where the full view leaves them absent, and Workers is absent
-// where the full view's `workers` is empty. The full view's other members are not served.
+// WaitingOn, StepRole and Architect are absent where the full view leaves them absent, and Workers
+// is absent where the full view's `workers` is empty. The full view's other members are not
+// served.
 type ObservedIssue struct {
 	Key       string                        `json:"key"`
 	Phase     phase.Phase                   `json:"phase"`
+	StepRole  string                        `json:"stepRole,omitempty"`
 	Tree      string                        `json:"tree,omitempty"`
 	Slot      *ObservedSlot                 `json:"slot,omitempty"`
 	WaitingOn *WaitingOnView                `json:"waitingOn,omitempty"`
@@ -2224,7 +2226,7 @@ func observedOf(state State) ObservedState {
 	observed := ObservedState{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission,
 		Issues: make(map[string]ObservedIssue, len(state.Issues))}
 	for key, issue := range state.Issues {
-		view := ObservedIssue{Key: issue.Key, Phase: issue.Phase, Tree: issue.Tree, WaitingOn: issue.WaitingOn}
+		view := ObservedIssue{Key: issue.Key, Phase: issue.Phase, StepRole: issue.StepRole, Tree: issue.Tree, WaitingOn: issue.WaitingOn}
 		if issue.Slot != nil {
 			view.Slot = &ObservedSlot{Index: issue.Slot.Index}
 		}

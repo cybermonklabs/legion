@@ -515,6 +515,7 @@
     "LEGION-240": {
       "key": "LEGION-240",
       "phase": "step",
+      "stepRole": "checker",
       "tree": "LEGION-240",
       "slot": {
         "index": 6
@@ -523,6 +524,7 @@
     "LEGION-241": {
       "key": "LEGION-241",
       "phase": "held",
+      "stepRole": "checker",
       "tree": "LEGION-241",
       "slot": {
         "index": 7

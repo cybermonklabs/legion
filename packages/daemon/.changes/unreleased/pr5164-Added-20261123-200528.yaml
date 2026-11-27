@@ -15,12 +15,15 @@ body: |-
   the role of a running step (`stepRole`) and the roles that wait for the issue's pod
   (`startWaitsForPod`). A caller whose contract lacks the entry reads `step` as `implementing`. A
   plugin whose contract lacks the entry is refused, with a `409`, the registration of a claim of
-  such a role.
+  such a role. A state event names the step role as its field `stepRole` whenever a write moves it,
+  a move from one step of the deployment to another included.
 
   The migration `20261124192838_deployment_roles` widens the role and phase checks, and an
   earlier release cannot read a row at `step` or of such a role. Before a rollback past this
   release, finish or stop each issue whose plan names such a role. `docs/kubernetes.md`, "Rolling
-  back the release whose deployment defines roles", gives the way back.
+  back the release whose deployment defines roles", gives the way back. The migration
+  `20261127224354_observed_step_role` adds `issues.observed_step_role`, the step role an issue's
+  last write served, and its header gives its way back.
 time: 2026-11-23T20:05:28Z
 custom:
     Issue: pr5164

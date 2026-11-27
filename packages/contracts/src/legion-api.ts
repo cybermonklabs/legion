@@ -1693,13 +1693,15 @@ const legionObservedClaim = z.object({
 
 /** `api.ObservedIssue` — one issue of the observed view: the members of the full state's issue
  * (`legionIssue`) that Dispatch observes, each spelled and valued as the full state spells and
- * values it. `tree` is absent on an issue the workflow does not record, `slot` where the issue
- * holds no slot, `waitingOn` outside `awaiting_person`, `architect` where the issue shows no
- * architect, and `workers` where the full state's `workers` is empty. Its `slot` carries the
- * index alone and each claim its state alone. */
+ * values it. `stepRole` is absent where the issue stands neither at `step` nor held from it, `tree`
+ * on an issue the workflow does not record, `slot` where the issue holds no slot, `waitingOn`
+ * outside `awaiting_person`, `architect` where the issue shows no architect, and `workers` where
+ * the full state's `workers` is empty. Its `slot` carries the index alone and each claim its state
+ * alone. */
 const legionObservedIssue = z.object({
   key: nonEmptyString,
   phase: z.enum(LEGION_PHASES),
+  stepRole: stepRole.optional(),
   tree: issueKey.optional(),
   slot: z.object({ index: z.number().int().nonnegative() }).optional(),
   waitingOn: legionWaitingOn.optional(),
@@ -1731,21 +1733,25 @@ export type LegionObservedState = z.output<typeof LegionObservedStateResponse>;
 
 /** The fields a state event's change names (the `state_change` outbox payload of
  * `packages/daemon/internal/record/outbox.go`), each one Dispatch observes of an issue: its phase,
- * its tree, its admission slot, what it waits on from a person, and one role's claim. */
-const LEGION_STATE_FIELDS = ["phase", "tree", "slot", "waitingOn", "claim"] as const;
+ * its tree, its admission slot, what it waits on from a person, one role's claim, and the role of
+ * its running step at `step` or held from it (`stepRole`, a role the deployment defines). */
+const LEGION_STATE_FIELDS = ["phase", "tree", "slot", "waitingOn", "claim", "stepRole"] as const;
 
 /** Each field's value as the state route serves it at that issue (`legionIssue`): the phase, the
- * key of the tree's root, the slot's index, the `waitingOn` view, and the claim's state. */
+ * key of the tree's root, the slot's index, the `waitingOn` view, the claim's state, and the
+ * running step's role. */
 const legionStateFieldValues = {
   phase: z.enum(LEGION_PHASES),
   tree: issueKey,
   slot: z.number().int().nonnegative(),
   waitingOn: legionWaitingOn,
   claim: z.enum(LEGION_CLAIM_STATES),
+  stepRole: stepRole,
 } satisfies Record<(typeof LEGION_STATE_FIELDS)[number], z.ZodType>;
 
 /** A change's `old` or `new`: a value of one of the fields, or `null` where the issue holds
- * none — no tree, no slot, no wait, no claim — and as `old` on the issue's first write. */
+ * none — no tree, no slot, no wait, no claim, no running step of a role of the deployment — and as
+ * `old` on the issue's first write. */
 const legionStateValue = z
   .union([
     legionStateFieldValues.phase,
@@ -1753,15 +1759,17 @@ const legionStateValue = z
     legionStateFieldValues.slot,
     legionStateFieldValues.waitingOn,
     legionStateFieldValues.claim,
+    legionStateFieldValues.stepRole,
   ])
   .nullable();
 
 /** One field a write moved, from `old` to `new`, each a value of that field. A `claim` change
- * names the claim's role, and a change of any other field names none. */
+ * names the claim's role, one of Legion's six or a role of the deployment (`stepRole`'s grammar),
+ * and a change of any other field names none. */
 const legionStateChange = z
   .object({
     field: z.enum(LEGION_STATE_FIELDS),
-    role: z.enum(LEGION_ROLES).optional(),
+    role: stepRole.optional(),
     old: legionStateValue,
     new: legionStateValue,
   })

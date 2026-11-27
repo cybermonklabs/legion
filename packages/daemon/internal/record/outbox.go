@@ -1922,13 +1922,14 @@ func (StateChange) OutboxKind() OutboxKind { return OutboxKindStateChange }
 // StateField names one field of an issue that a state change can move (stateevent.Field).
 type StateField = stateevent.Field
 
-// The five fields Dispatch observes of an issue, named as the state route serves them.
+// The six fields Dispatch observes of an issue, named as the state route serves them.
 const (
 	StateFieldPhase     = stateevent.FieldPhase
 	StateFieldTree      = stateevent.FieldTree
 	StateFieldSlot      = stateevent.FieldSlot
 	StateFieldWaitingOn = stateevent.FieldWaitingOn
 	StateFieldClaim     = stateevent.FieldClaim
+	StateFieldStepRole  = stateevent.FieldStepRole
 )
 
 // StateFieldChange is one field a write moved (stateevent.FieldChange).

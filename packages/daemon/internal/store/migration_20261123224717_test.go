@@ -18,9 +18,10 @@ import (
 // through everything before it whatever lands beside it.
 const membersOwedVersion = 20261123224717
 
-// issuePriorityVersion is the migration that adds issues.priority, and p0StartVersion the one that
-// adds issues.resolved_known, resolved_priority and priority_from (dispatch://INFRA-5636), each of
-// which PutIssue writes.
+// issuePriorityVersion is the migration that adds issues.priority, p0StartVersion the one that
+// adds issues.resolved_known, resolved_priority and priority_from (dispatch://INFRA-5636), and
+// observedStepRoleVersion (migration_20261127224354_test.go) the one that adds
+// issues.observed_step_role, each of which PutIssue writes.
 const (
 	issuePriorityVersion = 20261124060500
 	p0StartVersion       = 20261125181828
@@ -47,17 +48,17 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, membersOwedVersion-1)
-	// The seed goes through this release's PutIssue, which writes issues.priority and the resolved
-	// priority's three columns, which the waiting line's issue priority (20261124060500) and the P0
-	// start (20261125181828) add above this migration. Those are applied with the seed's schema, and
-	// Migrate, which decides each migration on its own row, then applies this one; none reads or
-	// writes another's column.
+	// The seed goes through this release's PutIssue, which writes issues.priority, the resolved
+	// priority's three columns and the observed step role, which the waiting line's issue priority
+	// (20261124060500), the P0 start (20261125181828) and the observed step role (20261127224354)
+	// add above this migration. Those are applied with the seed's schema, and Migrate, which decides
+	// each migration on its own row, then applies this one; none reads or writes another's column.
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	for _, migration := range all {
-		if migration.Version != issuePriorityVersion && migration.Version != p0StartVersion {
+		if migration.Version != issuePriorityVersion && migration.Version != p0StartVersion && migration.Version != observedStepRoleVersion {
 			continue
 		}
 		if _, err := store.apply(ctx, migration); err != nil {

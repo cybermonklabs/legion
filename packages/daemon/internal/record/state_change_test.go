@@ -434,7 +434,7 @@ func TestAnIssueWriteQueuesOneStateEventNamingEachFieldItMoved(t *testing.T) {
 
 // stepRoleField is the field a state change names for the role of the step an issue at step runs,
 // the route's `stepRole`.
-const stepRoleField = record.StateField("stepRole")
+const stepRoleField = record.StateFieldStepRole
 
 // A move of a task from one step of a role the deployment defines to another, with the issue at
 // step before and after, moves no phase: the role of the running step is what Dispatch reads of
