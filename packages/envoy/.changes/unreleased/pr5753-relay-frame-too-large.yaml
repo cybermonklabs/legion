@@ -11,7 +11,12 @@ body: |-
   `done` acknowledges the message and its `nak` has the server send it again, and the later messages
   arrive. The notice is the listener's own envelope on the message's own topic, and its payload
   names the message: `reason` `too_large`, its `event_id`, `original_topic`, `stream_seq`, `size`,
-  the `frame_size` those bytes make with the headers, and the server's `max_payload`. The listener's
-  size checks also keep the relay's headers their room now, so a message a message route or a role
-  forward accepts reaches a session whole, and one past that room is answered `413` naming the
-  message's size, its frame's size and the max payload.
+  the `frame_size` those bytes make with the headers, and the server's `max_payload`. It is built to
+  fit its own frame whatever the message holds: each text it copies is cut to one line of 160
+  characters, a `repo` past GitHub's own limits and an over-long role mark are left out, and `cut`
+  names every field cut or left out. The listener's size checks also keep the relay's headers their
+  room now, so a message either message route accepts, and a role send's forward to a live holder,
+  reaches a session whole, and one past that room is answered `413` naming the message's size, its
+  frame's size and the max payload. A copy the stream already holds - a role's kept copy, a role
+  lane's forward, a publish window's send of Dispatch's outbox, a delivery exception - is not held to
+  that room, and reaches its session whole or as the notice.
