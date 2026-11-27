@@ -533,10 +533,11 @@ func TestTheFirstStepOfATaskWhoseJoinBranchDidNotMergeIsToldToMergeIt(t *testing
 	seedTasks(t, pool, root.Key, root.Generation,
 		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
 		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
 		planTask{id: "h", steps: []string{"implementer:h"}, agents: []claim.Agent{"impl-h"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
 		planTask{id: "k", steps: []string{"implementer:k"}, agents: []claim.Agent{"impl-k"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
-		planTask{id: "z", steps: []string{"implementer:z"}, agents: []claim.Agent{"impl-z"}, needs: []string{"h", "k"}, state: record.TaskWaiting})
-	seedBranches(t, pool, root.Key, "a", "c", "h", "k")
+		planTask{id: "z", steps: []string{"implementer:z"}, agents: []claim.Agent{"impl-z"}, needs: []string{"d", "h", "k"}, state: record.TaskWaiting})
+	seedBranches(t, pool, root.Key, "a", "c", "d", "h", "k")
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		store := record.NewStore()
 		if err := store.SetJoinUnmerged(t.Context(), tx, root.Key, root.Generation, "h", true); err != nil {
