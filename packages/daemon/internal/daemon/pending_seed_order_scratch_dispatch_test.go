@@ -130,6 +130,10 @@ func (r *personHandoverRig) seedRanAfterStatusWrite(held *outboxHold, run pendin
 	if shown == "retro" {
 		t.Fatalf("Dispatch still shows %s retro once its status rows are done: no status write landed over the person's retro, so this run proves no order", run.parent.Key)
 	}
+	// The daemon applies the event of its own write too, so its copy of Dispatch and its record
+	// both show P's new status before the seeds read: a seed that read the daemon's store first
+	// cannot find P retro there by arriving before the echo.
+	r.applied(r.newestEvent(run.parent.Key, "issue.updated", func(e scratchEvent) bool { return e.status() == shown }))
 	held.release(run.root.Key)
 	testwait.Eventually(t, "the held pending-basis seed of "+run.root.Key+" to run", func() bool {
 		return r.outboxCount(run.root.Key, record.OutboxKindPendingBasisSeed) == 0
