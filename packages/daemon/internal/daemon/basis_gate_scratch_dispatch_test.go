@@ -689,6 +689,7 @@ func insertAtEnd(markdown string) map[string]string {
 // (internal/api): the rig runs no pod and no caller of it states a contract below this daemon's
 // own, so no caller here is narrowed.
 func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	pause, held := &registrationPause{}, &outboxHold{}
 	r := newPersonHandoverRig(t, 8)
 	r.tune = func(o *overrides) {
@@ -966,6 +967,7 @@ func onBasis(issue string, version int, served ...string) func(record.DesignGate
 // version reaches the daemon as an event it drops, and the registration's own read carries that
 // approval, opening the step on it and recording no basis.
 func TestBasisGateRefusals(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	drop := &consumerDrop{}
 	r := newPersonHandoverRig(t, 3)
 	r.tune = func(o *overrides) { o.dropConsumedEvent = drop.drops }
