@@ -520,6 +520,15 @@ export function transcriptAnswers(
     if (entry.kind === "call" && entry.callId !== undefined) calls.set(entry.callId, entry);
   const answers: Answer[] = [];
   for (const entry of upTo) {
+    // THE DELIVERY VARIANT, for the control of plan Task 5 and nothing else: a delivery to the
+    // role counts as an answer, so an architect's relay of GitHub's payload reads as GitHub's
+    // own answer about the head.
+    if (entry.kind === "delivery") {
+      const relayed = answerOfPayload(entry.text ?? "");
+      if (relayed !== null)
+        answers.push({ source: "transcript", place: "a delivery", at: entry.at, ...relayed });
+      continue;
+    }
     if (entry.kind !== "result" || entry.callId === undefined) continue;
     const call = calls.get(entry.callId);
     if (call === undefined) continue;
