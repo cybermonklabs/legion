@@ -2503,12 +2503,16 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
       comment.evaluate((row) => {
         const words = row.querySelector("[data-node-words]");
         return {
-          clipped: words === null ? 0 : words.scrollHeight - words.clientHeight,
+          clipped: words === null ? null : words.scrollHeight - words.clientHeight,
           height: Math.round(words?.getBoundingClientRect().height ?? 0),
           more: row.querySelectorAll("[data-node-more]").length,
         };
       })
     );
+    expect(
+      unfocused.clipped,
+      "the comment's row draws no words once the focus has left it"
+    ).not.toBeNull();
     expect(
       unfocused.more,
       "the comment's row cuts its words behind more once the focus has left it"
@@ -2749,109 +2753,90 @@ test("a press past inline HTML that ends a Spec statement of several lines keeps
   });
 });
 
-// The tester's finding at 983d5c9f: a press past a footnote's reference that ends a statement's
-// words puts the caret before the reference. The Spec view draws the reference as the text its
-// author wrote ("[^n1]"), since it draws the statement's block alone and the note's definition
-// stands elsewhere in the spec, while the editor holds it as an atom (`sup` of `footnote_reference`).
-// A press past the end of the words, where the reader sees "[^n1]" end them, then puts the caret
-// between the last word and the atom, and the reader's typing goes before the note. On a copy of
-// INFRA-1196, at 1440 x 900 and at 390 x 844, and at 422b723c as at 983d5c9f.
-// SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view and a press, each read
-// once the page has stopped moving.
-test("a press past a footnote's reference that ends a Spec statement puts the caret after it", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = seedStatement(
-    () =>
-      `${statementBlock(LONG_BLOCK_ID, "The reader presses past the note that ends these words[^n1]")}\n\n[^n1]: The note the words end with.`
-  );
-  await phase(browser, seed, async (page, seeded) => {
-    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    // The press is 20 px past the end of the words' last line, at its middle.
-    const at = await long.locator("[data-node-words]").evaluate((words) => {
-      const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-      let last: Text | null = null;
-      for (let text = walker.nextNode(); text !== null; text = walker.nextNode())
-        last = text as Text;
-      const end = document.createRange();
-      end.setStart(last ?? words, Math.max(0, (last?.data.length ?? 1) - 1));
-      end.setEnd(last ?? words, last?.data.length ?? 0);
-      const box = end.getBoundingClientRect();
-      return {
-        x: Math.round(Math.min(box.right + 20, words.getBoundingClientRect().right - 2)),
-        y: Math.round((box.top + box.bottom) / 2),
-      };
-    });
-    expect(
-      await long.evaluate((row, point) => {
-        const hit = document.elementFromPoint(point.x, point.y);
-        const words = row.querySelector("[data-node-words]");
-        return words?.contains(hit) === true && hit?.closest("a, button") === null;
-      }, at),
-      `the point (${at.x}, ${at.y}) is not on the statement's words past their end`
-    ).toBe(true);
-    await settledScrollTop(page);
-    await page.mouse.click(at.x, at.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message: "a press past the end of the statement's words does not put the caret in them",
-      })
-      .toBe(true);
-    const note = '[data-type="footnote_reference"]';
-    await expect(
-      long.locator(`[data-editor-box] ${note}`),
-      "the statement's editor holds no footnote's reference at the end of its words"
-    ).toHaveCount(1);
-    expect(
-      await long.evaluate((row, selector) => {
-        const placed = row.querySelector(`[data-editor-box] ${selector}`);
-        const caret = window.getSelection();
-        if (placed === null || caret?.anchorNode == null) return false;
-        const after = document.createRange();
-        after.setStartAfter(placed);
-        return after.comparePoint(caret.anchorNode, caret.anchorOffset) >= 0;
-      }, note),
-      "a press past the footnote's reference that ends the statement's words puts the caret before it"
-    ).toBe(true);
-  });
-});
-
-/** One inline kind a statement's editor holds, as a statement of the row below writes it, and how
- *  the Spec view's drawn words show it: by an element (`selector`) or by the text its author wrote
- *  (`text`). A kind the view draws as a link takes no caret where it is pressed: the link opens. */
-interface InlineKind {
+/** One inline kind a statement's editor holds, as a statement of the row below writes it. A kind
+ *  the view draws as a link takes no caret where it is pressed: the link opens. A kind the view
+ *  draws with no box (`boxless`) holds nothing to press inside it. */
+interface KindWritten {
+  readonly boxless?: true;
   readonly kind: string;
   readonly link: boolean;
-  readonly selector?: string;
-  readonly text?: string;
   readonly written: string;
 }
+
+/** One inline kind of the row below, and how the Spec view's drawn words show it: by an element
+ *  (`selector`) or by the text its author wrote (`text`), never both. */
+type InlineKind =
+  | (KindWritten & { readonly selector: string; readonly text?: never })
+  | (KindWritten & { readonly selector?: never; readonly text: string });
 
 /** Where a press of the row below lands, for one kind: the word before it, the kind itself, the
  *  word after it, past the end of the line it ends, and past the end of the words it ends. */
 type PressPlace = "before" | "inside" | "after" | "line end" | "words end";
 
-// Decision 552: every inline kind a statement's editor holds otherwise than the Spec view draws it,
-// pressed at every place a press can stand, at 1440 and 390 px, with the caret the editor places
-// read against the place pressed. Each kind is one statement of three lines:
-// `prior<n> K later<n> …`, a hard break, `… ends with<n> K`, a hard break, `… the words end with<n>
-// K`. So K stands inside a line, ends a line and ends the words. A press on `prior<n>` or on
-// `later<n>` puts the caret in that word. A press inside K puts it at K's start, before an atom.
+/** Where the caret stands in a block of a statement's editor: the text its editable runs hold
+ *  before it, and how many elements the caret cannot enter and how many hard breaks stand before
+ *  it. */
+interface CaretReading {
+  readonly atoms: number;
+  readonly breaks: number;
+  readonly text: string;
+}
+
+/** A place of a statement's block: before its `before`th hard break, counted from 0, or its end. */
+type BlockPlace = { readonly before: number } | "end";
+
+/** What a press of the row below is wanted to do: open the link it lands on, put the caret in
+ *  `word`, put it where `caret` reads, or put it at `caretAt`, a place of the block read from the
+ *  editor the press opened. */
+type Wanted =
+  | "link"
+  | { readonly word: string }
+  | { readonly caret: CaretReading }
+  | { readonly caretAt: BlockPlace };
+
+// Every inline kind a statement's editor holds otherwise than the Spec view draws it, pressed at
+// every place a press can stand, at 1440 and 390 px, with the caret the editor places read
+// against the place pressed. The kinds are a reference, a mention, a picture of an artifact,
+// inline HTML, a footnote's reference whose note the spec defines, a footnote call the spec
+// defines no note for, an autolink to an issue, an image from another website, a picture whose
+// reference names no artifact, inline HTML long enough to wrap onto a second line at 390 px, and
+// inline HTML whose last word before its closing `">` is Hebrew. Each kind is one statement of
+// three lines: `prior<n> K later<n> …`, a hard break, `… ends with<n> K`, a hard break, `… the
+// words end with<n> K`. So K stands inside a line, ends a line and ends the words. A press on
+// `prior<n>` or on `later<n>` puts the caret in that word. A press inside K puts it at K's start,
+// before an atom; the footnote call with no note is text the view draws and the editor holds as
+// its author wrote it, so a press on its third character puts the caret before that character.
 // Past the end of the line K ends, it goes before the hard break, after K. Past the end of the
-// words, it goes after K, where the block ends. The caret's place is read from the editor as the
-// text its editable runs hold before it and the elements the caret cannot enter before it, and
-// compared with the same reading of the place a cell names. A kind the view draws as a link - a
-// reference, a mention, a picture's caption - opens it where pressed, so its press inside reads
-// that the caret did not move into the words. A hard break holds no box to press, and it can end
-// no words, so its cells are the line it ends and the word after it. Every cell is read, and the
-// row fails once, naming each cell whose caret is not at its place.
-// SLOW(>=2s): a seeded issue of sixty statements and six more, a second issue to cite, a load of
-// the Spec view and about sixty presses at two widths, each read once the page has stopped moving.
+// words, it goes after K, where the block ends: past the footnote's reference that ends the
+// words, after the reference and not before it. The caret's place is read from the editor as the
+// text its editable runs hold before it, the elements the caret cannot enter before it and the
+// hard breaks before it, and compared with the same reading of the place a cell names; the breaks
+// tell a caret before a hard break from one at the start of the line after it, whose text and
+// atoms before it are the same. A kind the view draws as a link - a reference, a mention, a
+// picture's caption, the autolink by the cited issue's key and title - opens it where pressed,
+// so its press inside reads that the caret did not move into the words. The picture that names
+// no artifact is drawn as a link with no words, which holds no box to press, so it has no cell
+// inside it. A hard break holds no box to press, and it can end no words, so its cells are the
+// line it ends and the word after it. The other website is answered with a grey picture, so the
+// image is drawn as it stands once loaded and no cell waits on a network the run may not reach.
+// A cell presses once its statement's words stand as the page settles on them, every reference
+// drawn by its target's name and every picture's load ended, and logs the boxes its kind draws
+// for the unit table of `pressed-words.test.ts`. Every cell is read, and the row fails once,
+// naming each cell whose caret is not at its place.
+// SLOW(>=2s): a seeded issue of sixty statements and twelve more, a second issue to cite, a load
+// of the Spec view and 112 presses, 56 at each of two widths, each read once the page has stopped
+// moving.
 test("a press on each inline kind of a Spec statement, at each place, puts the caret where it was pressed", async ({
   browser,
 }) => {
-  test.setTimeout(600_000);
+  test.setTimeout(1_200_000);
+  // The image from another website a statement shows, and the bytes answered for it: a grey PNG
+  // picture 48 px wide and 24 px tall.
+  const foreignPicture = "https://example.com/photo.png";
+  const greyPicture = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAADAAAAAYCAAAAACZliEAAAAAGElEQVR42mOYSSJgGNUwqmFUw6gG2moAAMc7sJ98XJveAAAAAElFTkSuQmCC",
+    "base64"
+  );
   const seed = async () => {
     const seeded = await seedTallSpec();
     const cited = await createIssue({
@@ -2879,7 +2864,54 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         written: `![shot.png](dispatch://${seeded.key}/artifact/shot-png@v1)`,
       },
       { kind: "inline HTML", link: false, selector: '[data-type="html"]', written: "<name>" },
-      { kind: "footnote reference", link: false, text: "[^k5]", written: "[^k5]" },
+      // The schema's own `sup`, holding the label, as the view draws a call whose note the spec
+      // defines (the definition the seed writes after the statements).
+      {
+        kind: "footnote reference",
+        link: false,
+        selector: 'sup[data-type="footnote_reference"]',
+        written: "[^k5]",
+      },
+      // A label the spec defines no note for: the view draws the call as the text written.
+      { kind: "footnote call with no definition", link: false, text: "[^zz6]", written: "[^zz6]" },
+      // The link the body's pass over its anchors hands to `RefLink`, which draws the cited
+      // issue's key and title in it (`RefLink.tsx`'s `collectReferenceAnchors`); the row's own
+      // reference pass leaves a link alone, so it carries no `data-row-reference`.
+      {
+        kind: "autolink",
+        link: true,
+        selector: "a[data-dispatch-ref]",
+        written: `<dispatch://${cited.key}>`,
+      },
+      // An `img`, as the serializer draws an image whose address is no Dispatch reference.
+      {
+        kind: "image from another website",
+        link: false,
+        selector: "img",
+        written: `![photo](${foreignPicture})`,
+      },
+      // The serializer's link with no words for a picture whose reference names no artifact
+      // (`markdown-serializer.ts`'s `pictureSerializer`), which the same pass hands to `RefLink`;
+      // its words are none, so `RefLink` draws nothing in it.
+      {
+        boxless: true,
+        kind: "picture that names no artifact",
+        link: true,
+        selector: "a[data-dispatch-ref]",
+        written: `![shot](dispatch://${cited.key})`,
+      },
+      {
+        kind: "inline HTML that wraps",
+        link: false,
+        selector: '[data-type="html"]',
+        written: '<span title="a placeholder long enough to wrap onto a second line of the words">',
+      },
+      {
+        kind: "inline HTML that ends in Hebrew",
+        link: false,
+        selector: '[data-type="html"]',
+        written: '<span title="the note שלום">',
+      },
     ];
     const blocks = kinds.map((one, index) =>
       statementBlock(
@@ -2889,8 +2921,13 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
           `the words end with${index + 1} ${one.written}`
       )
     );
+    // The hard break's statement, after the last kind's.
+    const broken = kinds.length + 1;
     blocks.push(
-      statementBlock("r-kind-6", "prior6 the first line ends here\\\nlater6 the second line")
+      statementBlock(
+        `r-kind-${broken}`,
+        `prior${broken} the first line ends here\\\nlater${broken} the second line`
+      )
     );
     await editArtifact(seeded.specArtifactId, {
       ops: [
@@ -2904,6 +2941,10 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
     return { ...seeded, kinds };
   };
   await phase(browser, seed, async (page, seeded) => {
+    // The other website is answered here, with the grey picture.
+    await page.route(foreignPicture, (route) =>
+      route.fulfill({ body: greyPicture, contentType: "image/png" })
+    );
     const body = await openSpecStatement(page, seeded, "r-kind-1").then(() =>
       issuePage(page).locator("[data-spec-body]")
     );
@@ -2946,11 +2987,61 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         },
         { nth, selector: kind.selector, text: kind.text }
       );
-    /** Where the caret stands in block `blockId` of `row`'s editor: the text its editable runs
-     *  hold before it, and how many elements the caret cannot enter stand before it. With
-     *  `place`, the same reading of that place: `{ before: n }` before the block's `n`th hard
-     *  break, or "end", the block's end. None where the caret is not in that block. */
-    const caretPlace = (row: Locator, blockId: string, place?: { before: number } | "end") =>
+    /** The point of a press on character `into` of the first `text` in `row`'s drawn words: 1 px
+     *  into its left edge, at its middle, which puts the caret before that character. None where
+     *  the words hold no such text. */
+    const charPoint = (row: Locator, text: string, into: number) =>
+      row.locator("[data-node-words]").evaluate(
+        (words, { into, text }) => {
+          const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            const at = (node.textContent ?? "").indexOf(text);
+            if (at < 0) continue;
+            const range = document.createRange();
+            range.setStart(node, at + into);
+            range.setEnd(node, at + into + 1);
+            const box = range.getBoundingClientRect();
+            return { x: Math.round(box.left + 1), y: Math.round((box.top + box.bottom) / 2) };
+          }
+          return undefined;
+        },
+        { into, text }
+      );
+    /** The point 20 px past the end of a line of `row`'s drawn words, at the middle of the last
+     *  box drawn on it, kept 2 px inside the words: the line that ends before the words' `end`
+     *  hard break, or their last line. None where that line draws no box. */
+    const pastLineEnd = (row: Locator, end: BlockPlace) =>
+      row.locator("[data-node-words]").evaluate((words, end) => {
+        const paragraph = words.querySelector("p") ?? words;
+        const line = document.createRange();
+        line.setStart(paragraph, 0);
+        if (end === "end") line.setEnd(paragraph, paragraph.childNodes.length);
+        else {
+          const broken = paragraph.querySelectorAll("br")[end.before];
+          if (broken === undefined) return undefined;
+          line.setEndBefore(broken);
+        }
+        const boxes = [...line.getClientRects()].filter((box) => box.width > 0);
+        const last = boxes.at(-1);
+        if (last === undefined) return undefined;
+        // The line ends where the rightmost box beside the last one ends: a chip's own box is
+        // wider than its words, and text written right to left ends its run on its left.
+        const right = Math.max(
+          ...boxes
+            .filter((box) => box.bottom > last.top && box.top < last.bottom)
+            .map((box) => box.right)
+        );
+        return {
+          x: Math.round(Math.min(right + 20, words.getBoundingClientRect().right - 2)),
+          y: Math.round((last.top + last.bottom) / 2),
+        };
+      }, end);
+    /** Where the caret stands in block `blockId` of `row`'s editor (`CaretReading`). With
+     *  `place`, the same reading of that place of the block. None where the caret is not in that
+     *  block. A caret before a hard break and one at the start of the line after it hold the same
+     *  text and atoms before them, so the reading counts the breaks too: each `br` but the one
+     *  ProseMirror draws at a paragraph's end so its last line keeps its height. */
+    const caretPlace = (row: Locator, blockId: string, place?: BlockPlace) =>
       row.evaluate(
         (element, { block, target }) => {
           const editor = element.querySelector<HTMLElement>(
@@ -2973,6 +3064,7 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
           }
           let text = "";
           let atoms = 0;
+          let breaks = 0;
           const walker = document.createTreeWalker(
             paragraph,
             NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT
@@ -2986,6 +3078,12 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
                 if (within) break;
               }
             } else if (
+              node instanceof HTMLBRElement &&
+              node.parentElement?.isContentEditable === true &&
+              !node.classList.contains("ProseMirror-trailingBreak")
+            ) {
+              breaks += 1;
+            } else if (
               node instanceof HTMLElement &&
               node.parentElement?.isContentEditable === true &&
               !node.isContentEditable &&
@@ -2994,10 +3092,66 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
               atoms += 1;
             }
           }
-          return { atoms, text };
+          return { atoms, breaks, text };
         },
         { block: blockId, target: place }
       );
+    /** A cell's one entry: the point its press at `place` of `kind` in `row`, statement `index`,
+     *  stands at, and what the press is wanted to do. A cell that presses a kind logs the boxes
+     *  the kind draws there. */
+    const entryOf = async (
+      cell: string,
+      row: Locator,
+      index: number,
+      kind: InlineKind | undefined,
+      place: PressPlace
+    ): Promise<{
+      readonly point: { x: number; y: number } | undefined;
+      readonly wanted: Wanted;
+    }> => {
+      if (place === "before" || place === "after") {
+        const word = `${place === "before" ? "prior" : "later"}${index}`;
+        // The third character of the word, or the first where the word starts the line a hard
+        // break opens, which reads that the press goes after the break.
+        const into = kind === undefined && place === "after" ? 0 : 2;
+        return { point: await charPoint(row, word, into), wanted: { word } };
+      }
+      if (kind === undefined) {
+        // The end of the line the hard break ends.
+        return { point: await pastLineEnd(row, { before: 0 }), wanted: { caretAt: { before: 0 } } };
+      }
+      const boxes = await kindBoxes(
+        row,
+        kind,
+        place === "inside" ? 0 : place === "line end" ? 1 : 2
+      );
+      // The boxes the real view draws, for the unit table of `pressed-words.test.ts`.
+      console.log(`E2E-BOXES ${cell} ${JSON.stringify(boxes)}`);
+      if (place !== "inside") {
+        const end: BlockPlace = place === "line end" ? { before: 1 } : "end";
+        return { point: await pastLineEnd(row, end), wanted: { caretAt: end } };
+      }
+      if (kind.text !== undefined) {
+        return {
+          point: await charPoint(row, kind.text, 2),
+          wanted: {
+            caret: { atoms: 0, breaks: 0, text: `prior${index} ${kind.text.slice(0, 2)}` },
+          },
+        };
+      }
+      // The middle of the kind's first box.
+      const box = boxes.at(0);
+      return {
+        point:
+          box === undefined
+            ? undefined
+            : {
+                x: Math.round((box.left + box.right) / 2),
+                y: Math.round((box.top + box.bottom) / 2),
+              },
+        wanted: kind.link ? "link" : { caret: { atoms: 0, breaks: 0, text: `prior${index} ` } },
+      };
+    };
     /** Expectations that note a cell's failure and go on to the next cell: the row reads every
      *  cell, and fails once, naming each cell whose caret is not where the press was. */
     const softly = expect.configure({ soft: true });
@@ -3014,84 +3168,46 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         0
       );
     };
+    const presses: { index: number; kind: InlineKind | undefined; place: PressPlace }[] = [];
+    for (const [at, kind] of seeded.kinds.entries()) {
+      for (const place of ["before", "inside", "after", "line end", "words end"] as const) {
+        // A kind drawn with no box holds nothing to press inside it.
+        if (place !== "inside" || kind.boxless !== true)
+          presses.push({ index: at + 1, kind, place });
+      }
+    }
+    const broken = seeded.kinds.length + 1;
+    presses.push({ index: broken, kind: undefined, place: "line end" });
+    presses.push({ index: broken, kind: undefined, place: "after" });
     for (const width of [DESKTOP.width, 390]) {
       await page.setViewportSize({ height: DESKTOP.height, width });
       const address = page.url();
-      const presses: { index: number; kind: InlineKind | undefined; place: PressPlace }[] = [];
-      for (const [at, kind] of seeded.kinds.entries()) {
-        for (const place of ["before", "inside", "after", "line end", "words end"] as const) {
-          presses.push({ index: at + 1, kind, place });
-        }
-      }
-      presses.push({ index: 6, kind: undefined, place: "line end" });
-      presses.push({ index: 6, kind: undefined, place: "after" });
       for (const { index, kind, place } of presses) {
         const cell = `${width} px, ${kind?.kind ?? "hard break"}, ${place}`;
         const row = statementOf(index);
         await toMiddle(row);
-        const words = row.locator("[data-node-words]");
-        let point: { x: number; y: number } | undefined;
-        if (place === "before" || place === "after") {
-          const word = `${place === "before" ? "prior" : "later"}${index}`;
-          point = await words.evaluate(
-            (drawn, { into, wanted }) => {
-              const walker = document.createTreeWalker(drawn, NodeFilter.SHOW_TEXT);
-              for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-                const at = (node.textContent ?? "").indexOf(wanted);
-                if (at < 0) continue;
-                const range = document.createRange();
-                // The third character of the word, or the first where the word starts the line a
-                // hard break opens, which reads that the press goes after the break.
-                range.setStart(node, at + into);
-                range.setEnd(node, at + into + 1);
-                const box = range.getBoundingClientRect();
-                return { x: Math.round(box.left + 1), y: Math.round((box.top + box.bottom) / 2) };
-              }
-              return undefined;
-            },
-            { into: kind === undefined && place === "after" ? 0 : 2, wanted: word }
-          );
-        } else if (kind === undefined) {
-          // The end of the line the hard break ends: past the last word before it.
-          point = await words.evaluate((drawn) => {
-            const broken = drawn.querySelector("br");
-            const range = document.createRange();
-            if (broken === null || broken.previousSibling === null) return undefined;
-            range.selectNode(broken.previousSibling);
-            const box = [...range.getClientRects()].at(-1);
-            const right = drawn.getBoundingClientRect().right - 2;
-            return box === undefined
-              ? undefined
-              : {
-                  x: Math.round(Math.min(box.right + 20, right)),
-                  y: Math.round((box.top + box.bottom) / 2),
-                };
-          });
-        } else {
-          const nth = place === "inside" ? 0 : place === "line end" ? 1 : 2;
-          const boxes = await kindBoxes(row, kind, nth);
-          // The boxes the real view draws, for the unit table of `pressed-words.test.ts`.
-          console.log(`E2E-BOXES ${cell} ${JSON.stringify(boxes)}`);
-          const box = place === "inside" ? boxes[0] : boxes.at(-1);
-          if (box !== undefined) {
-            const right = await words.evaluate((drawn) => drawn.getBoundingClientRect().right - 2);
-            point =
-              place === "inside"
-                ? {
-                    x: Math.round((box.left + box.right) / 2),
-                    y: Math.round((box.top + box.bottom) / 2),
-                  }
-                : {
-                    x: Math.round(Math.min(box.right + 20, right)),
-                    y: Math.round((box.top + box.bottom) / 2),
-                  };
-          }
-        }
+        // The statement's words as the page settles on them: none of its references drawn as the
+        // address its author wrote, as one is until its target's name arrives, and none of its
+        // pictures still loading. The boxes the cell reads and presses are then the reader's.
+        await expect
+          .poll(
+            () =>
+              row
+                .locator("[data-node-words]")
+                .evaluate(
+                  (words) =>
+                    !(words.textContent ?? "").includes("dispatch://") &&
+                    [...words.querySelectorAll("img")].every((picture) => picture.complete)
+                ),
+            { message: `${cell}: the statement still draws an address or a picture still loading` }
+          )
+          .toBe(true);
+        const { point, wanted } = await entryOf(cell, row, index, kind, place);
         expect(point, `${cell}: the statement draws nothing to press there`).toBeDefined();
         const at = point ?? { x: 0, y: 0 };
         const block = `r-kind-${index}`;
         await page.mouse.click(at.x, at.y);
-        if (place === "inside" && kind?.link === true) {
+        if (wanted === "link") {
           // A link opens where it is pressed, so once the page stops moving no caret is in the
           // words.
           await settledScrollTop(page);
@@ -3108,25 +3224,18 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
             timeout: 10_000,
           })
           .toBe(true);
-        if (place === "before" || place === "after") {
-          const word = `${place === "before" ? "prior" : "later"}${index}`;
+        if ("word" in wanted) {
           softly(
             await wordAtCaret(page, "selection"),
             `${cell}: the caret is in another word`
-          ).toBe(word);
+          ).toBe(wanted.word);
         } else {
-          const wanted =
-            place === "inside"
-              ? { atoms: 0, text: `prior${index} ` }
-              : await caretPlace(
-                  row,
-                  block,
-                  place === "words end" ? "end" : { before: kind === undefined ? 0 : 1 }
-                );
+          const reading =
+            "caret" in wanted ? wanted.caret : await caretPlace(row, block, wanted.caretAt);
           softly(
             await caretPlace(row, block),
             `${cell}: the caret stands elsewhere than the place pressed`
-          ).toEqual(wanted);
+          ).toEqual(reading);
         }
         await recover(row, address, "editor");
       }
