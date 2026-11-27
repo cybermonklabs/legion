@@ -399,10 +399,6 @@ type legionBoardCard struct {
 	Waiting  *legionBoardWaiting `json:"waiting"`
 	Tree     string              `json:"tree"`
 	Children int                 `json:"children"`
-	// wait is the daemon's own record WaitingOn was made from (legion.Wait), which the waiting
-	// rule reads once every card is made and numbered (cardWaiting). It carries no JSON: the
-	// wire shape is WaitingOn, and this is the value that one was made from.
-	wait *legion.Wait
 }
 
 // legionBoardWait is what a root in `awaiting_person` waits on, as the daemon recorded it: the
@@ -1121,12 +1117,10 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 	// The wait the Legion intake recorded is the daemon's object as the issue's state holds it,
 	// which an issue's own read carries whole. It is decoded once, by the one decode of the field
 	// (legion.ParseWait), into the rule's own shape, and nil where it names no kind or is not the
-	// shape it is read as; the body carries the three fields a card shows in the shape the view
-	// reads, which is this one mapping. The card keeps the decoded value as well, which is what
-	// the waiting rule reads (cardWaiting).
+	// shape it is read as; the body carries it as the view reads it, the same three fields, and
+	// the waiting rule reads it back from there (cardWaiting).
 	if wait, read := legion.ParseWait(issue.state.WaitingOn); read {
-		card.wait = wait
-		card.WaitingOn = &legionBoardWait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
+		card.WaitingOn = (*legionBoardWait)(wait)
 	}
 	if card.BlockedBy == nil {
 		card.BlockedBy = []string{}
@@ -1143,14 +1137,10 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 // to hand (legion.CardWaiting); this is its one wire mapping. The wait it reads is the one the
 // card was made from, never a second read of the issue.
 func cardWaiting(card *legionBoardCard, column string) *legionBoardWaiting {
-	waiting := legion.CardWaiting(legion.WaitingInput{
+	return (*legionBoardWaiting)(legion.CardWaiting(legion.WaitingInput{
 		Phase: card.Phase, Column: column, WaitingPlace: card.WaitingPlace,
-		BlockedBy: card.BlockedBy, PhaseSince: card.PhaseSince, WaitingOn: card.wait,
-	})
-	if waiting == nil {
-		return nil
-	}
-	return &legionBoardWaiting{Reason: waiting.Reason, Since: waiting.Since, BlockedBy: waiting.BlockedBy}
+		BlockedBy: card.BlockedBy, PhaseSince: card.PhaseSince, WaitingOn: (*legion.Wait)(card.WaitingOn),
+	}))
 }
 
 // sortedKeys is every issue the daemon reported, in Dispatch's rank order, with the issues

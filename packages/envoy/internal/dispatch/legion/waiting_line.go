@@ -46,11 +46,11 @@ type WaitingLineInput struct {
 // draws no card for.
 type WaitingLine struct {
 	input WaitingLineInput
-	// read is whether a read recorded an admission block at all (QueuedUnread).
-	read bool
-	// order is the issues the line names, in the daemon's own order, each one once; places is
-	// the place each of them holds, from 1; blockers is the issues a blocker link holds each
-	// issue on.
+	// order is the issues the line names that the daemon reports, in the daemon's own order, each
+	// one once; places is each of them by the index of its first element in Admission.Waiting plus
+	// one, counting every element of that slice, the keys the daemon reports nothing of included,
+	// which is the number Admission.Place answers; blockers is the issues a blocker link holds
+	// each issue on.
 	order    []string
 	places   map[string]int
 	blockers map[string][]string
@@ -62,7 +62,8 @@ type WaitingLine struct {
 // NewWaitingLine numbers the line and takes the blocker links, by the admission block's one rule
 // of which entry names an issue's blockers (Admission.Blockers), which one issue's read names
 // them by too. A key the daemon reports nothing of takes no place: the board draws no card for
-// it, so no reader has a card to put a place on.
+// it, so no reader has a card to put a place on. It still counts in the places of the keys after
+// it, as it does in Admission.Place's.
 // A field of the admission block it comes to read goes into SameLine too: a reader that holds a
 // line asks SameLine whether the next block builds another one.
 func NewWaitingLine(input WaitingLineInput) *WaitingLine {
@@ -75,8 +76,7 @@ func NewWaitingLine(input WaitingLineInput) *WaitingLine {
 	if input.Admission == nil {
 		return line
 	}
-	line.read = true
-	for _, key := range input.Admission.Waiting {
+	for index, key := range input.Admission.Waiting {
 		if _, reported := input.Issue(key); !reported {
 			continue
 		}
@@ -84,7 +84,7 @@ func NewWaitingLine(input WaitingLineInput) *WaitingLine {
 			continue
 		}
 		line.order = append(line.order, key)
-		line.places[key] = len(line.places) + 1
+		line.places[key] = index + 1
 	}
 	line.blockers = input.Admission.Blockers()
 	return line
@@ -110,7 +110,7 @@ func SameLine(a, b *Admission) bool {
 // the issue or a blocker link holds it.
 func (l *WaitingLine) queued(key string) Queued {
 	switch {
-	case !l.read:
+	case l.input.Admission == nil:
 		return QueuedUnread
 	case l.places[key] > 0 || len(l.blockers[key]) > 0:
 		return QueuedYes
@@ -119,16 +119,17 @@ func (l *WaitingLine) queued(key string) Queued {
 	}
 }
 
-// Place is the issue's place in the daemon's line, from 1, by the line's one rule (Admission.Place),
-// which one issue's read answers by too: every key the line names counts, the keys the daemon
-// reports nothing of included, so a card, its stored row and that read put one issue in one place.
-// It is nil for an issue the line does not name, and for one the daemon reports nothing of, which
-// carries no card. Each call answers a pointer of its own, which a caller may keep.
+// Place is the issue's place in the daemon's line, from 1, the number the line's one rule answers
+// (Admission.Place), which one issue's read answers by too: every key the line names counts, the
+// keys the daemon reports nothing of included, so a card, its stored row and that read put one
+// issue in one place. It is nil for an issue the line does not name, and for one the daemon
+// reports nothing of, which carries no card. Each call answers a pointer of its own, which a
+// caller may keep.
 func (l *WaitingLine) Place(key string) *int {
-	if _, named := l.places[key]; !named {
+	place, named := l.places[key]
+	if !named {
 		return nil
 	}
-	place, _, _ := l.input.Admission.Place(key)
 	return &place
 }
 

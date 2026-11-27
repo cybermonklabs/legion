@@ -19,8 +19,7 @@ type WokenLoop struct {
 	// and non-blocking send coalesce any number of changes into one signal. A signal that
 	// arrives while a pass runs stays in that buffer and earns one pass after it, so a change the
 	// running pass read too early is still served, and any number of changes during a pass earn
-	// that one pass; the pass can see the signal waiting (WakeOwed). Nil is a loop that runs only
-	// at start and when its passes ask to.
+	// that one pass. Nil is a loop that runs only at start and when its passes ask to.
 	Wake <-chan struct{}
 	// MinGap is the least time from the start of one pass to the start of the next, whatever woke
 	// it: wakes that arrive sooner collapse into the one pass at the end of the gap, so a loop under
@@ -60,25 +59,6 @@ type WokenLoop struct {
 // also reports it did not run, and the loop returns then rather than retrying.
 func RunWoken(ctx context.Context, loop WokenLoop) {
 	loop.run(ctx, Exclusive)
-}
-
-// wakeKey is the key a pass's context carries its loop's wake under (WithWake).
-type wakeKey struct{}
-
-// WithWake is ctx carrying wake as the wake of the loop whose pass runs under it, which WakeOwed
-// reads: what a WokenLoop gives each of its passes, and what a test of a pass gives it.
-func WithWake(ctx context.Context, wake <-chan struct{}) context.Context {
-	return context.WithValue(ctx, wakeKey{}, wake)
-}
-
-// WakeOwed reports, without blocking and without taking it, whether a signal waits in the wake of
-// the loop whose pass runs under ctx: a change arrived that the loop runs another pass for as soon
-// as this one returns. A pass may stop work it can leave to a later pass, so that the owed pass,
-// and the change behind the wake, start sooner. It answers false under a context no loop gave its
-// wake, and for a loop with none.
-func WakeOwed(ctx context.Context) bool {
-	wake, _ := ctx.Value(wakeKey{}).(<-chan struct{})
-	return len(wake) > 0
 }
 
 // MergeWakes is the one wake a WokenLoop reads, signalled by any of wakes: a loop woken by more
@@ -188,10 +168,9 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 	}
 }
 
-// attempt runs one pass, under the lease when the loop has one, with the loop's wake on its
-// context (WakeOwed), and reports whether it ran and the due time it returned.
+// attempt runs one pass, under the lease when the loop has one, and reports whether it ran and
+// the due time it returned.
 func (l WokenLoop) attempt(ctx context.Context, exclusive ExclusiveFunc) (next time.Time, ran bool) {
-	ctx = WithWake(ctx, l.Wake)
 	if l.Lease == "" {
 		return l.Pass(ctx), true
 	}

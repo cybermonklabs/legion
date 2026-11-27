@@ -8,6 +8,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
 
@@ -45,11 +47,14 @@ type projectStanding struct {
 // it.
 //
 // A project is read whole - a pass of this same loop that runs ComputeProject over the project
-// rather than Compute over a key set - where no build has read it whole (it holds no record of
-// issue_facts_computed), where another build read it whole before this process started, where
-// the rows that record counted have gone, or where lost says the change cursor fell below the
-// log, which loses the changes of every project at once. The first run on an empty table is the
-// first of those cases and needs no second code path.
+// rather than computeKeys over a key set - where no build has read it whole (it holds no record
+// of issue_facts_computed), where another build read it whole before this process started, where
+// the rows that record counted have gone, or where lost says the change cursor may have passed
+// over changes it never read, which loses the changes of every project at once. That is
+// delivery.CursorLost's test: the log's newest seq stands below the cursor's, or the change the
+// cursor rests on has left the log or been replaced while it was younger than the retention, or
+// after the consumer last read the log to its end more than the retention ago. The first run on
+// an empty table is the first of those cases and needs no second code path.
 //
 // The mark is a row of issue_facts_computed, which the pass that read the project whole writes
 // (markComputedWhole). "Never computed" is read from that record and not from "this project
@@ -348,16 +353,8 @@ func openRows(ctx context.Context, q Querier, project string) ([]string, error) 
 	if err != nil {
 		return nil, fmt.Errorf("read the open rows of %s: %w", project, err)
 	}
-	defer rows.Close()
-	open := []string{}
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("read the open rows of %s: %w", project, err)
-		}
-		open = append(open, key)
-	}
-	if err := rows.Err(); err != nil {
+	open, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("read the open rows of %s: %w", project, err)
 	}
 	return open, nil
@@ -403,15 +400,11 @@ func filingsToCompute(ctx context.Context, q Querier, project string, keys []str
 		if err != nil {
 			return nil, fmt.Errorf("read the stored filings of %d issues of %s: %w", len(keys), project, err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var key string
-			if err := rows.Scan(&key); err != nil {
-				return nil, fmt.Errorf("read the stored filings of %d issues of %s: %w", len(keys), project, err)
-			}
+		var key string
+		if _, err := pgx.ForEachRow(rows, []any{&key}, func() error {
 			set[key] = true
-		}
-		if err := rows.Err(); err != nil {
+			return nil
+		}); err != nil {
 			return nil, fmt.Errorf("read the stored filings of %d issues of %s: %w", len(keys), project, err)
 		}
 	}
@@ -471,17 +464,8 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 	if err != nil {
 		return nil, fmt.Errorf("read the stored roots of %d moved issues of %s: %w", len(wasMoved), project, err)
 	}
-	roots := []string{}
-	for stored.Next() {
-		var root string
-		if err := stored.Scan(&root); err != nil {
-			stored.Close()
-			return nil, fmt.Errorf("read the stored roots of %d moved issues of %s: %w", len(wasMoved), project, err)
-		}
-		roots = append(roots, root)
-	}
-	stored.Close()
-	if err := stored.Err(); err != nil {
+	roots, err := pgx.CollectRows(stored, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("read the stored roots of %d moved issues of %s: %w", len(wasMoved), project, err)
 	}
 	if len(roots) == 0 {
@@ -494,16 +478,8 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 	if err != nil {
 		return nil, fmt.Errorf("read the trees %v of %s: %w", roots, project, err)
 	}
-	defer rows.Close()
-	left := []string{}
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("read the trees %v of %s: %w", roots, project, err)
-		}
-		left = append(left, key)
-	}
-	if err := rows.Err(); err != nil {
+	left, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("read the trees %v of %s: %w", roots, project, err)
 	}
 	slices.Sort(left)

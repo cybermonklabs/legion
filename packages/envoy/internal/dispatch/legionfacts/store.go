@@ -330,16 +330,8 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 	if err != nil {
 		return nil, fmt.Errorf("write the Legion facts of %s: %w", project, err)
 	}
-	defer result.Close()
-	changed := []string{}
-	for result.Next() {
-		var key string
-		if err := result.Scan(&key); err != nil {
-			return nil, fmt.Errorf("write the Legion facts of %s: %w", project, err)
-		}
-		changed = append(changed, key)
-	}
-	if err := result.Err(); err != nil {
+	changed, err := pgx.CollectRows(result, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("write the Legion facts of %s: %w", project, err)
 	}
 	return changed, nil
@@ -444,16 +436,8 @@ func deleteRows(ctx context.Context, q Querier, project, statement string, args 
 	if err != nil {
 		return nil, fmt.Errorf("delete or stamp the stale Legion facts of %s: %w", project, err)
 	}
-	defer result.Close()
-	deleted := []string{}
-	for result.Next() {
-		var key string
-		if err := result.Scan(&key); err != nil {
-			return nil, fmt.Errorf("delete or stamp the stale Legion facts of %s: %w", project, err)
-		}
-		deleted = append(deleted, key)
-	}
-	if err := result.Err(); err != nil {
+	deleted, err := pgx.CollectRows(result, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("delete or stamp the stale Legion facts of %s: %w", project, err)
 	}
 	return deleted, nil
@@ -650,13 +634,14 @@ const closedInWhere = `
 	where project_key = $1 and closed_at >= $2 and closed_at < $3
 	order by closed_at desc, issue_key`
 
-// boardColumns is the columns of issue_facts the board shows (Read), with the moment its values
-// are closed at and their growth, which every read of the rows reads first, in scanRow's order:
-// every reader closes a row at its own clock (Row.At). A row no build of this release wrote holds
-// no as_of, and is closed at the moment it was written. wideColumns is every other column scanRow
-// reads, which a reader of closed rows reads (ReadClosedIn) and the board shows none of: two of them are JSON (bars and
-// idle_by_role, beside hours_by_phase and growth) that a read decodes for every row. boardSelect
-// and wideSelect are the reads of the two, which a where clause completes.
+// boardColumns is the columns of issue_facts the board shows (ReadOpen, ReadShownClosed), with the
+// moment its values are closed at and their growth, which every read of the rows reads first, in
+// scanRow's order: every reader closes a row at its own clock (Row.At). A row no build of this
+// release wrote holds no as_of, and is closed at the moment it was written. wideColumns is every
+// other column scanRow reads, which a reader of closed rows reads (ReadClosedIn) and the board
+// shows none of: two of them are JSON (bars and idle_by_role, beside hours_by_phase and growth)
+// that a read decodes for every row. boardSelect and wideSelect are the reads of the two, which a
+// where clause completes.
 const (
 	boardColumns = `issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 	       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
@@ -741,12 +726,12 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	return row, nil
 }
 
-// narrow is row with every field of wideColumns at its zero value, which is the row the board's
-// read answers (Read) once At has closed it at the read's clock. At grows every fact the row's
-// growth names, and the board's read loaded none of these, so one of them that grows - an open
-// issue's hours in backlog or icebox, its queued or slot-wait hours, its hours after the first
-// review - would otherwise hold its rate times the hours elapsed, grown from a zero the read never
-// loaded.
+// narrow is row with every field of wideColumns at its zero value, which is the row each of the
+// board's reads answers (ReadOpen, ReadShownClosed) once At has closed it at the read's clock. At
+// grows every fact the row's growth names, and the board's reads loaded none of these, so one of
+// them that grows - an open issue's hours in backlog or icebox, its queued or slot-wait hours, its
+// hours after the first review - would otherwise hold its rate times the hours elapsed, grown from
+// a zero the read never loaded.
 func (row Row) narrow() Row {
 	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = 0, 0, nil, nil
 	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = nil, nil, 0, false

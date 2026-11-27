@@ -41,8 +41,9 @@ const Freshness = time.Minute
 // (readObservationPage), which no later commit need wake. Such a pass asks for the next
 // horizonRetry on, doubling with each such pass in a row up to PassRetry (duty.Backoff). None of
 // these is a timer that rewrites a row: the pass it asks for reads what the last one could not,
-// and one that finds nothing new computes and writes nothing. Every other pass answers the zero
-// time, and the loop waits for a wake.
+// and one that finds nothing new computes nothing and writes no facts row; it stamps its cursors
+// alone (advanceCursors), which is what CursorAge reads. Every other pass answers the zero time,
+// and the loop waits for a wake.
 //
 // Nothing holds one pass back from the next (the loop's MinGap is zero): at most one pass runs
 // and at most one is owed, so a change that commits while a pass runs earns the one pass after it,
@@ -68,24 +69,24 @@ const Freshness = time.Minute
 // (metrics.TreeLinks). That read takes about 4.5 ms over the rig's 252 issues and 2,142
 // observations, best of five against the pod's test Postgres.
 //
-// A page that reads a `tree` observation now marks that issue moved, as it marks an issue whose
+// A page that reads a `tree` observation marks that issue moved, as it marks an issue whose
 // parent link moved (touch), so it makes the two reads of leftTrees over that issue's project:
 // one row of issue_facts for the moved issue's stored root, and the rows of that project held
 // under that root. Over the rig's eight-tree history the second read answers five rows, which
 // is a root and the four issues of its tree that carry Legion phase work, and the set the pass
-// states grows from two keys to six: the issue, the root it joined, and those five. A `tree`
-// observation is written only where the tree the daemon reports differs from the newest one
-// recorded (legion.RecordObservations), so a daemon that goes on reporting one tree costs a
-// pass nothing.
+// states is six keys where it would be two without them: the issue, the root it joined, and
+// those five. A `tree` observation is written only where the tree the daemon reports differs
+// from the newest one recorded (legion.RecordObservations), so a daemon that goes on reporting
+// one tree costs a pass nothing.
 //
 // Every pass also states the issues below each key it computes, because an input that names one
 // issue can move where every issue under that issue stands (rowsTouchedBy). Over the rig's 252
-// issues one event of a worker session states 2.8 keys on average and 6 at most, against 1.8
-// and 2 before the pass descended. The descent costs no read a pass did not make before it.
+// issues one event of a worker session states 2.8 keys on average and 6 at most, where the keys
+// and the issues above them alone are 1.8 and 2. The issues below cost no read of their own:
 // metrics.ReadIssues reads the whole tree of every key it is given (treeScopeKeys), so an issue
 // below a key is read whether or not the set names it. upsert writes a row only where a value of
-// that row moved. A row the descent added and the computation left where it stood is therefore
-// written by nothing.
+// that row moved. A row the issues below added and the computation left where it stood is
+// therefore written by nothing.
 const PassRetry = 10 * time.Second
 
 // horizonRetry is how far on a pass whose safe horizon held an event back asks for the next, the
@@ -107,7 +108,8 @@ const (
 	changesCursor      = "delivery_changes"
 )
 
-// cursorNames is the three in one list, which is how a pass reads them.
+// cursorNames is the three in one list, which is how a pass reads them (readCursors) and the
+// order it writes them in (advanceCursors).
 var cursorNames = []string{eventsCursor, observationsCursor, changesCursor}
 
 // Deps is what Run needs of the server.
@@ -278,19 +280,19 @@ func runPass(ctx context.Context, deps Deps, sched schedule, held *duty.Backoff)
 // page before it met a lost change cursor it held (readPages), so the pass answers the loss
 // itself rather than leave it to a pass no wake may start.
 //
-// The events feed is read up to the safe horizon the pass reads once (events.Horizon.SafeOrAwait,
-// the reading the suggestion outcomes take): one observation, which waits on no open transaction,
-// and an Await only while the horizon has proven nothing yet, a process's first pass. The lease
-// is held for the pass, so a pass that waited out every transaction open on the instance would
-// hold every facts update, and the other process's, behind the longest of them. A pass that
-// leaves an event above what it read (events.Horizon.HeldBack), the event whose commit woke it
-// among them, says so, and the loop asks for another soon, which reads it once the horizon has
-// passed it (runPass). The moment the pass computes at is read after the horizon, so no event the
-// pass reads is newer than the moment its rows are of. The observations feed has no horizon, so
-// its page stops below an observation newer than that moment (readObservationPage), and a pass
-// whose page stopped there says it held an input back as well.
+// The events feed is read up to the safe horizon the pass reads once (safeHorizon,
+// events.Horizon.SafeOrAwait, the reading the suggestion outcomes take): one observation, which
+// waits on no open transaction, and an Await only while the horizon has proven nothing yet, a
+// process's first pass. The lease is held for the pass, so a pass that waited out every
+// transaction open on the instance would hold every facts update, and the other process's, behind
+// the longest of them. A pass that leaves an event above what it read (events.Horizon.HeldBack),
+// the event whose commit woke it among them, says so, and the loop asks for another soon, which
+// reads it once the horizon has passed it (runPass). The moment the pass computes at is read after
+// the horizon, so no event the pass reads is newer than the moment its rows are of. The
+// observations feed has no horizon, so its page stops below an observation newer than that moment
+// (readObservationPage), and a pass whose page stopped there says it held an input back as well.
 func pass(ctx context.Context, deps Deps, sched schedule) ([]string, bool, error) {
-	safe, err := deps.Horizon.SafeOrAwait(ctx)
+	safe, err := safeHorizon(ctx, deps)
 	if err != nil {
 		return nil, false, err
 	}
@@ -307,6 +309,34 @@ func pass(ctx context.Context, deps Deps, sched schedule) ([]string, bool, error
 		held = held || page.held
 	}
 	return changed, held || deps.Horizon.HeldBack(safe), nil
+}
+
+// safeHorizon is the event log's safe horizon as a pass reads it (events.Horizon.SafeOrAwait),
+// read again after a Reset where it stands above the log's newest event, as the keyword fill reads
+// it (textversions' batch and its oldHorizon). Such a horizon is one an event log since reset
+// proved: e2e/seed.ts deletes the log's rows between browser scenarios and starts its ids again at
+// 1, and the shared horizon holds the old log's H until a reader forgets it. That H names no
+// position in the log as it stands: it caps nothing until the new log's ids climb back past it,
+// while a new id below it may still be committing, and a pass on a database that holds no cursor
+// row, as the reset leaves it, would start its events cursor there (readFeedHeads), above every id
+// the new log has handed out, which no page would then read. H is the id of an event that had
+// committed, and nothing but a reset deletes an event, so the horizon read again stands at or
+// below the newest event read after it.
+func safeHorizon(ctx context.Context, deps Deps) (int64, error) {
+	for {
+		safe, err := deps.Horizon.SafeOrAwait(ctx)
+		if err != nil {
+			return 0, err
+		}
+		var newest int64
+		if err := deps.Pool.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&newest); err != nil {
+			return 0, fmt.Errorf("read the event log's newest event: %w", err)
+		}
+		if safe <= newest {
+			return safe, nil
+		}
+		deps.Horizon.Reset()
+	}
 }
 
 // nextPage is what one page tells its pass of the page after it (passPage): whether to read one

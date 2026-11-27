@@ -615,11 +615,11 @@ func TestTheLostMergesReadProbesTheMergedFactsIndex(t *testing.T) {
 // staleProjectRowsStatement and deleteStaleFilings' staleFilingsStatement, each as the delete and
 // as a Yielded write's stamp) reads the list of computed keys it is given once, with the pass's
 // values and under the generic plan a statement pgx caches can settle on after its fifth run, as
-// explaintest.RequireListReadOnce holds it to: no SubPlan runs the list, no nested loop runs it
-// again for each row of its other side, and the deletion filters by it as a SetOp Except or a
-// hash or merge anti-join. Written as `not (issue_key = any($n))`, each stored row was compared
-// with the whole list, which a generic plan cannot hash, so a whole pass of a project of INFRA's
-// 13,000 issues compared each of its rows with up to 13,000 keys. The project here is past
+// explaintest.RequireStatementReadsListOnce holds it to: no SubPlan runs the list, no nested loop
+// runs it again for each row of its other side, and the deletion filters by it as a SetOp Except
+// or a hash or merge anti-join. Written as `not (issue_key = any($n))`, each stored row was
+// compared with the whole list, which a generic plan cannot hash, so a whole pass of a project of
+// INFRA's 13,000 issues compared each of its rows with up to 13,000 keys. The project here is past
 // work_mem: 80,000 issues, each with a stored row and a filing, analyzed, and each statement is
 // explained in a transaction of its own, as the pass's write (writePass) runs it, with the keys a
 // pass sends that computed every issue but one.

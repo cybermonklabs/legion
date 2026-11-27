@@ -278,7 +278,7 @@ func TestWakesDuringAPassMakeOneOwedPassAtItsEnd(t *testing.T) {
 		lease := &fakeLease{}
 		booted := time.Now()
 		cancel, done := runLoop(duty.WokenLoop{
-			Lease: "eval-days",
+			Lease: "legion-facts",
 			Wake:  wake,
 			Retry: 10 * time.Second,
 			Pass: func(context.Context) time.Time {
@@ -299,48 +299,8 @@ func TestWakesDuringAPassMakeOneOwedPassAtItsEnd(t *testing.T) {
 	})
 }
 
-// A pass sees a wake that arrives while it runs (duty.WakeOwed) without taking it: the first pass
-// reads no wake owed at its start and one owed after the wake, and the loop still runs the pass that
-// wake earns, which reads none owed. A context no loop gave its wake reads none.
-func TestAPassSeesAWakeOwedWithoutTakingIt(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		var passes passClock
-		wake := make(chan struct{}, 1)
-		var before, after []bool
-		booted := time.Now()
-		cancel, done := runLoop(duty.WokenLoop{
-			Wake: wake,
-			Pass: func(ctx context.Context) time.Time {
-				passes.record()
-				before = append(before, duty.WakeOwed(ctx))
-				if len(before) == 1 {
-					time.Sleep(time.Second)
-				}
-				after = append(after, duty.WakeOwed(ctx))
-				return time.Time{}
-			},
-		}, noLease(t))
-		time.Sleep(500 * time.Millisecond)
-		signal(wake)
-		time.Sleep(time.Hour)
-		stop(cancel, done)
-		wantPassesAt(t, &passes, booted, 0, time.Second)
-		if want := []bool{false, false}; !slices.Equal(before, want) {
-			t.Errorf("the passes read a wake owed at their start %v, want %v", before, want)
-		}
-		if want := []bool{true, false}; !slices.Equal(after, want) {
-			t.Errorf("the passes read a wake owed at their end %v, want %v: the first after the wake, the second after none", after, want)
-		}
-		if duty.WakeOwed(context.Background()) {
-			t.Error("a context no loop gave its wake reads a wake owed")
-		}
-	})
-}
-
 // A Backoff's waits begin at First and double up to Max, and Reset begins them again at First:
-// 250 ms doubling to the 10 s the refresher and the Legion facts consumer retry a held-back event
-// by at most.
+// 250 ms doubling to the 10 s the Legion facts consumer retries a held-back event by at most.
 func TestABackoffDoublesFromItsFirstWaitToItsMaxUntilReset(t *testing.T) {
 	t.Parallel()
 	b := duty.Backoff{First: 250 * time.Millisecond, Max: 10 * time.Second}

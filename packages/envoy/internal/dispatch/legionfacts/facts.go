@@ -2,8 +2,9 @@
 // (dispatch://INFRA-2915), with the issues Legion sessions filed, which it writes to
 // issue_filings (dispatch://INFRA-2916). The facts are computed once and stored as rows, so a
 // reader of them reads rows and computes nothing but the close of each open part at its own
-// clock (Row.At): the board reads a project's (Read), and a reader of the Legion measures reads
-// the issues closed in a window (ReadClosedIn) and the filings made in one (ReadFilingsIn).
+// clock (Row.At): the board reads a project's open rows and the closed rows it shows, and joins
+// the two (ReadOpen, ReadShownClosed, Join), and a reader of the Legion measures reads the issues
+// closed in a window (ReadClosedIn) and the filings made in one (ReadFilingsIn).
 //
 // The computation holds no loop and no lease: facts.go answers the rows and the filings of a key
 // set (computeKeys) or of a whole project (ComputeProject), and store.go writes them (WriteProject,

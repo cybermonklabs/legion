@@ -70,7 +70,7 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 			}
 		}
 		note("lists", classes.lists)
-		note("maps", slices.Collect(maps.Keys(classes.maps)))
+		note("maps", classes.maps)
 		note("counts", classes.counts)
 		note("whole", slices.Collect(maps.Keys(classes.whole)))
 		note("withChanges", classes.withChanges)
@@ -97,8 +97,7 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 		}
 
 		// Each class's shape: a list's items carry an id, a count map is two levels of counts, a
-		// map is keyed by string, and the subfields a whole field's or a map entry's revision
-		// leaves out exist.
+		// map is keyed by string, and the subfields a whole field's revision leaves out exist.
 		for _, list := range classes.lists {
 			typ := fields[list]
 			if typ == nil || typ.Kind() != reflect.Slice || typ.Elem().Kind() != reflect.Struct {
@@ -109,27 +108,9 @@ func TestEveryResponseFieldHasOneClass(t *testing.T) {
 				t.Errorf("%s: list %q's items have no id", kind, list)
 			}
 		}
-		for name, excluded := range classes.maps {
-			typ := fields[name]
-			if typ == nil || typ.Kind() != reflect.Map || typ.Key().Kind() != reflect.String {
+		for _, name := range classes.maps {
+			if typ := fields[name]; typ == nil || typ.Kind() != reflect.Map || typ.Key().Kind() != reflect.String {
 				t.Errorf("%s: map %q is %v, want a map by string", kind, name, typ)
-				continue
-			}
-			if len(excluded) == 0 {
-				continue
-			}
-			if typ.Elem().Kind() != reflect.Struct {
-				t.Errorf("%s: map %q's entries are %v, so its revision has no subfield %v to leave out", kind, name, typ.Elem(), excluded)
-				continue
-			}
-			sub := map[string]bool{}
-			for _, field := range liveJSONFields(typ.Elem()) {
-				sub[field.name] = true
-			}
-			for _, left := range excluded {
-				if !sub[left] {
-					t.Errorf("%s: %q's entry revision leaves out %q, which an entry does not hold", kind, name, left)
-				}
 			}
 		}
 		for _, name := range classes.counts {

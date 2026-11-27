@@ -769,12 +769,17 @@ function compareIds(
 }
 
 /** The JSON paths at or below `path` where `a` and `b` differ; an array whose length differs is
- *  one difference, at its own path. */
-function differences(a: unknown, b: unknown, path: string): string[] {
+ *  one difference, at its own path, and two numbers within `tolerance` of each other are the
+ *  same. At the default tolerance of 0 two numbers are the same only where they are `===`, so NaN
+ *  differs from NaN, 0 and -0 are the same, and an infinity is the same as itself alone. */
+function differences(a: unknown, b: unknown, path: string, tolerance = 0): string[] {
   if (a === b) return [];
+  if (typeof a === "number" && typeof b === "number") {
+    return Math.abs(a - b) <= tolerance ? [] : [path];
+  }
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return [path];
-    return a.flatMap((item, index) => differences(item, b[index], `${path}[${index}]`));
+    return a.flatMap((item, index) => differences(item, b[index], `${path}[${index}]`, tolerance));
   }
   if (
     typeof a === "object" &&
@@ -787,7 +792,9 @@ function differences(a: unknown, b: unknown, path: string): string[] {
     const left = new Map<string, unknown>(Object.entries(a));
     const right = new Map<string, unknown>(Object.entries(b));
     const keys = [...new Set([...left.keys(), ...right.keys()])].sort();
-    return keys.flatMap((key) => differences(left.get(key), right.get(key), `${path}.${key}`));
+    return keys.flatMap((key) =>
+      differences(left.get(key), right.get(key), `${path}.${key}`, tolerance)
+    );
   }
   return [path];
 }
@@ -841,36 +848,6 @@ export function legionIssuesAt(
   return mapValues(issues ?? {}, (entry) => legionEntryAt(entry, moment));
 }
 
-/** The JSON paths at or below `path` where `a` and `b` differ, as `differences` reads them, but
- *  for two numbers within `tolerance` of each other, which are the same. */
-function differencesWithin(a: unknown, b: unknown, path: string, tolerance: number): string[] {
-  if (typeof a === "number" && typeof b === "number") {
-    return Math.abs(a - b) <= tolerance ? [] : [path];
-  }
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return [path];
-    return a.flatMap((item, index) =>
-      differencesWithin(item, b[index], `${path}[${index}]`, tolerance)
-    );
-  }
-  if (
-    typeof a === "object" &&
-    a !== null &&
-    !Array.isArray(a) &&
-    typeof b === "object" &&
-    b !== null &&
-    !Array.isArray(b)
-  ) {
-    const left = new Map<string, unknown>(Object.entries(a));
-    const right = new Map<string, unknown>(Object.entries(b));
-    const keys = [...new Set([...left.keys(), ...right.keys()])].sort();
-    return keys.flatMap((key) =>
-      differencesWithin(left.get(key), right.get(key), `${path}.${key}`, tolerance)
-    );
-  }
-  return a === b ? [] : [path];
-}
-
 /** A Legion board held from the live view against the board the GET answers: every field but
  *  `computed_at`, which moves on every compute, and `header.facts_cursor_age_seconds`, which the
  *  read measures at its own moment; each `issues` entry of both grown to the GET's `computed_at`
@@ -888,7 +865,7 @@ export function compareLegionBoards(
   };
   const differ = [
     ...differences(without(held), without(answer), "board"),
-    ...differencesWithin(
+    ...differences(
       legionIssuesAt(held.issues, moment),
       legionIssuesAt(answer.issues, moment),
       "issues",

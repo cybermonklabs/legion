@@ -70,11 +70,11 @@ type deliveryLiveEntry struct {
 // typed values the board built it of) is written from those entries and the rest of the body
 // (composeDeliveryBody), and the map's revisions, which must name every entry it holds and no
 // other, are the body's own; every other body is json.Marshal's, read back by field, and a map
-// entry's revision is that of its encoding (deliveryLiveRevisionWithout). The duration is how
-// long its revisions took, the recompute's revision stage (deliveryRecomputeTimes), which the
-// caller takes from its own time of the call to leave the encode stage. The revisions are timed
-// where they are made, entry by entry, since each entry's encoding is read just before its
-// revision in the same loop, and a map the body revises as one call.
+// entry's revision is that of its encoding (deliveryLiveRevision). The duration is how long its
+// revisions took, the recompute's revision stage (deliveryRecomputeTimes), which the caller takes
+// from its own time of the call to leave the encode stage. The revisions are timed where they are
+// made, entry by entry, since each entry's encoding is read just before its revision in the same
+// loop, and a map the body revises as one call.
 func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, time.Duration, error) {
 	var revising time.Duration
 	classes, ok := deliveryLiveKinds[kind]
@@ -155,7 +155,7 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, time.Durati
 		encoded.revs.Items[list] = revs
 	}
 
-	for name, excluded := range classes.maps {
+	for _, name := range classes.maps {
 		if revises && name == own {
 			started := time.Now()
 			revs, revised := reviser.mapRevisions(name)
@@ -186,15 +186,12 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, time.Durati
 		if err := json.Unmarshal(value, &entries); err != nil {
 			return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
 		}
-		revs := make(map[string]string, len(entries))
 		values := make(map[string]deliveryLiveValue, len(entries))
+		revs := make(map[string]string, len(entries))
 		for key, entry := range entries {
 			started := time.Now()
-			rev, err := deliveryLiveRevisionWithout(entry, excluded)
+			rev := deliveryLiveRevision(entry)
 			revising += time.Since(started)
-			if err != nil {
-				return deliveryLiveEncoded{}, revising, fmt.Errorf("delivery live: %s.%s[%q]: %w", kind, name, key, err)
-			}
 			values[key] = deliveryLiveValue{raw: entry, rev: rev}
 			revs[key] = rev
 		}
@@ -345,10 +342,9 @@ func deliveryLiveCountRevision(count int) string {
 	return deliveryLiveRevision(strconv.AppendInt(nil, int64(count), 10))
 }
 
-// deliveryLiveRevisionWithout is a whole field's or a map entry's revision, over its encoding
-// without the subfields excluded leaves out: the timeline's measures move their computed_at,
-// window and freshness on every compute, and a page is sent the measures only when a number in
-// them moved.
+// deliveryLiveRevisionWithout is a whole field's revision, over its encoding without the
+// subfields excluded leaves out: the timeline's measures move their computed_at, window and
+// freshness on every compute, and a page is sent the measures only when a number in them moved.
 func deliveryLiveRevisionWithout(value json.RawMessage, excluded []string) (string, error) {
 	if len(excluded) == 0 {
 		return deliveryLiveRevision(value), nil
@@ -428,7 +424,7 @@ func diffDeliveryBody(next deliveryLiveEncoded, held DeliveryLiveRevs) (Delivery
 		changed = true
 	}
 
-	for name := range classes.maps {
+	for _, name := range classes.maps {
 		heldRevs := held.Maps[name]
 		nextValues := next.maps[name]
 		values := map[string]json.RawMessage{}

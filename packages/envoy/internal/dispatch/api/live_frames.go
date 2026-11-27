@@ -300,10 +300,9 @@ type deliveryLiveClasses struct {
 	body reflect.Type
 	// lists are sent item by item, each item by its "id" field.
 	lists []string
-	// maps are sent entry by entry, by key, an entry whole when its revision changes; each names
-	// the subfields of an entry its revision leaves out (they are still sent, with the rest, when
-	// the entry is), and a map the body revises itself (deliveryLiveMapReviser) names none.
-	maps map[string][]string
+	// maps are sent entry by entry, by key, an entry whole when its revision changes: its
+	// encoding's, or the body's own for a map the body revises itself (deliveryLiveMapReviser).
+	maps []string
 	// counts are {facet: {value: count}}, sent count by count.
 	counts []string
 	// whole fields are sent whole when their revision changes; each names the subfields its
@@ -335,11 +334,9 @@ type deliveryLiveClasses struct {
 // own computed_at, window and freshness.
 var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	deliveryLiveTimeline: {
-		body:  reflect.TypeFor[deliveryTimelineWithMeasures](),
-		lists: []string{"prs", "runs", "session_groups"},
-		maps: map[string][]string{
-			"issue_titles": nil, "session_titles": nil, "session_pr_counts": nil, "components": nil,
-		},
+		body:        reflect.TypeFor[deliveryTimelineWithMeasures](),
+		lists:       []string{"prs", "runs", "session_groups"},
+		maps:        []string{"issue_titles", "session_titles", "session_pr_counts", "components"},
 		counts:      []string{"facet_counts", "color_counts"},
 		whole:       map[string][]string{"waiting": nil, "measures": {"computed_at", "window", "freshness"}},
 		withChanges: []string{"window"},
@@ -392,23 +389,23 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// of work, and the as_of they are of, differ on every recompute, each record the Legion intake
 	// makes of the daemon among them. So the board revises the map itself (legionBoardResponse's
 	// mapRevisions), from the typed values it built each entry of rather than from the entry's
-	// encoding, and the class names no subfield: an entry's revision leaves out each value whose
-	// rate the entry's growth carries, and the as_of they are of, of which it keeps only whether it
-	// is null (legionBoardFacts' appendKept). A recompute that moved only the clock sends no entry,
-	// where it would otherwise resend every open issue's (about 2,600 at INFRA's size), and a value
-	// that comes to grow is left out once its rate joins the growth, which moves the revision
-	// itself. What the revision keeps moves whenever the stored row does: a write of a row whose
-	// values moved stamps its updated_at (legionfacts.WriteProject), and its growth, why it waits,
-	// its close, each value that stands and every other value the entry carries are kept as
-	// stored. An entry whose values grow carries its as_of and its growth, so a page closes the
-	// values it holds at its own clock by the rule the read closes them by; one whose values stand
-	// carries null for both. An entry that is sent goes whole, its values grown to the moment of
-	// the recompute that sent it. The board encodes the map's entries itself as well
-	// (legionBoardResponse's encodedMap), and the hub writes the body from them, the one body the
-	// GET answers, so no entry is read back out of the body's encoding.
+	// encoding: an entry's revision leaves out each value whose rate the entry's growth carries,
+	// and the as_of they are of, of which it keeps only whether it is null (legionBoardFacts'
+	// appendKept). A recompute that moved only the clock sends no entry, where it would otherwise
+	// resend every open issue's (about 2,600 at INFRA's size), and a value that comes to grow is
+	// left out once its rate joins the growth, which moves the revision itself. What the revision
+	// keeps moves whenever the stored row does: a write of a row whose values moved stamps its
+	// updated_at (legionfacts.WriteProject), and its growth, why it waits, its close, each value
+	// that stands and every other value the entry carries are kept as stored. An entry whose
+	// values grow carries its as_of and its growth, so a page closes the values it holds at its
+	// own clock by the rule the read closes them by; one whose values stand carries null for both.
+	// An entry that is sent goes whole, its values grown to the moment of the recompute that sent
+	// it. The board encodes the map's entries itself as well (legionBoardResponse's encodedMap),
+	// and the hub writes the body from them, the one body the GET answers, so no entry is read
+	// back out of the body's encoding.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
-		maps: map[string][]string{"issues": nil},
+		maps: []string{"issues"},
 		whole: map[string][]string{
 			"project": nil, "header": {"facts_cursor_age_seconds"}, "columns": nil, "settings": nil,
 		},

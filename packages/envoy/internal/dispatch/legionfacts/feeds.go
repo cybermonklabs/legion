@@ -21,14 +21,18 @@ import (
 //
 // It stands apart from the loop (consumer.go) because each feed carries rules of its own: where
 // a page stops, which issues a row of it names, and when its cursor may move. The loop reads a
-// page, states the work the page names and writes it. The page size, the cursor names and the
-// change kind this loop keeps are consts of the loop (consumer.go).
+// page, states the work the page names and writes it. The page size and the cursor names are
+// consts of the loop (consumer.go), and the one change kind this loop keeps is
+// delivery.ChangeKindPullRequest (readChangePage).
 
 // pages is what one page of a pass read of the three feeds: a page of each, whether this page
-// acts on a change cursor that had fallen below the oldest change the log still holds (lost),
-// whether a feed holds more rows, which makes the pass read another page at once (more), and
-// whether that page must carry the work no feed names, because this one met a lost change cursor
-// it may not answer and held it (unfed, readPages).
+// acts on a change cursor that may have passed over changes it never read (lost, by
+// delivery.CursorLost: the log's newest seq stands below the cursor's, or the change the cursor
+// rests on has left the log or been replaced while it was younger than the retention, or after
+// the consumer last read the log to its end more than the retention ago), whether a feed holds
+// more rows, which makes the pass read another page at once (more), and whether that page must
+// carry the work no feed names, because this one met a lost change cursor it may not answer and
+// held it (unfed, readPages).
 type pages struct {
 	events       feed
 	observations feed
@@ -827,7 +831,7 @@ func advanceCursors(ctx context.Context, tx pgx.Tx, cursors feedCursors, now tim
 		from unnest($1::text[], $2::bigint[], $3::timestamptz[], $4::timestamptz[]) as given(name, position, at, read_at)
 		on conflict (name) do update
 		set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
-	`, []string{eventsCursor, observationsCursor, changesCursor},
+	`, cursorNames,
 		[]int64{cursors.events, cursors.observations, cursors.changes.Seq},
 		[]*time.Time{nil, nil, cursors.changes.At},
 		[]time.Time{now, now, cursors.changes.ReadAt})

@@ -20,13 +20,15 @@
 // named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a
 // control that must fail it (RequireTheCheckFails), and it runs any statement under a plan-cache
 // mode with the planner's own settings and explains it with the shared buffers each node hit and
-// read (ExplainBuffered). RequireListReadOnce holds a plan to reading once the list a statement
-// is given, and RequireStatementReadsListOnce holds a statement's two plans to it.
-// dispatch/api, dispatch/refs, dispatch/graphstore, dispatch/sessionanswers, dispatch/delivery
-// and cipher/requests each pin a plan with these
-// checks, so they live here once rather than as a second (or third) hand copy of the same
-// recursive walk; it is an ordinary package rather than a _test.go file because Go cannot share
-// test-only code across packages (see internal/stacktest's identical reasoning).
+// read (ExplainBuffered). RequireStatementReadsListOnce holds a statement's plan with its values
+// and its generic plan to reading once the list the statement is given. cipher/requests,
+// dispatch/access, dispatch/api, dispatch/benchtime, dispatch/delivery, dispatch/docs,
+// dispatch/embedqueue, dispatch/graphcensus, dispatch/graphstore, dispatch/legion/legionbench,
+// dispatch/legion/metrics, dispatch/legionfacts, dispatch/refs, dispatch/sessionanswers,
+// dispatch/store and dispatch/textversions each pin a plan with these checks, so they live here
+// once rather than as a second (or third) hand copy of the same recursive walk; it is an ordinary
+// package rather than a _test.go file because Go cannot share test-only code across packages (see
+// internal/stacktest's identical reasoning).
 package explaintest
 
 import (
@@ -321,13 +323,12 @@ func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
 	return nodes
 }
 
-// RequireListReadOnce holds plan, one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level array,
+// requireListReadOnce holds plan, one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level array,
 // to reading the list its statement is given once, and fails t naming subject, the statement and
 // the plan under test, and printing the plan's Outline where it does not. A list is an array the
 // statement takes as a parameter and reads as rows: a "Function Scan" of unnest (one of
-// `unnest($1)` names the function, and one of `unnest($1, $2)`, of several arrays, names none),
-// or a scan of one of ctes, the CTEs a form of the statement holds the list in. The plan reads it
-// once where
+// `unnest($1)` names the function, and one of `unnest($1, $2)`, of several arrays, names none).
+// The plan reads it once where
 //   - no scan of it, nor any read of a table, runs under a SubPlan, which runs once for each row
 //     that tests it, as `not in (select … from <the list>)` does;
 //   - no scan of it is on the inner side of a nested loop, which runs that side again for each
@@ -337,13 +338,12 @@ func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
 //
 // A statement that tests each row against the array itself, as `<> all($1)` or `not (… =
 // any($1))` do, reads no list at all, and so filters by it as neither.
-func RequireListReadOnce(t testing.TB, plan json.RawMessage, subject string, ctes ...string) {
+func requireListReadOnce(t testing.TB, plan json.RawMessage, subject string) {
 	t.Helper()
 	nodes := planNodes(t, plan)
 	var lists []int
 	for i, node := range nodes {
-		if node.NodeType == "Function Scan" && (node.FunctionName == "" || node.FunctionName == "unnest") ||
-			node.NodeType == "CTE Scan" && slices.Contains(ctes, node.CTEName) {
+		if node.NodeType == "Function Scan" && (node.FunctionName == "" || node.FunctionName == "unnest") {
 			lists = append(lists, i)
 		}
 	}
@@ -388,22 +388,20 @@ func childOn(nodes []planNode, i, top int) int {
 // RequireStatementReadsListOnce explains statement in tx, which its caller set up as the write
 // that runs it does, twice: with arguments, and under the generic plan a statement pgx caches can
 // settle on after its fifth run (GenericPlan, prepared with parameters and explained with
-// literals). It holds each plan to reading its list once (RequireListReadOnce, ctes the CTEs a
-// form of the statement holds the list in), naming name, logs both plans' Outline, and answers
-// both plans for any check of its caller's own.
+// literals). It holds each plan to reading its list once (requireListReadOnce), naming name, and
+// logs both plans' Outline.
 func RequireStatementReadsListOnce(t testing.TB, ctx context.Context, tx pgx.Tx, name, statement string, arguments []any,
-	parameters, literals []string, ctes ...string) (valued, generic json.RawMessage) {
+	parameters, literals []string) {
 	t.Helper()
 	var raw []byte
 	if err := tx.QueryRow(ctx, "explain (format json) "+statement, arguments...).Scan(&raw); err != nil {
 		t.Fatalf("explain %s: %v", name, err)
 	}
-	valued = OnePlan(t, raw)
-	generic = GenericPlan(t, ctx, tx, pgx.Identifier{name}.Sanitize(), statement, parameters, literals)
-	RequireListReadOnce(t, valued, name+" with the values", ctes...)
-	RequireListReadOnce(t, generic, name+" under the generic plan", ctes...)
+	valued := OnePlan(t, raw)
+	generic := GenericPlan(t, ctx, tx, pgx.Identifier{name}.Sanitize(), statement, parameters, literals)
+	requireListReadOnce(t, valued, name+" with the values")
+	requireListReadOnce(t, generic, name+" under the generic plan")
 	t.Logf("%s, with the values:\n%s\nunder the generic plan:\n%s", name, Outline(t, valued), Outline(t, generic))
-	return valued, generic
 }
 
 // Outline is plan's nodes, one a line, each indented under the node it is directly under: its
@@ -426,7 +424,7 @@ func Outline(t testing.TB, plan json.RawMessage) string {
 	return strings.Join(lines, "\n")
 }
 
-// outlineName names node as Outline and RequireListReadOnce cite it: its type, its kind of join
+// outlineName names node as Outline and requireListReadOnce cite it: its type, its kind of join
 // or set operation, the relation, function or CTE it reads and the name the statement gives that,
 // and the subplan it runs under.
 func outlineName(node planNode) string {

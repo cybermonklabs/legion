@@ -18,7 +18,7 @@
  * `bounded-subprocess.test.ts` alone, through a `-t` filter.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
- * would kill a process its row is still using: the probe the seven driven rows of
+ * would kill a process its row is still using: the probe the nine driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the `sleep` its cgroup row starts in a scope of its
  * own and stops, the proxies the hooks of `round-robin-proxy.test.ts`
