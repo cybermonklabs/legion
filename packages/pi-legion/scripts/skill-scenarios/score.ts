@@ -3470,7 +3470,10 @@ function ownPlaces(
  * row.json (the header says each). */
 function scoreScoredRun(runsDir: string, name: string): void {
   const forward = FORWARD_SCENARIOS.find((scenario) => name.startsWith(`${scenario}-`));
-  if (forward !== undefined) return scoreForwardRun(runsDir, name, forward);
+  if (forward !== undefined) {
+    scoreForwardRun(runsDir, name, forward);
+    return;
+  }
   const named = ownerWalkRun(name);
   const dir = path.join(runsDir, name);
   if (named === undefined || !existsSync(dir)) {
