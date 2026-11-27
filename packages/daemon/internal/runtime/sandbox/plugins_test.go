@@ -612,8 +612,15 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 		}
 	})
 	arrived := ": >\"$LEGION_TEST_MARKS/$LEGION_TEST_ID\"\n"
+	// CONTROL ONLY: LEGION_TEST_CONTROL_STALL=hold stalls each install 4.5 s while it holds the lock.
+	stallHold := ""
+	if os.Getenv("LEGION_TEST_CONTROL_STALL") == "hold" {
+		stallHold = "sleep 4.5\n"
+		t.Logf("control: LEGION_TEST_CONTROL_STALL=hold: each stand-in install holds 4.5 s after its start")
+	}
 	body := "#!/bin/sh\n" +
 		"printf 'start %s\\n' \"$LEGION_TEST_ID\" >> \"$LEGION_TEST_LOG\"\n" +
+		stallHold +
 		arrived +
 		fmt.Sprintf("while { [ ! -e \"$LEGION_TEST_MARKS/a\" ] || [ ! -e \"$LEGION_TEST_MARKS/b\" ]; } && [ ! -e %s ] && kill -0 %d 2>/dev/null; do sleep 0.01; done\n",
 			shellprefix.Literal(release), os.Getpid()) +
@@ -650,6 +657,11 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 			"LEGION_TEST_ID="+id,
 			"LEGION_TEST_MARKS="+marks,
 		)
+		// CONTROL ONLY: LEGION_TEST_CONTROL_STALL=start-b starts b's script 600 ms after a's.
+		if id == "b" && os.Getenv("LEGION_TEST_CONTROL_STALL") == "start-b" {
+			time.Sleep(600 * time.Millisecond)
+			t.Logf("control: LEGION_TEST_CONTROL_STALL=start-b: b's script starts 600 ms after a's")
+		}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
