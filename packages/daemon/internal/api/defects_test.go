@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -379,8 +378,8 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 		{"a short head", defectText, "4d2f6a0", "", "DEFECT_HEAD_REQUIRED"},
 		{"an uppercase head", defectText, strings.ToUpper(defectHead), "", "DEFECT_HEAD_REQUIRED"},
 		{"a check that runs onto a line of its own", defectText, defectHead, "c-done\n## Closed", "DEFECT_CHECK_INVALID"},
-		{"a check with a space", defectText, defectHead, "c done", "DEFECT_CHECK_INVALID"},
-		{"a check longer than a block id", defectText, defectHead, strings.Repeat("c", 129), "DEFECT_CHECK_INVALID"},
+		{"a check holding a carriage return, which Dispatch reads as a line of its own", defectText, defectHead, "c-done\r## Closed", "DEFECT_CHECK_INVALID"},
+		{"a check longer than a block id", defectText, defectHead, strings.Repeat("c", dispatchbody.MaxBlockIDBytes+1), "DEFECT_CHECK_INVALID"},
 	} {
 		t.Run(tc.name+" is refused "+tc.code, func(t *testing.T) {
 			t.Parallel()
@@ -390,6 +389,24 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 			refused(t, reportDefectAs(h, implementer.grant(t), statusRoot, tc.text, tc.head, tc.check), http.StatusBadRequest, tc.code)
 			if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
 				t.Fatalf("defects = %+v, want none", rows)
+			}
+		})
+	}
+
+	// A check is a typed block's id, which holds any character that is not a control character, up
+	// to Dispatch's own bound: a role naming one of these reports with it rather than being refused
+	// and having to report without it, which would leave the report joining no reason.
+	for _, check := range []string{"q:1", "décision", "a b", "c-done", strings.Repeat("c", dispatchbody.MaxBlockIDBytes)} {
+		t.Run("the check "+check+" is a block id the report takes", func(t *testing.T) {
+			t.Parallel()
+			h, _, _ := statusHarness(t)
+			acceptPhase(t, h, statusRoot, phase.Retro)
+			implementer := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
+			if answer := answeredDefect(t, reportDefectAs(h, implementer.grant(t), statusRoot, defectText, defectHead, check)); answer.State != "recorded" {
+				t.Fatalf("answer = %+v, want recorded", answer)
+			}
+			if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].check != check {
+				t.Fatalf("defects = %+v, want the one defect about %q", rows, check)
 			}
 		})
 	}
@@ -608,7 +625,10 @@ func TestAWithdrawalStaysInTheWaitUntilAVersionShowsIt(t *testing.T) {
 				ids = append(ids, seedDefect(t, h, record.Defect{Issue: statusRoot, Generation: 1, Kind: record.DefectKindDefect, Text: text,
 					Role: tc.reporter, Head: defectHead, ReportedAt: reportedAt}))
 			}
-			reasons := []string{"same as the cache defect", "fixed by the retro\n## Closed"}
+			// The second reason runs onto a line of its own by a carriage return, which Dispatch
+			// turns into a line feed when it parses the upload: a document that split the text on
+			// "\n" alone would write that part at the start of a line.
+			reasons := []string{"same as the cache defect", "fixed by the retro\r## Closed"}
 			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 			for i, reason := range reasons {
 				answeredDefect(t, withdrawDefectAs(h, architect.grant(t), statusRoot, strconv.FormatInt(ids[i], 10), reason))
@@ -627,8 +647,18 @@ func TestAWithdrawalStaysInTheWaitUntilAVersionShowsIt(t *testing.T) {
 					t.Errorf("close-wait.md lacks the reason %q:\n%s", reason, document)
 				}
 			}
-			if lines := strings.Split(document, "\n"); slices.Contains(lines, "## Closed") {
-				t.Errorf("close-wait.md holds the reason's line \"## Closed\" as a heading:\n%s", document)
+			// Dispatch reads the document as it stands after that normalisation
+			// (dispatchbody.LineFeeds): every line of a role's text sits four spaces past its
+			// item's content column, which CommonMark reads as code whatever the line holds, so
+			// none of them is a heading. A block quote would not do: `> ## Closed` is a heading
+			// inside the quote.
+			for _, line := range strings.Split(dispatchbody.LineFeeds(document), "\n") {
+				if strings.TrimSpace(line) == "## Closed" && !strings.HasPrefix(line, "      ") {
+					t.Errorf("close-wait.md holds a line of a reason where CommonMark reads a heading:\n%s", document)
+				}
+			}
+			if !strings.Contains(dispatchbody.LineFeeds(document), "\n      ## Closed\n") {
+				t.Errorf("close-wait.md = %q, want the reason's second line inside the item's code block", document)
 			}
 		})
 	}
@@ -674,4 +704,32 @@ func TestTheDefectCallsAnswerTheirGoldens(t *testing.T) {
 	var withdrawn DefectWithdrawResponse
 	decodeInto(t, withdrawal, &withdrawn)
 	golden(t, "defect-withdraw.json", withdrawn)
+}
+
+// Both calls refuse a key that is no issue key before they read anything (INVALID_ISSUE), and an
+// issue the record does not hold under the fact lock (ISSUE_NOT_FOUND). Neither records nor
+// withdraws anything. The architect's grant drives both, since a phase worker's names its own
+// issue and the route refuses it any other DEFECT_CALLER_NOT_ALLOWED before the record is read.
+func TestTheDefectCallsRefuseAKeyThatIsNoIssueAndAnIssueTheRecordLacks(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		issue  string
+		status int
+		code   string
+	}{
+		{"not-an-issue-key", http.StatusBadRequest, "INVALID_ISSUE"},
+		{"LEGION-404", http.StatusNotFound, "ISSUE_NOT_FOUND"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			t.Parallel()
+			h, _, _ := statusHarness(t)
+			acceptPhase(t, h, statusRoot, phase.Retro)
+			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+			refused(t, reportDefectAs(h, architect.grant(t), tc.issue, defectText, defectHead, ""), tc.status, tc.code)
+			refused(t, withdrawDefectAs(h, architect.grant(t), tc.issue, "1", "fixed"), tc.status, tc.code)
+			if rows := defectRows(t, h, statusRoot); len(rows) != 0 {
+				t.Fatalf("defects of %s = %+v, want none", statusRoot, rows)
+			}
+		})
+	}
 }

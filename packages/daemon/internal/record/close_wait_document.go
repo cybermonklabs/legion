@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/dispatchbody"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -26,9 +28,10 @@ const (
 // twice. Each item says since when it stands. Entered is the time of the issue's newest entry
 // into verifying, after which alone a read of the checks counts. Ended is the change that ended
 // last, said once in the version written when it ended. Withdrawn is each reported defect the
-// owning architect withdrew, with the reason, that no version Dispatch took has said yet: every
-// write of the wait keeps it (workflow's heldWithdrawals), and the row that uploads a version
-// holding it takes it out after the upload (Store.ClearWaitWithdrawals), so it is said once.
+// owning architect withdrew, with the reason, that no version Dispatch took has said yet: the one
+// builder of a wait carries it (workflow's waitOf), so every writer of the wait keeps it, the
+// entry into verifying included, and the row that uploads a version holding it takes exactly
+// those out after the upload (Store.ClearWaitWithdrawals), which is what says it once.
 // Closed is when the issue closed, set in the last version only.
 //
 // A report of a defect in retro or merging (workflow's defectReport) stores the wait as well, so
@@ -167,9 +170,9 @@ func CloseWaitDocument(issue Issue) (string, error) {
 		doc.WriteString("\n## Withdrawn defects\n\n")
 		for _, withdrawn := range wait.Withdrawn {
 			fmt.Fprintf(&doc, "- defect %d, withdrawn at %s, because:\n", withdrawn.ID, waitTime(withdrawn.At))
-			writeIndented(&doc, "  ", withdrawn.Reason)
+			writeAgentText(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Reason)))
 			doc.WriteString("  The defect was:\n")
-			writeIndented(&doc, "    ", withdrawn.Text)
+			writeAgentText(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Text)))
 		}
 	}
 	if wait.Closed != nil {
@@ -254,20 +257,18 @@ func CloseWaitDocument(issue Issue) (string, error) {
 func writeWaitReason(doc *strings.Builder, reason WaitReason) {
 	fmt.Fprintf(doc, "- %s %d", reason.Kind, reason.ID)
 	if reason.Check != "" {
-		fmt.Fprintf(doc, " about `%s`", reason.Check)
+		fmt.Fprintf(doc, " about %s", codeSpan(reason.Check))
 	}
 	if reason.Role != "" {
 		fmt.Fprintf(doc, ", reported by the %s", reason.Role)
 	}
 	if reason.Head != "" {
-		fmt.Fprintf(doc, " at head `%s`", reason.Head)
+		fmt.Fprintf(doc, " at head %s", codeSpan(reason.Head))
 	}
 	fmt.Fprintf(doc, ", since %s", waitTime(reason.Since))
-	if text := strings.TrimSpace(reason.Text); text != "" {
+	if text := strings.TrimSpace(dispatchbody.LineFeeds(reason.Text)); text != "" {
 		doc.WriteString(":\n")
-		for line := range strings.SplitSeq(text, "\n") {
-			fmt.Fprintf(doc, "  %s\n", line)
-		}
+		writeAgentText(doc, "  ", text)
 		return
 	}
 	doc.WriteString("\n")
@@ -278,10 +279,49 @@ func waitTime(at time.Time) string {
 	return at.UTC().Format("2006-01-02 15:04:05 UTC")
 }
 
-// writeIndented writes text trimmed, each of its lines under indent, so no line of a role's text
-// stands at the start of a line of the document, where it could open a heading, a list or a block.
-func writeIndented(doc *strings.Builder, indent, text string) {
-	for line := range strings.SplitSeq(strings.TrimSpace(text), "\n") {
-		fmt.Fprintf(doc, "%s%s\n", indent, strings.TrimRight(line, "\r"))
+// writeAgentText writes text under indent as an indented code block: a blank line, then each line
+// of it four spaces past the content column of the item it stands in, which CommonMark reads as
+// code whatever the line holds. A block quote would not do: `> ## Closed` is an h2 inside the
+// quote, since a quote moves a heading rather than stopping one. The caller normalises the line
+// feeds first (dispatchbody.LineFeeds): Dispatch turns each lone CR of an upload into a line feed,
+// so a text split on "\n" alone would write a CR inside a line that the document then breaks
+// there, outside the block.
+func writeAgentText(doc *strings.Builder, indent, text string) {
+	doc.WriteString("\n")
+	for line := range strings.SplitSeq(text, "\n") {
+		if strings.TrimSpace(line) == "" {
+			doc.WriteString("\n")
+			continue
+		}
+		fmt.Fprintf(doc, "%s    %s\n", indent, line)
 	}
+	doc.WriteString("\n")
+}
+
+// codeSpan is word as a markdown code span whose fence is one backtick longer than the longest run
+// of backticks in it, with a space inside each fence where the word begins or ends with one, so a
+// word an agent chose cannot end the span early. A word that holds a line feed is written with its
+// feeds as spaces, since a code span holds no line break.
+func codeSpan(word string) string {
+	word = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return ' '
+		}
+		return r
+	}, dispatchbody.LineFeeds(word))
+	longest, run := 0, 0
+	for _, r := range word {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+			continue
+		}
+		run = 0
+	}
+	fence := strings.Repeat("`", longest+1)
+	pad := ""
+	if strings.HasPrefix(word, "`") || strings.HasSuffix(word, "`") || strings.HasPrefix(word, " ") || strings.HasSuffix(word, " ") {
+		pad = " "
+	}
+	return fence + pad + word + pad + fence
 }

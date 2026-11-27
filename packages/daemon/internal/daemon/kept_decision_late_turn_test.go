@@ -77,7 +77,7 @@ func TestAKeptDecisionToldInALateTurnIsToldOnce(t *testing.T) {
 	r.wantHeldBy(ref, taken.ID)
 
 	// The sweep sends the task again, and Oh My Pi, preparing the first prompt's turn, answers busy.
-	r.conn.RefusePrompt(keptBusyRefusal)
+	r.conn.FailPrompt(keptBusy)
 	if err := machine.Handle(r.ctx, aliveObservation(machine)); err != nil {
 		t.Fatalf("post the sweep's observation: %v", err)
 	}

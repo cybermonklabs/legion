@@ -130,43 +130,49 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "a clear of its generation", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearGeneration(ctx, tx, key, at))
+			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), forgetNothing)
+			must(t, err)
 		}, marks: true},
 		{name: "a clear of its tree's generation", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearTreeGeneration(ctx, tx, key, at))
+			_, err := store.ClearTreeGeneration(ctx, tx, key, forgetNothing)
+			must(t, err)
 		}, marks: true},
 		{name: "a clear of its tree's generation that raises the tree's run alone", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearTreeGeneration(ctx, tx, key, at))
+			_, err := store.ClearTreeGeneration(ctx, tx, key, forgetNothing)
+			must(t, err)
 		}, marks: true},
 		{name: "control: a clear of the tree of an issue with no record", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearTreeGeneration(ctx, tx, "LEGION-999", at))
+			_, err := store.ClearTreeGeneration(ctx, tx, "LEGION-999", forgetNothing)
+			must(t, err)
 		}},
 		{name: "a clear that deletes a gate alone", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutGate(ctx, tx, gate))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearGeneration(ctx, tx, key, at))
+			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), forgetNothing)
+			must(t, err)
 		}, marks: true},
 		{name: "control: a clear of a generation that holds nothing", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearGeneration(ctx, tx, key, at))
+			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), forgetNothing)
+			must(t, err)
 		}},
 		// The clear saves the merged row's merge as the issue's snapshot before it deletes the row
 		// (clearPullRequests), and the snapshot's writer names the issue.
 		{name: "a next change's clear of its merged pull request", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPullRequest(ctx, tx, merged))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearChangeGeneration(ctx, tx, key, at))
+			must(t, store.ClearChangeGeneration(ctx, tx, key))
 		}, marks: true, issue: true},
 		{name: "a next change's clear of its phase rows", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearChangeGeneration(ctx, tx, key, at))
+			must(t, store.ClearChangeGeneration(ctx, tx, key))
 		}, marks: true},
 		{name: "control: a next change's clear of a root's architect row, which it keeps", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, architectRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearChangeGeneration(ctx, tx, key, at))
+			must(t, store.ClearChangeGeneration(ctx, tx, key))
 		}},
 		{name: "a handout", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.StartHandout(ctx, tx, key))
@@ -226,6 +232,17 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 			write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 				must(t, store.NameIssueRepository(ctx, tx, key, "acme/widgets", "Acme/Widgets"))
 			}},
+		{name: "a repository correction", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			_, err := store.CorrectIssueRepository(ctx, tx, key, "acme/tools", "main", "Acme/Tools", at)
+			must(t, err)
+		}, marks: true},
+		{name: "control: a repository correction onto the repository the record holds", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			_, err := store.CorrectIssueRepository(ctx, tx, key, "acme/widgets", "main", "Acme/Widgets", at)
+			must(t, err)
+		}},
+		{name: "a repository change noted", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.NoteIssueRepositoryChange(ctx, tx, key, &RepositoryChange{Pending: "acme/tools", Reason: "not installed"}))
+		}, marks: true},
 		{name: "a pull request", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPullRequest(ctx, tx, PullRequest{Issue: key, Repo: "acme/widgets", Number: 1310, Branch: "legion/" + key,
 				HeadSHA: "b1", State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}}))

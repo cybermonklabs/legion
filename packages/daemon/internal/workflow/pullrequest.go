@@ -545,7 +545,6 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	stored := e.waitOf(issue, view, old, now)
 	stored.Entered, stored.Ended = now, ended
-	stored.Withdrawn = heldWithdrawals(old, nil)
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
 	}

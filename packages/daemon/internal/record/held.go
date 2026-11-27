@@ -229,12 +229,15 @@ func openChildren(wait ChildWait) []string {
 	return children
 }
 
-// openBeneathIn is the issues beneath a parent held before its retro that are still in the
-// workflow (OpenBeneath), the issues the release of its hold waits for, and nothing where none
-// is. They are read over the members of its tree among the records the pass walks its chains
-// over (chainOf): the pass's own records and the done ones above them, so a grandchild under a
-// child already done is beneath the parent here as it is in the workflow's read of the whole
-// tree, and the word names what the hold waits for.
+// openBeneathIn is the issues beneath a parent held before its retro whose work has still to
+// happen (WorkBeneath), the issues the release of its hold waits for, and nothing where none is.
+// It is the rule the workflow's acceptanceHeld reads, so the pass's facts name what the workflow
+// waits for: a child whose close waits in verifying has merged its work and holds the parent's
+// acceptance no longer (D10), though the parent's own close still waits for it (OpenBeneath).
+// They are read over the members of its tree among the records the pass walks its chains over
+// (chainOf): the pass's own records and the done ones above them, so a grandchild under a child
+// already done is beneath the parent here as it is in the workflow's read of the whole tree, and
+// the word names what the hold waits for.
 func openBeneathIn(issue Issue, chain map[string]Issue) []string {
 	members := make([]Issue, 0, len(chain))
 	for _, member := range chain {
@@ -242,15 +245,15 @@ func openBeneathIn(issue Issue, chain map[string]Issue) []string {
 			members = append(members, member)
 		}
 	}
-	if open := OpenBeneath(issue, members); len(open) > 0 {
+	if open := WorkBeneath(issue, members); len(open) > 0 {
 		return open
 	}
 	return nil
 }
 
 // RetroHolds is what a pass's facts show of the three holds on the acceptance of a parent held
-// before its retro (HoldForChildren), each by key: the issues beneath it still in the workflow
-// (Beneath, openBeneathIn), the roots still in the workflow that rest on its approval (Resting,
+// before its retro (HoldForChildren), each by key: the issues beneath it whose work has still to
+// happen (Beneath, openBeneathIn), the roots still in the workflow that rest on its approval (Resting,
 // RestingRootsOn), and its open Dispatch children (Open, readChildWaits), the same three the
 // workflow reads to hold the parent and to release it (workflow's acceptanceHeld). ReadLineFacts
 // puts them together once for each such parent (LineFacts.RetroHolds, retroHoldsOf).
