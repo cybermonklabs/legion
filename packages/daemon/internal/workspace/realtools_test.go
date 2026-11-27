@@ -107,23 +107,31 @@ func locksUnder(t *testing.T, dir string) []string {
 
 // slowCleanFilter is the clean filter the repository of TestARealGitStoppedAtItsBudgetLeavesNoLock
 // runs on every path it adds. git runs a filter through a shell, so this is a command line and
-// not an argv, and it sleeps far past the git's Timeout: that Timeout, never the filter's own
-// exit, is what ends that git. It is what holds .git/index.lock open for as long as the row needs,
+// not an argv, and it runs far past the git's Timeout: that Timeout, never the filter's own exit,
+// is what ends that git. It is what holds .git/index.lock open for as long as the row needs,
 // because neither runner gives a command a pipe that stays open — execRunner.Run passes no
 // standard input at all and RunCommand passes a byte slice that ends at once — so a git waiting
 // on its own standard input could not serve.
 //
-// Before it sleeps it writes what the row counts from, each a record of the kernel's or of its own
+// Before it waits it writes what the row counts from, each a record of the kernel's or of its own
 // that nothing of the runner's writes or moves. Its own start mark (testexec.MarkStart) goes to
 // filterMark: when the git forked it, which `git add` does only once it holds .git/index.lock. A
 // mark of that form for its parent, the git, goes to gitMark: when the kernel made the process
 // execRunner.Run started (/proc/$PPID/stat). And lockSeen is written where repository's
 // .git/index.lock is there as the filter runs, the lock the stop must remove.
+//
+// It then writes the git a byte every 50 ms, 6,000 times (five minutes or more), rather than sleep
+// in one piece, so the git it holds wakes to read every 50 ms until its stop. Beside 16 stress-ng
+// workers, a git that slept a second or more before its SIGTERM was sometimes still there when its
+// one second of grace ended, and ended by the SIGKILL, though its handler had removed its lock: 3
+// of 600 runs with a 2 s Timeout and 3 of 600 with a 1 s one, against 0 of 1,000 with a 300 ms one
+// and 0 of 600 with a filter that wrote a byte every 50 ms and a 2 s Timeout (measured
+// 2026-11-27). Why the sleep matters was not found; that it does was measured.
 func slowCleanFilter(repository, filterMark, gitMark, lockSeen string) string {
 	return testexec.MarkStart(`"`+filterMark+`"`) +
 		`; read -r up </proc/uptime; read -r stat </proc/$PPID/stat; printf '%s\n%s\n' "$up" "$stat" >"` + gitMark + `"` +
 		`; [ -e "` + filepath.Join(repository, ".git", "index.lock") + `" ] && : >"` + lockSeen + `"` +
-		`; sleep 300; cat`
+		`; ticks=0; while [ "$ticks" -lt 6000 ]; do printf x; sleep 0.05; ticks=$((ticks+1)); done`
 }
 
 // lockBound is how soon after the kernel started the git of TestARealGitStoppedAtItsBudgetLeavesNoLock
@@ -138,7 +146,7 @@ const lockBound = time.Second
 // an `git add` and removes it from the signal handler of its own lockfile API; SIGKILL runs no
 // handler, so a git killed outright leaves that lock and every later git and jj of the repository
 // fails on it (dispatch://INFRA-3098, procgroup.StopGrace). The repository is a real one whose
-// `filter.slow.clean` sleeps past the git's Timeout and whose .gitattributes points every path at
+// `filter.slow.clean` runs past the git's Timeout and whose .gitattributes points every path at
 // that filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
 // through, under its own Timeout and nothing else: the caller's context ends only in the test's
 // cleanup, after the row has read the run. What the row reads is the production stop's own
@@ -184,7 +192,7 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 
 	// The caller's context is cancelled only by the cleanup, which waits for the run to return: a
 	// run whose Timeout never stopped its git fails the wait below, and the cleanup then stops the
-	// git rather than leave it to sleep out its filter.
+	// git rather than leave it to wait out its filter.
 	type ran struct {
 		result Result
 		err    error
