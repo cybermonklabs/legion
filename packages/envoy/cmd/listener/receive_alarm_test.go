@@ -257,14 +257,23 @@ func TestAHolderWhoseDurableReadTheGrantRefusesNamesItAtOnceAndTriesAgain(t *tes
 // A lease holder that cannot prepare its durable (here its reads of it go unanswered) says so in
 // /healthz, 200 degraded with the reason, and once its failures have lasted the alarm bound, timed
 // from the start of the first, logs the alarm line at ERROR with that reason and gives the lease
-// up: the other pod takes it at its next poll and delivers what was published meanwhile, and the
-// stuck pod, a standby again, does not take it back from a pod that receives. Before, the holder
-// retried forever and renewed its lease, so no standby ever tried, /healthz answered 200 healthy
-// and no alarm fired.
+// up: the other pod takes it at its next poll and delivers from the machine's deployed durable
+// what was published meanwhile, and the stuck pod, a standby again, does not take it back from a
+// pod that receives. Before, the holder retried forever and renewed its lease, so no standby ever
+// tried, /healthz answered 200 healthy and no alarm fired.
 // It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T) {
 	const machineID = "box-stuck"
 	granted, denied := consumerInfoUnansweredNATS(t, machineID)
+	// The machine's durable is deployed before either pod starts. pod-stuck cannot read it, so
+	// pod-b's direct connection creates it here, before pod-b's lease and receive loop start. A
+	// durable first created when pod-b takes the lease over would start at deliver-new, after the
+	// message published while pod-stuck holds the lease (correctListenerDurable).
+	handle, received := recordingHandler()
+	standby := newReceiverRig(t, granted, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
+	if _, err := ensureListenerDurable(context.Background(), standby.client, standby.consumer); err != nil {
+		t.Fatalf("create the durable: %v", err)
+	}
 	// The bound is past one failed read, so /healthz is read between the first failure and the
 	// give-up.
 	timing := testReceiveTiming()
@@ -274,8 +283,8 @@ func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T
 	stuck.lease.Start(context.Background())
 	stuck.receiver.Start()
 	stuck.awaitState(t, receivePreparing, 10*time.Second)
-	handle, received := recordingHandler()
-	standby := startReceiverRig(t, granted, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
+	standby.lease.Start(context.Background())
+	standby.receiver.Start()
 	waitFor(t, "pod-b to read pod-stuck's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-stuck"
 	})
