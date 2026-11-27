@@ -14,14 +14,15 @@ import (
 
 // TestAKeyedRepeatReplaysNoAnswerItsCallerNoLongerSees: a key belongs to a person whatever
 // credential they write through (requestKeyLogin), and a repeat under it is answered the first
-// request's stored answer, so a repeat is held to what its caller sees now (heldAnswerHidden). bob,
+// request's stored answer, so a repeat is held to what its caller sees now (heldAnswerRefusal). bob,
 // a restricted member PRIV's list names, renames PRIV's issue under a key and is answered 200 with
 // the issue; PATCH /api/v1/issues/{key} keeps that answer's bytes and replays them. His repeat is
-// replayed while he is on the list. carol takes him off PRIV's list, and his repeat under the same
-// key answers exactly what the same patch under a fresh key answers - an issue nobody holds - and
-// holds no part of the issue.
+// replayed while he is on the list. carol takes him off PRIV's list: the same patch under a fresh
+// key now answers 404, an issue nobody holds, and his repeat under the first key is refused 409
+// KEY_COMMITTED, not replayed and never run again, holding no part of the issue, as a repeat of a
+// write that landed whose object its caller does not see is at every slice.
 //
-// Control: heldAnswerHidden answering false, under which the repeat replays the stored 200 with
+// Control: heldAnswerRefusal answering nil, under which the repeat replays the stored 200 with
 // PRIV's issue in it, and the test fails.
 func TestAKeyedRepeatReplaysNoAnswerItsCallerNoLongerSees(t *testing.T) {
 	seed := seedPrivateProject(t)
@@ -50,17 +51,11 @@ func TestAKeyedRepeatReplaysNoAnswerItsCallerNoLongerSees(t *testing.T) {
 	}
 
 	seed.removePrincipal(t, seedPrivate, access.PrincipalPerson, seedBob)
-	fresh := keyed("bob-rename-2")
-	if fresh.Code != http.StatusNotFound {
-		t.Fatalf("bob's rename of PRIV's issue under a fresh key after he left PRIV's list = %d %s, want 404: the comparison proves nothing",
+	if fresh := keyed("bob-rename-2"); fresh.Code != http.StatusNotFound {
+		t.Fatalf("bob's rename of PRIV's issue under a fresh key after he left PRIV's list = %d %s, want 404: he still sees PRIV, and the case proves nothing",
 			fresh.Code, fresh.Body.String())
 	}
-	repeat := keyed("bob-rename-1")
-	if repeat.Code != fresh.Code || repeat.Body.String() != fresh.Body.String() || strings.Contains(repeat.Body.String(), title) ||
-		repeat.Header().Get(contracts.IdempotencyReplayedHeader) != "" {
-		t.Errorf("bob's repeat after he left PRIV's list = %d %s (replayed %q), want what a fresh key answers, %d %s",
-			repeat.Code, repeat.Body.String(), repeat.Header().Get(contracts.IdempotencyReplayedHeader), fresh.Code, fresh.Body.String())
-	}
+	wantKeyedRefusal(t, "bob's repeat after he left PRIV's list", keyed("bob-rename-1"), title)
 }
 
 // TestAStatusChangeIsNotReplayedToACredentialThatDoesNotSeeWhatItsIssueNames: a status change's

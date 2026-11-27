@@ -1312,11 +1312,10 @@ func (s *server) answerDrainedRepeat(
 // by the same rule: a caller that does not see every object cannot be told which objects it saw,
 // so a replay of a deleted object's first answer would tell it "deleted" where a hidden one tells
 // it nothing. An object that is there, of a project or of none, is not missing. Never running a
-// hidden repeat again is this slice's rule: the issue's loaders bind no reader yet (loadIssue,
-// loadIssueWithProgress), so a request run again for a caller that does not see its issue would
-// find it and write it a second time, and no create holds its caller to the project its body
-// names. Slice S3c-issues, whose loaders bind the reader, runs a hidden repeat
-// again under no key, which answers its object as missing and writes nothing.
+// hidden repeat again is the rule at every slice, also once the issue's loaders bind the reader:
+// one fail-closed rule, under which no repeat writes twice whatever loader its route reaches, and
+// whose caller reads what the write made through the routes that read it, each held to what that
+// caller sees.
 //
 // A repeat answered from the key gets the first answer whole, judged by the object its address or
 // body names and the issues its point names, and by nothing else it holds: an issue create's
