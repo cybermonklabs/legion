@@ -65,11 +65,11 @@
 # commit and the head of each priority pull request left after the label read, with every commit
 # and tree of their history and no file contents (--filter=blob:none). A merge base needs the
 # history, at whatever depth it lies below a head that has not merged main for weeks, so the fetch
-# is not shallow; git merge-tree fetches the contents of the files it merges as it needs them.
-# Main's whole history read that way was 16 MB and took 1.8 s from a development machine on
-# 2026-11-26, and the job log prints the seconds the fetch and each pull request's merges took. A
-# run where no priority pull request but the one its event names is approved or queued fetches
-# nothing.
+# is not shallow; git fetches the contents of a file from origin when a merge, or a read of the
+# file or of the change's renames, first needs them. Main's whole history read that way was 16 MB
+# and took 1.8 s from a development machine on 2026-11-26, and the job log prints the seconds the
+# fetch and each pull request's merges took. A run where no priority pull request but the one its
+# event names is approved or queued fetches nothing.
 #
 # A read it could not make fails the check rather than pass it, saying what it could not read: a
 # label read GitHub refused at every attempt gh-read.sh's gh_read made, an answer that is not the
@@ -83,11 +83,16 @@
 #                      gh-read.sh's gh_read, which waits out a spent budget within the job's
 #                      JOB_TIMEOUT_MINUTES and tries twice more after any other refusal.
 #   GITHUB_REPOSITORY, GITHUB_SERVER_URL  as Actions sets them: the repository read and fetched.
-#   RUNNER_TEMP        where the fetch's repository is made.
+#   RUNNER_TEMP        where the fetch's repository is made, and the files that keep git's words.
 #
-# Every ::error:: line goes to stderr, every other line to stdout. A pull request's title is
-# written in an ::error:: line alone, escaped, and every other line names a pull request by its
-# number, so no title can start a line of the log.
+# Every ::error:: line goes to stderr, and so does each line that names a file of git's or gh's
+# kept words; every other line goes to stdout. A line names a pull request by its number alone,
+# never its title, free text of GitHub's answer, which the label read does not ask for. No line
+# holds git's words either: a git call that reads file contents fetches them from origin as it
+# needs them, and what answers in origin's place writes those words. So each such call keeps its
+# words in a file of its own under RUNNER_TEMP (gh-read.sh's _gh_read_kept) and prints one line on
+# stderr in their place, naming the call, its exit and that file (`words`, below), as gh-read.sh
+# does for gh's words and for the fetch's.
 #
 # Run from anywhere: .github/scripts/priority-conflicts.sh
 # Its tests are in priority-conflicts.test.sh, which ci.yaml's test job runs.
@@ -98,8 +103,8 @@ export LC_ALL=C
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
-# error <text>: one ::error:: line, escaped as a workflow command's data must be, since a title or
-# a path can hold a percent sign.
+# error <text>: one ::error:: line, escaped as a workflow command's data must be, since a path can
+# hold a percent sign.
 error() {
   local text=$1
   text=${text//'%'/%25}
@@ -111,6 +116,20 @@ error() {
 fail() {
   error "$1"
   exit 1
+}
+
+# words <call> <status> <file>: in place of <file>, the words a git call that reads file contents
+# wrote on stderr, one line on stderr naming the call, its exit and the file of their own under
+# RUNNER_TEMP that keeps them (gh-read.sh's _gh_read_kept): the header says why they are printed
+# nowhere. A call that wrote nothing prints no line.
+words() {
+  local kept
+  [ -s "$3" ] || return 0
+  if kept=$(_gh_read_kept "$3"); then
+    echo "$1 exited $2; its own words are in $kept" >&2
+  else
+    echo "$1 exited $2; its own words could not be kept" >&2
+  fi
 }
 
 event_name=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
@@ -160,14 +179,14 @@ query PriorityPulls($owner: String!, $repo: String!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequests(states: OPEN, labels: ["priority"], first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { number title headRefOid reviewDecision isInMergeQueue }
+      nodes { number headRefOid reviewDecision isInMergeQueue }
     }
   }
 }
 GRAPHQL
 shape='.data.repository.pullRequests
   | (.pageInfo.hasNextPage | type == "boolean") and (.nodes | type == "array")
-    and all(.nodes[]; (.number | type == "number") and (.title | type == "string")
+    and all(.nodes[]; (.number | type == "number")
       and (.headRefOid | type == "string" and test("^[0-9a-f]{40}$"))
       and (.reviewDecision == null or (.reviewDecision | type == "string"))
       and (.isInMergeQueue | type == "boolean"))'
@@ -193,15 +212,14 @@ while :; do
   after=$next
 done
 # Each priority pull request, once, though a page boundary that moved between two reads lists it
-# twice: its number, title and head, whether it is in the merge queue, and whether it is approved
-# or queued.
+# twice: its number and head, whether it is in the merge queue, and whether it is approved or
+# queued.
 pulls=$(jq -s -c 'unique_by(.number)
-  | map({number, title, head: .headRefOid, queued: .isInMergeQueue,
+  | map({number, head: .headRefOid, queued: .isInMergeQueue,
          landing: (.reviewDecision == "APPROVED" or .isInMergeQueue)})' \
   "$work/nodes")
 
 is_priority() { jq -e --argjson number "$1" 'any(.[]; .number == $number)' <<<"$pulls" > /dev/null; }
-title_of() { jq -r --argjson number "$1" 'first(.[] | select(.number == $number) | .title)' <<<"$pulls"; }
 
 if [ "$event_name" = pull_request ] && is_priority "$number"; then
   echo "#$number carries the label priority, and priority pull requests are not held to each other: nothing to check."
@@ -293,9 +311,9 @@ names() {
 # that info and the CONFLICT messages name, once; and <out>.marked, the paths git wrote conflict
 # markers into (those of its `CONFLICT (contents)` messages but its `CONFLICT (binary)` ones, as
 # git names a binary file's conflict under both); NUL-separated and sorted. Returns 0 for a clean
-# merge, 1 for a conflicted one and 2 when git could not merge or its answer could not be read,
-# with git's words on stderr. It is called where `set -e` does not reach inside it, so every step
-# returns 2 on its own failure.
+# merge, 1 for a conflicted one and 2 when git could not merge or its answer could not be read.
+# git's words stay in a file `words` names. It is called where `set -e` does not reach inside it,
+# so every step returns 2 on its own failure.
 merge() {
   local out=$1 status=0 argument arguments=() fields=() i count kind
   local entry_shape=$'^([0-7]+) ([0-9a-f]{40}) ([123])\t(.*)$'
@@ -311,11 +329,11 @@ merge() {
     esac
   done
   git -C "$repo" merge-tree --write-tree -z "${arguments[@]}" > "$out" 2> "$out.err" || status=$?
+  words "git merge-tree" "$status" "$out.err"
   mapfile -d '' -t fields < "$out" || return 2
   # git answers 1 for a revision it cannot read too, so a merge counts only when its first field
   # is a tree.
   if [ "$status" -gt 1 ] || ! [[ ${fields[0]:-} =~ ^[0-9a-f]{40}$ ]]; then
-    cat "$out.err" >&2
     return 2
   fi
   printf '%s\n' "${fields[0]}" > "$out.tree" || return 2
@@ -366,12 +384,16 @@ listed() {
 
 # unlabelled <tree> <path>: the file at <path> in <tree> with the label taken off each conflict
 # marker line, which names a ref or a path and differs between merges that hold the same conflict;
-# nothing for a path that is no file in <tree>. Fails when git cannot read the tree or the file.
+# nothing for a path that is no file in <tree>. Fails when git cannot read the tree or the file,
+# whose words stay in a file `words` names.
 unlabelled() {
-  local entry
+  local entry status=0
   entry=$(git -C "$repo" --literal-pathspecs ls-tree "$1" -- "$2") || return 1
   [[ $entry == *" blob "* ]] || return 0
-  git -C "$repo" cat-file blob "$1:$2" | sed -E 's/^(<<<<<<<|>>>>>>>|[|]{7}) .*$/\1/'
+  git -C "$repo" cat-file blob "$1:$2" > "$work/blob" 2> "$work/blob.err" || status=$?
+  words "git cat-file" "$status" "$work/blob.err"
+  [ "$status" -eq 0 ] || return 1
+  sed -E 's/^(<<<<<<<|>>>>>>>|[|]{7}) .*$/\1/' "$work/blob"
 }
 
 # The change's own renames, so that a conflict with no markers at a path the change renamed is
@@ -379,9 +401,11 @@ unlabelled() {
 declare -A renamed_from=()
 renames_read=''
 read_renames() {
-  local fields=() i
-  git -C "$repo" diff --find-renames --name-status -z "$base" "$change_commit" > "$work/renames" ||
-    fail "git could not list the renames of $change, $unread"
+  local fields=() i status=0
+  git -C "$repo" diff --find-renames --name-status -z "$base" "$change_commit" > "$work/renames" \
+    2> "$work/renames.err" || status=$?
+  words "git diff --find-renames" "$status" "$work/renames.err"
+  [ "$status" -eq 0 ] || fail "git could not list the renames of $change, $unread"
   mapfile -d '' -t fields < "$work/renames"
   for ((i = 0; i < ${#fields[@]}; )); do
     if [[ ${fields[i]} == R* ]]; then
@@ -531,7 +555,7 @@ for candidate in "${candidates[@]}"; do
   else
     where="in a conflict git names no file for"
   fi
-  error "$change conflicts with priority pull request #$pull ($(title_of "$pull")) $where. A priority pull request merges first: wait for #$pull to merge, then $remedy."
+  error "$change conflicts with priority pull request #$pull $where. A priority pull request merges first: wait for #$pull to merge, then $remedy."
 done
 
 [ "$conflicts" -eq 0 ] || exit 1
