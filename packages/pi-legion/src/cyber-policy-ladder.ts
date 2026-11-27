@@ -37,8 +37,8 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  * Why this runs inside the turn. The daemon reads how a take's turn ended from the turn-outcome
  * report this plugin sends at the `agent_end` that settles the turn, naming the take's number
  * (`turnOutcomes` in extensions/legion.ts). A `session_stop` handler that answers a continuation
- * makes the host end the run with `willContinue` (`session/agent-session.ts:6458-6459,
- * 7061-7067`), which ends no turn (`turnGoesOn`, src/turn-end.ts): the take keeps its number and
+ * makes the host end the run with `willContinue` (`session/agent-session.ts:6493-6494,
+ * 7096-7102`), which ends no turn (`turnGoesOn`, src/turn-end.ts): the take keeps its number and
  * nothing is reported across every rung, and the one report is the last rung's. The host stops
  * waiting for a `session_stop` handler at 30 s without aborting it (`extensibility/extensions/runner.ts:152,
  * 1983-1988, 2030`), so each wait is at most `LONGEST_RUNG_WAIT_MS`, and once `SETTLE_BUDGET_MS`
@@ -62,15 +62,15 @@ import { integerSetting, type StallLimitsLog } from "@legion/pi-shared/stall-lim
  * session (`session/cyber-policy-closure.ts:9-11, 81-96, 131`); a continuation is inside input, and
  * a call it makes is held with no request sent. So each rung first sends one hidden message marked
  * `origin: "outside"`, which ends the hold before the message is queued
- * (`session/agent-session.ts:12605-12616`), and the compaction is asked for with the same origin
- * (`:9369-9373`). Deciding to retry is this plugin's, on the operator's behalf, with the settings
+ * (`session/agent-session.ts:12675-12686`), and the compaction is asked for with the same origin
+ * (`:9415-9419`). Deciding to retry is this plugin's, on the operator's behalf, with the settings
  * below. That message and the continuation's own text are taken out of every request again
  * (`CyberPolicyLadder.request`), and so is each refused reply, so the plain retry sends what the
  * refused request sent.
  *
  * Two turns end with no `session_stop` and so get no ladder: a refused reply that carries tool
- * calls, and a turn that ends while a background job's result is due (`agent-session.ts:6417-6421,
- * 6454-6457`). Their refusal reaches the daemon as before.
+ * calls, and a turn that ends while a background job's result is due (`agent-session.ts:6452-6456,
+ * 6489-6492`). Their refusal reaches the daemon as before.
  */
 
 /** The four rungs, in the order the ladder climbs them. */
@@ -104,11 +104,11 @@ const CYBER_POLICY_RETRY_MESSAGE = {
 } as const;
 
 /** The continuation text of every rung but the second. The host needs a text to continue the turn
- * (`agent-session.ts:7108-7133`); this one is taken out of every request again, and it says what a
+ * (`agent-session.ts:7143-7168`); this one is taken out of every request again, and it says what a
  * model would need to read if it ever were sent. */
 export const CYBER_POLICY_CONTINUE = "Continue the task from where the refused request left off.";
 
-/** The host's `customType` for a `session_stop` continuation (`agent-session.ts:7123-7131`). */
+/** The host's `customType` for a `session_stop` continuation (`agent-session.ts:7158-7166`). */
 const SESSION_STOP_CONTINUATION = "session-stop-continuation";
 
 /** The name of the host's rejection of a compaction with nothing to compact, after which it resumes
@@ -297,7 +297,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
   };
 
   /** Input from outside the session, sent before each rung: it ends the host's hold for that
-   * rung's request (`session/agent-session.ts:12605-12616`). */
+   * rung's request (`session/agent-session.ts:12675-12686`). */
   const endHold = (): void =>
     deps.sendMessage(CYBER_POLICY_RETRY_MESSAGE, {
       deliverAs: "nextTurn",
@@ -483,7 +483,7 @@ export function createCyberPolicyLadder<Context extends CyberPolicyLadderContext
  * newest turn group, which holds the request that was refused — is summarized with the rest, and
  * the first entry kept is the leaf itself, the refused reply the next request leaves out
  * (`CyberPolicyLadder.request`). The host keeps the newest group whatever its keep budget says
- * (`packages/agent/src/compaction/compaction.ts:516-519`), so this is the one way to have it
+ * (`packages/agent/src/compaction/compaction.ts:519-522`), so this is the one way to have it
  * summarized.
  */
 export function summarizeThrough(preparation: CompactionPreparation, leafId: string): void {
