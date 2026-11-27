@@ -2711,6 +2711,15 @@ type Store interface {
 	// is known and later than the stored one, or the stored one is unknown. It answers whether the
 	// snapshot was written. A merge that names no pull request is refused.
 	PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string, merge Merge) (bool, error)
+	// MergeHistoryOf is issue key's merge history as its rows show it now (MergeHistoryRow): its
+	// evidence and the class derived from it, read through the one evidence projection. It writes
+	// nothing, and refuses a key the record holds no issue of. A door reads it under the fact lock,
+	// before any clear.
+	MergeHistoryOf(ctx context.Context, tx pgx.Tx, key string) (MergeHistoryRow, error)
+	// MergeHistoryRows is the merge history of each recorded issue of project, in key order, through
+	// the same projection: of the issues on one of repos, compared without case, or of every issue
+	// of the project where repos is empty. It writes nothing.
+	MergeHistoryRows(ctx context.Context, tx pgx.Tx, project string, repos []string) ([]MergeHistoryRow, error)
 	// PutDefect records a reason of a next change of the issue (Defect) and answers its id.
 	PutDefect(ctx context.Context, tx pgx.Tx, defect Defect) (int64, error)
 	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,

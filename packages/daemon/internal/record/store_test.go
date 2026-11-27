@@ -3226,3 +3226,80 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 		t.Fatalf("the issue after a later merge holds %+v, want %+v", got.Merge, later)
 	}
 }
+
+// A path that deletes or replaces a merged pull request row saves the row's merge first, so the
+// issue's evidence of its merge outlives the row. A closed issue holds a retained merged row and no
+// snapshot, as an issue a release before the snapshot merged does. Each clear of a generation, on
+// its own copy of that seed, and a write of a later pull request from the same branch, which
+// replaces the row, leave the snapshot holding the row's number, repository, merge commit, base and
+// final head, with no merged_at, which the row never held, and the issue derives ANSWERED. A
+// cleared row that never merged saves no snapshot, and its kept clock derives PARTIAL.
+func TestAClearKeepsTheMergeOfARowItDeletes(t *testing.T) {
+	ctx := context.Background()
+	records := NewStore()
+	head, sha := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	at := time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)
+	seed := func(t *testing.T, state PullRequestState) *store.Store {
+		t.Helper()
+		st := migratedStore(t)
+		inTx(t, st, func(tx pgx.Tx) {
+			issue := issueFixture("ACME-1")
+			issue.Project, issue.Tree, issue.Parent, issue.Phase, issue.Status, issue.Repo = "ACME", "ACME-1", nil, phase.Done, "done", "acme/widgets"
+			must(t, records.PutIssue(ctx, tx, issue))
+			must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-1", Repo: "acme/widgets", Number: 41, Branch: "legion/ACME-1", Base: "main",
+				HeadSHA: head, HeadUpdatedAt: at, MergeSHA: sha, State: state}))
+		})
+		return st
+	}
+	read := func(t *testing.T, st *store.Store) (Merge, MergeHistoryClass) {
+		t.Helper()
+		var (
+			merge Merge
+			class MergeHistoryClass
+		)
+		inTx(t, st, func(tx pgx.Tx) {
+			issue, err := records.Issue(ctx, tx, "ACME-1")
+			must(t, err)
+			history, err := records.MergeHistoryOf(ctx, tx, "ACME-1")
+			must(t, err)
+			merge, class = issue.Merge, history.Class
+		})
+		return merge, class
+	}
+	merged := Merge{Number: 41, Head: head, SHA: sha, Base: "main", Repo: "acme/widgets"}
+	for _, tc := range []struct {
+		name  string
+		write func(tx pgx.Tx) error
+	}{
+		{"ClearGeneration", func(tx pgx.Tx) error { return records.ClearGeneration(ctx, tx, "ACME-1", at) }},
+		{"ClearTreeGeneration", func(tx pgx.Tx) error { return records.ClearTreeGeneration(ctx, tx, "ACME-1", at) }},
+		{"ClearChangeGeneration", func(tx pgx.Tx) error { return records.ClearChangeGeneration(ctx, tx, "ACME-1", at) }},
+		{"a PutPullRequest of a later pull request from the branch", func(tx pgx.Tx) error {
+			return records.PutPullRequest(ctx, tx, PullRequest{Issue: "ACME-1", Repo: "acme/widgets", Number: 42, Branch: "legion/ACME-1", Base: "main",
+				HeadSHA: strings.Repeat("c", 40), HeadUpdatedAt: at.Add(time.Hour), State: PullRequestOpen})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := seed(t, PullRequestMerged)
+			inTx(t, st, func(tx pgx.Tx) { must(t, tc.write(tx)) })
+			merge, class := read(t, st)
+			if merge != merged {
+				t.Fatalf("the snapshot after %s = %+v, want the merge of the row it deleted, %+v", tc.name, merge, merged)
+			}
+			if class != MergeHistoryAnswered {
+				t.Fatalf("the class after %s = %s, want %s", tc.name, class, MergeHistoryAnswered)
+			}
+		})
+	}
+	t.Run("a cleared row that did not merge", func(t *testing.T) {
+		st := seed(t, PullRequestClosed)
+		inTx(t, st, func(tx pgx.Tx) { must(t, records.ClearGeneration(ctx, tx, "ACME-1", at)) })
+		merge, class := read(t, st)
+		if merge.Merged() {
+			t.Fatalf("the snapshot after the clear of a closed row = %+v, want none", merge)
+		}
+		if class != MergeHistoryPartial {
+			t.Fatalf("the class after the clear of a closed row = %s, want %s: its kept clock", class, MergeHistoryPartial)
+		}
+	})
+}
