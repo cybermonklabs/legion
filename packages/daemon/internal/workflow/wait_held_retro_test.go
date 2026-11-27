@@ -15,6 +15,8 @@ import (
 // row holds b's handoff, and b's approved review passes its last step while LEGION-209 is in the
 // workflow beneath LEGION-208, so b is held at its retro; LEGION-209 then leaves done. Task a,
 // `implementer:k`, which b needs, holds k at its step where busy, until a passes; else a is done.
+// b works on a branch of its own, with its pull request #45, so a holds the issue's branch and its
+// #42 alone, which its implementer's pass reads.
 func heldRetroStart(t *testing.T, busy bool) (record.SuperviseRequest, string) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -27,6 +29,8 @@ func heldRetroStart(t *testing.T, busy bool) (record.SuperviseRequest, string) {
 	seedTasks(t, pool, root.Key, root.Generation, a,
 		planTask{id: "b", steps: []string{"implementer:k", "reviewer"}, agents: []claim.Agent{"k", "reviewer"}, needs: []string{"a"},
 			state: record.TaskRunning, place: atStep(2)})
+	seedTaskBranch(t, pool, root.Key, "b", "legion/"+root.Key+".b")
+	seedTaskPR(t, pool, engine, root.Key, "b", 45)
 	last := record.PhaseRow{Issue: root.Key, Role: claim.RoleReviewer, Claim: agentClaim(t, root.Key, "reviewer"),
 		HandoffRecord: "review-b", HandoffVersion: 1, HandoffCommit: "head-b", StepTask: "b", StepPlace: 2}
 	seedPhase(t, pool, last)
@@ -48,6 +52,7 @@ func heldRetroStart(t *testing.T, busy bool) (record.SuperviseRequest, string) {
 		}
 		taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
 		joinsEnd(t, pool, engine, root.Key)
+		assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskDone, atStep(1))
 	}
 	tasks := tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "b", record.TaskRunning, retro)
