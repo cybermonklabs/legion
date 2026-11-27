@@ -108,6 +108,11 @@ func fileSize(path string) (int64, error) {
 
 // readStatementLog reads every execution the jsonlog file at path holds after offset.
 func readStatementLog(path string, offset int64) ([]logged, error) {
+	return readExecutions(path, offset, false)
+}
+
+// Include executions without a query id for items, which captures the read's transaction.
+func readExecutions(path string, offset int64, includeUnkeyed bool) ([]logged, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open the statement log: %w", err)
@@ -127,7 +132,7 @@ func readStatementLog(path string, offset int64) ([]logged, error) {
 			Detail    string `json:"detail"`
 			QueryID   int64  `json:"query_id"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &line) != nil || line.QueryID == 0 {
+		if json.Unmarshal(scanner.Bytes(), &line) != nil || (!includeUnkeyed && line.QueryID == 0) {
 			continue
 		}
 		match := executed.FindStringSubmatch(line.Message)

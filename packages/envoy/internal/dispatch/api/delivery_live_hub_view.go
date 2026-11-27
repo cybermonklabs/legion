@@ -170,8 +170,9 @@ func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErro
 // shows, its window, as a timeline view names one, and its query, the query string
 // GET /api/v1/projects/{key}/evals/{slug}/items would be sent without from and to: the compare
 // range (compare_from and compare_to), the series, the row kind and row (row_kind, row), the
-// repositories (repo), the order (sort) and the page (limit and offset). A query the route refuses
-// is refused here, by the route's own reading of the query the view's read sends it (evalsQuery,
+// repositories (repo), sources (source), the order (sort), the page (limit and offset), or the
+// bounded readings (buckets and group). A query the route refuses is refused here, by the route's
+// own reading of the query the view's read sends it (evalsQuery,
 // parseEvalItemsQuery), before the view is held, as an evals view's is (parseEvalsLiveView). A
 // project or a slug no row holds is the read's to refuse, as the route's is (readEvalItems).
 func parseEvalItemsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {

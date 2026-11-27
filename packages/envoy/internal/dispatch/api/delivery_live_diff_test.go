@@ -1260,6 +1260,17 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	itemsHeldAt := itemsAt.Add(-4 * time.Hour)
 	itemsDelta.Sub, itemsDelta.Seq, itemsDelta.ChangedAt = "items-1", "46", &itemsAt
 
+	// A second items view holds a step reading before the window and one in its first bucket.
+	anchor := readingItemRow(evals.Reading{ID: "00000000-0000-4000-8000-000000000001", Series: "limit",
+		RowKey: "anchor", RowKind: "sample", Value: new(2.0), MeasuredAt: liveEvalsWindow.From.Add(-time.Minute), Links: []evals.Link{}}, evals.RangeWindow)
+	anchor.BeforeWindow = true
+	sample := readingItemRow(evals.Reading{ID: "00000000-0000-4000-8000-000000000002", Series: "limit",
+		RowKey: "sample", RowKind: "sample", Value: new(3.0), MeasuredAt: liveEvalsWindow.From, Links: []evals.Link{}}, evals.RangeWindow)
+	sample.Kept = []string{"first", "last", "min", "max"}
+	bucketBody := liveItemsOf(anchor, sample)
+	bucketBody.Total, bucketBody.Limit, bucketBody.Compare = 1, 0, nil
+	bucketed := mustEncodeLive(t, evalItemsView, bucketBody)
+
 	// ACME's project timeline, grown from its two newest rows to all four: the growth's delta
 	// carries the two rows the page lacked, its new limit, and the waiting line the page reaches
 	// now that it holds the window's oldest row.
@@ -1309,16 +1320,17 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 			Type: "error", Sub: "timeline-1", Code: deliveryNotConfiguredCode,
 			Message: deliveryNotConfiguredMessage,
 		},
-		"events_start.json":   liveEventsStart("events-1", 41, true),
-		"event.json":          event,
-		"ended.json":          liveEnded("events-1", liveEndedBehind),
-		"agent.json":          liveAgentFrame("agent-1", agentEventResponder, responderEvent(true)),
-		"evals_snapshot.json": evalsHeld.snapshot("evals-1", 43, &evalsHeldAt),
-		"evals_delta.json":    evalsDelta,
-		"evals_after.json":    evalsNext.snapshot("evals-1", 44, &evalsAt),
-		"items_snapshot.json": itemsHeld.snapshot("items-1", 45, &itemsHeldAt),
-		"items_delta.json":    itemsDelta,
-		"items_after.json":    itemsNext.snapshot("items-1", 46, &itemsAt),
+		"events_start.json":            liveEventsStart("events-1", 41, true),
+		"event.json":                   event,
+		"ended.json":                   liveEnded("events-1", liveEndedBehind),
+		"agent.json":                   liveAgentFrame("agent-1", agentEventResponder, responderEvent(true)),
+		"evals_snapshot.json":          evalsHeld.snapshot("evals-1", 43, &evalsHeldAt),
+		"evals_delta.json":             evalsDelta,
+		"evals_after.json":             evalsNext.snapshot("evals-1", 44, &evalsAt),
+		"items_snapshot.json":          itemsHeld.snapshot("items-1", 45, &itemsHeldAt),
+		"items_delta.json":             itemsDelta,
+		"items_after.json":             itemsNext.snapshot("items-1", 46, &itemsAt),
+		"items_bucketed_snapshot.json": bucketed.snapshot("items-bucketed", 46, &itemsAt),
 		// The growth is the same sub subscribed again with the higher limit and a resume: its
 		// answer is the delta, and the snapshot after it is what a new subscription is sent.
 		"project_timeline_snapshot.json": timelineHeld.snapshot("project-timeline-1", 46, &timelineAt),

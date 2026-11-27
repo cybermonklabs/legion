@@ -42,7 +42,8 @@ export type DeliveryLiveWindow =
  *  id. An items view names the project and the `slug` of the eval whose rows it shows, its
  *  window, and the rest of what `GET /api/v1/projects/{key}/evals/{slug}/items` would be sent as
  *  its `query`: the compare range, the series (`series`), the row kind and row (`row_kind`,
- *  `row`), the repositories, the order (`sort`) and the page. Its snapshot and deltas carry an
+ *  `row`), the repositories, the sources (`source`), the order (`sort`), the page, or the
+ *  readings-only buckets (`buckets`, `group`). Its snapshot and deltas carry an
  *  `EvalItemsResponse`, every field of it sent whole, since its rows carry no id. A
  *  project-timeline view names the project whose timeline rows it shows, its window, and the rest
  *  of what `GET /api/v1/projects/{key}/timeline` would be sent as its `query`: the search, the

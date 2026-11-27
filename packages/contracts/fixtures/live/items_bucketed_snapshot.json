@@ -1,0 +1,99 @@
+{
+  "type": "snapshot",
+  "sub": "items-bucketed",
+  "seq": "46",
+  "changed_at": "2026-10-28T23:00:00Z",
+  "body": {
+    "items": [
+      {
+        "row_key": "anchor",
+        "row_kind": "sample",
+        "cols": {
+          "attributes": null,
+          "ci_high": null,
+          "ci_level": null,
+          "ci_low": null,
+          "col": "",
+          "id": "00000000-0000-4000-8000-000000000001",
+          "n": null,
+          "n_unit": "",
+          "note": "",
+          "recorded_at": "0001-01-01T00:00:00Z",
+          "recorded_by": {
+            "kind": "",
+            "id": ""
+          },
+          "replaces": "",
+          "series": "limit",
+          "unit": "",
+          "value": 2,
+          "value_absent_reason": ""
+        },
+        "measured_at": "2026-09-30T23:59:00Z",
+        "source": "",
+        "href": "",
+        "links": [],
+        "range": "window",
+        "before_window": true
+      },
+      {
+        "row_key": "sample",
+        "row_kind": "sample",
+        "cols": {
+          "attributes": null,
+          "ci_high": null,
+          "ci_level": null,
+          "ci_low": null,
+          "col": "",
+          "id": "00000000-0000-4000-8000-000000000002",
+          "n": null,
+          "n_unit": "",
+          "note": "",
+          "recorded_at": "0001-01-01T00:00:00Z",
+          "recorded_by": {
+            "kind": "",
+            "id": ""
+          },
+          "replaces": "",
+          "series": "limit",
+          "unit": "",
+          "value": 3,
+          "value_absent_reason": ""
+        },
+        "measured_at": "2026-10-01T00:00:00Z",
+        "source": "",
+        "href": "",
+        "links": [],
+        "range": "window",
+        "kept": [
+          "first",
+          "last",
+          "min",
+          "max"
+        ]
+      }
+    ],
+    "total": 1,
+    "limit": 0,
+    "offset": 0,
+    "window": {
+      "from": "2026-10-01T00:00:00Z",
+      "to": "2026-10-29T00:00:00Z",
+      "days": 28
+    },
+    "compare": null
+  },
+  "revs": {
+    "items": {},
+    "maps": {},
+    "counts": {},
+    "fields": {
+      "compare": "5b9bc4ba528108e4",
+      "items": "b6bc605c9413e39b",
+      "limit": "af63ad4c86019caf",
+      "offset": "af63ad4c86019caf",
+      "total": "af63ac4c86019afc",
+      "window": "04ae088b7addef8d"
+    }
+  }
+}

@@ -12914,6 +12914,25 @@
             }
           },
           {
+            "name": "buckets",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "col",
+                "row",
+                "row_group"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "schema": {
@@ -24575,6 +24594,21 @@
           },
           "href": {
             "type": "string"
+          },
+          "kept": {
+            "items": {
+              "enum": [
+                "first",
+                "last",
+                "min",
+                "max",
+                "no_value",
+                "min_low",
+                "max_high"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           },
           "links": {
             "items": {

@@ -380,6 +380,11 @@ type evalItemsQuery struct {
 	// results, slowest first; failures, the jobs that failed in the 24 hours before the range's
 	// end, most failures first.
 	Sort string `query:"sort" enum:"median,failures"`
+	// Buckets divides each range into 160 to 2,000 equal time spans. Returns only kept readings
+	// and before-window readings, without pagination.
+	Buckets int `query:"buckets" minimum:"160" maximum:"2000"`
+	// Group adds row or row_group to the series and column grouping used by buckets.
+	Group string `query:"group" enum:"col,row,row_group"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.

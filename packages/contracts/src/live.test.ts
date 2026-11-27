@@ -12,6 +12,7 @@ import eventsStart from "../fixtures/live/events_start.json";
 import freshness from "../fixtures/live/freshness.json";
 import heartbeat from "../fixtures/live/heartbeat.json";
 import itemsAfter from "../fixtures/live/items_after.json";
+import itemsBucketedSnapshot from "../fixtures/live/items_bucketed_snapshot.json";
 import itemsDelta from "../fixtures/live/items_delta.json";
 import itemsSnapshot from "../fixtures/live/items_snapshot.json";
 import legionReadAfter from "../fixtures/live/legion_read_after.json";
@@ -226,8 +227,7 @@ const ITEMS_KEYS = allOf<keyof EvalItemsResponse>()([
   "window",
   "compare",
 ]);
-/** An items row's keys. `before_window` is written only on a reading held from before the window
- *  (`omitempty`), which no fixture row is, so a row that leaves it out is held to the rest. */
+/** An items row's keys. Only a before-window reading or a bucketed reading carries its mark. */
 const ITEM_ROW_KEYS = allOf<keyof EvalItemRow>()([
   "row_key",
   "row_kind",
@@ -238,6 +238,7 @@ const ITEM_ROW_KEYS = allOf<keyof EvalItemRow>()([
   "links",
   "range",
   "before_window",
+  "kept",
 ]);
 /** A daemon read's fields, every one sent whole. */
 const LEGION_READ_KEYS = allOf<keyof LegionReadResponse>()(["read_at", "ok", "error"]);
@@ -391,13 +392,15 @@ test("an evals delta upserts the evals that moved by id and sets the fields that
 });
 
 test("an items snapshot is the items route's body, every field of it whole", () => {
-  for (const frame of [itemsSnapshot, itemsAfter]) {
+  for (const frame of [itemsSnapshot, itemsAfter, itemsBucketedSnapshot]) {
     expect(keysOf(frame)).toEqual(sorted(SNAPSHOT_KEYS));
     expect(frame.type).toBe("snapshot");
     expect(frame.seq).toMatch(/^\d+$/);
     expect(keysOf(frame.body)).toEqual(sorted(ITEMS_KEYS));
     for (const row of frame.body.items) {
-      const held = ITEM_ROW_KEYS.filter((key) => key !== "before_window" || key in row);
+      const held = ITEM_ROW_KEYS.filter(
+        (key) => (key !== "before_window" && key !== "kept") || key in row
+      );
       expect(keysOf(row)).toEqual(sorted(held));
     }
     expect(keysOf(frame.revs)).toEqual(sorted(REVS_KEYS));
@@ -407,6 +410,16 @@ test("an items snapshot is the items route's body, every field of it whole", () 
     expect(keysOf(frame.revs.fields)).toEqual(sorted(ITEMS_KEYS));
     for (const revision of leaves(frame.revs.fields, 1)) expect(revision).toMatch(REVISION);
   }
+});
+
+test("a bucketed items snapshot distinguishes a before-window reading from its kept readings", () => {
+  const [before, kept] = itemsBucketedSnapshot.body.items;
+  expect(before?.before_window).toBe(true);
+  expect(before).not.toHaveProperty("kept");
+  expect(kept).not.toHaveProperty("before_window");
+  expect(kept?.kept).toEqual(["first", "last", "min", "max"]);
+  expect(itemsBucketedSnapshot.body.total).toBe(1);
+  expect(itemsBucketedSnapshot.body.limit).toBe(0);
 });
 
 test("an items delta sets the rows whole, with the fields that moved beside them", () => {

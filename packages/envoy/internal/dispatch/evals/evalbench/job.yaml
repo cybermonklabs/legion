@@ -23,6 +23,14 @@
 # at the commit COMMIT merges, `git merge-base <COMMIT> origin/main`, which base mode builds and
 # loads.
 #
+# For k28, start the seeded server again on a test database with log_destination=jsonlog and
+# log_min_duration_statement=0. Before opening a page, run `measure items -database-file <file>
+# -url <server> -token-file <file> -pg-log <jsonlog> -view-file <items view JSON> -budget-ms <n>`.
+# Use 60 ms for a 28-day view without a compare range and 150 ms for an 84-day view with a compare
+# range. The command subscribes once to the given view, replays each SQL read from its snapshot
+# transaction once with EXPLAIN (ANALYZE, BUFFERS), and prints their total and the compressed body
+# bytes. Repeat from a server restart for each view.
+#
 # The log of the `driver` container is the evidence: judge it by its RESULT and FAIL lines and its
 # closing SHAPE and VERDICT lines, never by the Job's phase. The SHAPE line (job.sh's header says
 # what it holds) names the node, the machine's CPUs, CPU model and memory, each container's

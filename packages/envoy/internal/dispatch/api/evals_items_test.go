@@ -972,3 +972,163 @@ func TestARowsReadOfReadingsAloneCountsReadings(t *testing.T) {
 	requireTheItemsRead(t, rig.handler, "EVL", "pr-size", conn.snapshot(t, "rows").Body, viewQuery)
 	t.Logf("readings alone: %d of %d; day rows alone: %d; every source: %d", len(readings.Items), readings.Total, days.Total, every.Total)
 }
+
+// TestABucketedReadRefusesAPage holds both page keys, including an explicit zero offset.
+func TestABucketedReadRefusesAPage(t *testing.T) {
+	handler := newTestHandler(t)
+	for _, key := range []string{"limit", "offset"} {
+		t.Run(key, func(t *testing.T) {
+			page := map[string]string{"limit": "50", "offset": "0"}
+			target := evalItemsPath("EVL", "steps") + "?buckets=160&" + key + "=" + page[key]
+			rec := evalRequest(t, handler, http.MethodGet, target, nil, "")
+			answer := decodeBody[refusalAnswer](t, rec)
+			if rec.Code != http.StatusBadRequest || answer.Code != "INVALID_QUERY" || !strings.HasPrefix(answer.Error, key+" ") {
+				t.Errorf("got %d %s %q, want 400 INVALID_QUERY naming %s", rec.Code, answer.Code, answer.Error, key)
+			}
+		})
+	}
+}
+
+func TestTheStepReadKeepsWhatM4Keeps(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, group string
+		band        bool
+		readings    []m4TestReading
+	}{
+		{name: "one reading and the next bucket's left edge", readings: []m4TestReading{
+			{second: 0, value: new(5.0), roles: "first,last,min,max"},
+			{second: 60, roles: "first,last,no_value"},
+			{second: 9600}, // The right endpoint is exclusive.
+		}},
+		{name: "ties by id, not write order", readings: []m4TestReading{
+			{second: 1, value: new(5.0), roles: "first,min,max"},
+			{second: 1, value: new(5.0)},
+			{second: 1, value: new(5.0), roles: "last"},
+		}},
+		{name: "only the first gap also gets no_value", readings: []m4TestReading{
+			{second: 1, value: new(5.0), roles: "first,max"},
+			{second: 2, roles: "no_value"},
+			{second: 3, value: new(1.0), roles: "min"},
+			{second: 4, roles: "last"},
+		}},
+		{name: "band edges", band: true, readings: []m4TestReading{
+			{second: 1, value: new(5.0), low: new(4.0), high: new(6.0), roles: "first"},
+			{second: 2, value: new(3.0), low: new(2.0), high: new(4.0), roles: "min"},
+			{second: 3, value: new(5.0), low: new(-5.0), high: new(7.0), roles: "min_low"},
+			{second: 4, value: new(5.0), low: new(4.0), high: new(20.0), roles: "max_high"},
+			{second: 5, value: new(9.0), low: new(8.0), high: new(10.0), roles: "max"},
+			{second: 6, value: new(7.0), low: new(6.0), high: new(8.0), roles: "last"},
+		}},
+		{name: "row anchors in each range", group: "row", readings: []m4TestReading{
+			{second: -2, row: "a", value: new(1.0), roles: "before"},
+			{second: -1, row: "b", roles: "before"},
+			{second: 1, row: "a", value: new(3.0), roles: "first,last,min,max"},
+			{second: 2, row: "b", value: new(8.0), roles: "first,last,min,max"},
+		}},
+		{name: "row_group crosses row keys", group: "row_group", readings: []m4TestReading{
+			{second: -3, row: "a", group: "red", value: new(3.0)},
+			{second: -2, row: "b", group: "red", value: new(4.0), roles: "before"},
+			{second: -1, row: "a", group: "blue", roles: "before"},
+			{second: 1, row: "a", group: "red", value: new(7.0), roles: "first,max"},
+			{second: 2, row: "b", group: "red", value: new(2.0), roles: "last,min"},
+			{second: 3, row: "a", group: "blue", value: new(5.0), roles: "first,last,min,max"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slug := "step-" + strings.ReplaceAll(strings.Fields(tc.name)[0], "_", "-")
+			chart := stepChart("step", "value", tc.group)
+			if tc.band {
+				chart = strings.Replace(chart, `"xy"`, `"band"`, 1)
+			}
+			if tc.group == "" {
+				tc.readings = append(tc.readings, m4TestReading{second: -1, value: new(4.0), roles: "before"})
+			}
+			registerLastSeries(t, handler, "EVL", slug, []string{"value"}, chartList(chart))
+			window := evals.Range{From: at, To: at.Add(160 * time.Minute)}
+			compare := evals.Range{From: at.Add(-24 * time.Hour), To: at.Add(-24*time.Hour + 160*time.Minute)}
+			type expected struct{ rangeName, roles string }
+			want := map[string]expected{}
+			kept := 0
+			for _, rng := range []struct {
+				label string
+				start time.Time
+			}{{"window", window.From}, {"compare", compare.From}} {
+				var readings []any
+				for _, row := range tc.readings {
+					r := stepReading("value", "", row.row, row.value, at)
+					r["measured_at"] = rng.start.Add(time.Duration(row.second) * time.Second).Format(time.RFC3339)
+					if row.group != "" {
+						r["attributes"] = map[string]string{"row_group": row.group}
+					}
+					if row.low != nil {
+						r["ci_low"], r["ci_high"] = row.low, row.high
+					}
+					readings = append(readings, r)
+				}
+				rec := evalRequest(t, handler, http.MethodPost, strings.TrimSuffix(evalItemsPath("EVL", slug), "items")+"readings",
+					map[string]any{"readings": readings}, "seed-"+slug+"-"+rng.label)
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("write readings: %d %s", rec.Code, rec.Body)
+				}
+				items := decodeBody[struct{ Items []evals.Reading }](t, rec).Items
+				if len(items) != len(readings) {
+					t.Fatalf("write answered %d readings, want %d", len(items), len(readings))
+				}
+				// The tie case has identical written readings, so order those by the IDs
+				// the writer assigned before matching them to the expected roles.
+				if tc.name == "ties by id, not write order" {
+					slices.SortFunc(items[:3], func(a, b evals.Reading) int { return strings.Compare(a.ID, b.ID) })
+				}
+				for i, row := range tc.readings {
+					if row.roles != "" {
+						want[items[i].ID] = expected{rng.label, row.roles}
+						if row.roles != "before" {
+							kept++
+						}
+					}
+				}
+			}
+			query := rangesQuery(window, compare)
+			query.Set("buckets", "160")
+			query.Set("series", "value")
+			if tc.group != "" {
+				query.Set("group", tc.group)
+			}
+			answer := evalGet[evalItemsResponse](t, handler, evalItemsPath("EVL", slug)+"?"+query.Encode())
+			if answer.Total != kept || answer.Limit != 0 || answer.Offset != 0 {
+				t.Errorf("total/limit/offset = %d/%d/%d, want %d/0/0", answer.Total, answer.Limit, answer.Offset, kept)
+			}
+			inRange := map[string]bool{}
+			for _, row := range answer.Items {
+				id, _ := row.Cols["id"].(string)
+				roles := strings.Join(row.Kept, ",")
+				if row.BeforeWindow {
+					if inRange[row.Range] || roles != "" {
+						t.Errorf("before-window reading %s follows its range's readings or has kept roles %q", id, roles)
+					}
+					roles = "before"
+				} else {
+					inRange[row.Range] = true
+				}
+				if got := (expected{row.Range, roles}); row.RowKind != "sample" || want[id] != got {
+					t.Errorf("reading %s (%s) got %+v, want %+v", id, row.RowKind, got, want[id])
+				}
+				delete(want, id)
+			}
+			if len(want) != 0 {
+				t.Errorf("missing readings: %v", want)
+			}
+		})
+	}
+}
+
+type m4TestReading struct {
+	second           int
+	row, group       string
+	value, low, high *float64
+	roles            string
+}

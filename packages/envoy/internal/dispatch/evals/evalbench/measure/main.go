@@ -6,6 +6,8 @@
 //	measure wait  -mode head -database <url> -url <server>
 //	measure paint -mode head -database <url> -url <server> -token-file <file> \
 //	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file> [-run <n> -runs-file <file>]
+//	measure items -database-file <file> -url <server> -token-file <file> -pg-log <Postgres jsonlog> \
+//	  -view-file <items view JSON> [-budget-ms <n>]
 //	measure runs  -runs <n> -runs-file <file>
 //	measure k14   -mode k14 -database <url> -url <server> -token-file <file> -server-log <file> -pg-log <file> \
 //	  -pg-log-from <offset> -github-log <file> -expect-file <file>
@@ -178,10 +180,10 @@ type options struct {
 	scale      string
 }
 
-const usage = "usage: measure wait|paint|runs|k14|k14-paints|github -mode head|failure-day|base|base-failure-day|k14 -database <url> -url <server> [flags]"
+const usage = "usage: measure wait|paint|items|runs|k14|k14-paints|github [flags]"
 
 // commands is every subcommand measure runs.
-var commands = []string{"wait", "paint", "runs", "k14", "k14-paints", "github"}
+var commands = []string{"wait", "paint", "items", "runs", "k14", "k14-paints", "github"}
 
 func main() {
 	if len(os.Args) < 2 || !slices.Contains(commands, os.Args[1]) {
@@ -195,6 +197,9 @@ func main() {
 	flags.StringVar(&o.database, "database", "", "the Postgres URL the server reads, as a superuser (required): the instrument resets pg_stat_statements and sets the statement log")
 	flags.StringVar(&o.url, "url", "", "the server's base URL")
 	tokenFile := flags.String("token-file", "", "a file holding the server's agent token (DISPATCH_AGENT_TOKEN), which every read sends as its bearer; a file, so the token is in no process's command line")
+	databaseFile := flags.String("database-file", "", "items: a file holding the benchmark database URL")
+	viewFile := flags.String("view-file", "", "items: a JSON items view, as supplied in a live subscribe frame")
+	itemsBudget := flags.Float64("budget-ms", 0, "items: database time budget in milliseconds (zero reports the time without a limit)")
 	flags.StringVar(&o.serverLog, "server-log", "", "the file the server's stderr is written to, which holds its access log")
 	flags.StringVar(&o.pgLog, "pg-log", "", "Postgres's jsonlog file, which holds each statement with its parameters")
 	flags.StringVar(&o.project, "project", "INFRA", "the project the first paint reads")
@@ -252,6 +257,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "measure: %s is mode k14's, not %q's\n", command, o.mode)
 		os.Exit(2)
 	}
+	if command == "items" {
+		if o.database != "" || *databaseFile == "" || o.url == "" || o.token == "" || o.pgLog == "" || *viewFile == "" {
+			fmt.Fprintln(os.Stderr, "measure: items needs -database-file (not -database), -url, -token-file, -pg-log and -view-file")
+			os.Exit(2)
+		}
+		held, err := os.ReadFile(*databaseFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "measure: read -database-file: %v\n", err)
+			os.Exit(2)
+		}
+		o.database = strings.TrimSpace(string(held))
+		if o.database == "" {
+			fmt.Fprintln(os.Stderr, "measure: -database-file is empty")
+			os.Exit(2)
+		}
+	}
 	if command != "runs" && command != "k14-paints" && (o.database == "" || o.url == "") {
 		fmt.Fprintln(os.Stderr, usage+": name the database with -database and the server with -url")
 		os.Exit(2)
@@ -278,6 +299,8 @@ func main() {
 			os.Exit(2)
 		}
 		err = paint(ctx, r, o)
+	case "items":
+		err = items(ctx, r, o, *viewFile, *itemsBudget)
 	case "runs":
 		if o.runsFile == "" || o.runs < 1 {
 			fmt.Fprintln(os.Stderr, "measure: runs needs -runs-file and -runs, at least 1")
