@@ -88,8 +88,11 @@ test("the machine-login page finds a pending login by its typed code and Approve
 // packages/envoy/internal/dispatch/cipher/client.go): a change at the broker reaches a
 // reloaded page within it, which is what `expect.poll` waits for here rather than a fixed sleep.
 // The row serves the grant again at the end, so it leaves the broker as it found it.
-// @pr: Sign-in and tokens: the machine-code page is served only while the broker serves the device grant.
-test("the machine-code page is served only while the broker serves the device grant @pr", async ({
+// Off the pull-request lane, which went over its budget when #3729's two stubbed issue-header rows
+// joined it: of the lane's real-stack rows outside the Inbox whose file keeps another row there,
+// this was the slowest (13.2 s on dispatch-browser-pr at 178e67a3). The machine-login row above
+// keeps Sign-in and tokens on the lane, and the full lane, the merge queue and the nightly run this.
+test("the machine-code page is served only while the broker serves the device grant", async ({
   browser,
 }) => {
   test.setTimeout(60_000);

@@ -327,8 +327,12 @@ test("highlights follow edits in the other browser and preserve their anchor sta
 });
 
 // SLOW(>=2s): two browser contexts, two suggestion sends and the accept and reject round trips.
-// @pr: The live document's settlement: an accepted suggestion changes the text in both browsers and names a version; a rejected one leaves it.
-test("accepting a suggestion changes the text in both browsers and names a version; rejecting leaves the text @pr", async ({
+// Off the pull-request lane, which went over its budget when #3729's two stubbed issue-header rows
+// joined it: of the lane's real-stack rows outside the Inbox whose file keeps another row there,
+// this was the second slowest (12.5 s on dispatch-browser-pr at 178e67a3). The highlights row above
+// keeps the live document's two-browser race on the lane, and the full lane, the merge queue and
+// the nightly run this one.
+test("accepting a suggestion changes the text in both browsers and names a version; rejecting leaves the text", async ({
   browser,
 }) => {
   await createProject({ key: "SUG", name: "Suggestions" });
