@@ -44,8 +44,9 @@ import (
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
 // issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
 // differently: a merge forward still owed to its role is asked again at a launch later than the one
-// the ask was last sent at (askAgainAtLaunch), and it is given its phase's task again when it holds
-// that phase with nothing pending (readyWorkerTask).
+// a row of the ask was last delivered at (askAgainAtLaunch), the worker another role's open merge
+// holds is held again (holdSentWorker), and it is given its phase's task again when it holds that
+// phase with nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -70,6 +71,9 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	}
 	if fact.Role != claim.RoleArchitect {
 		if err := e.askAgainAtLaunch(ctx, tx, *issue, fact); err != nil {
+			return intake.Result{}, err
+		}
+		if err := e.holdSentWorker(ctx, tx, *issue, fact.Role); err != nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, *issue, fact)
@@ -244,7 +248,8 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // owedEntryRoles): the whole row, below the skips above, so a ready this function passes over
 // costs no query and the row the rule is weighed against is the row whose work is sent. A claim
 // behind that entry — the entry it was given is under the row's and no queued start carries that
-// entry (OwedEntry) — is sent the work of that entry at that entry (SendOwedEntry), which is the
+// entry (OwedEntry) — is sent the work of that entry at that entry (sendOwedEntry, unmarked as
+// SendOwedEntry sends it; claimReady holds the worker itself), which is the
 // task the transition wrote when it raised the number. It is sent that rather than the phase's
 // resume task because the resume says to carry the existing phase work on, and the work of an
 // entry this claim was never given is work it does not have; the resume would also spend the turn
@@ -319,7 +324,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, issue, role, row); err != nil {
+		if err := e.sendOwedEntry(ctx, tx, issue, role, row, supervise.OriginPhaseStart, startMarks{}); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",

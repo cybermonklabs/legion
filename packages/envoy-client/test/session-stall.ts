@@ -482,7 +482,14 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // (1) The state is its record's age, and `last_seen` is the registration it made before it
     // froze — not the moment the listener noticed, which is a whole live window later.
     expect(Math.abs(stalled.lastSeen - registered)).toBeLessThan(REGISTRATION_SLACK_MS);
-    expect(Date.now() - stalled.lastSeen).toBeGreaterThan(LIVE_WINDOW_MS);
+    // A whole live window at least, and possibly exactly one: the listener reads a record
+    // unresponsive once its age passes the window on its own clock, in nanoseconds since the
+    // millisecond `last_seen` names (`StateOf`, packages/envoy/internal/session/state.go), and
+    // `Date.now()`, read after that answer, is a later instant floored to the millisecond. An
+    // answer given inside the millisecond the window ends in reads as exactly LIVE_WINDOW_MS here
+    // (CI job 139937509810: "Expected: > 10000, Received: 10000"). Where the window ends is
+    // TestStateOfAtItsBoundaries' to hold (packages/envoy/internal/session/state_test.go).
+    expect(Date.now() - stalled.lastSeen).toBeGreaterThanOrEqual(LIVE_WINDOW_MS);
 
     // (2) The default listing is unchanged for every caller that only ever wanted live
     // sessions; the stalled row is there for a caller that asks, with the same last_seen.
@@ -624,8 +631,10 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
       "gone",
       stalled.lastSeen + GONE_HORIZON_MS + REAP_INTERVAL_MS + 30_000
     );
-    // It reached the horizon by its record's age, not by anything the rig did to it.
-    expect(Date.now() - stalled.lastSeen).toBeGreaterThan(GONE_HORIZON_MS);
+    // It reached the horizon by its record's age, not by anything the rig did to it: a whole
+    // horizon at least, and possibly exactly one, for the reason the live window's reading in the
+    // first test gives.
+    expect(Date.now() - stalled.lastSeen).toBeGreaterThanOrEqual(GONE_HORIZON_MS);
 
     // Only the role claim reaper releases the claim, and only now that the holder is gone. It
     // runs on the listener's own reap interval, so from here its pass can fall between any two

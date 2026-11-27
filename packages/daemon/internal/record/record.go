@@ -1346,27 +1346,28 @@ type ConflictRead struct {
 // stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
 // merge left conflicts in its turn and is merged forward again, Earlier is what still names the
 // head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
-// Withdrawn is whether the ask was withdrawn from the role it names, which that role is told: the
-// merge of the head is owed to nobody then until a role is asked again (workflow's owedTo), and
-// the ask is sent to no later launch (workflow's askAgain). This release reads it and writes it
-// nowhere: cybermonklabs/legion#5312's withdrawal of an ask owed to nobody writes it, and the end
-// of the take hold that write makes is posted from putPullRequest. SentLaunch is the latest launch
-// of the asked role's claim (intake.ClaimReady.Launch) the ask was told to: the launch a row of it
-// was delivered to, or the launch it was sent again to, 0 while neither happened. The ask is sent
-// again, and that launch recorded here, to a later launch of that role while the merge of the head
-// is still owed to it and no row of the ask is queued for it: at that launch's ready (workflow's
-// askAgainAtLaunch), and at the end of a row of the ask that did not reach it (workflow's
-// MergeForwardAskEnded). The re-send writes the launch as it queues its row, which carries the
-// launch it replaced (MergeForwardMessage.SentLaunch), and a re-send's row that ends undelivered -
-// a close of the pull request refuses its delivery - sets it back to that one while it still names
-// the row's launch (workflow's settleAskRow). The row a reopen queues carries it too, and its
-// delivery tells only a later launch (workflow's askAtReopen, the daemon's mergeForwardMessage), so
-// a live launch told before a close is not told twice. A process relaunched after the delivery and
-// before the landing - a death, a provider error's retry - holds no ask, and a claim that failed,
-// that an operator stopped or whose agent reported its own exit takes no row of the ask queued
-// after it ended; while the merge is owed, every take of the issue that would adopt the working
-// copy is held, the asked role's own phase task included (supervise's Deps.MergeForwardOwed), so a
-// launch never told the ask would hold that work with no turn to land the merge. It is stored as the jsonb of
+// Withdrawn is whether the implementer was told that the ask is no longer its work (workflow's
+// MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
+// again (workflow's owedTo), and the ask is sent to no later launch (workflow's askAgain); the
+// write that withdraws it ends the take hold the ask put on the issue (workflow's putPullRequest).
+// SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) a row of
+// the ask was delivered to, 0 while none was; it is recorded only at a delivered end (workflow's
+// MergeForwardAskEnded), and a delivery where the listener names no holder is credited to the
+// launch the row was sent at. The ask is sent again to a later launch of that role while the merge
+// of the head is still owed to it and no row of the ask is queued for it: at that launch's ready
+// (workflow's askAgainAtLaunch), and at the end of a row of the ask that did not reach it
+// (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped or whose
+// agent reported its own exit takes no row of the ask queued after it ended. A row that ends
+// undelivered records nothing, a row a close of the pull request refused among them, so the ask
+// still names the launch last told. A reopen keeps the ask and queues it once, sent at the launch
+// after the one the ask names (workflow's askAtReopen, MergeForwardMessage.SentLaunch), and the
+// row's delivery tells no launch below that one (the daemon's mergeForwardMessage): a live launch
+// told before a close is not told twice, and a launch the close kept the ask from is told. A
+// process relaunched after the delivery and before the landing - a death, a provider error's
+// retry - holds no ask; while the merge is
+// owed, every take of the issue that would adopt the working copy is held, the asked role's own
+// phase task included (supervise's Deps.MergeForwardOwed), so a launch never told the ask would
+// hold that work with no turn to land the merge. It is stored as the jsonb of
 // pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier,
 // Role, Withdrawn and SentLaunch with no migration of their own, and leaves each out while it is
 // empty, and a release before them reads the jsonb without them.

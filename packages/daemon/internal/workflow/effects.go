@@ -676,21 +676,27 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
 // back into a phase is a transition with a task of its own. Its start carries no mark, which is
 // what a sweep's and a ready's start carry, and a phase start's origin; a door that marks its
-// start, or names an origin of its own, calls sendOwedEntry.
+// start, or names an origin of its own, calls sendOwedEntry. The worker another role's open merge
+// holds is held with the work (holdSentWorker), as a worker a move starts is; the ready of a
+// launch holds it itself and sends through sendOwedEntry.
 func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
-	return e.sendOwedEntry(ctx, tx, issue, role, row, supervise.OriginPhaseStart, startMarks{})
+	if err := e.sendOwedEntry(ctx, tx, issue, role, row, supervise.OriginPhaseStart, startMarks{}); err != nil {
+		return err
+	}
+	return e.holdSentWorker(ctx, tx, issue, role)
 }
 
-// sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the
-// cutover's repair of a merger the `awaiting_merge` cutover left (resume.go's
+// sendOwedEntry is the send SendOwedEntry makes before its hold, and the one the ready of a launch
+// (readyWorkerTask), which holds the worker itself, the builder of the boot's resume by rule and of
+// the cutover's repair of a merger the `awaiting_merge` cutover left (resume.go's
 // startPhaseOwner) and the silence repair (silence.go's repairSilence) share, with the origin
 // and the marks of the door the start comes through (startMarks). A mark names that door and not
 // the task's text, so what a claim behind its entry is sent is composed in one place however the
 // start is made, and the boot's resume of a claim the daemon suspended goes on telling the outbox
 // whose launch budget is at risk. The origin is the door's too: the task is the work of a phase
-// entry, which admission's sends, the boot's resume and the cutover's repair name a phase start's
-// (supervise.OriginPhaseStart), and the silence repair names its own (supervise.OriginSilence), so
-// the repair's writes are counted apart from every other source's.
+// entry, which admission's sends, the boot's resume, the ready of a launch and the cutover's
+// repair name a phase start's (supervise.OriginPhaseStart), and the silence repair names its own
+// (supervise.OriginSilence), so the repair's writes are counted apart from every other source's.
 //
 // Every start it writes is a re-assertion (startMarks.reasserts), whichever door it came
 // through: the admission pass's sweep of the claims behind their entry, on every pass and on the

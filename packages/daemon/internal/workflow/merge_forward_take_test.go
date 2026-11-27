@@ -282,10 +282,11 @@ func asksOf(t *testing.T, pool *pgxpool.Pool, step record.MergeForwardStep) []re
 // Row 46, the workflow's side: the implementer is asked in testing and the ask's row is delivered to
 // its launch 1, then its process is relaunched by a death (a launch 2 the row did not reach). The
 // record owes the merge still, and the hold stands over every adopting take, the asked role's own
-// among them, with no process told the merge. So the ready of launch 2 sends the ask again, once, and
-// the record keeps that launch, its row carrying the launch it was queued for and the one it
-// replaced (plan v162 decision 11). Once that row has finished, a second ready of launch 2, and a
-// ready of launch 1, send nothing: each launch was told the ask. The landing then ends the hold.
+// among them, with no process told the merge. So the ready of launch 2 sends the ask again, once,
+// its row carrying that launch (record.MergeForwardMessage.SentLaunch); the record's ask still
+// names launch 1 until that row's delivered end records launch 2 (MergeForwardAskEnded). Once that
+// row has been delivered, a second ready of launch 2, and a ready of launch 1, send nothing: each
+// launch was told the ask. The landing then ends the hold.
 //
 // The negative control is no ask sent again at a ready (6ed3e46f): the outbox holds no second ask,
 // and the record keeps no launch. With the launch comparison cut from askAgain, the second ready of
@@ -296,19 +297,21 @@ func TestTakeHoldOfAnAskOwedToARelaunchedRoleIsKeptByTheAskSentAgainAtItsReady(t
 
 	applyRefusingNothing(t, pool, readsAfter(3*time.Minute), implementerReadyAt(2))
 
-	if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{askQueuedUnder(2, 1)}) {
-		t.Fatalf("after the ready of launch 2 the asks are %+v, want the implementer's ask once", got)
+	resent := sentAgain(implementerAsked(phase.Testing, record.ConflictCheckNotGreen), 2)
+	if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{resent}) {
+		t.Fatalf("after the ready of launch 2 the asks are %+v, want the implementer's ask once, sent at launch 2", got)
 	}
-	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != 2 {
-		t.Fatalf("after the ready of launch 2 the record's ask is %+v, want it sent at launch 2", mf)
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != 1 {
+		t.Fatalf("after the ready of launch 2 the record's ask is %+v, want it still told launch 1: no row reached launch 2 yet", mf)
 	}
 	wantOwed(t, pool, "after the ask was sent again,", claim.RoleImplementer)
 
-	// The re-send's row finishes, as its delivery ends it, so no queued row stands between the
-	// readies below and the launch the record's ask names.
+	// The re-send's row is delivered to launch 2, and its end records that launch, so no queued row
+	// stands between the readies below and the launch the record's ask names.
 	askRowsEnded(t, pool)
+	endsAskRow(t, pool, resent, 2, 2)
 	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != 2 {
-		t.Fatalf("after the re-send's row finished the record's ask is %+v, want it still sent at launch 2", mf)
+		t.Fatalf("after the re-send's delivery the record's ask is %+v, want it told launch 2", mf)
 	}
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), implementerReadyAt(2), implementerReadyAt(1))
 	if got := asksOf(t, pool, record.MergeForwardAsk); len(got) != 0 {
@@ -384,13 +387,14 @@ func TestTakeHoldOfAnAskIsKeptByTheAskSentAgainOnlyWhileTheMergeIsOwed(t *testin
 
 // endsAskRow is the daemon's end of ask, a row of the implementer's ask of conflictHead, in a
 // transaction of its own as the executor makes it (MergeForwardAskEnded): told is the launch the
-// row was delivered to (0 for an end undelivered) and launch the claim's launch as the executor
-// reads it there. It answers whether the ask was sent again.
+// row was delivered to, 0 for an end undelivered, so a row told a launch is a delivered one, and
+// launch the claim's launch as the executor reads it there. It answers whether the ask was sent
+// again.
 func endsAskRow(t *testing.T, pool *pgxpool.Pool, ask record.MergeForwardMessage, told, launch uint64) bool {
 	t.Helper()
 	var sent bool
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-		sent, err = MergeForwardAskEnded(ctx, record.NewStore(), tx, "LEGION-208", ask, told, launch, firstConflictRead.Add(5*time.Minute))
+		sent, err = MergeForwardAskEnded(ctx, record.NewStore(), tx, "LEGION-208", ask, told != 0, told, launch, firstConflictRead.Add(5*time.Minute))
 		return err
 	}); err != nil {
 		t.Fatalf("end the ask's row: %v", err)
@@ -402,9 +406,12 @@ func endsAskRow(t *testing.T, pool *pgxpool.Pool, ask record.MergeForwardMessage
 // did not reach, so each launch is told the ask once whichever of the row's end and the launch's
 // ready comes first (MergeForwardAskEnded). A row delivered to launch 2 while the claim is at launch
 // 2 only records it; one delivered to launch 1, or ended undelivered, while a launch 2 came ready
-// before the row ended (and so left the ask to the row), sends the ask to launch 2; and where the
-// claim holds no launch (failed, retired), or the ask is owed to nobody, nothing is sent.
+// before the row ended (and so left the ask to the row), sends the ask to launch 2, in a row sent at
+// that launch, whose own delivered end records it; and where the claim holds no launch (failed,
+// retired), or the ask is owed to nobody, nothing is sent. The record's ask names only a launch a
+// row was delivered to.
 func TestTakeHoldOfAnAskIsKeptByTheEndOfItsRowTellingALaterLaunch(t *testing.T) {
+	act := implementerAsked(phase.Testing, record.ConflictCheckNotGreen)
 	for _, tc := range []struct {
 		name       string
 		told, live uint64
@@ -413,8 +420,8 @@ func TestTakeHoldOfAnAskIsKeptByTheEndOfItsRowTellingALaterLaunch(t *testing.T) 
 		landed     bool
 	}{
 		{name: "delivered to the live launch: recorded, told once", told: 2, live: 2, sentLaunch: 2},
-		{name: "delivered to launch 1 while launch 2 is live: launch 2 is told", told: 1, live: 2, sent: true, sentLaunch: 2},
-		{name: "ended undelivered while launch 2 is live: launch 2 is told", told: 0, live: 2, sent: true, sentLaunch: 2},
+		{name: "delivered to launch 1 while launch 2 is live: launch 2 is told", told: 1, live: 2, sent: true, sentLaunch: 1},
+		{name: "ended undelivered while launch 2 is live: launch 2 is told", told: 0, live: 2, sent: true},
 		{name: "ended undelivered with no live launch: the next launch's ready tells it", told: 0, live: 0},
 		{name: "delivered to launch 1 with no live launch: recorded only", told: 1, live: 0, sentLaunch: 1},
 		{name: "an ask that landed is told to nobody", told: 1, live: 2, landed: true},
@@ -427,13 +434,17 @@ func TestTakeHoldOfAnAskIsKeptByTheEndOfItsRowTellingALaterLaunch(t *testing.T) 
 			// The executor deletes the row in the transaction that settles its end, so no row of the ask is queued.
 			askRowsEnded(t, pool)
 
-			sent := endsAskRow(t, pool, implementerAsked(phase.Testing, record.ConflictCheckNotGreen), tc.told, tc.live)
+			sent := endsAskRow(t, pool, act, tc.told, tc.live)
 
 			if sent != tc.sent {
 				t.Fatalf("the end of the row sent the ask again = %t, want %t", sent, tc.sent)
 			}
-			if got, want := len(asksOf(t, pool, record.MergeForwardAsk)), map[bool]int{true: 1}[tc.sent]; got != want {
-				t.Fatalf("the end queued %d asks, want %d", got, want)
+			want := []record.MergeForwardMessage{}
+			if tc.sent {
+				want = append(want, sentAgain(act, tc.live))
+			}
+			if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, want) {
+				t.Fatalf("the end queued the asks %+v, want %+v", got, want)
 			}
 			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != tc.sentLaunch {
 				t.Fatalf("after the end the record's ask is %+v, want it told launch %d", mf, tc.sentLaunch)
@@ -464,13 +475,22 @@ func queuedAsk(t *testing.T, pool *pgxpool.Pool) record.MergeForwardMessage {
 	return asks[len(asks)-1]
 }
 
-// askQueuedUnder is the implementer's ask of conflictHead in testing as a row carries it when it
-// was queued for launch, 0 for none, while the record's ask had last told sent
-// (record.MergeForwardMessage's Launch and SentLaunch), naming the conflicting read.
-func askQueuedUnder(launch, sent uint64) record.MergeForwardMessage {
-	ask := implementerAsked(phase.Testing, record.ConflictCheckNotGreen)
-	ask.Launch, ask.SentLaunch = launch, sent
-	return ask
+// askSentAt is the implementer's ask of conflictHead in testing as a row carries it when it was
+// sent at launch (record.MergeForwardMessage.SentLaunch): the launch a ready sent it again at, the
+// launch after the last told for the reopen's, and 0 for the act's. It names the conflicting read.
+func askSentAt(launch uint64) record.MergeForwardMessage {
+	return sentAgain(implementerAsked(phase.Testing, record.ConflictCheckNotGreen), launch)
+}
+
+// wantToldThrough fails the test unless the record's ask names launch as the one a row of it was
+// last delivered to (record.MergeForward.SentLaunch): the launch at and below which the daemon's
+// delivery of an ask tells nothing (its mergeForwardMessage), at the point of the test named by
+// when.
+func wantToldThrough(t *testing.T, pool *pgxpool.Pool, when string, launch uint64) {
+	t.Helper()
+	if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != launch {
+		t.Fatalf("%s the record's ask is %+v, want it told launch %d", when, mf, launch)
+	}
 }
 
 // readUnknown is ask as a row queued after a reopen carries it: the reopen builds the record's row
@@ -537,12 +557,15 @@ func TestTakeHoldOfAnOwedMergeForwardIsKeptByASameHeadReopen(t *testing.T) {
 // Row 48 of plan v162, the ask at the reopen: the re-send at a launch's ready sends nothing while
 // the pull request is not open, and the delivery of a row of the ask refuses one, so an ask whose
 // row ended undelivered during the close, or whose asked role was relaunched during it, reached no
-// live launch. The reopen queues the ask once, carrying the SentLaunch it was queued under, which
-// the daemon's delivery reads to tell only a launch past it - the one place the asked role's launch
-// is known. A row still queued at the reopen is not doubled, and nor is the reopen's row by a ready
-// that comes while it is queued. Where the live launch was told before the close the workflow still
-// queues the row, under that launch, and its delivery tells nothing (the daemon's side). The landing
-// then ends the hold.
+// live launch. The reopen queues the ask once. The workflow knows no launch of the claim, so the
+// row is sent at the launch after the one the record's ask was last delivered to
+// (record.MergeForward.SentLaunch), and the daemon's delivery, which reads the launch - the one
+// place the asked role's launch is known - tells no launch below it. A row still queued at the
+// reopen is not doubled, and nor is the reopen's row by a ready that comes while it is queued.
+// Where the live launch was told before the close the workflow still queues the row, and its
+// delivery tells nothing (the daemon's side). The reopen also holds again the tester, the worker
+// the merge keeps waiting, since no hold reached a worker while the pull request was closed
+// (cybermonklabs/legion#5312's hold, carried onto the reopen). The landing then ends the hold.
 //
 // The negative control is the reopen queuing nothing (88ed2ae7): no ask follows the reopen.
 func TestTakeHoldOfAnAskTheCloseKeptFromItsRoleIsSentOnceAtTheReopen(t *testing.T) {
@@ -552,13 +575,15 @@ func TestTakeHoldOfAnAskTheCloseKeptFromItsRoleIsSentOnceAtTheReopen(t *testing.
 		// before runs before the close, and during between the close and the reopen.
 		before, during func(t *testing.T, pool *pgxpool.Pool)
 		want           []record.MergeForwardMessage
+		// toldThrough is the launch the record's ask names as told when the reopen's row is queued.
+		toldThrough uint64
 	}{
 		{name: "the ask's row ended undelivered during the close", during: func(t *testing.T, pool *pgxpool.Pool) {
 			askRowsEnded(t, pool)
 			if endsAskRow(t, pool, act, 0, 1) {
 				t.Fatal("the end of the ask's row during the close sent the ask again, want nothing sent to a closed pull request")
 			}
-		}, want: []record.MergeForwardMessage{readUnknown(askQueuedUnder(0, 0))}},
+		}, want: []record.MergeForwardMessage{readUnknown(askSentAt(1))}},
 		{name: "the asked role relaunched during the close", before: func(t *testing.T, pool *pgxpool.Pool) {
 			askDeliveredTo(t, pool, 1)
 		}, during: func(t *testing.T, pool *pgxpool.Pool) {
@@ -566,11 +591,11 @@ func TestTakeHoldOfAnAskTheCloseKeptFromItsRoleIsSentOnceAtTheReopen(t *testing.
 			if got := asksOf(t, pool, record.MergeForwardAsk); len(got) != 0 {
 				t.Fatalf("the ready of launch 2 during the close queued %+v, want nothing sent to a closed pull request", got)
 			}
-		}, want: []record.MergeForwardMessage{readUnknown(askQueuedUnder(0, 1))}},
+		}, want: []record.MergeForwardMessage{readUnknown(askSentAt(2))}, toldThrough: 1},
 		{name: "the act's row still queued at the reopen", want: []record.MergeForwardMessage{act}},
 		{name: "the live launch told before the close", before: func(t *testing.T, pool *pgxpool.Pool) {
 			askDeliveredTo(t, pool, 1)
-		}, want: []record.MergeForwardMessage{readUnknown(askQueuedUnder(0, 1))}},
+		}, want: []record.MergeForwardMessage{readUnknown(askSentAt(2))}, toldThrough: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := askedInTesting(t)
@@ -581,11 +606,17 @@ func TestTakeHoldOfAnAskTheCloseKeptFromItsRoleIsSentOnceAtTheReopen(t *testing.
 			if tc.during != nil {
 				tc.during(t, pool)
 			}
+			holds := len(asksOf(t, pool, record.MergeForwardHold))
 
 			applyRefusingNothing(t, pool, readsAfter(20*time.Minute), reopensAt(conflictHead, 20*time.Minute))
 
 			if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("after the reopen the asks are %+v, want %+v", got, tc.want)
+			}
+			wantToldThrough(t, pool, "after the reopen", tc.toldThrough)
+			if got := asksOf(t, pool, record.MergeForwardHold); len(got) != holds+1 ||
+				got[len(got)-1] != readUnknown(heldIn(claim.RoleTester, phase.Testing, record.ConflictCheckNotGreen)) {
+				t.Fatalf("after the reopen the holds are %+v, want the tester held once more", got)
 			}
 			wantOwed(t, pool, "after the reopen,", claim.RoleImplementer)
 			applyRefusingNothing(t, pool, readsAfter(25*time.Minute), implementerReadyAt(3))
@@ -636,22 +667,24 @@ func TestTakeHoldOfTheAskOfImplementingReopenedInItsRetroQueuesNothing(t *testin
 	wantOwed(t, pool, "after the reopen,", "")
 }
 
-// Row 48b of plan v162: the re-send at a launch's ready writes that launch as the ask's SentLaunch
-// when it queues its row, and the row carries the SentLaunch it replaced. Delivered to that launch
-// while the pull request is open, its end keeps the launch, and the row a later reopen queues
-// carries it, so its delivery tells that launch nothing more. Refused by a close before it was
-// delivered, its row ends undelivered and sets the SentLaunch back to the one it replaced, so the
-// row the reopen queues carries that one and its delivery tells the launch the re-send never
-// reached.
+// Row 48b of plan v162: the re-send at a launch's ready carries that launch on its row
+// (record.MergeForwardMessage.SentLaunch), and the record's ask names it only once the row's
+// delivered end records it (MergeForwardAskEnded). Delivered to that launch while the pull request
+// is open, the record names the launch, and the delivery of the row a later reopen queues tells
+// that launch nothing more. Refused by a close before it was delivered, its row ends undelivered
+// and records nothing, so the record still names the launch last told, and the delivery of the row
+// the reopen queues tells the launch the re-send never reached.
 //
-// The negative control is a row that sets nothing back: after the refused re-send the record still
-// names launch 2, and the reopen's row skips the launch that was never told.
+// The negative control is a record that names the re-send's launch from its queue on (askAgain
+// before cybermonklabs/legion#5312's fold): after the refused re-send the record names launch 2,
+// and the reopen's row skips the launch that was never told.
 func TestTakeHoldOfAReSendAtANewLaunchIsToldOnceAcrossALaterClose(t *testing.T) {
 	t.Run("the re-send delivered while open, then a later close and reopen", func(t *testing.T) {
 		pool := askedInTesting(t)
 		askDeliveredTo(t, pool, 1)
 		applyRefusingNothing(t, pool, readsAfter(10*time.Minute), closesAt(conflictHead, 10*time.Minute))
 		applyRefusingNothing(t, pool, readsAfter(20*time.Minute), reopensAt(conflictHead, 20*time.Minute))
+		wantToldThrough(t, pool, "after the reopen", 1)
 		reopened := queuedAsk(t, pool)
 		askRowsEnded(t, pool)
 		// Its delivery skipped launch 1, which was told before the close: the row ends undelivered.
@@ -660,77 +693,78 @@ func TestTakeHoldOfAReSendAtANewLaunchIsToldOnceAcrossALaterClose(t *testing.T) 
 		}
 
 		applyRefusingNothing(t, pool, readsAfter(25*time.Minute), implementerReadyAt(2))
-		if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{readUnknown(askQueuedUnder(2, 1))}) {
-			t.Fatalf("after the ready of launch 2 the asks are %+v, want the re-send queued for launch 2 under launch 1", got)
+		if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{readUnknown(askSentAt(2))}) {
+			t.Fatalf("after the ready of launch 2 the asks are %+v, want the re-send sent at launch 2", got)
 		}
+		wantToldThrough(t, pool, "after the ready of launch 2", 1)
 		resent := queuedAsk(t, pool)
 		askRowsEnded(t, pool)
 		endsAskRow(t, pool, resent, 2, 2)
-		if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != 2 {
-			t.Fatalf("after the re-send's delivery the record's ask is %+v, want it told launch 2", mf)
-		}
+		wantToldThrough(t, pool, "after the re-send's delivery", 2)
 
 		applyRefusingNothing(t, pool, readsAfter(30*time.Minute), closesAt(conflictHead, 30*time.Minute))
 		applyRefusingNothing(t, pool, readsAfter(40*time.Minute), reopensAt(conflictHead, 40*time.Minute))
-		if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{readUnknown(askQueuedUnder(0, 2))}) {
-			t.Fatalf("after the later reopen the asks are %+v, want one row under launch 2, which its delivery skips", got)
+		if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{readUnknown(askSentAt(3))}) {
+			t.Fatalf("after the later reopen the asks are %+v, want one row sent past launch 2, which its delivery skips at launch 2", got)
 		}
+		wantToldThrough(t, pool, "after the later reopen", 2)
 	})
 	t.Run("the re-send refused by a close before its delivery", func(t *testing.T) {
 		pool := askedInTesting(t)
 		askDeliveredTo(t, pool, 1)
 		applyRefusingNothing(t, pool, readsAfter(5*time.Minute), implementerReadyAt(2))
 		resent := queuedAsk(t, pool)
-		if resent != askQueuedUnder(2, 1) {
-			t.Fatalf("the re-send at the ready of launch 2 is %+v, want it queued for launch 2 under launch 1", resent)
+		if resent != askSentAt(2) {
+			t.Fatalf("the re-send at the ready of launch 2 is %+v, want it sent at launch 2", resent)
 		}
+		wantToldThrough(t, pool, "after the re-send was queued", 1)
 
 		applyRefusingNothing(t, pool, readsAfter(10*time.Minute), closesAt(conflictHead, 10*time.Minute))
 		askRowsEnded(t, pool)
 		if endsAskRow(t, pool, resent, 0, 2) {
 			t.Fatal("the end of the refused re-send sent the ask again, want nothing sent to a closed pull request")
 		}
-		if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.SentLaunch != 1 {
-			t.Fatalf("after the refused re-send the record's ask is %+v, want it set back to launch 1, the last told", mf)
-		}
+		wantToldThrough(t, pool, "after the refused re-send, launch 1 is still the last told:", 1)
 
 		applyRefusingNothing(t, pool, readsAfter(20*time.Minute), reopensAt(conflictHead, 20*time.Minute))
-		if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{readUnknown(askQueuedUnder(0, 1))}) {
-			t.Fatalf("after the reopen the asks are %+v, want one row under launch 1, which its delivery tells launch 2", got)
+		if got := asksOf(t, pool, record.MergeForwardAsk); !reflect.DeepEqual(got, []record.MergeForwardMessage{readUnknown(askSentAt(2))}) {
+			t.Fatalf("after the reopen the asks are %+v, want one row sent past launch 1, which its delivery tells launch 2", got)
 		}
+		wantToldThrough(t, pool, "after the reopen", 1)
 	})
 }
 
-// A row that ends undelivered sets the ask's SentLaunch back only while the record's ask is still
-// the row's own - the same head and asked role, not landed - and still names the row's own launch:
-// a row of an old head ending after a new ask replaced the record's, a launch recorded since, and a
-// landing are each left as they are, and a delivered row and a row queued for no launch set
-// nothing back.
-func TestTakeHoldOfAReSendWhoseRowEndsUndeliveredSetsItsLaunchBackOnlyWhileTheAskIsItsOwn(t *testing.T) {
+// A row's end records a launch on the record's ask only where the row was delivered and the ask is
+// still the row's own - the same head and asked role, not landed - and it never takes a launch
+// back: a row that ends undelivered, a row that names no later launch, a row of an old head ending
+// after a new ask replaced the record's, an ask of another role, a landing and a launch recorded
+// since are each left as they are (MergeForwardAskEnded's recordAskEnd). So the record names only a
+// launch a row reached, and a close that refused a row leaves the launch it was sent at to be told.
+func TestTakeHoldOfAnAskRowsEndRecordsItsLaunchOnlyWhereItWasDeliveredToTheAskItsOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		ask  record.MergeForwardMessage
 		told uint64
-		// record is what the record's ask holds when the row ends, from the ask told launch 2.
+		// record is what the record's ask holds when the row ends, from the ask told launch 1.
 		record func(mf *record.MergeForward)
 		want   uint64
 	}{
-		{name: "control: the re-send's row ended undelivered", ask: askQueuedUnder(2, 1), want: 1},
-		{name: "the re-send's row delivered", ask: askQueuedUnder(2, 1), told: 2, want: 2},
-		{name: "a row queued for no launch", ask: askQueuedUnder(0, 1), want: 2},
-		{name: "a launch recorded since", ask: askQueuedUnder(2, 1), record: func(mf *record.MergeForward) { mf.SentLaunch = 3 }, want: 3},
-		{name: "a new ask of another head replaced the row's", ask: askQueuedUnder(2, 1), record: func(mf *record.MergeForward) { mf.Head = headThree }, want: 2},
-		{name: "an ask of another role", ask: askQueuedUnder(2, 1), record: func(mf *record.MergeForward) {
+		{name: "control: the re-send's row ended undelivered", ask: askSentAt(2), want: 1},
+		{name: "the re-send's row delivered", ask: askSentAt(2), told: 2, want: 2},
+		{name: "the act's row delivered to the launch already told", ask: askSentAt(0), told: 1, want: 1},
+		{name: "a launch recorded since", ask: askSentAt(2), told: 2, record: func(mf *record.MergeForward) { mf.SentLaunch = 3 }, want: 3},
+		{name: "a new ask of another head replaced the row's", ask: askSentAt(2), told: 2, record: func(mf *record.MergeForward) { mf.Head = headThree }, want: 1},
+		{name: "an ask of another role", ask: askSentAt(2), told: 2, record: func(mf *record.MergeForward) {
 			mf.Role, mf.Phase = claim.RoleMerger, phase.Merging
-		}, want: 2},
-		{name: "the ask landed", ask: askQueuedUnder(2, 1), record: func(mf *record.MergeForward) { mf.Landed = forwardHead }, want: 2},
+		}, want: 1},
+		{name: "the ask landed", ask: askSentAt(2), told: 2, record: func(mf *record.MergeForward) { mf.Landed = forwardHead }, want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := askedInTesting(t)
 			askRowsEnded(t, pool)
 			pr := recordedPR(t, pool, "LEGION-208")
 			mf := *pr.MergeForward
-			mf.SentLaunch = 2
+			mf.SentLaunch = 1
 			if tc.record != nil {
 				tc.record(&mf)
 			}

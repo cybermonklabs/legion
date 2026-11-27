@@ -53,8 +53,10 @@ func takeImplementersAsk() record.MergeForward {
 // takeWokenByTheAsk is mergeForwardRunner's LEGION-208 in testing with the implementer's ask owed
 // and its row queued, the implementer's claim as an idle release left it, and the workflow behind
 // the supervisor, so each launch's ready is applied as the daemon applies it
-// (workflowRuntime.terminal). The ask's first attempt has run: it woke the implementer, whose new
-// launch is coming up, and published nothing, since no session holds the role yet.
+// (workflowRuntime.terminal). The listener names the session of the claim's launch as the holder it
+// stored each message for, as a live listener answers (notify.Publisher.Publish). The ask's first
+// attempt has run: it woke the implementer, whose new launch is coming up, and published nothing,
+// since no session holds the role yet.
 func takeWokenByTheAsk(t *testing.T) (*outbox, *store.Pool, *holderPublisher, *supervise.Machine) {
 	t.Helper()
 	publisher := &holderPublisher{}
@@ -65,6 +67,7 @@ func takeWokenByTheAsk(t *testing.T) (*outbox, *store.Pool, *holderPublisher, *s
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	publisher.setAbsent(notify.RoleTopicPrefix + string(token))
 	machine := releasedClaim(t, sup, claim.RoleImplementer)
+	publisher.holdBy(func() string { return string(machine.View().Claim.Session) })
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", takeAsk, time.Now().Add(-time.Minute)))
 	drainAt(t, runner, 0, "the ask's first attempt")
@@ -186,7 +189,8 @@ func TestTakeAskWhoseRowWakesItsRoleIsToldOnce(t *testing.T) {
 // takeFailedWithTheAsk is mergeForwardRunnerAt's LEGION-208 standing in at, its pull request #86
 // open at takeAskHead with asked as the record's merge forward, the claim of ask's role as a failure
 // of its first launch left it, the workflow behind the supervisor as takeWokenByTheAsk has it, and
-// ask's row queued. The listener takes every publish.
+// ask's row queued. The listener takes every publish and names the session of the claim's launch as
+// the holder it stored it for.
 func takeFailedWithTheAsk(t *testing.T, at phase.Phase, asked record.MergeForward, ask record.MergeForwardMessage) (*outbox, *store.Pool, *holderPublisher, *supervise.Machine) {
 	t.Helper()
 	publisher := &holderPublisher{}
@@ -200,6 +204,7 @@ func takeFailedWithTheAsk(t *testing.T, at phase.Phase, asked record.MergeForwar
 	if err != nil {
 		t.Fatalf("create the failed %s's claim: %v", ask.Role, err)
 	}
+	publisher.holdBy(func() string { return string(machine.View().Claim.Session) })
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
 	return runner, pool, publisher, machine
@@ -324,13 +329,13 @@ type takePublishedThen struct {
 	then func()
 }
 
-func (p *takePublishedThen) Publish(ctx context.Context, topic, message string, payload any, key string) error {
-	err := p.holderPublisher.Publish(ctx, topic, message, payload, key)
+func (p *takePublishedThen) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
+	holder, err := p.holderPublisher.Publish(ctx, topic, message, payload, key)
 	if then := p.then; err == nil && then != nil {
 		p.then = nil
 		then()
 	}
-	return err
+	return holder, err
 }
 
 // The ask's row reaches the woken implementer's launch 2, and before the publish returns, that
@@ -394,7 +399,8 @@ func TestTakeAskDeliveredWhileItsRoleIsRelaunchedIsSentToTheNewLaunch(t *testing
 // whose end of a merge forward's hold reaches the issue's claims through the daemon's own path
 // (Config.MergeForwardEnded, workflowRuntime.mergeForwardEnded, supervisor.wakeIssueClaims). Its
 // outbox (runner) runs the rows the workflow queues, publishing through publisher, which takes
-// every publish.
+// every publish, and the listener names the session of the implementer's launch as the holder it
+// stored each one for (takeNamingPublisher).
 type takeRig struct {
 	t           *testing.T
 	ctx         context.Context
@@ -408,6 +414,19 @@ type takeRig struct {
 	machine     *supervise.Machine
 	runner      *outbox
 	publisher   *outboxPublisher
+}
+
+// takeNamingPublisher is an outboxPublisher whose every publish names session() as the holder the
+// listener stored it for, as a live listener's 200 does (notify.Publisher.Publish), so the delivery
+// of an ask credits the launch whose session took it (the daemon's deliverHeld).
+type takeNamingPublisher struct {
+	*outboxPublisher
+	session func() string
+}
+
+func (p takeNamingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
+	_, err := p.outboxPublisher.Publish(ctx, topic, message, payload, key)
+	return p.session(), err
 }
 
 const takePhaseTask = "Continue Workflow. Issue: LEGION-208. Phase: implementing."
@@ -453,6 +472,7 @@ func newTakeRig(t *testing.T) *takeRig {
 		t.Fatalf("create the implementer: %v", err)
 	}
 	rig.machine = machine
+	runner.notices = takeNamingPublisher{outboxPublisher: publisher, session: func() string { return string(machine.View().Claim.Session) }}
 	sup.deps.Conns.(*fake.Conns).Register(rig.implementer, fake.NewConn())
 	if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: rig.implementer}); err != nil {
 		t.Fatalf("spawn the implementer: %v", err)
@@ -557,8 +577,9 @@ func (r *takeRig) lands() {
 // Rows 45 and 46: the implementer holds its phase task in implementing, and the daemon asks it to
 // merge the base forward; the ask is delivered to launch 1. The implementer's process is relaunched
 // before the landing, by a death and, in a case of its own, by a provider error that the operator's
-// stop and retry carried on. At the new launch's ready the ask is sent again once and that launch
-// recorded; a second ready of the same launch sends nothing. The new process's take of its phase
+// stop and retry carried on. At the new launch's ready the ask is sent again once, its row carrying
+// that launch, which the record's ask names once the row is delivered (workflow.MergeForwardAskEnded);
+// a second ready of the same launch sends nothing. The new process's take of its phase
 // task is refused in-turn, with no adoption over the merge in progress. The merge lands: the daemon
 // posts the issue's claims the end of the hold, the value is written again, and the take that
 // follows is accepted once, adopting the merged working copy.
@@ -629,15 +650,15 @@ func TestTakeOfARelaunchedAskedRoleIsHeldAskedAgainAndTakenOnceAtTheLanding(t *t
 			r := newTakeRig(t)
 			tc.ends(r)
 
-			// The re-send carries the launch it was queued for and the one it replaced (plan v162
-			// decision 11, record.MergeForwardMessage's Launch and SentLaunch).
+			// The re-send carries the launch it was sent at (record.MergeForwardMessage.SentLaunch), and
+			// the record's ask still names launch 1, the launch a row of it was last delivered to.
 			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: takeAskHead, Base: "main",
-				Phase: phase.Implementing, PullRequest: 86, Why: record.ConflictCheckNotGreen, Launch: 2, SentLaunch: 1}}
+				Phase: phase.Implementing, PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: 2}}
 			if got := r.asks(); !slices.Equal(got, want) {
 				t.Fatalf("after the ready of launch 2 the outbox holds %+v, want the ask once", got)
 			}
-			if sent := takeSentLaunch(t, r.pool); sent != 2 {
-				t.Fatalf("after the ready of launch 2 the record's ask was told launch %d, want 2", sent)
+			if sent := takeSentLaunch(t, r.pool); sent != 1 {
+				t.Fatalf("after the ready of launch 2 the record's ask was told launch %d, want 1: no row reached launch 2 yet", sent)
 			}
 			result, err := intake.ApplyFact(r.ctx, r.pool, "test", "ready-again", intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleImplementer, Launch: 2}, r.engine)
 			if err != nil || result.Refusal != nil {
@@ -674,7 +695,8 @@ func TestTakeOfARelaunchedAskedRoleIsHeldAskedAgainAndTakenOnceAtTheLanding(t *t
 // takeLiveAt is mergeForwardRunnerAt's LEGION-208 in testing, its pull request #86 in state at
 // takeAskHead with asked as the record's merge forward, the implementer's claim live at launch 2 -
 // a failure of launch 1, then the operator's retry - with no workflow behind the supervisor, so its
-// ready writes nothing, and ask's row queued. The listener takes every publish.
+// ready writes nothing, and ask's row queued. The listener takes every publish and names the
+// session of the claim's launch as the holder it stored it for.
 func takeLiveAt(t *testing.T, state record.PullRequestState, asked record.MergeForward, ask record.MergeForwardMessage) (*outbox, *store.Pool, *holderPublisher) {
 	t.Helper()
 	publisher := &holderPublisher{}
@@ -686,6 +708,7 @@ func takeLiveAt(t *testing.T, state record.PullRequestState, asked record.MergeF
 	if err != nil {
 		t.Fatalf("create the failed implementer's claim: %v", err)
 	}
+	publisher.holdBy(func() string { return string(machine.View().Claim.Session) })
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	if err := takeRelaunched(machine); err != nil {
 		t.Fatal(err)
@@ -698,14 +721,16 @@ func takeLiveAt(t *testing.T, state record.PullRequestState, asked record.MergeF
 }
 
 // Row 48 of plan v162, the delivery's side: the workflow knows no launch of the asked role's claim,
-// so the row a reopen queues carries the SentLaunch of the record's ask it was queued under, and its
-// delivery, which reads the launch, tells only a launch past it. A live launch told the ask before
-// the close, whose merge may still be running, is told nothing again, and the record keeps that
-// launch; a launch that came up during the close is told once, and recorded.
+// so the row a reopen queues is sent at the launch after the one the record's ask was last
+// delivered to (record.MergeForwardMessage.SentLaunch), and its delivery, which reads the launch,
+// tells no launch below that one. A live launch told the ask before the close, whose merge may
+// still be running, is told nothing again, and the record keeps that launch; a launch that came up
+// during the close is told once, and recorded.
 //
-// The negative control is a delivery that reads no carried launch (heldMessage.toldThrough unset):
-// the live launch told before the close is told the ask a second time.
-func TestTakeMergeForwardAskQueuedAtAReopenTellsOnlyALaunchPastTheOneItWasQueuedUnder(t *testing.T) {
+// The negative control is a delivery that reads no launch the row was sent at
+// (heldMessage.toldThrough unset): the live launch told before the close is told the ask a second
+// time.
+func TestTakeMergeForwardAskQueuedAtAReopenTellsOnlyALaunchPastTheOneTheAskWasLastTold(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -719,9 +744,9 @@ func TestTakeMergeForwardAskQueuedAtAReopenTellsOnlyALaunchPastTheOneItWasQueued
 			t.Parallel()
 			asked := takeImplementersAsk()
 			asked.SentLaunch = tc.sent
-			ask := takeAsk
-			ask.SentLaunch = tc.sent
-			runner, pool, publisher := takeLiveAt(t, record.PullRequestOpen, asked, ask)
+			reopened := takeAsk
+			reopened.SentLaunch = tc.sent + 1
+			runner, pool, publisher := takeLiveAt(t, record.PullRequestOpen, asked, reopened)
 
 			drainAt(t, runner, 0, "the reopen's row")
 
@@ -738,20 +763,20 @@ func TestTakeMergeForwardAskQueuedAtAReopenTellsOnlyALaunchPastTheOneItWasQueued
 	}
 }
 
-// Row 48b of plan v162, through the executor: the re-send at the ready of launch 2 wrote launch 2
-// as the ask's SentLaunch as it queued its row, which carries launch 1, the one it replaced. The
-// pull request is closed before the row is delivered, so the row ends undelivered, tells nobody,
-// and sets the record's ask back to launch 1, the launch last told, so the reopen's row tells
-// launch 2.
+// Row 48b of plan v162, through the executor: the re-send at the ready of launch 2 carries that
+// launch on its row, and the record's ask still names launch 1, the launch last told, since a row
+// records its launch only at its delivered end (workflow.MergeForwardAskEnded). The pull request is
+// closed before the row is delivered, so the row ends undelivered, tells nobody and records nothing:
+// the record's ask still names launch 1, so the reopen's row tells launch 2.
 //
-// The negative control is an end that sets nothing back (settleAskRow's undelivered branch cut):
-// the record still names launch 2, which was never told.
-func TestTakeMergeForwardReSendRefusedByACloseSetsItsLaunchBack(t *testing.T) {
+// The negative control is an end that records the row's launch undelivered: the record names launch
+// 2, which was never told.
+func TestTakeMergeForwardReSendRefusedByACloseLeavesTheLaunchLastTold(t *testing.T) {
 	t.Parallel()
 	asked := takeImplementersAsk()
-	asked.SentLaunch = 2
+	asked.SentLaunch = 1
 	ask := takeAsk
-	ask.Launch, ask.SentLaunch = 2, 1
+	ask.SentLaunch = 2
 	runner, pool, publisher := takeLiveAt(t, record.PullRequestClosed, asked, ask)
 
 	drainAt(t, runner, 0, "the re-send's row on the closed pull request")
@@ -763,7 +788,7 @@ func TestTakeMergeForwardReSendRefusedByACloseSetsItsLaunchBack(t *testing.T) {
 		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
 	}
 	if sent := takeSentLaunch(t, pool); sent != 1 {
-		t.Errorf("the record's ask was told launch %d, want it set back to launch 1", sent)
+		t.Errorf("the record's ask was told launch %d, want launch 1, the last told", sent)
 	}
 }
 

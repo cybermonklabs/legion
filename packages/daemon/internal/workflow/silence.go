@@ -172,6 +172,11 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 			return err
 		}
 	}
+	// A held worker that stopped as its hold says is up between turns with no task, so the work
+	// goes with the hold, by the rule of every start (holdSentWorker).
+	if err := e.holdSentWorker(ctx, tx, issue, fact.Role); err != nil {
+		return err
+	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
 		return err

@@ -20,12 +20,12 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but three: the row is written from thirteen places — a pull request opened, reopened,
+// it but three, named below. It is written where a pull request is opened, reopened,
 // synchronized, pushed to, closed or merged, a CI settlement, a mergeability read and the end of
 // its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward), its
-// landing (mergeForwardLanded) and its clearing (clearMergeForward) — and a write site added
-// later would otherwise have to remember the mark. Routing them through
-// one function is what makes forgetting it hard rather than easy.
+// withdrawal (withdrawUnowed), its landing (mergeForwardLanded) and its clearing
+// (clearMergeForward) - and a write site added later would otherwise have to remember the mark.
+// Routing them through one function is what makes forgetting it hard rather than easy.
 //
 // The three exceptions write the row through the store themselves, and each says why where it
 // stands. The first is the listener's duplicate of a settlement the pass already built
@@ -37,10 +37,10 @@ import (
 // of the pull request, so the test below names that field nowhere and this helper would mark
 // nothing for it either, and the walk the write sits in touches every pull request recorded on the
 // base with each row in hand already, so a second read apiece would buy nothing. The third is the
-// launch a merge forward's ask was last told (record.MergeForward.SentLaunch: askAgain and
+// launch a merge forward's ask was last told (record.MergeForward.SentLaunch: recordAskEnd, from
 // MergeForwardAskEnded), which the daemon's outbox executor writes with
-// record.Store.PutPullRequest and no engine at the end of an ask's row, and which changes the
-// merge forward alone, a field the test below leaves out. A new write site that only records a
+// record.Store.PutPullRequest and no engine at the delivered end of an ask's row, and which changes
+// the merge forward alone, a field the test below leaves out. A new write site that only records a
 // read belongs with those three; every write that changes what the record knows of the pull
 // request belongs here.
 //
@@ -157,7 +157,8 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // (classify.AdvancePullRequestHead). A reopen keeps the record's merge forward too, and at a head
 // its open ask was not made of records the merge landing, as that synchronize would
 // (mergeForwardLanded); where the merge of the head is still owed it queues the ask once for the
-// asked role's live launch, which the close may have kept it from (askAtReopen). A new generation
+// asked role's live launch, and the hold for the worker the merge keeps waiting, which the close
+// may have kept from them (askAtReopen). A new generation
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
@@ -260,7 +261,8 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		// was closed - is that merge landing, as a synchronize to the head records it: Landed, the
 		// landed message, the review asked where the reviewer's step already ran, Earlier kept, and
 		// the end of the hold. Where the merge of the head is still owed, the ask goes once to the
-		// asked role's launch it may not have reached while the pull request was closed.
+		// asked role's launch it may not have reached while the pull request was closed, and the
+		// hold to the worker the merge keeps waiting.
 		if err := e.mergeForwardLanded(ctx, tx, *issue, &pr); err != nil {
 			return intake.Result{}, err
 		}

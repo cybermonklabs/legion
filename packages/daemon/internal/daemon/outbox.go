@@ -322,8 +322,16 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // withhold the role from it, so the daemon withholds its own messages. A topic of no claim this
 // daemon supervises, and every other topic, is published as made.
 func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	_, err := r.publishTo(ctx, topic, message, payload, dedupeKey)
+	return err
+}
+
+// publishTo is publish answering the session the listener stored the message for, "" where its
+// answer names none (notify.Publisher.Publish): the one evidence of who was told at the write, which
+// a held message bound to its role's launch reads (deliverHeld).
+func (r *outbox) publishTo(ctx context.Context, topic, message string, payload any, dedupeKey string) (string, error) {
 	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
-		return err
+		return "", err
 	}
 	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
 }

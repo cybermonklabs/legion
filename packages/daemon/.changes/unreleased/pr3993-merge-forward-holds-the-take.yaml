@@ -7,17 +7,19 @@ body: |-
   and left an empty commit on it. A take that adopts nothing is not held. The hold is read from the
   record at each such take (`Deps.MergeForwardOwed`), so a restarted daemon holds the same take, and
   a read that fails leaves the take undecided and its value written again, never accepted. When the
-  merge lands or is cleared, or a move leaves the ask owed to nobody, the daemon posts the issue's
-  claims the event a turn's end posts, so each held value is written again at once. The ask is sent
-  again to a relaunched asked role, so the hold never waits on a process that
-  was never told the merge: at the ready of a later launch of that role, while the merge is owed
-  and no row of the ask is queued for it, the ask is sent once and that launch recorded
-  (`sentLaunch` in `pull_requests.merge_forward`); the end of a row of the ask records the launch
-  it reached and sends the ask to a later launch it did not reach, under the fact lock. A close of
-  the pull request at the same head does not stop a merge already running, so the hold stands
-  through it and the architect is told `pr-closed-unmerged`. A reopen at the same head keeps the
-  ask, which it used to drop, and sends it once more where it did not reach the asked role's live
-  launch: the row it queues carries the launch the ask was last told (`sentLaunch` in the
-  merge-forward outbox row), its delivery tells only a later launch, and a row of the ask the close
-  refused sets the recorded launch back to the one before it. A reopen at a head pushed while the
-  pull request was closed records the merge landing, as a synchronize to that head would.
+  merge lands, is withdrawn or is cleared, or a move leaves the ask owed to nobody, the daemon posts
+  the issue's claims the event a turn's end posts, so each held value is written again at once. The
+  ask is sent again to a relaunched asked role, so the hold never waits on a process that was never
+  told the merge: at the ready of a later launch of that role, while the merge is owed and no row of
+  the ask is queued for it, the ask is sent once, by the rule of cybermonklabs/legion#5312, which
+  records a launch on the ask (`sentLaunch` in `pull_requests.merge_forward`) only at the delivered
+  end of a row that reached it; the end of a row of the ask sends the ask to a later launch it did
+  not reach, under the fact lock. A close of the pull request at the same head does not stop a merge
+  already running, so the hold stands through it and the architect is told `pr-closed-unmerged`;
+  while the pull request is closed no worker is told to wait and nobody is asked. A reopen at the
+  same head keeps the ask, which it used to drop, and sends it once more where it did not reach the
+  asked role's live launch: the delivery of the row it queues tells only a launch later than the one
+  the ask was last delivered to, and a row of the ask the close refused recorded no launch, so the
+  launch it was sent at is told. The reopen also holds again the worker the merge keeps waiting. A
+  reopen at a head pushed while the pull request was closed records the merge landing, as a
+  synchronize to that head would.
