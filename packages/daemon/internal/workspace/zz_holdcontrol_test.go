@@ -138,32 +138,71 @@ type memberChange struct {
 	set string
 }
 
-// DIAG: watchStop waits for ready, reads the leader's pid from pidFile, and then watches the
-// leader, its group and the control's hogs until the group and every hog are gone.
+// DIAG: watchStop reads the leader's pid from pidFile once the leader has written it, watches its
+// group every 5ms until ready exists, and then every 2ms watches the leader, its group and the
+// control's hogs until the group and every hog are gone. A member in D is named with its wchan.
 func watchStop(t *testing.T, ready, pidFile string, h *hold) *stopWatch {
 	w := &stopWatch{done: make(chan struct{})}
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
+	pause := func(d time.Duration) bool {
+		select {
+		case <-stop:
+			return false
+		case <-time.After(d):
+			return true
+		}
+	}
 	go func() {
 		defer close(w.done)
 		for {
+			if raw, err := os.ReadFile(pidFile); err == nil {
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+					w.pid = pid
+					break
+				}
+			}
+			if !pause(time.Millisecond) {
+				return
+			}
+		}
+		last := ""
+		scan := func(now time.Duration) {
+			entries, _ := os.ReadDir("/proc")
+			var members []string
+			for _, entry := range entries {
+				pid, err := strconv.Atoi(entry.Name())
+				if err != nil {
+					continue
+				}
+				state, pgrp, comm, ok := procStat(pid)
+				if !ok || pgrp != w.pid {
+					continue
+				}
+				member := fmt.Sprintf("%d:%s:%c", pid, comm, state)
+				if state == 'D' {
+					if wchan, err := os.ReadFile("/proc/" + entry.Name() + "/wchan"); err == nil {
+						member += "@" + string(wchan)
+					}
+				}
+				members = append(members, member)
+			}
+			if joined := strings.Join(members, ","); joined != last {
+				w.members = append(w.members, memberChange{at: now, set: joined})
+				last = joined
+			}
+		}
+		for {
+			now := bootNow()
 			if _, err := os.Stat(ready); err == nil {
+				w.readySeen = now
 				break
 			}
-			select {
-			case <-stop:
+			scan(now)
+			if !pause(5 * time.Millisecond) {
 				return
-			case <-time.After(time.Millisecond):
 			}
 		}
-		w.readySeen = bootNow()
-		raw, err := os.ReadFile(pidFile)
-		if err != nil {
-			w.note = "no pid file: " + err.Error()
-			return
-		}
-		w.pid, _ = strconv.Atoi(strings.TrimSpace(string(raw)))
-		last := ""
 		for deadline := bootNow() + 20*time.Second; bootNow() < deadline; {
 			now := bootNow()
 			if w.termSeen == 0 && termPending(w.pid) {
@@ -191,33 +230,36 @@ func watchStop(t *testing.T, ready, pidFile string, h *hold) *stopWatch {
 			}
 			h.mu.Unlock()
 			if w.groupGone == 0 {
-				entries, _ := os.ReadDir("/proc")
-				var members []string
-				for _, entry := range entries {
-					pid, err := strconv.Atoi(entry.Name())
-					if err != nil {
-						continue
-					}
-					if state, pgrp, comm, ok := procStat(pid); ok && pgrp == w.pid {
-						members = append(members, fmt.Sprintf("%d:%s:%c", pid, comm, state))
-					}
-				}
-				if joined := strings.Join(members, ","); joined != last {
-					w.members = append(w.members, memberChange{at: now, set: joined})
-					last = joined
-				}
+				scan(now)
 			}
 			if w.groupGone != 0 && allDead {
 				return
 			}
-			select {
-			case <-stop:
+			if !pause(2 * time.Millisecond) {
 				return
-			case <-time.After(2 * time.Millisecond):
 			}
 		}
 	}()
 	return w
+}
+
+// DIAG: pressure is the machine's pressure stall lines for io and memory (/proc/pressure), and
+// the filesystem type of dir (statfs f_type, hex).
+func pressure(dir string) string {
+	var out []string
+	for _, name := range []string{"io", "memory", "cpu"} {
+		raw, err := os.ReadFile("/proc/pressure/" + name)
+		if err != nil {
+			out = append(out, name+": "+err.Error())
+			continue
+		}
+		out = append(out, name+": "+strings.ReplaceAll(strings.TrimSpace(string(raw)), "\n", " | "))
+	}
+	var fs unix.Statfs_t
+	if err := unix.Statfs(dir, &fs); err == nil {
+		out = append(out, fmt.Sprintf("fs type of the row's dir 0x%x", fs.Type))
+	}
+	return strings.Join(out, "; ")
 }
 
 // DIAG: timeline logs every moment the row, the control and the watcher recorded, in ms after

@@ -94,6 +94,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// behind 16 busy loops, until it reports that it is running.
 		h := holdOnCPU0(t, 16, ready)
 		w := watchStop(t, ready, diag+".pid", h)
+		t.Logf("DIAG pressure before the call: %s", pressure(dir))
 		anchorWall, anchorBoot := time.Now(), bootNow()
 		call := calling(t)
 		started := time.Now()
@@ -128,6 +129,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Errorf("the run returned %s after its budget passed, past half the %s grace: a command that leaves on its SIGTERM must end the grace, not sit out its whole span", stopped, procgroup.StopGrace)
 		}
 		t.Logf("DIAG the run returned %s after its budget passed", stopped)
+		t.Logf("DIAG pressure after the run: %s", pressure(dir))
 		timeline(t, anchorBoot+passed.Sub(anchorWall), anchorBoot+returned.Sub(anchorWall), reached, waits[0], diag+".trap", h, w)
 	})
 
