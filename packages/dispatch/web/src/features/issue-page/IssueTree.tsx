@@ -219,8 +219,10 @@ export function IssueTree({
   reveal: readonly TreeNode[] | undefined;
   /** The tree as the view left it. */
   root: TreeNode;
-  /** Whether no filter is on (`presets.ts`'s `PresetView.rootRow`): the conversation, which the
-   *  page opens on what waits on the reader. */
+  /** Whether the page opens on what waits on the reader (below): where no filter is on
+   *  (`presets.ts`'s `PresetView.rootRow`), the conversation, and the address names nothing the
+   *  page draws no row and no line of - an id it dropped, or a message Conversation draws no row
+   *  of - where the page opens with the focus on no row (`slots/body.tsx`, decision 553 (1)). */
   rootRow: boolean;
   /** The node an address roots the tree at, as a zoom the reader made, by its id: Graph's
    *  address `/graph/<node id>` (R10). The tree is zoomed to it as it is drawn and as the address
