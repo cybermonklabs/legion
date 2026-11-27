@@ -1280,8 +1280,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           }
         }
       },
-      // The run, a bounded child under the short bound.
-      rowLimit("short")
+      // The run, a bounded child under the legRun bound.
+      rowLimit("legRun")
     );
 
     test(
