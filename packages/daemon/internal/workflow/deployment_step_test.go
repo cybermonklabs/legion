@@ -672,7 +672,7 @@ func lostChecker() *Engine {
 	return engine
 }
 
-// A step whose role the deployment no longer defines stops its task where the task would start it:
+// A step whose role neither the deployment nor the plan in force defines stops its task where the task would start it:
 // in `implementer checker`, the implementer's completion starts no checker, the task stops naming
 // step 2 and the checker, the issue is held from implementing for the stopped task, and the owner is
 // told once, in a task-stopped notice that names the checker.
@@ -702,9 +702,9 @@ func TestAStepWhoseRoleTheDeploymentLostStopsTheTask(t *testing.T) {
 }
 
 // A daemon that restarts with settings that no longer define the role of a step its task still has
-// to run stops that task at its boot: the checker running at step 2 is stopped (step_stop), the
-// task stops naming it, and the owner is told once. A task whose steps the deployment all defines
-// is left alone.
+// to run, a role the plan in force does not define either, stops that task at its boot: the
+// checker running at step 2 is stopped (step_stop), the task stops naming it, and the owner is told
+// once. A task whose steps the deployment all defines is left alone.
 func TestABootStopsATaskWhoseRoleTheDeploymentLost(t *testing.T) {
 	pool := migratedPool(t)
 	engine := lostChecker()

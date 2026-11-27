@@ -16,7 +16,7 @@ var checkerToken = claim.Token("legion-legion-legion-208-checker")
 
 // withChecker is a deployment that defines the role checker, acting as the review App.
 func withChecker(o *Options) {
-	o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Review}
 }
 
 // podBuiltBeforeChecker is the rig's issue pod built by a runtime whose deployment defines no

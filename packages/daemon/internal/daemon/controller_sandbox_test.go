@@ -408,7 +408,7 @@ func (r *controllerSandboxRig) restart(to controllerSandboxSetting) {
 // GitHub bundle and the owners' directories, the provisioning tokens and repository set every
 // runtime is refused without (checkSupervision), and the rig's `legion` and agent command.
 func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, address string, _ appauth.Source,
+	return func(ctx context.Context, listener *stream.Listener, address string, _ appauth.Source, roleApps appauth.RoleApps,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
 	) (legionruntime.Runtime, error) {
 		opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil),
@@ -416,17 +416,17 @@ func (r *controllerSandboxRig) runtimeFor(cfg config.Config) runtimeFactory {
 		if err != nil {
 			return nil, fmt.Errorf("sandboxOptions: %w", err)
 		}
-		opts.Conns, opts.StreamURL, opts.Store = listener, address, st
+		opts.Conns, opts.StreamURL, opts.Store, opts.RoleApps = listener, address, st, roleApps
 		opts.Tokens = idleRigTokens{}
-		opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			app, err := appauth.AppRoleFor(role, nil)
+		opts.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
 			}
 			rendered := ghconfig.Render("ghs_controller_sandbox", string(app), time.Now().Add(time.Hour))
 			owner := strings.ToLower(repo.Owner())
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
-		}
+		})
 		opts.ControllerCredential = func(_ context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 			rendered := ghconfig.Render("ghs_controller_sandbox", string(appauth.Review), time.Now().Add(time.Hour))
 			owner := controllerSandboxOwner

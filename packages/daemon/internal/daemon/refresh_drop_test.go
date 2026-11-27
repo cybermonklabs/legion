@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sync"
@@ -76,7 +77,7 @@ func TestARefreshPassTheStopHaltsGivesBackEveryCreditItCouldNotPost(t *testing.T
 			}
 		}}
 
-	s.refreshStalePlugins(s.claims, "sweep")
+	s.refreshStalePlugins(context.Background(), s.claims, "sweep")
 
 	if admitted != rate {
 		t.Fatalf("the pass admitted %d claims, want the rate, %d: every claim is stale and idle, so the gate grants each one",
@@ -128,7 +129,7 @@ func TestAStopAfterTheRefreshPassDeliveredItsPostsGivesBackEveryCreditTheyCarry(
 	gate := supervise.NewRefreshGate(rate)
 	s := &supervision{log: quietLogger(), supervisor: sup, claims: claims, plan: plan{pluginRelaunchable: true},
 		refreshGate: gate}
-	s.refreshStalePlugins(s.claims, "sweep")
+	s.refreshStalePlugins(context.Background(), s.claims, "sweep")
 	if credit := gate.Admit(); credit != nil {
 		credit.Release()
 		t.Fatalf("the gate still grants after the pass, want its %d credits out on the posts waiting in the inboxes", rate)
@@ -215,7 +216,7 @@ func TestARefreshPassSpendsNoCreditOnAClaimThatLeftTheLaneSinceItsSnapshot(t *te
 					admitted = append(admitted, token)
 				}}
 
-			s.refreshStalePlugins(snapshot, "sweep")
+			s.refreshStalePlugins(context.Background(), snapshot, "sweep")
 
 			if !slices.Equal(admitted, []claim.Token{second}) {
 				t.Fatalf("the pass admitted %v, want only %s: %s is %s now, so the gate's one credit goes to the idle claim after it",

@@ -256,15 +256,15 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
    * dropped when the record says this role no longer works this phase — the shape of a worker
    * that completed its phase from the shell instead of the tool; at `step`, which no role's phase
-   * names, the role that works it is the issue's `stepRole`, a role of the deployment — when
-   * another claim of this role works the role's step, and when the daemon has failed this claim,
-   * which is the daemon's own word that this process is finished. Two claims of one issue can hold
-   * one role (the daemon's `record.WorkerClaim`), and only the worker on the step, the claim the
-   * record names by its token under `workers` (the stranded token's contract entry), works the
-   * phase: the other claim is not reminded, so it never reaches the architect as that role's
-   * worker. A record that names no token, from a daemon below that entry, keeps the role's rule. A
-   * claim the daemon failed runs no further turn in this process — its retry relaunches this
-   * session in a new process, or starts a new session
+   * names, the role that works it is the issue's `stepRole`, a role of the deployment or of the
+   * issue's plan — when another claim of this role works the role's step, and when the daemon has
+   * failed this claim, which is the daemon's own word that this process is finished. Two claims of
+   * one issue can hold one role (the daemon's `record.WorkerClaim`), and only the worker on the
+   * step, the claim the record names by its token under `workers` (the stranded token's contract
+   * entry), works the phase: the other claim is not reminded, so it never reaches the architect as
+   * that role's worker. A record that names no token, from a daemon below that entry, keeps the
+   * role's rule. A claim the daemon failed runs no further turn in this process — its retry
+   * relaunches this session in a new process, or starts a new session
    * once the daemon's `forgetSession` (its supervise package) has dropped this one — and a
    * reminder written now reaches nobody who can act on it. That is what stops Claude Code's
    * reminder, which has no refused-turn settle of its own for a turn the provider never answered.

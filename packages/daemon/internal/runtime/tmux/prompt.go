@@ -20,7 +20,8 @@ import (
 // role as it stood at the launch that wrote it, so it stands in for no later launch's flag. A
 // settings set with no `default` role is not refused here: Oh My Pi launches silently on a
 // built-in model instead (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
-// Where the spec names a model (a role of the deployment's `model`, runtime.SpawnSpec.Model),
+// Where the spec names a model (a role of the deployment's `model`, or the `model` of a role of the
+// issue's plan: runtime.SpawnSpec.Model),
 // that model is named, as one word quoted for the pane's shell.
 func innerCommand(prefix []string, invocation, model, resumeSessionFile, promptFile string) string {
 	named := "@default"

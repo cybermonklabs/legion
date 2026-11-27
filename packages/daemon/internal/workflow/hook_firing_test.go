@@ -207,3 +207,47 @@ func TestAFiringReachesEachRoleItNames(t *testing.T) {
 		}
 	})
 }
+
+// planDefines writes role into version of the plan of key at generation, the version in force, as
+// a version taken writes the roles it defines (plan_roles).
+func planDefines(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, version int, role claim.Role) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `insert into plan_roles (issue, generation, role, plan_version, type, model, prompt)
+		values ($1, $2, $3, $4, 'testing', '', 'Probe the change.')`, key, int64(generation), string(role), version); err != nil {
+		t.Fatalf("write the role %s of the plan of %s: %v", role, key, err)
+	}
+}
+
+// A hook names roles of the deployment, and a role the plan in force of the issue defines is the
+// plan's role, even where the deployment defines a role of that name: it takes none of that role's
+// own settings, a hook's prompt among them. LEGION-208's plan defines prober, and the hook names
+// the implementer and prober, so the firing at the failed test reaches the implementer alone and
+// says so. A hook that names prober alone reaches nobody on that issue, and says that too.
+func TestAFiringPassesOverARoleThePlanOfTheIssueDefines(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	engine.cfg.Hooks = []Hook{
+		{Name: "work-back", On: HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer, "prober"}, Prompt: saySoFar},
+		{Name: "probe-back", On: HookEventWorkBack, Every: 1, Roles: []claim.Role{"prober"}, Prompt: readTheThreads},
+	}
+	root := stepRoot(t, pool, phase.Admitted)
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: countedClaim})
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
+	planDefines(t, pool, root.Key, root.Generation, 2, "prober")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+
+	testsFail(t, pool, engine, root.Key, 1)
+
+	if roles := promptRoles(hookPrompts(t, pool)); !sameStrings(roles, []string{"implementer"}) {
+		t.Fatalf("the firings addressed %v, want the implementer alone: the plan of %s defines prober", roles, root.Key)
+	}
+	posted := firingMessages(t, pool)
+	var prompted []string
+	for _, message := range posted {
+		_, said, _ := strings.Cut(message, " Prompted: ")
+		prompted = append(prompted, said)
+	}
+	if want := []string{"implementer.", "none."}; !sameStrings(prompted, want) {
+		t.Fatalf("the firings posted %q on the issue, want one saying it prompted the implementer and one saying it prompted none", posted)
+	}
+}

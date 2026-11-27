@@ -71,15 +71,23 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 // appauth.ControllerCredential and appauth.GitHubDirs) over refusedProjectRepos and tokens, the
 // three sharing the two records their bundles write — the owners each App was read installed on
 // and what the mints found GitHub refuses — as internal/daemon's sandboxRuntime builds them for
-// a project, the credential over the deployment's roles (Options.DeploymentApps, nil in a rig
-// that sets none; an option that sets it goes first). Each App is installed on every owner the
+// a project, the credential over the runtime's reader of a role's App (Options.RoleApps, whose
+// Deployed is nil in a rig that sets none; an option that sets it goes first). Each App is installed on every owner the
 // project serves a repository of, so what a bundle holds here is what the mints answer for.
 func withProjectTokens(tokens appauth.Tokens) rigOption {
+	return withProjectTokensOf(tokens, nil)
+}
+
+// withProjectTokensOf is withProjectTokens whose credential and whose walks read planned, what the
+// plan in force of an issue says of a role (appauth.RoleApps.Plan, internal/daemon's planRoleOf;
+// nil reads no plan), as the daemon's own credential does.
+func withProjectTokensOf(tokens appauth.Tokens, planned func(context.Context, string, claim.Role) (appauth.Planned, error)) rigOption {
 	return withOptions(func(o *Options) {
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 		apps := sourceOf(tokens, installedOnServed{repos: refusedProjectRepos})
 		served := servesOneOf(refusedProjectRepos)
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.DeploymentApps, o.Log)
+		o.RoleApps.Plan = planned
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.RoleApps, o.Log)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
@@ -160,7 +168,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnServed{repos: refusedProjectRepos}),
-			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, nil, o.Log)
+			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, appauth.RoleApps{}, o.Log)
 	}))
 
 	loc := g.spawn(workerSpec(t))
@@ -182,8 +190,8 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-			bundle, err := staticCredential(ctx, role, repo)
+		o.GitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			bundle, err := staticCredential(ctx, issue, role, repo)
 			if err != nil {
 				return bundle, err
 			}
@@ -195,7 +203,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 			}
 			delete(bundle.Dirs, "acme")
 			return bundle, nil
-		}
+		})
 	}))
 
 	_, err := g.r.Spawn(g.ctx, workerSpec(t))

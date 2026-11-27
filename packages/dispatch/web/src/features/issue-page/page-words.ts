@@ -99,13 +99,13 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the five typed blocks of those documents, the
+ * issue, the documents and images it carries, the six typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task` and `check` are the block type names in
- * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `plan_role` and `check` are the block type
+ * names in `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
  * `message` are the item kinds of a `dispatch://` reference. A name is lowercase because the
  * page draws it inside its own sentences and rows, where a capital would read as a proper noun;
  * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
@@ -125,6 +125,8 @@ export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   image: "image",
   issue: "issue",
   message: "message",
+  /** A `plan_role` block: a role an owner's plan defines, which a plan task's step can name. */
+  plan_role: "plan role",
   plan_task: "plan task",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
@@ -1226,6 +1228,8 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
   kind: "kind",
+  /** The model a plan role's agent starts on. */
+  model: "model",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
@@ -1239,6 +1243,9 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   steps: "steps",
   surface: "surface",
   title: "title",
+  /** The kind of work a plan role does (`testing`, say), which names the GitHub App its agent
+   *  works as. */
+  type: "type",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1398,6 +1405,7 @@ export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
     image: "image",
     issue: "issue",
     message: "message",
+    plan_role: "plan-role",
     plan_task: "plan-task",
     requirement: "requirement",
     result: "result",

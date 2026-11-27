@@ -285,6 +285,15 @@ func (c Config) StallBackstopFor(role claim.Role) time.Duration {
 	if bound, named := c.WorkerStallBackstops[role]; named {
 		return bound
 	}
+	return c.UnnamedStallBackstopFor(role)
+}
+
+// UnnamedStallBackstopFor is the backstop of role where `worker_stall_backstop_hours` names no
+// bound for it: twice the role's own bound, and never below its ladder (StallBackstopFor). A role
+// the plan of a claim's issue defines runs under it whatever the file names for a deployment role
+// of that name, since such a role takes none of the settings the deployment keys by its name
+// (internal/daemon's stallBackstopOf).
+func (c Config) UnnamedStallBackstopFor(role claim.Role) time.Duration {
 	called := c.StallLimits.CallBoundFor(role)
 	return max(saturatingSum(called, called), c.StallLadderFor(role))
 }

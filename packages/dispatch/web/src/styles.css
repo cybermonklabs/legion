@@ -794,7 +794,12 @@ html:has([data-issue-page]) {
   color: #62748e; /* slate-500 */
 }
 
+/* A label and its value sit on one line, the value 0.5rem after the label's colon. Typography
+   spaces a `dt` and a `dd` as a definition list down the page, a top margin on the label and
+   a top margin and an indent on the value: each is taken back here, or the label drops below
+   its value and the value starts an indent away from it. */
 :is(.dispatch-doc, .dispatch-markdown) [data-proof-block-attributes] dt {
+  margin: 0;
   font-weight: 600;
 }
 
@@ -804,6 +809,7 @@ html:has([data-issue-page]) {
 
 :is(.dispatch-doc, .dispatch-markdown) [data-proof-block-attributes] dd {
   margin: 0;
+  padding: 0;
 }
 
 @media (prefers-color-scheme: dark) {

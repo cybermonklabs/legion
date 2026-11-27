@@ -48,6 +48,9 @@ type Walk struct {
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
 	Version record.PlanVersion
+	// Roles are the roles the plan in force defines (record.StoredPlan.Roles), which a step of its
+	// task may name beside the deployment's; none where the run has no plan rows.
+	Roles []record.PlanRole
 }
 
 // todaysSteps is the steps of the task default of a run with no plan rows, which walks today's
@@ -56,7 +59,7 @@ type Walk struct {
 // and its places, and the ids of its records, stay where the release before put them. Each takes
 // the type of its role among Legion's own (plan.BuiltinRoles), whatever the deployment defines.
 // They are read once.
-var todaysSteps = planSteps(plan.Deployment{Roles: plan.BuiltinRoles()}, "", 0, defaultTask, config.Project{}.RunsByDefault())
+var todaysSteps = planSteps(plan.BuiltinRoles(), "", 0, defaultTask, config.Project{}.RunsByDefault())
 
 // todaysWalk is the walk of a run with no plan rows: the task default walking todaysSteps on
 // today's line, phase.Order, with Stored false.
@@ -77,7 +80,7 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	}
 	steps := stored.Steps[task.Task]
 	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: plan.Line(namedSteps(steps)), State: task.State,
-		Place: task.Place, StoppedReason: task.StoppedReason, Version: stored.Version}, nil
+		Place: task.Place, StoppedReason: task.StoppedReason, Version: stored.Version, Roles: stored.Roles}, nil
 }
 
 // namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
@@ -125,8 +128,9 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 // place: the workflow reads a step's agent from it alone (Engine.stepToken, AgentAt, agentIDAt),
 // so the claim a start of the place's work runs on and the identity the start names are always one
 // agent. For a step, that step, so the steps of one key are one agent; for the retro, the task's
-// last step of the type implementation, which runs it. A walk with no plan rows holds none, and
-// neither does the merge or a place the task does not hold: there the role stands for the agent.
+// last step of the type implementation (implementationPlace), which runs it. A walk with no plan
+// rows holds none, and neither does the merge or a place the task does not hold: there the role
+// stands for the agent.
 func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
 	if !w.Stored {
 		return record.PlanStep{}, false
@@ -135,10 +139,8 @@ func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
 	case record.PlaceStep:
 		return w.planStepAt(place)
 	case record.PlaceRetro:
-		for i := len(w.Steps) - 1; i >= 0; i-- {
-			if w.Steps[i].Type == plan.TypeImplementation {
-				return w.Steps[i], true
-			}
+		if step, ok := w.implementationPlace(place); ok {
+			return w.planStepAt(step)
 		}
 	}
 	return record.PlanStep{}, false
@@ -156,6 +158,52 @@ func (w Walk) agentIDAt(place record.TaskPlace) plan.AgentID {
 		return agent.ID()
 	}
 	return ""
+}
+
+// implementationPlace is the place of the step whose agent does the implementation work of w's
+// task where it stands at place, the one rule of that agent whatever its role is called: the last
+// step of the type implementation (record.PlanStep.Type) at or before place, so a step of that type
+// is its own, and every step stands before the retro and the merge; where none stands there - a
+// task sent back to a step before every step of that type, or a place its line does not hold - the
+// task's last step of that type, whose agent made the head the task stands on. That agent runs the
+// retro (AgentAt), is asked to merge the base forward (mergeForward) and is told what CI said of its
+// head (tellChecks), each on the claim the start of its step names (Engine.implementationAgent).
+// A walk with no plan rows names its implementer's step. ok is false for a task with no step of
+// that type.
+func (w Walk) implementationPlace(place record.TaskPlace) (record.TaskPlace, bool) {
+	reached := len(w.Steps)
+	if place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
+		reached = place.Position
+	}
+	last := 0
+	for i := len(w.Steps) - 1; i >= 0; i-- {
+		if w.Steps[i].Type != plan.TypeImplementation {
+			continue
+		}
+		if i < reached {
+			return record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}, true
+		}
+		if last == 0 {
+			last = i + 1
+		}
+	}
+	if last == 0 {
+		return record.TaskPlace{}, false
+	}
+	return record.TaskPlace{Kind: record.PlaceStep, Position: last}, true
+}
+
+// atImplementation says whether w's task, while its issue stands in at, stands at the step whose
+// agent does its implementation work there (implementationPlace from placeIn, as
+// Engine.implementationAgent reads it): implementing on today's steps, or a step of the type
+// implementation under another role's name, which runs as step. There the work a merge forward
+// needs is already where the issue stands (mergeForward), and a move in drops the merge forward
+// the record holds (mergeForwardOnEntry). The retro, which that agent also runs (AgentAt), is not
+// that step: the retro is an assignment of its own.
+func (w Walk) atImplementation(at phase.Phase) bool {
+	place, _ := w.placeIn(at)
+	step, ok := w.implementationPlace(place)
+	return ok && step == place
 }
 
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
@@ -261,6 +309,64 @@ func (w Walk) passedStep(at, p phase.Phase) bool {
 	return standing && held && there.Rank() < here.Rank()
 }
 
+// passedImplementation says whether w's task, while its issue stands in at, stands past the step
+// whose agent does its implementation work there (implementationPlace from placeIn, as
+// atImplementation reads it): the step of that type the task left behind, as passedStep reads the
+// implementer's step on today's steps, whatever the role of that step is called. An issue that
+// stands at no place of the line passed nothing.
+func (w Walk) passedImplementation(at phase.Phase) bool {
+	here, standing := w.placeIn(at)
+	step, ok := w.implementationPlace(here)
+	return standing && ok && step.Rank() < here.Rank()
+}
+
+// implementationStart is the place of the first step of w's task of the type implementation
+// (record.PlanStep.Type), from which a merge forward stands (classify.MergeForwardStands): the
+// implementer's step on today's steps and for a walk with no plan rows, or a step of that type
+// under another role's name; no place for a task with none.
+func (w Walk) implementationStart() record.TaskPlace {
+	for i, step := range w.Steps {
+		if step.Type == plan.TypeImplementation {
+			return record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}
+		}
+	}
+	return record.TaskPlace{}
+}
+
+// mergeForwardStands is where a merge forward stands for issue's task on w at place, the place it
+// stands at (classify.MergeForwardStands): at its implementation step (implementationStart) or a
+// place after it, and, once the task's run has reached that step (implementationReached), at any
+// place, so a move back to a step before it keeps the merge forward. It reads the issue's phases
+// rows only for a place before that step, where the place alone does not decide. reached is the
+// answer for classify.MergeStateReadOwed, which reads the same rule.
+func (e *Engine) mergeForwardStands(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place record.TaskPlace) (start record.TaskPlace, reached bool, err error) {
+	start = w.implementationStart()
+	if place.Started() && start.Started() && place.Rank() < start.Rank() {
+		reached, err = e.implementationReached(ctx, tx, issue, w, start)
+	}
+	return start, reached, err
+}
+
+// implementationReached says whether issue's run of w's task has reached the task's first step of
+// the type implementation, at start: that step's phases row of this run holds an entry, which the
+// step's start raises (enter). A row of this run of a stored task names the step (its StepTask
+// and StepPlace), since a new generation clears both; a run with no plan rows has one row for each
+// role, whose entry's task a new generation clears (record.Store.ClearGeneration).
+func (e *Engine) implementationReached(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, start record.TaskPlace) (bool, error) {
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
+	role := claim.Role(w.Steps[start.Position-1].Role)
+	if !w.Stored {
+		row := record.PhaseRowOf(rows, role)
+		return row.Entry > 0 && row.EntryTask != "", nil
+	}
+	return slices.ContainsFunc(rows, func(row record.PhaseRow) bool {
+		return row.Role == role && row.StepTask == w.Task && row.StepPlace == start.Position && row.Entry > 0
+	}), nil
+}
+
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
 // for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
 // place, which is the phase of an issue out of the workflow; the phase of the step at place, retro
@@ -329,8 +435,8 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 // the walk in the caller's transaction, after any move of the task (moveTask), so a write that
 // names its phase itself is checked against the store and not against the caller's copy: one read
 // of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
-// three reads (issue_plans, plan_tasks, plan_steps) for a run with plan rows. A workflow move
-// writes through writeIssueOn instead, on the walk it read once and moved.
+// four reads (issue_plans, plan_tasks, plan_steps, plan_roles) for a run with plan rows. A workflow
+// move writes through writeIssueOn instead, on the walk it read once and moved.
 func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -489,25 +595,81 @@ func returnStep(issue record.Issue, w Walk, from stepSite, n int, act returnAct)
 	return record.TaskPlace{Kind: record.PlaceStep, Position: n}, ""
 }
 
-// lostAt says whether the work of place on w's task is lost to d: a step whose role d does not
-// define, a role the deployment lost, whose step no role may start (stopLostRole); or a step, or
-// the retro, whose agent is named for such a role (lostAgent). An agent runs in the slot of its
-// name (claim.Token.Slot), taken from the role of its first step (record.NameAgents), whatever
-// role its step has now, so an agent named for a role the deployment lost has no slot in a pod the
-// deployment builds, and its launch waits for a pod that never comes. Legion's own roles are in
-// every deployment (config.Config.Deployment, and New's default), so only a role of a deployment's
-// own can be lost.
+// lostAt says whether the work of place on w's task is lost to d (lostWork), answering place where
+// it is.
 func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlace, bool) {
-	if !w.Stored {
-		return record.TaskPlace{}, false
-	}
-	if step, ok := w.planStepAt(place); ok && !d.Defines(step.Role) {
-		return place, true
-	}
-	if step, ok := w.stepAt(place); ok && lostAgent(step.AgentName(), d) {
+	if _, _, lost := w.lostWork(place, d); lost {
 		return place, true
 	}
 	return record.TaskPlace{}, false
+}
+
+// lostWork says whether the work of place on w's task is lost to d, and why, in the words the
+// task's stop gives (lostStop), with the role the stop's notice names: a step whose role's name
+// nobody defines for the issue (plan.RoleOf: neither d nor the plan in force, Roles), a role the
+// deployment lost, whose step no role may start (stopLostRole); a step whose role the plan in
+// force defines with a model d does not list (plan.Deployment.Lists), a model the deployment no
+// longer lists; or a step, or the retro, whose agent is named for a role nobody defines for the
+// issue (lostAgent over deployment). An agent runs in the slot of its name (claim.Token.Slot),
+// taken from the role of its first step (record.NameAgents), whatever role its step has now, so
+// an agent named for a role the deployment lost has no slot in a pod the deployment builds, and
+// its launch waits for a pod that never comes. Legion's own roles are in every deployment
+// (config.Config.Deployment, and New's default), and a role of the plan is kept with the version
+// that defines it, so only a role of a deployment's own can be lost. register_plan judged a plan
+// role's model against the models listed then, and the role, carried into each later generation
+// (record.Store.CarryPlan), keeps it while the settings change under it.
+func (w Walk) lostWork(place record.TaskPlace, d plan.Deployment) (why, role string, lost bool) {
+	if !w.Stored {
+		return "", "", false
+	}
+	if step, ok := w.planStepAt(place); ok {
+		switch def, source := plan.RoleOf(step.Role, w.planRole(step.Role), d); {
+		case source == plan.SourceNone:
+			return fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", place.Position, step.Role), step.Role, true
+		case source == plan.SourcePlan && !d.Lists(def.Model):
+			return fmt.Sprintf("step %d names the role %s, whose model %s the deployment no longer lists; %s",
+				place.Position, step.Role, def.Model, d.Listed()), step.Role, true
+		}
+	}
+	if step, ok := w.stepAt(place); ok && lostAgent(step.AgentName(), w.deployment(d)) {
+		name := string(step.AgentName())
+		work := fmt.Sprintf("step %d", place.Position)
+		if place.Kind == record.PlaceRetro {
+			work = "the retro"
+		}
+		return fmt.Sprintf("%s is the work of the agent %s, which runs in the slot of the role %s, which the deployment no longer defines", work, name, name), name, true
+	}
+	return "", "", false
+}
+
+// planRole is the role the plan in force of w's issue defines named name (Roles), as plan.RoleOf
+// reads it, and nil where it defines none of that name.
+func (w Walk) planRole(name string) *plan.PlanRole {
+	i := slices.IndexFunc(w.Roles, func(role record.PlanRole) bool { return role.Role == name })
+	if i < 0 {
+		return nil
+	}
+	return &plan.PlanRole{Name: w.Roles[i].Role, Type: plan.Type(w.Roles[i].Type), Model: w.Roles[i].Model, Prompt: w.Roles[i].Prompt}
+}
+
+// deployment is d as w's issue reads it: the roles d defines and each role the plan in force of
+// the issue defines (planDeployment), so a step of a role of the plan, and an agent named for one,
+// is no work the deployment lost (lostRole, lostAgent, lostSlot).
+func (w Walk) deployment(d plan.Deployment) plan.Deployment {
+	return planDeployment(w.Roles, d)
+}
+
+// planDeployment is d with each role of roles, the roles a plan in force defines, as a role a step
+// can name (plan.RolesOf, which reads a role of the plan before the deployment's of its name).
+func planDeployment(roles []record.PlanRole, d plan.Deployment) plan.Deployment {
+	if len(roles) == 0 {
+		return d
+	}
+	p := plan.Plan{Roles: make([]plan.PlanRole, 0, len(roles))}
+	for _, role := range roles {
+		p.Roles = append(p.Roles, plan.PlanRole{Name: role.Role, Type: plan.Type(role.Type), Model: role.Model, Prompt: role.Prompt})
+	}
+	return plan.Deployment{Roles: plan.RolesOf(p, d), Models: d.Models}
 }
 
 // lostStep is the first work w's task still has to do that d lost (lostAt): the step it stands at
@@ -561,7 +723,7 @@ func (w Walk) planStepAt(place record.TaskPlace) (record.PlanStep, bool) {
 
 // RoleAt is the role that works the step of w's task at place: for a step, the worker of the
 // phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
-// and the role itself where it runs as step, a role the deployment defines; the implementer at the
+// and the role itself where it runs as step, a role the deployment or the plan defines; the implementer at the
 // retro and the merger at the merge; and "" at no act or at a place the task does not hold. On a
 // task whose roles are Legion's own it answers phase.RoleFor of the phase the place derives.
 func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
@@ -583,7 +745,7 @@ func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
 
 // endingRole is the role whose step a move of w's task out of from ends, read on the walk before
 // the move: on a task with plan rows the role of the step at the task's place (RoleAt), which names
-// a role the deployment defines at step, and on an issue with none the role of the phase.
+// a role the deployment or the plan defines at step, and on an issue with none the role of the phase.
 func (w Walk) endingRole(from phase.Phase) claim.Role {
 	if w.Stored {
 		return w.RoleAt(w.Place)

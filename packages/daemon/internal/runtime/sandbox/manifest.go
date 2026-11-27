@@ -630,6 +630,10 @@ func (l launch) brokersDispatch(r *Runtime) bool {
 // never answers that round (INFRA-484). Each such drop is logged once, at the launch that makes
 // it, naming the issue, the role, the experiment and the arm.
 //
+// A role the plan of the launch's issue defines takes none of the settings the deployment keys
+// by its name (runtime.SpawnSpec.PlanRole), so it names none of the overlays role_config_files
+// names for a deployment role of that name, whether the launch keeps a pod or builds one.
+//
 // carried are the arms the launch runs in: each arm of l.spec.Variants, in its order, of which
 // the launch names every overlay — every arm for a launch that builds its pod, and for one that
 // keeps a pod, each arm none of whose overlays the pod lacks. An arm the pod holds only some of
@@ -640,6 +644,9 @@ func (l launch) overlays(r *Runtime) (files []string, carried []runtime.Variant)
 	own := r.roleConfigFiles[l.spec.Role]
 	if l.kept != nil {
 		own = l.kept.overlays
+	}
+	if l.spec.PlanRole {
+		own = nil
 	}
 	var variants []string
 	for _, variant := range l.spec.Variants {
@@ -1020,8 +1027,8 @@ func SessionFromVolume(file, root string) (string, error) {
 // the launch that wrote it, so it stands in for no later launch's flag. A profile with no
 // `default` role is not refused here: Oh My Pi launches silently on a built-in model instead,
 // which is the deployment's to notice (deploy/kubernetes/operator-route/README.md, "Changing a
-// role's model"). Where the spec names a model (a role of the deployment's `model`,
-// runtime.SpawnSpec.Model), that model is named in the same place.
+// role's model"). Where the spec names a model (a role of the deployment's `model`, or the `model`
+// of a role of the issue's plan: runtime.SpawnSpec.Model), that model is named in the same place.
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()

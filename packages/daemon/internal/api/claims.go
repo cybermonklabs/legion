@@ -784,9 +784,28 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // supervise's own reader of the shared rule adds no such term, because the one place it is
 // asked has answered it already: a pending delivery is handed to no claim that is not ready or
 // idle (supervise's staleRefusesClaim, sendPending).
-func (s *server) staleClaim(c supervise.Claim) (int, bool) {
-	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion(), s.pluginRelaunchable, s.noPluginInstall) &&
-		c.State != supervise.StateWorking
+//
+// The turn term is asked first, and the shared rule asks the daemon whether the claim's launch
+// installs a plugin only of a claim its cheap terms find stale, under ctx, the request's own
+// context: that answer reads the plan of the claim's issue from the daemon's store under
+// Kubernetes, and every `legion` call of a claim reaches this. A read of it that fails refuses
+// nothing: the refusal's sentence says a relaunch is under way, which nothing established, so the
+// call is served, and one Warn line names the claim and the read's error. A read that fails
+// because the caller hung up says nothing of the store, and no line is written for it. The next
+// call is judged again.
+func (s *server) staleClaim(ctx context.Context, c supervise.Claim) (int, bool) {
+	if c.State == supervise.StateWorking {
+		return c.PluginContract, false
+	}
+	stale, err := supervise.StaleRefusesCalls(ctx, c, DaemonAPIVersion(), s.pluginRelaunchable, s.noPluginInstall)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Warn("api: the read of whether this claim's launch installs a plugin failed, so the call is not refused as one from a stale plugin",
+				"claim", c.Token, "pluginContract", c.PluginContract, "daemonApiVersion", DaemonAPIVersion(), "error", err)
+		}
+		return c.PluginContract, false
+	}
+	return c.PluginContract, stale
 }
 
 // logStaleRefusal is the one log line every stale-caller refusal writes: never the body,
@@ -800,7 +819,7 @@ func (s *server) logStaleRefusal(r *http.Request, identityKey, identityValue str
 // naming both contracts, by way of claim.Refusal, which a claim route already answers with on any
 // other refusal.
 func (s *server) refuseIfStaleClaim(w http.ResponseWriter, r *http.Request, c supervise.Claim) bool {
-	got, stale := s.staleClaim(c)
+	got, stale := s.staleClaim(r.Context(), c)
 	if !stale {
 		return false
 	}
@@ -813,7 +832,7 @@ func (s *server) refuseIfStaleClaim(w http.ResponseWriter, r *http.Request, c su
 // refuseIfStaleClaimFailure is the credential- and workflow-route refusal shape (the grants
 // route's claim form, every grant-bearing route): Failure{Code: "STALE_PLUGIN_CONTRACT"}.
 func (s *server) refuseIfStaleClaimFailure(w http.ResponseWriter, r *http.Request, c supervise.Claim) bool {
-	got, stale := s.staleClaim(c)
+	got, stale := s.staleClaim(r.Context(), c)
 	if !stale {
 		return false
 	}

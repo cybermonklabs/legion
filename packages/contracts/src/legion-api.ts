@@ -54,14 +54,15 @@ export const LegionInstant = timestamp.regex(
 );
 
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
- * the role working it: `workers` is keyed by role, each of `LEGION_ROLES` or a role of the
- * deployment. `awaiting_person` is a root that keeps its admission slot while its architect waits
- * on a person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
- * deployment defines, which the issue names in `stepRole` (the deployment roles' contract entry).
- * `accepting` is the architect's acceptance, where the issue's task places its `acceptance:owner`
- * step (in the default steps, between the reviewer's approval and retro): no worker runs it. The
- * merger merges in `merging`, and the daemon closes the issue when it reads that merge (`done`);
- * the production check after the close is no phase (`check` on the issue record). */
+ * the role working it: `workers` is keyed by role, each of `LEGION_ROLES`, a role of the
+ * deployment or a role of the issue's plan. `awaiting_person` is a root that keeps its admission
+ * slot while its architect waits on a person's answer (`waitingOn` on the issue record). `step`
+ * runs each step of a role the deployment or the issue's plan defines, which the issue names in
+ * `stepRole` (the deployment roles' contract entry). `accepting` is the architect's acceptance,
+ * where the issue's task places its `acceptance:owner` step (in the default steps, between the
+ * reviewer's approval and retro): no worker runs it. The merger merges in `merging`, and the
+ * daemon closes the issue when it reads that merge (`done`); the production check after the
+ * close is no phase (`check` on the issue record). */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
   "awaiting_person",
@@ -794,11 +795,11 @@ const legionIssue = z.object({
   key: nonEmptyString.optional(),
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
-  /** The role of the deployment that works the issue's running step, where the issue stands at
-   * `step` or its hold took it out of `step` (the deployment roles' contract entry): no phase
-   * names such a role, so the phase alone does not say who works the issue. Absent at every other
-   * phase, whose role the phase names, and from every issue of the body the route serves a caller
-   * below that entry, which is served an issue at `step` as `implementing`. */
+  /** The role of the deployment or of the issue's plan that works the issue's running step, where
+   * the issue stands at `step` or its hold took it out of `step` (the deployment roles' contract
+   * entry): no phase names such a role, so the phase alone does not say who works the issue.
+   * Absent at every other phase, whose role the phase names, and from every issue of the body the
+   * route serves a caller below that entry, which is served an issue at `step` as `implementing`. */
   stepRole: stepRole.optional(),
   status: nonEmptyString.optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child

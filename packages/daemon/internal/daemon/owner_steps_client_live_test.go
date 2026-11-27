@@ -407,11 +407,6 @@ func (l *ownerStepsClientLive) run(dir, name string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// check is ownerStepsLive's check: `== <name>`, the body, and `ok <name>` or `FAIL <name>`.
-func (l *ownerStepsClientLive) check(name string, body func()) {
-	(&ownerStepsLive{ownerStepsRig: l.ownerStepsRig}).check(name, body)
-}
-
 // client runs owner-steps-client.ts once: call with args as c's session, the client imported from
 // tree, report as the pane's handoff record answers it. It answers what the script printed.
 func (l *ownerStepsClientLive) client(tree string, c *stepClaimant, call string, args, report map[string]any) clientOutcome {

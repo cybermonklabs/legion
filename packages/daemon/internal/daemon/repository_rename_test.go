@@ -298,7 +298,7 @@ func TestARecordOnAPairsOldNameGetsTheNewOwner(t *testing.T) {
 	if kept, ok := w.defaultBranches.Kept(old); !ok || kept.Name.String() != moved || kept.DefaultBranch != "main" {
 		t.Fatalf("the default branch read for %s = %+v, %v; want GitHub's %s@main, read on the new owner's token", old, kept, ok, moved)
 	}
-	if _, err := w.identity(ctx, claim.RoleImplementer, ghrepo.MustParse(old)); err != nil {
+	if _, err := w.identity(ctx, "LEGION-208", claim.RoleImplementer, ghrepo.MustParse(old)); err != nil {
 		t.Fatalf("the implementer's identity for a record on %s: %v, want it minted for the new owner", old, err)
 	}
 	if got := tokens.owners(); !slices.Equal(got, []string{"cybermonklabs"}) {
@@ -359,7 +359,7 @@ func TestAnUnansweredReadOfAPairsNewNameStillServesIt(t *testing.T) {
 	if got := w.repositories.serving(ghrepo.MustParse(old)); got.String() != moved {
 		t.Fatalf("a record on %s is served as %s while %s's read is unanswered, want %s", old, got, moved, moved)
 	}
-	if _, err := w.identity(ctx, claim.RoleImplementer, ghrepo.MustParse(old)); err != nil {
+	if _, err := w.identity(ctx, "LEGION-208", claim.RoleImplementer, ghrepo.MustParse(old)); err != nil {
 		t.Fatalf("the implementer's identity for a record on %s: %v, want it minted for the new owner", old, err)
 	}
 	if got := tokens.owners(); !slices.Equal(got, []string{"cybermonklabs"}) {

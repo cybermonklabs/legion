@@ -8,8 +8,8 @@ import (
 	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
-// A role of an issue is one of Legion's six or a name of the role grammar a deployment defines, up
-// to MaxRoleBytes, and never the controller's name.
+// A role of an issue is one of Legion's six or a name of the role grammar that a deployment or the
+// issue's plan defines, up to MaxRoleBytes, and never the controller's name.
 func TestIsRoleTakesTheGrammarButTheController(t *testing.T) {
 	for _, role := range append(slices.Clone(legionclaim.Roles), "checker", "code-checker", strings.Repeat("r", legionclaim.MaxRoleBytes)) {
 		if !legionclaim.IsRole(role) {

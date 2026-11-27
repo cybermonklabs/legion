@@ -1479,8 +1479,9 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // name can sort first and be taken; a controller works no repository, so its every directory is
 // read-only.
 //
-// The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
-// nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
+// The launch's roles run as two Apps and work the one repository, and a bundle is held by its App
+// and that repository, and by its role for a role that is none of Legion's (appauth's bundleKey),
+// so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
 // the launch opens with two live reads of the Apps' installations rather than six serial round
 // trips to GitHub before its first role starts.
 func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]ghconfig.Bundle, error) {
@@ -1501,23 +1502,24 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	}
 	launching, _ := l.spec.Claim.Slot()
 	holders[slotKey{sandbox: l.name, slot: launching}] = slotHolder{token: l.spec.Claim, role: l.spec.Role, generation: l.spec.Generation}
-	memo := appauth.NewBundles(r.gitHubCredential)
+	memo := appauth.NewBundles(r.gitHubCredential, r.controllerCredential, r.roleApps)
 	for i, role := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
 		var err error
-		if role == claim.RoleController {
-			bundle, err = r.controllerCredential(minting, "")
-		} else {
+		// holds is the role whose App the slot holds; the controller's slot holds its own.
+		holds := role
+		if role != claim.RoleController {
 			// The pod's launcher of role serves the slot of role's name.
 			slot := claim.Agent(role)
-			app, first := l.agentRoles[role]
+			var first bool
+			holds, first = l.agentRoles[role]
 			if _, runs := holders[slotKey{sandbox: l.name, slot: slot}]; runs || !first {
-				app, err = r.slotAppRole(minting, holders, l.name, slot, "")
+				holds, err = r.slotAppRole(minting, holders, l.name, slot, "")
 			}
-			if err == nil {
-				bundle, err = memo.Bundle(minting, app, l.spec.Repository)
-			}
+		}
+		if err == nil {
+			bundle, err = memo.Bundle(minting, l.spec.Issue, holds, l.spec.Repository, "")
 		}
 		cancel()
 		switch {

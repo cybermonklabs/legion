@@ -1,8 +1,9 @@
 # The operator's model route
 
-Legion carries no provider or route knowledge, and no model but the `model` a role of `roles` names. Everything a Legion pod needs to reach a model
-is the operator's, delivered through `runtime.kubernetes.pod` and `provider_keys`
-(`docs/kubernetes.md`, "Operator configuration"). This directory is an example of it:
+Legion carries no provider or route knowledge. It names a model only where `legion.yaml` or an
+issue's plan names one: `models`, `roles.<name>.model` or a role block's `model`. Everything a
+Legion pod needs to reach a model is the operator's, delivered through `runtime.kubernetes.pod` and
+`provider_keys` (`docs/kubernetes.md`, "Operator configuration"). This directory is an example of it:
 [`pod.yml`](pod.yml) is the pieces an operator supplies, in the shape the daemon loads, and
 [`models.yml`](models.yml) and [`overlay.yml`](overlay.yml) are the two files its ConfigMap holds,
 on the model names every other agent uses. The Go live harnesses run on all three.
@@ -65,13 +66,14 @@ its line under `modelRoles` in `overlay.yml` and run the same `apply.sh` command
 repository changes. Pods started after that read the new file.
 A running pod keeps the files it started with until it restarts, because `pod.yml` mounts both by
 `subPath`, which the kubelet never refreshes.
-A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the
-`default` line.
+A role whose settings or plan block name a `model` runs on that model, named in `legion.yaml` or
+the issue's plan, in place of the `default` line.
 
-`modelRoles.default` is the model of each role whose settings name no model, a resumed session
-included: each such launch names `--model @default`, Oh My Pi's own name for that role, so a role
-takes the model this file gives it now rather than the one its session saved when it started.
-A role of `roles` that names a `model` is launched with `--model` and that model instead.
+`modelRoles.default` is the model of every role's session that names no model of its own, a resumed
+session included: such a launch names `--model @default`, Oh My Pi's own name for that role, so the
+role takes the model this file gives it now rather than the one its session saved when it started.
+A role whose `legion.yaml` settings name a model (`roles.<name>.model`), and a role an issue's plan
+defines with a `model`, start on that model instead (`--model <model>`).
 A settings set without that key is not refused anywhere: Oh My Pi reads `@default` as its own
 built-in chat role and the session starts, silently, on a model that is no model of this
 directory's and reachable from no pod.
@@ -82,7 +84,7 @@ serves, never to another family, and adds that model to `enabledModels` and to `
 `models-key-file.yml`. A gateway serves only the ids it was set up for and answers any other with
 404, so on the gateway route run one `omp -p --model @<role> "Reply ok."` turn through the new
 `models.yml` for each new model id before applying.
-An older model can leave all three once no role and no fallback chain names it.
+An older model can leave all three once no role, no plan and no fallback chain names it.
 A resumed session does not need it, since each launch names its model with `--model`.
 The pinned Oh My Pi restores a session's saved model only for a launch that names none
 (`docs/kubernetes.md`).
@@ -138,5 +140,7 @@ a Secret**, and they meet nowhere:
 - `provider_keys` names variables Oh My Pi or the extension reads that must come from the providers
   Secret. The shim exports each into the Oh My Pi child's environment only, after the pod's own
   variables, so a `provider_keys` name that collides with one of `pod.env` is refused at config load.
-- `pod.env`'s `PI_CONFIG_FILES` names the operator's overlay. Legion's own pod baseline is written
-  first in that list, so this overlay outranks it, and both outrank a repository's `.omp/config.yml`.
+- `pod.env`'s `PI_CONFIG_FILES` names the operator's overlay. Legion writes no overlay of its own.
+  A role's own overlays (`role_config_files`) and those of each experiment arm its unit was drawn
+  into follow it in the list, so each of them outranks it. All of them outrank a repository's
+  `.omp/config.yml`.

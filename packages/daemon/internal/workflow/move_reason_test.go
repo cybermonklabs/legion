@@ -32,7 +32,7 @@ func TestOnlyTheBackwardMovePostsAReasonOnTheIssue(t *testing.T) {
 }
 
 // A backward move names the role that asked, the role running the step it left (at step the role
-// the deployment defines), and gives that role's words as they end, with one full stop added where
+// the deployment or the issue's plan defines), and gives that role's words as they end, with one full stop added where
 // they end in none; words that are only space read as none.
 func TestABackwardMoveNamesWhoAskedAndGivesTheirWords(t *testing.T) {
 	t.Parallel()

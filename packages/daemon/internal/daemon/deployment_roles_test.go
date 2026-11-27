@@ -1,6 +1,6 @@
 // The whole daemon walks each issue of a project through its own steps when the settings define a
-// role of the deployment's own, and an issue that the release before this one left mid-walk goes on
-// under this release.
+// role of the deployment's own, and an issue that the release before a deployment could define a
+// role left mid-walk goes on under this release.
 //
 // Each test boots the whole daemon (startDaemonWithin) over the package's broker, the real store,
 // the real outbox and the real Dispatch of this package's tests (startScratchDispatchOn), and walks
@@ -66,7 +66,7 @@ const (
 	deploymentReason = "The plan fit the work."
 )
 
-// v-steps, whole. The settings define checker (type testing, a prompt file, the model
+// The settings define checker (type testing, a prompt file, the model
 // checker-model). Issue A gives no plan and walks the seven phases. Issue B gives `implementer
 // checker`: it launches the implementer, then the checker, and no planner and no tester; the
 // checker's spawn spec names checker-model and the prompt file's text; its task names B, holds the
@@ -217,26 +217,26 @@ func (r *deploymentRolesRig) walkImplementerChecker() error {
 	return nil
 }
 
-// An issue the release before this one left at testing goes on under this release. The store holds
-// every migration of the release before, every one below this release's deployment_roles, applied
-// by hand (storeOfTheEarlierRelease), and the record of one issue at testing, written with plain SQL
-// in the columns of the release before: its task a at step 2 of the owner's plan `implementer
-// tester reviewer`, the implementer's step done and the tester's claim a launch the earlier daemon
-// began (seedEarlierReleaseIssue). This release's migrations then run on it, as a deploy runs them,
-// and the whole daemon boots on it. The tester's pass moves the task to step 3 at reviewing, the
-// issue goes on to done, its retro rates the plan 4 with its reason, and the read of its steps names
-// the retro with that rating and that reason. The way back, the transaction in the header of the
-// deployment_roles migration as an operator copies it out, then succeeds on that store with the
-// daemon stopped.
+// An issue that the release before a deployment could define a role left at testing goes on under
+// this release. The store holds every migration below this release's deployment_roles, applied by
+// hand (storeBelow), and the record of one issue at testing, written with plain SQL in that
+// release's columns: its task a at step 2 of the owner's plan `implementer tester reviewer`, the
+// implementer's step done and the tester's claim a launch the earlier daemon began
+// (seedIssueAtTesting). This release's migrations then run on it, as a deploy runs them, and the
+// whole daemon boots on it. The tester's pass moves the task to step 3 at reviewing, the issue goes
+// on to done, its retro rates the plan 4 with its reason, and the read of its steps names the retro
+// with that rating and that reason. The way back of the deployment's roles, the transaction in the
+// header of the deployment_roles migration as an operator copies it out, then succeeds on that
+// store with the daemon stopped.
 //
 // The fault: this release's walk keys its rows by place (Walk.row matches row.FromPlace ==
 // w.Place), so an issue whose place the release before stored is not read would stop at its next
 // report. The control is a mutation of the release's code, run by hand: Engine.walk answering the
-// zero place in place of plan_tasks.position, as a store that lost the place the release before
-// stored would answer; the tester's pass then moves nothing, and the assertion of step 3 fails.
-func TestAnIssueOfTheEarlierReleaseGoesOnUnderThisRelease(t *testing.T) {
+// zero place in place of plan_tasks.position, as a store that lost that place would answer; the
+// tester's pass then moves nothing, and the assertion of step 3 fails.
+func TestAnIssueThatRanBeforeDeploymentRolesGoesOn(t *testing.T) {
 	t.Parallel()
-	r := newEarlierReleaseRig(t)
+	r := newEarlierReleaseRig(t, deploymentRolesMigration)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
 		t.Fatalf("after the tester's pass %s's task a stands at %s %d, want step 3", r.key, kind, position)
@@ -253,7 +253,7 @@ func TestAnIssueOfTheEarlierReleaseGoesOnUnderThisRelease(t *testing.T) {
 
 	r.d.stop()
 	if err := runSQL(t, r.cfg.PostgresDSN, wayBackOf(t, deploymentRolesMigration)); err != nil {
-		t.Fatalf("the way back of the deployment's roles on the store whose issue of the release before ran to done: %v", err)
+		t.Fatalf("the way back of the deployment's roles on the store of the earlier release's issue ran to done on: %v", err)
 	}
 	var recorded int
 	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from schema_version where version = $1`,
@@ -595,25 +595,25 @@ func deref[T any](p *T) any {
 }
 
 // deploymentRolesMigration ends the name of this release's migration of the deployment's roles,
-// the first one of the release. It is found by its name rather than its number, so the store of the
-// release before is the same whatever number a later merge gives it.
+// the first one of the release. It is found by its name rather than its number, so the store of
+// the release before is the same whatever number a later merge gives it.
 const deploymentRolesMigration = "_deployment_roles.up.sql"
 
-// earlierReleaseRig is the walk's rig on the store the release before this one leaves, with its one
-// issue at testing, and the version of the migration whose way back the test runs.
+// earlierReleaseRig is the walk's rig on the store an earlier release leaves, with its one issue at
+// testing, and the version of the migration the store stops below, whose way back a test can run.
 type earlierReleaseRig struct {
 	*stepRecordsRig
 	migrationVersion int
 }
 
-// newEarlierReleaseRig is the store the release before leaves (storeOfTheEarlierRelease), seeded with
-// one issue at testing (seedEarlierReleaseIssue), migrated to this release's schema, with the daemon
-// booted on it at the real Dispatch of this package's tests and the issue's architect and tester
-// resumed in the sessions the earlier daemon recorded.
-func newEarlierReleaseRig(t *testing.T) *earlierReleaseRig {
+// newEarlierReleaseRig is the store an earlier release leaves, every migration below the one whose
+// name ends below (storeBelow), seeded with one issue at testing (seedIssueAtTesting), migrated to
+// this release's schema, with the daemon booted on it at the real Dispatch of this package's tests
+// and the issue's architect and tester resumed in the sessions the earlier daemon recorded.
+func newEarlierReleaseRig(t *testing.T, below string) *earlierReleaseRig {
 	t.Helper()
 	proof := newLiveProofOn(t, workflowNATS(t))
-	st, dsn, version := storeOfTheEarlierRelease(t)
+	st, dsn, version := storeBelow(t, below)
 	proof.st, proof.cfg.PostgresDSN = st, dsn
 	proof.cfg.Project = "ER" + randomSuffix(t)[:6]
 	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
@@ -632,9 +632,9 @@ func newEarlierReleaseRig(t *testing.T) *earlierReleaseRig {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
 	r.cfg.DispatchURL = r.dispatch.base
-	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Release before"}, http.StatusCreated, nil)
+	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Earlier release"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
-	const title = "An issue of the release before goes on"
+	const title = "Earlier release issue continues"
 	var created struct {
 		Key     string `json:"key"`
 		Rank    string `json:"rank"`
@@ -646,9 +646,9 @@ func newEarlierReleaseRig(t *testing.T) *earlierReleaseRig {
 	r.issues = append(r.issues, walkIssue{key: created.Key, number: int(number)})
 	r.on(created.Key)
 	r.github.open("legion/"+r.key, r.number)
-	sessions := r.seedEarlierReleaseIssue(title, status, created.Rank, created.LastSeq)
+	sessions := r.seedIssueAtTesting(title, status, created.Rank, created.LastSeq)
 	if _, err := st.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate the store the release before left to this release's schema: %v", err)
+		t.Fatalf("migrate the store the earlier release left to this release's schema: %v", err)
 	}
 	r.boot()
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester} {
@@ -657,16 +657,17 @@ func newEarlierReleaseRig(t *testing.T) *earlierReleaseRig {
 	return r
 }
 
-// storeOfTheEarlierRelease is a database of this test's own carrying every embedded migration whose
-// version is below this release's first (deploymentRolesMigration), applied by hand in version
-// order (applyMigrationsByHand): the schema the release before leaves. It answers the store, its URL
-// and the version of this release's first migration.
-func storeOfTheEarlierRelease(t *testing.T) (*store.Store, string, int) {
+// storeBelow is a database of this test's own carrying every embedded migration whose version
+// is below the one whose name ends below, applied by hand in version order (applyMigrationsByHand):
+// with deploymentRolesMigration, the schema of the release before a deployment could define a role;
+// with planRolesMigration (plan_roles_test.go), the schema of the release before a plan could
+// define one. It answers the store, its URL and the version of the migration whose name ends below.
+func storeBelow(t *testing.T, below string) (*store.Store, string, int) {
 	t.Helper()
 	dsn := testdb.Database(t, "legion_earlier_release")
 	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
-		t.Fatalf("open the store the release before leaves: %v", err)
+		t.Fatalf("open the store the earlier release leaves: %v", err)
 	}
 	t.Cleanup(st.Close)
 	all, err := migrations.All()
@@ -675,12 +676,12 @@ func storeOfTheEarlierRelease(t *testing.T) (*store.Store, string, int) {
 	}
 	first := 0
 	for _, migration := range all {
-		if strings.HasSuffix(migration.Name, deploymentRolesMigration) {
+		if strings.HasSuffix(migration.Name, below) {
 			first = migration.Version
 		}
 	}
 	if first == 0 {
-		t.Fatalf("no embedded migration ends %s, the first one of this release", deploymentRolesMigration)
+		t.Fatalf("no embedded migration ends %s", below)
 	}
 	var before []migrations.Migration
 	for _, migration := range all {
@@ -692,27 +693,27 @@ func storeOfTheEarlierRelease(t *testing.T) (*store.Store, string, int) {
 	return st, dsn, first
 }
 
-// earlierReleaseSession is a session the earlier daemon recorded on a claim: its id and its file.
-type earlierReleaseSession struct {
+// earlierSession is a session the earlier daemon recorded on a claim: its id and its file.
+type earlierSession struct {
 	id, file string
 }
 
-// seedEarlierReleaseIssue writes the walk's issue as the release before leaves it at testing, with
-// plain SQL in its columns: the root handed to Legion, its tree under the workflow, its approved
-// design gate, its slot, its open pull request of the task a, the owner's plan `implementer tester
-// reviewer` at version 1 with its task a running at step 2 (plan_tasks.running_kind step, position
-// 2), the count of starts of steps 1 and 2, the implementer's phases row of its done step 1, the
-// tester's row raised at entry 1 for step 2, and the claims of the architect and the tester, each a
-// launch the earlier daemon began in the session it recorded, which the boot resumes. It answers
-// those sessions.
-func (r *earlierReleaseRig) seedEarlierReleaseIssue(title, status, rank string, seq int64) map[claim.Role]earlierReleaseSession {
+// seedIssueAtTesting writes the walk's issue as the earlier release leaves it at testing, with
+// plain SQL in that release's columns: the root handed to Legion, its tree under the workflow, its
+// approved design gate, its slot, its open pull request of the task a, the owner's plan
+// `implementer tester reviewer` at version 1 with its task a running at step 2
+// (plan_tasks.running_kind step, position 2), the count of starts of steps 1 and 2, the
+// implementer's phases row of its done step 1, the tester's row raised at entry 1 for step 2, and
+// the claims of the architect and the tester, each a launch the earlier daemon began in the
+// session it recorded, which the boot resumes. It answers those sessions.
+func (r *earlierReleaseRig) seedIssueAtTesting(title, status, rank string, seq int64) map[claim.Role]earlierSession {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
 	exec := func(what, statement string, args ...any) {
 		t.Helper()
 		if _, err := r.st.Pool().Exec(ctx, statement, args...); err != nil {
-			t.Fatalf("write %s in the columns of the release before: %v", what, err)
+			t.Fatalf("write %s in the earlier release's columns: %v", what, err)
 		}
 	}
 	key := r.key
@@ -756,17 +757,17 @@ func (r *earlierReleaseRig) seedEarlierReleaseIssue(title, status, rank string, 
 		now() - interval '2 hours', 'a', 1)`, key, implementer, stepRecordsHead, "implement-record-"+key)
 	// The tester's entry carries the resume task the earlier daemon stored for it, in the shape the
 	// workflow composes a resume of testing (workflow's Engine.ResumeTask): the engine reads this
-	// release's columns, which the store the release before left does not hold yet, so the text is
+	// release's columns, which the store the earlier release left does not hold yet, so the text is
 	// written here.
 	testerTask := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s. Working copy: branch %s. Resume the existing phase work.",
 		title, key, phase.Testing, claim.IssueBranch(key))
 	exec("the tester's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary,
 		last_handoff, entry, entry_task, entry_raised_at, step_task, step_place) values ($1, 'tester', $2, '', 0, '', '', '', 1, $3,
 		now() - interval '1 hour', 'a', 2)`, key, tester, testerTask)
-	sessions := map[claim.Role]earlierReleaseSession{}
+	sessions := map[claim.Role]earlierSession{}
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester} {
 		token := r.token(role)
-		kept := earlierReleaseSession{id: "ses_" + string(role) + "_" + strings.ToLower(key), file: filepath.Join(r.cfg.StateDir, key+"-"+string(role)+".jsonl")}
+		kept := earlierSession{id: "ses_" + string(role) + "_" + strings.ToLower(key), file: filepath.Join(r.cfg.StateDir, key+"-"+string(role)+".jsonl")}
 		sessions[role] = kept
 		exec("the "+string(role)+"'s claim on "+key, `insert into claims (token, project, tree, issue, role, generation, session,
 			session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, boot_token_hash, serving_generation,
@@ -782,7 +783,7 @@ func (r *earlierReleaseRig) seedEarlierReleaseIssue(title, status, rank string, 
 // it: the launch resumes the session the earlier daemon recorded, and the pane says hello with the
 // launch's boot token, registers in that session and says ready, as the plugin of the deployed
 // release does.
-func (r *earlierReleaseRig) resume(role claim.Role, kept earlierReleaseSession) {
+func (r *earlierReleaseRig) resume(role claim.Role, kept earlierSession) {
 	t := r.t
 	t.Helper()
 	token := r.token(role)

@@ -168,7 +168,7 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 // what else its daemon needs to the overrides this answers.
 func (r *localRuntime) daemonOverrides(rt runtime.Runtime) overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source, _ appauth.RoleApps,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			r.conns, r.stream = listener, address
 			return rt, nil

@@ -81,10 +81,11 @@ type Config struct {
 	// none, and of a task whose block names neither steps nor a sub-owner. Nil takes the steps of
 	// a project that names none.
 	DefaultSteps []plan.Step
-	// Deployment is the roles a step of this deployment names, each with its type
-	// (config.Config.Deployment): Legion's own and each role of `roles`. A stored step takes the
-	// type of its role here (planSteps). A Config that sets no roles takes Legion's own
-	// (plan.BuiltinRoles).
+	// Deployment is what this deployment gives a plan (config.Config.Deployment): the roles a step
+	// names, Legion's own and each role of `roles`, each with its type, its model and its harness,
+	// the listed models and the owner's role. A stored step takes the type plan.RolesOf gives its
+	// role, the plan's own role's before the deployment's (planSteps). A Config that sets no roles
+	// takes Legion's own (plan.BuiltinRoles).
 	Deployment plan.Deployment
 	Clock      func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
@@ -305,7 +306,7 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		// A settlement on the head of a released pod's pull request wakes that pod before the
 		// settlement is applied, so the woken role's task names the settlement this very
 		// transaction records (wakeOnSettlement).
-		// The role it woke is told no role message of that settlement: its wake task already
+		// The claim it woke is told no role message of that settlement: its wake task already
 		// names it (tellChecks).
 		woken, err := e.wakeOnSettlement(ctx, tx, fact)
 		if err != nil {
@@ -2156,7 +2157,13 @@ func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.
 	if record.OutOfWorkflow(issue.Status) {
 		return nil
 	}
-	if lostRole(fact.Role, e.cfg.Deployment) || lostSlot(fact.Claim, e.cfg.Deployment) {
+	// A role the plan in force of the issue defines is no role the deployment lost, nor is an agent
+	// named for one (deploymentOf).
+	d, err := deploymentOf(ctx, e.store, tx, issue, e.cfg.Deployment)
+	if err != nil {
+		return err
+	}
+	if lostRole(fact.Role, d) || lostSlot(fact.Claim, d) {
 		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of a claim whose role or slot the deployment no longer defines",
 			"issue", issue.Key, "role", fact.Role, "claim", fact.Claim)
 		return nil
@@ -2979,10 +2986,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if stops {
 		return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, record.StandsAt(issue), stepSite{}, handoff))
 	}
-	// A move into the step of a role the deployment no longer defines starts no role: the task
-	// stops where it stands, naming the step (stopLostRole), and the step it stood at ends as the
-	// move would have ended it. A move stands in a phase a hold stands in, so a refusal of the
-	// stop is an error.
+	// A move into a step no role may start (lostAt: its role neither the deployment nor the plan in
+	// force defines, or the plan defines it on a model the deployment no longer lists) starts no
+	// role: the task stops where it stands, naming the step (stopLostRole), and the step it stood
+	// at ends as the move would have ended it. A move stands in a phase a hold stands in, so a
+	// refusal of the stop is an error.
 	if lost, ok := w.lostAt(row.ToPlace, e.cfg.Deployment); ok {
 		refusal, err := e.stopLostRole(ctx, tx, issue, w, lost, endOfTransition(w, trigger, record.StandsAt(issue), stepSite{}, handoff))
 		if err == nil && refusal != nil {
@@ -3122,9 +3130,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
-	// it, and a move at a head held in a confirmed conflict asks for it where the merge comes
-	// next. It comes after the start, so the worker of the phase entered is
+	// The merge forward follows the move (mergeForwardOnEntry): a move into the task's
+	// implementation step drops it, and a move at a head held in a confirmed conflict asks for it
+	// where the merge comes next or where an ask made at the implementation step no longer covers
+	// the step the task stands at. It comes after the start, so the worker of the step entered is
 	// started before the hold that tells it to wait for the merge.
 	if err := e.mergeForwardOnEntry(ctx, tx, issue, w); err != nil {
 		return err
@@ -3373,12 +3382,14 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	return e.transition(ctx, tx, issue, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
 }
 
-// stopLostRole stops w's task of issue, whose step at lost names a role the engine's deployment no
-// longer defines (Walk.lostAt): the daemon restarted with settings that dropped the role while a
-// task still had a step of it to run. The task stops where it stands as stop_task stops it
-// (stopTask), its step ending as end says, with the reason that names the step and the role, and
-// the task's owner is told once, in a task-stopped notice that names the lost role. The owner's
-// next version of the plan, or a person who defines the role again and sets the root back to
+// stopLostRole stops w's task of issue, whose step at lost no role may start (Walk.lostAt): its
+// role is one neither the engine's deployment nor the plan in force defines, or one the plan
+// defines on a model the deployment does not list. The daemon restarted with settings that
+// dropped the role or the model while a task still had a step of it to run. The task stops where
+// it stands as stop_task stops it (stopTask), its step ending as end says, with the reason that
+// names the step and the role, and the model where the model is what was lost, and the task's
+// owner is told once, in a task-stopped notice that names the role. The owner's next version of
+// the plan, or a person who defines the role or lists the model again and sets the root back to
 // todo, starts the task again. It answers stopTask's refusal of a stop that cannot stand where the
 // issue stands now (a root that waits on a person before its first step), and writes nothing then.
 func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, lost record.TaskPlace, end StepEnd) (*intake.Refusal, error) {
@@ -3416,40 +3427,40 @@ func (e *Engine) keepLostStop(ctx context.Context, tx pgx.Tx, released record.Is
 }
 
 // lostStop is the stop of w's task of issue for its work at lost, which d lost (Walk.lostAt): the
-// task's reason, which names the step and the role, and the task-stopped notice that tells the
-// task's owner, which names the role, the place the issue stands and that reason. Where the step's
-// role is lost the reason names it. Where the work's agent is named for a role d lost (lostAgent),
-// a step of a role d defines or the retro, the reason names that agent and its name's role, the
-// slot it runs in: a later version of the plan gives that work an agent of another name.
+// task's reason (Walk.lostWork), which names the step and the role, and the model where the model
+// is what was lost, and the task-stopped notice that tells the task's owner, which names the role,
+// the place the issue stands and that reason. Where the step's role is lost the reason names it.
+// Where the work's agent is named for a role nobody defines for the issue (lostAgent), a step of a
+// role that is defined or the retro, the reason names that agent and its name's role, the slot it
+// runs in: a later version of the plan gives that work an agent of another name.
 func lostStop(issue record.Issue, w Walk, lost record.TaskPlace, d plan.Deployment) (string, record.Notice) {
-	step, _ := w.stepAt(lost)
-	role := step.Role
-	why := fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", lost.Position, role)
-	if lost.Kind != record.PlaceStep || d.Defines(step.Role) {
-		role = string(step.AgentName())
-		work := fmt.Sprintf("step %d", lost.Position)
-		if lost.Kind == record.PlaceRetro {
-			work = "the retro"
-		}
-		why = fmt.Sprintf("%s is the work of the agent %s, which runs in the slot of the role %s, which the deployment no longer defines", work, role, role)
-	}
+	why, role, _ := w.lostWork(lost, d)
 	return why, record.Notice{Kind: "task-stopped", Role: claim.Role(role), Phase: record.StandsAt(issue),
 		Reason: fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)}
 }
 
 // stopLostRoles stops, at the daemon's boot, the task of each issue of the project in the workflow
-// whose task still has a step to run of a role the engine's deployment no longer defines
-// (Walk.lostStep), running or waiting: the settings are read at the start, so a restart is where a
-// role leaves the deployment while the store still names it. A task its plan already holds
-// (planHold) has nothing to stop: a todo on its root keeps it stopped while one of its steps names
-// a lost role (keepLostStop). A task whose stop cannot stand where its issue stands now (a root
-// that waits on a person before its first step) is passed over with one log line: the move into
-// its first step stops it then (transition's lostAt).
+// whose task still has work to do that no role may start (Walk.lostStep), running or waiting: a
+// step of a role neither the engine's deployment nor the plan in force defines, a step of a role
+// the plan defines on a model the deployment does not list, or work whose agent runs in the slot
+// of a role nobody defines for the issue. The settings are read at the start, so a restart is
+// where a role leaves the deployment, or a model leaves `models`, while the store still names it.
+// A task its plan already holds (planHold) has nothing to stop: a todo on its root keeps it
+// stopped while one of its steps names a lost role (keepLostStop). A task whose stop cannot stand
+// where its issue stands now (a root that waits on a person before its first step) is passed over
+// with one log line: the move into its first step stops it then (transition's lostAt).
+//
+// A restart is also where the deployment can take the name of a role the plan in force of an
+// issue defines. That issue keeps its plan's role until a version of its plan changes it
+// (appauth.AppRoleFor, the daemon's specs.rolePromptPaths), and every other issue takes the
+// deployment's. The boot logs one line for each such name, naming the issues whose plan keeps it.
 func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
 		return err
 	}
+	var names []string
+	shadowed := map[string][]string{}
 	for _, issue := range issues {
 		if issue.Project != e.cfg.Project || issue.Phase == phase.Done || record.OutOfWorkflow(issue.Status) {
 			continue
@@ -3457,6 +3468,17 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 		w, err := e.walk(ctx, tx, issue)
 		if err != nil {
 			return err
+		}
+		for _, role := range w.Roles {
+			// A name the deployment and the plan in force both hold is the plan's (plan.Overrides),
+			// which is what makes the deployment's role a shadowed one on this issue.
+			if _, deployed := e.cfg.Deployment.Roles[role.Role]; !deployed || !plan.Overrides(role.Role, true) {
+				continue
+			}
+			if _, seen := shadowed[role.Role]; !seen {
+				names = append(names, role.Role)
+			}
+			shadowed[role.Role] = append(shadowed[role.Role], issue.Key)
 		}
 		if planHold(issue, w.Stored) {
 			continue
@@ -3470,9 +3492,13 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 			return err
 		}
 		if refusal != nil {
-			e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
+			e.logOnCommit(ctx, "workflow: a task whose step no role may start under the deployment is not stopped where it stands",
 				"issue", issue.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
 		}
+	}
+	for _, name := range names {
+		e.logOnCommit(ctx, "workflow: a role of the deployment has the name of a role the plan in force of an issue defines; each such issue keeps its plan's role until a version of its plan changes it, and every other issue takes the deployment's",
+			"role", name, "issues", shadowed[name])
 	}
 	return nil
 }
@@ -3515,7 +3541,7 @@ type claimTarget struct {
 //
 // A claim can also come up after this read: a start already past its fences when the request's
 // fact commits brings its claim up later, with no row of its own. So each role the issue can hold
-// (record.IssueRoles: Legion's own and each role of the deployment that ran on it) but except,
+// (record.IssueRoles: Legion's own and each role of the deployment or of the issue's plan that ran on it) but except,
 // whose worker claim is none of the stored claims, is a target by the role alone: the executor
 // reaches the claim the record gives that role's step when the row runs, and treats a request for
 // a claim that does not exist as done.

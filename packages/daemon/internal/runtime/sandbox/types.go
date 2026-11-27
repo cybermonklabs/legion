@@ -226,11 +226,13 @@ type Options struct {
 	ControllerSlackChannels []string
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
-	// DeploymentApps is each role the deployment defines in its settings (`roles`) with the
-	// GitHub App it acts as (the daemon's deploymentApps). Its roles, sorted by name, follow
-	// Legion's six in the runtime's issue roles (issueRolesOf), and each takes overlays
-	// (RoleConfigFiles) as one of Legion's does. Nil is a deployment that defines no role.
-	DeploymentApps appauth.DeploymentApps
+	// RoleApps is the reader of a role's App that GitHubCredential reads (the daemon's roleApps):
+	// Deployed is each role the deployment defines in its settings (`roles`) with the GitHub App it
+	// acts as, and Plan reads a role the plan in force of an issue defines. The roles of Deployed,
+	// sorted by name, follow Legion's six in the runtime's issue roles (issueRolesOf), and each takes
+	// overlays (RoleConfigFiles) as one of Legion's does. A walk's memo of bundles reads both
+	// (appauth.NewBundles). A nil Deployed is a deployment that defines no role.
+	RoleApps appauth.RoleApps
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings
 	// overlays a role alone names in PI_CONFIG_FILES, by role, after the operator's own (Pod.Env's
 	// PI_CONFIG_FILES), so each outranks those (mainEnvironment, roleOperatorEnv), and the shim
@@ -367,14 +369,15 @@ type Options struct {
 	// AdoptTimeout bounds a working-copy adoption (slow_command_timeout_seconds).
 	AdoptTimeout time.Duration
 	Tokens       ProvisionTokens
-	// GitHubCredential is the daemon's function for a role's gh files
-	// (runtime.GitHubCredential): hosts.yml and config.yml rendered from the role's App token. It
+	// GitHubCredential is the daemon's function for a role's gh files (appauth.Credential,
+	// appauth.GitHubCredential): hosts.yml and config.yml rendered from the role's App token. It
 	// is called for every launcher role when the pod's role Secrets are written
 	// (writeLauncherSecrets), and again for each by the refresher (refreshGitHubCredentials), which
 	// rewrites the Secret when the render changed: every workflow role of an issue pod and the
-	// controller's, which acts as the review App. Required: configure refuses nil as it refuses a
-	// nil Tokens.
-	GitHubCredential runtime.GitHubCredential
+	// controller's, which acts as the review App. A walk of either reads a role's App once per ask
+	// and builds through its ForApp (appauth.Bundles). Required: configure refuses nil as it
+	// refuses a nil Tokens.
+	GitHubCredential *appauth.Credential
 	// ActsAs answers the role whose App a claim's slot holds while the claim does work other than
 	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each write of a slot's gh
 	// files. Optional: nil gives every slot its claim's stored role.

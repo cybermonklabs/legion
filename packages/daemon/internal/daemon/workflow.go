@@ -72,9 +72,10 @@ type workflowRuntime struct {
 	// so its own code and its tests hold the narrower type.
 	tokens appauth.Tokens
 	apps   appauth.Source
-	// deployed is each role the deployment defines with the App it acts as (deploymentApps),
-	// which identity reads through appauth.AppRoleFor.
-	deployed appauth.DeploymentApps
+	// roleApps is the App of each role for a claim of an issue, the boot's one value (roleApps:
+	// each role the deployment defines, and the daemon's one reader of a role of an issue's plan),
+	// which identity reads through appauth.RoleApps.Of.
+	roleApps appauth.RoleApps
 	// forget drops the token source's cached leases for an App and owner, a token GitHub refused
 	// (tokenRefused).
 	forget          appauth.Forgetter
@@ -710,13 +711,16 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
 // clock.
 //
+// roleApps is the boot's one reader of a claim's App (roleApps, which run builds once and hands
+// the runtime too), which the workflow's identities read (workflowRuntime.roleApps).
+//
 // source is the random source every `random` experiment is drawn with (overrides.experimentSource):
 // the engine holds it, and the admission draws with the engine's (workflow.Engine's
 // ExperimentSource). nil is the engine's own, experiment.CryptoSource.
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
 // productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, roleApps appauth.RoleApps, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -751,7 +755,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, deployed: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
+		tokens: tokens, apps: tokens, roleApps: roleApps, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		stopped:    ctx,
@@ -1081,8 +1085,9 @@ func (w *workflowRuntime) agentText(token claim.Token, field, text string) strin
 // login from its boot lease: its own project's production_check is the role that works the checks
 // a merge opens (empty, it opens none), its own project's default steps are what an issue whose
 // owner gives no plan runs, the file's deployment (config.Config.Deployment: Legion's own roles of
-// a step and each role of `roles`, with its type) is the engine's, which a stored step takes the
-// type of its role from, and its own project's declared experiments are what each issue the
+// a step and each role of `roles`, each with its type, its model and its harness, the listed
+// models and the owner's role) is the engine's, a stored step takes the type plan.RolesOf gives
+// its role (the plan's own role's, else the deployment's), and its own project's declared experiments are what each issue the
 // engine records is drawn for. hookPrompts are the words boot read for the hooks that name a file
 // (readBoot), which engineHooks puts in the place of each such hook's path.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
@@ -1702,25 +1707,33 @@ func deploymentApps(roles []config.Role) appauth.DeploymentApps {
 	return apps
 }
 
-// identity is the bot a role's commits are authored by: its App's (appauth.AppRoleFor, over the
-// deployment's roles), from the lease the token source mints for the owner whose installation
-// holds the repository the role works (the identity is fetched once per App and cached). A role
-// that neither Legion nor the deployment defines is given no App by AppRoleFor, and its identity
-// is that error.
+// identity is the bot a role's commits are authored by on issue: its App's (appauth.RoleApps.Of:
+// Legion's roles, the deployment's, and a role of the issue's plan by its type), as identityAs
+// mints it. A role that none of Legion, the deployment and the issue's plan defines is given no
+// App, and its identity is that error. It is the identity of a working copy's adoption
+// (adoptIdentity), which holds no resolution of the claim's role; a launch resolved its role's App
+// already and asks identityAs.
+func (w *workflowRuntime) identity(ctx context.Context, issue string, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
+	app, err := w.roleApps.Of(ctx, issue, role)
+	if err != nil {
+		return runtime.GitIdentity{}, err
+	}
+	return w.identityAs(ctx, app, role, recorded)
+}
+
+// identityAs is the bot of app, the App role acts as, from the lease the token source mints for
+// the owner whose installation holds the repository the role works (the identity is fetched once
+// per App and cached).
 //
 // recorded is the repository the issue's record names, and the mint is made for the owner GitHub
 // serves it under now (repositories.serving): the record keeps the name it was written under
 // until the one-time rename pass writes the pair's `to` over it (renamePass), while after a
 // transfer the installation that covers the repository is the owner it moved to's. Taking the
-// repository rather than an owner is what keeps that rule here, in
-// the one place both callers reach — a launch's spec (specs.SpawnSpec) and a working copy's
-// adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
-// every launch of a tree open at the transfer.
-func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
-	app, err := appauth.AppRoleFor(role, w.deployed)
-	if err != nil {
-		return runtime.GitIdentity{}, err
-	}
+// repository rather than an owner is what keeps that rule here, in the one place both callers
+// reach — a launch's spec (specs.SpawnSpec) and a working copy's adoption (identity,
+// adoptIdentity) — so neither can mint on an owner the repository has left and fail every launch
+// of a tree open at the transfer.
+func (w *workflowRuntime) identityAs(ctx context.Context, app appauth.AppRole, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
 	served := w.repositories.serving(recorded)
 	lease, err := w.tokens.Token(ctx, app, served.Owner())
 	if err != nil {
@@ -1729,20 +1742,17 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 	return lease.Identity, nil
 }
 
-// knownIdentity is the bot identity role's App commits as where the token source already holds
-// it (appauth.KnownIdentities: the identity a lease of that App fetched), read with no mint and
-// no call to GitHub; false before that App's first lease, and for a token source that answers no
+// knownIdentity is the bot identity app commits as where the token source already holds it
+// (appauth.KnownIdentities: the identity a lease of that App fetched), read with no mint and no
+// call to GitHub; false before that App's first lease, and for a token source that answers no
 // such read, a test's fake among them. A bot identity is the App's own and no owner's, so it
-// needs no repository. A launch's table of every role's identity reads it for the roles of the
-// other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
-// daemon knows its identity. A role that acts as no App (appauth.ErrRoleNotDefined) has none.
-func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, bool) {
+// needs no repository. A launch's table of every role's identity reads it for the other App than
+// the one the claim's role acts as on its issue (specs.knownIdentity), so it costs that App no
+// mint while the daemon knows its identity. The caller names the App, since the App of a role of
+// an issue's plan is that issue's (appauth.RoleApps.Of).
+func (w *workflowRuntime) knownIdentity(app appauth.AppRole) (runtime.GitIdentity, bool) {
 	known, ok := w.tokens.(appauth.KnownIdentities)
 	if !ok {
-		return runtime.GitIdentity{}, false
-	}
-	app, err := appauth.AppRoleFor(role, w.deployed)
-	if err != nil {
 		return runtime.GitIdentity{}, false
 	}
 	return known.KnownIdentity(app)
@@ -1874,7 +1884,7 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
-	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
+	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor, supervision.roleDefinition,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)

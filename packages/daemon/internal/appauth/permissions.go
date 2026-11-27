@@ -63,8 +63,9 @@ import (
 // does: the review App's set asks for write and the implement App's for read, its roles reading
 // which alerts stand on a head. The write is what a dismissal of an alert whose code is right
 // needs, and the set is keyed by App rather than by workflow role, so the token serves every role
-// the review App mints for — architect, planner, tester and reviewer, and each role the
-// deployment defines whose github_app is review, its default (AppRoleFor, identity.go) — and each
+// the review App mints for — architect, planner, tester and reviewer, acceptance and the
+// controller, each role the deployment defines whose github_app is review, its default, and each
+// role of an issue's plan of any type but implementation (AppRoleFor, identity.go) — and each
 // of them can dismiss an alert, upload SARIF or delete an analysis. A dismissal names the App in
 // its dismissed_by, whichever of those roles made it, so which role acted is readable only where
 // the comment the dismissal carries says so; an upload or a deletion leaves neither.

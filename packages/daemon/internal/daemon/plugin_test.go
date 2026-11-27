@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -323,7 +324,7 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
 		refreshGate: supervise.NewRefreshGate(0)}
 
-	s.refreshStalePlugins(s.claims, "boot")
+	s.refreshStalePlugins(context.Background(), s.claims, "boot")
 
 	m, ok := sup.Machine(token)
 	if !ok {
@@ -408,7 +409,7 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 		refreshGate: supervise.NewRefreshGate(0)}
 
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
+	s.refreshStalePlugins(context.Background(), s.claims, "boot")
 	letEndsGo()
 
 	for _, token := range []claim.Token{live, suspended} {
@@ -482,7 +483,7 @@ func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T)
 	s := &supervision{log: quietLogger(), supervisor: sup, claims: []supervise.Claim{c}, plan: plan{pluginRelaunchable: true},
 		refreshGate: supervise.NewRefreshGate(0)}
 
-	s.refreshStalePlugins(s.claims, "boot")
+	s.refreshStalePlugins(context.Background(), s.claims, "boot")
 
 	m.Wait()
 	if held := m.Claim(); held.State != supervise.StateWorking {
@@ -554,6 +555,82 @@ func TestAKubernetesDaemonWithNoPluginSourceRelaunchesNothing(t *testing.T) {
 	}
 	if c := d.claim(fresh); c.PluginContract != 1 || c.Budgets.LaunchFailures != 0 {
 		t.Fatalf("the freshly registered stale claim = %+v, want pluginContract 1 recorded and uncharged", c)
+	}
+}
+
+// The boot's stale-plugin pass runs once the replay of the facts no daemon applied has finished,
+// and the replay runs on a budget of its own because the boot's would end it (run). So the boot's
+// budget can be spent by the time the pass reads the plan of a claim's issue, and the pass reads
+// it on a context of its own (start). A daemon that cannot relaunch onto a plugin still writes
+// its boot-only line for each stale claim an install would move: here a stale prober that the
+// plan of its issue defines, so it runs on Oh My Pi, though the deployment's prober runs on Claude
+// Code. The boot's budget is spent where the replay ends (settle), as a long replay spends it.
+//
+// The control is the pass on the boot's own context, run by hand: each read of the plan then fails
+// on the spent budget, the pass decides nothing for the claim, and no line names it.
+func TestTheBootsStalePluginPassReadsThePlanOnceTheBootsBudgetIsSpent(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	cfg := testConfig(t)
+	cfg.PostgresDSN = pool.Config().ConnString()
+	cfg.Runtime.Name = "kubernetes"
+	cfg.Roles = []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}
+	cfg.WorkerBackends = map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := cfg.Project + "-1"
+	c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
+	c.PluginContract, c.Locator = api.DaemonAPIVersion()-1, pluginTestLocator(c.Token)
+	putPreviousRun(t, cfg, previousRun{issues: []record.Issue{runningRoot(issue, phase.Implementing)}, claims: []supervise.Claim{c}})
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	putPlanRole(t, st, issue, record.PlanRole{Role: "prober", Type: "testing", Model: "prober-model", Prompt: "# Prober\n\nProbe the change."})
+
+	supervising, stop := context.WithCancel(context.Background())
+	rt := fake.NewRuntime()
+	sup := newSupervisor(supervising, st, project, t.TempDir(), quietLogger())
+	sup.deps = supervise.Deps{
+		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract: api.DaemonAPIVersion(),
+		RefreshGate:    supervise.NewRefreshGate(0),
+		Worker:         store.ForConcurrentWorker,
+	}
+	listener, err := stream.Listen(supervising, "tcp://127.0.0.1:0",
+		func(string) (claim.Token, uint64, bool, bool, error) { return "", 0, false, false, nil }, stream.Options{RPCTimeout: time.Second, Log: quietLogger()})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	claims, err := st.Claims(context.Background())
+	if err != nil {
+		t.Fatalf("read the claims: %v", err)
+	}
+	logs := &syncBuffer{}
+	s := &supervision{
+		cfg: cfg, log: jsonLogger(logs), plan: plan{project: project, clock: stillClock{}, orphanSweep: time.Hour},
+		stream: listener, runtime: rt, supervisor: sup, claims: claims,
+		backends: roleBackends(cfg.BackendFor, planRoleOf(st)), refreshGate: supervise.NewRefreshGate(0),
+	}
+	t.Cleanup(func() {
+		stop()
+		s.wg.Wait()
+		sup.stop()
+	})
+
+	boot, spend := context.WithCancel(store.WithTransactionTracking(context.Background()))
+	if err := s.start(boot, func() error { spend(); return nil }); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	lines := loggedLines(t, logs.String(), supervise.NoPluginSourceMessage)
+	if len(lines) != 1 || lines[0]["claim"] != string(c.Token) {
+		t.Fatalf("the boot's no-source lines = %+v, want one naming %s, the prober its plan defines on Oh My Pi; the boot logged:\n%s",
+			lines, c.Token, logs.String())
 	}
 }
 

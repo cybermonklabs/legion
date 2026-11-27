@@ -297,8 +297,8 @@ func (namedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, 
 // repository routes to (ghconfig.RouteDir), cybermonklabs' wherever the pair resolves.
 func renamedCredentialBundle(t *testing.T, served []ghrepo.Repository, renames ghrepo.Renames) (root, defaultDir string) {
 	t.Helper()
-	credential := appauth.GitHubCredential(namedTokens{}, servesOneOf(served), renames, nil, nil, nil, slog.Default())
-	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
+	credential := appauth.GitHubCredential(namedTokens{}, servesOneOf(served), renames, nil, nil, appauth.RoleApps{}, slog.Default())
+	bundle, err := credential.Bundle(context.Background(), "", legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)
 	}

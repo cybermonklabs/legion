@@ -433,7 +433,7 @@ export interface StallEvidenceRecord {
   /** Which kind of session this is (`src/classify.ts`), which is what decides who is told. */
   readonly session: LegionSessionKind["kind"];
   readonly issue?: string;
-  /** The claim's role: one of Legion's six or a role of the deployment. */
+  /** The claim's role: one of Legion's six, a role of the deployment or a role of the issue's plan. */
   readonly role?: LegionStepRole;
   readonly toolCallId: string;
   readonly tool: string;

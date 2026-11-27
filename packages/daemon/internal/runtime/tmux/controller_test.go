@@ -125,18 +125,18 @@ func TestTheControllerWorksInADirectoryAndAWindowOfItsOwn(t *testing.T) {
 func TestAControllerWithNoGitHubOwnerRunsWithGhActingAsNobody(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
-	noOwner := func(_ context.Context, role claim.Role, _ ghrepo.Repository) (ghconfig.Bundle, error) {
+	noOwner := func(_ context.Context, _ string, role claim.Role, _ ghrepo.Repository) (ghconfig.Bundle, error) {
 		return ghconfig.Bundle{}, fmt.Errorf("the review App for %s: %w", role, runtime.ErrNoGitHubOwner)
 	}
 	f := newFakeServerRuntimeWith(t, noOwner, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		func(o *Options) {
 			o.ControllerCredential = func(context.Context, string) (ghconfig.Bundle, error) {
-				return noOwner(ctx, claim.RoleController, ghrepo.Repository{})
+				return noOwner(ctx, "", claim.RoleController, ghrepo.Repository{})
 			}
 		})
 	spec := controllerSpec(t, "omp")
 	root := runtime.GHConfigDir(f.stateDir, spec.Claim)
-	stale, _ := staticCredential(ctx, claim.RoleController, ghrepo.MustParse("acme/widgets"))
+	stale, _ := staticCredential(ctx, "", claim.RoleController, ghrepo.MustParse("acme/widgets"))
 	if _, err := ghconfig.WriteBundle(root, stale); err != nil {
 		t.Fatal(err)
 	}

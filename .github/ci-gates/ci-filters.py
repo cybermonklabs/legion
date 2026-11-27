@@ -12,6 +12,7 @@ GATE = gate("ci_filters", "ci-filters", runs=[
         text=".github/scripts/check-ci-filters.sh"),
 ], reads=reads(
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay and go test -overlay compile it"),
+    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane-architect.go", "the pi_legion gate's go run -overlay compiles it, as internal/daemon/rig_prompt_test.go's does"),
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane_test.go", "the pi_legion gate's go test -overlay compiles it"),
     (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
     (".github/ci-gates/**", f"{at('ci-filters', CHECK_STEP)} reads every gate from them, which every filter is "

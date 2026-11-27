@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `legion` tool's description of `register_plan` says that a task's steps can name a role a
+  `plan_role` block of the plan defines, and that a version which changes such a role of a running
+  task is refused. A role the issue's plan defines reports a `verdict` of pass or fail on its
+  completion, as the tester and a role of the deployment do.
+time: 2026-11-23T04:19:36Z
+custom:
+    Issue: pr5160

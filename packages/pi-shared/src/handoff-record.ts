@@ -107,7 +107,7 @@ export interface HandoffReport {
 export interface HandoffReportInput {
   /** The issue's phase, from its record (`read_record`'s `phase`). */
   readonly phase: LegionPhase;
-  /** The session's claim role: one of Legion's six or a role of the deployment. */
+  /** The session's claim role: one of Legion's six, a role of the deployment or a role of the issue's plan. */
   readonly role: LegionStepRole;
   /** The pane's environment: `LEGION_WORKSPACE` and `LEGION_ISSUE`. */
   readonly env: NodeJS.ProcessEnv;

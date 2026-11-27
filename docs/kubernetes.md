@@ -1359,7 +1359,7 @@ Under `postgres` the image probe's container is told `OMP_SESSION_SQL_DSN_FILE` 
 under `cloudsql-iam` the probe's pod mounts no session key and is told no pointer at all (`sessionDSNPointer`, `manifest.go`).
 
 A resumed Oh My Pi session runs the model its launch names, not the one it last used.
-Every launch of a pod's Oh My Pi names one with `--model`: the `model` of a role of `roles`, or `@default` (`agentArgv`, `internal/runtime/sandbox/manifest.go`).
+Every launch of a pod's Oh My Pi names one with `--model`: the role's own model, the `model` of a role of `roles` or of a role an issue's plan defines, or `@default` where the role names none (`agentArgv`, `internal/runtime/sandbox/manifest.go`).
 The Oh My Pi `.omp-pin` names restores a session's saved model only for a launch that names none (`TestAResumeNamingItsModelOutlivesADroppedSavedModel`, `internal/runtime/sandbox/model_omp_test.go`, measures both on that build).
 Only such a launch is refused, in `--mode rpc`, when the profile no longer has that model (`Could not restore model <provider>/<model>`, exit 1).
 So a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops a model a session last used fails none of its resumes.
@@ -2808,6 +2808,7 @@ the notices and the controller notices of the three kinds, the `step_stop` rows,
 The outbox and the issue records are shared by every project's daemon on the database, so each of those deletes and the update take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` and `split_part(key, '-', 1)` are a row's project, since a project key holds no hyphen).
 The tables and the columns are the database's, so every project's daemon on it rolls back too:
 a daemon of this release left running fails every write of an issue once the tables are gone, since each write reads the issue's plan (`WriteIssue` in `workflow/line.go`), and makes them again at its next boot.
+A rollback that also goes past `20261125114700_plan_roles.up.sql` runs that migration's way back before this one, since the `plan_roles` table it adds has a foreign key on `issue_plans`, and the drop of `issue_plans` is refused while that table stands.
 The release that names each step's agent adds one more column to `plan_steps`, `agent`, in `20261124213820_plan_step_agent.up.sql`, so a rollback past this release runs that migration's way back first, the one its header gives:
 it drops the column and deletes its version row, which would otherwise stand after `plan_steps` is gone, so that the roll-forward creates `plan_steps` again and then adds the column to it.
 That way back also takes the key `claim` off each queued `supervise`, `issue_bundle`, `update_ask`, `hook_prompt`, `merge_forward` and `controller_notice` row, where that release names the claim a row acts on;
@@ -3861,9 +3862,9 @@ a rollback past it runs the way back its header gives, which closes all but the 
 20261124213822_pod_wake_backstop_claim adds `pod_wake_backstops.claim`, the claim each backstop wakes, names on each backstop it finds the claim of the backstop's role whose token the earlier release built for it, refuses a backstop that names no claim, and holds one open backstop per claim in place of one per role, and touches none of the six, so the block holds over it;
 a rollback past it runs the way back its header gives, which keeps the newest open backstop of each role, puts the one open backstop per role back over every row, drops the column and deletes its version row, so that the roll-forward adds the column again and names each backstop again.
 20261124213823_release_suspends_claims rewrites the mark of a release in flight, `issue_releases.suspended`, from the roles it names to the token of each claim of the issue that holds one of them, adds `pod_releases.claims`, the tokens of the claims each release suspended, at its default, the empty string, and touches none of the six, so the block holds over it;
-a rollback past it runs the way back its header gives after that of 20261124213824, which writes each mark in flight back as the role each of its tokens names, the token's last part, and not the role the claim stores, which is the role of its key's step where the release moved the claim, drops the column and deletes its version row, so that the roll-forward runs it again.
+a rollback past it runs the way back its header gives after those of 20261125114900, 20261125114800 and 20261124213824, which writes each mark in flight back as the role each of its tokens names, the token's last part, and not the role the claim stores, which is the role of its key's step where the release moved the claim, drops the column and deletes its version row, so that the roll-forward runs it again.
 20261124213824_claim_role_change adds `claims.role_change`, the record that a claim took another role and whether its agent has been told that the GitHub tokens of its earlier role are no longer its to use, null on every row, and touches none of the six, so the block holds over it;
-a rollback past it runs the way back its header gives, which drops the column and deletes its version row, so that the roll-forward adds the column again, null on every row.
+a rollback past it runs the way back its header gives after those of 20261125114900 and 20261125114800, the two newer migrations below, which drops the column and deletes its version row, so that the roll-forward adds the column again, null on every row.
 20261125091522_idle_decline_claim adds `idle_release_declines.claim`, the claim told of unpushed workspace work, empty on existing declines where no recipient is known, and touches none of the six, so the block holds over it.
 Its header's way back drops the column and its version row; run it before the earlier way backs, with every daemon sharing the database stopped.
 A roll-forward preserves the work and hold but forgets the recipient, so the next successful read can repeat its notice once.
@@ -3890,6 +3891,33 @@ the earlier release's upsert of a phases row names the conflict target `(issue, 
 It records the agent of the claim's latest kept start, or the agent of the latest plan row of its name.
 It touches none of the six columns.
 Run its header's rollback first to remove `agent` from queued `supervise` rows and drop the function, column and version row ([Rolling back the release that records the agent of a claim's session](#rolling-back-the-release-that-records-the-agent-of-a-claims-session)).
+20261125114700_plan_roles adds the table `plan_roles`, the roles an owner's plan defines, and touches none of the six, so the block holds over it;
+a rollback past it runs that migration's own way back too, `drop table if exists plan_roles;` and `delete from schema_version where version = 20261125114700;` in one transaction (its header carries the whole block), so that the roll-forward creates the table again empty, and a rollback that also goes past the issue plans' tables runs it first, since the table's foreign key stands on `issue_plans`.
+That way back takes away every role a plan defines.
+Before you pin the release before, remove the `models` key from `legion.yaml` where the file sets it: that release refuses the whole file at load (`unknown key models`), and the models the key lists are the models a role of a plan may name, which the way back takes away.
+At its boot, the release before stops each task that still has a step of such a role to run.
+The reason it gives is `step <n> names the role <role>, which the deployment no longer defines`.
+Two kinds of task are not stopped at boot.
+A task whose plan role has the name of a role of the deployment is not stopped.
+The release before runs the deployment's role in its place.
+A root that waits on a person before its first step is not stopped at boot.
+It is stopped when it moves into that step.
+After the roll forward, the owner of each stopped task gives a new version of its plan.
+Legion takes only a version later than the one in force.
+A version Legion took, given again at the generation it was given at, is the same registration.
+Legion answers it `200` with its plan again and changes nothing, so the task stays stopped.
+Any other version at or below the one in force is refused (`409 PLAN_VERSION_OLD`), and the task stays stopped.
+At a later generation of the issue, the same version is a new registration, judged against that generation's plan alone.
+20261125114800_merge_forward_own adds the key `own` to each `pull_requests.merge_forward` ask the earlier release recorded in implementing, the mark that the ask was made at the task's implementation step, and touches none of the six, so the block holds over it;
+the earlier release reads that column leniently and ignores the key, and a rollback past it runs the way back its header gives, which deletes its version row alone, so that the roll-forward marks again each ask recorded in implementing in between.
+20261125114900_claim_launched_definition adds `claims.launched_definition` and `claims.launched_generation`, and touches none of the six, so the block holds over it.
+`launched_definition` is the definition of a plan's role that the claim's recorded process was launched with.
+`launched_generation` is the claim's generation at that launch.
+Every existing row takes the empty string and 0.
+The earlier release names neither column and leaves both as they stand.
+A rollback past it runs the way back its header gives, which drops both columns and deletes its version row.
+So the roll-forward reads every claim as launched with no plan's definition.
+The start of such a role's next step relaunches its agent where the plan in force defines that role.
 20261125212800_claims_tree adds the index `claims_tree` on `claims (tree)`, which the reads of a session's claims in one tree use, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads and writes `claims` the same with the index in place, and a rollback leaves it standing.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
@@ -4039,6 +4067,7 @@ What carries it is the update round over its pod, which asks it like every other
 A plugin-contract change for a Claude Code role in a pod is answered by a new image, never by an install, and `legion config check`, which prints the line under `runtime: kubernetes` alone, says so after its plugin line, naming each role this deployment runs on Claude Code:
 `Claude Code runs <roles>, whose plugin is the worker image's: a plugin-contract
 change for such a role is answered by a new image, not by an install.`
+A role the plan in force of an issue defines runs on Oh My Pi on that issue whatever `worker_backends` names for a role of the deployment of its name: it loads both plugins, and a stale-plugin relaunch of its claim installs both, as for any other Oh My Pi role.
 
 The pair the install uses is `runtime.kubernetes.plugins: { pi_legion: <exact version | absolute
 tarball path | http(s) URL>, pi_envoy: <same> }` (both keys together;
@@ -4494,7 +4523,7 @@ the Hawk model gateway, keyed by a projected ServiceAccount token, with a `model
 the operator keeps their own copies of the two files in a directory of their own ([Operator configuration](#operator-configuration)), and the Stage 4a and 4b proofs run on the example, each with its own copy of its ConfigMap.
 
 **A Claude Code role's model route is the operator's too.**
-A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod, and Claude Code reads its route from its own environment:
+A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod (a role the plan in force of an issue defines runs on Oh My Pi on that issue, whatever `worker_backends` names for its name), and Claude Code reads its route from its own environment:
 `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` for a gateway.
 Legion adds no key and no settings file for it.
 The credential goes in `provider_keys` (`ANTHROPIC_API_KEY: <the providers Secret's key>`), which the shim exports into the agent's environment and nowhere else;
@@ -5912,9 +5941,7 @@ The bundle holds one directory per owner the role's App is installed on, one mor
 A directory is named for its owner's login, lowercased, and takes every login GitHub serves an account under: up to 39 letters, digits, hyphens and underscores, beginning with a letter or digit, so a managed user's login, which ends in `_<shortcode>` (`mona-cat_octo`), names one too.
 So the login of every owner a repository can be configured or recorded under is a directory's name, the issue's own owner among them.
 A login GitHub lists that is no such name is left out the same way: no lease is asked for it, it is said once on the daemon's stderr naming it, and only where it is the owner a controller's bundle is asked for does it fail the bundle instead.
-Every directory's token is the role's own App's.
-It is the implement App's for the implementer, the merger and each role of `roles` whose `github_app` is `implement`.
-It is the review App's for every other role, a role of `roles` with no `github_app` among them.
+Every directory's token is the App's the role acts as on the issue: the implement App's for the implementer, the merger and a role of the issue's plan of the type implementation, the App its `github_app` names for a role of the deployment that the issue's plan does not define, and the review App's for every other role, `acceptance` and each other role of a plan among them.
 Each one is the installation lease of the owner its directory is named for, minted at the role's own permissions — the implement App's write set, the review App's review set.
 No directory holds a reading lease of another owner, and each token reaches every repository its own installation holds.
 A role's Secret therefore holds tokens to push to, open a pull request in and review a pull request of every repository its App reaches.
@@ -5949,7 +5976,7 @@ The daemon keeps one record per project of what its mints found refused, and the
 A repository added under an owner the pod already projects is not a reason either: the pod keeps running until something else replaces it.
 Until then it works that repository through that owner's directory, whose token reaches every repository that owner's installation holds, the new one included.
 Both role Apps are public GitHub Apps, so any GitHub account can install them, and a daemon that mints with its own App key counts every installation: it keeps no list of owners.
-An account that installs the implement App gets a directory with that App's write token in the Secret of every role that acts as that App (the implementer, the merger and each role of `roles` whose `github_app` is `implement`), from the next bundle the daemon builds, and an install of the review App gives every other role's Secret that App's token the same way and the controller's its read-only one.
+An account that installs the implement App gets a directory with that App's write token in the Secret of every role that acts as that App (above), from the next bundle the daemon builds, and an install of the review App gives the Secret of every role that acts as the review App that App's token the same way and the controller's its read-only one.
 The account's name joins the owners that each later launch of that App's roles is told in its `Legion addressing` line.
 An issue pod gets one update round once both role Apps are installed on the account, as said above, and until the round replaces it the new directory is in its roles' Secrets and in no pod.
 The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
@@ -9687,7 +9714,7 @@ Four prerequisites and caveats the configuration cannot check for you:
 ### Operator configuration
 
 The Go coordinator's.
-Legion holds no provider or route, and no model but the `model` a role of `roles` names.
+Legion holds no provider or route, and names a model only where `legion.yaml` or an issue's plan names one (`models`, `roles.<name>.model`, a role block's `model`).
 Everything a pod's Oh My Pi needs to reach a model is the operator's, and the daemon hands the same pieces to every pod it runs:
 each issue's pod (every role of it alike) and the image probe's.
 
@@ -9771,13 +9798,15 @@ each issue's pod (every role of it alike) and the image probe's.
   `legion model-token` is a model `apiKey` command that signs a pod in to Cognito with its projected service-account token and prints the access token;
   the [operator route README](../deploy/kubernetes/operator-route/README.md) shows the line and what the command does.
 
-- **The model of each of Legion's six roles** is the operator's:
+- **Each role's model** is the operator's, but for a role whose settings or plan name a model (`models`, below):
   the `models.yml` and `overlay.yml` they keep in a directory of their own (for example `~/.local/state/legion-model-config`), which `deploy/kubernetes/operator-route/apply.sh --context <kube context> <directory>` writes into the ConfigMap `legion-operator-route` in namespace `legion`, with a server-side apply under its own field manager that forces conflicts:
   it takes the two keys over from any tool that wrote them before and names that tool's field manager on stderr.
   A tool that still declares the ConfigMap acts at its own next apply:
   a forced one writes its copy back, and one without force fails on any key whose value differs and leaves the operator's copy;
   either way, stop it declaring the ConfigMap first.
   To change the model of one of Oh My Pi's model roles (`default`, `review`, `smol` and the rest), edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
+  `modelRoles.default` is the model of every Legion role that names none of its own, whose launch names `--model @default`.
+  A role of `roles` with a `model`, and a role an issue's plan defines with a `model`, start on that model (`--model <model>`).
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
   A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.
   The example overlay also turns `retry.modelFallback` on (a failed model call is retried on another model;
@@ -9785,6 +9814,23 @@ each issue's pod (every role of it alike) and the image probe's.
   the probe pod reads the effective value under the operator's configuration (`omp config get retry.modelFallback`) onto its OK line's `model-fallback` mark (`unread` when it could not read it:
   the probe pod's log says why), and the daemon reports the `model-fallback` capability open while a deployment's copy turns it off or the probe could not read it
   — a report, not a refusal; a `capabilities.decided.model-fallback: "<reason>"` line in `legion.yaml` records a decision to keep it off ([The deployment's capability report](#the-deployments-capability-report)).
+
+- **`models`**, a top-level `legion.yaml` key, lists the models a role of an owner's plan may name, in the order the owner is told them: `models: [<model>, …]`.
+  The listed models are `models`, then each model a role of `roles` names that `models` lacks, so a role of the deployment's model is listed whether or not `models` names it.
+  Every architect is told them after Legion's roles and the deployment's.
+  `legion config check` prints them on one line right after the project lines (`models: <m1>, <m2>`, or `models: none` where none is named).
+  The served settings carry them as `settings.models`, absent where none is named.
+  The daemon reads them when it boots, so a change to `models` takes effect when the daemon restarts.
+  The loader refuses a value that is not a list (`models must be a list of model names, e.g. [anthropic/claude-sonnet-4]`), an entry that is not a string (`models[<i>] must be a model's name`), an empty entry (`models[<i>] is empty`), an entry that holds white space (`models[<i>] is "<m>", which holds white space: a model's name is one word`, a missing comma among them: `[m-a m-b]` is one entry) and a model named twice (`models names <m> twice`), each index counted from 0, at boot and at `legion config check` alike.
+  No such value is taken with a warning first: the release before refuses the key itself, and a load that left a bad entry out would list fewer models, so its boot would stop the tasks below.
+  `register_plan` refuses a plan that defines a role whose `model` is not listed (`… the deployment does not list; it lists <m1>, <m2>.`, or `… it lists none.`).
+  A role of a plan keeps its model with the version that defines it, into each later generation of its issue, so a model you take out of the listed models stops, at the daemon's next boot, each task whose remaining steps name a role of the issue's plan on that model, running or waiting:
+  the task stops where it stands, as `stop_task` stops it, a running step's worker is stopped, the issue is held `task-stopped`, and the owner is told once, in a `task-stopped` notice that names the role, with the reason `task <t> of <KEY> was stopped: step <n> names the role <role>, whose model <m> the deployment no longer lists; it lists <m1>, <m2>` (or `it lists none`).
+  A root that waits on a person before its first step is stopped when it moves into a step of such a role.
+  The owner's next version of the plan, on a listed model, starts the task again, as listing the model again and setting the root back to `todo` does.
+  A rollback past the release that adds `models` removes the key from `legion.yaml` first: the release before refuses it at load (`unknown key models`; [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  Give a role of the deployment its model in the settings, as `roles.<name>.model`: Legion lists that model, and compares the `model` of a role block with the listed models.
+  A model that only a role's Oh My Pi overlay names is neither compared nor listed; the step record shows the model that each session ran.
 
 - **The pace of the wakes the daemon causes** is the operator's, as two top-level `legion.yaml` keys:
   `worker_wakes_per_minute` (8 by default) and `worker_wake_burst` (1 by default), a token bucket over the role processes the daemon starts and the tasks and notices it queues to wake a session that already runs (`internal/wakepace`), as [The daemon's Kubernetes request rate](#the-daemons-kubernetes-request-rate) is one over its requests to the API server.
@@ -10340,7 +10386,10 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **Settings order.**
   Oh My Pi reads `PI_CONFIG_FILES` in order, each overlay outranking the ones before it and all of them outranking a repository's `.omp/config.yml`.
-  Legion writes no overlay at all: the list a role reads is the operator's own overlays, then that role's own (`role_config_files`), then the project's memory overlays (`projects.<KEY>.memory.config_files`) where the role's tree was drawn into the memory group, composed by the runtime that starts the role, and the shim passes it through untouched.
+  Legion writes no overlay at all.
+  The list a role reads is the operator's overlays, then the role's own (`role_config_files`), then the overlays of the arms its unit was drawn into.
+  An arm adds its overlays only where its experiment reaches the role (`roles`), and the memory group's (`projects.<KEY>.memory.config_files`) is one such arm.
+  The runtime that starts the role composes the list, and the shim passes it through untouched.
   So nothing of Legion's holds a repository's settings off — they reach a pod's agent as they reach any agent session, under the operator's overlay — and nothing of Legion's turns a pinned binary's own defaults off either: background work (`async.enabled`, `bash.autoBackground.enabled`) is on for every role, as it is for `--mode rpc`.
   The pod sets `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file` on the agent where the pod leaves them unset, which an operator's pod may not set, since they decide where Oh My Pi keeps the session a resume reads.
   From the pinned build on, `OMP_CONFIG_ROOT` decides it too, and outranks `PI_CONFIG_DIR`: an operator's pod may not set it either, but the pod does not set it, so a repository's `.env` that sets it moves the config root (read from Oh My Pi's source, `env.ts` and `dirs.ts`; not run).
@@ -10373,7 +10422,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The image probe runs every provider key command the agents' models need, at every boot.
   A command that fails is "no working credentials", whether the cause is a revoked token or a network blip:
   the gate cannot tell the two apart, and passing on a failed key is the fallback the gate exists to stop.
-  Nothing restarts the Go daemon on its own: it runs off the cluster, and whoever started it starts it again.
+  The daemon then exits, and whatever started it starts it again: its Deployment in the cluster, or the operator for a daemon off the cluster.
 
 #### The Dispatch identity the broker can issue
 

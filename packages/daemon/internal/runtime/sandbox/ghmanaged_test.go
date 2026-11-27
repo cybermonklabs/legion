@@ -33,7 +33,7 @@ func servingManagedUser(o *Options) {
 	served := servesOneOf(func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke")} })
 	installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 	apps := sourceOf(refusingOwnerTokens{refuse: new(atomic.Bool)}, installedOnOwners{managedUser, "sjawhar"})
-	o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.DeploymentApps, o.Log)
+	o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.RoleApps, o.Log)
 	o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 		return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
 	}

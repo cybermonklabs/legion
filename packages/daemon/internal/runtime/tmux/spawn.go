@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -688,10 +689,17 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 				"claim", spec.Claim, "why", err)
 		}
 	}
+	// A role the plan of the claim's issue defines takes none of the settings the deployment keys
+	// by its name (runtime.SpawnSpec.PlanRole), so its pane names none of the overlays
+	// role_config_files names for a deployment role of that name.
+	roleFiles := r.roleConfigFiles[spec.Role]
+	if spec.PlanRole {
+		roleFiles = nil
+	}
 	pairs := panePairs(spec, PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
-		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
+		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: roleFiles,
 		Variants: spec.Variants, LeakCheck: leakCheck, LeakCheckManifestSHA256: r.leakCheckManifestSHA256,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
@@ -720,22 +728,23 @@ type launchGitHubCredential struct {
 // its default the first owner (runtime.GitHubCredential).
 //
 // It writes nothing: a mint is a network call, made before the launch lock, and the claim's
-// directories are written only after the refusal (writeGitHubCredential).
+// directories are written only after the refusal (writeGitHubCredential). It is one claim's one
+// ask, so it builds no walk's memo (appauth.ClaimBundle).
 func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSpec) (launchGitHubCredential, error) {
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
 	}
-	var bundle ghconfig.Bundle
+	// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
+	// claim's stored role: the spec's role, which the machine builds from it. The controller's
+	// is its own.
+	role := spec.Role
 	var err error
-	if spec.Role == claim.RoleController {
-		bundle, err = r.controllerCredential(ctx, "")
-	} else {
-		// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
-		// claim's stored role: the spec's role, which the machine builds from it.
-		var role claim.Role
-		if role, err = runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role); err == nil {
-			bundle, err = r.gitHubCredential(ctx, role, spec.Repository)
-		}
+	if role != claim.RoleController {
+		role, err = runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
+	}
+	var bundle ghconfig.Bundle
+	if err == nil {
+		bundle, err = appauth.ClaimBundle(ctx, r.gitHubCredential, r.controllerCredential, spec.Issue, role, spec.Repository, "")
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {

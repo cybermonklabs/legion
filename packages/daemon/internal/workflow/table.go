@@ -19,7 +19,7 @@ const (
 	TriggerReviewApproved      TriggerKind = "review_approved"
 	TriggerReviewRejected      TriggerKind = "review_rejected"
 	// TriggerStepPassed and TriggerStepFailed are the report of a step that runs as step, a role
-	// the deployment defines: its verdict pass moves the task on, and fail sends the work back.
+	// the deployment or the issue's plan defines: its verdict pass moves the task on, and fail sends the work back.
 	TriggerStepPassed        TriggerKind = "step_passed"
 	TriggerStepFailed        TriggerKind = "step_failed"
 	TriggerRetroCompleted    TriggerKind = "retro_completed"

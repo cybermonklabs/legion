@@ -1491,6 +1491,52 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	}
 }
 
+// Every architect is told, right after the roles, the models a role of its plan can name: the
+// deployment's listed models in their order, or that it lists none, so a role of its plan names
+// no model and starts on the default one. A root architect's addressing still ends with its
+// design gate's line, then the project's production check; no other launch is told the models.
+func TestTheOwnersPromptNamesTheListedModels(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const listed = "The models of this deployment, which a role of your plan can name: m-one, m-two."
+	const none = "This deployment lists no model, so a role of your plan names none and starts on the default model."
+	gate := DesignGateFragment(config.DesignGateRootIssues.Steps())
+	addressing := func(models []string, issue string, role claim.Role) string {
+		t.Helper()
+		token, err := claim.NewToken("s1", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, models: models,
+			designSteps: config.DesignGateRootIssues.Steps()}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: issue, Tree: "S1-1", Role: role})
+		if err != nil {
+			t.Fatalf("the %s's spawn spec on %s: %v", role, issue, err)
+		}
+		return spec.Prompt.Addressing
+	}
+
+	root := addressing([]string{"m-one", "m-two"}, "S1-1", claim.RoleArchitect)
+	if want := DeploymentRolesFragment(nil) + " " + listed; !strings.Contains(root, want) {
+		t.Errorf("the root architect's addressing = %q, want it to hold %q, the models right after the roles", root, want)
+	}
+	if check := " " + gate + " " + ProductionCheckFragment(""); !strings.HasSuffix(root, check) {
+		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, check)
+	}
+	if reversed := addressing([]string{"m-two", "m-one"}, "S1-2", claim.RoleArchitect); !strings.Contains(reversed, "can name: m-two, m-one.") {
+		t.Errorf("a sub-architect's addressing under models [m-two m-one] = %q, want the models in the file's order", reversed)
+	}
+	if unlisted := addressing(nil, "S1-2", claim.RoleArchitect); !strings.Contains(unlisted, DeploymentRolesFragment(nil)+" "+none) {
+		t.Errorf("an architect's addressing under a deployment that lists no model = %q, want it to hold %q", unlisted, none)
+	}
+	tester := addressing([]string{"m-one", "m-two"}, "S1-2", claim.RoleTester)
+	if strings.Contains(tester, "models of this deployment") || strings.Contains(tester, "lists no model") {
+		t.Errorf("a tester's addressing = %q, want no word of the deployment's models", tester)
+	}
+}
+
 // An agent's own request — a completion, which ends its step — reaches the daemon on its HTTP
 // request, while the answer its model gave just before can still wait in the claim's inbox behind
 // an earlier frame the machine is deciding. Read then, the step's agent names no model, and the

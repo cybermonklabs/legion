@@ -18,6 +18,7 @@
     "list_item",
     "ordered_list",
     "paragraph",
+    "plan_role",
     "plan_task",
     "requirement",
     "table",

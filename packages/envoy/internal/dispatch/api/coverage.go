@@ -17,10 +17,10 @@ import (
 // `check` block of any document of that issue or of any descendant issue, at any status, names
 // it in `serves`, and a plan task when a `plan_task` block of that set does; the descendants are
 // read with refs.IssueDescendants, the server's one recursive `child_of` subtree walk. The
-// missing-plan-task gap is named only once the issue has a plan document, since the plan comes
-// after the spec's approval. Nothing is ever refused for a gap: three readers show it — the
-// route below for the Spec tab, `dispatch read --issue`, which prints each gap after
-// `Coverage: `, and an approval request's answer, which names the missing checks alone.
+// missing-plan-task gap is named only once the issue has a plan document. Nothing is ever refused
+// for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
+// which prints each gap after `Coverage: `, and an approval request's answer, which names the
+// missing checks alone.
 
 // noRequirementsGap is the one gap line a spec that marks no requirement answers, in place of a
 // line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, as
@@ -125,7 +125,7 @@ func noCheckGap(blockID string) string {
 }
 
 // missingCheckGaps is the gap lines an approval request's answer carries: one per requirement
-// with no check, and never a missing plan task, since the plan comes after the approval. A spec
+// with no check, and never a missing plan task, even where the issue already has a plan. A spec
 // that marks no requirements carries the one line that says so, as the route does, so the
 // approver is told that too; a spec every requirement of which has a check carries none.
 func missingCheckGaps(coverage model.IssueCoverage) []string {

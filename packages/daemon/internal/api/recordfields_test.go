@@ -146,6 +146,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		LastDeathAt:        at.Add(-4 * time.Minute),
 		LastStartFailure:   "the launcher refused the start",
 		LastStartFailureAt: at.Add(-5 * time.Minute),
+		// A hash, and the generation it was written at, which no surface carries (ColumnWithheld).
+		LaunchedDefinition: "c0ffee",
+		LaunchedGeneration: 3,
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},

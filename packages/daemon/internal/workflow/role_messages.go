@@ -13,11 +13,14 @@ import (
 // roleRecipient is one role a message is addressed to: issue, whose role it is - an architect's is
 // the issue it is the architect of, its tree's root for the tree's own - role, and row, the issue
 // whose outbox the message is written to, which differs from issue only for an architect told of
-// an issue below its own.
+// an issue below its own. claim is the claim of the agent the sender named by the step it works
+// (implementationAgent, through stepToken), "" for a recipient addressed as the worker of its
+// role's step.
 type roleRecipient struct {
 	issue string
 	role  claim.Role
 	row   string
+	claim claim.Token
 }
 
 // addressedRole is a recipient the daemon can name: the claim token whose role topic the message
@@ -31,11 +34,12 @@ type addressedRole struct {
 }
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
-// tellGateMoved, mergeForward, mergeForwardLanded, holdMerger): the claim of the worker on each
-// recipient's role's step (record.WorkerClaim over the recipient issue's phases rows, read in tx),
-// in the order given and each token once, so a role named twice - the implementer that also holds
-// the phase, two roles one keyed agent works - is told once. A recipient with no role is a phase no
-// worker holds, and is nobody.
+// tellGateMoved, mergeForward, mergeForwardLanded, holdMerger): each recipient's claim where the
+// sender named it (roleRecipient.claim), and otherwise the claim of the worker on the recipient's
+// role's step (record.WorkerClaim over the recipient issue's phases rows, read in tx), in the order
+// given and each token once, so a role named twice - the implementer that also holds the phase,
+// two roles one keyed agent works - is told once. A recipient with no role is a phase no worker
+// holds, and is nobody.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, and the one thing the
 // five senders choose of how the collection runs: nil ends the collection with that error, and so
@@ -55,20 +59,22 @@ func (e *Engine) addressRoles(ctx context.Context, tx pgx.Tx, project string, re
 		if recipient.role == "" {
 			continue
 		}
-		// A failed read is the transaction's failure, never a holder the daemon could not name.
-		rows, err := e.store.Phases(ctx, tx, recipient.issue)
-		if err != nil {
-			return nil, err
-		}
-		token, err := record.WorkerClaim(projectToken, recipient.issue, recipient.role, rows)
-		if err != nil {
-			if unnamable == nil {
+		token := recipient.claim
+		if token == "" {
+			// A failed read is the transaction's failure, never a holder the daemon could not name.
+			rows, err := e.store.Phases(ctx, tx, recipient.issue)
+			if err != nil {
 				return nil, err
 			}
-			if err := unnamable(recipient, err); err != nil {
-				return nil, err
+			if token, err = record.WorkerClaim(projectToken, recipient.issue, recipient.role, rows); err != nil {
+				if unnamable == nil {
+					return nil, err
+				}
+				if err := unnamable(recipient, err); err != nil {
+					return nil, err
+				}
+				continue
 			}
-			continue
 		}
 		if slices.ContainsFunc(addressed, func(a addressedRole) bool { return a.token == token }) {
 			continue

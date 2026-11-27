@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -1234,7 +1235,7 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 		{
 			name: "a claim whose launch installs no plugin",
 			harness: func(t *testing.T) *harness {
-				return newNoInstallHarness(t, func(c supervise.Claim) bool { return c.Role == claim.RoleImplementer })
+				return newNoInstallHarness(t, func(_ context.Context, c supervise.Claim) (bool, error) { return c.Role == claim.RoleImplementer, nil })
 			},
 		},
 		{

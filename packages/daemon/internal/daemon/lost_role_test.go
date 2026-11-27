@@ -1,6 +1,7 @@
 // A restart of the whole daemon under settings that no longer define a role of the deployment: the
 // daemon boots, and each task that still has a step of that role to run stops, while an issue of
-// the default steps goes on.
+// the default steps goes on. A role the plan in force of an issue defines is no role of the
+// deployment and is never lost this way.
 //
 // The test boots the whole daemon over the package's broker, the real store, the real outbox and
 // the real Dispatch of this package's tests, with the fake runtime and the fake GitHub, and walks

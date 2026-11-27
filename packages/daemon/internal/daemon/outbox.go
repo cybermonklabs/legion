@@ -78,6 +78,12 @@ const (
 // work (outbox_lanes.go). Claiming and finishing have separate transactions so a slow external
 // service never holds an issue transition lock.
 type outbox struct {
+	// roleDefinition is the definition of a plan's role a launch of a claim would run now
+	// (specs.roleDefinition: the fingerprint of the one resolution of the claim's role), which the
+	// start of a step compares with the definition the claim's process was launched with
+	// (roleDefinitionChanged). Nil compares nothing, as for an outbox a test builds with no specs.
+	roleDefinition func(ctx context.Context, c supervise.Claim) (string, error)
+
 	// pool is the daemon's guarded pool (store.Pool): each lane opens its transactions on it
 	// under a hold mark of the lane's own (runLane), so a row's work that asks for a second
 	// connection while its transaction holds one is refused at that call
@@ -268,12 +274,12 @@ type outboxTrees interface {
 
 // newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
 // which decides whether the launched controller claim holds the controller topic back (heldTopic).
-func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, roleDefinition func(context.Context, supervise.Claim) (string, error), trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
-		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
+		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, roleDefinition: roleDefinition, trees: trees, tokens: tokens,
 		handlers: handlers, gatedSteps: gatedSteps, controllerLaunched: controllerLaunched,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
@@ -2912,8 +2918,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// The claim is readied for the start before anything brings it back (prepareClaimForStep):
 		// it takes the role of the step the start is for where it holds another, and its process
-		// stops where its session is another agent's or one the start leaves, so the steps of one
-		// key, one claim, can follow one another across roles and agents. A step the issue left
+		// stops where its session is another agent's or one the start leaves, or where it runs a
+		// process launched under another definition of its role than the plan in force gives now,
+		// so the steps of one key, one claim, can follow one another across roles and agents, and a
+		// version of the plan can change a role's block. A step the issue left
 		// after the fences above read it and before the first of those acts is no step to ready a
 		// claim for: the machine refuses it under its lock, and the row finishes without acting,
 		// since the start of the step the issue stands in now readies the claim for that one.
@@ -3023,10 +3031,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// that record started — takes this start's agent, whose task goes to that process, so a
 		// later start of another agent starts that one in a new session (prepareClaimForStep)
 		// rather than in this one (supervise.Machine.TakeSessionFor). It is asked with the step's
-		// standing: a running claim of the step's role whose session records no agent is neither
-		// suspended nor given a role above (prepareClaimForStep), so this is the start's first act
-		// to judge it, and a move or a later entry that committed since the fences above leaves the
-		// claim recording no agent, and the start finishes here without acting: its task would be
+		// standing: a running claim of the step's role whose session records no agent, and whose
+		// process runs the definition of its role the plan in force gives, is neither suspended nor
+		// given a role above (prepareClaimForStep), so this is the start's first act to judge it,
+		// and a move or a later entry that committed since the fences above leaves the claim
+		// recording no agent, and the start finishes here without acting: its task would be
 		// refused at its delivery in any case.
 		if err := machine.TakeSessionFor(step, agent); errors.Is(err, supervise.ErrStepLeft) {
 			r.log.Info("outbox start serves a step its issue left before the running claim took its agent; finished without acting", "row", row.ID,
@@ -3406,7 +3415,7 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 }
 
 // claimsOfIssue is the machine of every claim of issue the daemon supervises, whatever its role
-// (one of Legion's six or a role the deployment defines), in token order, read from each claim's
+// (one of Legion's six, a role the deployment defines or a role the issue's plan defines), in token order, read from each claim's
 // view, which waits on no decision a claim has in flight and reads no store. A claim that can
 // still run a process is a supervised one, so this is every claim a start or a removal of the
 // issue's workspace waits on.

@@ -129,6 +129,11 @@ type Settings struct {
 	// RoleConfigFiles is `role_config_files`, the Oh My Pi overlays one role names and no other
 	// does, by role, `{}` while the file names none.
 	RoleConfigFiles map[string][]string `json:"role_config_files"`
+	// Models are the models a role an owner's plan defines may name (config.Config.ListedModels):
+	// `models`, then each model a role of `roles` names that `models` lacks, in the file's order,
+	// the list the owner is told and register_plan judges a plan by. It is absent while there is no
+	// such model, as `github_apps` is absent while the file configures no App.
+	Models []string `json:"models,omitempty"`
 	// WorkerStallBackstopHours is `worker_stall_backstop_hours`, how long after a role's last
 	// recorded step the daemon ends that turn itself, by role, in hours as the file names them,
 	// 0 being the backstop off for that role. It is absent while the file names no role's
@@ -607,6 +612,7 @@ func SettingsOf(cfg config.Config) Settings {
 		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
 		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),
+		Models:                                  cfg.ListedModels(),
 		RepositoryRenames:                       repositoryRenamesOf(cfg.RepositoryRenames),
 		Hooks:                                   hooksSettingsOf(cfg.Hooks),
 	}

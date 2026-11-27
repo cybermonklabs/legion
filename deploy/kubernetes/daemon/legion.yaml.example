@@ -365,8 +365,10 @@ github_apps:
 #                                      # key or its _FILE pointer, a credential-shaped name, and a URL
 #                                      # value with a password (a secret reaches a pane as a file,
 #                                      # never as a value on tmux's command line)
-#     pi_config_files: [./overlay.yml] # Oh My Pi overlays every pane names in PI_CONFIG_FILES, in order;
-#                                      # Legion adds none of its own, so these and role_config_files are all
+#     pi_config_files: [./overlay.yml] # Oh My Pi overlays every pane names first in PI_CONFIG_FILES,
+#                                      # in order. Legion adds none of its own, so only role_config_files
+#                                      # and the config_files of each experiment arm a pane's unit was
+#                                      # drawn into follow them
 #     take_over: kubernetes            # only while moving a project from runtime kubernetes onto this
 #                                      # host: take over the claims its pods held (docs/deployment.md,
 #                                      # "Moving a project onto tmux")

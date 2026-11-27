@@ -163,7 +163,7 @@ Both Apps are public GitHub Apps, so any GitHub account can install them.
 What such an install gives depends on where the daemon gets its tokens.
 A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the profile names, each an account of the secret's `github-owners` tag, so an install by any other account gives nothing.
 A daemon that mints with its own App key counts every installation and keeps no list of owners.
-There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every role that acts as that App (the implementer, the merger and each role of `roles` whose `github_app` is `implement`), and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every role that acts as that App (the implementer, the merger, a role of the deployment whose `github_app` names it, and a role of an issue's plan of the type implementation), and an install of the review App gives every role that acts as the review App that App's token the same way and the controller its read-only one.
 The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
 The one exception is the account that holds the pane's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
 Until then every bundle built for the pane succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
@@ -844,8 +844,9 @@ worker_backends:
   implementer: claude
 ```
 
-Each key is an issue role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`) or a role of `roles`
-and each value `omp` or `claude`; a role left out runs on Oh My Pi. What each harness may run is
+Each key is an issue role: one of Legion's (`architect`, `planner`, `implementer`, `tester`,
+`reviewer`, `merger`) or a role `roles` defines. Each value is `omp` or `claude`, and a role left
+out runs on Oh My Pi. What each harness may run is
 one table, `runtime.Backends` (`packages/daemon/internal/runtime/backend.go`): Claude Code runs the
 phase workers alone, since the architect's loop and the controller's are proven only on Oh My Pi,
 and it runs them under either runtime — a tmux
@@ -997,13 +998,15 @@ provider_keys:
   value. One such member costs the pane every attribute of the variable, the operator's own among
   them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
-  Legion adds no overlay of its own to the list: it writes none, so the operator's are the whole of
-  it, with a role's own (`role_config_files`) after them. The
+  Legion adds no overlay of its own to the list, since it writes none. The operator's come first,
+  then a role's own (`role_config_files`), then those of each experiment arm the pane's unit was
+  drawn into. The
   boot plugin gate probes Oh My Pi under the same overlays and variables.
 - **`role_config_files`**, a top-level key beside the block, gives one role's panes overlays no
   other role's get (`role_config_files: {implementer: [/etc/legion-operator/fallback.yml]}`, the
-  controller's pane under `controller: daemon` too): such a pane's `PI_CONFIG_FILES` is
-  `pi_config_files`, then the role's own in order, and nothing after them. Each
+  controller's pane under `controller: daemon` too). Such a pane's `PI_CONFIG_FILES` is
+  `pi_config_files`, then the role's own in order, then those of each experiment arm its unit was
+  drawn into. Each
   path must be absolute; boot and `legion config check` refuse one the host does not hold
   as a file the daemon's user can read, naming the role and the path, and a pane of a role the key
   leaves out is told what it was told without it. After the plugin gate passes, the boot gate runs

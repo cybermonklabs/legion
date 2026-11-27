@@ -121,7 +121,8 @@ function tomlBasicString(workspace: string): string | undefined {
 }
 
 /** Whether `role` may reach the overlay's `Legion-Role:` line: a role of the step grammar
- * (`isStepRole`: one of Legion's six or a role of the deployment) or the controller's. The match
+ * (`isStepRole`: one of Legion's six, a role of the deployment or a role of the issue's plan) or
+ * the controller's. The match
  * is containment as much as correctness, as the issue key's is: the value is interpolated into a
  * jj template inside a TOML literal, and the grammar holds no quote, backslash or newline. */
 function isTrailerRole(role: string | undefined): role is string {

@@ -418,7 +418,8 @@ func onlyReviewerStart(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest
 // read on the reviewer's row (record.PhaseRow.ReviewedHead), and the start of round 2 names it in
 // its task (namingTheReviewRound), before the sentence of its entry, which ends the task. The
 // first round of a generation has no earlier review, and its task names no commit; nor does a task
-// of any other of Legion's roles (a review step of a role of the deployment names its own commit).
+// of any other of Legion's roles (a review step of a role of the deployment or of the plan names
+// its own commit).
 func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	t.Parallel()
 	pool, _, apply := reviewRoundOne(t)

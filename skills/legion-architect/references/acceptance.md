@@ -81,11 +81,11 @@ When the merger reports:
 ## A conflicting head
 
 A head that conflicts with its base keeps the issue in its phase.
-Until the task's last step has run, the daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
+Until the task's last step has run, the daemon asks the agent of the task's implementation step (the implementer, in the default steps) to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
 A conflict it does not act on yet is recorded: the task's steps go on at that head, and a reviewer step's approval of it ends its review round.
 Once every step has run, in `retro` or in `accepting` with no step after yours, the conflict waits, so accept the head as any other; once the issue enters `merging` the daemon asks the merger to merge the base forward,
 and a check the base's newer code breaks is the merger's to fix in that merge too.
-When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes.
+When it asks, the daemon tells you once by `checks-red`, naming the phase the issue stays in, the role asked, the head, the base and why; at the task's implementation step no notice comes.
 You start nothing for the merge.
 
 Where a reviewer step of the task already ran, the daemon asks the agent of the reviewer step that started last to read the merge and approve the new head by its SHA, or request changes; the merger merges the new head only once that approval is on the pull request.

@@ -1121,17 +1121,20 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
-// claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
-// column. So does a migration that changes a table a version of the list creates, as
-// 20261124213820 adds a column to 20261117034837's plan_steps and 20261125114500 writes the key
-// of phases over the two columns 20261117034837 adds: left out, it is applied as main's, before
-// that table or those columns exist; one that replaces an index a version of the list creates,
-// as 20261124213821 replaces 20261105183200's pod_resumes_one_open_per_role; and one that reads a
-// table a version of the list creates, as 20261125114600 reads the keys of plan_steps' rows
-// (20261117034837, 20261124213820) to record on each claim the key its name belongs to.
-// 20261119203047 is the last migration that writes outbox_kind_check: it stands above main's
-// 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
+// claims.abandoned_session (20261029121200), dispatch://INFRA-5463's 20261123212127 reads
+// claims.last_start_failure (20261029121000) and 20261125114800 writes pull_requests.merge_forward
+// (20261119003157): applied before that version, it fails on the missing column. So does a
+// migration that builds on a table only a version of the list creates, as 20261125114700's
+// foreign key on issue_plans does: the case of a database main migrated would apply it before
+// 20261117034837 creates that table. So does a migration that changes a table a version of the
+// list creates, as 20261124213820 adds a column to 20261117034837's plan_steps and 20261125114500
+// writes the key of phases over the two columns 20261117034837 adds: left out, it is applied as
+// main's, before that table or those columns exist; one that replaces an index a version of the
+// list creates, as 20261124213821 replaces 20261105183200's pod_resumes_one_open_per_role; and one
+// that reads a table a version of the list creates, as 20261125114600 reads the keys of
+// plan_steps' rows (20261117034837, 20261124213820) to record on each claim the key its name
+// belongs to. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
+// main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
 // 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
 // column a version of the list adds either, so neither is in the list. Any other version left out
 // makes the cases below weaker, never red, which is why the comment says where the list comes
@@ -1146,7 +1149,7 @@ var thisRelease = map[int]bool{
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
 	20261123212127: true, 20261124213820: true, 20261124213821: true, 20261125114500: true,
-	20261125114600: true,
+	20261125114600: true, 20261125114700: true, 20261125114800: true, 20261125114900: true,
 }
 
 const idleRelease = 20261101222956

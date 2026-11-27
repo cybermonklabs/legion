@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  Dispatch's block schema version 10 adds the typed block `plan_role`, a role an owner's plan
+  defines: its id is the role's name, its `type` and `model` attributes are the role's type and
+  model, and its body is the role's prompt, which can hold headings, lists and code. The issue page
+  shows the role's name, type and model. A build at an earlier schema version creates no such block
+  and answers a document that holds one with `409 DOC_NEWER_CONTENT`.
+time: 2026-11-23T04:19:36Z
+custom:
+    Issue: pr5160

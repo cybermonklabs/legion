@@ -26,7 +26,7 @@ const (
 	Implementing   Phase = "implementing"
 	Testing        Phase = "testing"
 	Reviewing      Phase = "reviewing"
-	// Step is a step of a role the deployment defines: none of Legion's own roles works it, and
+	// Step is a step of a role the deployment or the issue's plan defines: none of Legion's own roles works it, and
 	// the role that does is the one the issue's plan names for the step it stands at, so RoleFor
 	// names none.
 	Step      Phase = "step"
@@ -179,7 +179,7 @@ func buildMovePairSet() map[string]bool {
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
 // role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and merging
 // write none, and report the commit they stand on; accepting is the architect's sign-off, no
-// handoff at all; and step, whose role the deployment defines, writes none either.
+// handoff at all; and step, whose role the deployment or the issue's plan defines, writes none either.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	switch p {
 	case Planning:
@@ -237,7 +237,7 @@ func RoleFor(p Phase) claim.Role {
 // LeftBy is the phase role has left when the issue, standing at at, no longer stands in a phase
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
-// it stands past it. A role the deployment defines works step alone, so step is the phase it has
+// it stands past it. A role the deployment or the issue's plan defines works step alone, so step is the phase it has
 // left wherever the issue stands. A completion that arrives after the issue moved on without its
 // role is of this phase (Of). The architect works admitted and accepting, signs accepting off and
 // completes nothing, so it leaves no phase here, and neither does a name that is no role.

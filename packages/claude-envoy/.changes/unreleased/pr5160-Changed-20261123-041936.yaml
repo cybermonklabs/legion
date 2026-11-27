@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The `legion` tool's description says that a role the issue's plan defines reports a `verdict`
+  of pass or fail on its completion, as the tester and a role of the deployment do.
+time: 2026-11-23T04:19:36Z
+custom:
+    Issue: pr5160

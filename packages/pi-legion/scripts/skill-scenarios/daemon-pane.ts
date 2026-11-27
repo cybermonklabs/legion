@@ -3,18 +3,27 @@
  * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
  * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
- * handoff words, its resolution of the real gh, its join and write of a system prompt, the parts of
- * a step of a role of the deployment (`stepPromptPaths`), the sentence that tells an architect
- * the roles of its deployment (`deploymentRolesLine`) and the sentence of its production check
- * (`productionCheckLine`), which the program carries because one program runs against each label's
- * checkout of the daemon module, and an older one names them otherwise or lacks them; each one's
- * comment says so, and `daemon-pane_test.go`, which `goInDaemonModule` runs with the program in
- * this checkout's module, holds the last three to the daemon's own functions. `workerPane` builds
- * a phase worker's whole pane environment over it, `composeRolePrompt` the prompt a launch of any
- * role starts with, and `composeStepPrompt` the prompt a launch of a step of a role of the rig's
- * deployment starts with.
+ * handoff words, its resolution of the real gh, its join and write of a system prompt and the parts
+ * of a step of a role of the deployment (`stepPromptPaths`), which the program carries because one
+ * program runs against each label's checkout of the daemon module, and an older one names them
+ * otherwise or lacks them; each one's comment says so, and `daemon-pane_test.go`, which
+ * `goInDaemonModule` runs with the program in this checkout's module, holds the last to the
+ * daemon's own method. An architect's prompt is composed by the daemon's own function, in
+ * `daemon-pane-architect.go`, which is built in only where the checkout declares that function
+ * (`daemonPaneOverlay`). `workerPane` builds a phase worker's whole pane environment over it,
+ * `composeRolePrompt` the prompt a launch of any role starts with, and `composeStepPrompt` the
+ * prompt a launch of a step of a role of the rig's deployment starts with.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
@@ -26,6 +35,35 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
+
+/** The part of daemon-pane.go that calls daemon.ArchitectAddressing, the daemon's composition of
+ * what an architect is told after its addressing. */
+const ARCHITECT_PART = path.join(import.meta.dir, "daemon-pane-architect.go");
+
+/** A declaration of daemon.ArchitectAddressing: gofmt puts the `func` of a top-level function in
+ * column 0, where a comment naming it has `//`. */
+const ARCHITECT_ADDRESSING = /^func ArchitectAddressing\(/m;
+
+/** The files `go run -overlay` builds daemon-pane.go with in `module`, each keyed by its name under
+ * `<module>/cmd/daemon-pane/` (`goInDaemonModule`): the program, and `daemon-pane-architect.go`
+ * beside it where a file of the module's internal/daemon package, not a test's, declares
+ * daemon.ArchitectAddressing. A checkout older than that function lacks it, and a build with a call
+ * it cannot resolve fails in every mode, so there the program is built alone: it serves every mode
+ * and role as it did, and refuses an architect's prompt, naming the function the checkout lacks.
+ * A checkout that declares the function with other parameters fails the build in every mode, as
+ * one whose AddressingFragment takes other parameters does. */
+export function daemonPaneOverlay(module: string): Record<string, string> {
+  const overlay: Record<string, string> = { "main.go": PROGRAM };
+  const daemon = path.join(module, "internal", "daemon");
+  const declared = readdirSync(daemon).some(
+    (file) =>
+      file.endsWith(".go") &&
+      !file.endsWith("_test.go") &&
+      ARCHITECT_ADDRESSING.test(readFileSync(path.join(daemon, file), "utf8"))
+  );
+  if (declared) overlay["architect.go"] = ARCHITECT_PART;
+  return overlay;
+}
 
 /** Runs `go <command> -overlay <overlay> ./cmd/daemon-pane ...args` in `module`, a checkout's
  * daemon module, where the overlay puts each of `files` (a file's name under
@@ -71,19 +109,21 @@ export function goInDaemonModule(
   }
 }
 
-/** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
- * there is none), and returns its stdout. */
+/** Runs daemon-pane.go in `module`, with daemon-pane-architect.go where the module's daemon
+ * declares the function it calls (`daemonPaneOverlay`), with `args`, `input` on its stdin (the
+ * caller's own stdin when there is none), and returns its stdout. */
 export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
-  return goInDaemonModule(module, { "main.go": PROGRAM }, "run", args, input);
+  return goInDaemonModule(module, daemonPaneOverlay(module), "run", args, input);
 }
 
 /** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
  * `prompt`): the role's parts, a blank line, then its addressing, which for an architect goes on
- * with the roles of the rig's deployment where the module's daemon has the key `roles`, for the
- * architect of a tree's root (`root`) then with the design gate steps, and for every architect ends
- * with the production check where the module's daemon has the key `production_check`, byte for
- * byte as the daemon writes the prompt file. The claim is the rig's: its issue is the root of its
- * tree, or a child under that root. */
+ * with what the module's daemon tells every architect after it (daemon.ArchitectAddressing): the
+ * roles of the rig's deployment and the models, for the architect of a tree's root (`root`) then
+ * the design gate steps, and the production check, byte for byte as the daemon writes the prompt
+ * file. The claim is the rig's: its issue is the root of its tree, or a child under that root.
+ * Throws for an architect in a checkout whose daemon declares no ArchitectAddressing
+ * (`daemonPaneOverlay`). */
 export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
   return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
 }

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The documentation of a claim's role, of an issue's `workers` and of `stepRole` says that the role
+  can also be a role the issue's plan defines in a `plan_role` block. No type or wire shape changed.
+time: 2026-11-23T04:19:36Z
+custom:
+    Issue: pr5160

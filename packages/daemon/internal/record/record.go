@@ -1187,12 +1187,14 @@ type PullRequest struct {
 	// and a read of another head confirms nothing of it.
 	ConflictRead *ConflictRead
 	// MergeForward is the daemon's ask that a role merge the base forward onto a head whose
-	// conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The
-	// issue keeps its phase, and the ask is a message on the topic of the claim that works the
-	// role's step rather than a phase start: it names the head and the base branch of the conflict,
-	// the role asked, the phase the issue stood in and stays in, why the act was needed, when it was
-	// asked, and, once a new head arrives, that head (MergeForward.Landed). It also keeps every
-	// merge forward that landed before it in the same stretch of work (MergeForward.Earlier).
+	// conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands: the
+	// agent of the task's implementation step (the implementer of the default steps) before
+	// merging, and the merger in merging. The issue keeps its phase, and the ask is a message on the
+	// topic of that agent's claim rather than a phase start: it names the head and the base branch of
+	// the conflict, the role asked, the phase the issue stood in and stays in, why the act was
+	// needed, when it was asked, and, once a new head arrives, that head (MergeForward.Landed). It
+	// also keeps every merge forward that landed before it in the same stretch of work
+	// (MergeForward.Earlier).
 	//
 	// Who writes it: Engine.mergeForward, in the transaction that queues the merge_forward rows,
 	// and pullRequestSynchronized, which sets Landed on the first head that moves off
@@ -1238,25 +1240,33 @@ type ConflictRead struct {
 }
 
 // MergeForward is the daemon's ask that a role merge Base forward onto Head
-// (PullRequest.MergeForward). Role is the role asked: the implementer before merging, and the
-// merger in merging (MergeForwardAsker, cybermonklabs/legion#4979); Asked reads it. Phase is the phase
-// the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
-// held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
-// first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
-// landing asked the reviewer to read the merge, which it does when the reviewer step of the
-// issue's task already ran (workflow's mergeForwardLanded), and which the merger's task and its
-// landed message read. Earlier is every merge forward that landed before this ask in the same
-// stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
-// merge left conflicts in its turn and is merged forward again, Earlier is what still names the
-// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
-// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
-// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
-// empty.
+// (PullRequest.MergeForward). Role is the role asked: the role of the task's implementation step
+// (the implementer on today's steps) before merging, and the merger in merging (MergeForwardAsker,
+// cybermonklabs/legion#4979); Asked reads it. Phase is the phase the issue stood in when the
+// daemon asked, and stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374
+// R0, ConflictWhy). Own is whether the ask was made while the task stood at the implementation
+// step itself (workflow's mergeForward): implementing on today's steps, or a step of the type
+// implementation under another role's name, where the work the conflict needs already is. Such an
+// ask sends no hold and no notice, tells its agent that its own assignment and its completion
+// stand (MergeForwardMessage.Message), and covers that step alone: once the task stands elsewhere
+// at the same head, the ask is made again, with the hold and the notice. AskedAt is when the ask
+// was written. Landed is the first new head that arrived after the ask, "" until one does;
+// ReviewAsked is whether that landing asked the reviewer to read the merge, which it does when the
+// reviewer step of the issue's task already ran (workflow's mergeForwardLanded), and which the
+// merger's task and its landed message read. Earlier is every merge forward that landed before
+// this ask in the same stretch of work, oldest first: a later ask replaces the one the record
+// holds, so when the head a merge left conflicts in its turn and is merged forward again, Earlier
+// is what still names the head the first merge replaced (PullRequest.MergeForward says how long
+// the stretch lasts). It is stored as the jsonb of pull_requests.merge_forward (migration
+// 20261119003157), null for nil; the jsonb takes Earlier, Role and Own with no migration of their
+// own, and leaves each out while it is empty. Migration 20261125114800 marks Own on each ask the
+// release before recorded in implementing.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
 	Role        claim.Role           `json:"role,omitempty"`
 	Phase       phase.Phase          `json:"phase"`
+	Own         bool                 `json:"own,omitempty"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
@@ -1309,7 +1319,10 @@ const (
 // in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
 // the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
 // the task at the implementer's place, or a place after it on the task's line). The ask's row goes to it
-// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role). Before merging the
+// workflow asks the agent of the task's implementation step (workflow's implementationAgent),
+// which is the implementer on today's steps and can be a role of the type implementation under
+// another name, which a phase alone does not tell; this answers the implementer there.
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
 		return claim.RoleMerger
@@ -2431,10 +2444,16 @@ type Store interface {
 	// attributes and keeps where it stands (MoveTask, StopTask, PutReturnCounts); the steps of
 	// each task it gives are its steps alone.
 	PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error
-	// Plan is the plan of issue at generation: its highest version, every task and every step.
-	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
-	// no plan reached yet.
+	// PutPlanRoles writes the roles version of the plan of issue at generation defines over every
+	// role that generation holds: a role the version does not define is gone, and nil leaves none.
+	PutPlanRoles(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, roles []PlanRole) error
+	// Plan is the plan of issue at generation: its highest version, every task, every step and
+	// every role it defines. nil where the generation has no plan rows: an issue that ran before
+	// plans, and a generation no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// PlanRoleOf is the role named role that the plan of issue defines at the issue's current
+	// generation, and false, with no error, where it defines none of that name.
+	PlanRoleOf(ctx context.Context, tx pgx.Tx, issue, role string) (PlanRole, bool, error)
 	// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its
 	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
 	// agents from.
@@ -2459,11 +2478,11 @@ type Store interface {
 	// whose giver is an architect of the issue's tree now (ArchitectOfTree), each carried copy
 	// among them: the plans a first step of an issue whose group takes none passes over.
 	PlansOfOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
-	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
-	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
-	// no plan rows.
+	// CarryPlan copies the plan of issue at from to to, with every role it defines: with carried,
+	// each task where it stands; without, each task waiting at no act with its counts at 0. It
+	// writes nothing where from has no plan rows.
 	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
-	// DeletePlan deletes the plan of issue at generation from its three tables.
+	// DeletePlan deletes the plan of issue at generation from its four tables.
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
 	// DeleteTasks deletes each of tasks, waiting or stopped, with its steps.
 	DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error

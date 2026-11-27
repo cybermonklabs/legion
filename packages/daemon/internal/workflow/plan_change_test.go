@@ -351,7 +351,7 @@ func runningRefusal() *intake.Refusal {
 
 // A later version changes only a task that waits or is stopped. While
 // task a runs, a version that changes its steps, or only its text, is refused naming a, and writes
-// nothing. A version that leaves a's block as it is, and changes only the prose outside it, is
+// nothing. A version that leaves a's block as it is, and changes only the prose outside the task and role blocks, is
 // taken, a goes on at its step, and the run's plan node is written again at that version. A
 // version at or below the one in force, and a version of another document, are refused. A version
 // given while a is stopped that leaves its block as it is
@@ -379,8 +379,8 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		assertPlanRefusal(t, pool, engine, key, gen, id,
 			apply(id, ownersPlan(t, key, gen, 3, givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer"))), runningRefusal(), before)
 
-		// The control: the same block, with only the prose outside it changed, which no
-		// plan.Plan holds, is taken, and a goes on at its step.
+		// The control: the same block, with only the prose outside the task and role blocks
+		// changed, which no plan.Plan holds, is taken, and a goes on at its step.
 		mustTake(t, "version 4 with a's block as it is", apply(planID(key, gen, 4), ownersPlan(t, key, gen, 4, built)))
 		kept := planStandingOf(t, pool, engine, key, gen)
 		if !reflect.DeepEqual(kept.versions, []string{"1 owner", "4 owner"}) {
@@ -812,8 +812,8 @@ func firstStep(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return engine.StartFirstPhase(ctx, tx, issue, nil) })
 }
 
-// planRowsOf is how many rows of key each of the three plan tables holds, of every generation:
-// issue_plans, plan_tasks and plan_steps.
+// planRowsOf is how many rows of key three of the four plan tables hold, of every generation:
+// issue_plans, plan_tasks and plan_steps (it does not count plan_roles).
 func planRowsOf(t *testing.T, pool *pgxpool.Pool, key string) [3]int {
 	t.Helper()
 	var rows [3]int

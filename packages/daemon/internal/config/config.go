@@ -288,6 +288,9 @@ type Config struct {
 	// (runtime.tmux.pi_config_files, or runtime.kubernetes.pod.env's PI_CONFIG_FILES); a role it
 	// leaves out names those alone. Nil while the file names none.
 	RoleConfigFiles map[claim.Role][]string
+	// Models is `models`: the models a role an owner's plan defines may name, in the file's order.
+	// Nil while the file names none.
+	Models []string
 	// WorkerStallBackstops is `worker_stall_backstop_hours`: how long after a role's recorded
 	// last step the daemon ends the turn that step belongs to itself, by role, 0 being the
 	// backstop off for that role (INFRA-1274). A role the file leaves out is not here and runs
@@ -319,6 +322,8 @@ type Config struct {
 	// a project still sets such a key (readProject's `deploys`): the key is accepted and warned
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
+	// One line also names each step of a project's `default_steps` whose key names one agent on two
+	// models or two harnesses (checkDefaultSteps), which this release takes and the next refuses.
 	// `legion start` logs each before any other work this boot does with the configuration, and
 	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
@@ -495,6 +500,7 @@ type fileConfig struct {
 	RoleTypes                []plan.Type
 	WorkerBackends           map[claim.Role]runtime.Backend
 	RoleConfigFiles          map[claim.Role][]string
+	Models                   []string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
 	LeakCheck                *fileLeakCheck
@@ -1234,7 +1240,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		cfg.Capabilities = *file.Capabilities
 	}
 	cfg.WorkerBackends = file.WorkerBackends
-	cfg.RoleConfigFiles = file.RoleConfigFiles
+	cfg.RoleConfigFiles, cfg.Models = file.RoleConfigFiles, file.Models
 	if err := checkRoleConfigFiles(cfg); err != nil {
 		return Config{}, err
 	}
@@ -1265,7 +1271,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)
 	// Every key whose names it judges is set by now.
-	if err := checkDeploymentRoleKeys(cfg); err != nil {
+	if err := checkDeploymentRoleKeys(&cfg); err != nil {
 		return Config{}, err
 	}
 	if cfg.Runtime.Name == "kubernetes" {

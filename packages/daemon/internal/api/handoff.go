@@ -54,8 +54,9 @@ import (
 // the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
 // plugin sends one. ReturnTo is the step of the issue's running task that a failed
-// step names as the one its task returns to, by its place in the task, 1 for its first: only
-// the completion of a tester or of a role of the deployment with the verdict fail names one (returnToRefusal), and it is a pointer for
+// step names as the one its task returns to, by its place in the task, 1 for its first: only a
+// completion with the verdict fail names one, a tester's or a role's of the deployment or of the
+// issue's plan (returnToRefusal), and it is a pointer for
 // the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
 // Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
 type HandoffCompleteRequest struct {
@@ -197,11 +198,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			grant.Issue, whose))
 		return
 	}
-	// A role the deployment defines reports its step as a tester does: with the verdict pass or
-	// fail and the commit it read, and with no handoff record (the phase step ends with none). The
-	// rules read the role the grant's claim holds, never the settings: a role outside Legion's six
-	// is a role of the deployment, whichever agent's claim, named for that role or keyed and on a
-	// step of it, holds it.
+	// A role the deployment or the issue's plan defines reports its step as a tester does: with the
+	// verdict pass or fail and the commit it read, and with no handoff record (the phase step ends
+	// with none). The rules read the role the grant's claim holds, never the settings or the plan: a
+	// role outside Legion's six is a role of the deployment or of the issue's plan, whichever agent's
+	// claim, named for that role or keyed and on a step of it, holds it.
 	deploymentRole := claim.IsDeploymentRole(grant.Role)
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger || deploymentRole) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
 		return
@@ -215,11 +216,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		return
 	}
 	if grant.Role != claim.RoleTester && !deploymentRole && req.Verdict != "" {
-		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester or a role of the deployment reports a verdict")
+		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester, a role of the deployment or a role of the issue's plan reports a verdict")
 		return
 	}
-	// The step a failed step's task returns to is named by a fail alone, the tester's or a role of
-	// the deployment's (returnToRefusal), refused here on every other completion before anything is
+	// The step a failed step's task returns to is named by a fail alone, the tester's or a role's of
+	// the deployment or of the issue's plan (returnToRefusal), refused here on every other completion before anything is
 	// read or recorded.
 	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
@@ -492,8 +493,9 @@ func completionWho(grant credential.Grant) string {
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
 // names none or names one it may. failsAStep is whether the completion fails a step (the verdict
-// fail of a tester or of a role of the deployment, the roles VERDICT_ROLE_FORBIDDEN leaves a
-// verdict to), and what names the completion in a refusal. Every refusal is a 400 its caller
+// fail of a tester or of a role of the deployment or of the issue's plan, the roles
+// VERDICT_ROLE_FORBIDDEN leaves a verdict to), and what names the completion in a refusal. Every
+// refusal is a 400 its caller
 // writes before anything is recorded, so the same completion sent again, corrected, is taken:
 //
 //   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.

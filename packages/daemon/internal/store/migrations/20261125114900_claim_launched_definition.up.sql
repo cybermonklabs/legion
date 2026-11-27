@@ -1,0 +1,36 @@
+-- 20261125114900_claim_launched_definition.up.sql — the definition of a plan's role that the
+-- process a claim records was launched with, and the generation that launch ran at.
+--
+-- claims.launched_definition is supervise.Claim.LaunchedDefinition: the fingerprint of the
+-- definition of a plan's role (its type, its model and its prompt) that the launch of the claim's
+-- recorded process was built for (runtime.SpawnSpec.RoleDefinition), and '' for a launch of a role
+-- no plan defines. claims.launched_generation is supervise.Claim.LaunchedGeneration: the claim's
+-- generation at that launch. The write that records the process writes both (supervise's
+-- launchNow), and the let-go of the process clears both, so the start of a later step compares the
+-- definition with the definition of the plan in force after a restart as well as before one
+-- (internal/daemon's roleDefinitionChanged): a version of the plan taken while the process came
+-- up, after its launch was built, is told from one taken before the launch, and a process of an
+-- unchanged definition is not relaunched. The definition is the process's only while the claim's
+-- generation is launched_generation: a launch of a release that keeps neither column writes the
+-- claim's next generation and leaves both as they stood, and its process is read as running no
+-- plan's definition.
+--
+-- Every existing row takes '' and 0: no release before this one launched a role of a plan, so no
+-- process such a release started runs a plan's definition, which is what '' says, and no claim's
+-- generation is 0 once it has launched, so 0 names no launch of this release.
+--
+-- The release before names no such column: its writes of a claim leave both as they stand and its
+-- reads skip them. There is no down file. This directory keeps none — migrations here are
+-- forward-only and no .down.sql file exists — so the way back is the one transaction that closes
+-- this header, its last paragraph (migrations.WayBack), run before the release before starts,
+-- through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. It drops both columns and deletes this
+-- migration's version row, so the roll-forward adds them again with '' and 0 on every row: a
+-- process the release before launched in between is read as running no plan's definition, and the
+-- start of its role's next step relaunches it where the plan in force defines that role.
+--
+-- begin;
+-- alter table claims drop column launched_definition, drop column launched_generation;
+-- delete from schema_version where version = 20261125114900;
+-- commit;
+alter table claims add column launched_definition text not null default '',
+	add column launched_generation bigint not null default 0;

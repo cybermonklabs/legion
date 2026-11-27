@@ -210,7 +210,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	opts := reads.opts
 	opts.RoundPodEnds = p.launchRounds.ends
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left,
-		opts.DeploymentApps, o.githubAPI, p.memoryGuardKills, p.volumeReports)
+		o.githubAPI, p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -344,7 +344,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
 // credential is the launch's Dispatch credential (readBoot): the bearer dispatch_token_file holds,
 // or under dispatch_token_broker the role's own trade (sandbox.DispatchCredential.Broker) and the
-// transition token.
+// transition token. The Options' RoleApps holds the deployment's roles alone, which `legion
+// probe-boot` reads for the pod's issue roles (ProbeBoot); the factory replaces it with the boot's
+// one reader of a claim's App (roleApps), which holds the same roles and reads a role of an
+// issue's plan too.
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, credential sandbox.DispatchCredential, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {
@@ -397,7 +400,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,
 		Tools:                   workerImageTools,
 		Pod:                     sandbox.Pod(k.Pod),
-		DeploymentApps:          deploymentApps(cfg.Roles),
+		RoleApps:                appauth.RoleApps{Deployed: deploymentApps(cfg.Roles)},
 		RoleConfigFiles:         cfg.RoleConfigFiles,
 		ProviderKeys:            providerSecretKeys(cfg.ProviderKeys),
 		LaunchSecrets:           launchSecretNames(cfg, lookup),
@@ -588,10 +591,11 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, minted as the App the role acts as, deployed naming the App of each
-// role the deployment defines, a directory for each owner the role's App is installed on, read
-// from GitHub at every bundle, and one for each owner a configured rename moved a repository away
-// from while served answers the name it moved to is served), with the
+// bundle (gitHubCredential, minted as the App the role acts as, roleApps, the boot's one reader of
+// a claim's App, naming the App of each role the deployment defines and reading, from the store, a
+// role the plan of a claim's issue defines, a directory for each owner the role's App is
+// installed on, read from GitHub at every bundle, and one for each owner a configured rename
+// moved a repository away from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
 // and the directory set those directories are compared with (appauth.GitHubDirs), which the
@@ -625,10 +629,13 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // errVolumeReportsUnbound, which the launcher session logs.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut,
-	deployed appauth.DeploymentApps, githubAPI string, kills *memoryGuardKills, reports *volumeTrimReports) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+	githubAPI string, kills *memoryGuardKills, reports *volumeTrimReports) runtimeFactory {
+	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source, roleApps appauth.RoleApps,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
+		// The boot's one reader of a role's App, which the credential and each walk's memo of
+		// bundles read alike: the deployment's roles, and a role of an issue's plan from the store.
+		opts.RoleApps = roleApps
 		// Each role's start in a pod whose Sandbox owns the issue's kept volume records that pod
 		// with its volume, which the issue's update round reads, and no role starts there until
 		// it is recorded.
@@ -660,7 +667,7 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 			// every launch's addressing reads its role's App's owners out of beside the drift
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, deployed, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, opts.RoleApps, opts.Log)
 			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)

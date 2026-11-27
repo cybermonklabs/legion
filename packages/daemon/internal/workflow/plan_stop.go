@@ -80,7 +80,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 
 // StoppedStepRole is the role whose process the stop of issue's task stopped (stopTask's
 // step_stop): the role that works the step a task-stopped hold is from (record.Issue.RoleAt, at
-// step the role of the deployment that runs it), and no role for an issue held for any other
+// step the role of the deployment or of the issue's plan that runs it), and no role for an issue held for any other
 // reason or not held, for a stop at a phase no role works, and for a stop at accepting, whose
 // architect is the owner itself and runs no process of Legion's for the step. That role starts
 // again only when its task does: a later version of the plan that starts the task again, or a

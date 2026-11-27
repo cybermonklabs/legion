@@ -838,7 +838,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
 	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger, or a role of this deployment; "+
+		"role must be one of architect, planner, implementer, tester, reviewer, merger, a role of this deployment, or a role of the issue's plan; "+
 			"the project's controller is none of them, and its own claim takes no fresh session")
 }
 

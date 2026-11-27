@@ -160,9 +160,9 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 	first, second := "first", "second"
 	lease.Store(&first)
 	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}), withOptions(func(o *Options) {
-		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			app := string(role)
-			if acting, err := appauth.AppRoleFor(role, nil); err == nil {
+			if acting, err := appauth.AppRoleFor(role, nil, appauth.Planned{}); err == nil {
 				app = string(acting)
 			}
 			owner := strings.ToLower(repo.Owner())
@@ -173,7 +173,7 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 				"acme": ghconfig.Render("ghs_"+app+"_"+*lease.Load()+"_read", app, staticCredentialExpiry),
 				owner:  ghconfig.Render("ghs_"+app+"_"+*lease.Load(), app, staticCredentialExpiry),
 			}}, nil
-		}
+		})
 	}))
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	slot := roleSecretName(loc.Sandbox.Name, "implementer-2")
@@ -262,7 +262,7 @@ func TestASlotWithNoClaimHoldsTheAppOfItsNameOnlyWhereItsNameIsARole(t *testing.
 	if err != nil || role != want {
 		t.Fatalf("the slot implementer-2, in which a claim of the implementer runs, holds the App of %q (err %v), want %q", role, err, want)
 	}
-	if app, err := appauth.AppRoleFor(role, g.r.deploymentApps); err != nil || app != appauth.Implement {
+	if app, err := g.r.roleApps.Of(g.ctx, childIssue, role); err != nil || app != appauth.Implement {
 		t.Errorf("the role %q of the slot implementer-2 acts as the App %q (err %v), want the implement App", role, app, err)
 	}
 }

@@ -41,8 +41,9 @@ export interface CollaboratorSections {
 
 export function collaboratorSections(collaborators: IssueCollaborators): CollaboratorSections {
   /** Whether this row is held by a role of an issue, which is what puts it in a Legion section:
-   *  one of the six or a role the deployment defines (`isStepRole`). A row with no Legion record,
-   *  and one naming a role outside that grammar, both belong to `others`. */
+   *  one of the six, a role the deployment defines or a role the issue's plan defines
+   *  (`isStepRole`). A row with no Legion record, and one naming a role outside that grammar, both
+   *  belong to `others`. */
   const known = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
     agent.legion !== null && isStepRole(agent.legion.role);
   // The document types every list as nullable, though this handler always sends `[]`.

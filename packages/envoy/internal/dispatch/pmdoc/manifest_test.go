@@ -280,9 +280,10 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4 and 5 add each have a row of their own
+// elements versions 4, 5 and 10 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
-// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour).
+// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
+// TestTheTypedBlockVersionTenAddsIsUnknownToABuildAtVersionNine).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -415,6 +416,66 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored plan task carrying steps = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// The plan_role block, which manifest version 10 adds (a role a plan defines: the block's id is the
+// role's name, its type and model attributes are the role's type and model, and its body, in
+// Markdown, is the role's prompt), is staged by its own numbers: this build reads and writes it,
+// with the headings, lists and code a prompt holds, and a build at the version before declares no
+// plan_role, so it creates none and reads a stored document holding one as an element it does not
+// know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT), while it still reads a plan task
+// carrying steps. This manifest adds nothing at versions 6 to 9.
+func TestTheTypedBlockVersionTenAddsIsUnknownToABuildAtVersionNine(t *testing.T) {
+	const adds = 10
+	element := Element{Kind: TypedBlockElement, Name: "plan_role"}
+	versions, declared := element.Versions()
+	if !declared || versions.Since != adds || versions.CreatableSince != adds {
+		t.Fatalf("typed block plan_role = %+v, %t; want since and creatable_since %d", versions, declared, adds)
+	}
+	if SchemaVersion() < adds {
+		t.Fatalf("SchemaVersion() = %d, below the version %d that adds plan_role", SchemaVersion(), adds)
+	}
+	const markdown = ":::plan_role{#prober type=\"testing\" model=\"listed-model\"}\n# Prober\n\nProbe the change.\n\n- one\n- two\n:::\n"
+	stored, err := Parse(markdown)
+	if err != nil {
+		t.Fatalf("this build reads a plan_role whose body holds a heading and a list: %v", err)
+	}
+	if _, err := ParseForWrite(markdown, nil); err != nil {
+		t.Fatalf("this build writes a plan_role whose body holds a heading and a list: %v", err)
+	}
+	if len(stored.Children) != 1 || stored.Children[0].Type != "plan_role" {
+		t.Fatalf("Parse(%q) = %+v, want one plan_role block", markdown, stored.Children)
+	}
+	role := stored.Children[0]
+	if role.Attrs[BlockIDAttr] != "prober" || role.Attrs["type"] != "testing" || role.Attrs["model"] != "listed-model" {
+		t.Fatalf("the plan_role block reads attributes %+v, want id prober, type testing and model listed-model", role.Attrs)
+	}
+	body := make([]string, len(role.Children))
+	for index, child := range role.Children {
+		body[index] = child.Type
+	}
+	if !slices.Equal(body, []string{"heading", "paragraph", "bullet_list"}) {
+		t.Fatalf("the plan_role block's body = %v, want a heading, a paragraph and a list", body)
+	}
+
+	before := adds - 1
+	restore, err := UseManifestForTest(manifestAsOf(t, before))
+	if err != nil {
+		t.Fatalf("install the manifest as of version %d: %v", before, err)
+	}
+	t.Cleanup(restore)
+	if IsTypedBlock("plan_role") {
+		t.Errorf("a build at version %d declares typed block plan_role, which version %d adds", before, adds)
+	}
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "plan_role") {
+		t.Errorf("a build at version %d writing a plan_role = %v, want ErrUnknownElement naming it", before, err)
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+		t.Errorf("a build at version %d reading a stored plan_role = %v, want ErrUnknownElement", before, err)
+	}
+	if _, err := Parse(":::plan_task{#b-t1 steps=\"implementer reviewer\"}\nBody.\n:::\n"); err != nil {
+		t.Errorf("a build at version %d reading a plan task carrying steps = %v, want no error", before, err)
 	}
 }
 

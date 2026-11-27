@@ -173,8 +173,9 @@ type GitHubApp struct {
 }
 
 // GitHubApps holds the two App identities Legion needs: the implement App acts for the implementer,
-// the merger and each role of the deployment whose github_app is implement, the review App for
-// every other role, so Legion's reviewer never reviews as the account that wrote the change.
+// the merger, each role of the deployment whose github_app is implement and each role of an
+// issue's plan of the type implementation, the review App for every other role, so Legion's
+// reviewer never reviews as the account that wrote the change.
 type GitHubApps struct {
 	Implement GitHubApp
 	Review    GitHubApp

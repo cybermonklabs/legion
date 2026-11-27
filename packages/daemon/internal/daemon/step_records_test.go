@@ -241,10 +241,15 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from plan_tasks where issue = $1`, r.key).Scan(&tasks); err != nil || tasks != 1 {
 		t.Fatalf("at the rollback %s holds %d plan tasks (%v), want its one task default: a way back that drops nothing proves nothing", r.key, tasks, err)
 	}
-	// The witness the step records' way back keeps reads one phases row of each role
-	// (step_run_witness), so the step key's way back, which keeps one, runs first: this issue has one
-	// row of each role, but the database is the whole run's, whose other issues can hold a role at
-	// two steps.
+	// While the key by step stands a role can hold a phases row at each of two steps, and the
+	// step records' way back reads one row of each role (step_run_witness). The run's database
+	// can hold such a role on another issue, so this issue's implementer is given an earlier entry
+	// at another step too, and the order of the way backs is held here rather than left to what
+	// else the database holds. The step key's way back keeps the row of each role with the
+	// highest entry, so the walk's own row is the one that stands after it.
+	r.exec(`insert into phases select (jsonb_populate_record(null::phases, to_jsonb(p) ||
+		jsonb_build_object('entry', p.entry - 1, 'step_place', p.step_place + 100))).*
+		from phases p where p.issue = $1 and p.role = 'implementer'`, r.key)
 	r.rollBackStepKey()
 	r.rollBackStepRecords()
 	// The way back keeps the moment of the rollback beside the issue's witness, and the roll forward
@@ -408,13 +413,16 @@ func (r *stepRecordsRig) rollBackStepKey() {
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
 // the plan's tables and columns, so the roll forward creates them again empty. The way back of the
-// key of a phases row by its step runs before it (rollBackStepKey), and so does that of the name of
-// each step's agent (planStepAgentMigration), as the guide's list says: that migration adds a
-// column to plan_steps, and left recorded, its version would keep the roll forward from adding the
-// column to the plan_steps it creates again, and every later write of a plan would fail.
+// key of a phases row by its step runs before it (rollBackStepKey), and so do those of two later
+// migrations, newest first, as the guide's list and their headers say. The name of each step's
+// agent (planStepAgentMigration) adds a column to plan_steps: left recorded, its version would
+// keep the roll forward from adding the column to the plan_steps it creates again, and every later
+// write of a plan would fail. The roles a plan defines (planRolesMigration) are a table whose
+// foreign key stands on issue_plans, and the drop of issue_plans is refused while that table
+// stands.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
-	for _, name := range []string{planStepAgentMigration, inFlightPlanMigration} {
+	for _, name := range []string{planStepAgentMigration, planRolesMigration, inFlightPlanMigration} {
 		r.exec(strings.ReplaceAll(r.headerTransaction(name), "<PROJECT>", r.cfg.Project))
 	}
 }

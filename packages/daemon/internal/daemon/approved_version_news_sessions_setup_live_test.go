@@ -600,7 +600,7 @@ func (r *sessionsRun) boot() {
 	r.daemon = newRecordingLog(r.log())
 	o := r.rt.daemonOverrides(&sessionsRuntime{localRuntime: r.rt, launchable: r.launchable})
 	wired := o.runtime
-	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source, roleApps appauth.RoleApps,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		// The boot snapshotted the prompts before it builds the runtime (prompts.New, in the
 		// plan), and no pane starts before the runtime exists.
@@ -609,7 +609,7 @@ func (r *sessionsRun) boot() {
 				return nil, err
 			}
 		}
-		return wired(ctx, listener, address, apps, repository, st, cached)
+		return wired(ctx, listener, address, apps, roleApps, repository, st, cached)
 	}
 	o.workflowTokens = &workflowTokenRecorder{}
 	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.daemon), 2*time.Minute)

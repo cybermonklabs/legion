@@ -253,3 +253,58 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
     "bun test web/src"
   );
 });
+
+// A plan role's id is the role's name: the word a plan task's `steps` names it by. The header
+// showed the block's type and its `type` and `model`, but not the id, so a reader of the plan
+// could not tell which role a block defines.
+const planRoleSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    text: { group: "inline" },
+    plan_role: {
+      attrs: { blockId: { default: null }, model: { default: "" }, type: { default: "" } },
+      content: "block+",
+      group: "block",
+    },
+  },
+});
+
+const planRoleType: BlockTypeSchema = {
+  attributes: {
+    model: { default: "", kind: "string" },
+    type: { default: "", kind: "string" },
+  },
+  content: "block+",
+  name: "plan_role",
+  render: "host",
+};
+
+test("a plan role's header names the role, its block's id, beside the block's type", () => {
+  const node = planRoleSchema.node(
+    "plan_role",
+    { blockId: "prober", model: "prober-model", type: "testing" },
+    [planRoleSchema.node("paragraph", undefined, [planRoleSchema.text("Probe the change.")])]
+  );
+  const drawn = DOMSerializer.renderSpec(document, renderTypedBlock(node, planRoleType))
+    .dom as HTMLElement;
+  const header = drawn.querySelector("[data-proof-block-summary]");
+
+  // The block's type, then the role's name as the header's own text, then its attributes.
+  expect(Array.from(header?.children ?? [], (child) => child.tagName.toLowerCase())).toEqual([
+    "span",
+    "span",
+    "dl",
+  ]);
+  expect(header?.children[0]?.textContent).toBe("plan_role");
+  expect(header?.children[1]?.textContent).toBe("prober");
+  expect(header?.children[1]?.hasAttribute("data-proof-block-title")).toBe(true);
+  expect(header?.querySelector('dd[data-proof-block-attribute="type"]')?.textContent).toBe(
+    "testing"
+  );
+  expect(header?.querySelector('dd[data-proof-block-attribute="model"]')?.textContent).toBe(
+    "prober-model"
+  );
+  // The name is no attribute the author set, so it is not drawn as one.
+  expect(header?.textContent).not.toContain("blockId");
+});

@@ -65,12 +65,12 @@ func TestAHandedOverOrphanKeepsItsPlan(t *testing.T) {
 	carried.Generation = 2
 	carriedTask := task
 	carriedTask.Generation = 2
-	want := &record.StoredPlan{Version: carried, Tasks: []record.PlanTask{carriedTask}, Steps: map[string][]record.PlanStep{}}
+	want := &record.StoredPlan{Version: carried, Tasks: []record.PlanTask{carriedTask}, Steps: map[string][]record.PlanStep{}, Roles: []record.PlanRole{}}
 	for _, step := range steps {
 		step.Generation = 2
 		want.Steps[step.Task] = append(want.Steps[step.Task], step)
 	}
-	old := &record.StoredPlan{Version: version, Tasks: []record.PlanTask{task}, Steps: map[string][]record.PlanStep{"a": steps}}
+	old := &record.StoredPlan{Version: version, Tasks: []record.PlanTask{task}, Steps: map[string][]record.PlanStep{"a": steps}, Roles: []record.PlanRole{}}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		got, err := records.Plan(ctx, tx, child, 2)

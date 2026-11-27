@@ -782,10 +782,10 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester and from a
-// role of the deployment alone (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
+// Every role reads one description, and the daemon accepts a verdict from the tester, a role of
+// the deployment and a role of the issue's plan alone (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
 // from its own instructions that it reports one.
-test("the legion tool's description gives a verdict to the tester or a role of the deployment", () => {
+test("the legion tool's description gives a verdict to the tester, a role of the deployment or a role of the issue's plan", () => {
   const tool = createLegionTool({
     pi,
     daemon: recordingDaemon({}).daemon,

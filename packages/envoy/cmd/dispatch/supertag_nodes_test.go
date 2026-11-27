@@ -120,12 +120,13 @@ const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 // one supertag node for each and no other. Each later change that creates a kind adds it to this
 // list in its own pull request: the change that moves lenses and lens kinds adds `lens_kind`, the
 // change that moves issues and their documents adds `query` and `query version`, the change that
-// moves handoffs adds `handoff`, and the root adds `priority`, `step` and `plan`. The list is
-// written here as the test's own copy, so a seed that adds or drops a name has to be read by a
-// person before this test agrees with it.
+// moves handoffs adds `handoff`, and the root adds `priority`, `step` and `plan`. The type
+// migration 20261125115000_graph_supertags_plan_role adds `plan_role`, the typed block of a role
+// an owner's plan defines. The list is written here as the test's own copy, so a seed that adds or
+// drops a name has to be read by a person before this test agrees with it.
 var closedSupertags = []string{
 	"issue", "document", "document version", "block", "callout", "ask", "requirement",
-	"plan_task", "check", "result", "decision", "reading", "criterion",
+	"plan_task", "plan_role", "check", "result", "decision", "reading", "criterion",
 	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
 }

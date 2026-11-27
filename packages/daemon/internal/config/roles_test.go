@@ -51,10 +51,11 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 		t.Errorf("RoleOf(ghost) = %+v, true; want no role", got)
 	}
 	deployment := cfg.Deployment()
-	if got, want := deployment.Roles["checker"], (plan.RoleDef{Name: "checker", Type: "testing"}); got != want {
+	if got, want := deployment.Roles["checker"], (plan.RoleDef{Name: "checker", Type: "testing", Model: "checker-model", Backend: "omp"}); got != want {
 		t.Errorf("Deployment().Roles[checker] = %+v, want %+v", got, want)
 	}
 	for name, builtin := range plan.BuiltinRoles() {
+		builtin.Backend = "omp"
 		if got := deployment.Roles[name]; got != builtin {
 			t.Errorf("Deployment().Roles[%s] = %+v, want Legion's own %+v", name, got, builtin)
 		}
@@ -70,7 +71,13 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 	if cfg.Roles != nil || cfg.RoleTypes != nil {
 		t.Errorf("a file with no roles reads Roles %v and RoleTypes %v, want both nil", cfg.Roles, cfg.RoleTypes)
 	}
-	if got, want := cfg.Deployment(), (plan.Deployment{Roles: plan.BuiltinRoles()}); !reflect.DeepEqual(got, want) {
+	onOmp := plan.BuiltinRoles()
+	for name, role := range onOmp {
+		role.Backend = "omp"
+		onOmp[name] = role
+	}
+	want := plan.Deployment{Roles: onOmp}
+	if got := cfg.Deployment(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Deployment() of a file with no roles = %+v, want Legion's own roles %+v", got, want)
 	}
 

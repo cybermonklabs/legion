@@ -180,12 +180,14 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 		onClaude: claim.RoleReviewer,
 		backends: map[claim.Role]runtime.Backend{},
 	}
-	// The backends map is the one the API server reads through cfg.BackendFor, and it is empty
+	// The backends map is the one the API server reads through the daemon's roleBackends for a
+	// role the plan of the claim's issue does not define, and it is empty
 	// while the daemon boots: boot resolves Claude Code's binary, its bun and its plugin
 	// directory for every backend the configuration names (the daemon's resolveClaude), and this
 	// pod has no Claude Code to resolve. The role is put on that backend once the daemon is up,
-	// because the refusal under test reads that map and nothing else (api's compact, over
-	// Options.Backend, which the daemon fills from config.Config.BackendFor); the alternative
+	// because the refusal under test reads that map and nothing else for such a role (api's
+	// compact, over Options.Backend, which the daemon fills from roleBackends: the plan of the
+	// claim's issue first, then config.Config.BackendFor); the alternative
 	// would put some other binary on a real resolver's path and claim it is Claude Code. The
 	// map is written after the boot that read it because a Config's WorkerBackends is a map and
 	// every copy of the Config shares it, which is how internal/daemon's own pod-update tests

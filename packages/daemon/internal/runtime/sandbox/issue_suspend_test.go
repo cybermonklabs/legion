@@ -474,7 +474,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfEachSlotOfItsPod(t *testing.T) {
 	g := newRig(t, nil,
 		withOptions(func(o *Options) {
-			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement}
+			o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Implement}
 			keptVolumes(SandboxMicroVM)(o)
 			o.Store.(*fakeStore).plan(childIssue, map[claim.Agent]claim.Role{
 				"implementer": claim.RoleImplementer, "implementer-2": claim.RoleImplementer,

@@ -65,7 +65,9 @@ func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
 }
 
 // The engine's deployment is the file's (config.Config.Deployment): Legion's own roles of a step
-// and each role of `roles`, each with its type, which a step of that role is stored with.
+// and each role of `roles`, each with its type, which a step of that role is stored with where the
+// plan defines no role of its name (the deployment also carries each role's model and harness, the
+// listed models and the owner's role, which this test does not read).
 // The package names its resolved configuration plan, so the types are written as their words.
 func TestTheDeploymentReachesTheEngine(t *testing.T) {
 	t.Parallel()
@@ -137,7 +139,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", dispatch.BearerTransport("dispatch-token", nil), nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now, nil, nil)
+			_, err := openWorkflow(context.Background(), cfg, nil, appauth.RoleApps{}, "project-id", dispatch.BearerTransport("dispatch-token", nil), nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}

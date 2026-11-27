@@ -36,6 +36,8 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   image: "M2 3 h12 v10 h-12 Z M2 11 l4 -4 l3 3 l2 -2 l3 3",
   issue: "M8 1 a7 7 0 1 0 0.01 0 Z",
   message: "M1 4 h14 v8 h-14 Z M1 4 l7 5 l7 -5",
+  /** A plan role: the plan task's frame with a head and shoulders inside it. */
+  "plan-role": "M2 2 h12 v12 h-12 Z M8 4.5 a1.5 1.5 0 1 0 0.01 0 Z M5 12 a3 2.5 0 0 1 6 0",
   "plan-task": "M2 2 h12 v12 h-12 Z M5 8 h6",
   requirement: "M3 1 h10 v14 l-5 -4 l-5 4 Z",
   result: "M8 2 l2 4 l4 1 l-3 3 l1 4 l-4 -2 l-4 2 l1 -4 l-3 -3 l4 -1 Z",

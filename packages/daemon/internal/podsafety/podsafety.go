@@ -35,7 +35,8 @@
 // the image's own directories, and is told neither.
 //
 // Legion writes no settings overlay of its own. A role's PI_CONFIG_FILES is the operator's own
-// overlays with the role's own after them, composed by the runtime that starts the role
+// overlays, then the role's own, then those of each experiment arm its unit was drawn into,
+// composed by the runtime that starts the role
 // (sandbox.roleOperatorEnv in a pod, tmux.panePairs in a pane), and Apply passes the value the pod
 // carries through untouched: a repository's settings reach a pod's agent as they reach any agent
 // session, under the operator's, and nothing of Legion's outranks either.
@@ -94,8 +95,9 @@ func Variables() []Variable {
 
 // Apply is environ as a pod's Oh My Pi starts with it: each baseline variable set where environ
 // leaves it unset or empty, and nothing else. PI_CONFIG_FILES rides through as the pod carries it,
-// the operator's overlays and the role's own, already composed by the runtime that starts the
-// role, and no file is written anywhere, since Legion names no settings overlay of its own.
+// the operator's overlays, the role's own and its experiment arms', already composed by the runtime
+// that starts the role, and no file is written anywhere, since Legion names no settings overlay of
+// its own.
 func Apply(environ []string) []string {
 	out := make([]string, 0, len(environ)+len(baseline))
 	set := map[string]bool{}

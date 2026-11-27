@@ -742,7 +742,8 @@ type stepClaimant struct {
 	prompts   chan shimwire.Prompt
 	mu        sync.Mutex
 	// model is the model the agent's answers name, as Oh My Pi's message_end names it: the model
-	// its launch's spec named (runtime.SpawnSpec.Model, a role of the deployment's own model), and
+	// its launch's spec named (runtime.SpawnSpec.Model: a role of the deployment's own model, or the
+	// model a role of the issue's plan names), and
 	// stepRecordsModel for a launch that named none, until its test gives the agent another.
 	model string
 	// sh is the shim's connection to the daemon now running, which a restart replaces.

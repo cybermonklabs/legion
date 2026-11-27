@@ -93,7 +93,7 @@ func TestADeploymentRoleReportsWithAVerdictAndACommit(t *testing.T) {
 			text: "phase step of LEGION-208 ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing"},
 		{name: "fail naming returnTo 1", role: "checker", req: HandoffCompleteRequest{Summary: "a gap", Verdict: "fail", Commit: headSHA, ReturnTo: &one}, status: http.StatusOK},
 		{name: "a reviewer's verdict", role: claim.RoleReviewer, req: HandoffCompleteRequest{Summary: "looked", Verdict: "pass", Commit: headSHA},
-			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", text: "only a tester or a role of the deployment reports a verdict"},
+			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", text: "only a tester, a role of the deployment or a role of the issue's plan reports a verdict"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _, facts := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,

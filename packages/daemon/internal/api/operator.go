@@ -304,7 +304,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // that records no issues — and its caller starts such a claim another way.
 //
 //   - an issue held for that worker's own role (record.Issue.RoleAt of the phase it is held from,
-//     which at step is the role of its running step, a role the deployment defines) is
+//     which at step is the role of its running step, a role the deployment or the issue's plan defines) is
 //     retried as its architect's retry_or_escalate retries it (intake.RetryOrEscalate): the phase
 //     it was held from comes back, and its role is started on it;
 //   - an issue standing in that worker's own phase has that phase started again

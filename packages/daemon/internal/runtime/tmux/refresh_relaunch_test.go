@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -47,7 +48,7 @@ func TestARefreshOfALetGoPaneLeavesTheRelaunchsBundle(t *testing.T) {
 				r.launchMu.Lock()
 				defer r.launchMu.Unlock()
 				r.untrack(old)
-				bundle, err := staticCredential(ctx, claim.RoleTester, repo)
+				bundle, err := staticCredential(ctx, "", claim.RoleTester, repo)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -58,13 +59,13 @@ func TestARefreshOfALetGoPaneLeavesTheRelaunchsBundle(t *testing.T) {
 			}
 			r = &Runtime{
 				stateDir: t.TempDir(),
-				gitHubCredential: func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+				gitHubCredential: appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 					if refreshing && tc.interleave && !interleaved {
 						interleaved = true
 						relaunch()
 					}
-					return staticCredential(ctx, role, repo)
-				},
+					return staticCredential(ctx, issue, role, repo)
+				}),
 				controllerCredential: staticControllerCredential,
 				claimRepository:      acmeWidgets,
 				log:                  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -72,7 +73,7 @@ func TestARefreshOfALetGoPaneLeavesTheRelaunchsBundle(t *testing.T) {
 				writeBundle:          ghconfig.WriteBundle,
 			}
 			// The claim's first pane, launched as the implementer, with the implementer's bundle.
-			first, err := staticCredential(ctx, claim.RoleImplementer, repo)
+			first, err := staticCredential(ctx, "", claim.RoleImplementer, repo)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +128,7 @@ func TestARelaunchAtTheMomentOfARefreshsWriteWaitsForItAndWritesLast(t *testing.
 	t.Cleanup(release)
 	r := &Runtime{
 		stateDir:             stateDir,
-		gitHubCredential:     staticCredential,
+		gitHubCredential:     appauth.CredentialOf(staticCredential),
 		controllerCredential: staticControllerCredential,
 		claimRepository:      acmeWidgets,
 		log:                  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -140,7 +141,7 @@ func TestARelaunchAtTheMomentOfARefreshsWriteWaitsForItAndWritesLast(t *testing.
 		},
 	}
 	dir := runtime.GHConfigDir(r.stateDir, keyed)
-	first, err := staticCredential(ctx, claim.RoleImplementer, repo)
+	first, err := staticCredential(ctx, "", claim.RoleImplementer, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +168,7 @@ func TestARelaunchAtTheMomentOfARefreshsWriteWaitsForItAndWritesLast(t *testing.
 		}
 		defer r.launchMu.Unlock()
 		r.untrack(old)
-		bundle, err := staticCredential(ctx, claim.RoleTester, repo)
+		bundle, err := staticCredential(ctx, "", claim.RoleTester, repo)
 		if err == nil {
 			_, err = ghconfig.WriteBundle(dir, bundle)
 		}

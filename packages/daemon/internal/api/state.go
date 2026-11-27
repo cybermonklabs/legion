@@ -772,7 +772,8 @@ type Issue struct {
 	Generation uint64      `json:"generation"`
 	Phase      phase.Phase `json:"phase"`
 	// StepRole is the role that works the issue's running step where the issue stands at step or
-	// its hold took it out of step (record.Issue.StepRole): a role of the deployment, which no
+	// its hold took it out of step (record.Issue.StepRole): a role of the deployment or of the
+	// issue's plan, which no
 	// phase names, so the phase alone does not say who works the issue. Absent at every other
 	// phase, whose role the phase names (phase.RoleFor).
 	StepRole string `json:"stepRole,omitempty"`

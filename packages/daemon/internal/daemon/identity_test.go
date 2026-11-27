@@ -54,8 +54,11 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("zeta/tools"), "main", nil
 		},
-		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
-			asked = append(asked, string(appOf(role))+" on "+repository.String())
+		identity: func(_ context.Context, app appauth.AppRole, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
+			if appOf(role) != app {
+				t.Errorf("identity asked for %s as %s, want the App its role resolved to, %s", role, app, appOf(role))
+			}
+			asked = append(asked, string(app)+" on "+repository.String())
 			return bot, nil
 		}}
 	spec, err := s.SpawnSpec(context.Background(), c)
@@ -63,7 +66,7 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		t.Fatalf("SpawnSpec = %q, %v; want zeta/tools, the runtime's to locate the workspace from", spec.Repository, err)
 	}
 	// The claim's own App first, as before the table, then the other App, whose one identity is
-	// all of its roles': the role each is asked with only names its App (workflowRuntime.identity).
+	// all of its roles': each is asked as its App (workflowRuntime.identityAs).
 	want := []string{string(appauth.Implement) + " on zeta/tools", string(appauth.Review) + " on zeta/tools"}
 	if !slices.Equal(asked, want) {
 		t.Errorf("identity asked for the Apps %q, want the claim's own App and then the other App, each on the recorded repository alone, %q: the owner its lease is minted for is identity's own to decide", asked, want)
@@ -81,7 +84,7 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		t.Errorf("the launch's Env = %v, want the six git identity variables and the role identities alone", spec.Env)
 	}
 
-	s.identity = func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
+	s.identity = func(context.Context, appauth.AppRole, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
 		return runtime.GitIdentity{}, errors.New("github_app_not_installed")
 	}
 	if _, err := s.SpawnSpec(context.Background(), c); err == nil || !strings.Contains(err.Error(), "github_app_not_installed") {
@@ -100,7 +103,7 @@ var appIdentities = map[appauth.AppRole]runtime.GitIdentity{
 // appOf is role's own App with no role of a deployment defined (appauth.AppRoleFor), which every
 // role of claim.Roles has.
 func appOf(role claim.Role) appauth.AppRole {
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		panic(err)
 	}
@@ -132,12 +135,12 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 	var asked []appauth.AppRole
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
-		identity: func(_ context.Context, role claim.Role, at ghrepo.Repository) (runtime.GitIdentity, error) {
+		identity: func(_ context.Context, app appauth.AppRole, role claim.Role, at ghrepo.Repository) (runtime.GitIdentity, error) {
 			if at != repository {
 				t.Errorf("identity asked for the %s on %s, want the repository the launch works, %s", role, at, repository)
 			}
-			asked = append(asked, appOf(role))
-			return appIdentities[appOf(role)], nil
+			asked = append(asked, app)
+			return appIdentities[app], nil
 		}}
 	const table = `{"architect":{"name":"legion-review[bot]","email":"8+legion-review[bot]@users.noreply.github.com"},` +
 		`"implementer":{"name":"legion-implement[bot]","email":"9+legion-implement[bot]@users.noreply.github.com"},` +
@@ -189,8 +192,8 @@ func TestALaunchCarriesTheIdentityOfEachRoleOfTheDeployment(t *testing.T) {
 			{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
 		},
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
-		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
-			return appIdentities[appOf(role)], nil
+		identity: func(_ context.Context, app appauth.AppRole, _ claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+			return appIdentities[app], nil
 		}}
 	every := map[claim.Role]runtime.GitIdentity{
 		"checker": appIdentities[appauth.Implement],
@@ -234,9 +237,9 @@ func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) 
 			var logged bytes.Buffer
 			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 				log: slog.New(slog.NewJSONHandler(&logged, nil)),
-				identity: func(_ context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+				identity: func(_ context.Context, app appauth.AppRole, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
 					asked = append(asked, asking)
-					if appOf(asking) == other {
+					if app == other {
 						return runtime.GitIdentity{}, refused
 					}
 					return appIdentities[own], nil
@@ -316,8 +319,8 @@ func TestALaunchWhoseContextEndsDuringTheOtherAppsMintFails(t *testing.T) {
 				var logged bytes.Buffer
 				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 					log: slog.New(slog.NewJSONHandler(&logged, nil)),
-					identity: func(ctx context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
-						if app := appOf(asking); app != own {
+					identity: func(ctx context.Context, app appauth.AppRole, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+						if app != own {
 							during()
 							return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s: %w", app, asking, ctx.Err())
 						}
@@ -402,7 +405,7 @@ func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
 					repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 						return ghrepo.MustParse("zeta/tools"), "main", nil
 					},
-					identity: w.identity, knownIdentity: w.knownIdentity}
+					identity: w.identityAs, knownIdentity: w.knownIdentity}
 				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
 				if err != nil {
 					t.Fatalf("%s: SpawnSpec: %v", name, err)
@@ -457,16 +460,16 @@ func TestALaunchWhoseOwnAppCannotBeMintedFails(t *testing.T) {
 				t.Fatal(err)
 			}
 			var asked []claim.Role
-			var read []claim.Role
+			var read []appauth.AppRole
 			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-				identity: func(_ context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+				identity: func(_ context.Context, app appauth.AppRole, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
 					asked = append(asked, asking)
-					if appOf(asking) == own {
+					if app == own {
 						return runtime.GitIdentity{}, refused
 					}
 					return runtime.GitIdentity{Name: "legion-" + string(asking) + "[bot]", Email: string(asking) + "@users.noreply.github.com"}, nil
 				},
-				knownIdentity: func(reading claim.Role) (runtime.GitIdentity, bool) {
+				knownIdentity: func(reading appauth.AppRole) (runtime.GitIdentity, bool) {
 					read = append(read, reading)
 					return runtime.GitIdentity{Name: "legion-" + string(reading) + "[bot]", Email: string(reading) + "@users.noreply.github.com"}, true
 				}}

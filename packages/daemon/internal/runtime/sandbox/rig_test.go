@@ -102,7 +102,7 @@ func testOptions() Options {
 		ProbeInterval:         time.Hour,
 		AdoptTimeout:          time.Minute,
 		Tokens:                staticTokens{},
-		GitHubCredential:      staticCredential,
+		GitHubCredential:      appauth.CredentialOf(staticCredential),
 		ControllerCredential:  staticControllerCredential,
 		GitHubDirs:            func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
 		Conns:                 fake.NewConns(),
@@ -130,7 +130,7 @@ var staticCredentialExpiry = time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 // defines no role of its own); a role it does not define fails the test.
 func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 	t.Helper()
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 // legionApp is appOf for a helper with no test to fail: it panics on a role the deployment does
 // not define, which only a test of a role Legion does not have reaches.
 func legionApp(role claim.Role) appauth.AppRole {
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		panic(err)
 	}
@@ -164,8 +164,8 @@ func staticOwnerToken(role claim.Role, owner string) string {
 // sjawhar when repo is the zero Repository, which is how staticControllerCredential builds the
 // controller's — holding the role's App's token for that owner (appauth.AppRoleFor), and acme
 // holding acme's own, rendered as gh's files with a fixed expiry; repo's owner is the default.
-func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	app, err := appauth.AppRoleFor(role, nil)
+func staticCredential(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
@@ -185,7 +185,7 @@ func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository
 // it is asked for none, which is what the controller's launch asks for, as
 // appauth.ControllerCredential answers one.
 func staticControllerCredential(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-	bundle, err := staticCredential(ctx, claim.RoleController, ghrepo.Repository{})
+	bundle, err := staticCredential(ctx, "", claim.RoleController, ghrepo.Repository{})
 	if err != nil || defaultOwner == "" {
 		return bundle, err
 	}
@@ -226,17 +226,17 @@ var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), ad
 // owner and never will (movedGhDirs).
 func servingAddedOwner(o *Options) {
 	o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return servedDirs }
-	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		bundle, err := staticCredential(ctx, role, repo)
+	credential := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		bundle, err := staticCredential(ctx, issue, role, repo)
 		if err != nil {
 			return bundle, err
 		}
 		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(legionApp(role)), staticCredentialExpiry)
 		return bundle, nil
 	}
-	o.GitHubCredential = credential
+	o.GitHubCredential = appauth.CredentialOf(credential)
 	o.ControllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		bundle, err := credential(ctx, claim.RoleController, ghrepo.Repository{})
+		bundle, err := credential(ctx, "", claim.RoleController, ghrepo.Repository{})
 		if err != nil || defaultOwner == "" {
 			return bundle, err
 		}
@@ -311,7 +311,7 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 		apps := sourceOf(&namedLeases{}, installedOnServed{repos: listed})
 		o.CacheRepositories = listed
 		o.Tokens = servingTokens{served: served, renames: renames}
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil, nil)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, appauth.RoleApps{}, nil)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)

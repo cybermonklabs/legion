@@ -103,8 +103,9 @@ type Options struct {
 	// named them: what register_gate resolves a registration's step against, and what the
 	// controller secret route answers `legion controller start`. The empty list gates no step.
 	Steps []record.DesignStep
-	// Deployment is the roles a step of this deployment names, each with its type
-	// (config.Config.Deployment): Legion's own and each role of `roles`. register_plan judges a
+	// Deployment is what this deployment gives a plan (config.Config.Deployment): the roles a step
+	// can name, Legion's own and each role of `roles`, each with its type, its model and its
+	// harness, the models the deployment lists and the owner's own role. register_plan judges a
 	// plan against it. A server given none takes Legion's own (plan.BuiltinRoles).
 	Deployment plan.Deployment
 	// ControllerLaunched is the daemon launching the project's controller itself (`controller:
@@ -120,19 +121,23 @@ type Options struct {
 	PluginRelaunchable bool
 	// NoPluginInstall is supervise.Deps.NoPluginInstall as the API sees it: whether this claim's
 	// launch installs no plugin at all, which only the daemon knows, since a role's backend and
-	// the runtime it launches into are its configuration (internal/daemon's noPluginInstall — a
-	// Claude Code role's plugin in a pod is its image's own claude-envoy). Nothing of this
+	// the runtime it launches into are its own (internal/daemon's noPluginInstall: the plan of the
+	// claim's issue decides the backend of a role it defines, Oh My Pi, and `worker_backends` every
+	// other role's — a Claude Code role's plugin in a pod is its image's own claude-envoy). Nothing of this
 	// daemon relaunches such a claim for its contract and its registration stands, so the routes
 	// serve it on the contract it speaks (staleClaim). Nil is a daemon whose every claim a
-	// relaunch can carry.
-	NoPluginInstall func(c supervise.Claim) bool
-	// Backend is the harness one role's claims run on (config.Config.BackendFor, the daemon's
-	// own reading of `worker_backends` against runtime.Backends). A role's harness is the
-	// daemon's configuration and nothing the claim itself records, so the one route that has to
-	// know is handed it here: a compaction is an Oh My Pi command, and a Claude Code claim has
-	// no Oh My Pi session to compact (compact). Nil answers Oh My Pi for every role, which is
-	// what a deployment that configures no `worker_backends` runs.
-	Backend func(role claim.Role) runtime.Backend
+	// relaunch can carry. ctx is the request's own: under Kubernetes the answer reads the plan of
+	// the claim's issue from the daemon's store, and a read that fails is the error, which says
+	// nothing of the claim (staleClaim logs it and refuses nothing on it).
+	NoPluginInstall func(ctx context.Context, c supervise.Claim) (bool, error)
+	// Backend is the harness a role's claim of an issue runs on (the daemon's roleBackends: a role
+	// the issue's plan defines runs on Oh My Pi, every other role on what `worker_backends` names
+	// against runtime.Backends). A role's harness is the daemon's configuration and the issue's
+	// plan, nothing the claim itself records, so the one route that has to know is handed it here:
+	// a compaction is an Oh My Pi command, and a Claude Code claim has no Oh My Pi session to
+	// compact (compact). Nil answers Oh My Pi for every role, which is what a deployment that
+	// configures no `worker_backends` runs.
+	Backend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
 	// CallerPod is the runtime's pod at a request's address: the uid of the project's pod that
 	// holds addr, and false for an address no pod of the project holds (the Sandbox runtime's
 	// PodAt). GET /legion/v1/state authenticates nobody, so this is how it knows which claims'
@@ -343,9 +348,9 @@ type server struct {
 	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
 	pluginRelaunchable bool
-	noPluginInstall    func(c supervise.Claim) bool
-	// backend is Options.Backend: the harness one role's claims run on.
-	backend func(role claim.Role) runtime.Backend
+	noPluginInstall    func(ctx context.Context, c supervise.Claim) (bool, error)
+	// backend is Options.Backend: the harness a claim of one role on one issue runs on.
+	backend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
 	controllerMu sync.Mutex

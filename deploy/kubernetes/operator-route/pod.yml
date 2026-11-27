@@ -9,8 +9,8 @@
 # instead, legion-operator-route-<run>, points its pods at that name, and deletes it after, so a run
 # sharing the namespace never touches it.
 env:
-  # The operator's settings overlay (overlay.yml), named after Legion's pod baseline, so it
-  # outranks the baseline and every repository's .omp/config.yml.
+  # The operator's settings overlay (overlay.yml). Legion writes no overlay of its own, and this one
+  # outranks every repository's .omp/config.yml.
   PI_CONFIG_FILES: /etc/legion-operator/overlay.yml
   # Anthropic Foundry puts FOUNDRY_BASE_URL ahead of a model's own baseUrl; a repository's .env
   # could turn it on, and the pod's own value outranks .env.

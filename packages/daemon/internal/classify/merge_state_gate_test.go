@@ -65,9 +65,30 @@ func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
 		{"a base push at the implementer's place between two steps", checkedAround, step(2), MergeStateFactBasePush, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := MergeStateReadOwed(tc.line, tc.place, tc.fact); got != tc.want {
+			if got := MergeStateReadOwed(implementerPlace(tc.line), tc.place, false, tc.fact); got != tc.want {
 				t.Fatalf("MergeStateReadOwed = %v, want %v", got, tc.want)
 			}
 		})
 	}
+	// Once the task's run has reached its implementer, a move back to a step before it keeps the
+	// merge forward standing there, so a head push and a base push at the checker's place 1 each
+	// ask the read; the cases above, at that same place before the run reached the implementer,
+	// ask none.
+	for _, fact := range []MergeStateFact{MergeStateFactHeadMove, MergeStateFactBasePush} {
+		if !MergeStateReadOwed(implementerPlace(checkedAround), step(1), true, fact) {
+			t.Errorf("MergeStateReadOwed(the checker's place 1, after the run reached the implementer, %v) = false, want true", fact)
+		}
+	}
+}
+
+// implementerPlace is the place of the implementer's step on line, the first step of the type
+// implementation of a task whose roles are Legion's (the workflow's Walk.implementationStart), and
+// no place where line holds none.
+func implementerPlace(line []phase.Phase) record.TaskPlace {
+	for at, p := range line {
+		if p == phase.Implementing {
+			return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}
+		}
+	}
+	return record.TaskPlace{}
 }

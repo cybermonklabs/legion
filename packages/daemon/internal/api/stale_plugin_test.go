@@ -37,9 +37,10 @@ func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
 }
 
 // newNoInstallHarness is a harness whose daemon knows which claims a launch installs no plugin
-// for (Options.NoPluginInstall, the daemon's noPluginInstall over its configured backends),
-// relaunchable like newStaleHarness's so the rest of the stale-caller rule still applies.
-func newNoInstallHarness(t *testing.T, noInstall func(supervise.Claim) bool) *harness {
+// for (Options.NoPluginInstall, the daemon's noPluginInstall over the harness of each claim's
+// role, which the plan of its issue decides for a role the plan defines), relaunchable like
+// newStaleHarness's so the rest of the stale-caller rule still applies.
+func newNoInstallHarness(t *testing.T, noInstall func(context.Context, supervise.Claim) (bool, error)) *harness {
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
@@ -65,7 +66,7 @@ func newNoInstallHarness(t *testing.T, noInstall func(supervise.Claim) bool) *ha
 // window, and the 409 the stale-caller rule has always answered.
 func TestAClaimWhoseLaunchInstallsNoPluginIsServedOnItsOldContract(t *testing.T) {
 	claudeRole := claim.RoleImplementer
-	h := newNoInstallHarness(t, func(c supervise.Claim) bool { return c.Role == claudeRole })
+	h := newNoInstallHarness(t, func(_ context.Context, c supervise.Claim) (bool, error) { return c.Role == claudeRole, nil })
 	stale := DaemonAPIVersion() - 1
 
 	for _, tc := range []struct {

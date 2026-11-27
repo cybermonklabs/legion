@@ -911,7 +911,7 @@ func later(a, b time.Time) time.Time {
 // row.
 //
 // Planning, implementing, testing, reviewing, step and retro each have a worker with work: step's
-// is the role of the deployment the plan names for the step the issue's task stands at.
+// is the role of the deployment or of the issue's plan that the plan names for the step the issue's task stands at.
 // Merging has one too, and keeps it: its merger's own merge is what ends the phase, so there is
 // no armed READY waiting on a person here any more. Admitted is work only for
 // a root whose design gate has never opened at every step the deployment gates, where its
@@ -936,7 +936,7 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // PhaseKeepsSlot is the one list of the phases that hold one of the cap's slots: admitted, where
 // a root's architect writes its design and a started child waits to be entered again;
 // awaiting_person; the phases a step's worker runs besides the owner's acceptance — planning,
-// implementing, testing, reviewing, and step, where a role of the deployment works; and held,
+// implementing, testing, reviewing, and step, where a role of the deployment or of the issue's plan works; and held,
 // which is reached here only where the record names no earlier phase for the hold (StandsAt).
 // Every other phase holds none: accepting, retro and merging (in the default steps, the phases
 // after the review), and done, which has finished. A step after accepting whose phase keeps a

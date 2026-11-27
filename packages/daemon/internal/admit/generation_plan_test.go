@@ -325,9 +325,9 @@ func assertCarriedOrphan(t *testing.T, pool *pgxpool.Pool, want phase.Phase, hol
 }
 
 // carriedPlan is stored as it stands at generation 1, copied to generation 2 with each task where
-// it stood (record.Store's CarryPlan with carried).
+// it stood and each role of the plan (record.Store's CarryPlan with carried).
 func carriedPlan(stored *record.StoredPlan) *record.StoredPlan {
-	carried := &record.StoredPlan{Version: stored.Version, Steps: map[string][]record.PlanStep{}}
+	carried := &record.StoredPlan{Version: stored.Version, Steps: map[string][]record.PlanStep{}, Roles: []record.PlanRole{}}
 	carried.Version.Generation = 2
 	for _, task := range stored.Tasks {
 		task.Generation = 2
@@ -338,6 +338,10 @@ func carriedPlan(stored *record.StoredPlan) *record.StoredPlan {
 			step.Generation = 2
 			carried.Steps[task] = append(carried.Steps[task], step)
 		}
+	}
+	for _, role := range stored.Roles {
+		role.Generation = 2
+		carried.Roles = append(carried.Roles, role)
 	}
 	return carried
 }

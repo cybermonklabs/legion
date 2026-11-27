@@ -213,19 +213,20 @@ func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, held
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, record.NameAgents(earlier, held, claims, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
+	return version, []record.PlanTask{task}, record.NameAgents(earlier, held, claims, planSteps(plan.RolesOf(plan.Plan{}, e.cfg.Deployment), issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
-// place from 1, with its agent key and the type its role has in d, the engine's deployment
-// (Config.Deployment), so a role the deployment defines is stored with its own type. It is the
-// one writer of a stored step's type, which the step record names and the return of a failed
-// step, the count of a review round and the commit of a review step read.
-func planSteps(d plan.Deployment, issue string, generation uint64, task string, steps []plan.Step) []record.PlanStep {
+// place from 1, with its agent key and the type its role has in roles, the roles the plan's steps
+// can name as plan.RolesOf answers them over the engine's deployment (Config.Deployment): Legion's,
+// the deployment's and the plan's own, so a role the deployment or the plan defines is stored with
+// its own type. It is the one writer of a stored step's type, which the step record names and the
+// return of a failed step, the count of a review round and the commit of a review step read.
+func planSteps(roles map[string]plan.RoleDef, issue string, generation uint64, task string, steps []plan.Step) []record.PlanStep {
 	rows := make([]record.PlanStep, len(steps))
 	for i, step := range steps {
 		rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,
-			Type: d.Roles[step.Role].Type, AgentKey: step.Key}
+			Type: roles[step.Role].Type, AgentKey: step.Key}
 	}
 	return rows
 }

@@ -283,7 +283,7 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, by claim.Role, reason
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
 // it went to, the role that asked, by (the role running the step left, which backward holds the
-// requester to: at step the role the deployment defines) and that role's own words, or that it
+// requester to: at step the role the deployment or the issue's plan defines) and that role's own words, or that it
 // gave none.
 func backwardMoveReason(from, to phase.Phase, by claim.Role, reason string) string {
 	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, by)

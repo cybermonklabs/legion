@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -68,6 +69,45 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 			if pass := implementerPass(t, pool); pass != 0 {
 				t.Fatalf("pass = %d, want none counted: nothing went back", pass)
 			}
+			want := make([]record.RoleMessage, 0, len(tc.roles))
+			for _, role := range tc.roles {
+				want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})
+			}
+			assertRoleMessages(t, pool, "LEGION-208", want)
+		})
+	}
+}
+
+// The settlement's message goes to the agent of the task's step that does its implementation work
+// where the task stands (implementationAgent), whatever its role is called, as a merge forward's
+// ask does. In `coder tester`, coder a role of the plan of the type implementation, a settlement in
+// testing tells the architect, the tester and the coder, on the claim the coder's step starts; the
+// role implementer, which no step names and no agent works, is told nothing. The control is the
+// same settlement on the default steps of a run with no plan rows, which tells the implementer.
+func TestASettlementTellsTheAgentOfTheTasksImplementationStep(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		steps []string
+		roles []claim.Role
+	}{
+		{name: "coder tester", steps: []string{"coder", "tester"}, roles: []claim.Role{claim.RoleArchitect, claim.RoleTester, "coder"}},
+		{name: "control: the default steps", roles: []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+				Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+				Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim"})
+			if len(tc.steps) > 0 {
+				seedStepsPlanDefining(t, pool, "LEGION-208", 1, map[string]plan.Type{"coder": plan.TypeImplementation}, tc.steps...)
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+				})
+			}
+			applyRefusingNothing(t, pool, mergingEngine(), settledAt("head", 1, "unit"))
+
 			want := make([]record.RoleMessage, 0, len(tc.roles))
 			for _, role := range tc.roles {
 				want = append(want, record.RoleMessage{Role: roleToken(t, role), Body: toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")})

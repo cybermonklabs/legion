@@ -412,6 +412,18 @@ type Claim struct {
 	LastStartFailure   string
 	LastStartFailureAt time.Time
 	LastReady          time.Time
+	// LaunchedDefinition is the definition of a plan's role that the launch of the process the
+	// claim records was built for (runtime.SpawnSpec.RoleDefinition), "" for a launch of a role no
+	// plan defines, and LaunchedGeneration is the generation that launch ran at. The write that
+	// records that process writes both (launchNow), letGo clears both with the process it lets go,
+	// and the store keeps them, so the start of a later step compares the definition with the
+	// definition of the plan in force after a restart as well as before one (internal/daemon's
+	// roleDefinitionChanged). The definition is the process's only while the claim's generation is
+	// LaunchedGeneration: a release that keeps neither, run in between after a rollback that skipped
+	// the way back, launches at a later generation and leaves both as they stood. A claim a release
+	// before this one launched holds "" and 0: no such release launched a role of a plan.
+	LaunchedDefinition string
+	LaunchedGeneration uint64
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -1193,7 +1205,9 @@ type Deps struct {
 	// launches into — this package cannot read the configuration a role is launched from — so it
 	// states the fact here, as it states its plugin contract and whether it can relaunch at all.
 	// nil is a daemon whose every launch installs a plugin, which is what every caller that
-	// states nothing means.
+	// states nothing means. Under Kubernetes the daemon's answer reads the plan of the claim's
+	// issue from its store for a role that is none of Legion's, bounded by ctx, the context of the
+	// call that asks, so StaleRefusesCalls asks it only of a claim its cheap terms find stale.
 	//
 	// A claim it answers true for, at any contract, is never relaunched by the stale-plugin lane
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
@@ -1202,7 +1216,12 @@ type Deps struct {
 	// what carries it: it is asked the steps of UpdateTask like any other claim, on its own Envoy
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
-	NoPluginInstall func(c Claim) bool
+	//
+	// An error is a read that failed, and the answer beside it says nothing of the claim: a reader
+	// logs the error once and decides nothing on it — it refuses nothing, relaunches nothing,
+	// charges nothing and reports no fact of the claim's launch — and asks again at its next call
+	// (staleRegistration, staleRefusesClaim, internal/api's staleClaim).
+	NoPluginInstall func(ctx context.Context, c Claim) (bool, error)
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
 	// architect from that (admission's ReconcileAwaiting), so without it a root whose wait was
@@ -1586,6 +1605,12 @@ type Machine struct {
 	// it, and the reason the claim stores with the abandoned session (Claim.Abandoned) still tells
 	// the fresh agent at its first task.
 	lostCause SessionLoss
+	// builtDefinition is the definition of a plan's role the newest spec this machine built was
+	// for (runtime.SpawnSpec.RoleDefinition, spawnSpec). The write that records that launch's
+	// process copies it onto the claim (Claim.LaunchedDefinition, launchNow). A launch that started
+	// nothing copies nothing: the claim it leaves records no process, and letGo cleared the
+	// definition of the one it let go.
+	builtDefinition string
 	// refusedEarlierRelease is the generation at which the fence refused the registration of a
 	// process an earlier release started, for a claim that records a session and no file
 	// (markRollEdge), and 0 where no such refusal is outstanding. Such a process is a fresh agent
@@ -3555,9 +3580,12 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
 			// The mark of a start that had Oh My Pi resume the session by its id, which start set
-			// (Claim.AgentResumeGeneration), reaches the store in this one write with the process
-			// it names, so a claim that records that process always records the mark with it.
+			// (Claim.AgentResumeGeneration), and the definition of a plan's role its spec was built
+			// for with the generation it ran at (Claim.LaunchedDefinition, LaunchedGeneration)
+			// reach the store in this one write with the process they name, so a claim that records
+			// that process always records them with it.
 			m.claim.Locator = &loc
+			m.claim.LaunchedDefinition, m.claim.LaunchedGeneration = m.builtDefinition, m.claim.Generation
 			m.leftPodRoundAt(loc)
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
@@ -3781,7 +3809,8 @@ func (m *Machine) launchFromTop(l launchTry) func(context.Context) error {
 // than the one bound that still applies to it (runtime.PromptTooLarge): the start frame a pod's
 // launcher reads, which the sandbox runtime measures before anything starts. Nothing was
 // started, and every later try would compose the same text from the same files and be refused
-// the same way until the deployment changes them, which takes a restart of the daemon. So it is
+// the same way until the deployment changes them, which takes a restart of the daemon, or, for a
+// role of the issue's plan, until a later version of the plan changes its prompt. So it is
 // charged no launch failure and not tried again: the claim fails at once, under the cause the
 // charged path at its limit would name (launchTries), with the refusal's sentence — the role, the
 // prompt's size and the limit — as its failure and as LastStartFailure, which read_state serves as
@@ -4216,6 +4245,7 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
+	m.builtDefinition = spec.RoleDefinition
 	spec.Generation, spec.BootToken = m.claim.Generation, token
 	spec.ResumeSessionFile, spec.ResumeSessionID = "", ""
 	spec.ResumeSession, spec.ResumeByAgent = "", false
@@ -4942,10 +4972,13 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // next process is sent the task anew. What the runtime last reported of that process goes with it
 // too, and what was charged for its death with that (processGone, Claim.DeathCharged): the claim
 // records no process for a report to be about, and the one the next launch starts has been
-// reported nothing and charged nothing. The clear of the charge reaches the store with the write
-// every caller of this makes of the claim it leaves — the launch that records the new process,
-// the suspension, the retirement, the failure — so no stored charge ever outlives the process it
-// was made for.
+// reported nothing and charged nothing. So does the definition of a plan's role that process was
+// launched with, and the generation it ran at (Claim.LaunchedDefinition, LaunchedGeneration): a
+// claim that records no process records no definition, and the start of a step compares none. The
+// clear of the charge and of the definition reaches the store with the write every caller of this
+// makes of the claim it leaves — the launch that records the new process, the suspension, the
+// retirement, the failure — so no stored charge or definition ever outlives the process it was
+// made for.
 //
 // Before any of that, what the process ended is recorded for cause, the caller's reading of why
 // it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
@@ -4983,6 +5016,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	if m.claim.Locator != nil {
 		m.previous, m.claim.Locator = m.claim.Locator, nil
 	}
+	m.claim.LaunchedDefinition, m.claim.LaunchedGeneration = "", 0
 }
 
 // judge acts on what a probe or the sweep says about the claim's process. alive is what a live

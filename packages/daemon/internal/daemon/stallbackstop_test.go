@@ -321,6 +321,42 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 	}
 }
 
+// A role the plan in force of its issue defines is the plan's role, even where the deployment
+// defines a role of that name, and it takes none of that role's own settings: the deployment
+// switches the backstop of its prober off (`worker_stall_backstop_hours` names 0 for it), and
+// LEGION-43's plan defines prober. LEGION-43's prober runs under the bound of a role the file
+// names no bound for, so its turn, silent past that bound, is ended and its session brought back.
+// LEGION-44's prober is the deployment's, whose backstop is off, and is left alone. The plan is
+// read for the name the file gives a bound of its own and for no role of Legion's.
+func TestARoleOfAPlanRunsUnderTheBackstopOfARoleTheFileNamesNoBoundFor(t *testing.T) {
+	rig := newBackstopRig(t)
+	rig.s.cfg.WorkerStallBackstops["prober"] = 0
+	silent := 3 * time.Hour
+	if bound := rig.s.cfg.StallBackstopFor("ghost"); bound <= 0 || bound >= silent {
+		t.Fatalf("the bound of a role the file names none for = %s, want one above 0 and below the %s the claims are silent", bound, silent)
+	}
+	var asked []string
+	rig.s.planRole = func(_ context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+		asked = append(asked, issue+"/"+string(role))
+		return record.PlanRole{}, issue == "LEGION-43" && role == "prober", nil
+	}
+	planned := rig.claim("prober", "LEGION-43", silent, true)
+	deployed := rig.claim("prober", "LEGION-44", silent, true)
+	working := rig.claim(claim.RoleTester, "LEGION-45", time.Minute, true)
+	claims := rig.supervising(planned, deployed, working)
+
+	rig.sweep(claims)
+
+	rig.awaitResumed(planned.Token, 1)
+	rig.settled(deployed)
+	if resumed := rig.resumes(deployed.Token); len(resumed) != 0 {
+		t.Errorf("the deployment's prober, whose backstop is off, was brought back %d times, want none", len(resumed))
+	}
+	if want := []string{"LEGION-43/prober", "LEGION-44/prober"}; !slices.Equal(asked, want) {
+		t.Errorf("the sweep read the plans of %v, want %v", asked, want)
+	}
+}
+
 // A claim whose agent has sent nothing since its turn began is judged from that turn's start,
 // which is the only moment its record holds.
 func TestTheStallBackstopJudgesAClaimWithNoCallFromItsTurnsStart(t *testing.T) {

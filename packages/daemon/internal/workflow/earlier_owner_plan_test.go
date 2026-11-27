@@ -19,7 +19,7 @@ import (
 // gateOpened), never in silence: one log line for each version passed over, naming the issue, the
 // generation, the version, its document, its giver and the plan the first step runs; one
 // plan-not-taken notice to the issue's architect that names the same; and no row of the old plan
-// left in the three plan tables, so its walk never reads it, also where it stood at the issue's
+// left in issue_plans, plan_tasks and plan_steps, so its walk never reads it, also where it stood at the issue's
 // own generation: the first step stores the project's default steps in their place. The owner is
 // any architect of the issue's tree now (record.ArchitectOfTree): a sub-architect's plan for an
 // issue of its tree is the owner's, and so is the tree root architect's plan for its child (the

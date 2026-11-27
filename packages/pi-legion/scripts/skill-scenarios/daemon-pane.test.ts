@@ -9,13 +9,14 @@ import {
   composeRolePrompt,
   composeStepPrompt,
   DAEMON_MODULE,
+  daemonPaneOverlay,
   goInDaemonModule,
   RIG_GH_TOKEN,
   workerPane,
 } from "./daemon-pane";
 
-// Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
-// `go run` compiles and runs, so a host with no go runs none of them.
+// Every row below but the last asks the daemon's own functions for a pane environment or a role's
+// prompt, which `go run` compiles and runs, so a host with no go runs none of them.
 const skip = skipWithout("go");
 
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
@@ -322,42 +323,43 @@ test.skipIf(skip)(
 );
 
 // Every architect owns a plan, whose steps name the roles of the deployment, so its addressing
-// goes on with them: Legion's five, then the rig's checker and critic, each with its type. Its
-// production check line comes after them (the row below).
+// goes on with them: Legion's five, then the rig's checker and critic, each with its type, then the
+// models a role of its plan can name, none in the rig's deployment. Its production check line comes
+// after them (the row below).
 test.skipIf(skip)(
   "tells an architect the roles of the rig's deployment after its addressing",
   () => {
     const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
     expect(child).toMatch(
-      /\n\nLegion addressing: [^\n]* The roles of this deployment, each with the type of its step: [^\n]*, checker \(testing\), critic \(review\)\. Production check: [^\n]+\.$/
+      /\n\nLegion addressing: [^\n]* Legion's roles, each with the type of its step: [^\n]*\. The roles this deployment defines, each with the type of its step: checker \(testing\), critic \(review\)\. This deployment lists no model, so a role of your plan names none and starts on the default model\. Production check: [^\n]+\.$/
     );
   },
   600_000
 );
 
 // Every architect's addressing ends with the project's production check line, after the roles of
-// the deployment and, for a root's architect, after the design gate steps, as a launch's does
-// (workerSpawnSpec). The rig's deployment leaves `production_check` unset, so the line names the
-// tester.
+// the deployment and the models and, for a root's architect, after the design gate steps, as a
+// launch's does (workerSpawnSpec). The rig's deployment leaves `production_check` unset, so the
+// line names the tester.
 test.skipIf(skip)(
   "ends an architect's addressing with the production check line of a deployment that leaves it unset",
   () => {
     const root = composeRolePrompt(DAEMON_MODULE, "architect", true);
     expect(root).toMatch(
-      /\n\nLegion addressing: [^\n]* critic \(review\)\. Design gate steps: [^\n]+\. Production check: tester\.$/
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. This deployment lists no model, so a role of your plan names none and starts on the default model\. Design gate steps: [^\n]+\. Production check: tester\.$/
     );
     const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
     expect(child).toMatch(
-      /\n\nLegion addressing: [^\n]* critic \(review\)\. Production check: tester\.$/
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. This deployment lists no model, so a role of your plan names none and starts on the default model\. Production check: tester\.$/
     );
   },
   600_000
 );
 
-// daemon-pane.go restates three of the daemon's functions, the parts of a step of a role of the
-// deployment, the sentence of the deployment's roles and the sentence of its production check, and
-// daemon-pane_test.go holds each to the daemon's own in this checkout's module. `go test` exits 0
-// on a run that holds no test, so the row asks for the test's own PASS line.
+// daemon-pane.go restates one of the daemon's methods, the parts of a step of a role of the
+// deployment, and names the production check of its deployment, and daemon-pane_test.go holds each
+// to the daemon's own in this checkout's module. `go test` exits 0 on a run that holds no test, so
+// the row asks for the test's own PASS line.
 test.skipIf(skip)(
   "holds the rig's restatements of the daemon to the daemon's own functions in this checkout",
   () => {
@@ -374,3 +376,28 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+// daemon-pane-architect.go calls daemon.ArchitectAddressing, which a checkout of the daemon module
+// older than that function does not declare, and a build with a call it cannot resolve fails in
+// every mode. So the rig builds that file in only where the checkout's daemon declares the function
+// in a file of the package itself, not where it is named in a comment or declared by a test; in an
+// older checkout the program builds as before and refuses an architect's prompt alone. Each file
+// is keyed by its name under cmd/daemon-pane (goInDaemonModule).
+test("builds the architect's part in only where the checkout's daemon declares ArchitectAddressing", () => {
+  const older = path.join(rig, "older", "packages", "daemon");
+  mkdirSync(path.join(older, "internal", "daemon"), { recursive: true });
+  writeFileSync(
+    path.join(older, "internal", "daemon", "specs.go"),
+    "package daemon\n\n// ArchitectAddressing comes later; func ArchitectAddressing(\nfunc AddressingFragment() {}\n"
+  );
+  writeFileSync(
+    path.join(older, "internal", "daemon", "specs_test.go"),
+    "package daemon\n\nfunc ArchitectAddressing() {}\n"
+  );
+  const program = path.join(import.meta.dir, "daemon-pane.go");
+  expect(daemonPaneOverlay(older)).toEqual({ "main.go": program });
+  expect(daemonPaneOverlay(DAEMON_MODULE)).toEqual({
+    "main.go": program,
+    "architect.go": path.join(import.meta.dir, "daemon-pane-architect.go"),
+  });
+});

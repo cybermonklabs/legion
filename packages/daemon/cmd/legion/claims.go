@@ -305,9 +305,11 @@ func quotedOrNone(value string) string {
 // claimsSpawn launches the claim that works --role's step of --issue now, in the tree --tree
 // roots: the claim of the agent the step names, a keyed agent on a step of another role included,
 // or the role's own where no step names one, created where none is stored.
-// --prompt-file is an optional operator override; omitted, the daemon composes the role's shared
-// and Go-specific parts, or, for a role of the deployment, its prompt_file with the headless part
-// and worker-common.md. --task is its first delivery, sent once the agent is ready.
+// --prompt-file is an optional operator override; omitted, the daemon gives the role the prompt
+// every launch of it gets: Legion's composed shared and Go-specific parts for one of Legion's
+// roles, and for a role of the deployment or of the issue's plan its own prompt (a role of the
+// deployment's prompt_file) between the headless part and worker-common.md. --task is its first
+// delivery, sent once the agent is ready.
 func claimsSpawn(c *claimsCall) action {
 	tree := c.flags.String("tree", "", "issue key of the tree's root (required)")
 	issue := c.flags.String("issue", "", "issue key the claim is on (required)")

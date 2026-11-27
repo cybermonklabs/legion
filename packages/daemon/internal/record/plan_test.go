@@ -42,9 +42,9 @@ func ownersPlan(issue string, generation uint64, version int, givenBy claim.Toke
 	return v, tasks, steps
 }
 
-// storedOf is what Plan reads for the rows ownersPlan writes.
+// storedOf is what Plan reads for the rows ownersPlan writes, which define no role.
 func storedOf(v PlanVersion, tasks []PlanTask, steps []PlanStep) *StoredPlan {
-	plan := &StoredPlan{Version: v, Tasks: tasks, Steps: map[string][]PlanStep{}}
+	plan := &StoredPlan{Version: v, Tasks: tasks, Steps: map[string][]PlanStep{}, Roles: []PlanRole{}}
 	for _, step := range steps {
 		plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
 	}
@@ -67,7 +67,8 @@ func readPlan(t *testing.T, tx pgx.Tx, issue string, generation uint64) *StoredP
 	return plan
 }
 
-// The plan of an issue is three tables keyed by the issue and its generation: one task and its two
+// The plan of an issue is four tables keyed by the issue and its generation, the roles a version
+// defines among them (plan_roles): one task and its two
 // steps read back as they were written, every column of each, and the generation beside it reads
 // no plan at all. A plan given before the daemon records its issue is written at generation 0, and
 // no row of the issues table is needed for it: the plan names an issue the daemon has not recorded.
@@ -421,9 +422,9 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 	})
 }
 
-// DeletePlan deletes one plan, every row of its generation in each of the three tables, and leaves
+// DeletePlan deletes one plan, every row of its generation in each of its four tables, and leaves
 // the plan of each other generation as it was.
-func TestDeletePlanRemovesTheThreeTables(t *testing.T) {
+func TestDeletePlanRemovesEachOfItsTables(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	gone, goneTasks, goneSteps := ownersPlan(planIssue, 0, 2, otherOwner, planGivenAt)
@@ -432,11 +433,12 @@ func TestDeletePlanRemovesTheThreeTables(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		putPlan(t, tx, gone, goneTasks, goneSteps)
 		putPlan(t, tx, later, laterTasks, laterSteps)
+		must(t, NewStore().PutPlanRoles(ctx, tx, planIssue, 0, 3, []PlanRole{planRole(planIssue, 0, 3, "prober")}))
 		putPlan(t, tx, kept, keptTasks, keptSteps)
 		must(t, NewStore().DeletePlan(ctx, tx, planIssue, 0))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		for _, table := range []string{"issue_plans", "plan_tasks", "plan_steps"} {
+		for _, table := range []string{"issue_plans", "plan_tasks", "plan_steps", "plan_roles"} {
 			var left int
 			must(t, tx.QueryRow(ctx, "select count(*) from "+table+" where issue = $1 and generation = 0", planIssue).Scan(&left))
 			if left != 0 {
@@ -445,6 +447,100 @@ func TestDeletePlanRemovesTheThreeTables(t *testing.T) {
 		}
 		if got, want := readPlan(t, tx, planIssue, 1), storedOf(kept, keptTasks, keptSteps); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plan of generation 1 after the delete of generation 0's = %#v, want it as it was: %#v", got, want)
+		}
+	})
+}
+
+// planRole is the role name of the plan of issue at generation, as version defines it: a type, a
+// model and a prompt, every field written, so a round trip that drops a column can fail.
+func planRole(issue string, generation uint64, version int, name string) PlanRole {
+	return PlanRole{
+		Issue: issue, Generation: generation, Role: name, PlanVersion: version,
+		Type: "testing", Model: "listed-model", Prompt: "# " + name + "\n\nProbe the change.\n",
+	}
+}
+
+// The roles a plan defines are stored with the version that wrote them, read with the plan, and
+// carried with it to a new generation. A later version's roles replace the earlier version's, so a
+// role the later version drops is gone, and a version that defines none leaves the plan with none,
+// read as an empty list. A launch reads one role at the issue's current generation (PlanRoleOf):
+// a role the plan defines is found with its model and its prompt, and one it does not define is no
+// error. A role of another issue, generation or version is refused before anything is written.
+func TestAPlansRolesAreStoredReadAndCarried(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := NewStore()
+	issue := issueFixture(planIssue)
+	at := issue.Generation
+	v1, tasks1, steps1 := ownersPlan(planIssue, at, 1, planOwner, planGivenAt)
+	v2, tasks2, steps2 := ownersPlan(planIssue, at, 2, planOwner, planGivenAt.Add(time.Hour))
+	prober, critic := planRole(planIssue, at, 1, "prober"), planRole(planIssue, at, 2, "critic")
+	roles := func(tx pgx.Tx, issue string, generation uint64) []PlanRole {
+		t.Helper()
+		plan := readPlan(t, tx, issue, generation)
+		if plan == nil {
+			t.Fatalf("the plan of %s at generation %d reads none", issue, generation)
+		}
+		return plan.Roles
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		putPlan(t, tx, v1, tasks1, steps1)
+		must(t, records.PutPlanRoles(ctx, tx, planIssue, at, 1, []PlanRole{prober}))
+		if got := roles(tx, planIssue, at); !reflect.DeepEqual(got, []PlanRole{prober}) {
+			t.Fatalf("the roles of version 1 = %#v, want prober alone", got)
+		}
+		putPlan(t, tx, v2, tasks2, steps2)
+		must(t, records.PutPlanRoles(ctx, tx, planIssue, at, 2, []PlanRole{critic}))
+		if got := roles(tx, planIssue, at); !reflect.DeepEqual(got, []PlanRole{critic}) {
+			t.Fatalf("the roles of version 2 = %#v, want critic alone: version 2 dropped prober", got)
+		}
+		must(t, records.PutPlanRoles(ctx, tx, planIssue, at, 2, nil))
+		if got := roles(tx, planIssue, at); got == nil || len(got) != 0 {
+			t.Fatalf("the roles of a version that defines none = %#v, want an empty list", got)
+		}
+		must(t, records.PutPlanRoles(ctx, tx, planIssue, at, 2, []PlanRole{critic}))
+	})
+	for _, wrong := range []PlanRole{
+		planRole("LEGION-209", at, 2, "critic"),
+		planRole(planIssue, at+1, 2, "critic"),
+		planRole(planIssue, at, 1, "critic"),
+	} {
+		inTx(t, st, func(tx pgx.Tx) {
+			if err := records.PutPlanRoles(ctx, tx, planIssue, at, 2, []PlanRole{wrong}); err == nil || !strings.Contains(err.Error(), "critic") {
+				t.Fatalf("a role of %s at generation %d and version %d put as version 2 of %s at generation %d = %v, want it refused naming it",
+					wrong.Issue, wrong.Generation, wrong.PlanVersion, planIssue, at, err)
+			}
+			if got := roles(tx, planIssue, at); !reflect.DeepEqual(got, []PlanRole{critic}) {
+				t.Fatalf("the roles after a refused put = %#v, want critic as it was", got)
+			}
+		})
+	}
+
+	// A fresh issue whose plan at generation 1 defines critic: the copy to generation 2 holds it.
+	const fresh = "LEGION-209"
+	fv, ftasks, fsteps := ownersPlan(fresh, 1, 1, planOwner, planGivenAt)
+	inTx(t, st, func(tx pgx.Tx) {
+		putPlan(t, tx, fv, ftasks, fsteps)
+		must(t, records.PutPlanRoles(ctx, tx, fresh, 1, 1, []PlanRole{planRole(fresh, 1, 1, "critic")}))
+		must(t, records.CarryPlan(ctx, tx, fresh, 1, 2, false))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		if got, want := roles(tx, fresh, 2), []PlanRole{planRole(fresh, 2, 1, "critic")}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the roles of the carried plan = %#v, want %#v", got, want)
+		}
+		if got, want := roles(tx, fresh, 1), []PlanRole{planRole(fresh, 1, 1, "critic")}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the roles of the old generation after the copy = %#v, want them as they were: %#v", got, want)
+		}
+
+		got, found, err := records.PlanRoleOf(ctx, tx, planIssue, "critic")
+		must(t, err)
+		if !found || !reflect.DeepEqual(got, critic) {
+			t.Fatalf("PlanRoleOf(%s, critic) = %#v, %t; want %#v", planIssue, got, found, critic)
+		}
+		ghost, found, err := records.PlanRoleOf(ctx, tx, planIssue, "ghost")
+		if err != nil || found || ghost != (PlanRole{}) {
+			t.Fatalf("PlanRoleOf(%s, ghost) = %#v, %t, %v; want no role and no error", planIssue, ghost, found, err)
 		}
 	})
 }

@@ -135,14 +135,14 @@ func newOwnerStepsLive(t *testing.T, script string, issues int) *ownerStepsLive 
 	return l
 }
 
-// check runs one of the proof's checks between its `== <name>` line and its one line of outcome,
+// check runs one of a live proof's checks between its `== <name>` line and its one line of outcome,
 // `ok <name> (<s>s)`, or `FAIL <name> (<s>s)` when the check failed the test, which ends the run.
-func (l *ownerStepsLive) check(name string, body func()) {
-	l.t.Helper()
+func (p *liveProof) check(name string, body func()) {
+	p.t.Helper()
 	started := time.Now()
 	fmt.Printf("== %s\n", name)
 	defer func() {
-		if l.t.Failed() {
+		if p.t.Failed() {
 			fmt.Printf("FAIL %s (%ds)\n", name, int(time.Since(started).Seconds()))
 		}
 	}()

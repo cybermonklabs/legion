@@ -67,17 +67,22 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // (Options.GitHubCredential nil: a daemon with no GitHub Apps) wrote no pane any gh files, so it
 // has nothing to refresh.
 //
-// The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
-// role the pane's claim role runs as (appauth.AppRoleFor) and the pane's repository alone, and
-// each build opens with a live read of every page of its App's installations under a fresh JWT
-// (appauth.GitHubCredential), so the panes of one issue running as one App cost the tick one
+// The walk builds each bundle once (appauth.Bundles), held by the App role the pane's claim role
+// runs as on its issue (appauth.AppRoleFor), the role itself where it is none of Legion's, and the
+// pane's repository, and each build opens with a live read of every page of its App's
+// installations under a fresh JWT (appauth.GitHubCredential), so the panes of one issue whose
+// roles are Legion's and run as one App cost the tick one
 // read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
 // reads GitHub for what its bundles hold (INFRA-2543 R2).
+//
+// A pane's bundle is asked for on its claim's issue, whose plan can define the pane's role and
+// then decides its App (appauth.RoleApps.Of): the issue the launch recorded, or, for a pane this
+// runtime adopted, the issue key its claim's token names (claim.Token.IssueKey), which is exact.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	if r.gitHubCredential == nil {
 		return
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.controllerCredential, r.roleApps)
 	for _, entry := range r.trackedProcesses() {
 		token := entry.locator.Claim
 		role, ok, err := r.paneRole(ctx, entry)
@@ -100,12 +105,11 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			}
 			repo = recorded
 		}
-		var bundle ghconfig.Bundle
-		if role == claim.RoleController {
-			bundle, err = r.controllerCredential(ctx, entry.ghDefault)
-		} else {
-			bundle, err = bundles.Bundle(ctx, role, repo)
+		issue := entry.issue
+		if issue == "" {
+			issue, _ = token.IssueKey()
 		}
+		bundle, err := bundles.Bundle(ctx, issue, role, repo, entry.ghDefault)
 		if role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner) {
 			continue
 		}

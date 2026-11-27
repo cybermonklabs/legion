@@ -147,6 +147,71 @@ func TestAMergeForwardMessageNamesTheClaimOfItsRolesStep(t *testing.T) {
 	}
 }
 
+// A merge forward asks the agent of the step that does its task's implementation work where the
+// task stands (Walk.implementationPlace): the last step of the type implementation at or before
+// that place, whatever its role is called, on the claim the start of that step names (stepToken).
+// In `coder tester`, coder a role of the plan of the type implementation, a conflict confirmed in
+// testing asks the coder and holds the tester; the role implementer, which no step names and no
+// agent works, is asked nothing. A task back at such a step asks that step's own agent, which no
+// hold then tells again: `coder implementer tester` back at the coder's step asks the coder alone.
+// A task back at a step before every step of that type, once its run has reached the implementer
+// (the implementer's phases row of this run holds an entry), asks the last of them, whose agent
+// made the head: `checker implementer tester` back at the checker's step asks the implementer and
+// holds the checker, since a merge forward stands at any step once the run has reached its
+// implementation step (classify.MergeForwardStands). The same task at the checker's step before
+// its run reached the implementer asks nothing and tells nobody. The control is the default steps
+// of a run with no plan rows: the implementer is asked and the tester held, as before.
+func TestAMergeForwardAsksTheAgentOfTheTasksImplementationStep(t *testing.T) {
+	told := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
+		return record.MergeForwardMessage{Role: role, Claim: claim.Token(token(t, "LEGION-208", role)), Step: step, Head: conflictHead,
+			Base: "main", Phase: at, PullRequest: 42, Why: record.ConflictCheckNotGreen}
+	}
+	coderDefined := map[string]plan.Type{"coder": plan.TypeImplementation}
+	for _, tc := range []struct {
+		name    string
+		at      phase.Phase
+		status  string
+		defined map[string]plan.Type
+		// steps are the plan's steps, none for a run with no plan rows, and place where its task
+		// stands; reached says the implementer's step of this run raised an entry.
+		steps   []string
+		place   int
+		reached bool
+		want    []record.MergeForwardMessage
+	}{
+		{name: "coder tester, in testing", at: phase.Testing, status: "testing", defined: coderDefined, steps: []string{"coder", "tester"}, place: 2,
+			want: []record.MergeForwardMessage{told("coder", record.MergeForwardAsk, phase.Testing), told(claim.RoleTester, record.MergeForwardHold, phase.Testing)}},
+		{name: "coder implementer tester, back at the coder's step", at: phase.Step, status: "in_progress", defined: coderDefined,
+			steps: []string{"coder", "implementer", "tester"}, place: 1,
+			want: []record.MergeForwardMessage{told("coder", record.MergeForwardAsk, phase.Step)}},
+		{name: "checker implementer tester, back at the checker's step", at: phase.Step, status: "in_progress",
+			defined: map[string]plan.Type{"checker": plan.TypeTesting}, steps: []string{"checker", "implementer", "tester"}, place: 1, reached: true,
+			want: []record.MergeForwardMessage{told(claim.RoleImplementer, record.MergeForwardAsk, phase.Step), told("checker", record.MergeForwardHold, phase.Step)}},
+		{name: "checker implementer tester, at the checker's step before the run reached the implementer", at: phase.Step, status: "in_progress",
+			defined: map[string]plan.Type{"checker": plan.TypeTesting}, steps: []string{"checker", "implementer", "tester"}, place: 1,
+			want: []record.MergeForwardMessage{}},
+		{name: "control: the default steps of a run with no plan rows", at: phase.Testing, status: "testing",
+			want: []record.MergeForwardMessage{told(claim.RoleImplementer, record.MergeForwardAsk, phase.Testing), told(claim.RoleTester, record.MergeForwardHold, phase.Testing)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
+			if len(tc.steps) > 0 {
+				seedStepsPlanDefining(t, pool, "LEGION-208", 1, tc.defined, tc.steps...)
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.place}, record.TaskRunning)
+				})
+				if tc.reached {
+					seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Entry: 1, StepTask: "a", StepPlace: 2})
+				}
+			}
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("merge-forward messages %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // conflictConfirms is the due time of every second read of a conflict the outbox holds, in the
 // order written, each of them a read of #42 at conflictHead due a minute after the first read it
 // carries (record.ConflictConfirm.FirstReadAt).
@@ -380,6 +445,62 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 
 			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), conflictingRead(requiresCI))
 			askedOnce(t, pool, tc.at, tc.status, tc.why, tc.hold)
+		})
+	}
+}
+
+// A merge forward the record holds for the head, asked away from the task's implementation step,
+// covers that head wherever the task stands, so a confirmed read again at that head
+// (mergeability's decision, which mergeForward's walk is read for) asks nothing and reads nothing
+// of the task's walk to decide so: the walk decides only for an ask made at that step
+// (record.MergeForward.Own), which covers that step alone. The walk is made unreadable here, a plan
+// of two tasks, which this release walks none of (record.StoredPlan.Task), so any read of it is an
+// error. The control is the ask made at the implementation step, whose decision reads the walk and
+// answers its error.
+func TestAMergeForwardAlreadyAskedOfTheHeadReadsNoWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		own   bool
+		reads bool
+	}{
+		{name: "an ask made away from the implementation step", own: false},
+		{name: "control: an ask made at the implementation step", own: true, reads: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := settledGreen("lint")
+			pr.ConflictingHead = conflictHead
+			pr.MergeForward = &record.MergeForward{Head: conflictHead, Base: "main", Phase: phase.Testing, Own: tc.own,
+				Why: record.ConflictCheckNotGreen, AskedAt: firstConflictRead}
+			pool := seedConflictIssue(t, phase.Testing, "testing", pr)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				v := record.PlanVersion{Issue: "LEGION-208", Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+					GivenBy: claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect)), GivenAt: stepClock}
+				tasks := []record.PlanTask{
+					{Issue: "LEGION-208", Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting},
+					{Issue: "LEGION-208", Generation: 1, Task: "b", PlanVersion: 2, BlockText: "Test the widget.", State: record.TaskWaiting},
+				}
+				return record.NewStore().PutPlan(t.Context(), tx, v, tasks, nil)
+			})
+
+			engine := readsAfter(2 * conflictConfirmWait)
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(t.Context())
+			_, err = engine.mergeability(t.Context(), tx, conflictingRead(&record.BaseRules{Required: []string{"ci"}}))
+			if read := err != nil && strings.Contains(err.Error(), "holds 2 tasks"); read != tc.reads || (err != nil && !read) {
+				t.Fatalf("a confirmed read at the head already asked of (Own %t) = %v, want the walk read %t", tc.own, err, tc.reads)
+			}
+			if tc.reads {
+				return
+			}
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if messages := mergeForwardMessages(t, pool); len(messages) != 0 {
+				t.Fatalf("merge-forward messages %+v, want none: the head was asked of already", messages)
+			}
 		})
 	}
 }

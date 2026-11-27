@@ -862,9 +862,10 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// Nor is a claim whose every `legion` call this daemon refuses for a stale plugin handed its
 	// task: it waits for the process the refresh lane's relaunch starts (staleRefusesClaim). It is
 	// asked below the three above and below the question of whether there is a task at all,
-	// because it is the costliest of the four — Deps.NoPluginInstall reads the daemon's
-	// configuration — and every send of a claim holding nothing would otherwise pay for it.
-	if m.staleRefusesClaim() {
+	// because it is the costliest of the four: under Kubernetes, for a claim its cheap terms find
+	// stale, Deps.NoPluginInstall reads the plan of the claim's issue from the daemon's store, and
+	// every send of a claim holding nothing would otherwise pay for it.
+	if m.staleRefusesClaim(ctx) {
 		return nil
 	}
 	if _, awaiting := m.timers[TimerTurn]; awaiting {

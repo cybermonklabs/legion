@@ -28,7 +28,8 @@ import (
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
 // declares (listenerwire.LegionAgentEntry). Its role is a role of an issue (legionclaim.IsRole: one
-// of Legion's six or a role the deployment defines), the role of the step its agent runs as
+// of Legion's six, a role the deployment defines or a role the issue's plan defines), the role of
+// the step its agent runs as
 // of the entry's latest write. Its role token is the claim token of that agent, which ends in the
 // agent's name: the role of its first step, or a numbered name such as `implementer-2` for a second
 // agent of one role. Readers ignore fields they do not know, so a later writer may add some.

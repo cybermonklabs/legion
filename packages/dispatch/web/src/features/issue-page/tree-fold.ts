@@ -146,13 +146,14 @@ function unanswered(node: TreeNode): boolean {
     case "requirement":
       return node.counts !== undefined && node.counts.checks === 0;
     // Nothing else holds an answer of its own for the reader to wait on. A note is what
-    // somebody wrote; a child issue is read and answered on its own page, and is one row of
-    // the outline's group of children (R12); a comment and a message are what somebody
-    // said, and what is unanswered in a conversation is the ask inside it, which puts its turn
-    // on the frontier as that ask's ancestor; a result is a record of what a run saw, and its
-    // check carries the verdict; and the issue itself is the root, which is drawn whatever this
-    // says. A document, an image and a handoff are nodes of the issue and not of its
-    // conversation, so the tree holds none of them (R1, R3).
+    // somebody wrote; a plan role is a role the plan defines, its prompt and its model, which
+    // a plan task's step names and nobody answers; a child issue is read and answered on its own
+    // page, and is one row of the outline's group of children (R12); a comment and a message are
+    // what somebody said, and what is unanswered in a conversation is the ask inside it, which
+    // puts its turn on the frontier as that ask's ancestor; a result is a record of what a run
+    // saw, and its check carries the verdict; and the issue itself is the root, which is drawn
+    // whatever this says. A document, an image and a handoff are nodes of the issue and not of
+    // its conversation, so the tree holds none of them (R1, R3).
     case "callout":
     case "child_issue":
     case "comment":
@@ -161,6 +162,7 @@ function unanswered(node: TreeNode): boolean {
     case "image":
     case "issue":
     case "message":
+    case "plan_role":
     case "result":
       return false;
   }

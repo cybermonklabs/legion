@@ -61,8 +61,10 @@ import (
 // already covers (StartFor) gets no second.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The stop of each task
-// a step of a role the deployment no longer defines still has to run (stopLostRoles) comes next,
-// so the resume finds those issues held and starts no lost role. The owners' read
+// that still has to run a step no role may start, of a role neither the deployment nor the plan in
+// force defines or of a role the plan defines on a model the deployment no longer lists
+// (stopLostRoles), comes next, so the resume finds those issues held and starts no such role. The
+// owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers

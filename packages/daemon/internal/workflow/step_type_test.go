@@ -17,11 +17,12 @@ func checkerAndCriticDeployment() plan.Deployment {
 	return plan.Deployment{Roles: roles}
 }
 
-// A stored step takes the type its role has in the engine's deployment (Config.Deployment), which
-// the step record names and every reader of a step's type reads: the project's default steps and
-// an owner's plan each store a role the deployment defines with its own type, as they store
-// Legion's own roles. An engine whose configuration names no deployment stores Legion's own roles
-// with theirs.
+// A stored step takes the type plan.RolesOf gives its role: the type it has in the engine's
+// deployment (Config.Deployment), or, for a role the plan defines, the plan's, which the step
+// record names and every reader of a step's type reads: the project's default steps and an
+// owner's plan each store a role the deployment defines with its own type, as they store Legion's
+// own roles. An engine whose configuration names no deployment stores Legion's own roles with
+// theirs.
 func TestAStoredStepTakesTheTypeOfItsRoleInTheDeployment(t *testing.T) {
 	t.Run("the project's default steps", func(t *testing.T) {
 		pool := migratedPool(t)

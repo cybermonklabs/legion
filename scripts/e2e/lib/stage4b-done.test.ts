@@ -8,7 +8,10 @@ import { scriptCheckpoints } from "./script-functions";
 // children-first-acceptance, before the sign-off the daemon held for them, so nothing of tree 1 is
 // in the workflow when its pull request merges, and the merge closes it at once: merging to done
 // on pull_request_merged, with no close that waits and no pr-merged notice. The checkpoint counts
-// the daemon's wait log and the deliveries of a pr-merged notice to tree 1's architect.
+// the daemon's own line for a close that waits ("a merged issue's close waits for the issues
+// beneath it", which internal/workflow/pullrequest.go writes) and the deliveries of a pr-merged
+// notice to tree 1's architect, and fails on either. A checkpoint that waits for the root to stay
+// in merging, or for a waiting close's log line, cannot pass.
 const path = fileURLToPath(new URL("../stage4b-sandbox-tree.sh", import.meta.url));
 
 /** The `done` checkpoint's lines, from `begin "done"` to the next checkpoint's `begin`. */
@@ -22,7 +25,7 @@ test("the done checkpoint waits for the merge to close tree 1 at once", () => {
 test("the done checkpoint fails on a close that waits and on a pr-merged notice for tree 1", () => {
   const waits = "workflow: a merged issue's close waits for the issues beneath it";
   expect(done).toContain(`log_lines "${waits}"`);
-  expect(done).toContain('[ "$merge_waits" = 0 ]');
+  expect(done).toContain('[ "$waited" = 0 ]');
   expect(done).toContain(
     'notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")"'
   );

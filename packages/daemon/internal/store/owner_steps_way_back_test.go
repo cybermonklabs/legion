@@ -44,6 +44,21 @@ func ownerStepsWayBack(t *testing.T) string {
 	return block
 }
 
+// planRolesMigration is the migration of the roles a plan defines, whose table plan_roles holds a
+// foreign key on issue_plans. A rollback undoes its newest migration first, so a rollback past
+// this release runs that migration's way back before ownerStepsWayBack, as its header and
+// docs/kubernetes.md say: the drop of issue_plans is refused while plan_roles stands.
+const planRolesMigration = "20261125114700_plan_roles.up.sql"
+
+// runPlanRolesWayBack runs the way back the header of planRolesMigration carries, its psql block
+// (headerWayBackOf), on store, as an operator runs it before this release's block.
+func runPlanRolesWayBack(t *testing.T, store *Store) {
+	t.Helper()
+	if _, err := store.Pool().Exec(context.Background(), headerWayBackOf(t, planRolesMigration), pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the way back of %s before %s's: %v", planRolesMigration, ownerStepsMigration, err)
+	}
+}
+
 // noticeKindsBeforeOwnerSteps is the list of the notice kinds an architect is told in the release
 // this rollback goes back to (its validNoticeKinds): every kind of this release's list but the
 // three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
@@ -196,6 +211,7 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 				}
 			}
 
+			runPlanRolesWayBack(t, store)
 			if _, err := store.Pool().Exec(ctx, strings.ReplaceAll(tc.block, "<PROJECT>", "LEGION"), pgx.QueryExecModeSimpleProtocol); err != nil {
 				t.Fatalf("run the way back %s's header carries: %v", ownerStepsMigration, err)
 			}
@@ -272,6 +288,7 @@ func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
 					t.Fatalf("seed %s: %v", h.key, err)
 				}
 			}
+			runPlanRolesWayBack(t, store)
 			if _, err := store.Pool().Exec(ctx, strings.ReplaceAll(tc.block, "<PROJECT>", "LEGION"), pgx.QueryExecModeSimpleProtocol); err != nil {
 				t.Fatalf("run the way back %s's header carries: %v", ownerStepsMigration, err)
 			}

@@ -22,20 +22,17 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
-- To have one agent work several steps, give each of them the same key after its role, as `steps="implementer:a tester:a reviewer"`.
-  Legion runs the steps of one key as one agent, in one claim and one session, whatever their roles; a step with no key is an agent of its own.
+- Steps that share a key, `<role>:<key>`, are one agent in one session, and a step with no key has an agent of its own.
+  Your role prompt gives the rules of keys and of a role at two steps.
   The agent of the step whose role your `Production check` line names keeps its session past the close, for that check, and where two steps of the task have that role, the agent of the one that ran last; where no step of the task has that role, the check starts a fresh agent of it.
-  A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
-  A role may stand at two steps, of one agent where both steps carry one key, or of two.
-  Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
-  `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`.
-  Under `runtime: kubernetes` it runs in a pod slot named for it, and where the pod has none, step 3 waits for the pod's update round or release.
+  Write in the task's text whether each step needs a fresh agent or an earlier one, and why.
+  Retro rates the plan's steps, and the agent that worked each, against that choice.
   A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
 
 ## The roles and their order
 
 Name the steps in `steps` in the order they run.
-A step names one of Legion's roles in the table below, or a role this deployment defines: your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.
+A step names one of Legion's roles in the table below, a role this deployment defines, or a role your plan defines (`skill://legion-architect/references/plan-roles.md`): your `Legion addressing` line lists the first two, each with the type of its step.
 A `planner` step may stand at any place. The task's first `implementer` step stands before each `tester`, `reviewer` and `acceptance:owner` step, and a later one may follow them, as in `implementer:a reviewer implementer:a`: a plan with no `implementer` step before one of them is refused with a reason that ends `This release of Legion does not carry it out yet.`
 A role this deployment defines runs where its step stands, at the phase `step`, and reports pass or fail.
 It reads no pull request, so it may stand at any place too.
@@ -62,16 +59,19 @@ A step of a role of this deployment runs and holds the checks only as its prompt
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
+The refusals of a role block your plan defines: `skill://legion-architect/references/plan-roles.md`.
+A step that names a role neither the deployment nor the plan defines is refused (`step <n> of task <t> names the role <role>, which neither the deployment nor the plan defines.`), and no release takes it.
+The steps of one key, `<role>:<key>`, are one agent.
+So a key whose steps name roles of two models is refused (`… one agent runs on one model.`), and so is one whose steps name roles of two harnesses (`… one agent runs on one harness.`).
 Fix each reason and give a new version.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the rules above.
-Among them, a role of this deployment of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
-A step that names a role neither Legion nor this deployment defines is refused `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`, and no release takes it.
+Among them, a role of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
 `read_record` shows such an issue: one of its `assignments` has `plan` `default`.
 
-The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
+Your role prompt gives the reasons a version gets for where its task stands.
 
 ## When to give it
 

@@ -28,9 +28,10 @@ type Tmux struct {
 	PaneEnv map[string]string
 	// PiConfigFiles is `runtime.tmux.pi_config_files`: Oh My Pi settings overlays every pane names
 	// in PI_CONFIG_FILES, in file order and before the pane's own role overlays
-	// (`role_config_files`), so the later of them outranks the earlier; Legion names no overlay of
-	// its own, so these and the role's own are the whole of the list. A relative path is resolved
-	// against the file's directory.
+	// (`role_config_files`), so the later of them outranks the earlier. Legion names no overlay of
+	// its own: the list is these, then the role's own, then those of each experiment arm the pane's
+	// unit was drawn into (tmux's panePairs). A relative path is resolved against the file's
+	// directory.
 	PiConfigFiles []string
 	// TakeOver is `runtime.tmux.take_over`: the runtime whose claims this daemon takes over from
 	// the project's store, "" for none, and TakeOverKubernetes the one value accepted. With it, a

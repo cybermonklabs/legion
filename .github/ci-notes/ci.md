@@ -307,9 +307,16 @@ a Go test cannot see no longer runs 1,083 s of them (dispatch://INFRA-1413).
 
 pi-legion's agents: `packages/daemon/internal/prompts/roles_test.go#TestEveryTaskAgentARolePromptDispatchesIsShipped`
 stats `agents/<name>.md`.
-With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, they are the files of
-pi-legion this suite reads. The pack and prompt probes, which read the rest of
-it, are the plugin-pack job's.
+With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 live proof" step) reads, and the
+skill-scenario rig's program (the next note), they are the files of pi-legion this suite reads. The pack and
+prompt probes, which read the rest of it, are the plugin-pack job's.
+
+## daemon_go_tests: The skill-scenario rig's program: internal/daemon/rig_prompt_test.go builds it
+
+The skill-scenario rig's program: internal/daemon/rig_prompt_test.go's runRig builds
+packages/pi-legion/scripts/skill-scenarios/daemon-pane.go, with daemon-pane-architect.go beside it, as
+the main of cmd/daemon-pane with `go run -overlay`, as the rig does, and holds the architect's prompt it
+prints to the one SpawnSpec composes.
 
 ## daemon_go_tests: The rule file internal/prompts/roles_test.go holds the role parts to
 

@@ -149,7 +149,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 }
 
 // register_plan judges a plan against the deployment the server is given (Options.Deployment),
-// the roles the daemon's settings define: with checker in it, `implementer checker` is taken;
+// whose roles are the ones the daemon's settings define: with checker in it, `implementer checker` is taken;
 // without it, the plan is refused naming checker; and `reviewer implementer` is refused with the
 // reason of a step that reads a pull request before the implementer, whatever the deployment.
 func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {

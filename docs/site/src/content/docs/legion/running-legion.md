@@ -19,7 +19,7 @@ in your cluster, from one published worker image, and every agent of that issue 
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
 | [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and, for the issues that name no repository, the project's default repository, set in Dispatch ([below](#the-projects-repositories)). |
 | The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs. |
-| Three GitHub Apps | An **implement** App (the identity of the implementer, the merger and each role of `roles` whose `github_app` is `implement`), a **review** App (every other role's) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
+| Three GitHub Apps | An **implement** App (the identity of the implementer, the merger and each role of the type implementation that an issue's plan defines), a **review** App (every other role's, but a role of the deployment acts as the App its `github_app` names) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
 | The worker image | `ghcr.io/cybermonklabs/legion-worker`, pinned by digest. |
 | A model route | An Oh My Pi provider file and settings overlay, and the credential they read ([below](#the-model-route)). |
 
@@ -243,9 +243,11 @@ installation that Dispatch searches.
 An install of a role App counts as every other installation of it does, because the daemon
 keeps no list of owners.
 An account that installs the implement App gets a directory with that App's write token in the
-gh bundle of every role that acts as that App, from the next bundle the daemon builds.
-An install of the review App gives every other role that App's token the same way, and the
-controller its read-only one.
+gh bundle of every role that acts as that App, from the next bundle the daemon builds: the
+implementer, the merger, a role of the deployment whose `github_app` names it, and a role of an
+issue's plan of the type implementation.
+An install of the review App gives every role that acts as the review App that App's token the
+same way, and the controller its read-only one.
 The account's name joins the owners that each later launch of that App's roles is told in the
 `Legion addressing` line of its prompt.
 Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's
@@ -880,10 +882,11 @@ What each part is for:
   each refused by name. What the pacing is holding right now is in the state's `wakesWaiting`
   ([Observe](#observe)).
 - **`worker_backends`** (optional) runs a role on Claude Code instead of Oh My Pi:
-  `worker_backends: {implementer: claude}`. Each key is an issue role or a role of `roles`, each value `omp` (the
-  default) or `claude`. Claude Code runs the phase workers (`planner`, `implementer`, `tester`,
-  `reviewer`, `merger`, and each role of `roles`) under either runtime; the loader refuses `claude` for the architect, naming
-  why, and refuses any other value. The controller always runs on Oh My Pi. A tmux daemon running a
+  `worker_backends: {implementer: claude}`. Each key is an issue role, one of Legion's or a role
+  `roles` defines, and each value is `omp` (the default) or `claude`. Claude Code runs the phase
+  workers (`planner`, `implementer`, `tester`, `reviewer`, `merger`) and the roles `roles` defines,
+  under either runtime. The loader refuses `claude` for the architect, naming why, and refuses any
+  other value. The controller always runs on Oh My Pi. A tmux daemon running a
   Claude Code role resolves `claude` from `LEGION_CLAUDE_PATH` (else `PATH`), the `bun` its MCP
   server runs on from `LEGION_BUN_PATH` (else `PATH`), and a built `packages/claude-envoy` from
   `LEGION_CLAUDE_PLUGIN_DIR`, and refuses to boot without any of them. A Kubernetes daemon
@@ -1126,7 +1129,9 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 
 ## The model route
 
-Legion names no provider, and no model but the `model` a role of `roles` names: how an agent reaches a model is yours. The repository's
+Legion names no provider, and a model only where your settings or an issue's plan name one for a
+role (`models`, `roles.<name>.model`, the `model` of a `plan_role` block): how an agent reaches a
+model is yours. The repository's
 `deploy/kubernetes/operator-route/` is a working example, rendered in the
 [configuration reference](/legion/legion/reference/config/):
 
@@ -1171,8 +1176,8 @@ To change the model of one of Oh My Pi's model roles later, edit its line under 
 `overlay.yml` and run `apply.sh` again.
 Pods started after that use it; a running pod keeps its files until it is relaunched.
 A role whose settings name no model runs on the `default` line.
-A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the
-`default` line.
+A role whose `roles.<name>.model` or whose plan's role block names a `model` runs on that model, in
+place of the `default` line.
 
 ## Check and start the daemon
 
@@ -1193,11 +1198,12 @@ legion start --config legion.yaml
 
 The daemon runs in the foreground and logs JSON lines to standard error. At every boot it checks
 that Agent Sandbox is installed and runs the worker image's launch probes in a probe Sandbox
-(`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must speak this daemon's contract
-and load with its Envoy plugin,
-every agent's model must resolve, and every model key must work. Nothing restarts the daemon on its
-own, so run it under a process supervisor you trust. `legion stop --config legion.yaml` stops it,
-and `legion legions` lists the daemons registered on the machine.
+(`legion-probe-<project>-<digest prefix>`). The image's Legion plugin must speak this daemon's
+contract and load with its Envoy plugin. Each subagent that Legion's role prompts dispatch and that
+names a model must resolve to it, with a key that works. A model only a role's settings or an
+issue's plan names is not resolved at boot. Nothing restarts the daemon on its own, so run it under
+a process supervisor you trust. `legion stop --config legion.yaml` stops it, and `legion legions`
+lists the daemons registered on the machine.
 
 The `legion` binary the daemon runs and the worker image must come from the same commit. The
 image carries that binary, which embeds Legion's role prompts, at `/opt/legion/bin/legion` and

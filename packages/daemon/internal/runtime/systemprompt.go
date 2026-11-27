@@ -61,7 +61,8 @@ func ComposePrompt(parts PromptParts) (string, error) {
 // longer rides an argument, and one the daemon must meet itself. The daemon sets no bound of its
 // own on a model's context, which it cannot read; Oh My Pi answers a request too large for its
 // model. Nothing of the launch was started, and every try composes the same text from the same
-// files until the deployment changes them, so supervise charges it no launch failure and fails the
+// files until the deployment changes them, or, for a role of the issue's plan, until a later
+// version of the plan changes its prompt, so supervise charges it no launch failure and fails the
 // claim at once with this sentence, which names the role, the prompt's size and the limit
 // (promptRefused).
 type PromptTooLarge struct {

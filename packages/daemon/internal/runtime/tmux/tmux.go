@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -83,7 +84,8 @@ type Options struct {
 	// dispatch_url is set.
 	DispatchURL       string
 	DispatchTokenFile string
-	// GitHubCredential is the daemon's function for a role's gh bundle (runtime.GitHubCredential):
+	// GitHubCredential is the daemon's function for a role's gh bundle (appauth.Credential,
+	// appauth.GitHubCredential):
 	// one directory of gh files per GitHub owner of the project. A launch calls it for the pane's
 	// role and its repository's owner and writes the bundle under the claim's root
 	// (runtime.GHConfigDir), the pane's LEGION_GH_OWNERS_DIR, whose default owner's directory is the
@@ -93,7 +95,14 @@ type Options struct {
 	// both ask ControllerCredential, since it works no repository; it acts as the review App either
 	// way (appauth.AppRoleFor). Nil is a daemon with no GitHub Apps (Stage 2's, which configures no
 	// workflow): its panes are told no gh variable, hold no gh files, and the refresher does nothing.
-	GitHubCredential runtime.GitHubCredential
+	GitHubCredential *appauth.Credential
+	// RoleApps is the reader of a role's App that GitHubCredential reads (the daemon's roleApps):
+	// Deployed is each role the deployment defines in its settings (`roles`) with the GitHub App it
+	// acts as, and Plan reads a role the plan in force of an issue defines. A walk of the panes
+	// builds one bundle for each App a role acts as and each repository (appauth.NewBundles), so a
+	// role of the deployment is built once for every issue of a repository whose plan does not
+	// define its name. A nil Deployed is a deployment that defines no role.
+	RoleApps appauth.RoleApps
 	// ActsAs answers the role whose App a claim's pane holds while the claim does work other than
 	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each mint of a pane's gh
 	// files. Optional: nil gives every pane its claim's stored role.
@@ -205,7 +214,9 @@ type Runtime struct {
 	natsURLs         []string
 	dispatchURL      string
 	dispatchToken    string
-	gitHubCredential runtime.GitHubCredential
+	gitHubCredential *appauth.Credential
+	// roleApps is Options.RoleApps.
+	roleApps appauth.RoleApps
 	// actsAs is Options.ActsAs.
 	actsAs runtime.ActsAs
 	// controllerCredential is the controller pane's bundle by default owner
@@ -385,6 +396,7 @@ func New(opts Options) (*Runtime, error) {
 		dispatchURL:             opts.DispatchURL,
 		dispatchToken:           opts.DispatchTokenFile,
 		gitHubCredential:        opts.GitHubCredential,
+		roleApps:                opts.RoleApps,
 		actsAs:                  opts.ActsAs,
 		controllerCredential:    opts.ControllerCredential,
 		gh:                      opts.GH,

@@ -37,7 +37,7 @@ import (
 // begins with the settlement's identity (intake.SettlementIdentity), by which it is matched to
 // the listener's line that published the settlement, and is written once for each identity
 // (logDroppedSettlement).
-func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Role) (intake.Result, error) {
+func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Token) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil {
 		return intake.Result{}, err
@@ -177,13 +177,13 @@ const conflictConfirmWait = time.Minute
 //
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
-// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer, or in merging the
-// merger, to merge the base forward, and the issue keeps its phase (mergeForward, R1); no reason
-// leaves the conflict recorded and logged with the checks the base requires and those green on
-// the head, and the task's steps go on at that head. A CONFLICTING read of a head the
-// record already holds conflicting decides again in the same way, since the phase the issue has
-// reached since can need what the phase before did not, and mergeForward asks nothing twice for
-// one head.
+// (intake.PullRequestMergeability.Rules). A reason to act asks the agent of the task's
+// implementation step, or in merging the merger, to merge the base forward, and the issue keeps
+// its phase (mergeForward, R1); no reason leaves the conflict recorded and logged with the checks
+// the base requires and those green on the head, and the task's steps go on at that head. A
+// CONFLICTING read of a head the record already holds conflicting decides again in the same way,
+// since the phase the issue has reached since can need what the phase before did not, and
+// mergeForward asks nothing twice for one head.
 //
 // GitHub's own merge state for the head rides along on the same fact: it is what says whether
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
@@ -322,6 +322,13 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	// A confirmed read again at a head the record's ask names, made away from the task's
+	// implementation step, asks nothing: that ask covers the head wherever the task stands
+	// (mergeForward), so neither the walk nor R0 is read to decide so. Only an ask made at that step
+	// (record.MergeForward.Own) covers that step alone, and its decision reads the walk.
+	if asked := pr.MergeForward; decide && asked != nil && asked.Head == pr.HeadSHA && !asked.Own {
+		decide = false
 	}
 	if decide {
 		w, err := e.walk(ctx, tx, *issue)
@@ -539,29 +546,33 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
 // the worker that holds the phase decides whether to re-run, wait or fix
 // (dispatch://INFRA-714/spec R1). One message goes to the claim of each of three roles' workers -
-// the worker holding the issue's phase, the implementer, whose code the checks ran on, and the
-// architect that owns the issue (owningArchitect) - each on the role topic of that claim
-// (record.RoleMessage), the way the daemon reaches a role holder with a message. In merging the
-// implementer is not told: the merge and what breaks it are the merger's to decide, and the merger
-// asks the implementer when it needs it (cybermonklabs/legion#4979). A held issue keeps the worker
-// of Hold.From (record.StandsAt). A claim named twice, the implementer holding the phase or one
-// keyed agent working two of the roles, is told once, and a phase no worker holds names none
+// the worker holding the issue's phase, the agent of the task's step that does its implementation
+// work where the issue stands (implementationAgent: the implementer of today's steps, or a role of
+// the type implementation under another name), whose code the checks ran on, and the architect
+// that owns the issue (owningArchitect) - each on the topic of that claim (record.RoleMessage), the
+// way the daemon reaches a role holder with a message. In merging the agent of the implementation
+// step is not told: the merge and what breaks it are the merger's to decide, and the merger asks
+// the implementer when it needs it (cybermonklabs/legion#4979). A held issue keeps the worker of
+// Hold.From (record.StandsAt). A claim named twice, the implementer holding the phase or one keyed
+// agent working two of the roles, is told once, and a phase no worker holds names none
 // (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
 // the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every claim of the tree is
 // suspended there, so the settlement is recorded and nobody is told.
 //
-// A role whose released pod this same settlement woke is told nothing: its wake task already
+// A claim whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
 // would reach it as a second wake of one release, described to the worker as something somebody
-// published to its role topic. woken is that role, "" when the settlement woke nobody, and every
-// other role — a live one, and one the wake did not reach — is told as before.
+// published to its role topic. woken is that claim, "" when the settlement woke nobody, and every
+// other claim — a live one, and one the wake did not reach — is told as before. It is compared by
+// claim, not by role: the agent of the implementation step can work the retro under the role
+// implementer while its own step's role has another name, and so be the claim the wake reached.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Token) error {
 	settled := settledChecks(*pr)
 	if settled == "" || settled == told {
 		return nil
@@ -576,25 +587,25 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
 	// while its claim holds its role, else the nearest one above it that does, else the tree
 	// root's. A phase the architect itself holds (accepting) is that same architect's acceptance,
-	// so it is told once, as the owner; and an architect this settlement woke would be the issue's
-	// own released claim, which holds its role and so is that owner too.
-	recipients := []roleRecipient{}
-	if woken != claim.RoleArchitect {
-		owner, err := e.owningArchitect(ctx, tx, *issue)
+	// so it is told once, as the owner.
+	owner, err := e.owningArchitect(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	recipients := []roleRecipient{{issue: owner, role: claim.RoleArchitect, row: issue.Key}}
+	if worker := issue.RoleAt(record.StandsAt(*issue)); worker != claim.RoleArchitect {
+		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
+	}
+	if !record.StandsIn(*issue, phase.Merging) {
+		w, err := e.walk(ctx, tx, *issue)
 		if err != nil {
 			return err
 		}
-		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
-	}
-	roles := []claim.Role{issue.RoleAt(record.StandsAt(*issue))}
-	if !record.StandsIn(*issue, phase.Merging) {
-		roles = append(roles, claim.RoleImplementer)
-	}
-	for _, role := range roles {
-		if role == claim.RoleArchitect || role == woken {
-			continue
+		if implementer, named, err := e.implementationAgent(*issue, w, record.StandsAt(*issue)); err != nil {
+			return err
+		} else if named {
+			recipients = append(recipients, implementer)
 		}
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
 	}
 	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {
@@ -602,6 +613,9 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	}
 	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", pr.Number, settled)
 	for _, to := range addressed {
+		if to.token == woken {
+			continue
+		}
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
 			return err
 		}
@@ -1574,7 +1588,11 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 		return false, err
 	}
 	place, _ := w.placeIn(record.StandsAt(*issue))
-	if classify.MergeStateReadOwed(w.Line, place, fact) {
+	start, reached, err := e.mergeForwardStands(ctx, tx, *issue, w, place)
+	if err != nil {
+		return false, err
+	}
+	if classify.MergeStateReadOwed(start, place, reached, fact) {
 		return true, nil
 	}
 	// The round's own answer matters only where the fact and the phase owe no read: every phase

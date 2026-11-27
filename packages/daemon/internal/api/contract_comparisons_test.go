@@ -149,12 +149,12 @@ var contractComparisonRows = []contractComparisonRow{
 	// The 409 STALE_PLUGIN_CONTRACT is written where StaleRefusesCalls says the claim is stale
 	// (internal/api's staleClaim), and compares nothing of its own.
 	{row: "Stale claims", compares: []comparisonSite{
-		comparedIn("internal/supervise/plugin.go", "StaleRefusesCalls", "c.PluginContract != daemonContract"),
+		comparedIn("internal/supervise/plugin.go", "StaleRefusesCalls", "c.PluginContract == daemonContract"),
 		comparedIn("internal/supervise/plugin.go", "Machine.refreshPlugin", "m.claim.PluginContract == m.deps.PluginContract"),
 		comparedIn("internal/supervise/plugin.go", "Machine.refreshOverturned", "m.claim.PluginContract == m.deps.PluginContract"),
 		comparedIn("internal/supervise/plugin.go", "Machine.staleRegistration", "got == m.deps.PluginContract"),
 		comparedIn("internal/supervise/plugin.go", "Machine.staleRegistration", "m.claim.PluginRelaunchFor == m.deps.PluginContract"),
-		comparedIn("internal/daemon/daemon.go", "staleForTheLane", "c.PluginContract == api.DaemonAPIVersion()"),
+		comparedIn("internal/daemon/stale_plugin.go", "staleForTheLane", "c.PluginContract == api.DaemonAPIVersion()"),
 		comparedIn("internal/daemon/specs.go", "specs.stalePluginInstall", "c.PluginContract == api.DaemonAPIVersion()"),
 	}},
 	{row: "A current registration", compares: []comparisonSite{

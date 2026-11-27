@@ -3,11 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
@@ -15,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -38,8 +42,8 @@ func refreshCountSource(t *testing.T, cfg config.Config, st *store.Store) *sourc
 		runtime: "tmux", admissionCap: cfg.AdmissionCap, startedAt: time.Now(),
 		deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
-		noPluginInstall: func(c supervise.Claim) bool {
-			return c.Role == claim.RoleReviewer
+		noPluginInstall: func(_ context.Context, _ pgx.Tx, c supervise.Claim) (bool, error) {
+			return c.Role == claim.RoleReviewer, nil
 		},
 	}
 }
@@ -153,6 +157,122 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 	}
 	if got := refreshCountState(t, cfg, st, view).ClaimsToRefresh; got != 0 {
 		t.Fatalf("claimsToRefresh = %d once every claim records this contract, want 0", got)
+	}
+}
+
+// Under Kubernetes the state's count asks, of a stale claim of a role that is none of Legion's,
+// whether its launch installs a plugin, and that reads the plan of the claim's issue. The count
+// runs inside the state's snapshot under a context that marks the connection the snapshot holds,
+// as every API route's does, so the pool refuses that caller a connection of its own
+// (store.ErrNestedAcquire). The deployment's prober runs on Claude Code. The plan of the first
+// issue defines no prober, so its stale claim is one no install moves and the count leaves it
+// out. The plan of the second defines a prober of its own, which runs on Oh My Pi, so an install
+// moves its stale claim and the count names it. Only a read of the plan through the snapshot
+// itself answers both (stateNoPluginInstall): a read refused or failed answers neither, so the
+// count of 1 is what a read that left the snapshot cannot give.
+func TestTheStateCountReadsAClaimsPlanThroughItsOwnSnapshot(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Runtime.Name = "kubernetes"
+	cfg.Roles = []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}
+	cfg.WorkerBackends = map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}
+	deployed, planned := cfg.Project+"-1", cfg.Project+"-2"
+	var claims []supervise.Claim
+	for _, issue := range []string{deployed, planned} {
+		c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
+		c.PluginContract = api.DaemonAPIVersion() - 1
+		claims = append(claims, c)
+	}
+	putPreviousRun(t, cfg, previousRun{
+		issues: []record.Issue{runningRoot(deployed, phase.Implementing), runningRoot(planned, phase.Implementing)},
+		claims: claims,
+	})
+
+	ctx := store.WithTransactionTracking(context.Background())
+	st, err := store.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	putPlanRole(t, st, planned, record.PlanRole{Role: "prober", Type: "testing", Model: "prober-model", Prompt: "# Prober\n\nProbe the change."})
+	view := refreshCountSource(t, cfg, st)
+	view.noPluginInstall = stateNoPluginInstall(cfg)
+	var state api.State
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		state, _, err = view.State(ctx, tx)
+		return err
+	}); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if state.ClaimsToRefresh != 1 {
+		t.Fatalf("claimsToRefresh = %d, want 1: the prober of %s is the deployment's on Claude Code, which no install moves, and the prober of %s is its plan's on Oh My Pi, which an install moves",
+			state.ClaimsToRefresh, deployed, planned)
+	}
+}
+
+// putPlanRole records version 1 of the plan of issue, at its generation 1, as defining role and
+// no task: what a plan read of the role finds (record.Store.PlanRoleOf).
+func putPlanRole(t *testing.T, st *store.Store, issue string, role record.PlanRole) {
+	t.Helper()
+	ctx := context.Background()
+	records := record.NewStore()
+	role.Issue, role.Generation, role.PlanVersion = issue, 1, 1
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: issue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, issue, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		if err := records.PutPlan(ctx, tx, v, nil, nil); err != nil {
+			return err
+		}
+		return records.PutPlanRoles(ctx, tx, issue, 1, 1, []record.PlanRole{role})
+	}); err != nil {
+		t.Fatalf("record the plan of %s defining %s: %v", issue, role.Role, err)
+	}
+}
+
+// A read of a claim's plan that the server fails inside the state's snapshot ends the state's read
+// with that read's own error. The server's error has already ended the snapshot's transaction, so
+// a count that took the failure for an answer would go on to the next read of the snapshot, which
+// fails with "current transaction is aborted" and names nothing of the cause. The plan's table is
+// renamed away in a database of the test's own, so the read fails at the server as a store fault
+// does, through the daemon's own reader (stateNoPluginInstall).
+//
+// The control is the rule before this, run by hand: a failed read answered that no install moves
+// the claim. The state's read then ends on the project's pause, with the aborted transaction's
+// error (25P02) in place of the plan read's (42P01).
+func TestAFailedPlanReadEndsTheStatesReadWithItsOwnError(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	cfg := testConfig(t)
+	cfg.PostgresDSN = pool.Config().ConnString()
+	cfg.Runtime.Name = "kubernetes"
+	cfg.Roles = []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}
+	cfg.WorkerBackends = map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}
+	issue := cfg.Project + "-1"
+	c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
+	c.PluginContract = api.DaemonAPIVersion() - 1
+	putPreviousRun(t, cfg, previousRun{issues: []record.Issue{runningRoot(issue, phase.Implementing)}, claims: []supervise.Claim{c}})
+
+	ctx := store.WithTransactionTracking(context.Background())
+	st, err := store.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if _, err := st.Pool().Exec(context.Background(), `alter table plan_roles rename to plan_roles_away`); err != nil {
+		t.Fatalf("rename the plan's roles away: %v", err)
+	}
+	view := refreshCountSource(t, cfg, st)
+	view.noPluginInstall = stateNoPluginInstall(cfg)
+	err = store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := view.State(ctx, tx)
+		return err
+	})
+	// 42P01 is undefined_table, the server's own error for the renamed table.
+	var failed *pgconn.PgError
+	if !errors.As(err, &failed) || failed.Code != "42P01" {
+		t.Fatalf("State = %v, want the plan read's own error, undefined_table (42P01)", err)
+	}
+	if want := "the role prober of the plan of " + issue; !strings.Contains(err.Error(), want) {
+		t.Errorf("State = %v, want it to name the read (%q)", err, want)
 	}
 }
 

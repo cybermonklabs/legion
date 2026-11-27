@@ -18,10 +18,10 @@ section can use the words without stopping to explain them.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime each issue runs in one pod of its own, from one published worker image: every agent of
   the issue runs in that pod, each in a slot of its own and in Linux namespaces of its own, and
-  talks to the daemon over a connection its slot's launcher dials back; the project's controller
-  runs in a pod of its own. A phase worker's role, a role of the deployment among them, may run on
-  Claude Code instead, under either runtime (`worker_backends` in `legion.yaml`); it does the same
-  work through the same `legion` tool and keeps its conversation the same way.
+  talks to the daemon over a connection its slot's launcher dials back; a controller the daemon
+  launches runs in a pod of its own. A phase worker's role, a role of the deployment among them, may
+  run on Claude Code instead, under either runtime (`worker_backends` in `legion.yaml`); it does the
+  same work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
@@ -47,11 +47,12 @@ with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
 Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
-Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
-is installed on.
-Each token is minted on that owner's installation with the role's own permissions: the implement
-App's write set for the implementer, the merger and each role of `roles` whose `github_app` is
-`implement`, the review App's review set for every other role.
+Every worker holds a gh bundle of the GitHub App its role acts as on its issue, with one token for
+each owner that App is installed on.
+Each token is minted on that owner's installation with that App's permissions: the implement
+App's write set for the implementer, the merger and a role of the issue's plan of the type
+implementation, the set of the App its `github_app` names for a role of the deployment that the
+issue's plan does not define, and the review App's review set for every other role.
 The bundle holds one directory per owner the App is installed on, one more per owner a
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
@@ -122,13 +123,13 @@ admission to close. The architect:
 1. claims the issue in Dispatch, so no other session works it alongside Legion;
 2. extends your issue's spec in place, writing each open question as a decision block for you to
    answer;
-3. asks you to approve the spec (the [design gate](#the-design-gate));
-4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
+3. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
+4. asks you to approve the spec (the [design gate](#the-design-gate));
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
 6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
 
-The architect writes no code. A child issue runs the steps its own plan names, as its root does,
-with a pull request of its own, inside the same tree.
+The architect writes no code. A child issue runs the steps its own plan names, or the default
+steps, as its root does, with a pull request of its own, inside the same tree.
 
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
 Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
@@ -182,7 +183,7 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `step` | the role of the deployment the step names | Runs each step of a role the deployment defines (`roles` in `legion.yaml`, below). Its agent does what its `prompt_file` asks, writes no handoff, and reports `pass` or `fail` with the commit its workspace stands on. The issue's Dispatch status is `in_progress`. | the App its `github_app` names, the review App by default |
+| `step` | the role of the deployment or of the issue's plan the step names | Runs each step of a role the deployment defines (`roles` in `legion.yaml`, below) or the issue's plan defines (a `plan_role` block, below). Its agent does what its `prompt_file` or its block's prompt asks, writes no handoff, and reports `pass` or `fail` with the commit its workspace stands on. The issue's Dispatch status is `in_progress`. | for a role of the deployment, the App its `github_app` names, the review App by default; for a role of the plan, the implement App for the type implementation and the review App for any other |
 | `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the handoff of each tester step and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`). No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
@@ -214,19 +215,20 @@ own required checks.
 The table is the line of the **default steps**. Each architect of a tree, the root's or a
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
 **plan** that picks which steps it runs and in what order.
-Its one task names the table's roles or roles the deployment defines,
+Its one task names the table's roles, roles the deployment defines or roles the plan defines itself,
 with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
 since each of those reads the pull request the implementer opens,
 and after each other step of the type implementation,
 since Legion's retro is done by the implementer,
 where these ordering rules apply to the first `implementer` step.
+The plan defines each of its roles in a `plan_role` block such as `:::plan_role{#prober type="testing" model="<a listed model>"}`, whose text is the role's prompt.
 A later `implementer` step may come after the steps that read the pull request.
 
 `acceptance:owner` is the architect's acceptance in `accepting`. Other steps can carry a key, as in `implementer:a tester:a`. Steps with one key run as one agent in one claim and one session. A role at two steps can use a single key, as in `implementer:a reviewer implementer:a`, or two agents. In `implementer reviewer implementer`, step 3 starts `implementer-2` with a fresh session. In `implementer reviewer:a implementer:a`, step 3 uses the agent that started as the reviewer.
 
 A key keeps its name even when a plan version omits it. A new agent that would have used it gets a numbered name and a pod slot of its own. Its start can wait for the pod's update round. A name only unkeyed agents held can return to a new agent of their role once no agent of the current plan holds it. The new agent starts a fresh session. A different role cannot take the name: the stored claim or an earlier row records its role.
 
-The architect writes the plan as the issue's `plan.md` document, with one `plan_task` block such as
+The owner writes the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its

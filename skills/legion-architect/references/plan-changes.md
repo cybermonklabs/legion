@@ -16,6 +16,19 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 - A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
   The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
 
+### A role under a running task
+
+- A later version that changes the type, the model or the prompt of a role block that a step of the running task names is refused (`task <id> is running: stop it with stop_task before you change it.`).
+  Stop the task with `stop_task` first, then give the version.
+  A change of a role block that no step names changes no task.
+
+- A later version that takes away a role block that a step still names is refused whether the task runs or not (`… which neither the deployment nor the plan defines.`), and stopping the task does not help.
+  Keep the block, or change the task's steps too, and then the rule above for a running task applies.
+
+- Once an operator adds a role of the deployment with your role's name, your issue keeps its plan's role, but Legion refuses every later version that keeps a role of that name (`… which the deployment or Legion defines already; …`).
+  A version that gives the role a new name changes each task whose steps name it, so Legion refuses it while such a task runs:
+  stop that task with `stop_task` first, then give a version whose role has a new name.
+
 ## The notices
 
 - **`task-stopped`:** Legion stopped the task and holds the issue.

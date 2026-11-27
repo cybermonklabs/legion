@@ -20,6 +20,13 @@ import { parseNodeReference, referenceHref, shortForm } from "../refs/routes";
  */
 const BLOCK_IDENTITY_ATTRIBUTE = "blockId";
 
+/**
+ * The block types whose identity is a name a reader reads, so the header draws it as the block's
+ * own text: a plan role's id is the role's name, the word a plan task's `steps` names it by. Every
+ * other type's identity is an address, which the header hides.
+ */
+const NAMED_BY_IDENTITY: Readonly<Record<string, true>> = { plan_role: true };
+
 function attributeValue(value: unknown): string {
   return Array.isArray(value) ? JSON.stringify(value) : String(value);
 }
@@ -102,12 +109,13 @@ function drawnAttributes(
  * The header reads as a label rather than a dump: the block's name is an eyebrow, a `kind` is a
  * badge beside it, a `title` is the header's own text, and any other attribute the author wrote
  * follows as a quiet name/value pair, a `block[]` one as a link to each block it points at
- * (`drawnAttributes`). What the author did not write never appears - the block's
- * identity, and every attribute the type's schema marks `server`, which is where the parser's
- * complaint and a decision's recorded state live. `type` is that schema entry; without one
- * (a node whose type the schema no longer describes) only the identity is hidden, and a
- * `block[]` attribute of such a type reads as the value it is. In the editor
- * it is the node view's drawing (`typedBlockView`), never the node's `toDOM`: HTML of the
+ * (`drawnAttributes`). A type whose identity is a name (`NAMED_BY_IDENTITY`, a plan role) shows
+ * that name as the header's own text, beside the block's name. What the author did not write
+ * never appears - every other type's identity, and every attribute the type's schema marks
+ * `server`, which is where the parser's complaint and a decision's recorded state live. `type`
+ * is that schema entry; without one (a node whose type the schema no longer describes) only the
+ * identity is hidden, and a `block[]` attribute of such a type reads as the value it is. In the
+ * editor it is the node view's drawing (`typedBlockView`), never the node's `toDOM`: HTML of the
  * document - a copy, a drag, or the editor's plain-text paste, which renders the markdown it
  * parsed through `toDOM` - carries only the block's section and content, which is all its parse
  * rule reads. In the read-only text engine (a comment, ask or message body) it is the schema's
@@ -119,6 +127,11 @@ export function renderTypedBlock(
   type?: Pick<BlockTypeSchema, "attributes"> | undefined
 ): DOMOutputSpec {
   const shown = drawnAttributes(node, type);
+  const identity = node.attrs[BLOCK_IDENTITY_ATTRIBUTE];
+  const naming: DOMOutputSpec[] =
+    NAMED_BY_IDENTITY[node.type.name] === true && typeof identity === "string" && identity !== ""
+      ? [["span", { "data-proof-block-identity": "", "data-proof-block-title": "" }, identity]]
+      : [];
   const title = shown.find((attribute) => attribute.name === "title");
   const kind = shown.find((attribute) => attribute.name === "kind");
   const rest = shown.filter((attribute) => attribute.name !== "title" && attribute.name !== "kind");
@@ -165,6 +178,7 @@ export function renderTypedBlock(
       "header",
       { contenteditable: "false", "data-proof-block-summary": "" },
       ["span", { "data-proof-block-name": "" }, node.type.name],
+      ...naming,
       ...badge,
       ...heading,
       ...others,

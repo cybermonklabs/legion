@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 10,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -133,6 +133,23 @@
       },
       "since": 3,
       "creatable_since": 3
+    },
+    {
+      "name": "plan_role",
+      "content": "block+",
+      "render": "host",
+      "attributes": {
+        "type": {
+          "kind": "string",
+          "default": ""
+        },
+        "model": {
+          "kind": "string",
+          "default": ""
+        }
+      },
+      "since": 10,
+      "creatable_since": 10
     },
     {
       "name": "check",

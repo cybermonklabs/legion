@@ -195,13 +195,13 @@ func (p podWithRoles) roles(*Runtime) []claim.Role { return p.launched }
 // deployedRuntime is a runtime of a deployment that defines the roles of deployed, as
 // configureProber sets its issue roles and its map.
 func deployedRuntime(deployed appauth.DeploymentApps) *Runtime {
-	return &Runtime{issueRoles: issueRolesOf(deployed), deploymentApps: deployed}
+	return &Runtime{issueRoles: issueRolesOf(deployed), roleApps: appauth.RoleApps{Deployed: deployed}}
 }
 
 // The Apps a pod holds a bundle of are the Apps its roles act as, each named once, a role of the
 // deployment's acting as the App its setting names (appauth.AppRoleFor). A role that neither
-// Legion nor the deployment defines is an error, never a pod read as holding fewer Apps than its
-// roles act as.
+// Legion, the deployment nor the issue's plan defines is an error, never a pod read as holding
+// fewer Apps than its roles act as.
 func TestAPodsAppsAreItsRolesAppsAndARoleNobodyDefinesIsAnError(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

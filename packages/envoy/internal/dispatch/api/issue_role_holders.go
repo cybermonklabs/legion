@@ -70,13 +70,13 @@ import (
 // issueRoleHolder is one holder of a publication: a role of the issue, the session that holds it,
 // the claim it holds the role by and whether that claim works the role's step. Role and session
 // are required: the route refuses a holder that leaves either out. The role is one of Legion's
-// six or a role the deployment defines, a name of the role grammar but the controller's
-// (legionclaim.IsRole), so the shape spells the grammar and lists no roles. The claim is the
-// Legion claim token of the issue the session runs (legionclaim.CutClaimToken), and works_step
-// is true for the claim the daemon's record gives the role's step: two claims of one issue can
-// hold one role, and the way back of 20261124213825 keeps that claim's session where it folds a
-// role back to one session. A daemon before that release names neither, which reads as no claim
-// and no step.
+// six, a role the deployment defines or a role the issue's plan defines, a name of the role grammar
+// but the controller's (legionclaim.IsRole), so the shape spells the grammar and lists no roles.
+// The claim is the Legion claim token of the issue the session runs (legionclaim.CutClaimToken),
+// and works_step is true for the claim the daemon's record gives the role's step: two claims of
+// one issue can hold one role, and the way back of 20261124213825 keeps that claim's session where
+// it folds a role back to one session. A daemon before that release names neither, which reads as
+// no claim and no step.
 type issueRoleHolder struct {
 	Role      string `json:"role" required:"true" pattern:"^[a-z][a-z0-9-]{0,31}$"`
 	Session   string `json:"session" required:"true"`
@@ -95,8 +95,9 @@ type issueRoleHolderRecord struct {
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
-// the order of legionclaim.Roles, the order of the default steps, then every role the deployment
-// defines by name. An issue where no session holds a role answers [].
+// the order of legionclaim.Roles, the order of the default steps, then every other role, a role
+// the deployment or the issue's plan defines, by name. An issue where no session holds a role
+// answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
 	Holders []issueRoleHolderRecord `json:"holders"`
@@ -215,8 +216,8 @@ const maxRoleHolderSessionBytes = 256
 // carry the mark.
 //
 // The body is checked whole before the transaction opens: each role is a role of an issue
-// (legionclaim.IsRole: one of Legion's six or a role the deployment defines), and may be named for
-// several sessions, since two claims of one issue can hold one role; each session is a session id
+// (legionclaim.IsRole: one of Legion's six, a role the deployment defines or a role the issue's plan
+// defines), and may be named for several sessions, since two claims of one issue can hold one role; each session is a session id
 // (text.IsSessionID) of at most maxRoleHolderSessionBytes, once; and each claim named is a claim
 // token of this issue (legionclaim.CutClaimToken), once. A body that fails is 400
 // INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or an index of the
@@ -265,7 +266,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	for index, holder := range holders {
 		if !legionclaim.IsRole(holder.Role) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
-				"%s is no role of an issue. A role is a name of %s other than controller: one of %s, or a role the deployment defines.",
+				"%s is no role of an issue. A role is a name of %s other than controller: one of %s, a role the deployment defines, or a role the issue's plan defines.",
 				holder.Role, legionclaim.RolePattern, strings.Join(legionclaim.Roles, ", ")))
 			return
 		}

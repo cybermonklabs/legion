@@ -611,14 +611,15 @@ func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
 }
 
 // podAppRoles are the GitHub Apps a pod of kind holds a bundle of under r, each named once
-// (appauth.AppRoleFor over the runtime's deploymentApps, its kind's roles under r): both of them
+// (appauth.AppRoleFor over the deployment's roles of r.roleApps, its kind's roles under r): both of them
 // for an issue pod, whose roles run as one or the other, and the review App alone for the project
-// controller's. It is what the record of the directories a mint found GitHub refuses is read for
-// (movedGhDirs, appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
+// controller's. A role of an issue's plan adds no App to its pod: it acts as one of the two. It is
+// what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
+// appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
 func podAppRoles(r *Runtime, kind podKind) ([]appauth.AppRole, error) {
 	apps := make([]appauth.AppRole, 0, len(appauth.Roles))
 	for _, role := range kind.roles(r) {
-		app, err := appauth.AppRoleFor(role, r.deploymentApps)
+		app, err := appauth.AppRoleFor(role, r.roleApps.Deployed, appauth.Planned{})
 		if err != nil {
 			return nil, err
 		}
@@ -638,7 +639,7 @@ func podAppRoles(r *Runtime, kind podKind) ([]appauth.AppRole, error) {
 // these Apps together (internal/daemon's plan.appOwners), as the drift check does (movedGhDirs).
 // A role of the pod that acts as no App is AppRoleFor's error.
 func PodAppRoles(role claim.Role, deployed appauth.DeploymentApps) ([]appauth.AppRole, error) {
-	return podAppRoles(&Runtime{issueRoles: issueRolesOf(deployed), deploymentApps: deployed}, podKindFor(role))
+	return podAppRoles(&Runtime{issueRoles: issueRolesOf(deployed), roleApps: appauth.RoleApps{Deployed: deployed}}, podKindFor(role))
 }
 
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names

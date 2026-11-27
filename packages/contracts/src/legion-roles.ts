@@ -70,8 +70,9 @@ export function isLegionRole(role: string): role is LegionRole {
   return LEGION_ROLES.some((candidate) => candidate === role);
 }
 
-/** Whether a claim of an issue can be on `role`: each of Legion's six, and each role a deployment
- * defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The controller is none: its claim holds no issue.
+/** Whether a claim of an issue can be on `role`: each of Legion's six, each role a deployment
+ * defines and each role an issue's plan defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The
+ * controller is none: its claim holds no issue.
  * The one definition of a role of the step grammar; the Go daemon's `claim.IsRole` is its twin. */
 export function isStepRole(role: string): boolean {
   return role !== "controller" && STEP_ROLE.test(role);

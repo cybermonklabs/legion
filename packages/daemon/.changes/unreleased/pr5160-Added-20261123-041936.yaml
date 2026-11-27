@@ -1,0 +1,42 @@
+kind: Added
+body: |-
+  An owner's plan can define a role of its own in a `plan_role` block: the block's id is the
+  role's name, `type` is its type, `model` is its model and the block's text is its prompt. A step
+  names the role as it names any other, and the role's agent runs on Oh My Pi with that prompt and
+  model. The prompt stands between two lines that name it as the issue owner's text. A later
+  version of the plan that changes the role's type, model or prompt relaunches a live agent of the
+  role on its own session at its next step, with the new definition. The claim keeps the
+  definition its agent was launched with, so a version given while that agent came up, or before a
+  restart of the daemon, relaunches it too, and an unchanged role relaunches nothing. A claim whose
+  launch failed and waits to be tried again runs no agent to relaunch: the next try builds from the
+  plan in force. The claim keeps the generation of that launch with it, so an agent an earlier
+  release launched in between, after a rollback that skipped the way back, is relaunched as well.
+  `register_plan` refuses a role whose name Legion or the deployment already holds,
+  a model the deployment does not list, and a key whose steps name roles of two models or two
+  harnesses.
+
+  The new top-level `legion.yaml` key `models` lists the models a role of a plan may name; the
+  model of each role of `roles` is listed after them. The loader refuses a value of `models` that
+  is not a list, and an entry that is not one model's name, as a missing comma makes, or that
+  names a model again. A `default_steps` key that names one agent for roles of two models or two
+  harnesses is taken with a warning at boot and at `legion config check`, its later such step runs
+  as an agent of its own, and the next release refuses it. A model taken out of `models` stops, at
+  the next boot, each task whose remaining steps name a role of the issue's plan on that model,
+  with a `task-stopped` notice whose reason names the model.
+
+  A merge forward asks the agent of the task's step of the type implementation, whatever its role
+  is called. While the task stands at that step itself, a step of a role of the plan that runs as
+  `step` included, the merge forward is told as it is in implementing: that agent is asked alone,
+  its ask says its own assignment and its completion stand, the architect gets no `checks-red`
+  notice, the move on out of that step asks again with the hold and the notice, and a move back
+  into it drops the ask. The merge that agent pushes sends it no message that it landed.
+
+  One migration adds the table of the roles a plan defines, another marks each ask to merge
+  forward that an earlier release recorded in implementing as made at that step, and a third adds
+  the columns in which a claim keeps the definition its agent was launched with and the generation
+  of that launch. A rollback runs
+  the way back of each, and removes `models` from `legion.yaml` first, since an earlier daemon
+  refuses the key.
+time: 2026-11-23T04:19:36Z
+custom:
+    Issue: pr5160

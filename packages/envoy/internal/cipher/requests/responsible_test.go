@@ -270,11 +270,11 @@ func TestTheFirstResponsiblePersonWins(t *testing.T) {
 
 // TestIssueKeyOfClaim reads a Dispatch issue key out of a Legion claim token of an issue and
 // nothing else. The token ends in its agent's name: the role of the agent's first step, which is
-// one of Legion's six or a role the deployment defines (`checker`, `code-checker`, `janitor`), or a
-// numbered name such as `implementer-2` for a second agent of one role, so any name of the role
-// grammar names the issue, one of 32 characters included. The controller's token, a token with no
-// name after its number, the name `controller` after an issue's number, a name outside the grammar
-// and a token whose issue part is not one name no issue.
+// one of Legion's six, a role the deployment defines or a role the issue's plan defines (`checker`,
+// `code-checker`, `janitor`), or a numbered name such as `implementer-2` for a second agent of one
+// role, so any name of the role grammar names the issue, one of 32 characters included. The
+// controller's token, a token with no name after its number, the name `controller` after an
+// issue's number, a name outside the grammar and a token whose issue part is not one name no issue.
 func TestIssueKeyOfClaim(t *testing.T) {
 	for claim, want := range map[string]string{
 		"legion-acme-acme-12-planner":                    "ACME-12",

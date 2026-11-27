@@ -43,10 +43,23 @@ var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
 // role, each named as planGiven names a version's agents (record.NameAgents), waiting at no act.
 func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, words ...string) {
 	t.Helper()
+	seedStepsPlanDefining(t, pool, key, generation, nil, words...)
+}
+
+// seedStepsPlanDefining is seedStepsPlan of a plan that also defines the roles defined, each by its
+// name and its type (record.PlanRole): a step of such a role takes that type, as planSteps gives
+// it from plan.RolesOf.
+func seedStepsPlanDefining(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, defined map[string]plan.Type, words ...string) {
+	t.Helper()
 	v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 		GivenBy: claim.Token(treeRoleToken(t, key, claim.RoleArchitect)), GivenAt: stepClock}
 	task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
 	roles := plan.BuiltinRoles()
+	var definedRows []record.PlanRole
+	for name, typ := range defined {
+		roles[name] = plan.RoleDef{Name: name, Type: typ}
+		definedRows = append(definedRows, record.PlanRole{Issue: key, Generation: generation, Role: name, PlanVersion: 2, Type: string(typ)})
+	}
 	steps := make([]record.PlanStep, 0, len(words))
 	for i, word := range words {
 		role, key, _ := strings.Cut(word, ":")
@@ -54,7 +67,10 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 			AgentKey: key, Type: roles[role].Type})
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, nil, steps))
+		if err := record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, nil, steps)); err != nil {
+			return err
+		}
+		return record.NewStore().PutPlanRoles(t.Context(), tx, key, generation, 2, definedRows)
 	})
 }
 

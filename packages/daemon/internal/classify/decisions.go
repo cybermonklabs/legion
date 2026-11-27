@@ -1503,55 +1503,50 @@ const (
 )
 
 // MergeForwardStands says whether a merge forward is asked, and stands, at place, where a task
-// that walks line stands (the workflow's Walk.Line: one phase for each step, then retro and merging;
-// phase.Order for an issue with no plan rows): the implementer's place, where the work already is,
-// or any place after it on that line (dispatch://INFRA-4374 R1). On the default steps that is
-// testing, reviewing, accepting, retro and merging. Where the task places a planner step after the
+// stands whose first step of the type implementation is at implementation (the workflow's
+// Walk.implementationStart: the implementer's step on the default steps and for an issue with no
+// plan rows, or a step of that type under another role's name; no place for a task with none):
+// that place, where the work already is, or any place after it on the task's line
+// (dispatch://INFRA-4374 R1), and, once the task's run has reached that step (reached: the
+// workflow's implementationReached), any place of its line at all, so a move back to a step before
+// it keeps the merge forward standing there. On the default steps that is implementing, testing,
+// reviewing, accepting, retro and merging. Where the task places a planner step after the
 // implementer, its planning is one too, since it works on a branch whose pull request is open. The
 // issue keeps that phase while the role asked (record.MergeForwardAsker) merges.
 //
-// It reads the place and never the phase, because every step of a role the deployment defines
-// runs as step: `checker implementer linter` reads step at place 1 and at place 3, and only the
-// place says that the checker's comes before the implementer's and the linter's after it. The
-// caller hands it the place the task stands at while its issue stands where it does (the
-// workflow's Walk.placeIn of record.StandsAt, so a hold counts as standing at the place it is held
-// from), which is no place for an issue that stands anywhere else - admitted, awaiting_person, or
-// out of the workflow - and such an issue, and one at a planner's step before the implementer, has
-// no pull request work to merge forward and is asked for none. Where the merge comes next before
-// merging - retro, or accepting where no step of the task follows the acceptance (MergeComesNext) -
-// nothing is asked (ConflictNeedsMerge): the merger merges the base forward once the issue reaches
-// merging (cybermonklabs/legion#4979), and an ask made before stands there until it lands.
-func MergeForwardStands(line []phase.Phase, place record.TaskPlace) bool {
-	implementer, held := implementerPlace(line)
-	return held && place.Started() && place.Rank() >= implementer.Rank()
-}
-
-// implementerPlace is the place of the implementer's step on line, and whether line holds one: a
-// line holds each step first, at its place from 1, and the implementer runs one step at most.
-func implementerPlace(line []phase.Phase) (record.TaskPlace, bool) {
-	for at, p := range line {
-		if p == phase.Implementing {
-			return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, true
-		}
-	}
-	return record.TaskPlace{}, false
+// It reads the place and never the phase, because every step of a role the deployment or the
+// issue's plan defines runs as step: `checker implementer linter` reads step at place 1 and at
+// place 3, and only the place says that the checker's comes before the implementer's and the
+// linter's after it. The caller hands it the place the task stands at while its issue stands where
+// it does (the workflow's Walk.placeIn of record.StandsAt, so a hold counts as standing at the
+// place it is held from), which is no place for an issue that stands anywhere else - admitted,
+// awaiting_person, or out of the workflow - and such an issue, and one at a step before the
+// implementer whose run has not reached the implementer yet, has no pull request work to merge
+// forward and is asked for none; the first move into the implementation step is what reaches it
+// (the workflow's mergeForwardOnEntry). Where the merge comes next before merging - retro, or
+// accepting where no step of the task follows the acceptance (MergeComesNext) - nothing is asked
+// (ConflictNeedsMerge): the merger merges the base forward once the issue reaches merging
+// (cybermonklabs/legion#4979), and an ask made before stands there until it lands.
+func MergeForwardStands(implementation, place record.TaskPlace, reached bool) bool {
+	return implementation.Started() && place.Started() && (reached || place.Rank() >= implementation.Rank())
 }
 
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
 // request (workflow's mergeStateOwed, which both a fact of one pull request reads by, to queue the
 // ladder behind daemon's readMergeState, and a base push reads by for each pull request on the
 // base, to queue that base's batch of reads, daemon's queueBaseMergeStates): whether a fact of
-// kind fact asks for it, for an issue whose task walks line and stands at place
-// (MergeForwardStands says which place the caller hands it). Each of two reasons asks, and one is
-// enough:
+// kind fact asks for it, for an issue whose task's first step of the type implementation is at
+// implementation, which its run has reached where reached, and which stands at place
+// (MergeForwardStands says which places stand). Each of two reasons asks, and one is enough:
 //
 //   - The fact moves the head, and a merge forward stands where the task stands
 //     (MergeForwardStands, dispatch://INFRA-4374 R0): the implementer's place, or a place after it
 //     on the task's line. GitHub runs no checks on a head that conflicts with its base, so without
 //     a read a conflicting push stands with no CI and nobody is told; the read that finds the head
 //     CONFLICTING is the first of the two reads that confirm a conflict (R2).
-//   - The fact is a push to the base, and the task stands at a place after the implementer's on
-//     its line. GitHub sends no event of the pull request while it computes whether the head
+//   - The fact is a push to the base, and a merge forward stands where the task stands at a place
+//     other than the implementer's on its line. GitHub sends no event of the pull request while
+//     it computes whether the head
 //     still merges into the moved base. In merging the merge is next (record.ConflictMergeNext),
 //     so a conflict there is acted on at once (R0). Where the merge comes next before merging
 //     (MergeComesNext: retro, or accepting where no step of the task follows the acceptance) it
@@ -1559,7 +1554,8 @@ func implementerPlace(line []phase.Phase) (record.TaskPlace, bool) {
 //     read, the record would keep the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
 //     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for a task at the implementer's
-//     place or before it: there the head the implementer pushes next is read, by the reason above.
+//     place or, before its run reached it, a place before it: there the head the implementer pushes
+//     next is read, by the reason above.
 //
 // Every other fact asks nothing here, and so does a head move or a base push of a task at no such
 // place. The third reason a read is owed is not the gate's: the issue's review round waiting on
@@ -1568,13 +1564,12 @@ func implementerPlace(line []phase.Phase) (record.TaskPlace, bool) {
 // whose first conflicting read waits for its second (workflow's reviewRound,
 // round.waitsOnMergeState). Only the engine works out the round, so workflow's mergeStateOwed adds
 // that reason, and works the round out only for a fact the gate owes no read for.
-func MergeStateReadOwed(line []phase.Phase, place record.TaskPlace, fact MergeStateFact) bool {
+func MergeStateReadOwed(implementation, place record.TaskPlace, reached bool, fact MergeStateFact) bool {
 	switch fact {
 	case MergeStateFactHeadMove:
-		return MergeForwardStands(line, place)
+		return MergeForwardStands(implementation, place, reached)
 	case MergeStateFactBasePush:
-		implementer, _ := implementerPlace(line)
-		return MergeForwardStands(line, place) && place != implementer
+		return MergeForwardStands(implementation, place, reached) && place != implementation
 	}
 	return false
 }

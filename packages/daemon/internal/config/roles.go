@@ -52,19 +52,6 @@ const maxRoleWord = 32
 // builtinTypes are Legion's five types of a step, in the order a refusal lists them.
 var builtinTypes = []plan.Type{plan.TypeDesign, plan.TypePlanning, plan.TypeImplementation, plan.TypeTesting, plan.TypeReview}
 
-// legionName is whether name is a name Legion gives a role of its own: a role of a claim, the
-// controller, or a role of a step (plan.BuiltinRoles, acceptance among them). A role of the
-// deployment takes none of them. `owner` is none: it is the key of a task's owner, and the name of
-// no role, claim, token or slot.
-func legionName(name string) bool {
-	role := claim.Role(name)
-	if slices.Contains(claim.Roles, role) || role == claim.RoleController {
-		return true
-	}
-	_, builtin := plan.BuiltinRoles()[name]
-	return builtin
-}
-
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
 // outside the grammar, longer than Dispatch's step record takes, a name of Legion's own or named
 // twice is refused naming it; the block's type is judged in resolveRoles, once `role_types` is
@@ -93,7 +80,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 			return nil, fmt.Errorf("%s names %q, which is outside %s", key, name, strings.Trim(roleWord.String(), "^$"))
 		case len(name) > maxRoleWord:
 			return nil, fmt.Errorf("%s is %d characters, and a role's name has at most %d: Dispatch's step record takes no longer one", field, len(name), maxRoleWord)
-		case legionName(name):
+		case plan.IsLegionName(name):
 			return nil, fmt.Errorf("%s names a role of Legion's own: a deployment defines roles of its own names", field)
 		case slices.ContainsFunc(roles, func(r Role) bool { return string(r.Name) == name }):
 			return nil, fmt.Errorf("%s names %s twice", key, name)
@@ -245,8 +232,8 @@ func (c Config) withRoles(legion []claim.Role) []claim.Role {
 // list names both. Its keys: `worker_backends`, `role_config_files`,
 // `worker_stall_backstop_hours` and each hook's `roles`. Then it judges each project's
 // `default_steps`, which readDefaultSteps only parses, in the order of the projects' keys
-// (checkDefaultSteps).
-func checkDeploymentRoleKeys(cfg Config) error {
+// (checkDefaultSteps), which can give a step of them another agent, with a warning.
+func checkDeploymentRoleKeys(cfg *Config) error {
 	issueRoles := cfg.issueRoles()
 	if err := namedRoles(cfg.WorkerBackends, "worker_backends", "an issue role", issueRoles); err != nil {
 		return err
@@ -268,17 +255,25 @@ func checkDeploymentRoleKeys(cfg Config) error {
 }
 
 // checkDefaultSteps holds each project's `default_steps` to the checks a plan of the one task
-// `default` with those steps passes (plan.Supported, then plan.Validate against the deployment's
-// roles, Legion's and those of `roles`), so the steps a task with none runs are steps this release
+// `default` with those steps passes (plan.Supported, then plan.Validate against the deployment:
+// its roles, Legion's and those of `roles`, with their models and harnesses, the models it lists
+// and the owner's role), so the steps a task with none runs are steps this release
 // carries out. The projects are judged in the order of their keys, and a refusal names the key,
-// then gives every reason of both checks.
-func checkDefaultSteps(cfg Config) error {
+// then gives every reason of both checks. One cause is taken with a warning first, since this
+// release is the first to judge it: a key naming one agent for roles of two models or two
+// harnesses (oneAgentOneModel), whose step this release runs as an agent of its own and the next
+// release refuses.
+func checkDefaultSteps(cfg *Config) error {
 	deployment := cfg.Deployment()
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
-		steps := cfg.Projects[key].DefaultSteps
-		if steps == nil {
+		project := cfg.Projects[key]
+		if project.DefaultSteps == nil {
 			continue
 		}
+		steps, warnings := oneAgentOneModel(key, project.DefaultSteps, deployment)
+		project.DefaultSteps = steps
+		cfg.Projects[key] = project
+		cfg.Warnings = append(cfg.Warnings, warnings...)
 		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
 		refusals := append(plan.Supported(task, deployment), plan.Validate(task, deployment)...)
 		if len(refusals) == 0 {
@@ -291,6 +286,31 @@ func checkDefaultSteps(cfg Config) error {
 		return fmt.Errorf("projects.%s.default_steps: %s", key, strings.Join(reasons, " "))
 	}
 	return nil
+}
+
+// oneAgentOneModel is steps, the `default_steps` of the project project, with no key on each step
+// plan.KeyMismatches finds, a step whose key names one agent with an earlier step whose role runs
+// on another model or another harness, as d gives each role; a step with no key runs as an agent
+// of its own. It answers one warning for each such step, naming the entry and giving plan.Validate's
+// reason in the words of a list of steps that is no task's (plan.KeyMismatch.StepsReason), and
+// saying the next release refuses it. Legion took a key of `default_steps` on two models or two
+// harnesses before it judged one, so such a file is taken here, and runs. steps is not changed:
+// the answer is a copy where any key is left out.
+func oneAgentOneModel(project string, steps []plan.Step, d plan.Deployment) ([]plan.Step, []string) {
+	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
+	mismatches := plan.KeyMismatches(task, plan.RolesOf(task, d))
+	if len(mismatches) == 0 {
+		return steps, nil
+	}
+	kept := slices.Clone(steps)
+	warnings := make([]string, len(mismatches))
+	for i, mismatch := range mismatches {
+		at := mismatch.Step.Place - 1
+		kept[at].Key = ""
+		warnings[i] = fmt.Sprintf("projects.%s.default_steps[%d] is %s: %s This release runs step %d as an agent of its own, and the next release refuses it; give that step another key, or none, in legion.yaml",
+			project, at, steps[at], mismatch.StepsReason(), mismatch.Step.Place)
+	}
+	return kept, warnings
 }
 
 // namedRoles refuses the first role in name order that key names and roles does not hold, as the
@@ -313,15 +333,21 @@ func typeList(types []plan.Type) string {
 	return strings.Join(words, ", ")
 }
 
-// Deployment is the roles a step of a plan may name: Legion's own (plan.BuiltinRoles) and each
-// role of `roles`, with its type. It names no phase for a role of the deployment: how a step runs
-// is decided by its role.
+// Deployment is what a plan is judged against: the roles a step of a plan may name, Legion's own
+// (plan.BuiltinRoles) and each role of `roles`, each with its type, its model ("" for Legion's
+// own, which start on the default model) and its harness (BackendFor); and the models a role may
+// name (ListedModels). It names no phase for a role of the deployment: how a step runs is decided
+// by its role.
 func (c Config) Deployment() plan.Deployment {
 	roles := plan.BuiltinRoles()
-	for _, role := range c.Roles {
-		roles[string(role.Name)] = plan.RoleDef{Name: string(role.Name), Type: role.Type}
+	for name, role := range roles {
+		role.Backend = string(c.BackendFor(claim.Role(name)))
+		roles[name] = role
 	}
-	return plan.Deployment{Roles: roles}
+	for _, role := range c.Roles {
+		roles[string(role.Name)] = plan.RoleDef{Name: string(role.Name), Type: role.Type, Model: role.Model, Backend: string(c.BackendFor(role.Name))}
+	}
+	return plan.Deployment{Roles: roles, Models: c.ListedModels()}
 }
 
 // RoleOf is the role of the deployment named name, and whether `roles` defines one.

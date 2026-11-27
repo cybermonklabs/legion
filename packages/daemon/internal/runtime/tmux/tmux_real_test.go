@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -564,7 +565,7 @@ func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 		Conns:                r.stream,
 		Environ:              r.environ,
 		Executable:           func() (string, error) { return r.legion, nil },
-		GitHubCredential:     staticCredential,
+		GitHubCredential:     appauth.CredentialOf(staticCredential),
 		ControllerCredential: staticControllerCredential,
 		GH:                   fakeGH,
 		ClaimRepository:      acmeWidgets,
@@ -1332,8 +1333,8 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 	// wrote its credential would change the live pane's gh files.
 	var mintMu sync.Mutex
 	mints := 0
-	minting := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		bundle, err := staticCredential(ctx, role, repo)
+	minting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		bundle, err := staticCredential(ctx, issue, role, repo)
 		mintMu.Lock()
 		mints++
 		token := fmt.Sprintf("ghs_mint_%d", mints)
@@ -1342,7 +1343,7 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 		bundle.Dirs[bundle.Default] = ghconfig.Render(token, written.App, staticCredentialExpiry)
 		return bundle, err
 	}
-	withMinting := func(o *Options) { o.GitHubCredential = minting }
+	withMinting := func(o *Options) { o.GitHubCredential = appauth.CredentialOf(minting) }
 	r := newRig(t, withMinting)
 	ctx := testwait.Context(t)
 

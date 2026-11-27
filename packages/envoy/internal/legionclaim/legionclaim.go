@@ -15,7 +15,8 @@ import (
 // an issue too (IsRole), and every reader that orders roles puts such a role after the six.
 var Roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
-// roleGrammar is the grammar of an issue's role, one of Roles or a role the deployment defines:
+// roleGrammar is the grammar of an issue's role, one of Roles, a role the deployment defines or a
+// role the issue's plan defines:
 // the grammar the daemon's claim.IsRole and isStepRole in packages/contracts take, which Dispatch's
 // step write takes too (internal/dispatch/workflowstore). The controller's name is of the grammar
 // and is no role of an issue (IsRole).
@@ -31,8 +32,9 @@ const RolePattern = `^` + roleGrammar + `$`
 
 var rolePattern = regexp.MustCompile(RolePattern)
 
-// IsRole reports whether role is a role of an issue: one of Roles, or a role the deployment
-// defines in its settings, a name of RolePattern. The controller's name is of the grammar and is
+// IsRole reports whether role is a role of an issue: one of Roles, a role the deployment defines
+// in its settings, or a role the issue's plan defines in a `plan_role` block, a name of
+// RolePattern. The controller's name is of the grammar and is
 // the project's, no issue's, so it is none. It is the one rule each reader of an issue's role in
 // Envoy takes.
 func IsRole(role string) bool {
@@ -49,13 +51,13 @@ var claimTokenPattern = regexp.MustCompile(`^legion-([a-z0-9]+)-([a-z][a-z0-9]*)
 
 // CutClaimToken splits a Legion claim token of an issue into the Legion project token it carries,
 // the Dispatch issue key it names (upper case, ACME-7) and the name of its agent. The agent's name
-// is the role of the agent's first step, one of Roles or a role the deployment defines, or a
-// numbered name such as `implementer-2` for a second agent of one role (the daemon's
-// claim.NumberedAgentName), and stays the agent's whatever role its later steps are on. Each is a
-// name of the role grammar, so a token whose last part is outside it, or is the controller's name
-// (IsRole), is no claim of an issue: ok is false for it and for every token of another shape. It
-// is the one split of a claim token in Envoy, which the Legion agent registry's entries and the
-// broker's reading of a pod's issue both take.
+// is the role of the agent's first step, one of Roles, a role the deployment defines or a role the
+// issue's plan defines, or a numbered name such as `implementer-2` for a second agent of one role
+// (the daemon's claim.NumberedAgentName), and stays the agent's whatever role its later steps are
+// on. Each is a name of the role grammar, so a token whose last part is outside it, or is the
+// controller's name (IsRole), is no claim of an issue: ok is false for it and for every token of
+// another shape. It is the one split of a claim token in Envoy, which the Legion agent registry's
+// entries and the broker's reading of a pod's issue both take.
 func CutClaimToken(token string) (project, issue, agent string, ok bool) {
 	match := claimTokenPattern.FindStringSubmatch(token)
 	if match == nil || !IsRole(match[4]) {

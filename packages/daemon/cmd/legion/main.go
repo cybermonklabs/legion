@@ -272,11 +272,13 @@ func pluginsLine(cfg config.Config) string {
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
-// back the steps an issue runs when its owner gives no plan. Then one line per role the
-// deployment defines in `roles`, in the file's order (roleLine): its type, its model, the GitHub
-// App it works as and its prompt file, which the check reads as the start does
-// (config.CheckRolePrompts). After them, one line per configured
-// repository rename
+// back the steps an issue runs when its owner gives no plan. After them, one line naming the
+// models a role an owner's plan defines may name (modelsLine of config.Config.ListedModels): the
+// file's `models`, then each model a role of `roles` names, the list the owner is told and
+// register_plan judges a plan by. Then one line per role the deployment defines in `roles`, in
+// the file's order (roleLine): its type, its model, the GitHub App it works as and its prompt
+// file, which the check reads as the start does (config.CheckRolePrompts). After them, one line per
+// configured repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
@@ -337,6 +339,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
 		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
 	}
+	fmt.Fprintln(stdout, modelsLine(cfg.ListedModels()))
 	for _, role := range cfg.Roles {
 		fmt.Fprintln(stdout, roleLine(role))
 	}
@@ -391,6 +394,15 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// modelsLine is `legion config check`'s line for the models a role an owner's plan defines may
+// name (config.Config.ListedModels), in their order, or `none` where there is no such model.
+func modelsLine(models []string) string {
+	if len(models) == 0 {
+		return "models: none"
+	}
+	return "models: " + strings.Join(models, ", ")
 }
 
 // roleLine is `legion config check`'s line for one role of `roles`: its type, its model (the

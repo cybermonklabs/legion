@@ -14,7 +14,8 @@ import { DECLARED_DEADLINE_MOST_MS } from "./stall-watchdog";
 
 /** Every role word of Legion's a session's `LEGION_ROLE` can hold: the six issue roles and the
  * controller. The controller is no `LegionRole`, and its bound is every other role's. A role of the
- * deployment holds its own name. */
+ * deployment or of an issue's plan holds its own name, a word of the step grammar this list leaves
+ * out. */
 const ROLE_WORDS: readonly (string | undefined)[] = [...LEGION_ROLES, "controller", undefined];
 
 /** The log `stallLimits` warns to, with the warnings it was given. */

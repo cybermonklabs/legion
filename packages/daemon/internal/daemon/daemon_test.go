@@ -362,13 +362,15 @@ type stopped struct{}
 func (stopped) Stop() bool { return true }
 
 // built is what the daemon handed the runtime it built: the connection directory, the address
-// every pane's shim dials, the workflow's App tokens and repository rule, the store it reads, and
-// the cache set, the repositories the Sandbox runtime keeps a repository cache of.
+// every pane's shim dials, the workflow's App tokens, the boot's reader of a claim's App, the
+// workflow's repository rule, the store it reads, and the cache set, the repositories the Sandbox
+// runtime keeps a repository cache of.
 type built struct {
 	mu         sync.Mutex
 	conns      runtime.Conns
 	address    string
 	apps       appauth.Source
+	roleApps   appauth.RoleApps
 	repository func(context.Context, string) (ghrepo.Repository, string, error)
 	store      *store.Store
 	cached     func() []ghrepo.Repository
@@ -378,11 +380,11 @@ type built struct {
 // real stream listener, store, and machines, with nothing launched for real.
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source, roleApps appauth.RoleApps,
 			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
-			record.conns, record.address, record.apps, record.repository, record.store, record.cached = listener, address, apps, repository, st, cached
+			record.conns, record.address, record.apps, record.roleApps, record.repository, record.store, record.cached = listener, address, apps, roleApps, repository, st, cached
 			return rt, nil
 		},
 		clock:  stillClock{},
@@ -451,10 +453,10 @@ func runStoppedOnceItsStoreIsOpen(cfg config.Config) error {
 	defer cancel()
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	build := o.runtime
-	o.runtime = func(buildCtx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+	o.runtime = func(buildCtx context.Context, listener *stream.Listener, address string, apps appauth.Source, roleApps appauth.RoleApps,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		cancel()
-		return build(buildCtx, listener, address, apps, repository, st, mapped)
+		return build(buildCtx, listener, address, apps, roleApps, repository, st, mapped)
 	}
 	return run(ctx, cfg, quietLogger(), o)
 }

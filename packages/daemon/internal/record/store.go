@@ -1673,12 +1673,13 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// nothing of the old generation's counting survives it. conflict_read, a first conflicting
 		// read still waiting for its second (PullRequest.ConflictRead), stays for the same reason:
 		// it is GitHub's answer, and the second read that confirms or releases it is still owed.
-		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that a role
-		// merge the base forward, and the new generation decides afresh, on its own confirmed
-		// conflict, whether to ask again. What the pull request remembers of its settled heads
-		// stays (PullRequest.SettledHeads, pull_request_settled_heads). Its head run's rows stay
-		// too, until the next write of the pull request deletes them: a record with no run open
-		// reads none of them (loadSettledHeads).
+		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that a role - the
+		// agent of its task's implementation step, or in merging the merger - merge the base
+		// forward, and the new generation decides afresh, on its own confirmed conflict, whether to
+		// ask again. What the pull request remembers of its settled heads stays
+		// (PullRequest.SettledHeads, pull_request_settled_heads). Its head run's rows stay too, until
+		// the next write of the pull request deletes them: a record with no run open reads none of
+		// them (loadSettledHeads).
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,

@@ -274,6 +274,6 @@ func heldTopicsRig(t *testing.T, opts heldTopicsOptions, claims []supervise.Clai
 		}
 	}
 	publisher := &outboxPublisher{}
-	runner := newOutbox(nil, nil, &outboxDispatch{}, publisher, sup, nil, nil, nil, nil, "legion", "LEGION", t.TempDir(), "", nil, nil, opts.launched, cmp.Or(opts.log, quietLogger()))
+	runner := newOutbox(nil, nil, &outboxDispatch{}, publisher, sup, nil, nil, nil, nil, nil, "legion", "LEGION", t.TempDir(), "", nil, nil, opts.launched, cmp.Or(opts.log, quietLogger()))
 	return sup, publisher, runner
 }

@@ -1,6 +1,12 @@
 package supervise
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+)
 
 // A live claim whose registration declared a plugin contract below PodUpdateContract — a worker
 // started from the image of the release before this one, which is what every roll of this
@@ -192,7 +198,7 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 			h.reach(StateReady)
 			h.m.deps.PluginContract = PodUpdateContract + 2
 			h.m.deps.PluginRelaunchable = true
-			h.m.deps.NoPluginInstall = func(Claim) bool { return true }
+			h.m.deps.NoPluginInstall = func(context.Context, Claim) (bool, error) { return true, nil }
 			// The mark a relaunch of this claim already left, which is what turns the next
 			// stale registration into the charged path (relaunchAfterFailure).
 			h.m.claim.PluginRelaunchFor = h.m.deps.PluginContract
@@ -215,5 +221,47 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 				t.Errorf("PluginContract = %d, want the contract the process declared, %d", c.PluginContract, testCase.declared)
 			}
 		})
+	}
+}
+
+// A stale registration whose read of whether the claim's launch installs a plugin fails is judged
+// nothing: the read established no fact of the claim, so neither the line of a claim no install
+// moves nor a relaunch follows from it. The registration stands, charged nothing, and one line
+// names the read's own error; the stale-plugin lane reads the claim again at its next sweep.
+//
+// The control is the rule before this, run by hand: a failed read answered that no install moves
+// the claim. The registration then logs that the claim's launch installs no plugin, a cause no
+// read established, and names no error.
+func TestAStaleRegistrationWhoseInstallReadFailsNamesTheReadAndDecidesNothing(t *testing.T) {
+	h := updateHarness(t, PodUpdateContract-1)
+	h.reach(StateReady)
+	h.m.deps.PluginContract = PodUpdateContract + 2
+	h.m.deps.PluginRelaunchable = true
+	const cause = "the role prober of the plan of LEGION-209: connection refused"
+	h.m.deps.NoPluginInstall = func(context.Context, Claim) (bool, error) { return false, errors.New(cause) }
+
+	h.must(RequestRegister{
+		Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+		CapabilityHash: []byte("capability"), PluginContract: PodUpdateContract - 1,
+	})
+
+	h.wantCalls("Resume", 0)
+	if c := h.claim(); c.Budgets != (Budgets{}) {
+		t.Errorf("the registration left budgets %+v, want none charged", c.Budgets)
+	}
+	h.records.mu.Lock()
+	written := slices.Clone(h.records.kept)
+	h.records.mu.Unlock()
+	named := 0
+	for _, r := range written {
+		if strings.Contains(r.message, "installs no plugin") {
+			t.Errorf("logged %q, a cause no read established", r.message)
+		}
+		if v, ok := r.attr("error"); ok && strings.Contains(v.String(), cause) {
+			named++
+		}
+	}
+	if named != 1 {
+		t.Errorf("%d lines named the failed read's error %q, want one", named, cause)
 	}
 }

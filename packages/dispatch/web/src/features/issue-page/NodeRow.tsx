@@ -601,6 +601,7 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return author === "person" ? "person" : "agent";
     case "decision":
       return "decision";
+    case "plan_role":
     case "plan_task":
       return "step";
     case "requirement":

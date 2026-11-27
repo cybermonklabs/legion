@@ -21,7 +21,10 @@ package supervise
 // staleRefusesClaim (its NoPluginInstall branch, its PluginRelaunchable term), which holds a
 // task that must go now.
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // A stale claim with no wake parked over it yet — the gate has admitted it nothing, which at a
 // fleet's worth of claims is most of them for most of a wave — holds the task it is handed, and
@@ -99,7 +102,7 @@ func TestAClaudeCodeRolesClaimInAPodIsSentItsTaskOnAnEarlierContract(t *testing.
 	sent := len(h.prompts())
 	h.m.deps.PluginContract = refreshContract
 	h.m.deps.PluginRelaunchable = true
-	h.m.deps.NoPluginInstall = func(Claim) bool { return true }
+	h.m.deps.NoPluginInstall = func(context.Context, Claim) (bool, error) { return true, nil }
 
 	h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
 

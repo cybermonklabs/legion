@@ -111,6 +111,41 @@ func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 	}
 }
 
+// A plan document can define a role with a plan_role block, and a version read lists it beside the
+// plan's tasks: the role's name as the block's id, its type and model as its attributes, and a
+// byte range whose markdown holds its body, the role's prompt, headings and lists included.
+func TestAVersionReadListsAPlanRoleWithItsAttributes(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createArtifactIssue(t, handler)
+	const role = ":::plan_role{#prober type=\"testing\" model=\"listed-model\"}\n# Prober\n\nProbe the change.\n\n- one\n- two\n:::\n"
+	plan := createIssueDocument(t, handler, issue.Key, "plan.md", role+"\n:::plan_task{#a steps=\"implementer prober\"}\nDo it.\n:::\n")
+	answer := readVersionBlocks(t, handler, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true")
+	assertPlanTask(t, answer, "a", "implementer prober", "Do it.")
+	var roles []model.ArtifactBlock
+	for _, block := range *answer.Blocks {
+		if block.Type == "plan_role" {
+			roles = append(roles, block)
+		}
+	}
+	if len(roles) != 1 || roles[0].ID != "prober" {
+		t.Fatalf("version 1 lists the roles %+v, want the one plan_role prober (markdown %q)", roles, answer.Markdown)
+	}
+	attributes := map[string]string{}
+	for _, attribute := range roles[0].Attributes {
+		attributes[attribute.Name] = attribute.Value
+	}
+	if attributes["type"] != "testing" || attributes["model"] != "listed-model" {
+		t.Fatalf("the plan_role prober carries attributes %+v, want type testing and model listed-model", roles[0].Attributes)
+	}
+	if roles[0].From < 0 || roles[0].To > len(answer.Markdown) || roles[0].To < roles[0].From {
+		t.Fatalf("the plan_role %+v does not index the markdown it came with (%q)", roles[0], answer.Markdown)
+	}
+	rendering := answer.Markdown[roles[0].From:roles[0].To]
+	if !strings.HasPrefix(rendering, ":::plan_role{") || !strings.Contains(rendering, "# Prober") || !strings.Contains(rendering, "- two") || !strings.HasSuffix(rendering, ":::") {
+		t.Fatalf("the plan_role prober spans %q, want its opening line, its prompt with its heading and its list, and its closing fence", rendering)
+	}
+}
+
 // createIssueDocument uploads a markdown document onto an issue as version 1.
 func createIssueDocument(t *testing.T, handler http.Handler, issueKey, name, content string) model.Artifact {
 	t.Helper()

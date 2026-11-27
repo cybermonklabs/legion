@@ -97,6 +97,7 @@ var settingsEmitted = map[string]string{
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
+	"Config.Models":                                  "models",
 	"Config.WorkerStallBackstops":                    "worker_stall_backstop_hours",
 	"Config.RepositoryRenames":                       "repository_renames",
 	"Runtime.Name":                                   "runtime.name",
@@ -389,7 +390,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"worker_background_hours",
 		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
 		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
-		"hooks", "roles", "role_types",
+		"hooks", "roles", "role_types", "models",
 	}
 	top := keysOf(t, encoded)
 	assertKeys(t, "settings", top, wantTop)
@@ -704,6 +705,35 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// The settings serve the models a role of an owner's plan may name (config.Config.ListedModels)
+// under `models`: the file's `models`, then each model a role of `roles` names that `models` lacks,
+// in the file's order. A deployment whose only model is a role's serves that model, the list the
+// owner is told and register_plan judges a plan by. A file with no such model carries no such key.
+func TestSettingsOfServesTheListedModels(t *testing.T) {
+	const checker = "roles: {checker: {type: testing, prompt_file: checker.md, model: m-two}}\n"
+	for _, tc := range []struct{ name, file, want string }{
+		{name: "the key", file: "models: [m-one]\n", want: `["m-one"]`},
+		{name: "a role's model alone", file: checker, want: `["m-two"]`},
+		{name: "the key, then a role's model", file: "models: [m-one]\n" + checker, want: `["m-one","m-two"]`},
+	} {
+		encoded, err := json.Marshal(SettingsOf(loadSettingsFileWith(t, minimalSettingsFile+tc.file,
+			map[string]string{"checker.md": "You check the change.\n"})))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if got := string(keysOf(t, encoded)["models"]); got != tc.want {
+			t.Errorf("%s: models = %s, want %s: %s", tc.name, got, tc.want, encoded)
+		}
+	}
+	none, err := json.Marshal(SettingsOf(minimalSettingsConfig(t)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if raw, present := keysOf(t, none)["models"]; present {
+		t.Errorf("models = %s for a file that lists none, want absent", raw)
 	}
 }
 

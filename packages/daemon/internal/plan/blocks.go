@@ -7,8 +7,8 @@ import (
 )
 
 // The two types of block a plan holds. Every other block of the document is its prose.
-// RoleBlockType is no type of Dispatch's block schema yet: the release that lets an owner define
-// a role adds it there under this name, with the role's name as the block's id.
+// RoleBlockType is Dispatch's role block: its id is the role's name, its `type` and `model`
+// attributes are the role's type and model, and its text is the role's prompt.
 const (
 	TaskBlockType = "plan_task"
 	RoleBlockType = "plan_role"
@@ -43,7 +43,9 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 		}
 		typeOf[block.ID] = block.Type
 		if block.Type == RoleBlockType {
-			p.RoleBlocks = append(p.RoleBlocks, block.ID)
+			p.Roles = append(p.Roles, PlanRole{
+				Name: block.ID, Type: Type(block.Attributes["type"]), Model: block.Attributes["model"], Prompt: block.Text,
+			})
 			continue
 		}
 		task, err := taskOf(block)
@@ -78,9 +80,11 @@ func taskOf(block Block) (Task, error) {
 
 // ChangedTasks is the ids of the tasks next changes against held, in the order of their ids: each
 // task whose block says anything else (its steps, its text, `needs`, `owner`, `part_of` or
-// `merges`), each task held has and next does not, and each task next adds. A change of the prose
-// outside the task blocks changes no task, and neither does a change of `serves`, which says what
-// a task is for and nothing Legion carries out. The answer is never nil.
+// `merges`), each task with a step that names a role whose block next changes (sameRoles), each
+// task held has and next does not, and each task next adds. A change of the prose outside the task
+// and role blocks changes no task, and neither does a change of `serves`, which says what a task
+// is for and nothing Legion carries out, nor a change of a role block no step names. The answer is
+// never nil.
 //
 // It compares the tasks as the blocks write them, so a held plan is read from the blocks of the
 // version that was given, not from the steps a task runs (a task with no steps runs the project's
@@ -90,11 +94,12 @@ func ChangedTasks(held, next Plan) []string {
 	for _, task := range held.Tasks {
 		before[task.ID] = task
 	}
+	heldRoles, nextRoles := rolesByName(held), rolesByName(next)
 	after := make(map[string]bool, len(next.Tasks))
 	changed := []string{}
 	for _, task := range next.Tasks {
 		after[task.ID] = true
-		if was, ok := before[task.ID]; !ok || !sameBlock(was, task) {
+		if was, ok := before[task.ID]; !ok || !sameBlock(was, task) || !sameRoles(task, heldRoles, nextRoles) {
 			changed = append(changed, task.ID)
 		}
 	}
@@ -111,4 +116,27 @@ func ChangedTasks(held, next Plan) []string {
 func sameBlock(a, b Task) bool {
 	return a.Text == b.Text && a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
 		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
+}
+
+// sameRoles says whether each role a step of t names is the same in both versions: defined by
+// neither, or by both with one type, one model and one prompt. ChangedTasks asks it only of a task
+// whose block is the same in both versions, so t's steps are the steps of both.
+func sameRoles(t Task, held, next map[string]PlanRole) bool {
+	for _, step := range t.Steps {
+		was, inHeld := held[step.Role]
+		is, inNext := next[step.Role]
+		if inHeld != inNext || was != is {
+			return false
+		}
+	}
+	return true
+}
+
+// rolesByName is the roles p defines, by name.
+func rolesByName(p Plan) map[string]PlanRole {
+	roles := make(map[string]PlanRole, len(p.Roles))
+	for _, role := range p.Roles {
+		roles[role.Name] = role
+	}
+	return roles
 }

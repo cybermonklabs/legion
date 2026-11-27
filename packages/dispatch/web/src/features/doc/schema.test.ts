@@ -38,6 +38,7 @@ test("the compiled manifest is the page's own, and it creates everything it read
     "ask",
     "requirement",
     "plan_task",
+    "plan_role",
     "check",
   ]);
   expect(schemaCreatable(compiledBlockSchema)).toBe(compiledBlockSchema.version);

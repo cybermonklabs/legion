@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strings"
@@ -9,8 +10,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -93,6 +97,91 @@ func TestARolesOwnOverlaysStandAloneWithoutTheOperators(t *testing.T) {
 	}
 	if got, want := envOf(workerOf(t, r, workerSpec(t)))["PI_CONFIG_FILES"], strings.Join(roleFiles[claim.RoleTester], ":"); got != want {
 		t.Errorf("the tester's PI_CONFIG_FILES = %q, want %q", got, want)
+	}
+}
+
+// proberOverlay is the overlay role_config_files names for the deployment's prober
+// (withDeploymentProber), a file the operator's creds Secret volume holds (operatorPod).
+const proberOverlay = "/etc/legion-operator/creds/prober.yml"
+
+// withDeploymentProber is the operator's pod, with a deployment that defines the role prober,
+// acting as the implement App, and names proberOverlay as that role's own overlay.
+func withDeploymentProber(o *Options) {
+	o.Pod = operatorPod()
+	o.RoleApps.Deployed = appauth.DeploymentApps{"prober": appauth.Implement}
+	// The deployment's prober acts as the implement App, so its gh files are the implementer's.
+	o.GitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		if role == "prober" {
+			role = claim.RoleImplementer
+		}
+		return staticCredential(ctx, issue, role, repo)
+	})
+	o.RoleConfigFiles = map[claim.Role][]string{"prober": {proberOverlay}}
+}
+
+// A role the plan in force of its issue defines is the plan's role, even where the deployment
+// defines a role of that name, and it takes none of that role's own settings: its process names
+// none of the overlays role_config_files names for the name. The deployment's own prober,
+// launched for an issue whose plan defines no prober, names them after the operator's.
+func TestAPlansRoleNamesNoneOfTheDeploymentRolesOverlays(t *testing.T) {
+	opts := testOptions()
+	withDeploymentProber(&opts)
+	r, err := configure(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator := operatorPod().Env["PI_CONFIG_FILES"]
+	deployed := testSpec(t, claim.Token("legion-legion-legion-208-prober"), "prober", testTree)
+	planned := deployed
+	planned.PlanRole = true
+	for _, tc := range []struct {
+		name string
+		spec runtime.SpawnSpec
+		want string
+	}{
+		{"the deployment's prober", deployed, operator + ":" + proberOverlay},
+		{"the plan's prober", planned, operator},
+	} {
+		if got := envOf(workerOf(t, r, tc.spec))["PI_CONFIG_FILES"]; got != tc.want {
+			t.Errorf("%s's PI_CONFIG_FILES = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A launch keeps a live pod and starts its role as that pod was built (keptBy), so it reads the
+// role's overlays from what the pod's stored template holds rather than from the configuration.
+// The plan's prober launched into a pod the deployment's prober was started in keeps that pod,
+// whose template holds the deployment prober's overlay, and its start still names none of it.
+//
+// The control is the order of the two terms of launch.overlays, swapped by hand: the plan's role
+// cleared before the kept pod's overlays are read. The kept launch then names the overlay.
+func TestAPlansRoleLaunchedIntoAKeptPodNamesNoneOfTheDeploymentRolesOverlays(t *testing.T) {
+	g := newRig(t, nil, withOptions(withDeploymentProber))
+	operator := operatorPod().Env["PI_CONFIG_FILES"]
+	token := claim.Token("legion-legion-legion-208-prober")
+	deployed := testSpec(t, token, "prober", testTree)
+	loc := g.spawn(deployed)
+	if got := startEnv(lastStart(t, g, token))["PI_CONFIG_FILES"]; got != operator+":"+proberOverlay {
+		t.Fatalf("the deployment's prober started with PI_CONFIG_FILES = %q, want %q: the pod must hold the overlay, or this case proves nothing",
+			got, operator+":"+proberOverlay)
+	}
+
+	planned := deployed
+	planned.PlanRole = true
+	planned.Generation, planned.BootToken, planned.ResumeSessionFile = 2, "boot-prober-g2", resumeSession
+	kept, err := g.r.Resume(g.ctx, &loc, planned)
+	if err != nil {
+		t.Fatalf("Resume the plan's prober: %v", err)
+	}
+	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
+		t.Fatalf("Resume replaced the pod %s; this case is about the pod a launch keeps", loc.Sandbox.PodUID)
+	}
+	start := lastStart(t, g, token)
+	if start.Generation != 2 {
+		t.Fatalf("the prober's launcher last received generation %d's start command, want generation 2's", start.Generation)
+	}
+	if got := startEnv(start)["PI_CONFIG_FILES"]; got != operator {
+		t.Errorf("the plan's prober in the kept pod started with PI_CONFIG_FILES = %q, want the operator's %q alone", got, operator)
 	}
 }
 

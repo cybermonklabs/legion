@@ -272,14 +272,15 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on: Legion's six, in claim.Roles' order, and each role
-// the deployment defines, which a claim of an issue's step is on.
+// roleList names the roles a claim can be on: Legion's six, in claim.Roles' order, each role the
+// deployment defines and each role the plan of an issue defines, which a claim of an issue's step
+// is on.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
 		names = append(names, string(role))
 	}
-	return strings.Join(names, ", ") + ", or a role of this deployment"
+	return strings.Join(names, ", ") + ", a role of this deployment, or a role of the issue's plan"
 }
 
 // freshSession is the one fresh-session effect, which `legion claims retry --fresh-session`

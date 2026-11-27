@@ -55,6 +55,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -990,7 +991,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		ProbeInterval:         liveProbeInterval,
 		AdoptTimeout:          liveAdoptTimeout,
 		Tokens:                r.tokens,
-		GitHubCredential:      r.tokens.Credential,
+		GitHubCredential:      appauth.CredentialOf(r.tokens.Credential),
 		ControllerCredential:  r.tokens.ControllerCredential,
 		GitHubDirs:            r.tokens.ProjectDirs,
 		Conns:                 ln,

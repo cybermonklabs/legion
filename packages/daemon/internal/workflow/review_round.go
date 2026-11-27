@@ -48,16 +48,16 @@ import (
 // naming the commit it was stored with, or `none`, though the row's commit has moved since, so
 // the record holds exactly what the worker is sent.
 //
-// A role the deployment defines whose step at step is of the type review is named the same commits,
-// read from the same row by the same rules, in its own sentences: the commit its row holds,
-// ` Last reviewed commit: <sha>.` (record.PhaseRow.ReviewedHead, which the workflow's
-// recordStepReview writes for a review step alone), and where its row holds none, the commit
-// another agent's review step on the task read, ` Commit another agent's review read: <sha>.`, so a
-// review step whose agent has no deciding review of its own on the task reads the whole change and
-// sees what changed since, as the reviewer does. It is told no `none`: where it gets neither
-// sentence it has no commit to read from, as in its first run of a generation with no other agent's
-// review before it. Such a step reports with its verdict and submits no review of GitHub's, so it
-// gets no entry's sentence.
+// A role the deployment or the issue's plan defines whose step at step is of the type review is
+// named the same commits, read from the same row by the same rules, in its own sentences: the
+// commit its row holds, ` Last reviewed commit: <sha>.` (record.PhaseRow.ReviewedHead, which the
+// workflow's recordStepReview writes for a review step alone), and where its row holds none, the
+// commit another agent's review step on the task read, ` Commit another agent's review read:
+// <sha>.`, so a review step whose agent has no deciding review of its own on the task reads the
+// whole change and sees what changed since, as the reviewer does. It is told no `none`: where it
+// gets neither sentence it has no commit to read from, as in its first run of a generation with no
+// other agent's review before it. Such a step reports with its verdict and submits no review of
+// GitHub's, so it gets no entry's sentence.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow, rows []record.PhaseRow) string {
 	if role != claim.RoleReviewer {
 		switch {
@@ -79,10 +79,10 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 }
 
 // NamesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
-// reviewer's, and a role the deployment defines, whose review step names its commit. So a stored
-// task of such a role is marked as named (record.SuperviseRequest.RoundNamed), the queue names
-// the others (queuedRow), and the daemon's start executor names such a start queued for news alone
-// (its newsForStart).
+// reviewer's, and a role the deployment or the issue's plan defines, whose review step names its
+// commit. So a stored task of such a role is marked as named (record.SuperviseRequest.RoundNamed),
+// the queue names the others (queuedRow), and the daemon's start executor names such a start queued
+// for news alone (its newsForStart).
 func NamesTheRound(role claim.Role) bool {
 	return role == claim.RoleReviewer || claim.IsDeploymentRole(role)
 }

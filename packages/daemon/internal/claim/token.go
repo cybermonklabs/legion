@@ -74,8 +74,9 @@ func KeyOfProject(project, key string) bool {
 // so the write fails instead, and the caller's transaction rolls back.
 var ErrKeyOfAnotherProject = errors.New("the outbox row is keyed by another project's issue, whose rows only that project's daemon runs")
 
-// IsRole reports whether a claim can be on role: one of Legion's six, or a role the deployment
-// defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The controller is none: its claim holds no issue.
+// IsRole reports whether a claim can be on role: one of Legion's six, a role the deployment
+// defines or a role the plan of the claim's issue defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The
+// controller is none: its claim holds no issue.
 func IsRole(role Role) bool {
 	return role != RoleController && roleName.MatchString(string(role))
 }
@@ -92,8 +93,10 @@ func RoleRank(role Role) int {
 	return len(Roles)
 }
 
-// IsDeploymentRole reports whether role is a valid issue claim role outside Legion's six.
-// To check whether that role is configured, consult the deployment.
+// IsDeploymentRole reports whether role is a valid issue claim role outside Legion's six: a role
+// the deployment defines or a role the plan of the claim's issue defines, which the name alone
+// does not tell apart. To check whether that role is configured, consult the deployment and the
+// issue's plan.
 func IsDeploymentRole(role Role) bool { return IsRole(role) && !IsBuiltin(role) }
 
 // NewToken is the token of the agent named for role on issue, AgentToken(project, issue,

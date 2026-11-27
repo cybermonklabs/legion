@@ -75,7 +75,7 @@ func TestTheRefusalTableIsHeldWhereAReaderSeesIt(t *testing.T) {
 	const heading = "## The daemon will not start"
 	rows := []string{"| It says | What to do |", "| --- | --- |", "| `a refusal` | Fix what it names. |"}
 	table := strings.Join(rows, "\n")
-	const command = "```sh\nlegion start --config legion.yaml --check-config\n```"
+	const command = "```sh\nlegion config check --config legion.yaml\n```"
 	for _, page := range []struct {
 		shape, text string
 		err         error

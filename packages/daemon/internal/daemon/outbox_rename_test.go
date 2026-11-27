@@ -193,7 +193,7 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 			w := &workflowRuntime{tokens: identityTokens{}, repositories: renamedRepositories(tc.served, tc.renames)}
 			want := runtime.GitIdentity{Name: "legion-implement[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
 
-			launch, err := w.identity(context.Background(), claim.RoleImplementer, recorded)
+			launch, err := w.identity(context.Background(), "LEGION-208", claim.RoleImplementer, recorded)
 			if err != nil || launch != want {
 				t.Fatalf("the identity of a launch on %s = %+v, %v; want %+v", recorded, launch, err, want)
 			}
@@ -208,7 +208,8 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 	}
 }
 
-// A role the deployment defines commits as the bot of the App its github_app setting names, and
+// A role the deployment defines, on an issue whose plan defines no role of its name, commits as the
+// bot of the App its github_app setting names, and
 // the map the workflow reads is built from the settings' roles (deploymentApps): the checker,
 // set to implement, commits as the implement App's bot and the critic, which names review, as
 // the review App's. A role nothing defines gets no identity: the mint is refused before any
@@ -225,15 +226,42 @@ func TestTheGitIdentityOfADeploymentRoleIsItsAppsBot(t *testing.T) {
 	if want := (appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}); !maps.Equal(apps, want) {
 		t.Fatalf("deploymentApps = %v, want %v", apps, want)
 	}
-	w := &workflowRuntime{tokens: identityTokens{}, repositories: renamedRepositories(tc.served, tc.renames), deployed: apps}
+	w := &workflowRuntime{tokens: identityTokens{}, repositories: renamedRepositories(tc.served, tc.renames), roleApps: appauth.RoleApps{Deployed: apps}}
 	for role, app := range map[claim.Role]string{"checker": "implement", "critic": "review"} {
 		want := runtime.GitIdentity{Name: "legion-" + app + "[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
-		if got, err := w.identity(context.Background(), role, recorded); err != nil || got != want {
+		if got, err := w.identity(context.Background(), "LEGION-208", role, recorded); err != nil || got != want {
 			t.Errorf("the identity of %s = %+v, %v; want %+v", role, got, err, want)
 		}
 	}
-	if got, err := w.identity(context.Background(), "ghost", recorded); !errors.Is(err, appauth.ErrRoleNotDefined) {
+	if got, err := w.identity(context.Background(), "LEGION-208", "ghost", recorded); !errors.Is(err, appauth.ErrRoleNotDefined) {
 		t.Errorf("the identity of ghost = %+v, %v; want an error that is appauth.ErrRoleNotDefined", got, err)
+	}
+}
+
+// A role an issue's plan defines commits as the bot of the App of its type: coder, of the type
+// implementation, as the implement App's, and prober, of the type testing, as the review App's.
+// The plan is the issue's own, so the same role on an issue whose plan does not define it gets
+// no identity, which would otherwise stop its launch at the git identity (specs.SpawnSpec).
+func TestTheGitIdentityOfARoleOfAPlanIsTheBotOfItsType(t *testing.T) {
+	recorded := ghrepo.MustParse("sjawhar/legion")
+	tc := transferStates[0]
+	owner := ghrepo.MustParse(tc.want).Owner()
+	planned := map[claim.Role]appauth.Planned{"coder": {Defines: true, Type: "implementation"}, "prober": {Defines: true, Type: "testing"}}
+	fake := func(_ context.Context, issue string, role claim.Role) (appauth.Planned, error) {
+		if issue != "LEGION-43" {
+			return appauth.Planned{}, nil
+		}
+		return planned[role], nil
+	}
+	w := &workflowRuntime{tokens: identityTokens{}, repositories: renamedRepositories(tc.served, tc.renames), roleApps: appauth.RoleApps{Plan: fake}}
+	for role, app := range map[claim.Role]string{"coder": "implement", "prober": "review"} {
+		want := runtime.GitIdentity{Name: "legion-" + app + "[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
+		if got, err := w.identity(context.Background(), "LEGION-43", role, recorded); err != nil || got != want {
+			t.Errorf("the identity of %s on LEGION-43 = %+v, %v; want %+v", role, got, err, want)
+		}
+	}
+	if got, err := w.identity(context.Background(), "LEGION-44", "coder", recorded); !errors.Is(err, appauth.ErrRoleNotDefined) {
+		t.Errorf("the identity of coder on LEGION-44 = %+v, %v; want an error that is appauth.ErrRoleNotDefined", got, err)
 	}
 }
 

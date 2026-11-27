@@ -28,8 +28,13 @@ import (
 // runs nothing it takes the step's role (supervise.Machine.Rerole), the one place a claim's role
 // changes. The decision that brings the claim back then resumes it on its session in that role or,
 // for another agent, leaves the session behind and records the start's agent
-// (supervise.StartWork.Agent). A claim of the step's role and agent, and a start of no phase entry
-// — a wake, a resume, a role admission brings back — are left as they stand.
+// (supervise.StartWork.Agent). A claim of the step's role and agent whose process was launched
+// under another definition of its role than the plan in force gives now (roleDefinitionChanged) is
+// suspended the same way, and the decision that brings it back relaunches it on its session with
+// that definition, so no task of a version goes to a process of an earlier one, whose next mint
+// would already act as the App of the new type. Any other claim of the step's role and agent, and
+// a start of no phase entry — a wake, a resume, a role admission brings back — are left as they
+// stand.
 //
 // A start that leaves the session the claim records (work, supervise.Machine.Leaves), the session
 // of a key's agent that the start's agent took the name of, asks the suspension too, where the
@@ -55,19 +60,28 @@ func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Mac
 	held := machine.Claim()
 	step := phaseEntry(payload)
 	rerole := step && held.Role != payload.Role
-	if !rerole && !(step && held.SessionOfAnotherAgent(agent)) {
+	var reason string
+	switch {
+	case !step:
 		return suspendToLeave(ctx, machine, token, row.Issue, payload.Role, work)
-	}
-	if rerole {
+	case rerole:
 		if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
 			return err
 		}
+		reason = fmt.Sprintf("its agent's next step on %s is the %s's", issue.Key, payload.Role)
+	case held.SessionOfAnotherAgent(agent):
+		reason = fmt.Sprintf("its claim's next step on %s is another agent's", issue.Key)
+	default:
+		changed, err := r.roleDefinitionChanged(ctx, machine)
+		if err != nil {
+			return err
+		}
+		if changed == "" {
+			return suspendToLeave(ctx, machine, token, row.Issue, payload.Role, work)
+		}
+		reason = changed
 	}
 	if !held.RunsNothing() {
-		reason := fmt.Sprintf("its claim's next step on %s is another agent's", issue.Key)
-		if rerole {
-			reason = fmt.Sprintf("its agent's next step on %s is the %s's", issue.Key, payload.Role)
-		}
 		err := suspendUntilIdle(ctx, machine, token, reason, func(held supervise.Claim) error {
 			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", payload.Role, issue.Key, token, held.Role)
 		})
@@ -79,6 +93,51 @@ func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Mac
 		return nil
 	}
 	return machine.Rerole(ctx, payload.Role)
+}
+
+// roleDefinitionChanged is why machine's claim runs a process that runs another definition of its
+// role than a launch of it would run now, and "" where it does not: the definition the launch of
+// that process was built for, which the claim keeps over a restart
+// (supervise.Claim.LaunchedDefinition), against the one the supervisor's spec builder resolves
+// from the plan in force (roleDefinition), both "" for a role no plan defines. So a version of the
+// plan taken at any moment after the launch was built — before its agent came up, after, or
+// before a restart of this daemon — relaunches the process at the role's next step, and a block no
+// version changed relaunches nothing.
+//
+// The claim's definition is the process's only while the claim's generation is the one that
+// launch wrote (supervise.Claim.LaunchedGeneration). A release that keeps no definition, run in
+// between after a rollback that skipped both ways back, launched the process the claim records
+// at a later generation and left the definition as this release wrote it, so that process is read
+// as running no plan's definition, as the release before's launches are, and relaunched where the
+// plan in force defines its role.
+//
+// A claim that records no process has none to compare: one whose launch failed or was cut short
+// after it let its process go, waiting to be tried again or for a suspension, or whose paced launch
+// has not run. No start of it is in flight while Claim answers, since a launch holds the machine
+// through its start, and the try that starts its next process builds its spec then, from the plan
+// in force (supervise's spawnSpec). Neither has a claim that runs nothing, and an outbox with no
+// reader of the definition (a test's) changes nothing.
+func (r *outbox) roleDefinitionChanged(ctx context.Context, machine *supervise.Machine) (string, error) {
+	held := machine.Claim()
+	if r.roleDefinition == nil || held.RunsNothing() || held.Locator == nil {
+		return "", nil
+	}
+	current, err := r.roleDefinition(ctx, held)
+	if err != nil {
+		return "", err
+	}
+	recorded := held.LaunchedGeneration == held.Generation
+	launched := held.LaunchedDefinition
+	if !recorded {
+		launched = ""
+	}
+	switch {
+	case launched == current:
+		return "", nil
+	case !recorded:
+		return fmt.Sprintf("a release that records no definition of its role %s launched its process on %s", held.Role, held.Issue), nil
+	}
+	return fmt.Sprintf("the definition of its role %s on %s changed since its process launched", held.Role, held.Issue), nil
 }
 
 // phaseEntry is whether payload is the start of a phase entry: it carries an entry and names a
