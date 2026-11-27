@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 )
 
 // The rows of this file are the floor of the passes after a starved one (Reconciler.starved, and
@@ -20,19 +21,21 @@ import (
 // could reach no head either, and nor could any pass after it. At the floor the pass reads the
 // heads, learns their pages, and the pass after it paces itself by those again.
 func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
-	// and 5 s (starveFirstPass, PassTimeout).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.Pace = RequestPace
 	starveFirstPass(t, h)
+	h.requireWaits(clock, 100*time.Millisecond)
 
 	// Set by the arithmetic, the gap would be nine tenths of the five-second bound over the one
 	// identity read the starved pass left: 4.5 seconds, which the ceiling clamps to 500ms.
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
@@ -43,6 +46,7 @@ func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
 	}
 
 	h.pass()
+	h.requireWaits(clock, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond)
 
 	// Two heads over REST are two listings each, and the repository's identity: five requests,
 	// and nine tenths of five seconds over five is 900ms, which the ceiling clamps to 500ms. The
@@ -53,32 +57,20 @@ func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
 	}
 }
 
-// starveFirstPass runs passes under a one-second bound until one lists both heads and reaches
-// neither. GitHub holds the first head's check runs until the pass's bound gives the request up,
-// so a pass that lists the heads reaches none of them however fast the machine runs; a pass the
-// machine kept from listing them within its second reached no head either, and is run again
-// rather than read as the row's verdict. The passes stop at the test binary's own deadline less
-// starveMargin (testwait.Bounded): a stand-in that never lists the heads fails the row by name,
-// with the last pass's line, rather than in the binary's panic. It then lets GitHub answer at
-// speed again under a bound of five seconds, which holds the few requests of these rows many
-// times over: 30 passes reading both heads at the ceiling's 500ms, the slowest pace these rows
-// read at, took 2.01 to 2.11 s at a box load of 688 to 1,559 on 288 CPUs. What the passes after
-// it read turns on their pace alone.
+// starveFirstPass ends the first pass at its held read of the first head, after it listed both.
+// Both the pass deadline and its pacing gaps use the test clock, so no retry or wall time is needed.
 func starveFirstPass(t *testing.T, h *harness) {
 	t.Helper()
 	h.reconciler.PassTimeout = time.Second
 	h.github.stall(runsOf(head(7)), time.Minute)
-	var line map[string]any
-	listed := testwait.Holds(testwait.Bounded(t, 24*time.Hour, starveMargin), testwait.Poll, func() bool {
-		h.pass()
-		line = h.passLine()
-		if number(t, line, "heads") != 0 {
-			t.Fatalf("a pass reached %v heads while GitHub held the first head's check runs, want none: nothing here is tested: %v", line["heads"], line)
-		}
-		return number(t, line, "heads_known") == 2
-	})
-	if !listed {
-		t.Fatalf("no pass listed both heads before the test binary's deadline drew near, want one that lists them and reaches neither: nothing here is tested: the last pass: %v", line)
+	h.github.atStall(h.endBound)
+	h.pass()
+	line := h.passLine()
+	if number(t, line, "heads") != 0 {
+		t.Fatalf("a pass reached %v heads while GitHub held the first head's check runs, want none: nothing here is tested: %v", line["heads"], line)
+	}
+	if number(t, line, "heads_known") != 2 {
+		t.Fatalf("the pass listed %v heads, want both before the held read: nothing here is tested: %v", line["heads_known"], line)
 	}
 	if line["deadline_reached"] != true {
 		t.Fatalf("the pass that listed both heads and reached neither reads deadline_reached %v, want its bound to end it: nothing here is tested: %v", line["deadline_reached"], line)
@@ -87,34 +79,28 @@ func starveFirstPass(t *testing.T, h *harness) {
 	h.reconciler.PassTimeout = 5 * time.Second
 }
 
-// starveMargin is what starveFirstPass leaves of the test binary's deadline once it gives up: the
-// one more pass testwait.Holds asks for after its bound, the failure itself and the harness's
-// cleanup -- its NATS server, its database and its stand-in -- before the binary's own panic.
-// The extra pass ends at the one-second bound starveFirstPass sets at the latest. With GitHub
-// listing no head and a -timeout of two minutes, it gave up at 90.0 s in 3 of 3 runs and the
-// binary ended 0.50 to 0.93 s later, at a box load of 258 to 359.
-const starveMargin = 30 * time.Second
-
 // A rate limit that ends the passes after a starved one leaves the floor in place: the limit,
 // not the pace, stopped them, and they learned no work either. So the pass after the limit's
 // reset reads at the floor too, whether GitHub answered the limit inside a pass or the limit was
 // still in force as a pass began. Cleared by the limited pass, the floor would give way to the
 // arithmetic, which spreads the one identity read over the bound and lands on the ceiling again.
 func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
-	// and 5 s (starveFirstPass, PassTimeout).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.Pace = RequestPace
 	starveFirstPass(t, h)
+	h.requireWaits(clock, 100*time.Millisecond)
 
 	// GitHub answers the first head's check runs as an exhausted limit, which ends the second
 	// pass before it reaches a head.
 	h.github.rateLimitNext(runsOf(head(7)))
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond)
 	line := h.passLine()
 	if line["rate_limited"] != true || number(t, line, "heads") != 0 {
 		t.Fatalf("the second pass reads rate_limited %v and %v heads reached, want the limit to end it before it reached a head: %v",
@@ -123,6 +109,7 @@ func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T
 	// The limit is still in the ledger every process shares, so the third pass reaches no head
 	// either.
 	h.pass()
+	h.requireWaits(clock)
 	if line := h.passLine(); line["rate_limited"] != true || number(t, line, "heads") != 0 {
 		t.Fatalf("the third pass reads rate_limited %v and %v heads reached, want the limit still in force to end it: %v",
 			line["rate_limited"], line["heads"], line)
@@ -138,6 +125,7 @@ func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T
 		t.Fatalf("clear the limit as its reset does: %v", err)
 	}
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 
 	line = h.passLine()
 	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
@@ -151,9 +139,9 @@ func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T
 // A deployment that configures a pause below the floor keeps it for the pass after a starved one:
 // the floor never makes a pass slower than the pause configured.
 func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
-	// and 5 s (starveFirstPass, PassTimeout).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
@@ -161,8 +149,10 @@ func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.
 	const configured = 50 * time.Millisecond
 	h.reconciler.Pace = configured
 	starveFirstPass(t, h)
+	h.requireWaits(clock, 100*time.Millisecond) // Before any page count is known, the floor applies.
 
 	h.pass()
+	h.requireWaits(clock, 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond)
 
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), configured.String(); got != want {
@@ -178,20 +168,22 @@ func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.
 // place, the floor would hold every pass of a deployment whose passes end on their bound -- the
 // cursor's own case -- at ten requests a second for good.
 func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
-	// and 5 s (starveFirstPass, PassTimeout), one of which GitHub holds a head past.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.Pace = RequestPace
 	starveFirstPass(t, h)
+	h.requireWaits(clock, 100*time.Millisecond)
 
 	// The pass at the floor reads the first head whole, and GitHub holds the second head's check
 	// runs until the pass's own bound gives the request up.
 	h.github.stall(runsOf(head(8)), time.Minute)
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
 		t.Fatalf("the pass after the starved one paced itself at %s, want the floor %s: nothing here is tested: %v", got, want, line)
@@ -205,6 +197,7 @@ func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) 
 	// The work is the first head's two listings and the repository's identity: nine tenths of
 	// five seconds over three requests is 1.5 seconds, which the ceiling clamps to 500ms.
 	h.pass()
+	h.requireWaits(clock, 500*time.Millisecond, 500*time.Millisecond)
 	line = h.passLine()
 	if got, want := text(t, line, "pace"), RequestPace.String(); got != want {
 		t.Errorf("the pass after one that reached a head and then ended on its bound paced itself at %s, want %s from the work it learned: reaching a head clears the floor: %v", got, want, line)
@@ -214,10 +207,11 @@ func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) 
 // readBothHeads runs a pass under a five-second bound that reads both heads whole, so the
 // Reconciler holds their pages: two listings of each and the repository's identity, five
 // requests, which nine tenths of the bound spread over is 900ms and the ceiling clamps to 500ms.
-func readBothHeads(t *testing.T, h *harness) {
+func readBothHeads(t *testing.T, h *harness, clock *advancingPaceClock) {
 	t.Helper()
 	h.reconciler.PassTimeout = 5 * time.Second
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 	if line := h.passLine(); number(t, line, "heads") != 2 || line["deadline_reached"] != false {
 		t.Fatalf("the first pass reached %v heads (deadline_reached %v), want both within its bound: nothing here is tested: %v",
 			line["heads"], line["deadline_reached"], line)
@@ -228,22 +222,25 @@ func readBothHeads(t *testing.T, h *harness) {
 // pass's: the pace did not stop that pass, so the pass after it paces itself by the work the
 // Reconciler holds, not at the floor.
 func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace) under a real bound of 5 s
-	// (readBothHeads), and a caller's deadline of 1 s ends one of them.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.Pace = RequestPace
-	readBothHeads(t, h)
+	readBothHeads(t, h, clock)
 
 	// GitHub holds the first head's check runs until the request is given up, and the caller's
 	// own deadline, a second away, gives it up well inside the pass's own bound of five seconds.
 	h.github.stall(runsOf(head(7)), time.Minute)
-	ctx, cancel := context.WithTimeout(h.ctx, time.Second)
+	caller := clocktest.New(clock.Now())
+	h.github.atStall(func() { caller.Advance(time.Second) })
+	ctx, cancel := caller.WithTimeout(h.ctx, time.Second)
 	h.reconciler.Pass(ctx)
 	cancel()
+	h.requireWaits(clock, 500*time.Millisecond)
 	if line := h.passLine(); number(t, line, "heads") != 0 || line["deadline_reached"] != true {
 		t.Fatalf("the pass the caller's deadline ended reached %v heads (deadline_reached %v), want a deadline to end it before it reached one: nothing here is tested: %v",
 			line["heads"], line["deadline_reached"], line)
@@ -251,6 +248,7 @@ func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 	h.github.stall(runsOf(head(7)), 0)
 
 	h.pass()
+	h.requireWaits(clock, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond)
 
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), RequestPace.String(); got != want {
@@ -258,49 +256,35 @@ func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 	}
 }
 
-// A rate limit GitHub answers as the pass's own bound falls, before the pass has reached a head,
-// leaves the floor as it was: the limit ended that pass, not its pace. GitHub answers the first
-// head's check runs with an exhausted limit, and the client writes that limit to the shared
-// ledger on a context of its own, which waits out githubapp's limitRecordTimeout (five seconds)
-// while this test holds the ledger against writes. The pass's own bound of four seconds falls
-// during that wait, whatever the machine's speed, once the limit's answer has come; the pass
-// after it paces itself by the work the Reconciler holds.
+// A rate limit answered as the pass's bound falls leaves the pace unchanged. The ledger's write
+// fails with DeadlineExceeded after ending the pass's deadline, as a blocked database write does.
 func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
-	// Not parallel: its pass's real bound of 4 s must fall inside the limit's write, which waits
-	// 5 s (limitRecordTimeout), and its passes pace themselves on the wall clock (Pace).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.Pace = RequestPace
-	readBothHeads(t, h)
+	readBothHeads(t, h, clock)
 
-	ledger, err := h.pool.Begin(h.ctx)
-	if err != nil {
-		t.Fatalf("open the transaction that holds the rate-limit ledger: %v", err)
-	}
-	t.Cleanup(func() { _ = ledger.Rollback(context.Background()) })
-	// Exclusive mode refuses every write to the table and no read of it, so the pass still reads
-	// the limits in force and only the record of GitHub's answer waits.
-	if _, err := ledger.Exec(h.ctx, `lock table github_rate_limits in exclusive mode`); err != nil {
-		t.Fatalf("hold the rate-limit ledger against writes: %v", err)
-	}
+	h.reconciler.GitHub = h.github.client(&boundRecordLimits{
+		Limits: ratelimit.New(h.pool), falls: h.endBound, refuse: context.DeadlineExceeded,
+	})
 	h.github.rateLimitNext(runsOf(head(7)))
 	h.reconciler.PassTimeout = 4 * time.Second
 	h.pass()
-	if err := ledger.Rollback(h.ctx); err != nil {
-		t.Fatalf("let the rate-limit ledger go: %v", err)
-	}
+	h.requireWaits(clock, 500*time.Millisecond)
 	if line := h.passLine(); line["rate_limited"] != true || number(t, line, "heads") != 0 {
 		t.Fatalf("the pass reads rate_limited %v and %v heads reached, want GitHub's limit to end it before it reached a head: nothing here is tested: %v",
 			line["rate_limited"], line["heads"], line)
 	}
 	h.reconciler.PassTimeout = 5 * time.Second
 
-	// The limit's record waited out its own bound, so the ledger holds no limit and this pass
-	// reads GitHub.
+	// The limit's record failed, so the ledger holds no limit and this pass reads GitHub.
 	h.pass()
+	h.requireWaits(clock, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond)
 
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), RequestPace.String(); got != want {
@@ -313,29 +297,38 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 // it with no head reached, as a bound inside a head's reads is: the pass after it reads at the
 // floor.
 func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace) under a real bound of 5 s
-	// (readBothHeads, PassTimeout).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.Pace = RequestPace
-	readBothHeads(t, h)
+	readBothHeads(t, h, clock)
 
 	// A bound already over as the pass begins: every read it makes fails before anything is
 	// sent -- the shared limits', which the pass reads first, and the covered repositories' -- so
 	// no request reaches GitHub and the walk counts no cut.
 	h.reconciler.PassTimeout = time.Nanosecond
+	bound := h.reconciler.bound
+	h.reconciler.bound = func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		bounded, cancel := bound(ctx, timeout)
+		clock.Advance(timeout)
+		return bounded, cancel
+	}
 	sentBefore := h.github.count()
 	h.pass()
+	h.requireWaits(clock)
 	if line := h.passLine(); number(t, line, "heads") != 0 || line["deadline_reached"] != false || h.github.count() != sentBefore {
 		t.Fatalf("the pass under a spent bound reached %v heads (deadline_reached %v) and sent GitHub %d requests, want none, and no cut counted: nothing here is tested: %v",
 			line["heads"], line["deadline_reached"], h.github.count()-sentBefore, line)
 	}
 	h.reconciler.PassTimeout = 5 * time.Second
+	h.reconciler.bound = bound
 
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {

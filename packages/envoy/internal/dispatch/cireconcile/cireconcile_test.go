@@ -74,7 +74,7 @@ func TestAPassSettlesAHeadNoWebhookReached(t *testing.T) {
 // that never comes. The pass reads GitHub's own listing, finds the run ended, writes it over the
 // running one, and the listener publishes the settlement the daemon was waiting for.
 func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
-	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -224,7 +224,7 @@ func TestAQueuedSuiteIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
 // holds the head: GitHub has not finished the head's CI, so a settlement on its one completed
 // check would claim the head done while two of its checks still run.
 func TestARunningRunIsRecordedAndHoldsTheHead(t *testing.T) {
-	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -257,7 +257,7 @@ func TestARunningRunIsRecordedAndHoldsTheHead(t *testing.T) {
 // one the webhook made, so the record's revision does not move and no second settlement is
 // published.
 func TestAPassOverRecordedChecksChangesNothing(t *testing.T) {
-	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()

@@ -245,7 +245,7 @@ func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t 
 // publish no settlement: the pass writes the observations the webhooks already wrote, and
 // cistore applies an unchanged observation as no change. It is k5 end to end.
 func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T) {
-	// Not parallel: it holds a 2 s quiet window (settlements.NextMsg), which load could make it miss.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(capturedRepository)
 	h.github.setRepository(capturedRepository, capturedRepository, 555)
@@ -282,9 +282,7 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 
 	h.pass()
 
-	if message, err := settlements.NextMsg(2 * time.Second); err == nil {
-		t.Fatalf("the pass published a settlement over what the webhooks recorded: %s", message.Data)
-	}
+	h.noSettlementAt(settlements, "after the pass over what the webhooks recorded", capturedOwner, capturedName, fmt.Sprint(capturedNumber), capturedSHA)
 	state, after := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
 	if state == nil {
 		t.Fatal("the head has no record after the pass")

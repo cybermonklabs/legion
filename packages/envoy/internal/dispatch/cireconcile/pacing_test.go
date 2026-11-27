@@ -212,25 +212,21 @@ func TestAPageThePassDidNotReachIsReadByTheNextPass(t *testing.T) {
 // interval. The work is the heads a query cannot answer whole, which are the only heads read
 // over REST at all.
 func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
-	// Not parallel: its second pass waits 3.6 s of a real bound of 5 s on the wall clock (Pace,
-	// PassTimeout), and has the 1.4 s left for its five requests.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
-	// A deployment's own pause well above what the arithmetic comes to, so the gap under test
-	// is the work's rather than the ceiling's, and a bound whose nine tenths the pass's five
-	// REST requests divide into 900ms. The pass then spends 3.6 seconds of its five waiting --
-	// it waits before every request but its first -- which leaves 1.4 seconds for five requests
-	// to a loopback GitHub: a margin a loaded machine keeps, where a bound this pass fills nine
-	// tenths of would not.
+	// Five REST requests share nine tenths of the five-second bound: 900 ms per gap.
 	h.reconciler.Pace = 2 * time.Second
 	h.reconciler.PassTimeout = 5 * time.Second
 
 	// The first pass of a process knows of no work yet and reads at the floor, which is the
 	// fastest it is ever allowed to read; it is the pass that learns the two heads there are.
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 
 	if got, want := text(t, h.passLine(), "pace"), FastestRequestPace.String(); got != want {
 		t.Fatalf("the first pass of the process paced itself at %s, want the floor %s: it knows of no work yet: %v",
@@ -238,6 +234,7 @@ func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 	}
 
 	h.pass()
+	h.requireWaits(clock, 900*time.Millisecond, 900*time.Millisecond, 900*time.Millisecond, 900*time.Millisecond)
 
 	// Two heads read over REST are two listings each, one page apiece, under the one repository
 	// whose identity the pass reads: five requests. Nine tenths of the five-second bound is
@@ -260,9 +257,9 @@ func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 // The gap stays at the floor, or Pace where Pace is shorter, however much work the pass has:
 // the secondary limit the floor sits inside is the App's, shared with its other readers.
 func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
-	// Not parallel: its second pass paces itself on the wall clock (Pace) under a real bound of
-	// 1 s (PassTimeout).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8), head(9), head(10), head(11), head(12))
 	for _, pull := range []fakePull{head(7), head(8), head(9), head(10), head(11), head(12)} {
@@ -272,11 +269,13 @@ func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
 	// by nothing: what this test measures is the gap the pass after it sets itself, and thirteen
 	// requests at the floor do not fit in the one-second bound that gives it that floor.
 	h.pass()
+	h.requireWaits(clock)
 
 	h.reconciler.Pace = RequestPace
 	h.reconciler.PassTimeout = time.Second
 
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)
 
 	// Six heads read over REST are twelve listing reads, and the repository's own identity:
 	// thirteen requests, and 900ms over thirteen is 69ms, which is below the floor.
@@ -293,9 +292,9 @@ func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
 // reads at Pace rather than minutes apart, so a head opened between two passes is still read at
 // the pace the deployment asked for.
 func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace, 500 ms between requests)
-	// under the pass's real bound (PassTimeout).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
@@ -304,8 +303,10 @@ func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
 
 	// The pass that learns the one head there is.
 	h.pass()
+	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond)
 
 	h.pass()
+	h.requireWaits(clock, 500*time.Millisecond, 500*time.Millisecond)
 
 	// One head over REST is three requests within a 5-minute bound, which is 90 seconds between
 	// them by the arithmetic alone; the pass reads at the configured 500ms instead.
@@ -323,9 +324,9 @@ func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
 // the bound then divides by zero. A pass panics into nothing -- its loop recovers none of it --
 // so the process would go down with it.
 func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
-	// Not parallel: its passes pace themselves on the wall clock (Pace) under the pass's real
-	// bound (PassTimeout).
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.reconciler.Pace = RequestPace
@@ -334,6 +335,7 @@ func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 	// A cycle the query answered whole: the head is counted among the heads the pass knows
 	// there are, and no head of it was read over REST, so the pass leaves no REST work behind.
 	h.pass()
+	h.requireWaits(clock)
 	if got := number(t, h.passLine(), "heads_known"); got != 1 {
 		t.Fatalf("the first pass knows of %d heads, want the one the query answered: %v", got, h.passLine())
 	}
@@ -345,6 +347,7 @@ func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 	}
 
 	h.pass()
+	h.requireWaits(clock)
 
 	line := h.passLine()
 	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
@@ -360,16 +363,17 @@ func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 // The stand-in answers every query in a fixed time, so the waits the pass leaves are the only
 // thing between one query and the next and the arithmetic is the pass's own.
 func TestQueriesGoOneAtATimeInsideGitHubsGraphQLBudget(t *testing.T) {
-	// Not parallel: it measures the waits on the wall clock between the pass's queries
-	// (graphQLPace) against the stand-in's answers of 150 ms.
+	t.Parallel()
 	const answersIn = 150 * time.Millisecond
 	h := newHarness(t, reviewerAppID)
+	clock := h.paceOnTheTestClock()
 	h.seedProjectDefault(rowRepository)
 	// Sixty-one open pull requests are four pages, which is four queries and three waits.
 	h.listHeads(heads(61)...)
 	h.github.everyQueryTakes(answersIn)
 
 	h.pass()
+	h.requireWaits(clock, 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond)
 
 	asked := h.github.queriesAsked()
 	if len(asked) != 4 {
@@ -387,12 +391,10 @@ func TestQueriesGoOneAtATimeInsideGitHubsGraphQLBudget(t *testing.T) {
 			t.Errorf("query %d began at %s, before query %d ended at %s: the pass's queries overlapped",
 				i, query.started, i-1, before.ended)
 		}
-		// The wait the pass leaves is what GitHub's budget asks of the query before it. The
-		// stand-in's own answer takes a little longer than it was asked to, so the wait is
-		// compared with the floor the pass's arithmetic gives, less a tenth for the clock.
-		want := graphQLWait(answersIn) * 9 / 10
-		if waited := query.started.Sub(before.ended); waited < want {
-			t.Errorf("the pass waited %s between queries %d and %d, want at least %s: %s of query time a minute",
+		// The clock measures both the query's processing time and the production gap exactly.
+		want := 50 * time.Millisecond
+		if waited := query.started.Sub(before.ended); waited != want {
+			t.Errorf("the pass waited %s between queries %d and %d, want exactly %s: %s of query time a minute",
 				waited, i-1, i, want, GraphQLTimePerMinute)
 		}
 	}
@@ -540,10 +542,11 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 // context; the write is given whatever context the client chose for it.
 type boundRecordLimits struct {
 	githubapp.Limits
-	t     *testing.T
+	t *testing.T
 	falls func()
-	mu    sync.Mutex
-	pass  context.Context
+	refuse error
+	mu sync.Mutex
+	pass context.Context
 }
 
 func (l *boundRecordLimits) Wait(ctx context.Context, scope string) (time.Duration, time.Time, error) {
@@ -562,6 +565,9 @@ func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.
 			l.falls()
 		}
 		testwait.Receive(l.t, "the pass deadline inside the rate-limit write", pass.Done())
+	}
+	if l.refuse != nil {
+		return l.refuse
 	}
 	return l.Limits.Record(ctx, scope, wait)
 }

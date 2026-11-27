@@ -59,6 +59,12 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 	wake := store.attachSummary()
 	start := time.Now()
 	z := newSummarizer(store, debounce)
+	// A test publisher can observe the scheduler's actual decisions without waiting for silence.
+	if observer, ok := pub.(interface {
+		SummaryScheduled(string, State, bool, int64)
+	}); ok {
+		z.scheduled = observer.SummaryScheduled
+	}
 	backlog := &backlogHeld{gauge: held}
 	go func() {
 		// armed is the k of the instant start + k*tick the timer is set for, 0 while it is stopped.
@@ -82,6 +88,9 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 				passed := armed
 				armed = 0
 				count, next, ok := z.pass(pub, logger, time.Now().UnixMilli())
+				if z.scheduled != nil {
+					z.scheduled("", State{}, false, 0) // This pass, including an empty initial scan, ended.
+				}
 				backlog.observe(count, logger)
 				if ok {
 					arm(max(passed+1, gridIndexAtOrAfter(start, tick, next)))
@@ -267,6 +276,9 @@ func (q *deadlineQueue) remove(key string) {
 type summarizer struct {
 	store    *Store
 	debounce time.Duration
+	// scheduled reports the record, whether it will be attempted, and its next deadline.
+	// An empty key reports the end of a pass. Nil is the production path.
+	scheduled func(string, State, bool, int64)
 
 	// mu guards the fields below. No pass holds it, or the store's lock, while it settles a record.
 	mu    sync.Mutex
@@ -396,7 +408,11 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 		delete(z.heldLogged, key)
 		return State{}, false
 	}
-	switch v, at := schedule(st, now, z.debounce); v {
+	v, at := schedule(st, now, z.debounce)
+	if z.scheduled != nil {
+		z.scheduled(key, st, v == verdictAttempt, at)
+	}
+	switch v {
 	case verdictIdle:
 		delete(z.heldLogged, key)
 	case verdictWait:
