@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/smithy-go/middleware"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 // The request body ends with endMark, so the client's connection knows which write carries its
@@ -37,8 +38,8 @@ const forcedOrderBound = 30 * time.Second
 // body, and only then is the write let go. With smithy-go's own body, net/http's read past the
 // Content-Length bytes gets the closed body's io.EOF from WriteTo, its write loop closes the
 // connection, and reading the response fails with "use of closed network connection". Through
-// Client the same order answers the call. The failing row is also this package's removal check:
-// once the smithy-go this module builds carries aws/smithy-go#728, it fails, naming what to delete.
+// Client the same order answers the call. When to delete this package is
+// TestASmithyRequestBodyClosedFirstStillFailsWriteTo's question, not this test's.
 func TestAClosedBodysWriteToStillFailsAnAnsweredCall(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -111,21 +112,56 @@ func TestAClosedBodysWriteToStillFailsAnAnsweredCall(t *testing.T) {
 			if !held.didHold() {
 				t.Fatalf("the request's write was never held after its last byte (err %v): the order was not forced", err)
 			}
+			reported, written := held.written()
+			if !reported {
+				t.Fatalf("net/http never reported the request written (InvokeModel = %v): the order was not forced", err)
+			}
 			if tc.through {
-				if err != nil || out == nil || len(out.Body) != len(answer) {
-					t.Fatalf("through Client: InvokeModel = %v, want the whole %d-byte answer", err, len(answer))
+				if err != nil || out == nil || len(out.Body) != len(answer) || written != nil {
+					t.Fatalf("through Client: InvokeModel = %v and the request write %v, want the whole %d-byte answer to a request written whole", err, written, len(answer))
 				}
 				return
 			}
-			if err == nil {
-				t.Fatalf("without Client the answered call succeeded: smithy-go %s no longer returns io.EOF from a closed request body's WriteTo "+
-					"(aws/smithy-go#728 is in it). Delete package awsbody and every awsbody.Client call", smithyVersion())
+			if !errors.Is(written, io.EOF) {
+				t.Fatalf("without Client: net/http reported the request write as %v, want smithy-go's closed body's io.EOF, so this row forced nothing "+
+					"(InvokeModel = %v; TestASmithyRequestBodyClosedFirstStillFailsWriteTo says whether smithy-go still returns it)", written, err)
 			}
 			if !errors.Is(err, net.ErrClosed) {
 				t.Fatalf("without Client: InvokeModel = %v, want the read of the answer to fail on the closed connection", err)
 			}
-			t.Logf("without Client, smithy-go %s: %v", smithyVersion(), err)
+			t.Logf("without Client, smithy-go %s: the request write %v, then %v", smithyVersion(), written, err)
 		})
+	}
+}
+
+// This package's removal check. smithy-go builds a request's body as its HTTP handler sends it
+// (Request.Build) and closes it once the response's headers are in. That closed body still has a
+// WriteTo returning io.EOF, which is the whole reason for Client. Once it returns nil, or the body
+// has no WriteTo, the smithy-go this module builds carries a fix of aws/smithy-go#719 (#728, #741
+// and #752 each propose one), and this package and every awsbody.Client call are to go.
+func TestASmithyRequestBodyClosedFirstStillFailsWriteTo(t *testing.T) {
+	t.Parallel()
+	stack := smithyhttp.NewStackRequest().(*smithyhttp.Request)
+	request, err := stack.SetStream(strings.NewReader("body"))
+	if err != nil {
+		t.Fatalf("SetStream: %v", err)
+	}
+	request.ContentLength = int64(len("body"))
+	built := request.Build(context.Background())
+	if built.Body == nil {
+		t.Fatal("Build gave the request no body, so this check reads nothing")
+	}
+	if err := built.Body.Close(); err != nil {
+		t.Fatalf("closing the built body: %v", err)
+	}
+	writerTo, ok := built.Body.(io.WriterTo)
+	if !ok {
+		t.Fatalf("smithy-go %s's closed request body (%T) has no WriteTo, so net/http reads it through Read: a fix of aws/smithy-go#719 is in it. "+
+			"Delete package awsbody and every awsbody.Client call", smithyVersion(), built.Body)
+	}
+	if n, err := writerTo.WriteTo(io.Discard); !errors.Is(err, io.EOF) {
+		t.Fatalf("smithy-go %s's closed request body's WriteTo = %d, %v, no longer io.EOF: a fix of aws/smithy-go#719 is in it. "+
+			"Delete package awsbody and every awsbody.Client call", smithyVersion(), n, err)
 	}
 }
 
@@ -139,6 +175,8 @@ type heldWrite struct {
 	mu        sync.Mutex
 	tail      []byte // the last len(endMark) bytes written
 	held      bool
+	writeErr  error // what net/http reported for the request's write, once reported is true
+	reported  bool
 	closeOnce sync.Once
 }
 
@@ -172,8 +210,16 @@ func (c *heldWrite) didHold() bool {
 	return c.held
 }
 
-// letGo releases the held write and waits for net/http to report the request written, and, when
-// it reports an error, for the connection to be closed: the order the answered call meets.
+// written reports whether net/http reported the request's write, and what it reported.
+func (c *heldWrite) written() (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reported, c.writeErr
+}
+
+// letGo releases the held write and waits for net/http to report the request written (recorded
+// for written), and, when it reports an error, for the connection to be closed: the order the
+// answered call meets.
 func (c *heldWrite) letGo(wrote <-chan error) error {
 	if !c.didHold() {
 		return nil
@@ -181,6 +227,9 @@ func (c *heldWrite) letGo(wrote <-chan error) error {
 	close(c.release)
 	select {
 	case err := <-wrote:
+		c.mu.Lock()
+		c.writeErr, c.reported = err, true
+		c.mu.Unlock()
 		if err == nil {
 			return nil
 		}

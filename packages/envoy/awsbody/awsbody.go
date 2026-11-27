@@ -1,6 +1,5 @@
-// Package awsbody keeps an answered AWS SDK call from failing because smithy-go closed its request
-// body early. Every AWS service client this repository builds takes its HTTP client through
-// Client:
+// Package awsbody keeps an answered AWS SDK call over HTTP/1.1 from failing because smithy-go
+// closed its request body early. A service client takes it in its option function:
 //
 //	svc.NewFromConfig(cfg, func(o *svc.Options) { o.HTTPClient = awsbody.Client(o.HTTPClient) })
 //
@@ -11,23 +10,30 @@
 //     data, and io.Copy hands that io.EOF on as an error.
 //  2. smithy-go closes the body as soon as the HTTP client's Do returns, that is, once the
 //     response's headers are in (transport/http/client.go).
-//  3. After net/http has written the body's Content-Length bytes, it reads the body once more for
-//     bytes past that length (transfer.go's writeBody), through WriteTo.
+//  3. After net/http's HTTP/1.1 transport has written the body's Content-Length bytes, it reads the
+//     body once more for bytes past that length (transfer.go's writeBody), through WriteTo.
 //
 // When the goroutine writing the request is held between its last byte and that read for as long
 // as the server takes to answer (a loaded CPU is enough), the read comes after the close, gets the
 // io.EOF, and net/http's write loop closes the connection while the response body is still being
 // read. The call fails after an HTTP 200 with "use of closed network connection", and the server
 // has done the work: a retry sends it again, and with no retry the caller treats an answered call
-// as failed. aws/smithy-go#719 reports it and aws/smithy-go#728 fixes it, in no release as of
-// v1.28.10.
+// as failed.
+//
+// Only HTTP/1.1 meets it: net/http's HTTP/2 transport reads a request body through Read alone. Over
+// TLS the SDK's default client asks for HTTP/2. In us-west-2 on 2026-11-27, Bedrock Runtime and
+// Cognito answered over HTTP/2, and S3, Secrets Manager, KMS and STS over HTTP/1.1. A stand-in
+// server over plain HTTP, as tests use, is HTTP/1.1.
+//
+// aws/smithy-go#719 reports it. #728, #741 and #752 each propose the fix, which no release carries
+// as of v1.28.10.
 //
 // Client hands net/http each body with only Read and Close, so that last read goes through Read,
 // whose io.EOF io.Copy takes as the end of the data. A body cut short still fails the request:
 // net/http still compares what it read with Content-Length.
 //
-// TestAClosedBodysWriteToStillFailsAnAnsweredCall fails once the smithy-go this module builds no
-// longer breaks the call without Client, which is when this package and its callers are to go.
+// TestASmithyRequestBodyClosedFirstStillFailsWriteTo fails once the smithy-go this module builds
+// carries a fix of aws/smithy-go#719, which is when this package and its callers are to go.
 package awsbody
 
 import (
