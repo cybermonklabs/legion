@@ -548,13 +548,13 @@ func TestRefusedFormsNeverRun(t *testing.T) {
 		{raw: `pr view 5`, want: "takes gh's arguments as a JSON array of strings"},
 		{raw: `["pr", 5]`, want: "takes gh's arguments as a JSON array of strings"},
 		{argv: []string{"api", "-X", "POST", "repos/other/thing/issues/5/comments", "-f", "body=Done."}, want: `the role's GitHub App is not installed on "other"`, readHelp: true},
-		{argv: []string{"pr", "view", "5", "-R", "acme/widgets", "--bogus"}, want: `"--bogus" is no option`, readHelp: true},
+		{argv: []string{"pr", "view", "5", "-R", "acme/widgets", "--bogus"}, want: "an option the command's help does not list is given to `gh pr view`", readHelp: true},
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/1", "-R", "acme/widgets"}, want: "more than one owner", readHelp: true},
 		// An absolute endpoint that is not GitHub's own https://api.github.com/…: gh sends the
 		// agent's token to the host and scheme it names, so an http:// one hands it over in the
 		// clear before GitHub's 301 (the routing refuses it, for this caller and `legion gh`).
-		{argv: []string{"api", "http://api.github.com/repos/acme/widgets"}, want: "is not https", readHelp: true},
-		{argv: []string{"api", "-X", "POST", "HTTP://API.GITHUB.COM/repos/acme/widgets/issues/5/comments", "-f", "body=Done."}, want: "is not https", readHelp: true},
+		{argv: []string{"api", "http://api.github.com/repos/acme/widgets"}, want: "is no https URL", readHelp: true},
+		{argv: []string{"api", "-X", "POST", "HTTP://API.GITHUB.COM/repos/acme/widgets/issues/5/comments", "-f", "body=Done."}, want: "is no https URL", readHelp: true},
 		{argv: []string{"api", "https://ghe.example.com/api/v3/repos/acme/widgets"}, want: "another host than api.github.com", readHelp: true},
 	} {
 		seq := i + 1
@@ -969,7 +969,7 @@ func TestACallNamingARenamedRepositoryRunsWithTheDirectoryOfTheOwnerHoldingIt(t 
 	}
 	argv := []string{"search", "issues", "--repo", "acme/legacy", "--repo", "acme/widgets"}
 	if target, _, _, err := answer.route(ctx, argv); err == nil || !strings.Contains(err.Error(), "more than one owner") ||
-		!strings.Contains(err.Error(), "sjawhar (--repo acme/legacy)") || !strings.Contains(err.Error(), "acme (--repo acme/widgets)") {
+		!strings.Contains(err.Error(), "sjawhar (a -R value naming acme/legacy)") || !strings.Contains(err.Error(), "acme (a -R value naming acme/widgets)") {
 		t.Errorf("gh %q routes to %+v, %v; want a refusal naming both directories", argv, target, err)
 	}
 }
@@ -1014,7 +1014,7 @@ func TestAFooterAddedToACallGoesBeforeTheDashDashEndingItsOptions(t *testing.T) 
 				tc.argv, target, owner, dir, runTarget, runOwner, runDir)
 		}
 		after := slices.Concat(tc.argv, tc.added(foot))
-		if _, _, _, err := f.answer.route(ctx, after); err == nil || !strings.Contains(err.Error(), "usage has no place for") {
+		if _, _, _, err := f.answer.route(ctx, after); err == nil || !strings.Contains(err.Error(), "has no place in") {
 			t.Errorf("gh %q, the footer after its --, routes with error %v; want it refused as arguments the usage has no place for", after, err)
 		}
 		f.clearInvocations()

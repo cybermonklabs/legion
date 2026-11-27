@@ -537,6 +537,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 // token. A token of a named project is answered anything but 401 on each of the same requests
 // and writes no rejection line, so each refusal is the token's and not the route's.
 func TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		narrowedSession = "ses_rig_narrowed"

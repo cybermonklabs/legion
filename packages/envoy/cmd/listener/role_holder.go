@@ -81,9 +81,33 @@ func holderRecord(ctx context.Context, sessions *session.SessionRegistry, sessio
 	return read(readCtx, sessionID)
 }
 
+// leaderOnlyHolderSessions is roleHolderSessions for the one resolution that reads its holder from
+// the leader whatever the cache holds: a role send that asks to be kept and names no source
+// session, which the route refuses with nothing kept when its role has no live holder
+// (roleSend.noHolder). A `keep: false` send and a send whose keep failed are refused on a "no live
+// holder" too, and read the cache; roleSend.resolve says why they need no read of the leaders. Its
+// holder is always read from the session bucket stream's leader (bucketSessionEntry), never from
+// the cache, as leaderHolderSessions reads one the cache shows live, and never by a direct get. A
+// cached record read live can pass its live deadline before the resolution judges it
+// (roles.ResolveHolder reads the holder's state again), and on a replicated bucket a copy that has
+// not applied a registration made a moment ago answers that the session has no record; either
+// would refuse the send for a holder that can take it. nats.ErrKeyNotFound is the leader's word
+// that no record stands, as it is Holder's.
+type leaderOnlyHolderSessions struct{ *session.SessionRegistry }
+
+func (s leaderOnlyHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
+	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, roleHolderReadTimeout)
+}
+
 // writeRoleHolderError writes the 404 of a role whose claim has no live holder
-// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+// (roleHolderRefusal).
 func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resolution) {
+	writeJSON(w, http.StatusNotFound, roleHolderRefusal(role, result))
+}
+
+// roleHolderRefusal is the body of the 404 of a role whose claim has no live holder
+// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
+func roleHolderRefusal(role string, result roles.Resolution) listenerwire.RoleRefusal {
 	response := listenerwire.RoleRefusal{
 		Reason:        result.State,
 		ClaimRevision: result.ClaimRevision,
@@ -110,7 +134,7 @@ func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resol
 			lastSeen,
 		)
 	}
-	writeJSON(w, http.StatusNotFound, response)
+	return response
 }
 
 // writeRoleClaimUnreadable answers a role-holder resolution that read a claim record it cannot

@@ -260,10 +260,10 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		{[]string{"api", "-X", "POST", "repos/Other/thing/issues", "-f", "title=t"}, `the role's GitHub App is not installed on "other"`},
 		// An absolute `gh api` endpoint that is not GitHub's own https://api.github.com/…: the
 		// real gh would send the bundle's token over the scheme it names.
-		{[]string{"api", "http://api.github.com/repos/sjawhar/legion"}, "is not https"},
+		{[]string{"api", "http://api.github.com/repos/sjawhar/legion"}, "is no https URL"},
 		{[]string{"api", "https://ghe.example.com/api/v3/repos/sjawhar/legion"}, "another host than api.github.com"},
-		{[]string{"pr", "view", "1", "--bogus"}, `"--bogus" is no option`},
-		{[]string{"issue", "lock", "1"}, "cannot read `gh issue lock`"},
+		{[]string{"pr", "view", "1", "--bogus"}, "an option the command's help does not list is given to `gh pr view`"},
+		{[]string{"issue", "lock", "1"}, "cannot read `gh issue` and \"lock\""},
 		{[]string{"co", "1"}, `"co" is a gh alias`},
 	} {
 		code, stdout, stderr := legionGh(t, env, tc.args...)

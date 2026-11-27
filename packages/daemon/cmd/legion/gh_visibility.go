@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
@@ -82,7 +83,7 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 		return status
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		ghroute.PrintRefusal(stderr, err)
 		return 1
 	}
 	fmt.Fprintln(stdout, visibility)

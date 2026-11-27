@@ -5,6 +5,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -69,28 +70,28 @@ var (
 // their canonical paths: refused before their help is read.
 var ghRunsAnotherProgram = map[string]bool{"copilot": true, "extension exec": true}
 
-// readGhCommand reads gh's help of path and parses it (parseGhHelp).
-func readGhCommand(path []string, help func(path []string) (string, error)) (ghCommand, error) {
+// readGhCommand reads gh's help of path and parses it (parseGhHelp). what is the command as a
+// refusal names it: words gh's help listed as written, any other by its place (ghWalk.named).
+func readGhCommand(path []string, what string, help func(path []string) (string, error)) (ghCommand, error) {
 	text, err := help(path)
 	if err != nil {
-		return ghCommand{}, fmt.Errorf("cannot read `%s`: %w; run gh's own command, and pass -R <owner>/<repo> to name its repository", strings.Join(append([]string{"gh"}, path...), " "), err)
+		return ghCommand{}, fmt.Errorf("cannot read %s: %w; run gh's own command, and pass -R <owner>/<repo> to name its repository", what, err)
 	}
-	return parseGhHelp(path, text)
+	return parseGhHelp(path, what, text)
 }
 
-// parseGhHelp reads gh's help of the command requested, gh's own for none. Its USAGE line names
-// the command's canonical path, which is requested itself or a cobra alias of it the help's
-// ALIASES section lists; a path that is a strict prefix of requested is gh's help of a parent,
-// which gh prints for a subcommand it does not know, and any other path is the help of the command
-// a gh alias stands for, whose expansion may carry arguments of its own: both are errors. A help
-// with a `… COMMANDS` section, or a USAGE naming `<command>`, is a group's: its COMMANDS and HELP
-// TOPICS sections list what may follow it, and its ALIAS COMMANDS and EXTENSION COMMANDS sections
-// the gh aliases and extensions among them. A leaf's help must list its options, --help among
-// them, every one in a form this reads; anything else is an error, since an option's arity decides
-// which argument is a repository.
-func parseGhHelp(requested []string, text string) (ghCommand, error) {
+// parseGhHelp reads gh's help of the command requested, gh's own for none, which a refusal names
+// as what (readGhCommand). Its USAGE line names the command's canonical path, which is requested
+// itself or a cobra alias of it the help's ALIASES section lists; a path that is a strict prefix
+// of requested is gh's help of a parent, which gh prints for a subcommand it does not know, and
+// any other path is the help of the command a gh alias stands for, whose expansion may carry
+// arguments of its own: both are errors. A help with a `… COMMANDS` section, or a USAGE naming
+// `<command>`, is a group's: its COMMANDS and HELP TOPICS sections list what may follow it, and its
+// ALIAS COMMANDS and EXTENSION COMMANDS sections the gh aliases and extensions among them. A leaf's
+// help must list its options, --help among them, every one in a form this reads; anything else is
+// an error, since an option's arity decides which argument is a repository.
+func parseGhHelp(requested []string, what, text string) (ghCommand, error) {
 	spelled := strings.Join(append([]string{"gh"}, requested...), " ")
-	what := "`" + spelled + "`"
 	lines := strings.Split(text, "\n")
 	var usage, section string
 	cmd := ghCommand{
@@ -230,7 +231,7 @@ func ghHelpTarget(words []string, help func(path []string) (string, error)) erro
 	walk := ghWalk{help: help}
 	for i, word := range words {
 		if strings.HasPrefix(word, "-") {
-			return cannotPlace(word, "is an option of `gh help`, which takes only the names of commands", false)
+			return cannotPlace(Shown(word, "an option given to gh help"), "is refused: `gh help` takes only the names of commands", false)
 		}
 		if err := walk.check(word); err != nil {
 			return err
@@ -262,7 +263,7 @@ type ghWalk struct {
 // official-extension stubs, `gh stack` and the like).
 func (w *ghWalk) check(word string) error {
 	if w.parent == nil {
-		gh, err := readGhCommand(nil, w.help)
+		gh, err := readGhCommand(nil, "`gh`", w.help)
 		if err != nil {
 			return err
 		}
@@ -275,7 +276,8 @@ func (w *ghWalk) check(word string) error {
 		return err
 	}
 	if len(w.path) == 0 && !w.parent.listed[word] {
-		return fmt.Errorf("cannot tell which repository the command targets: %q is no command gh's own help lists, and gh may answer it by installing an extension, so it sends no token; run gh's own commands, with -R <owner>/<repo>", word)
+		return fmt.Errorf("cannot tell which repository the command targets: %s is no command gh's own help lists, and gh may answer it by installing an extension, so it sends no token; run gh's own commands, with -R <owner>/<repo>",
+			Shown(word, "the command's first word"))
 	}
 	return nil
 }
@@ -283,7 +285,7 @@ func (w *ghWalk) check(word string) error {
 // read reads word's help as the command after the walk's path, which becomes the command's
 // canonical one, and a group the parent of the next word.
 func (w *ghWalk) read(word string) (ghCommand, error) {
-	cmd, err := readGhCommand(append(slices.Clone(w.path), word), w.help)
+	cmd, err := readGhCommand(append(slices.Clone(w.path), word), w.named(word), w.help)
 	if err != nil {
 		return ghCommand{}, err
 	}
@@ -294,9 +296,23 @@ func (w *ghWalk) read(word string) (ghCommand, error) {
 	return cmd, nil
 }
 
+// named is the command read reads next, the walk's path and word, as a refusal names it: the path
+// as gh's help spelled it, and word, a subcommand's slot, quoted only where the help of the path
+// lists it, which no credential is. A word that help does not list, a cobra alias of a subcommand
+// among them, is named by its place (Shown), and so is every word when gh's help could not be
+// read.
+func (w *ghWalk) named(word string) string {
+	path := "`" + strings.Join(append([]string{"gh"}, w.path...), " ") + "`"
+	if w.parent.listed[word] {
+		return path + " and " + strconv.Quote(word)
+	}
+	return path + " and " + Shown(word, "a subcommand its help does not list")
+}
+
 // mayRead refuses word as a subcommand of the group c when c's help lists it as a gh alias, whose
 // expansion may name a repository of its own, or an extension, which reads gh's token itself:
-// reading the help of either runs it, a shell alias or an extension with whatever it holds.
+// reading the help of either runs it, a shell alias or an extension with whatever it holds. The
+// word is quoted as c's help lists it, which is what each refusal is of.
 func (c *ghCommand) mayRead(word string) error {
 	switch {
 	case c.ghAliases[word]:

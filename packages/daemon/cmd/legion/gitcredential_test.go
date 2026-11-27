@@ -538,17 +538,22 @@ func runGhGitCredentialHere(t *testing.T, stdin string) (code int, stdout, stder
 
 // answersNothingForTheFork fails the test unless the helper, asked for the repository slug of an
 // owner the bundle at root holds no directory for, answered nothing, exit 1, on one stderr that
-// says so as ghroute.DirFor says it and names slug and each of says, and that holds no token.
-// Every token these tests write begins `ghs_`; the one that holds a line break ends `break_write`
-// after it.
+// says so as ghroute.DirFor says it and names the fork and each of says, and that holds no token.
+// The fork is named as slug, or, where ghroute.ForkDir refuses the repositories it comes from, by
+// its place alone (ghroute.Shown), the request's own spelling not printed. Every token these tests
+// write begins `ghs_`; the one that holds a line break ends `break_write` after it.
 func answersNothingForTheFork(t *testing.T, code int, stdout, stderr, root, slug string, says ...string) {
 	t.Helper()
 	owner, _, _ := strings.Cut(slug, "/")
 	if code != 1 || stdout != "" {
 		t.Errorf("legion git-credential get for %s = exit %d, stdout %q, stderr %q; want exit 1 and no answer", slug, code, stdout, stderr)
 	}
+	fork := slug
+	if strings.Contains(stderr, "GitHub answers that the repository the request names is a fork") {
+		fork = "the repository the request names"
+	}
 	unserved := `the role's GitHub App is not installed on "` + strings.ToLower(owner) + `": ` + root + " holds no gh directory for it"
-	for _, want := range append([]string{unserved, slug}, says...) {
+	for _, want := range append([]string{unserved, fork}, says...) {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("legion git-credential get for %s printed %q on stderr, which does not name %q", slug, stderr, want)
 		}
@@ -913,7 +918,7 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 			configDir: acme, token: "ghs_acme_write", reads: 1, answer: printsAnswer(movedParent, 0),
 			says: []string{
 				"a fork of sjawhar/legion",
-				"the configured rename sjawhar/legion -> cybermonklabs/legion serves sjawhar/legion from cybermonklabs's gh directory",
+				"the configured rename sjawhar/legion -> cybermonklabs/legion serves that repository from cybermonklabs's gh directory",
 				"its source is not tried",
 			},
 		},
@@ -984,7 +989,7 @@ func TestGitCredentialNamesTheForksRouteWhenItsParentHoldsNoToken(t *testing.T) 
 		t.Errorf("legion git-credential get for outside-author/sample-project = exit %d, stdout %q, stderr %q; want exit 1 and no answer", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"legion git-credential: the fork outside-author/sample-project routes to " + acme + " through its parent acme/sample-project, and ",
+		"legion git-credential: the repository the request names, a fork, routes to " + acme + " through its parent acme/sample-project, and ",
 		"names no github.com oauth_token; answering nothing",
 	} {
 		if !strings.Contains(stderr, want) {
@@ -1161,7 +1166,7 @@ func TestGitCredentialMakesNoReadForAServedOwner(t *testing.T) {
 		},
 		{
 			name: "a served owner's repository a configured rename moved to an owner with no directory", root: moved, path: "sjawhar/legion.git",
-			code: 1, stderrIn: `the configured rename sjawhar/legion -> cybermonklabs/legion serves sjawhar/legion from cybermonklabs's gh directory, and the role's GitHub App is not installed on "cybermonklabs"`,
+			code: 1, stderrIn: `the configured rename sjawhar/legion -> cybermonklabs/legion serves that repository from cybermonklabs's gh directory, and the role's GitHub App is not installed on "cybermonklabs"`,
 		},
 		{name: "a path naming only an outside owner", root: root, path: "outside-author", code: 1, stderrIn: unserved},
 		{name: "a path whose name is no GitHub name", root: root, path: "outside-author/..", code: 1, stderrIn: unserved},

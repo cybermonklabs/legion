@@ -23,6 +23,7 @@ import (
 // only through a new form - and the test checks first that it leaves each of those out, so a
 // shortcut that passed over one of them would answer otherwise and fail here.
 func TestTheRecipientCountsShortcutLeavesOutNothingTheFullFilterWould(t *testing.T) {
+	t.Parallel()
 	const (
 		session  = "ses_shortcut"
 		pairFoo  = "notifications.envoy.exceptions.foo.*"

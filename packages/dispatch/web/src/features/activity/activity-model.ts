@@ -117,6 +117,8 @@ function describe(
     }
     case "issue.deployed":
       return `deployed ${event.payload.repo}#${event.payload.number} to production (run ${event.payload.run_id})`;
+    case "deploy.recorded":
+      return `recorded a deploy of ${event.payload.program} in ${event.payload.repo} at ${event.payload.commit}, deployed ${event.payload.deployed_at}.`;
     case "handoff.recorded":
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":

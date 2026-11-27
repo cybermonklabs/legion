@@ -20,6 +20,7 @@ import (
 // element stays. Each refusal writes one WARN line, which names the elements the document holds
 // and carries nothing of the error (requireNewerContentWarnings).
 func TestEveryRouteAnswersADocumentHoldingNewerContentAlike(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, resident := range []bool{true, false} {
 		name := "stored"
 		if resident {

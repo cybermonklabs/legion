@@ -86,7 +86,9 @@ func (taken sessionTakenRole) requireReachedNext(t *testing.T, next, eventID str
 // gives it to that session. When the confirmation read the record with a direct get, the copy
 // answered it absent again, and the publish was handed to the stopped agent's daemon, 200: the
 // session that took the role never received it. Control: with a current copy the route finds
-// that session live and forwards the publish to it, 200.
+// that session live and forwards the publish to it, 200. The publish names a source session, so
+// its first resolution reads the buckets as GET /v1/roles/<role> does (roleSend.resolve): one
+// naming none reads the leaders from the start.
 func TestARolePublishReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheSessionsCopyIsBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -101,7 +103,7 @@ func TestARolePublishReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheSe
 			const stopped, next = "ses_publish_sessions_behind_stopped", "ses_publish_sessions_behind_next"
 			taken := takeRoleThroughAnotherListener(t, stopped, next, tc.behind)
 
-			encoded, err := json.Marshal(roleMessage(taken.role, "", "what did the review find?"))
+			encoded, err := json.Marshal(roleMessage(taken.role, "ses_publish_sessions_behind_sender", "what did the review find?"))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -131,7 +131,7 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 	const owners = "/var/run/invented/gh"
 	theRefusal := ownerNotServedLine("invented-org", owners)
-	renameRefusal := "legion gh: the configured rename invented-org/invented-repo -> moved-org/invented-repo serves invented-org/invented-repo " +
+	renameRefusal := "legion gh: the configured rename invented-org/invented-repo -> moved-org/invented-repo serves that repository " +
 		"from moved-org's gh directory, and " + (&OwnerNotServedError{Owner: "moved-org", OwnersDir: owners}).Error() +
 		"; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it"
 	notFound := []string{"HTTP/2.0 404 Not Found", "", `{"message":"Not Found","status":"404"}`, "gh: Not Found (HTTP 404)"}

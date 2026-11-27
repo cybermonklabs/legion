@@ -210,7 +210,7 @@ func CallerToken(env map[string]string) string {
 // option of refusedOptions on any leaf.
 func TargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]Remote, error), dirFor func(owner, name string) (string, error)) (Target, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
-		return Target{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
+		return Target{}, fmt.Errorf("GH_HOST names %s, so it sends no token; unset GH_HOST", Shown(host, "another host than github.com"))
 	}
 	if name := CallerToken(env); name != "" {
 		return Target{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)
@@ -233,7 +233,7 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 			return printsOnly(nil), nil
 		case arg == "-R" || arg == "--repo":
 			if i+1 == len(argv) {
-				return Target{}, cannotPlace(arg, "has no value", false)
+				return Target{}, cannotPlace("-R/--repo", "has no value", false)
 			}
 			rest = append(rest, arg, argv[i+1])
 			i++
@@ -242,11 +242,10 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 			// The leaf reads these as its own, in order with the rest of its arguments.
 			rest = append(rest, arg)
 		case strings.HasPrefix(arg, "-"):
-			why := "comes before the command's name, and only -R/--repo and --help may"
 			switch {
 			case len(walk.path) == 0 && arg == "--version":
 				// gh reads a word after it as a command, an alias's or an extension's among them.
-				why += " (gh's version is `gh --version` alone)"
+				return Target{}, cannotPlace(`"--version"`, "comes before the command's name, and only -R/--repo and --help may (gh's version is `gh --version` alone)", false)
 			case arg == "-h":
 				// cobra v1.10.2, the one gh 2.98.0 pins (command.go), finds the command before it
 				// adds a help flag (InitDefaultHelpFlag runs in execute, after Find, and adds none
@@ -263,9 +262,10 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 				// the undefined -h with the help of the command found so far. Either way the walk
 				// refuses it, since gh's contract (docs/deployment.md) admits only -R/--repo and
 				// --help before the command; --help, a boolean, takes no word.
-				why += " (gh can take the word after such a -h as its value and run another command; ask for help with --help)"
+				return Target{}, cannotPlace(`"-h"`, "comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value and run another command; ask for help with --help)", false)
 			}
-			return Target{}, cannotPlace(arg, why, false)
+			// Any other option is a value a person typed, named by its place (Shown).
+			return Target{}, cannotPlace(Shown(arg, "an option given before the command's name"), "is refused: only -R/--repo and --help may come there", false)
 		default:
 			if err := walk.check(arg); err != nil {
 				return Target{}, err
@@ -318,14 +318,36 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 	return Target{Dir: dir, Owner: sel.onlyOwner(), Repo: sel.onlyRepository(), Command: cmd.path, Sent: sent, WritesNothing: reads}, nil
 }
 
-// cannotPlace is TargetOf's refusal of an argument it cannot place: what it is and why, and how
-// to name the repository instead, which for gh api is its endpoint (it has no -R).
-func cannotPlace(arg, why string, api bool) error {
+// cannotPlace is TargetOf's refusal of an argument it cannot place: name, what it is, and why,
+// and how to name the repository instead, which for gh api is its endpoint (it has no -R). name is
+// never a person's value as written: its callers pass Shown's words for one (an argument by its
+// position, a selector by its kind, any other value by its place), or a name gh's own help gave
+// (an option the leaf lists, its command path). A value a person gives where no place is (`gh
+// secret set NAME <secret>` without --body, a header given without -H) is the likeliest
+// credential on the line, and gh itself, refusing it, prints none of it.
+func cannotPlace(name, why string, api bool) error {
 	advice := "pass -R <owner>/<repo>"
 	if api {
 		advice = "name it in the endpoint, repos/<owner>/<repo>/…"
 	}
-	return fmt.Errorf("cannot tell which repository the command targets: %q %s, so it sends no token; %s", arg, why, advice)
+	return fmt.Errorf("cannot tell which repository the command targets: %s %s, so it sends no token; %s", name, why, advice)
+}
+
+// ordinalArgument names the positional argument at position n, counting from 1: "the 2nd
+// argument".
+func ordinalArgument(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return fmt.Sprintf("the %d%s argument", n, suffix)
 }
 
 // ghArgs is a leaf's arguments as pflag reads them: its positional arguments in order, every
@@ -375,10 +397,10 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 			name, value, hasValue := strings.Cut(arg[2:], "=")
 			flag, ok := c.flags[name]
 			if !ok {
-				return ghArgs{}, cannotPlace(arg, "is no option "+leaf+"'s help lists", api)
+				return ghArgs{}, cannotPlace(Shown(arg, "an option the command's help does not list"), "is given to "+leaf, api)
 			}
 			if flag.uncertain {
-				return ghArgs{}, cannotPlace(arg, "is an option whose help does not say whether it takes a value", api)
+				return ghArgs{}, cannotPlace(strconv.Quote("--"+name), "is an option whose help does not say whether it takes a value", api)
 			}
 			if !hasValue {
 				switch {
@@ -387,7 +409,7 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 				case flag.optional:
 					// Its default, which names nothing.
 				case i+1 == len(args):
-					return ghArgs{}, cannotPlace(arg, "has no value", api)
+					return ghArgs{}, cannotPlace(strconv.Quote("--"+name), "has no value", api)
 				default:
 					i++
 					value, hasValue = args[i], true
@@ -410,11 +432,11 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 						parsed.help = true
 						return parsed, nil
 					}
-					return ghArgs{}, cannotPlace(arg, fmt.Sprintf("names -%c, which %s's help does not list", short, leaf), api)
+					return ghArgs{}, cannotPlace(Shown(arg, "a short option the command's help does not list"), "is given to "+leaf, api)
 				}
 				flag := c.flags[name]
 				if flag.uncertain {
-					return ghArgs{}, cannotPlace(arg, "is an option whose help does not say whether it takes a value", api)
+					return ghArgs{}, cannotPlace(strconv.Quote("--"+name), "is an option whose help does not say whether it takes a value", api)
 				}
 				value, hasValue := "", true
 				switch {
@@ -430,7 +452,7 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 					i++
 					value = args[i]
 				default:
-					return ghArgs{}, cannotPlace(arg, "has no value", api)
+					return ghArgs{}, cannotPlace(strconv.Quote("--"+name), "has no value", api)
 				}
 				if hasValue {
 					if err := parsed.set(name, flag, value, arg, api); err != nil {
@@ -484,7 +506,9 @@ var cloneGitFlagTakes = map[string]bool{
 // and `--recursive` clone every submodule with its own configuration; `--template` installs hooks
 // and configuration; `--reference` and `--separate-git-dir` take objects or the git directory from
 // a path the call names. A joined short flag (`-qn`, `-bmain`) and a stray argument are refused
-// too, so nothing reaches git that this has not read the way git reads it.
+// too, so nothing reaches git that this has not read the way git reads it. Such a word is named by
+// its place (Shown), never as written: `--config=http.extraheader=AUTHORIZATION: <token>` is
+// what a checkout writes; a flag of the table is named by the table's spelling.
 func cloneGitFlags(leaf string, passed []string) error {
 	i := 0
 	if len(passed) > 0 && !strings.HasPrefix(passed[0], "-") {
@@ -496,10 +520,10 @@ func cloneGitFlags(leaf string, passed []string) error {
 		takes, known := cloneGitFlagTakes[name]
 		switch {
 		case !known, joined && (!takes || !strings.HasPrefix(name, "--")):
-			return fmt.Errorf("%s hands %q to git clone, which takes only %s from a call: its other flags set the clone's configuration (--config), its hooks (--template), its submodules (--recurse-submodules) or where its objects come from (--reference), and git takes an abbreviation of any of them, so it sends nothing; clone without it, then run git in the clone", leaf, arg, cloneGitFlagList())
+			return fmt.Errorf("%s hands %s to git clone, which takes only %s from a call: its other flags set the clone's configuration (--config), its hooks (--template), its submodules (--recurse-submodules) or where its objects come from (--reference), and git takes an abbreviation of any of them, so it sends nothing; clone without it, then run git in the clone", leaf, Shown(arg, "a git flag after --"), cloneGitFlagList())
 		case takes && !joined:
 			if i+1 == len(passed) {
-				return fmt.Errorf("%s hands %q to git clone with no value, so it sends nothing", leaf, arg)
+				return fmt.Errorf("%s hands %q to git clone with no value, so it sends nothing", leaf, name)
 			}
 			i++
 		}
@@ -515,17 +539,17 @@ func cloneGitFlagList() string {
 // set records value given the option name: --help's as a boolean; another boolean's as pflag
 // reads it (strconv.ParseBool), the last given deciding (booleans), where a value that is no
 // boolean leaves the option as it was, since gh refuses that call itself; any other's taking a
-// value in the order given. An option of refusedOptions is refused first, naming the argument it
-// came in.
+// value in the order given. An option of refusedOptions is refused first, named by its long
+// name, never by the value in arg.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
 	if why, refused := refusedOptions[name]; refused {
-		return fmt.Errorf("%q %s, so it sends nothing", arg, why)
+		return fmt.Errorf("%q %s, so it sends nothing", "--"+name, why)
 	}
 	switch {
 	case name == "help":
 		help, err := strconv.ParseBool(value)
 		if err != nil {
-			return cannotPlace(arg, "gives --help a value that is no boolean", api)
+			return cannotPlace(`"--help"`, "has a value that is no boolean", api)
 		}
 		p.help = help
 	case flag.value:
@@ -588,8 +612,12 @@ func init() {
 // That group is not the terminal's, so none of the terminal's signals reach it, and ctx is how
 // they do: `legion gh`'s, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a
 // SIGHUP. A timeout or an end of ctx that came before gh started, which exec then never starts, is
-// said as such, and never as an answer of gh's. It runs under leakguard.RunByRealGhVar, so a gh
-// that leads back to `legion gh` is refused there.
+// said as such, and never as an answer of gh's. gh's error output is not printed: it can quote
+// the command's words, which the walk names by their place where gh's help lists none of them
+// (ghWalk.named). It runs under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh`
+// is refused there, and that refusal, which `legion gh` wrote itself and which names only
+// LEGION_GH_PATH, is the one text of gh's error output read back (ReentryRefusal): the read fails
+// with it when the output holds it whole.
 func ReadHelp(ctx context.Context, gh string, env, path []string) (string, error) {
 	bound := programbound.Of(&helpTimeout)
 	ctx, cancel := context.WithTimeout(ctx, bound)
@@ -610,12 +638,24 @@ func ReadHelp(ctx context.Context, gh string, env, path []string) (string, error
 		case ctx.Err() != nil && errors.Is(err, ctx.Err()):
 			return "", fmt.Errorf("gh's help read was stopped before gh started: %v", context.Cause(ctx))
 		}
-		return "", fmt.Errorf("gh answered its help with %v: %s", err, strings.TrimSpace(stderr.String()))
+		reentry := ReentryRefusal(gh)
+		var printed bytes.Buffer
+		PrintRefusal(&printed, reentry)
+		if bytes.Contains(stderr.Bytes(), printed.Bytes()) {
+			return "", reentry
+		}
+		return "", fmt.Errorf("gh answered its help with %v; its error output is not printed, since it can quote the command's words", err)
 	}
 	if stdout.Len() == 0 {
 		return "", errors.New("gh printed no help")
 	}
 	return stdout.String(), nil
+}
+
+// ReentryRefusal is the refusal of a `legion gh` run under leakguard.RunByRealGhVar, which names
+// real, the real gh that ran it: that gh leads back to `legion gh`, as a wrapper or a shim does.
+func ReentryRefusal(real string) error {
+	return fmt.Errorf("the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path", real)
 }
 
 // refusedCommands are the gh commands TargetOf refuses for everybody, by the path their help

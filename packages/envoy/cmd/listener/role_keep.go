@@ -1605,13 +1605,17 @@ type keptCopyVerdict struct {
 //     (envoy_role_kept_undecodable_total). Every other copy's envelope is read field by field
 //     (roleFrame.envelope), so a field the envelope's type for it does not take, or a value the
 //     wire rules or the envelope's own refuse, ends no copy.
-//  2. A copy under a delivery mode's dead-letter claim that this walk takes over
+//  2. A withdrawal mark (isWithdrawnFrame) is no message: the publish route wrote it in place of
+//     the takeover copy of a forward it answered as failed (withdrawLateForward), so it is ended,
+//     forwarded to no one, owed no dead letter and counted as no expired copy whatever its age,
+//     with one line naming its event, so a reader of the lane sees what became of that forward.
+//  3. A copy under a delivery mode's dead-letter claim that this walk takes over
 //     (keptCopyModeClaimed) is a delivery mode drop whose dead letter was not confirmed, and it is
 //     owed that dead letter again, whatever its age now, whoever holds the role now and whether
 //     anyone does. Its dead letter's line is its one report: it was dropped inside its hour for
 //     its delivery mode, so it is no expired copy however old it is when the dead letter is sent
 //     again.
-//  3. A copy whose hour ended (keptCopyEnded), and a copy under an expiry's dead-letter claim
+//  4. A copy whose hour ended (keptCopyEnded), and a copy under an expiry's dead-letter claim
 //     that this walk takes over (keptCopyExpiryClaimed) whatever its age by this walk's clock,
 //     since the walk that made the claim found its hour ended, is dropped, counted and logged
 //     (keptRoleDroppedReport). It is owed a dead letter when the listener kept it and its publish
@@ -1621,13 +1625,13 @@ type keptCopyVerdict struct {
 //     (keptRoleDrop.holder), since telling the sender no session held the role would be false;
 //     the dead letter of a copy whose forward may have reached the holder (below) says that
 //     instead.
-//  4. A walk with no holder stops at every other copy.
-//  5. A walk for a holder applies beforeForward (keptRoleForwardAllowed): an allowed copy is
+//  5. A walk with no holder stops at every other copy.
+//  6. A walk for a holder applies beforeForward (keptRoleForwardAllowed): an allowed copy is
 //     forwarded; an echo or a repeat is passed over; and a copy whose delivery mode the holder
 //     does not take is dropped as the lane refuses it, and owed a dead letter naming that holder
 //     when the listener kept it and its publish named a sender session.
 //
-// Every copy owed a dead letter, by rule 2, 3 or 5, is dropped as a copy whose forward may have
+// Every copy owed a dead letter, by rule 3, 4 or 6, is dropped as a copy whose forward may have
 // reached the holder (keptRoleDrop.forwarded) when the claim this walk takes over is a forward's
 // claim, or a dead letter's claim a walk wrote with that qualifier
 // (keptCopyClaim.forwardUnconfirmed), however many walks took the claim over before this one, and
@@ -1651,6 +1655,16 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	}
 	item := frame.envelope()
 	at := now()
+	if isWithdrawnFrame(item, stored.MsgID, role) {
+		return keptCopyVerdict{step: keptCopyEnd, item: item, report: func() {
+			cfg.logger.Info("listener kept role lane holds a withdrawn forward; nothing is forwarded for it",
+				slog.String("role", role),
+				slog.String("event_id", item.EventID),
+				slog.String("source_session", item.SourceSession),
+				slog.String("dedupe_key", item.DedupeKey),
+				slog.Uint64("sequence", stored.Sequence))
+		}}
+	}
 	owed := !isOutboxCopy(item) && item.SourceSession != ""
 	// deadLetter is the verdict of a copy owed a dead letter for drop, with the report the copy
 	// is owed beside it. Every such verdict is made here, so every drop carries the qualifier of

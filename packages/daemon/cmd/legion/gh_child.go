@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
@@ -216,14 +217,14 @@ func gitConfigKey(key string) string {
 // withGitHubUseHTTPPath adds credential.https://github.com.useHttpPath=true to env's GIT_CONFIG_COUNT
 // entries, which git reads as it reads `-c`, so the git gh runs tells its credential helper the
 // repository's path, whose owner `legion git-credential` answers for. A GIT_CONFIG_COUNT that is no
-// count is refused.
+// count is refused, named by its place.
 func withGitHubUseHTTPPath(env []string) ([]string, error) {
 	count := 0
 	for _, pair := range env {
 		if value, ok := strings.CutPrefix(pair, "GIT_CONFIG_COUNT="); ok {
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 0 {
-				return nil, fmt.Errorf("GIT_CONFIG_COUNT is %q, which is no count, so git's configuration cannot be extended; unset it", value)
+				return nil, fmt.Errorf("GIT_CONFIG_COUNT holds %s, which is no count, so git's configuration cannot be extended; unset it", ghroute.Shown(value, "a value that is not printed"))
 			}
 			count = n
 		}

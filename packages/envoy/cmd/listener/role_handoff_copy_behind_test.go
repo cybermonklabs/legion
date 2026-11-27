@@ -146,7 +146,8 @@ func TestAMarkedSendReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheCla
 // the kept lane's handover gives it to that session. Without the confirmation the publish was
 // handed to the stopped agent's daemon, 200, and the session that took the role never received
 // it. Control: with a current copy the route finds that session live and forwards the publish to
-// it, 200.
+// it, 200. The publish names a source session, so its first resolution reads the buckets as GET
+// /v1/roles/<role> does (roleSend.resolve): one naming none reads the leaders from the start.
 func TestARolePublishReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheClaimsCopyIsBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -162,7 +163,7 @@ func TestARolePublishReachesTheSessionThatTookTheRoleFromAStoppedAgentWhileTheCl
 			taken := takeRoleFromAStoppedAgent(t, stopped, next)
 			taken.placeCopy(t, tc.behind, map[bool]string{true: stopped, false: next}[tc.behind])
 
-			encoded, err := json.Marshal(roleMessage(taken.role, "", "what did the review find?"))
+			encoded, err := json.Marshal(roleMessage(taken.role, "ses_publish_behind_sender", "what did the review find?"))
 			if err != nil {
 				t.Fatal(err)
 			}

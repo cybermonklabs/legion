@@ -40,7 +40,9 @@ import (
 // token, which is what an owner-only answer would hand out, cannot write it. Failing closed
 // leaves git and gh saying so, where the other answer is a push that is refused at the remote.
 // That refusal holds OwnerNotServedError's words inside a longer line, so the leak guard reads
-// it as the setup failure it is and not as an owner the project does not serve.
+// it as the setup failure it is and not as an owner the project does not serve. It names the
+// repository by the pair alone, which holds it as configured, and never as the caller spelled it
+// (Shown's rule): owner and name are what the call named.
 func DirFor(ownersDir, owner, name string) (string, error) {
 	if name == "" {
 		return ownerDir(ownersDir, owner)
@@ -55,8 +57,8 @@ func DirFor(ownersDir, owner, name string) (string, error) {
 	}
 	answer, err := ownerDir(ownersDir, dir)
 	if err != nil {
-		return "", fmt.Errorf("the configured rename %s -> %s serves %s from %s's gh directory, and %w; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it",
-			pair.From, pair.To, owner+"/"+name, dir, err)
+		return "", fmt.Errorf("the configured rename %s -> %s serves that repository from %s's gh directory, and %w; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it",
+			pair.From, pair.To, dir, err)
 	}
 	return answer, nil
 }
@@ -124,11 +126,14 @@ func ForkRepository(ownersDir, owner, name string) (repo ghrepo.Repository, ok b
 // nowhere, as a rename that moved it to an owner with no directory does, the fork gets nothing,
 // as a request for it does, and a parent that routes nowhere leaves the source untried. route
 // names repo, that directory and the repository that routed there, as GitHub spells it: `the
-// fork <repo> routes to <dir> through its parent <full name>`, or `its source`. Where the parent
-// routes nowhere, the error names repo and the parent, why the parent did not route, and that the
-// source was not tried; otherwise it names repo, the parent and the source, and why each did not
-// answer.
+// repository the request names, a fork, routes to <dir> through its parent <full name>`, or `its
+// source`. Where the parent routes nowhere, the error names repo and the parent, why the parent
+// did not route, and that the source was not tried; otherwise it names repo, the parent and the
+// source, and why each did not answer. repo is what the request named, so each names it by its
+// place alone (Shown); the parent, the source and the directories are GitHub's answer and the
+// bundle's.
 func ForkDir(ownersDir string, repo ghrepo.Repository, parent, source string) (dir, route string, err error) {
+	named := Shown(repo.String(), "the repository the request names")
 	tried := make([]string, 0, 2)
 	for _, upstream := range []struct {
 		role     string
@@ -143,16 +148,16 @@ func ForkDir(ownersDir string, repo ghrepo.Repository, parent, source string) (d
 			continue
 		}
 		if dir, err = upstreamDir(ownersDir, upstream.fullName); err == nil {
-			return dir, fmt.Sprintf("the fork %s routes to %s through its %s %s", repo, dir, upstream.role, upstream.fullName), nil
+			return dir, fmt.Sprintf("%s, a fork, routes to %s through its %s %s", named, dir, upstream.role, upstream.fullName), nil
 		}
 		if upstream.role == "parent" {
 			return "", "", fmt.Errorf("GitHub answers that %s is a fork of %s, whose owner the bundle holds a directory for, and a request for %s answers nothing, so the fork gets nothing either and its source is not tried: %v",
-				repo, upstream.fullName, upstream.fullName, err)
+				named, upstream.fullName, upstream.fullName, err)
 		}
 		tried = append(tried, fmt.Sprintf("the %s %s, since %v", upstream.role, upstream.fullName, err))
 	}
 	return "", "", fmt.Errorf("GitHub answers that %s is a fork, and neither repository it comes from routes to a directory of the bundle: %s",
-		repo, strings.Join(tried, "; "))
+		named, strings.Join(tried, "; "))
 }
 
 // upstreamDir is the gh directory DirFor routes the repository fullName to, as GitHub spells it:

@@ -427,6 +427,7 @@ func (clock *listenerAcknowledgementClock) CancelAll() {
 // Before team topics were stored the route published them over core NATS, which hands a message
 // only to whoever holds the subject at that moment, so this message would have reached nobody.
 func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
+	// Not parallel: it requires the publish to a team topic to answer within 1 s of its start.
 	const topic = "notifications.team.deploy-squad"
 	harness := newListenerDeliveryHarness(t)
 	client := harness.client
@@ -2734,6 +2735,8 @@ type bindOutcome struct {
 // The replacement polls the durable while the old task holds it, so it binds within one interval of
 // the old task's exit rather than at the end of a backoff that grows with each attempt.
 func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
+	// Not parallel: it requires the bind within 500 ms of the old task's exit at a 50 ms
+	// interval, after a 300 ms time.Sleep that must still find the durable held.
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-on-release"
 	old, _ := durableHeldElsewhere(t, uri, consumer)
@@ -2816,6 +2819,8 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 // A signal during the wait ends the bind at once, without waiting for the next attempt, so the
 // listener's ordered shutdown starts while ECS's stop timeout still runs.
 func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
+	// Not parallel: it requires the bind to return within 500 ms of the context's end, which a
+	// 120 ms time.Sleep places inside the bind's 2 s wait.
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-cancelled"
 	durableHeldElsewhere(t, uri, consumer)
@@ -2903,6 +2908,8 @@ func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 // interval until the deadline: the grant refuses it again however often it is sent. It once ended
 // after 2m15s and 69 attempts with "listener durable bind exhausted".
 func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// deniedGrantClient).
 	const consumer = "listener-bind-denied"
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
@@ -2925,6 +2932,8 @@ func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
 // A rebuild's wait for its durable ends at once when the grant refuses the durable's read, naming
 // the refusal, rather than reading it again every interval until the deadline.
 func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// deniedGrantClient).
 	const consumer = "listener-await-denied"
 	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
 	client := deniedGrantClient(t, info)
@@ -3602,6 +3611,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 // the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
 // publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		topic     = "notifications.github.owner.repo.issue.1"
@@ -4825,6 +4835,8 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 // deleted one after another, and each rebuild repairs its fault. No fault outlives its recovery,
 // so the monitor must not count them as one persistent failure and terminate the listener.
 func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *testing.T) {
+	// Not parallel: each fault lands 50 ms after its repair, which the monitor's probe right
+	// after the rebuild must beat, and four rebuilds must come within a 1.4 s time.After deadline.
 	const interval = 100 * time.Millisecond
 	faults := []error{
 		errors.New("ci KV watcher stopped"),
@@ -5161,17 +5173,18 @@ func setupTestNATS(t *testing.T) *bus.Client {
 }
 
 // listenerTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel. Every untagged test calls t.Parallel except those that change or read back
-// something the whole process shares (t.Setenv, the log package's output, the default logger, the
-// entries of takeoverUnrecordedWarnings a test asserts on) or that hold a wall-clock bound within a
+// names no -parallel. Every test, in each build (natslive, odatrace and serverchange included),
+// calls t.Parallel except those that change or read back something the whole process shares
+// (t.Setenv, the log package's output, the default logger, the left-out log limiters and the
+// entries of takeoverUnrecordedWarnings a test asserts on, every goroutine's stack,
+// testing.AllocsPerRun, testnats.Hook) or that hold a wall-clock bound or a quiet window within a
 // second or two of what they wait for (a close, a probe count, a recovery, a relay's receipt wait
-// of 500 ms), which stay serial and run before the rest. The natslive rows keep the choice each
-// already made: the nine of relay_socket_live_test.go are parallel, the others serial. A test here
-// spends most of its time waiting on NATS, a listener process or Postgres, not on a core, and each
-// has a JetStream account of its own (testnats.URL) or a server of its own. go test's default of
-// GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's account, rig
-// and Dispatch database at once would swamp the one shared server. TestMain (testmain_test.go)
-// sets it.
+// of 500 ms); those stay serial, run before the rest, and say why on their first line in a
+// `// Not parallel:` comment. A test here spends most of its time waiting on NATS, a listener
+// process or Postgres, not on a core, and each has a JetStream account of its own (testnats.URL)
+// or a server of its own. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds
+// on a dev box, where every test's account, rig and Dispatch database at once would swamp the one
+// shared server. TestMain (testmain_test.go) sets it.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const listenerTestParallelism = 8

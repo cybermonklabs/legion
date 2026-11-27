@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   markIndex,
@@ -100,10 +101,18 @@ const SUBAGENT_REPORT = "BGSUB-SUBAGENT-REPORT: the scratch check passed.";
 /** What the message published while the subagent runs says. */
 const MESSAGE_SUMMARY = "BGSUB-MESSAGE: answer the reviewer's question about the retry bound.";
 
+// The one row of this file starts a cold role pane (a pinned Oh My Pi binary spawning and
+// registering over NATS), which reads 5-6 s, more than Bun's 5000 ms default. It takes a guard of
+// its own, in every mode (`bun test`, `--parallel`, `bun run test`): the row body calls
+// `useRowGuard` for the shared wait's deadline and passes the same value as `test`'s third argument
+// for Bun's row kill, and the afterEach passes it as its own hook timeout, because the cleanup's
+// raw awaits (killing omp, stopping the stub server) also outlast 5000 ms under load. See
+// packages/pi-legion/package.json's "//" note for the reading and its run.
+const COLD_PANE_GUARD_MS = 300_000;
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
@@ -656,6 +665,7 @@ const MOVED_ON = {
 test.skipIf(skip)(
   "a role's deep-worker runs in the background: the task call returns before it ends, a message sent meanwhile is read, and the job's result wakes the role",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await startRolePane();
 
     // The assignment's turn dispatches the worker. `solutionSpace` rides the child's first prompt
@@ -767,5 +777,6 @@ test.skipIf(skip)(
         `the message was read ${read.arrived.at - published.at} ms after it was published; ` +
         `the job woke the role ${woken.arrived.at - released.at} ms after the release`
     );
-  }
+  },
+  COLD_PANE_GUARD_MS
 );

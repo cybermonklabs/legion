@@ -41,10 +41,11 @@ func init() {
 // that repo is a fork, the answer is the directory ghroute.DirFor routes the fork's parent to
 // where the bundle holds a directory for the parent's owner, else the one it routes the fork's
 // source to where the bundle holds a directory for the source's owner (ghroute.ForkDir), with
-// route, the words that say how: `the fork <repo> routes to <dir> through its parent <full
-// name>`, or `through its source <full name>`. The caller then reads that directory's token as it
-// reads every answer's, and puts route in front of a failure of that read, whose own error names
-// the directory alone and so neither the fork nor which of its two upstreams led there.
+// route, the words that say how: `the repository the request names, a fork, routes to <dir>
+// through its parent <full name>`, or `through its source <full name>`. The caller then reads
+// that directory's token as it reads every answer's, and puts route in front of a failure of that
+// read, whose own error names the directory alone and so neither the fork nor which of its two
+// upstreams led there.
 //
 // Anything else is an error that holds refused, ghroute.DirFor's refusal of the request, and then
 // what the read found, on one line: no token to read with, a read that could not be made or did

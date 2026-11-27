@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The variables a listener takes broker access tokens on, beside ENVOY_API_TOKEN and the
@@ -75,7 +76,7 @@ func (c listenerBrokerConfig) configured() bool { return c.BrokerURL != "" }
 // already refused a configuration naming neither or both.
 func (c listenerBrokerConfig) account() ciphertoken.Account {
 	if c.AccountTokenFile != "" {
-		return ciphertoken.NewAccountToken(c.AccountTokenFile)
+		return ciphertoken.NewAccountToken(EnvBrokerAccountTokenFile, c.AccountTokenFile)
 	}
 	return ciphertoken.NewGoogleAccount(c.GoogleAudience)
 }
@@ -229,17 +230,18 @@ func (b *brokerTokens) retryAfter() int {
 	return 1
 }
 
-// describeBrokerTokens names this credential for the boot line: the broker it asks and the
-// identity it asks as, and nothing of either credential's bytes.
+// describeBrokerTokens names this credential for the boot line: the broker it asks, through
+// redact.URL, and the identity it asks as, the token file by the setting that names it, and nothing
+// of either credential's bytes or of the file's path, where a token pasted in its place would be.
 func (b *brokerTokens) describe() string {
 	if b == nil {
 		return ""
 	}
 	identity := "google audience " + b.config.GoogleAudience
 	if b.config.AccountTokenFile != "" {
-		identity = "projected token " + b.config.AccountTokenFile
+		identity = "the projected token " + EnvBrokerAccountTokenFile + " names"
 	}
-	return "broker tokens at " + b.config.BrokerURL + " as " + identity
+	return "broker tokens at " + redact.URL(b.config.BrokerURL) + " as " + identity
 }
 
 // listenerSourceAddress is the address one introspection bucket is keyed on: the address an edge

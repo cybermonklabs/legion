@@ -74,7 +74,7 @@ func TestCaptureGhHelpWalk(t *testing.T) {
 			t.Fatal(err)
 		}
 		saved++
-		cmd, err := parseGhHelp(path, text)
+		cmd, err := parseGhHelp(path, ghHelpWhat(path), text)
 		if err != nil || !cmd.group {
 			return
 		}
@@ -224,7 +224,7 @@ func TestParseGhHelpReadsEveryCommandOfEachSavedGh(t *testing.T) {
 						}
 					}
 				}
-				cmd, err := parseGhHelp(path, text)
+				cmd, err := parseGhHelp(path, ghHelpWhat(path), text)
 				switch {
 				case err == nil && cmd.group:
 					groups++

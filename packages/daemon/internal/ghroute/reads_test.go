@@ -238,7 +238,7 @@ func TestGhReadGrammarNamesEachOptionAsItsHelpDoes(t *testing.T) {
 	grammars := maps.Clone(readLeaves)
 	grammars["api"] = apiReadOptions
 	for leaf, options := range grammars {
-		cmd, err := readGhCommand(strings.Fields(leaf), savedGhHelp)
+		cmd, err := readGhCommand(strings.Fields(leaf), ghHelpWhat(strings.Fields(leaf)), savedGhHelp)
 		if err != nil {
 			t.Errorf("gh %s's saved help: %v", leaf, err)
 			continue

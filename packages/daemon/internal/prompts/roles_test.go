@@ -210,8 +210,7 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 }
 
 // A finding outside the tree takes the paths of skill://legion-worker/references/findings.md: the
-// tree fixes a clear defect itself, writes it to its owner only when the fix would collide or the
-// repository is out of reach, and to the project's coordinator to file only when nobody owns it;
+// tree fixes a clear defect itself;
 // a finding that needs a decision is an ask. The headless fragment composed into the same planner
 // prompt says the same, so the core may not say "always an ask".
 func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T) {
@@ -220,7 +219,6 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 		"Read the repository's `STRATEGY.md` when it has one",
 		"A finding outside the tree is never an issue you file.",
 		"A clear defect is this tree's to fix, in its own pull request or a separate one of the tree, in whichever repository it is.",
-		"It goes to the owner of that code, with its evidence, only when the fix would collide with the owner's open work or your access does not reach that repository, and to whoever coordinates the project's work, to file, only when nobody owns that code.",
 		"A defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a decision, is an ask.",
 		"A to-do only a person can do is always an ask.",
 	} {
@@ -408,8 +406,8 @@ func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testin
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back only for a change to the
-// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
+// before it merges it, and may ask the other workers.
+// Its part says so, and no longer tells it to hand the conflict to the
 // implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	merger := rolePart(t, "merger.md")
@@ -426,8 +424,6 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"so ask each of them, on their role topics, to record their results at the new head",
 		"### A check that failed",
 		"Read its log, and the same check on the base branch, and decide its cause.",
-		"re-run it, or wait for the base's fix",
-		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)

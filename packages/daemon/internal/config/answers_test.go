@@ -504,7 +504,8 @@ func TestLoadingAnswersReadsNoProviderKey(t *testing.T) {
 }
 
 // A provider's api_key_file is read again on every call: a key rewritten between two calls is the
-// second call's, trimmed. A missing or blank file is refused naming the key and the path, never
+// second call's, trimmed. A missing file is refused naming the key and why alone, as every secret
+// file that could not be read is (unreadable), and a blank one naming the key and the path, never
 // what the file held.
 func TestAnswerCredentialReadsTheFileAgainOnEveryCall(t *testing.T) {
 	path := writeConfigFile(t, minimalFile+answersBlock(anthropicByFile, opusPrice, ""))
@@ -516,8 +517,8 @@ func TestAnswerCredentialReadsTheFileAgainOnEveryCall(t *testing.T) {
 	keyFile := filepath.Join(filepath.Dir(path), "keys", "anthropic")
 	ctx := context.Background()
 
-	if _, err := credential.Read(ctx); err == nil || !strings.Contains(err.Error(), "answers.providers.anthropic.api_key_file names "+keyFile) {
-		t.Fatalf("Read with no file = %v, want a refusal naming the key and %s", err, keyFile)
+	if _, err := credential.Read(ctx); err == nil || err.Error() != "answers.providers.anthropic.api_key_file names a file that could not be read: it does not exist" || strings.Contains(err.Error(), keyFile) {
+		t.Fatalf("Read with no file = %v, want a refusal naming the key and why, and not %s", err, keyFile)
 	}
 	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
 		t.Fatal(err)
