@@ -6,9 +6,9 @@
       "$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS",
       "$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS",
       "$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS",
-      "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.listener-@MACHINE_ID@",
-      "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-@MACHINE_ID@",
-      "$JS.ACK.ENVOY_NOTIFICATIONS.listener-@MACHINE_ID@.>",
+      "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.listener-__MACHINE_ID__",
+      "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-__MACHINE_ID__",
+      "$JS.ACK.ENVOY_NOTIFICATIONS.listener-__MACHINE_ID__.>",
       "$JS.API.INFO",
       "$JS.API.STREAM.INFO.KV_envoy_interests",
       "$JS.API.STREAM.CREATE.KV_envoy_interests",
@@ -76,24 +76,28 @@
       "$JS.API.STREAM.INFO.KV_envoy_listener",
       "$JS.API.STREAM.CREATE.KV_envoy_listener",
       "$JS.API.STREAM.UPDATE.KV_envoy_listener",
-      "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-@MACHINE_ID@",
-      "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.handback.listener-@MACHINE_ID@.*",
-      "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.delivery.listener-@MACHINE_ID@.*.*",
+      "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-__MACHINE_ID__",
+      "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.handback.listener-__MACHINE_ID__.*",
+      "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.delivery.listener-__MACHINE_ID__.*.*",
       "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.seen.*",
-      "$KV.envoy_listener.lease.listener-@MACHINE_ID@",
-      "$KV.envoy_listener.handback.listener-@MACHINE_ID@.*",
-      "$KV.envoy_listener.delivery.listener-@MACHINE_ID@.*.*",
+      "$KV.envoy_listener.lease.listener-__MACHINE_ID__",
+      "$KV.envoy_listener.handback.listener-__MACHINE_ID__.*",
+      "$KV.envoy_listener.delivery.listener-__MACHINE_ID__.*.*",
       "$KV.envoy_listener.seen.*",
       "$JS.API.STREAM.PURGE.KV_envoy_interests",
       "$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
       "_INBOX.>",
       "agentstream.*.frames"
+    ],
+    "deny": [
+      "notifications.dispatch.>",
+      "notifications.github.>"
     ]
   },
   "subscribe": {
     "allow": [
       "_INBOX.>",
-      "notifications.role.> envoy-listener-@MACHINE_ID@",
+      "notifications.role.> envoy-listener-__MACHINE_ID__",
       "notifications.role.> envoy-roles",
       "notifications.>",
       "agentstream.*.control"

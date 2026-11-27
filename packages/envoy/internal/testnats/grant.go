@@ -12,8 +12,13 @@ import (
 
 // MachinePlaceholder stands for the machine id in the grant fixtures: each fixture holds the grant
 // envoy-infra renders for the machine id MachinePlaceholder, and ListenerGrant and HostGrant put a
-// machine id in its place.
-const MachinePlaceholder = "@MACHINE_ID@"
+// machine id in its place. It holds only letters and '_', which both spellings a grant writes a
+// machine id in leave as they are: the listener's names (bus.ListenerDurable, bus.ListenerQueue)
+// and the keys of the listener state bucket (bus.ListenerLeaseKey and the key families beside it),
+// which write '@' as "/40". So every subject of a fixture that names the machine holds it as it is,
+// and no other subject holds it. The machine id goes in as it is too, so a test passes an id both
+// spellings leave unchanged, as "box-a" is.
+const MachinePlaceholder = "__MACHINE_ID__"
 
 // The grant fixtures, in testdata/: the grants envoy-infra's core.ListenerPermissions and
 // core.HostPermissions render for MachinePlaceholder, so a test here can run a process under
