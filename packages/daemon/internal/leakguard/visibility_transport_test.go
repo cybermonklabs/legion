@@ -7,11 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -132,18 +132,14 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 }
 
 // startMark is a line of sh that appends to marks the moment it runs and the moment the kernel
-// started the process that runs it: the first field of /proc/uptime, and the fields of
-// /proc/self/stat after the program's name, whose twentieth is its start, both counted from the
-// machine's boot. The shell's own read reads both, so the line starts no program of its own. As
-// the first line of a stand-in, the gap between the two is how long the stand-in took to start
+// started the process that runs it: the first field of /proc/uptime and the line of
+// /proc/self/stat whole, a tab between, as testexec.ParseStartMark reads them, each counted from
+// the machine's boot. The shell's own read reads both, so the line starts no program of its own.
+// As the first line of a stand-in, the gap between the two is how long the stand-in took to start
 // once the guard had started it (starts): a loaded machine can make it long, and the guard cannot.
 func startMark(marks string) string {
-	return `read -r stat < /proc/self/stat; read -r up _ < /proc/uptime; printf '%s %s\n' "$up" "${stat##*) }" >> ` + shQuote(marks) + "\n"
+	return `read -r stat < /proc/self/stat; read -r up _ < /proc/uptime; printf '%s\t%s\n' "$up" "$stat" >> ` + shQuote(marks) + "\n"
 }
-
-// clockTick is the unit of a process's start in /proc/self/stat: USER_HZ, which Linux fixes at
-// 100 a second.
-const clockTick = 10 * time.Millisecond
 
 // slowStart is how long a stand-in may take to start (starts) before a transport row takes the
 // read again rather than judge it: a stand-in that slow spends the bound under test on the load
@@ -164,16 +160,12 @@ func starts(t *testing.T, marks string) []time.Duration {
 	}
 	var took []time.Duration
 	for _, line := range strings.Split(strings.TrimSuffix(string(content), "\n"), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 21 {
-			t.Fatalf("the start mark %q in %s does not say when the stand-in started", line, marks)
+		up, stat, _ := strings.Cut(line, "\t")
+		mark, err := testexec.ParseStartMark(up, stat)
+		if err != nil {
+			t.Fatalf("the start mark %q in %s does not say when the stand-in started: %v", line, marks, err)
 		}
-		at, atErr := time.ParseDuration(fields[0] + "s")
-		began, beganErr := strconv.ParseInt(fields[20], 10, 64)
-		if atErr != nil || beganErr != nil {
-			t.Fatalf("the start mark %q in %s does not say when the stand-in started", line, marks)
-		}
-		took = append(took, at-time.Duration(began)*clockTick)
+		took = append(took, mark.Late())
 	}
 	return took
 }
