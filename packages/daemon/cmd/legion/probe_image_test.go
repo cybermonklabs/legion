@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -29,6 +30,13 @@ import (
 // beside its discovery load from those roots, pi-envoy publishing the interface pi-legion speaks
 // from the one module instance, and Oh My Pi finds every task agent and skill Legion's prompts
 // name; and the session-storage setting refuses a value it does not know, naming the variable.
+// Each of the three fails, as an image that fails it does, under a switch of its own: under
+// $LEGION_TEST_AGENTS_MISSING the pi.agents probe's run (`models --no-extensions --extension *
+// --json`) answers LEGION_OMP_AGENTS=missing; under $LEGION_TEST_LOAD_NO the pod's load probe (its
+// three --extension) answers LEGION_PLUGIN_LOADED=no alone, a plugin Oh My Pi did not load; and
+// under $LEGION_TEST_SESSION_ACCEPTS the session storage probe's run (`--mode rpc --no-session
+// --no-extensions --no-skills --no-rules --no-lsp --no-tools`) exits 0, as a build that predates
+// the setting does.
 // Asked for task agents, it resolves their models too, unless told to skip them. It answers the
 // capability check's two commands as this pod's omp does: `setup python --check --json` says
 // Python is available when python3 is on its PATH and $LEGION_TEST_NO_PYTHON is unset, else
@@ -48,7 +56,8 @@ import (
 // `refuses-late` overlay, `omp --version` and `omp --help` for the slow ones. With
 // $LEGION_TEST_SEEN set, each run appends the environment it saw there: PI_CONFIG_FILES, whether
 // the first overlay it names exists, and OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the
-// provider key TEST_PROVIDER_KEY.
+// provider key TEST_PROVIDER_KEY. With $LEGION_TEST_CALLS set, each run appends its arguments
+// there ($*), one line a run, before it answers, whichever command they are.
 func imageOmp(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "omp")
@@ -59,9 +68,11 @@ if [ -n "${LEGION_TEST_SEEN:-}" ]; then
   printf '%s %s %s\n' "${PI_CONFIG_FILES:-none}" "$written" "${OMP_SESSION_STORAGE:-unset}" >>"$LEGION_TEST_SEEN"
 fi
 [ -z "${LEGION_TEST_KEY_SEEN:-}" ] || printf '%s\n' "${TEST_PROVIDER_KEY:-unset}" >>"$LEGION_TEST_KEY_SEEN"
+[ -z "${LEGION_TEST_CALLS:-}" ] || printf '%s\n' "$*" >>"$LEGION_TEST_CALLS"
 waiting() { [ -z "${LEGION_TEST_WAITING:-}" ] || printf '%s\n' "$1" >>"$LEGION_TEST_WAITING"; }
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json")
+  if [ -n "${LEGION_TEST_LOAD_NO:-}" ]; then echo LEGION_PLUGIN_LOADED=no >&2; exit 0; fi
   envoy=$(cd "$3" && pwd -P)
   root=$(cd "$5" && pwd -P)
   printf 'LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://%s/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n' "$root" >&2
@@ -69,7 +80,8 @@ case "$*" in
   if [ -n "${LEGION_PROMPT_AGENTS:-}" ]; then echo LEGION_PROMPT_AGENTS=resolved >&2; fi
   if [ -n "${LEGION_PROMPT_AGENTS:-}" ] && [ -z "${LEGION_SKIP_AGENT_MODELS:-}" ]; then echo LEGION_AGENT_MODELS=resolved >&2; fi
   if [ -n "${LEGION_PROMPT_SKILLS:-}" ]; then echo LEGION_PROMPT_SKILLS=resolved >&2; fi ;;
-"models --no-extensions --extension "*" --json") echo LEGION_OMP_AGENTS=available >&2 ;;
+"models --no-extensions --extension "*" --json")
+  if [ -n "${LEGION_TEST_AGENTS_MISSING:-}" ]; then echo LEGION_OMP_AGENTS=missing >&2; else echo LEGION_OMP_AGENTS=available >&2; fi ;;
 "setup python --check --json")
   if [ -n "${LEGION_TEST_NO_PYTHON:-}" ] || ! command -v python3 >/dev/null 2>&1; then
     echo '{"available": false, "usingManagedEnv": false, "managedEnvPath": ""}'; exit 1
@@ -104,6 +116,9 @@ case "$*" in
   else
     printf '      --session-id=<value>  Start a new session under this id (a lowercase UUID)\n'
   fi ;;
+"--mode rpc --no-session --no-extensions --no-skills --no-rules --no-lsp --no-tools")
+  if [ -n "${LEGION_TEST_SESSION_ACCEPTS:-}" ]; then exit 0; fi
+  echo "Invalid $OMP_SESSION_STORAGE for OMP_SESSION_STORAGE" >&2; exit 1 ;;
 *) echo "Invalid $OMP_SESSION_STORAGE for OMP_SESSION_STORAGE" >&2; exit 1 ;;
 esac
 `
@@ -1252,5 +1267,337 @@ func directoryFor(t *testing.T, path string) {
 	remove(t, path)
 	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// agentsProbeCall and sessionStorageProbeCall are the lines imageOmp appends to $LEGION_TEST_CALLS
+// for a run of the pi.agents probe, which names its probe extension in a temporary directory of
+// its own (internal/daemon's writeProbe), and for a run of the session storage probe.
+var (
+	agentsProbeCall         = regexp.MustCompile(`(?m)^models --no-extensions --extension .*/legion-omp-probe-[^/]+/probe\.mjs --json$`)
+	sessionStorageProbeCall = regexp.MustCompile(`(?m)^--mode rpc --no-session --no-extensions --no-skills --no-rules --no-lsp --no-tools$`)
+)
+
+// The daemon's boot run (LEGION_IMAGE_PROBE_RUN=boot, which its probe Sandbox sets) makes every
+// check runProbeImage makes but the three launch probes whose verdict the image alone decides:
+// pi.agents, the session storage probe and the Claude lane. Each row breaks one check, in the
+// order runProbeImage makes them, and runs the command twice: with the variable unset, as the
+// image build runs it, and with boot. A check the boot run still makes ends both runs alike, and
+// then their stdouts differ in the session-storage mark alone; an image that fails one of the
+// three fails the run with the variable unset and passes the boot run, whose OK line says
+// session-storage=skipped. The table is the list of the boot run's checks: a check added to
+// runProbeImage later gets a row here. Its last row runs once, with the variable unset, and holds
+// that the command reads the variable from its own process env, not from the env that
+// --provider-env-dir gives the probes.
+func TestProbeImageMakesEveryCheckButTheThreeLaunchProbesInTheBootRun(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv, inImage); it changes the whole process's working directory (inImage).
+	omp := imageOmp(t)
+	seed, public := testnkeys.User(t)
+	account := testnkeys.Account(t)
+	malformed := filepath.Join(t.TempDir(), "malformed.yml")
+	if err := os.WriteFile(malformed, []byte("retry:\n  modelFallback: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// okLine is the OK line of a run that passes over the stubbed image, with the session-storage
+	// state; probed and skipped begin it in each state, after the line before it.
+	okLine := func(state string) string {
+		return "probe-image: OK (" + omp + ") session-storage=" + state + " extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
+	}
+	probed, skipped := "\nprobe-image: OK ("+omp+") session-storage=probed ", "\nprobe-image: OK ("+omp+") session-storage=skipped "
+	// outcome is what one run of a row answers: its exit code, and texts its stdout or stderr
+	// holds; where after is set, stdout is the whole capability table, then after, and nothing else.
+	type outcome struct {
+		code  int
+		holds []string
+		after string
+	}
+	// exits is the outcome of a run that exits code, its stdout or stderr holding each of holds.
+	exits := func(code int, holds ...string) outcome { return outcome{code: code, holds: holds} }
+	// withoutState takes the session-storage mark out of a run's stdout.
+	withoutState := strings.NewReplacer(" session-storage=probed", "", " session-storage=skipped", "")
+	for _, tc := range []struct {
+		name string
+		// setup breaks the row's one check over img and answers the command's arguments.
+		setup func(t *testing.T, img image) []string
+		// cut, where set, is the line the stand-in writes once the step the probe's deadline cuts
+		// waits, and each run's deadline passes then (probeImageCutOnceLogged).
+		cut string
+		// unset and boot are what the run with the variable unset and the run with boot answer.
+		unset, boot outcome
+		// once marks the row that runs once, with the variable unset, and holds that its run made
+		// the pi.agents and the session storage probes (its LEGION_TEST_CALLS file).
+		once bool
+	}{
+		{name: "an argument", setup: func(t *testing.T, img image) []string { return img.flags("extra") },
+			unset: exits(2, "unexpected argument"), boot: exits(2, "unexpected argument")},
+		{name: "no --plugin-root", setup: func(t *testing.T, img image) []string {
+			return []string{"--envoy-plugin-root", img.envoy, "--claude-root", img.claude, "--claude-code-pin", img.pin}
+		}, unset: exits(2, "--plugin-root is required"), boot: exits(2, "--plugin-root is required")},
+		{name: "no --envoy-plugin-root", setup: func(t *testing.T, img image) []string {
+			return []string{"--plugin-root", img.legion, "--claude-root", img.claude, "--claude-code-pin", img.pin}
+		}, unset: exits(2, "--envoy-plugin-root is required"), boot: exits(2, "--envoy-plugin-root is required")},
+		{name: "an empty --claude-root", setup: func(t *testing.T, img image) []string { return img.flags("--claude-root", "") },
+			unset: exits(2, "each name a directory"), boot: exits(2, "each name a directory")},
+		{name: "a negative --probe-budget", setup: func(t *testing.T, img image) []string { return img.flags("--probe-budget", "-1s") },
+			unset: exits(1, "--probe-budget must not be negative"), boot: exits(1, "--probe-budget must not be negative")},
+		{name: "the role namespaces", setup: func(t *testing.T, img image) []string {
+			// The layout cannot be made where a file stands (TestProbeImageRefusesWhenTheRoleNamespaceCheckFails).
+			file := filepath.Join(t.TempDir(), "not-a-directory")
+			if err := os.WriteFile(file, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return img.flags("--role-namespaces", file)
+		}, unset: exits(1, "role namespaces"), boot: exits(1, "role namespaces")},
+		{name: "the pod's own test database", setup: func(t *testing.T, img image) []string {
+			// The image's PATH, its stubbed bin alone, holds no legion-testpg.
+			return img.flags("--test-postgres", t.TempDir())
+		}, unset: exits(1, "the pod's own test database"), boot: exits(1, "the pod's own test database")},
+		{name: "--role-references it cannot decode", setup: func(t *testing.T, img image) []string {
+			return img.flags("--role-references", `{"LEGION_PROMPT_AGENTS":{},"LEGION_PROMPT_SKILLS":{},"LEGION_PROMPT_AGENTS":{}}`)
+		}, unset: exits(1, "--role-references"), boot: exits(1, "--role-references")},
+		{name: "no Oh My Pi", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_OMP_PATH", "")
+			return img.flags()
+		}, unset: exits(1, "set LEGION_OMP_PATH"), boot: exits(1, "set LEGION_OMP_PATH")},
+		{name: "a --daemon-api-version that is no number", setup: func(t *testing.T, img image) []string { return img.flags("--daemon-api-version", "x") },
+			unset: exits(1, "must be a positive integer"), boot: exits(1, "must be a positive integer")},
+		{name: "a NATS seed that is not a user's", setup: func(t *testing.T, img image) []string {
+			t.Setenv("NATS_NKEY_SEED_FILE", testnkeys.SeedFile(t, account))
+			return img.flags()
+		}, unset: exits(1, "holds an nkey seed that is not a user's"), boot: exits(1, "holds an nkey seed that is not a user's")},
+		{name: "the NATS user line", setup: func(t *testing.T, img image) []string {
+			t.Setenv("NATS_NKEY_SEED_FILE", testnkeys.SeedFile(t, seed+"\n"))
+			return img.flags()
+		}, unset: outcome{code: 0, after: "probe-image: nats-nkey-user=" + public + "\n" + okLine("probed")},
+			boot: outcome{code: 0, after: "probe-image: nats-nkey-user=" + public + "\n" + okLine("skipped")}},
+		{name: "a provider key the environment already sets", setup: func(t *testing.T, img image) []string {
+			providers := t.TempDir()
+			if err := os.WriteFile(filepath.Join(providers, "TEST_PROVIDER_KEY"), []byte("from-the-secret"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("TEST_PROVIDER_KEY", "already-set")
+			return img.flags("--provider-env-dir", providers)
+		}, unset: exits(1, "TEST_PROVIDER_KEY"), boot: exits(1, "TEST_PROVIDER_KEY")},
+		{name: "the pi.agents probe", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_AGENTS_MISSING", "1")
+			return img.flags()
+		}, unset: exits(1, "does not expose pi.agents"), boot: exits(0, skipped)},
+		{name: "the contract probe", setup: func(t *testing.T, img image) []string {
+			rewrite(t, filepath.Join(img.legion, "package.json"), `"daemonApiVersion":`+thisBinarysContract, `"daemonApiVersion":2`)
+			return img.flags("--daemon-api-version", "4")
+		}, unset: exits(1, "speaks daemon API contract 2; this daemon requires 4"), boot: exits(1, "speaks daemon API contract 2; this daemon requires 4")},
+		{name: "the load probe", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_LOAD_NO", "1")
+			return img.flags()
+		}, unset: exits(1, "did not load with"), boot: exits(1, "did not load with")},
+		{name: "the session storage probe", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_SESSION_ACCEPTS", "1")
+			return img.flags()
+		}, unset: exits(1, "predates the session.storage setting"), boot: exits(0, skipped)},
+		{name: "the Claude lane", setup: func(t *testing.T, img image) []string {
+			rewrite(t, filepath.Join(img.claude, "package.json"), `"daemonApiVersion":`+thisBinarysContract, `"daemonApiVersion":2`)
+			return img.flags()
+		}, unset: exits(1, "speaks daemon API contract 2"),
+			boot: exits(0, skipped, "probe-image: capability claude-code: "+capabilities.StatusPresent+" (")},
+		{name: "a capability row", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_NO_PYTHON", "1")
+			return img.flags()
+		}, unset: exits(1, "capability eval-python is missing: "), boot: exits(1, "capability eval-python is missing: ")},
+		{name: "the model-fallback read", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_FALLBACK_FAIL", "1")
+			return img.flags()
+		}, unset: exits(0, "model-fallback=unread"), boot: exits(0, "model-fallback=unread")},
+		{name: "the version read", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_VERSION_FAIL", "1")
+			return img.flags()
+		}, unset: exits(0, "omp-version=unread"), boot: exits(0, "omp-version=unread")},
+		{name: "the help read", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_HELP_FAIL", "1")
+			return img.flags()
+		}, unset: exits(0, "omp-session-id=unread"), boot: exits(0, "omp-session-id=unread")},
+		{name: "a role's overlays", setup: func(t *testing.T, img image) []string {
+			// No PI_CONFIG_FILES of the caller's ahead of the merger's own file.
+			t.Setenv("PI_CONFIG_FILES", "")
+			return img.flags("--role-config-files", "merger="+malformed)
+		}, unset: exits(1, bootprobe.RoleOverlaysRefusedLine("merger", "Oh My Pi refuses "+malformed+": error: Failed to parse config overlay "+malformed+": SyntaxError: YAML Parse error")+"\n"),
+			boot: exits(1, bootprobe.RoleOverlaysRefusedLine("merger", "Oh My Pi refuses "+malformed+": error: Failed to parse config overlay "+malformed+": SyntaxError: YAML Parse error")+"\n")},
+		{name: "a check the deadline cuts", setup: func(t *testing.T, img image) []string {
+			t.Setenv("LEGION_TEST_VERSION_SLOW", "1")
+			return img.flags("--probe-budget", unreachedProbeBudget)
+		}, cut: "omp --version", unset: exits(bootprobe.NoVerdictExit, bootprobe.NoVerdictPrefix, "omp-version: "),
+			boot: exits(bootprobe.NoVerdictExit, bootprobe.NoVerdictPrefix, "omp-version: ")},
+		{name: "nothing broken", setup: func(t *testing.T, img image) []string { return img.flags() },
+			unset: outcome{code: 0, after: okLine("probed")}, boot: outcome{code: 0, after: okLine("skipped")}},
+		{name: "nothing broken, with --pod-safety", setup: func(t *testing.T, img image) []string { return img.flags("--pod-safety") },
+			unset: exits(0, probed), boot: exits(0, skipped)},
+		{name: "the variable as a provider file", setup: func(t *testing.T, img image) []string {
+			providers := t.TempDir()
+			if err := os.WriteFile(filepath.Join(providers, bootprobe.ImageProbeRunVariable), []byte(bootprobe.ImageProbeRunBoot), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return img.flags("--provider-env-dir", providers)
+		}, unset: exits(0, probed), once: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv, inImage); it changes the whole process's working directory (inImage).
+			img := inImage(t, thisBinarysContract, omp)
+			args := tc.setup(t, img)
+			values := []struct {
+				run, value string
+				want       outcome
+			}{{"unset", "", tc.unset}, {"boot", bootprobe.ImageProbeRunBoot, tc.boot}}
+			if tc.once {
+				values = values[:1]
+			}
+			stdouts := map[string]string{}
+			for _, v := range values {
+				// Files of this run's own, so no line of the first run stands in the second's.
+				calls, waiting := filepath.Join(t.TempDir(), "calls"), filepath.Join(t.TempDir(), "waiting")
+				t.Setenv("LEGION_TEST_CALLS", calls)
+				t.Setenv("LEGION_TEST_WAITING", waiting)
+				t.Setenv("LEGION_TEST_SEEN", filepath.Join(t.TempDir(), "seen"))
+				if v.value == "" {
+					fixtureenv.Unset(t, bootprobe.ImageProbeRunVariable)
+				} else {
+					t.Setenv(bootprobe.ImageProbeRunVariable, v.value)
+				}
+
+				var code int
+				var stdout, stderr string
+				if tc.cut == "" {
+					code, stdout, stderr = probeImage(args...)
+				} else {
+					code, stdout, stderr = probeImageCutOnceLogged(waiting, tc.cut, args...)
+				}
+
+				stdouts[v.run] = stdout
+				if code != v.want.code {
+					t.Errorf("the %s run = %d, stdout %q, stderr %q; want exit %d", v.run, code, stdout, stderr, v.want.code)
+				}
+				for _, text := range v.want.holds {
+					if !strings.Contains(stdout, text) && !strings.Contains(stderr, text) {
+						t.Errorf("the %s run's stdout %q and stderr %q; want one of them to hold %q", v.run, stdout, stderr, text)
+					}
+				}
+				if v.want.after != "" {
+					if table := tableLines(stdout); len(table) != len(capabilities.Table) || stdout != strings.Join(table, "\n")+"\n"+v.want.after {
+						t.Errorf("the %s run's stdout = %q; want the whole capability table (%d lines), then %q, and nothing else", v.run, stdout, len(capabilities.Table), v.want.after)
+					}
+				}
+				if tc.once {
+					raw, err := os.ReadFile(calls)
+					if err != nil {
+						t.Fatalf("read the %s run's Oh My Pi calls: %v", v.run, err)
+					}
+					for probe, call := range map[string]*regexp.Regexp{"pi.agents": agentsProbeCall, "session storage": sessionStorageProbeCall} {
+						if !call.Match(raw) {
+							t.Errorf("the %s run's Oh My Pi calls %q hold no run of the %s probe; want one: the command took the variable from the env --provider-env-dir gives the probes", v.run, raw, probe)
+						}
+					}
+				}
+			}
+			if !tc.once && tc.unset.code == tc.boot.code {
+				if unset, boot := withoutState.Replace(stdouts["unset"]), withoutState.Replace(stdouts["boot"]); unset != boot {
+					t.Errorf("the two runs' stdouts differ with the session-storage mark taken out:\nunset %q\nboot  %q", unset, boot)
+				}
+			}
+		})
+	}
+}
+
+// A LEGION_IMAGE_PROBE_RUN value other than boot comes from a daemon or a test this command does
+// not know, so the command refuses it as it refuses a bad flag, exit 2, naming the variable, the
+// value and the one value it takes, before any check runs: the role namespaces check that comes
+// after it prints nothing, and no Oh My Pi runs. The value is compared exactly, so another case,
+// or a space before or after boot, is another value.
+func TestProbeImageRefusesABootRunValueItDoesNotKnow(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv, inImage); it changes the whole process's working directory (inImage).
+	img := inImage(t, thisBinarysContract, imageOmp(t))
+	// A file, where the role namespaces check must make its layout, so that check refuses naming
+	// itself (TestProbeImageRefusesWhenTheRoleNamespaceCheckFails) if it runs.
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"Boot", "build", " boot", "boot ", "true", "1"} {
+		t.Run(strconv.Quote(value), func(t *testing.T) {
+			// Not parallel: it sets environment variables of the whole process (t.Setenv).
+			calls := filepath.Join(t.TempDir(), "calls")
+			t.Setenv("LEGION_TEST_CALLS", calls)
+			t.Setenv(bootprobe.ImageProbeRunVariable, value)
+
+			code, stdout, stderr := probeImage(img.flags("--role-namespaces", file)...)
+
+			// The value as %q writes it.
+			want := "legion probe-image: LEGION_IMAGE_PROBE_RUN is " + strconv.Quote(value) + ": it takes only boot, which the daemon's probe Sandbox sets, or no value\n"
+			if code != 2 || stdout != "" || !strings.Contains(stderr, want) || strings.Contains(stderr, "role namespaces") {
+				t.Errorf("probe-image under LEGION_IMAGE_PROBE_RUN=%q = %d, stdout %q, stderr %q; want exit 2 and %q, and no role namespaces check", value, code, stdout, stderr, want)
+			}
+			if _, err := os.Stat(calls); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("Oh My Pi ran (%s: %v), want no probe", calls, err)
+			}
+		})
+	}
+}
+
+// With no LEGION_IMAGE_PROBE_RUN value, unset or empty, as the image build and every daemon built
+// before the variable start the command, it makes the launch probes it made before the variable:
+// its Oh My Pi answers the pi.agents probe and the session storage probe once each, beside the
+// pod's load probe, and the OK line says session-storage=probed. With boot, as the daemon's probe
+// Sandbox sets it, the pod's load probe is the one of them Oh My Pi answers, and the OK line says
+// session-storage=skipped. Each run's Oh My Pi calls are a LEGION_TEST_CALLS file of its own, read
+// by each call's argv shape, since each probe extension a call names is in a temporary directory
+// of its own.
+func TestProbeImageWithNoBootRunValueMakesTheThreeLaunchProbes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv, inImage); it changes the whole process's working directory (inImage).
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	// The pod's load probe names the Envoy root, the Legion root, then its own probe extension.
+	podLoadCall := regexp.MustCompile(`(?m)^models --extension ` + regexp.QuoteMeta(img.envoy) + ` --extension ` + regexp.QuoteMeta(img.legion) + ` --extension .*/legion-plugin-probe-[^/]+/probe\.mjs --json$`)
+	for _, tc := range []struct {
+		name string
+		// unset runs the command with the variable not set at all, and value is the variable's
+		// value otherwise.
+		unset bool
+		value string
+		// agents, sessions and loads are how many runs of the pi.agents probe, the session storage
+		// probe and the pod's load probe Oh My Pi answers, and state is the OK line's
+		// session-storage mark.
+		agents, sessions, loads int
+		state                   string
+	}{
+		{name: "unset", unset: true, agents: 1, sessions: 1, loads: 1, state: "probed"},
+		{name: "empty", value: "", agents: 1, sessions: 1, loads: 1, state: "probed"},
+		{name: "boot", value: bootprobe.ImageProbeRunBoot, agents: 0, sessions: 0, loads: 1, state: "skipped"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Not parallel: it sets environment variables of the whole process (fixtureenv.Unset, t.Setenv).
+			calls := filepath.Join(t.TempDir(), "calls")
+			t.Setenv("LEGION_TEST_CALLS", calls)
+			if tc.unset {
+				fixtureenv.Unset(t, bootprobe.ImageProbeRunVariable)
+			} else {
+				t.Setenv(bootprobe.ImageProbeRunVariable, tc.value)
+			}
+
+			code, stdout, stderr := probeImage(img.flags()...)
+
+			if want := "\nprobe-image: OK (" + omp + ") session-storage=" + tc.state + " extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+				t.Errorf("probe-image = %d, stdout %q, stderr %q; want exit 0 and the OK line %q", code, stdout, stderr, want)
+			}
+			raw, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatalf("read the run's Oh My Pi calls: %v", err)
+			}
+			for _, probe := range []struct {
+				name  string
+				call  *regexp.Regexp
+				times int
+			}{{"pi.agents", agentsProbeCall, tc.agents}, {"session storage", sessionStorageProbeCall, tc.sessions}, {"pod's load", podLoadCall, tc.loads}} {
+				if got := len(probe.call.FindAll(raw, -1)); got != probe.times {
+					t.Errorf("Oh My Pi answered the %s probe %d times, want %d: its calls %q", probe.name, got, probe.times, raw)
+				}
+			}
+		})
 	}
 }
