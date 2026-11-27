@@ -1,8 +1,7 @@
 name: CI caches
 
-# Fills, on each push to main, the Actions caches ci.yaml's jobs restore, so a pull request or a
-# merge group finds them warm. Each `# why:` line names the section of the notes that holds the
-# derivation of the step, job or value it stands beside.
+# Fills, on each push to main, the Actions caches ci.yaml's jobs restore. Each `# why:` line names
+# the section of .github/ci-notes/ci-caches.md that holds the derivation of what it stands beside.
 # why: .github/ci-notes/ci-caches.md#why-a-workflow-of-its-own-fills-the-caches-on-a-push-to-main
 # why: .github/ci-notes/ci-caches.md#the-go-families-their-readers-and-their-runners
 
@@ -590,8 +589,8 @@ jobs:
           echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
 
-      # What envoy-infra-build, envoy-infra-go and the release build build, compiled and not run. On
-      # arm64 through scripts/race-unit.sh compile, which check-ci-filters.sh holds this leg to.
+      # The readers' builds, compiled and not run. check-ci-filters.sh holds the arm64 leg to
+      # scripts/race-unit.sh compile and to no race build of its own.
       - name: Build what envoy-infra-build and envoy-infra-go build
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |

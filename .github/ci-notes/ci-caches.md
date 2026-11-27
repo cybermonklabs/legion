@@ -179,9 +179,9 @@ ubuntu-24.04.
 go-notices is filled in a job of its own on ubuntu-24.04-arm, the runner of lint, whose notices step
 the family belongs to. It keys on packages/daemon/go.mod's Go, which lint installs, though that step
 also builds the envoy and infra modules' commands, and on the runner's architecture before the OS,
-as lint's restore does: the entry holds the go-licenses that step runs, and an <os>-<arch> key would
-start with the go-notices-<os>- prefix of a run of a workflow file older than the architecture in
-the key, which then restores this arm64 program on x86_64.
+as lint's restore does: the entry holds the go-licenses that step runs, and an `<os>-<arch>` key
+would start with the `go-notices-<os>-` prefix of a run of a workflow file older than the
+architecture in the key, which then restores this arm64 program on x86_64.
 
 The job runs the very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
 same loops over .github/go-release-targets.json, .github/agent-secrets-client-targets.json and
