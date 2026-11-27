@@ -1269,6 +1269,7 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 // Two provider_keys variables that read one key of the providers Secret are both named, sorted, so
 // the refusal is the same on every run, whatever order the map yields them in.
 func TestAMissingKeyNamesEveryVariableThatReadsIt(t *testing.T) {
+	t.Parallel()
 	r := &Runtime{providerKeys: map[string]string{"OPENAI_API_KEY": "shared", "ANTHROPIC_API_KEY": "shared", "GEMINI_API_KEY": "gemini"}}
 	for range 20 {
 		if got := r.providersMountFault(missingSecretKey + "shared"); got != "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY and provider_keys.OPENAI_API_KEY" {
@@ -2226,7 +2227,7 @@ func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
 		}
 		return true, &k8sruntime.Unknown{Raw: []byte(log)}, nil
 	})
-	got := g.r.logTail(g.ctx, "legion-pod", fetchContainer)
+	got := g.r.logTail(g.ctx, "legion-pod", initContainer)
 	ruled := redact.Read(got, false)
 	for _, part := range []string{"reader", "@h.example", "planted-query-token-9"} {
 		if strings.Contains(ruled, part) {

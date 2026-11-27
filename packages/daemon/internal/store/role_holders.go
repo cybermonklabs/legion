@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -59,22 +58,6 @@ func roleHolder(state supervise.ClaimState, by supervise.SuspendSource, session 
 		return ""
 	}
 	return session
-}
-
-// storedRoleHolder is the holder the row of c names before c is written, read under the row's lock
-// so that no other write of the claim lands between this read and the write that replaces it. A
-// claim the store does not hold yet names none. A claim's first row is its admission (AdmitClaim),
-// which is globally serialized, so two first writes of one claim never race past this read.
-func storedRoleHolder(ctx context.Context, tx pgx.Tx, c supervise.Claim) (string, error) {
-	var state, by, session string
-	err := tx.QueryRow(ctx, `select state, suspended_by, session from claims where token = $1 for update`, string(c.Token)).Scan(&state, &by, &session)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the role holder the row of %s names: %w", c.Token, err)
-	}
-	return roleHolder(supervise.ClaimState(state), supervise.SuspendSource(by), session), nil
 }
 
 // EnqueueRoleHolders writes the one role_holders_publish row of issue, due at nextAt, and answers
@@ -136,9 +119,9 @@ func (s *Store) PublishRoleHolders(woken func(issue string)) {
 // queuesRoleHolders is whether a write of claim c can queue a role-holder publication at all: the
 // daemon has turned the publication on (PublishRoleHolders), c's session can hold a role of an
 // issue (holdsIssueRole), and that issue is of c's own project (claim.KeyOfProject), whose row of
-// the issue this daemon's outbox runs. None depends on the stored row, so each is read before a
-// transaction opens, and a write for which it is false needs none (PutClaim): it neither reads the
-// stored holder nor writes any row of the outbox.
+// the issue this daemon's outbox runs. None depends on the stored row, so putClaim reads it before
+// it locks that row (putClaim), and a write for which it is false neither reads the stored holder
+// for it nor writes the publication's row.
 func (s *Store) queuesRoleHolders(c supervise.Claim) bool {
 	return s.roleHoldersQueued.Load() != nil && holdsIssueRole(c) && claim.KeyOfProject(c.Project, c.Issue)
 }

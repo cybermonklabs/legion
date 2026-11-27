@@ -378,3 +378,55 @@ func askForAToken(t *testing.T, url, asked string) (int, string) {
 	}
 	return answer.StatusCode, strings.TrimSpace(string(body))
 }
+
+// TestTheAWSStandsRefusalsAreReadBack: the AWS stand's refusals are served beside its records, so
+// a check reads why a call was refused - a signature, a key id, a session token - and not only
+// that it was. Before any call the route answers an empty array, and after a call that carries no
+// signature it answers that one refusal, in the stand's own words. The control is the same route
+// after a call to another stand: no refusal is added, so the route reads the AWS stand's alone.
+func TestTheAWSStandsRefusalsAreReadBack(t *testing.T) {
+	out := startStands(t, "--dir", t.TempDir())
+	refusals := func() []string {
+		t.Helper()
+		answer, err := http.Get(out.RecordsURL + "/refusals/" + standAWS)
+		if err != nil {
+			t.Fatalf("read the refusals: %v", err)
+		}
+		defer answer.Body.Close()
+		var got []string
+		if err := json.NewDecoder(answer.Body).Decode(&got); err != nil || got == nil {
+			t.Fatalf("the refusals route answered %v (%v); want a JSON array", got, err)
+		}
+		return got
+	}
+	if got := refusals(); len(got) != 0 {
+		t.Fatalf("before any call the refusals are %q; want none", got)
+	}
+	roots := x509.NewCertPool()
+	pem, err := os.ReadFile(out.CACertFile)
+	if err != nil || !roots.AppendCertsFromPEM(pem) {
+		t.Fatalf("read the authority's certificate %s: %v", out.CACertFile, err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+	}}
+	answer, err := client.Post(out.Stands[standAWS].URL+"/", "application/x-www-form-urlencoded", strings.NewReader("Action=GetCallerIdentity&Version=2011-06-15"))
+	if err != nil {
+		t.Fatalf("call the AWS stand: %v", err)
+	}
+	body, _ := io.ReadAll(answer.Body)
+	answer.Body.Close()
+	if answer.StatusCode != http.StatusForbidden {
+		t.Fatalf("an unsigned call answered %d %q; want 403", answer.StatusCode, body)
+	}
+	got := refusals()
+	if len(got) != 1 || !strings.Contains(string(body), got[0]) {
+		t.Fatalf("after one unsigned call the refusals are %q; want the one the call was answered with, %q", got, body)
+	}
+	if reply := askTheModel(t, out.Stands[standModel].URL); reply == "" {
+		t.Fatal("the model stand answered nothing")
+	}
+	if after := refusals(); len(after) != 1 {
+		t.Fatalf("after a call to another stand the AWS refusals are %q; want the one refusal still", after)
+	}
+}

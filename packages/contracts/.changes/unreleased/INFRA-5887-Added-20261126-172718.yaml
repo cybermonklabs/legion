@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    The daemon API fixtures hold the entry 20261126071719 workspace-init-direct-clone
+    (`contracts/20261126071719_workspace-init-direct-clone.json`): an issue pod runs one init
+    container, `workspace-init provision`, which fills the clone itself, and `workspace-init fetch`
+    and its `--feed` go, which moves the init container's command line and environment and no
+    answer's shape.
+time: 2026-11-26T17:27:18Z
+custom:
+    Issue: INFRA-5887

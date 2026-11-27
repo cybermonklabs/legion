@@ -359,8 +359,8 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
 // known-session store holds any more - its session ended after the page listed it - is queued
 // rather than failed. Dispatch makes no send, since its registry read answers `no live session`,
 // and publishes on the session's own agent subject the envelope the listener's send would have
-// stored, so the listener gives it up with the agent wake and the session reads it when it runs
-// again. The card reads the one queued sentence a person reads for every stopped session. The
+// stored, so the listener waits once, reports the agent wake, and the session reads it when it
+// runs again. The card reads the one queued sentence a person reads for every stopped session. The
 // harness runs Dispatch with NATS disabled, so the row reads what the server published from its
 // test hook rather than from a stream.
 // SLOW(>=2s): the Agents page's load and an opened card, then a send Dispatch answers only after

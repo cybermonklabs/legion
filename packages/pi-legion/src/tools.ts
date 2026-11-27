@@ -32,7 +32,6 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
-  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
@@ -373,9 +372,7 @@ function stateSummary(state: LegionState): string {
   const pause = pauseSummary(state);
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
-    lines.push(
-      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`
-    );
+    lines.push(`admission cap ${admission.cap}`);
     const p0 = p0Summary(state);
     if (p0 !== undefined) lines.push(p0);
     lines.push(
@@ -441,8 +438,7 @@ function stateSummary(state: LegionState): string {
     lines.push(`${key} ${issue.phase} ${issue.status}`);
     if (issue.phase === "done" || issue.phase === "unrecorded") continue;
     if (issue.slot !== undefined) {
-      const lent = issue.slot.lentTo === undefined ? "" : ` lent ${issue.slot.lentTo}`;
-      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}${lent}`);
+      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}`);
     }
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {
@@ -834,10 +830,9 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each successful step completion or backward move, never a look's report. */
-  readonly onPhaseCompleted: (context: SessionContext) => void;
+
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
-   * update message on its pod, and its phase stays open. */
+   * update message on its pod, and the turn it answered in is to be continued by no reminder. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
@@ -867,7 +862,6 @@ export function createLegionTool(deps: {
     daemon,
     session,
     controllerGrant,
-    onPhaseCompleted,
     onUpdateAnswered,
     handoffReport,
     branchHead,
@@ -914,7 +908,8 @@ export function createLegionTool(deps: {
         "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
+        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with a reason for each cause, " +
+        "the first reasons of each kind and one more that counts the rest of that kind " +
         "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
@@ -1170,18 +1165,10 @@ export function createLegionTool(deps: {
             { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
-          // A successful phase completion or backward move closes phase input. A report with
-          // check_opened_at leaves it open for this session's phase work.
-          // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
-          // then waits for its process to be replaced rather than working, so the turn it ends
-          // after answering earns no reminder (the `update-answered` input of
-          // `@legion/pi-shared/phase-stall`).
-          const effect = phaseInputAfter(operation, parameters);
-          if (effect === "phase-closed") {
-            onPhaseCompleted(context);
-          } else if (effect === "update-answered") {
-            onUpdateAnswered(context);
-          }
+          // `ready_for_update` answers the pod's update message, and the worker then waits for its
+          // process to be replaced rather than working, so the turn it ends after answering earns
+          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
+          if (operation === "ready_for_update") onUpdateAnswered(context);
           return jsonSuccess(answer);
         }
         assertOperationInput(parameters, operation);

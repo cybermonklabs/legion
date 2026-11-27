@@ -266,8 +266,6 @@ unhomed:
     row: "test-value-md 8.12 pack-memory-job.sh and pack-memory-probe.sh: tool; INFRA-5797"
   - finding: "script: scripts/e2e/plan-pointer-drive.sh: plan-pointer-drive.sh"
     row: "test-value-md 1.20 plan-pointer-drive.sh (devbox-tests-md section 1): delete; INFRA-5797"
-  - finding: "script: scripts/e2e/refusal-fallback-omp.sh: refusal-fallback-omp.sh"
-    row: "test-value-md 1.22 refusal-fallback-omp.sh (devbox-tests-md section 1): delete the added case; INFRA-5797"
   - finding: "script: scripts/e2e/verification-results.sh: verification-results.sh"
     row: "test-value-md 6.9 verification-results.sh (devbox-tests-md section 6): delete; INFRA-5796"
   - finding: "script: scripts/e2e/with-managed-settings.sh: with-managed-settings.sh"

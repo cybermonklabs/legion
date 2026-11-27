@@ -68,7 +68,13 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 // bus.RelayReplyPrefix.
 func newRelayRigUnownedAs(t *testing.T, first, max time.Duration, edge *edgeGrant) *relayRig {
 	t.Helper()
-	url := testnats.URL(t)
+	return newRelayRigUnownedOn(t, testnats.URL(t), first, max, edge)
+}
+
+// newRelayRigUnownedOn is newRelayRigUnownedAs on the NATS URL url, for a test that cuts or stops
+// the server behind it itself.
+func newRelayRigUnownedOn(t *testing.T, url string, first, max time.Duration, edge *edgeGrant) *relayRig {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
@@ -564,19 +570,19 @@ func TestSessionConsumerRestartWritesTheTopicsStoredWhenItHoldsTheLock(t *testin
 // next registration.
 func TestRelayRunExitTakesOrRefusesEveryWake(t *testing.T) {
 	t.Parallel()
-	wokenFirst := &relayRun{resume: make(chan struct{}, 1)}
-	if !wokenFirst.wake() {
+	wokenFirst := &relayRun{resume: make(chan uint64, 1)}
+	if !wokenFirst.wake(7) {
 		t.Fatal("a run that is not returning refused a wake")
 	}
-	if !wokenFirst.exit() {
-		t.Fatal("the run's exit missed the wake sent before it")
+	if heard, woken := wokenFirst.exit(); !woken || heard != 7 {
+		t.Fatalf("the run's exit took a wake %t of mark %d, want the wake sent before it, of mark 7", woken, heard)
 	}
 
-	exitedFirst := &relayRun{resume: make(chan struct{}, 1)}
-	if exitedFirst.exit() {
+	exitedFirst := &relayRun{resume: make(chan uint64, 1)}
+	if _, woken := exitedFirst.exit(); woken {
 		t.Fatal("the run's exit found a wake nobody sent")
 	}
-	if exitedFirst.wake() {
+	if exitedFirst.wake(7) {
 		t.Fatal("a returning run took a wake, which nothing would act on")
 	}
 }
@@ -585,8 +591,8 @@ func TestRelayRunExitTakesOrRefusesEveryWake(t *testing.T) {
 // a registration heard while the failed call ran included, rather than waiting its backoff out.
 func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 	t.Parallel()
-	run := &relayRun{resume: make(chan struct{}, 1)}
-	run.wake()
+	run := &relayRun{resume: make(chan uint64, 1)}
+	run.wake(1)
 	goesOn := make(chan bool, 1)
 	go func() { goesOn <- run.waitRetry(context.Background(), time.Hour) }()
 	select {

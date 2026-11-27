@@ -9,7 +9,7 @@
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
+// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonLogging),
 // booted with dispatch_url at that server, so every Dispatch read and write it makes - the issue
 // list, its status writes and messages, and the read of the record a completion names - goes to
 // the real routes. The worker side is the real `dispatch` CLI
@@ -46,6 +46,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,7 +169,7 @@ func (r *handoffRecordsLive) boot() {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonLogging(r.t, r.cfg, o, r.log())
 	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }
@@ -390,7 +391,7 @@ func (r *handoffRecordsLive) a3Accepted() {
 // handoffs moved to Dispatch, is refused at the tester's completion 403
 // HANDOFF_SESSION_MISMATCH; the tester reads it with `dispatch handoff-read`, writes it again
 // under its own session, and completes; and the reviewer the pass starts is told that record in
-// its task, the version its command reads.
+// its task, the version its command reads, with the command that reads the phase's newest version.
 func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	t := r.t
 	tester := r.claimant(claim.RoleTester, r.a7, "ses_a7_tester")
@@ -443,9 +444,16 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := handoffLine(r.a7, "test", rewritten.version)
-	if !strings.Contains(task.Message, want) {
-		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
+	// The prompt names the record as an agent reads it: the command that reads the version the
+	// daemon accepted (handoffLine), the same command with no --version, which reads the newest, and
+	// that a newer version is a correction. internal/workflow holds the line's words
+	// (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so this proof reads what it names.
+	read := fmt.Sprintf("dispatch handoff-read --issue %s --phase test", r.a7)
+	pinned := handoffLine(r.a7, "test", rewritten.version)
+	newest := slices.ContainsFunc(strings.Split(task.Message, read)[1:], func(rest string) bool { return !strings.HasPrefix(rest, " --version") })
+	if !strings.Contains(task.Message, pinned) || !newest || !strings.Contains(task.Message, "correction") {
+		t.Fatalf("the reviewer was prompted %q, want it to name %q, %q with no --version, and a newer version as a correction",
+			task.Message, pinned, read)
 	}
 	r.note("the reviewer's shim was prompted: %q", task.Message)
 	meta, _ = r.read(reviewer.session, r.a7, "test", "--version", strconv.Itoa(rewritten.version))
@@ -1048,10 +1056,12 @@ func holdsAll(text string, parts []string) bool {
 	return true
 }
 
-// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
-// task).
+// handoffLine is the part of a task's handoff line that names the handoff of word on key at
+// version: the command that reads the version the daemon accepted (workflow's task). It is that
+// command and not the line's words, which internal/workflow holds
+// (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so a proof reads what a task names.
 func handoffLine(key, word string, version int) string {
-	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
+	return fmt.Sprintf("dispatch handoff-read --issue %s --phase %s --version %d", key, word, version)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`

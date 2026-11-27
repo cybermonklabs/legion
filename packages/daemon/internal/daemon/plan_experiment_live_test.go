@@ -11,7 +11,7 @@
 // Nothing of the draw's path is stood in for. Dispatch is the real server this checkout builds
 // (startScratchDispatchOn), on a database of its own, its events on the script's broker, which the
 // daemon consumes, as the person's handover proof runs it (personHandoverRig). The daemon is the
-// whole daemon (run, through startDaemonWithin) with dispatch_url at that server. Each issue is
+// whole daemon (run, through startDaemonLogging) with dispatch_url at that server. Each issue is
 // created and handed to Legion as the person's todo through Dispatch's API, as at the dashboard;
 // its owner writes its plan as the document plan.md with the real `dispatch artifact`
 // (packages/envoy-client/bin/dispatch.ts under bun), as its prompt tells it to, and gives it with
@@ -27,7 +27,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -227,35 +226,6 @@ func (l *experimentLive) variantOnSteps() {
 		}
 		l.note("`dispatch steps --issue %s` prints %q right after its header and before its first run", want.issue.Key, want.line)
 	}
-}
-
-// variantPlace answers nil where line stands in printed, the stdout of `dispatch steps --issue
-// key`, where the command prints the variant of the issue: right after the header `<key>: <n>
-// steps in <m> tasks` and before the first run, with the header's n runs below it and nothing
-// else. It answers where the line stands otherwise.
-func variantPlace(key, line, printed string) error {
-	lines := strings.Split(strings.TrimRight(printed, "\n"), "\n")
-	header, ok := strings.CutPrefix(lines[0], key+": ")
-	var steps, tasks int
-	if _, err := fmt.Sscanf(header, "%d steps in %d tasks", &steps, &tasks); !ok || err != nil {
-		return fmt.Errorf("the first line %q is no header of %s", lines[0], key)
-	}
-	if at := slices.Index(lines, line); at != 1 {
-		if at < 1 {
-			return fmt.Errorf("no line below the header is %q", line)
-		}
-		return fmt.Errorf("it is line %d of %d, after %q; want it right after the header and before the first run", at+1, len(lines), lines[at-1])
-	}
-	runs := lines[2:]
-	for _, run := range runs {
-		if fields := strings.Fields(run); len(fields) != 12 || fields[5] != "attempt" {
-			return fmt.Errorf("the line %q below it is no run", run)
-		}
-	}
-	if steps == 0 || len(runs) != steps {
-		return fmt.Errorf("the header says %d steps and %d runs follow the line", steps, len(runs))
-	}
-	return nil
 }
 
 // writePlan writes ownersPlan as the document plan.md of key with the real `dispatch artifact`,

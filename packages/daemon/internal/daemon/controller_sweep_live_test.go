@@ -9,7 +9,9 @@
 // reconciliation retried while the keeper launches the controller reads them, and the store holds
 // the controller's claim launching, as the supervisor stores it before the launch begins. What the
 // proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
-// NATS), the App tokens are placeholders, and no record names a repository.
+// NATS), the App tokens are placeholders, the project's providers Secret holds placeholders
+// (putLiveProvidersSecret), the shared public leak check is read from a stand-in GitHub in this
+// process (serveLiveLeakCheck), and no record names a repository.
 package daemon
 
 import (
@@ -117,6 +119,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 	if err := sandbox.CheckInstalled(ctx, rc, agentSandbox); err != nil {
 		t.Fatalf("the cluster check: %v", err)
 	}
+	putLiveProvidersSecret(ctx, t, cfg, log)
 	dyn, err := dynamic.NewForConfig(rc)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +157,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 		for range listener.Events() {
 		}
 	}()
-	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, log); err != nil {
+	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, serveLiveLeakCheck(t), log, nil); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
 

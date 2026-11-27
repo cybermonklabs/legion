@@ -999,7 +999,7 @@ func TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn(t *testing.T) {
 		{name: "a stream to the bound host after those", fields: h2Fields(http.MethodGet, "https", boundHost, "/v1/things", authorization),
 			status: "200", carried: true},
 		{name: "a stream once the operator withheld the name", before: func() { r.grants.setConnection(workerPlaceholder, withheld) },
-			fields: h2Fields(http.MethodGet, "https", boundHost, "/v1/things", authorization), status: "403", reason: "no name of this grant is bound to " + boundHost},
+			fields: h2Fields(http.MethodGet, "https", boundHost, "/v1/things", authorization), status: "403", reason: "no name of a live grant of this session is bound to " + boundHost},
 		{name: "a stream once the grant ended", before: func() { r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive) },
 			fields: h2Fields(http.MethodGet, "https", boundHost, "/v1/things", authorization), status: "407", reason: requests.ErrGrantNotLive.Error()},
 	} {

@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  Dispatch puts every GET route of its route table in a read class (`readClasses`). A route is a
+  Dispatch puts every GET route of its route table in a read class (`routeDecl.Read`, stated in the route's own file). A route is a
   read, or a GET that writes. A read-only token is any token that holds `read`. Dispatch serves a
   read-only token on every read. It answers the token `403 READ_ONLY_TOKEN` on every other route
   and on `GET /ws/live`. The read class replaces the read list, which named three routes.

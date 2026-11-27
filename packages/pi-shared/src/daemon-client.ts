@@ -25,6 +25,9 @@ import {
   type LegionIssue,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
+  type LegionOwed,
+  LegionOwedRequest,
+  LegionOwedResponse,
   LegionP0BoundResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
@@ -109,15 +112,17 @@ export interface ExitInput {
  * claim and the idle rule reads (`src/session-activity.ts` builds it). */
 export type ActivityInput = z.input<typeof LegionActivityRequest>;
 
+/** `api.OwedRequest`: the claim, the session it records and the registration's secret, asking what
+ * the claim owes now. */
+export type OwedInput = z.input<typeof LegionOwedRequest>;
+
 export interface LegionDaemonClient {
-  /** The daemon's whole state. `signal` aborts the request, its answer's body included: a caller
-   * that stops waiting for a daemon that does not answer (the phase reminder's bounded record
-   * check) aborts it rather than leave it open. */
-  readonly state: (options?: { readonly signal?: AbortSignal }) => Promise<LegionState>;
+  /** The daemon's whole state. */
+  readonly state: () => Promise<LegionState>;
   /** One issue's record, the value the whole state holds under `issues.<key>`, or `undefined`
    * for an issue the daemon records nothing of, which it answers 404 `RECORD_NOT_FOUND`. Every
    * other refusal throws, so a caller's `undefined` is the absent record and its `catch` is the
-   * read that failed. `signal` aborts the request as `state`'s does. */
+   * read that failed. `signal` aborts the request, its answer's body included. */
   readonly record: (
     issue: string,
     options?: { readonly signal?: AbortSignal }
@@ -151,6 +156,14 @@ export interface LegionDaemonClient {
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
+  /** What this session's claim owes now, read from the daemon's record, and what that work is
+   * called (`POST /legion/v1/claims/owed`). It is authenticated by the claim, as `activity` is,
+   * and changes nothing. `signal` aborts the request, its answer's body included: the phase
+   * reminder bounds the question and aborts it at the bound rather than leave it open. */
+  readonly owed: (
+    input: OwedInput,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionOwed>;
   /** The deployment's idle-release records of one window: every release, resume and hold the
    * daemon recorded at or after `since`, oldest first. It is authenticated by the claim, as
    * `activity` is, and the claim's secret rides in the body rather than a query string, which
@@ -313,8 +326,9 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
-   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason in the sentence,
-   * and a plan of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason it names in the
+   * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and a plan
+   * of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
@@ -443,17 +457,32 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
  * session, claude-envoy's Legion claim) sends its `claims/ready` through it, at boot and after each
  * role regain. It makes `READY_RETRY_ATTEMPTS` attempts, and waits between them 1 s, or what the
  * answer's `Retry-After` asks for where that is longer, but never longer than
- * `READY_RETRY_AFTER_MAX_MS`: a proxy that asks for longer is asked again at that bound. `sleep` is
- * the wait, a test's own. */
+ * `READY_RETRY_AFTER_MAX_MS`: a proxy that asks for longer is asked again at that bound. Each
+ * failed attempt is said on `log`, the host's own writer.
+ *
+ * `signal` aborts when the host stops (R24 of dispatch://INFRA-3589). From then on nothing is
+ * said and no attempt is made: a wait for the next attempt ends at once, and the call throws the
+ * last attempt's error. `sleep` is the wait, a test's own, which ends at once when the signal it
+ * is given aborts. */
 export async function callReadyWithRetry(
   label: string,
   call: () => Promise<void>,
-  sleep: (ms: number) => Promise<void> = (ms) => {
+  host: { readonly log: (line: string) => void; readonly signal?: AbortSignal | undefined },
+  sleep: (ms: number, signal: AbortSignal | undefined) => Promise<void> = (ms, signal) => {
     const waited = Promise.withResolvers<void>();
-    setTimeout(waited.resolve, ms);
-    return waited.promise;
+    const timer = setTimeout(waited.resolve, ms);
+    const stop = (): void => {
+      clearTimeout(timer);
+      waited.resolve();
+    };
+    if (signal?.aborted === true) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
+    return waited.promise.finally(() => signal?.removeEventListener("abort", stop));
   }
 ): Promise<void> {
+  const { log, signal } = host;
+  // Read afresh at each use: the abort comes while an attempt or a wait is pending.
+  const stopped = (): boolean => signal?.aborted === true;
   for (let attempt = 1; ; attempt++) {
     try {
       await call();
@@ -463,17 +492,18 @@ export async function callReadyWithRetry(
         error instanceof LegionDaemonApiError
           ? outage(error.status)
           : isNetworkOrTimeoutError(error);
-      if (!retryable) throw error;
+      if (!retryable || stopped()) throw error;
       if (attempt === READY_RETRY_ATTEMPTS) {
-        console.error(`[legion] ${label} failed after ${attempt} attempts: ${messageFor(error)}`);
+        log(`${label} failed after ${attempt} attempts: ${messageFor(error)}`);
         throw error;
       }
       const asked = error instanceof LegionDaemonApiError ? error.retryAfterMs : 0;
       const wait = Math.min(Math.max(READY_RETRY_DELAY_MS, asked), READY_RETRY_AFTER_MAX_MS);
-      console.error(
-        `[legion] ${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying in ${wait / 1_000} s: ${messageFor(error)}`
+      log(
+        `${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying in ${wait / 1_000} s: ${messageFor(error)}`
       );
-      await sleep(wait);
+      await sleep(wait, signal);
+      if (stopped()) throw error;
     }
   }
 }
@@ -743,13 +773,15 @@ export function createLegionDaemonClient(
     return parsed.value;
   };
 
-  /** Parses the request before it leaves the pane, then reads the route's success body. */
+  /** Parses the request before it leaves the pane, then reads the route's success body. `signal`
+   * aborts the request, its answer's body included. */
   const post = <Input, Output>(
     path: string,
     request: z.ZodType<Input>,
     response: z.ZodType<Output>,
-    body: Input
-  ): Promise<Output> => read("POST", path, response, request.parse(body) as object);
+    body: Input,
+    signal?: AbortSignal
+  ): Promise<Output> => read("POST", path, response, request.parse(body) as object, signal);
 
   /** The claim routes that answer 204 and nothing else. */
   const acknowledge = async (path: string, body: object, signal?: AbortSignal): Promise<void> => {
@@ -767,8 +799,7 @@ export function createLegionDaemonClient(
   };
 
   return {
-    state: (reading) =>
-      read("GET", "/legion/v1/state", LegionStateResponse, undefined, reading?.signal),
+    state: () => read("GET", "/legion/v1/state", LegionStateResponse),
     record: async (issue, reading) => {
       try {
         return await read(
@@ -812,6 +843,9 @@ export function createLegionDaemonClient(
         input
       ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
+    // async, so a request the contract refuses comes back as a rejected promise, not a throw.
+    owed: async (input, options) =>
+      post("/legion/v1/claims/owed", LegionOwedRequest, LegionOwedResponse, input, options?.signal),
     releaseRecords: (input) =>
       post(
         "/legion/v1/claims/release-records",

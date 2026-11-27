@@ -182,10 +182,10 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 // no text at all: the deleted comment's body and suggestion, and the anchor quote of an insert
 // suggestion no accept made document text, which is the text that suggestion inserted, are
 // already cleared in the comment this payload is built from, and the block it names keeps every
-// field but its text (deleteEventReplyBlock), so the event keeps every field that routes it -
-// reply_to, ask_id, the anchor a root comment carries, the block's node id and id, thread_root_id
-// and thread_logins - and no copy of the post the reply answers. A reply naming no block carries
-// reply_block null either way.
+// field but its text, its quote and its occurrence (deleteEventReplyBlock), so the event keeps
+// every field that routes it - reply_to, ask_id, the anchor a root comment carries, the block's
+// node id and id, thread_root_id and thread_logins - and no copy of the post the reply answers.
+// A reply naming no block carries reply_block null either way.
 func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, changes model.ReferenceChanges) (model.CommentEventPayload, *events.Logins, error) {
 	var thread commentEventThread
 	if comment.ReplyTo != nil {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// Writes <content dir>/dispatch/reference/api.md from Dispatch's route table
-// (packages/envoy/internal/dispatch/api/routes_table.go), read through `envoy-dispatch routes`,
-// which prints the body GET /api/v1 serves without a database or a listener. Contract:
-// scripts/generate.ts; lib/reference.ts runs the binary.
+// Writes <content dir>/dispatch/reference/api.md from Dispatch's route declarations, one file a
+// route in packages/envoy/internal/dispatch/api (route_<path>+<method>.go), read through
+// `envoy-dispatch routes`, which prints the body GET /api/v1 serves without a database or a
+// listener. Contract: scripts/generate.ts; lib/reference.ts runs the binary.
 import type { DispatchScope } from "../../../packages/contracts/src/dispatch-api-core.ts";
 import { inline, writePage } from "./lib/markdown.ts";
 import { readTable } from "./lib/reference.ts";
@@ -20,8 +20,8 @@ const CALLERS: Record<string, { label: string; meaning: string }> = {
   },
 };
 
-/** What each OAuth scope a Dispatch credential can hold lets it do (`routeScopes` in the source,
- *  `model.ScopePerson`, `model.ScopeApprove` and `model.ScopeP0`). `satisfies` ties the entries to
+/** What each OAuth scope a Dispatch credential can hold lets it do (each route's `OAuthScopes` in
+ *  the source, `model.ScopePerson`, `model.ScopeApprove` and `model.ScopeP0`). `satisfies` ties the entries to
  *  `DISPATCH_SCOPES`: a scope added there with no entry here fails the typecheck. */
 const SCOPES = {
   person:
@@ -87,7 +87,7 @@ function render(routes: Route[]): string {
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
-    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve` or `p0`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`. The route index does not carry the read class, so this page does not mark those routes.",
+    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve` or `p0`. Dispatch serves it only on the GET routes it classes as reads (each route's `Read` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`. The route index does not carry the read class, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
     "",
@@ -117,6 +117,7 @@ writePage({
   title: "HTTP API",
   description:
     "Every route Dispatch serves under /api/v1: method, path, who may call it, the OAuth scopes it needs, and what it does.",
-  sources: ["packages/envoy/internal/dispatch/api/routes_table.go"],
+  // The route files, one a route: the directory, since no one file holds the table any more.
+  sources: ["packages/envoy/internal/dispatch/api"],
   body: () => render(readRoutes()),
 });
