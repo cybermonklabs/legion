@@ -1057,20 +1057,21 @@ export async function assertInventoryCarried(
  * from the Design's table "Where each thing goes" and ruling 5, and with root version 183's
  * renames: tab Artifacts to Documents (R2); part M's four, the Activity tab to History, the
  * Collaborators tab, the Steps tab to the steps in Details and a block's "Referenced by" to
- * "What references this row"; the margin's Comments to the margin beside their node; and part
- * L's, today's composer's form to the box at the foot's, Draft. Each rename's reason is in
- * `INVENTORY_RENAME_REASONS`, under the same key. The fixture is recorded again after each merge
- * of `main`; the table is declared here, so a new recording does not lose it.
+ * "What references this row"; the margin's Comments to the margin beside their node; part L's,
+ * today's composer's form to the box at the foot's, Draft; and dispatch://INFRA-5702's (#5545),
+ * today's Dashboard tab to the view row's Dashboard control, its first. Each rename's reason is
+ * in `INVENTORY_RENAME_REASONS`, under the same key. The fixture is recorded again after each
+ * merge of `main`; the table is declared here, so a new recording does not lose it.
  *
  * The ask body of dispatch://INFRA-5702, which this stack holds, draws an ask on every surface of
- * the new page. It keeps today's names for Decline ("Decline to answer"), Hand on ("Hand this
- * question to") and the settled ask's record ("Change answer"), so each of them stands
- * unrenamed, and it draws its answer box in place under the options rather than behind today's
- * "Add a note or answer in your own words", so that disclosure is renamed to the box. Part M's
- * Details facts of the focused ask carry an ask's edit history, recipients and copy handles under
- * their own names, which the fixture holds unchanged.
+ * the new page, and since #5545 `main`'s today page draws the same ask body: both pages offer
+ * its Decline ("Decline to answer"), Hand on ("Hand this question to"), settled ask's record
+ * ("Change answer") and answer box under the options by the same names, so each of its
+ * controls stands unrenamed. Part M's Details facts of the focused ask carry an ask's edit
+ * history, recipients and copy handles under their own names, which the fixture holds unchanged.
  */
 export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
+  'tab "Dashboard"': 'button "Dashboard" | menuitemradio "Dashboard"',
   'tab "Spec"': 'button "Spec" | menuitem "Spec" | menuitemradio "Spec"',
   'tab "Verification"':
     'button "Verification" | menuitem "Verification" | menuitemradio "Verification"',
@@ -1100,12 +1101,6 @@ export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
   'combobox "Repository of LAY-2"': 'button "acme/issue-layout-<run>, Repository of LAY-2"',
   'link "#11 acme/issue-layout-<run>"': 'link "#11 Merged"',
   'link "#2 Keep every old address, inherited"': 'link "#2 Keep every old address"',
-  'link "Block r1"': 'link "Every property of the issue…"',
-  'link "Block r2"': 'link "Requirement 2 of the redesign…"',
-  'link "Block r3"': 'link "Requirement 3 of the redesign…"',
-  'link "Block r4"': 'link "Requirement 4 of the redesign…"',
-  'link "Block r5"': 'link "Requirement 5 of the redesign…"',
-  'link "Block r6"': 'link "Requirement 6 of the redesign…"',
   'region "Open questions"': 'region "Decisions"',
   'region "Waiting for your review"': 'region "Decisions"',
   'region "Your decisions"': 'region "Decisions"',
@@ -1117,16 +1112,11 @@ export const INVENTORY_RENAMES: Readonly<Record<string, string>> = {
   'button "Open review panel (1 open ask)"': 'button "Details"',
   'button "Open review panel (0 open asks)"': 'button "Details"',
   'complementary "Review panel"': 'complementary "Review margin"',
-  'button "Add a note or answer in your own words"': 'textbox "Your answer"',
 };
 
 /** Why a child of the issue's link is the child's row on the new page. */
 const CHILD_ROW_REASON =
   "The children are rows of the outline, not a section of their own (the architect's ruling that no children's section is drawn, root version 183's 'Children tab → the children's section'): a child's link is carried by the child's row, whose words are its title.";
-
-/** Why a pointer link to a block is a chip on the new page. */
-const BLOCK_LINK_REASON =
-  "A pointer link to a block, drawn as the block's short form, is a chip carrying the block's words (the Design's table 'Where each thing goes'): the decision row's 'Shapes' line draws it, its words cut at the chip's width.";
 
 /** Why the conversation's All, Open and Closed are one control on the new page. */
 const FILTER_REASON =
@@ -1146,6 +1136,8 @@ const COPY_REFERENCE_REASON =
 
 /** Why a rename is the same control under a new name, keyed as `INVENTORY_RENAMES` is. */
 export const INVENTORY_RENAME_REASONS: Readonly<Record<string, string>> = {
+  'tab "Dashboard"':
+    "Today's Dashboard tab (dispatch://INFRA-5702, #5545) is the Dashboard control of the view row, its first control, which the issue's bare address opens (R2, dispatch://INFRA-5702/spec#b-r-new-page): a button in the toolbar and a menu item in the one control.",
   'tab "Spec"':
     "The Spec tab is the Spec view of the view row (R2), a button in the toolbar and a menu item in the one control.",
   'tab "Verification"': "The Verification tab is the Verification view of the view row (R2).",
@@ -1189,12 +1181,6 @@ export const INVENTORY_RENAME_REASONS: Readonly<Record<string, string>> = {
     "The header's pull request link names its number and how it stands, Open, Merged or Closed (R22), where it named its number and repository.",
   'link "#2 Keep every old address, inherited"':
     "A priority the issue advances because an issue above it does is named by the priority alone; the row marks it inherited in words beside the link (R13).",
-  'link "Block r1"': BLOCK_LINK_REASON,
-  'link "Block r2"': BLOCK_LINK_REASON,
-  'link "Block r3"': BLOCK_LINK_REASON,
-  'link "Block r4"': BLOCK_LINK_REASON,
-  'link "Block r5"': BLOCK_LINK_REASON,
-  'link "Block r6"': BLOCK_LINK_REASON,
   'region "Open questions"':
     "The Decisions tab's four lists are the Decisions view's own parts (R2).",
   'region "Waiting for your review"': "As above: the part for a decision waiting on the reader.",
@@ -1214,8 +1200,6 @@ export const INVENTORY_RENAME_REASONS: Readonly<Record<string, string>> = {
     "As above, on the closed issue, which waits on no ask.",
   'complementary "Review panel"':
     "The phone's review sheet is the margin inside Details, which on the issue page is one box at every width and named as the margin is (R14); Details opens it over the whole screen.",
-  'button "Add a note or answer in your own words"':
-    "The disclosure opened an open question's box for a note or an answer in the reader's own words; the ask body draws that box in place under the options on every surface and no surface draws the disclosure (dispatch://INFRA-5702/spec#b-r-ask-body, R15), so the reader types in the box, whose placeholder reads 'Answer in your own words, or ask a question back', with no press first.",
 };
 
 /** Links of today's page that a parent row of the outline carries (`ParentRowMapping`), keyed
