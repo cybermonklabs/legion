@@ -158,6 +158,7 @@ func execAll(t *testing.T, store *Store, statements ...string) {
 // The negative control is the migration without verifying in issues_phase_check: the write of
 // verifying after it is refused, and this test fails at it.
 func TestTheMigrationAddsVerifyingAndKeepsEveryRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, doneByChecksVersion-1)
@@ -230,6 +231,7 @@ func TestTheMigrationAddsVerifyingAndKeepsEveryRow(t *testing.T) {
 // phase, status and generation, and each check keeps every column it held. The migration queues
 // nothing and records no reason of a next change for either.
 func TestAReleaseLeavesEachClosedIssueClosed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, doneByChecksVersion-1)
@@ -322,6 +324,7 @@ func seedTheWait(t *testing.T, store *Store, project string) {
 // block B without its drop of pending_task_deliveries.start_at: the store then holds that column
 // besides the release before's.
 func TestTheWayBackOfDoneByChecks(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	if _, err := store.Migrate(t.Context()); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -388,6 +391,7 @@ func TestTheWayBackOfDoneByChecks(t *testing.T) {
 // The negative control is block B without its refusal: run first, it fails on issues_phase_check
 // instead, with no words for the operator, and this test fails at the words it wants.
 func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
+	t.Parallel()
 	blockA, blockB := doneByChecksWayBack(t)
 	seeded := func(t *testing.T) (*Store, *wayBackConn) {
 		store := emptyStore(t)
@@ -501,6 +505,7 @@ func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing
 // migration of main that writes one of the same objects, the fresh database would end at main's
 // text and the upgraded one at this migration's, and the two lines are what this test prints.
 func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
+	t.Parallel()
 	fresh := emptyStore(t)
 	if _, err := fresh.Migrate(t.Context()); err != nil {
 		t.Fatalf("migrate a fresh database: %v", err)
@@ -525,6 +530,7 @@ func TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase(t *testing.T) {
 // the migration as it ships applies over the same row and keeps it, and the cut copy applies over
 // the same database without the row.
 func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	all, err := migrations.All()
 	if err != nil {

@@ -316,6 +316,7 @@ func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
 // queue and the send reads the start back and makes it first. A task that starts nothing reads
 // back with none, also over a delivery that had one.
 func TestADeliveryKeepsItsStartAtBranchThroughARestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-213-implementer")
