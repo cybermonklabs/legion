@@ -3,6 +3,7 @@ package cireconcile
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -193,7 +194,8 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h.boundByTheTest()
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
 	stalled := make(chan struct{})
-	h.github.atStall(func() { close(stalled) })
+	var once sync.Once
+	h.github.atStall(func() { once.Do(func() { close(stalled) }) })
 
 	_, _, finished := holdLease(t, h.pool, h.reconciler.Pass)
 	testwait.Receive(t, "GitHub holding the second-page query open", stalled)
