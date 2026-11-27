@@ -14,11 +14,15 @@ import {
   causeRecords,
   classifyMergeBlocked,
   type MergeBlockedRead,
+  namesPersonRequest,
   parseSession,
+  type PersonRequestRead,
   type Reading,
   type ReturnFacts,
   type ReturnLine,
   readerTwoFaults,
+  requestRead,
+  requestReference,
   resolveReturn,
   statedCauses,
   summaryOf,
@@ -668,6 +672,7 @@ function made(parts: Partial<ReturnFacts> = {}): ReturnFacts {
       transcript: { state: "read", answers: [] },
       timeline: { state: "read", items: [] },
     },
+    personRequest: { ref: null, state: "read", authorKind: null, at: null, asksForReturn: null },
     ...parts,
   };
 }
@@ -1287,5 +1292,136 @@ describe("parsing a session the store imports", () => {
       ["call", "c1"],
       ["result", "c1"],
     ]);
+  });
+});
+
+describe("a return that rests on a person's request", () => {
+  const ASKED =
+    "the owner asked for this in dispatch://ACME-9/comment/11111111-2222-3333-4444-555555555555";
+  const REF = "dispatch://ACME-9/comment/11111111-2222-3333-4444-555555555555";
+
+  /** A Dispatch whose issue holds one comment, with the author and the time a case names. */
+  const holding = (comment: {
+    id?: string;
+    body?: string;
+    kind?: string;
+    at?: string;
+  }): { get: <T>(path: string) => Promise<T> } => ({
+    get: async <T,>() =>
+      [
+        {
+          message: {
+            id: comment.id ?? "11111111-2222-3333-4444-555555555555",
+            body: comment.body ?? "Take ACME-9 back to implementing, please.",
+            created_at: comment.at ?? "2026-11-20T10:00:00Z",
+            author: { kind: comment.kind ?? "user", id: "u-1" },
+          },
+        },
+      ] as T,
+  });
+
+  const asReturn = (read: PersonRequestRead): ReturnLine =>
+    returnOf(made({ reason: ASKED, personRequest: read }));
+
+  test("a reason naming a person and an asking states the cause, and one naming neither does not", () => {
+    expect([
+      namesPersonRequest(ASKED),
+      namesPersonRequest("the person wants the config fix in this change"),
+      namesPersonRequest("loadConfig returns DEFAULTS on a parse error"),
+      namesPersonRequest("the owner of the lock file is the test"),
+    ]).toEqual([true, true, false, false]);
+    expect(requestReference(ASKED)).toBe(REF);
+    expect(requestReference("the owner asked for this")).toBe(null);
+  });
+
+  test("a person's comment written before the call, asking for the return, is established", async () => {
+    const read = await requestRead(holding({}), ASKED, "ACME-9");
+    expect(read).toEqual({
+      ref: REF,
+      state: "read",
+      authorKind: "person",
+      at: "2026-11-20T10:00:00Z",
+      asksForReturn: true,
+    });
+    expect(causeRecords(made({ reason: ASKED, personRequest: read }))).toContainEqual({
+      cause: "person-request",
+      state: "established",
+      step: null,
+    });
+  });
+
+  // PLANT-13: a reference that looks perfect and resolves to a session's own words. A role cannot
+  // authorise its own return.
+  test("a reference resolving to a session's words is absent, and the return is unexplained", async () => {
+    const read = await requestRead(holding({ kind: "session" }), ASKED, "ACME-9");
+    expect(read.authorKind).toBe("session");
+    const ret = asReturn(read);
+    expect(ret.causes).toContainEqual({ cause: "person-request", state: "absent", step: null });
+    expect(
+      resolveReturn(ret, [
+        { return: ret.id, reader: "1", model: "m", own: false, confirmed: { "person-request": true } },
+      ]).class
+    ).toBe("unexplained");
+  });
+
+  // PLANT-14: a real person, a real comment, a real issue, and still not a request for that
+  // return, because it did not exist when the return was made.
+  test("a person's comment written after the call is absent, and the return is unexplained", async () => {
+    const read = await requestRead(holding({ at: "2026-11-20T11:30:00Z" }), ASKED, "ACME-9");
+    expect(read.authorKind).toBe("person");
+    const ret = asReturn(read);
+    expect(ret.causes).toContainEqual({ cause: "person-request", state: "absent", step: null });
+    expect(
+      resolveReturn(ret, [
+        { return: ret.id, reader: "1", model: "m", own: false, confirmed: { "person-request": true } },
+      ]).class
+    ).toBe("unexplained");
+  });
+
+  test("a reason that names no reference, and one whose comment the issue does not hold, are absent", async () => {
+    const none = await requestRead(holding({}), "the owner asked for this", "ACME-9");
+    expect(none.ref).toBe(null);
+    const missing = await requestRead(holding({ id: "other-id" }), ASKED, "ACME-9");
+    expect(missing.authorKind).toBe(null);
+    for (const read of [none, missing])
+      expect(causeRecords(made({ reason: ASKED, personRequest: read }))).toContainEqual({
+        cause: "person-request",
+        state: "absent",
+        step: null,
+      });
+  });
+
+  test("a reference Dispatch could not read is unread, and the return is pending", async () => {
+    const read = await requestRead(
+      {
+        get: async () => {
+          throw new Error("GET /api/v1/issues/ACME-9/comments: 503");
+        },
+      },
+      ASKED,
+      "ACME-9"
+    );
+    expect({ state: read.state, why: read.why }).toEqual({
+      state: "unread",
+      why: "GET /api/v1/issues/ACME-9/comments: 503",
+    });
+    const ret = asReturn(read);
+    expect(ret.causes).toContainEqual({ cause: "person-request", state: "unread", step: null });
+    expect(
+      resolveReturn(ret, [
+        { return: ret.id, reader: "1", model: "m", own: false, confirmed: { "person-request": true } },
+      ]).class
+    ).toBe("pending");
+  });
+
+  test("one unexplained return holds the verdict at unknown, and it is counted", () => {
+    const summary = summaryOf({
+      returns: [{ issue: "ACME-9", class: "unexplained" }],
+      lastStepsPassed: 1,
+      unknown: [],
+    });
+    expect(summary).toContain("unexplained: 1");
+    expect(summary).toContain("verdict: unknown");
+    expect(summary).toContain("ACME-9 unexplained");
   });
 });
