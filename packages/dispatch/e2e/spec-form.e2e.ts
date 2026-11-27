@@ -13,7 +13,8 @@ import {
   withOpenedAsk,
 } from "./api";
 import { type CliRun, cliSession, runDispatch } from "./dispatch-cli";
-import { inboxRow } from "./inbox-pane";
+import { drawer, peekTrigger } from "./inbox-drawer";
+import { askCard, inboxRow } from "./inbox-pane";
 import { READING_PANE_WIDTH } from "./reading-pane";
 import { expect, test } from "./test";
 
@@ -193,7 +194,7 @@ test("an agent's request of a broken statement under the root is refused with th
         [
           "spec.md version 1:",
           "Dispatch refuses an approval request of spec.md version 1, because 1 text breaks the form of The Spec.",
-          `- statement ${node}: ${detail}.`,
+          findingLine,
         ].join("\n")
       );
 
@@ -222,7 +223,7 @@ test("an agent's request of a broken statement under the root is refused with th
     const fixed = await runDispatch(request, home);
     expect(fixed.code, printed(fixed)).toBe(0);
     expect(fixed.stdout).toContain(
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it."
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it."
     );
     const [opened] = await openRequests(tree.requested.key);
     expect(opened, "the request the fixed statement opened").toBeDefined();
@@ -286,8 +287,13 @@ test("the person's Approve on the Inbox card of a broken statement under the roo
   await withHome(async (home) => {
     const tree = await seedTree(home);
     await page.setViewportSize({ height: 900, width: CARD_WIDTH });
-    await page.goto("/");
-    const card = page.getByTestId(`ask-${tree.asks.card}`);
+    // Since INFRA-575 the Inbox page's reading column shows the document under review, and the
+    // question's own card - the options, the note field and the refusal - is the drawer's, at
+    // every width. So the card is read there, over another page.
+    await page.goto("/agents");
+    await peekTrigger(page).click();
+    const card = drawer(page).getByTestId(`ask-${tree.asks.card}`);
+    await expect(card).toBeVisible();
     // Each option's name is its label and its description, and Request changes' description
     // holds the word "approved", so each is named by the start of its label.
     await card.getByRole("radio", { name: /^Approve / }).check();
@@ -519,12 +525,17 @@ test("the Inbox card's reason field at 390 px shows a refusal of three findings 
     const three = await brokenRequestUnderRoot(tree.outside, 3);
     const many = await brokenRequestUnderRoot(tree.outside, 25);
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto("/");
+    // The question's own card, with its reason field, is the drawer's at every width (INFRA-575).
+    await page.goto("/agents");
+    // One Peek: the drawer holds both questions, and a second press would close it.
+    await peekTrigger(page).click();
+    await expect(drawer(page)).toBeVisible();
     for (const [ask, whole] of [
       [three, true],
       [many, false],
     ] as const) {
-      const card = page.getByTestId(`ask-${ask}`);
+      const card = drawer(page).getByTestId(`ask-${ask}`);
+      await expect(card).toBeVisible();
       await card.getByRole("radio", { name: /^Approve / }).check();
       await card.getByRole("button", { name: "Answer" }).click();
       await expect(card.getByRole("alert")).toContainText("Dispatch refused this approval");
