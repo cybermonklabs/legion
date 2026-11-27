@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -570,8 +571,9 @@ func (e *Engine) tellOwnersAcceptance(ctx context.Context, tx pgx.Tx, root recor
 
 // ownersAcceptanceNotice is the phase-finished notice that moved issue, standing in its owner's
 // acceptance, there: the notice of the step before the acceptance on its walk (acceptedRoleOn, the
-// review on today's line), with the handoff that step's phases row keeps, as the move wrote it
-// (noticeFor).
+// review on today's line), at the phase that step's role runs as (plan.BuiltinRoles, the roles the
+// walk's deployment is built from), with the handoff that step's phases row keeps, as the move
+// wrote it (noticeFor).
 func (e *Engine) ownersAcceptanceNotice(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.Notice, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -585,7 +587,7 @@ func (e *Engine) ownersAcceptanceNotice(ctx context.Context, tx pgx.Tx, issue re
 	if err != nil {
 		return record.Notice{}, err
 	}
-	return record.Notice{Kind: "phase-finished", Role: role, Phase: builtinDeployment.Roles[string(role)].Phase,
+	return record.Notice{Kind: "phase-finished", Role: role, Phase: plan.BuiltinRoles()[string(role)].Phase,
 		Summary: row.Summary, Verdict: row.Verdict}, nil
 }
 
